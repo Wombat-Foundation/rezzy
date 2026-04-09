@@ -29,6 +29,10 @@ format: ##H Format codebase
 .PHONY: prove
 prove: ##H Run Lean theorem proofs and verification
 	$(LAKE) build
+	@printf "\n$${STYLE_GREEN}--- Verification Complete ---$${STYLE_RESET}\n"
+	@printf "$${STYLE_CYAN}Mapped Theorems & Definitions:$${STYLE_RESET}\n"
+	@grep -E '^(theorem|def|class|instance|structure) ' RumaLean/*.lean RumaLean.lean || true
+	@printf "$${STYLE_GREEN}--------------------------------$${STYLE_RESET}\n"
 
 
 
@@ -37,8 +41,10 @@ prove: ##H Run Lean theorem proofs and verification
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 # [ENUM] Styling / Colors
-STYLE_CYAN := $(shell tput setaf 6 2>/dev/null || echo -e "\033[36m")
-STYLE_RESET := $(shell tput sgr0 2>/dev/null || echo -e "\033[0m")
+STYLE_CYAN := $(shell tput setaf 6 2>/dev/null || echo '\033[36m')
+STYLE_GREEN := $(shell tput setaf 2 2>/dev/null || echo '\033[32m')
+STYLE_RESET := $(shell tput sgr0 2>/dev/null || echo '\033[0m')
+export STYLE_CYAN STYLE_GREEN STYLE_RESET
 
 .PHONY: _help
 _help:
