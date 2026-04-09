@@ -347,6 +347,91 @@ mod tests {
     }
 
     #[test]
+    fn test_v1_v2_v2_1_comparison_determinism() {
+        // Construct a scenario where all 3 versions might produce different results
+        let mut events = HashMap::new();
+        events.insert(
+            "A".into(),
+            LeanEvent {
+                event_id: "A".into(),
+                power_level: 10,
+                origin_server_ts: 10,
+                prev_events: vec![],
+                depth: 1,
+            },
+        );
+        events.insert(
+            "B".into(),
+            LeanEvent {
+                event_id: "B".into(),
+                power_level: 100,
+                origin_server_ts: 100,
+                prev_events: vec![],
+                depth: 10,
+            },
+        );
+
+        let sorted_v1 = lean_kahn_sort(&events, StateResVersion::V1);
+        let sorted_v2 = lean_kahn_sort(&events, StateResVersion::V2);
+        let sorted_v2_1 = lean_kahn_sort(&events, StateResVersion::V2_1);
+
+        assert_eq!(sorted_v1, vec!["A", "B"]); // V1: Depth wins
+        assert_eq!(sorted_v2, vec!["B", "A"]); // V2: Power wins
+        assert_eq!(sorted_v2_1, vec!["B", "A"]); // V2.1: Power wins
+    }
+
+    /// Batch Test Helper: Easily define tests in a row-based format.
+    /// Format: (ID, Power, TS, Depth, Parents)
+    fn run_batch_test(
+        version: StateResVersion,
+        rows: &[(&str, i64, u64, u64, &[&str])],
+        expected: &[&str],
+    ) {
+        let mut events = HashMap::new();
+        for r in rows {
+            events.insert(
+                r.0.to_string(),
+                LeanEvent {
+                    event_id: r.0.to_string(),
+                    power_level: r.1,
+                    origin_server_ts: r.2,
+                    depth: r.3,
+                    prev_events: r.4.iter().map(|s| s.to_string()).collect(),
+                },
+            );
+        }
+        let result = lean_kahn_sort(&events, version);
+        assert_eq!(
+            result,
+            expected.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_resolution_batch() {
+        // Test Case 1: Standard tie-break (Power wins over TS)
+        run_batch_test(
+            StateResVersion::V2,
+            &[("Alice", 100, 500, 1, &[]), ("Bob", 50, 100, 1, &[])],
+            &["Alice", "Bob"],
+        );
+
+        // Test Case 2: Deep DAG
+        run_batch_test(
+            StateResVersion::V2,
+            &[("Root", 100, 10, 1, &[]), ("Child", 50, 20, 2, &["Root"])],
+            &["Root", "Child"],
+        );
+
+        // Test Case 3: V1 Depth priority
+        run_batch_test(
+            StateResVersion::V1,
+            &[("Deep", 100, 100, 10, &[]), ("Shallow", 10, 100, 1, &[])],
+            &["Shallow", "Deep"],
+        );
+    }
+
+    #[test]
     fn test_native_resolution_bootstrap_parity() {
         // Simulates the 'Path A' resolution logic proven in Lean
         let mut events = HashMap::new();
