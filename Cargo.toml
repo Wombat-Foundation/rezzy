@@ -6,4 +6,16 @@ authors = ["Shane Jaroch <chown_tee@proton.me>"]
 description = "Formally verified, dependency-free Matrix State Resolution v2 logic."
 
 [dependencies]
-# Zero dependencies! That's the point.
+hashbrown = { version = "0.14", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+hex = "0.4"
+serde_json = { version = "1.0", optional = true }
+ed25519-consensus = { version = "2.1", optional = true }
+sp1-zkvm = { version = "6.0.2", optional = true }
+base64 = "0.21"
+
+[features]
+default = ["std"]
+std = ["serde_json", "ed25519-consensus"]
+alloc = ["hashbrown", "serde_json"]
+zkvm = ["sp1-zkvm"]
