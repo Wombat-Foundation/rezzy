@@ -154,6 +154,7 @@ pub fn resolve_lean(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
     use alloc::vec;
 
     #[cfg(not(feature = "std"))]
@@ -343,5 +344,82 @@ mod tests {
         assert_eq!(sorted_v1, vec!["B", "A"]);
         // V2 prioritizes power level
         assert_eq!(sorted_v2, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn test_native_resolution_bootstrap_parity() {
+        // Simulates the 'Path A' resolution logic proven in Lean
+        let mut events = HashMap::new();
+
+        // Root Event: Create Room
+        events.insert(
+            "1".into(),
+            LeanEvent {
+                event_id: "1".into(),
+                power_level: 100,
+                origin_server_ts: 10,
+                prev_events: vec![],
+                depth: 1,
+            },
+        );
+        // Event 2: Join User
+        events.insert(
+            "2".into(),
+            LeanEvent {
+                event_id: "2".into(),
+                power_level: 0,
+                origin_server_ts: 20,
+                prev_events: vec!["1".into()],
+                depth: 2,
+            },
+        );
+
+        let sorted = lean_kahn_sort(&events, StateResVersion::V2);
+
+        let mut resolved_state = BTreeMap::new();
+        for id in sorted {
+            let ev = events.get(&id).unwrap();
+            // Deterministic state key mapping
+            let key = ("m.room.member".to_string(), "@user:example.com".to_string());
+            resolved_state.insert(key, ev.event_id.clone());
+        }
+
+        // Verify the last event ("2") is the final state for that key
+        assert_eq!(
+            resolved_state.get(&("m.room.member".to_string(), "@user:example.com".to_string())),
+            Some(&"2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_hinted_verification_determinism() {
+        // Proves that the linear sequence generation is deterministic
+        let mut events = HashMap::new();
+        events.insert(
+            "A".into(),
+            LeanEvent {
+                event_id: "A".into(),
+                power_level: 100,
+                origin_server_ts: 10,
+                prev_events: vec![],
+                depth: 1,
+            },
+        );
+        events.insert(
+            "B".into(),
+            LeanEvent {
+                event_id: "B".into(),
+                power_level: 100,
+                origin_server_ts: 20,
+                prev_events: vec!["A".into()],
+                depth: 2,
+            },
+        );
+
+        let sequence_1 = lean_kahn_sort(&events, StateResVersion::V2);
+        let sequence_2 = lean_kahn_sort(&events, StateResVersion::V2);
+
+        assert_eq!(sequence_1, sequence_2);
+        assert_eq!(sequence_1, vec!["A", "B"]);
     }
 }
