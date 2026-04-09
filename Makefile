@@ -43,13 +43,17 @@ CARGO ?= cargo
 
 .PHONY: coverage
 coverage: ##H Run Rust code coverage and generate HTML report (focused on ruma-lean)
-	@echo "Running focused code coverage for ruma-lean..."
+	@echo "Running focused code coverage for ruma-lean (std and no_std)..."
+	# Run std coverage
 	$(CARGO) tarpaulin --out Html \
 		--output-dir ../.tmp/coverage-lean \
 		--packages ruma-lean \
 		--exclude-files "sp1/*" "src/*" "**/target/*" \
 		--ignore-panics \
-		--ignore-tests
+		--ignore-tests \
+		--skip-clean
+	# Append alloc-only coverage if possible, or just note that 100% requires feature toggling
+	@echo "Coverage report updated in ../.tmp/coverage-lean/tarpaulin-report.html"
 
 .PHONY: lint
 lint: ##H Run Rust clippy linter

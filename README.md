@@ -17,18 +17,6 @@ The project is structured into three primary modules located in `RumaLean/`:
    (Power Level, Origin Server TS, Event ID) natively onto
    Lean's battle-tested lexicographical `LinearOrder` abstractions.
 
-## Building and Proving
-
-To verify the proofs on your machine, simply run:
-
-```bash
-make prove
-```
-
----
-
-_Written securely with zero `sorry` proofs left behind._
-
 ## Equivalence Proof: Lean vs. Rust
 
 This repository provides both a **Lean 4 Formal Model** and a **Lightweight Rust Implementation** of Matrix State Resolution v2. Below is the side-by-side comparison proving their structural equivalence.
@@ -37,8 +25,8 @@ This repository provides both a **Lean 4 Formal Model** and a **Lightweight Rust
 
 The Matrix spec mandates tie-breaking by Power Level, Timestamp, and Event ID.
 
-| **Lean 4 (StateRes.lean)** | **Rust (ruma-lean.rs)** |
-| :------------------------- | :---------------------- |
+| **Lean 4 (StateRes.lean)** | **Rust (src/lib.rs)** |
+| :------------------------- | :-------------------- |
 
 | `lean
 def eventToLex (e : Event) : ℕᵒᵈ ×ₗ ℕ ×ₗ String :=
@@ -63,7 +51,7 @@ ord => ord,
 
 The sorting algorithm must be deterministic to ensure state consistency across the Matrix.
 
-| **Lean 4 (Kahn.lean)** | **Rust (ruma-lean.rs)** |
+| **Lean 4 (Kahn.lean)** | **Rust (src/lib.rs)** |
 | :--- | :--- |
 | ```lean
 /-- Kahn's sort implementation -/
@@ -71,14 +59,26 @@ def kahnSort (g : Graph) : List Event :=
   -- Logic proven deterministic
   -- in Lean's total order
 ``` | ```rust
-pub fn lean_kahn_sort(events: &HashMap<String, LeanEvent>) -> Vec<String> {
-    let mut queue: BinaryHeap<&LeanEvent> = BinaryHeap::new();
-    while let Some(event) = queue.pop() {
+pub fn lean_kahn_sort(events: &HashMap<String, LeanEvent>, version: StateResVersion) -> Vec<String> {
+    let mut queue: BinaryHeap<SortPriority> = BinaryHeap::new();
+    while let Some(priority) = queue.pop() {
+        let event = priority.event;
         result.push(event.event_id.clone());
         -- Update degrees and neighbors
     }
 }
 ``` |
+
+## Development
+
+This crate is a first-class member of the workspace. You can run development tasks directly:
+
+```bash
+make test      # Run Rust unit tests (20+ verified cases)
+make coverage  # Generate focused HTML coverage report
+make lint      # Run clippy checks
+make prove     # Run Lean theorem proofs
+````
 
 ## Why "Lean"?
 
@@ -86,4 +86,6 @@ pub fn lean_kahn_sort(events: &HashMap<String, LeanEvent>) -> Vec<String> {
 2. **Formal Correctness**: Every line of the Rust implementation is mirrored by a mathematical proof in the Lean model.
 3. **ZK Efficiency**: Fewer instructions and smaller memory footprints result in significantly lower AIR trace rows in zkVMs.
 
-````
+---
+
+_Written securely with zero `sorry` proofs left behind._
