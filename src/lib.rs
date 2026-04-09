@@ -49,8 +49,35 @@ pub struct LeanEvent {
     pub depth: u64, // Required for V1
 }
 
+/// The core tie-breaking logic from Ruma Lean (StateRes.lean).
+/// Defaults to Matrix V2 rules: power_level (desc) -> origin_server_ts (asc) -> event_id (asc)
+impl Ord for LeanEvent {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Higher power level comes FIRST (is "smaller" in terms of order)
+        match other.power_level.cmp(&self.power_level) {
+            Ordering::Equal => {
+                // Earlier timestamp comes FIRST
+                match self.origin_server_ts.cmp(&other.origin_server_ts) {
+                    Ordering::Equal => {
+                        // Lexicographically smaller ID comes FIRST
+                        self.event_id.cmp(&other.event_id)
+                    }
+                    ord => ord,
+                }
+            }
+            ord => ord,
+        }
+    }
+}
+
+impl PartialOrd for LeanEvent {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// A wrapper to ensure BinaryHeap pops the "smallest" (best) event first.
-#[derive(Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 struct SortPriority<'a> {
     event: &'a LeanEvent,
     version: StateResVersion,
@@ -477,8 +504,41 @@ mod tests {
     }
 
     #[test]
-    fn test_hinted_verification_determinism() {
-        // Proves that the linear sequence generation is deterministic
+    fn test_serialization_roundtrip() {
+        // Covers derived Serialize/Deserialize
+        let event = LeanEvent {
+            event_id: "$abc:example.com".into(),
+            power_level: 100,
+            origin_server_ts: 12345,
+            prev_events: vec!["$parent:example.com".into()],
+            depth: 5,
+        };
+        let serialized = serde_json::to_string(&event).unwrap();
+        let deserialized: LeanEvent = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(event, deserialized);
+    }
+
+    #[test]
+    fn test_kahn_missing_parents() {
+        // Covers the branch: if events.contains_key(prev) { ... } == false
+        let mut events = HashMap::new();
+        events.insert(
+            "A".into(),
+            LeanEvent {
+                event_id: "A".into(),
+                power_level: 100,
+                origin_server_ts: 10,
+                prev_events: vec!["MISSING".into()], // Parent exists in DAG but not in this conflict set
+                depth: 1,
+            },
+        );
+        let sorted = lean_kahn_sort(&events, StateResVersion::V2);
+        assert_eq!(sorted, vec!["A"]);
+    }
+
+    #[test]
+    fn test_kahn_disconnected_graph() {
+        // Covers multiple roots and disconnected components
         let mut events = HashMap::new();
         events.insert(
             "A".into(),
@@ -495,16 +555,213 @@ mod tests {
             LeanEvent {
                 event_id: "B".into(),
                 power_level: 100,
-                origin_server_ts: 20,
-                prev_events: vec!["A".into()],
-                depth: 2,
+                origin_server_ts: 10,
+                prev_events: vec![],
+                depth: 1,
+            },
+        );
+        let sorted = lean_kahn_sort(&events, StateResVersion::V2);
+        // Both roots, sorted by ID
+        assert_eq!(sorted, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn test_partial_ord_implementations() {
+        // Explicitly trigger PartialOrd for coverage
+        let e1 = LeanEvent {
+            event_id: "a".into(),
+            power_level: 100,
+            origin_server_ts: 10,
+            prev_events: vec![],
+            depth: 1,
+        };
+        let e2 = LeanEvent {
+            event_id: "b".into(),
+            power_level: 100,
+            origin_server_ts: 10,
+            prev_events: vec![],
+            depth: 1,
+        };
+
+        assert!(e1.partial_cmp(&e2).is_some());
+        assert!(e1 < e2);
+
+        let p1 = SortPriority {
+            event: &e1,
+            version: StateResVersion::V2,
+        };
+        let p2 = SortPriority {
+            event: &e2,
+            version: StateResVersion::V2,
+        };
+        assert!(p1.partial_cmp(&p2).is_some());
+    }
+
+    #[test]
+    fn test_v2_deep_tie_break() {
+        // Power Equal, TS Equal, tie-break by ID
+        let mut events = HashMap::new();
+        events.insert(
+            "B".into(),
+            LeanEvent {
+                event_id: "B".into(),
+                power_level: 100,
+                origin_server_ts: 10,
+                prev_events: vec![],
+                depth: 1,
+            },
+        );
+        events.insert(
+            "A".into(),
+            LeanEvent {
+                event_id: "A".into(),
+                power_level: 100,
+                origin_server_ts: 10,
+                prev_events: vec![],
+                depth: 1,
             },
         );
 
-        let sequence_1 = lean_kahn_sort(&events, StateResVersion::V2);
-        let sequence_2 = lean_kahn_sort(&events, StateResVersion::V2);
+        let sorted = lean_kahn_sort(&events, StateResVersion::V2);
+        assert_eq!(sorted, vec!["A", "B"]);
+    }
 
-        assert_eq!(sequence_1, sequence_2);
-        assert_eq!(sequence_1, vec!["A", "B"]);
+    #[test]
+    fn test_v1_equal_depth_tie_break() {
+        let mut events = HashMap::new();
+        events.insert(
+            "B".into(),
+            LeanEvent {
+                event_id: "B".into(),
+                power_level: 0,
+                origin_server_ts: 10,
+                prev_events: vec![],
+                depth: 1,
+            },
+        );
+        events.insert(
+            "A".into(),
+            LeanEvent {
+                event_id: "A".into(),
+                power_level: 0,
+                origin_server_ts: 10,
+                prev_events: vec![],
+                depth: 1,
+            },
+        );
+
+        let sorted = lean_kahn_sort(&events, StateResVersion::V1);
+        assert_eq!(sorted, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn test_kahn_no_neighbors() {
+        // Node with no outgoing edges
+        let mut events = HashMap::new();
+        events.insert(
+            "1".into(),
+            LeanEvent {
+                event_id: "1".into(),
+                power_level: 100,
+                origin_server_ts: 10,
+                prev_events: vec![],
+                depth: 1,
+            },
+        );
+        let sorted = lean_kahn_sort(&events, StateResVersion::V2);
+        assert_eq!(sorted, vec!["1"]);
+    }
+
+    #[test]
+    fn test_v2_1_full_coverage() {
+        // Ensure V2_1 branch is fully covered
+        let mut events = HashMap::new();
+        events.insert(
+            "A".into(),
+            LeanEvent {
+                event_id: "A".into(),
+                power_level: 100,
+                origin_server_ts: 10,
+                prev_events: vec![],
+                depth: 1,
+            },
+        );
+        let sorted = lean_kahn_sort(&events, StateResVersion::V2_1);
+        assert_eq!(sorted, vec!["A"]);
+    }
+
+    #[test]
+    fn test_total_order_properties() {
+        let e1 = LeanEvent {
+            event_id: "a".into(),
+            power_level: 100,
+            origin_server_ts: 10,
+            prev_events: vec![],
+            depth: 1,
+        };
+        let e2 = LeanEvent {
+            event_id: "b".into(),
+            power_level: 100,
+            origin_server_ts: 10,
+            prev_events: vec![],
+            depth: 1,
+        };
+        let e3 = LeanEvent {
+            event_id: "c".into(),
+            power_level: 50,
+            origin_server_ts: 10,
+            prev_events: vec![],
+            depth: 1,
+        };
+
+        // Reflexivity
+        assert_eq!(e1.cmp(&e1), Ordering::Equal);
+        assert!(e1 <= e1);
+
+        // Totality
+        assert!(e1 <= e2 || e2 <= e1);
+
+        // Transitivity
+        if e1 <= e2 && e2 <= e3 {
+            assert!(e1 <= e3);
+        }
+
+        // Antisymmetry
+        let e1_copy = e1.clone();
+        if e1 <= e1_copy && e1_copy <= e1 {
+            assert_eq!(e1, e1_copy);
+        }
+    }
+
+    #[test]
+    fn test_sort_priority_equality() {
+        let e1 = LeanEvent {
+            event_id: "a".into(),
+            power_level: 100,
+            origin_server_ts: 10,
+            prev_events: vec![],
+            depth: 1,
+        };
+        let p1 = SortPriority {
+            event: &e1,
+            version: StateResVersion::V2,
+        };
+        let p1_other = SortPriority {
+            event: &e1,
+            version: StateResVersion::V2,
+        };
+        assert_eq!(p1.cmp(&p1_other), Ordering::Equal);
+        assert_eq!(p1, p1_other);
+    }
+
+    #[test]
+    fn test_resolve_lean_functionality() {
+        // Ensures the resolve_lean wrapper body is covered
+        let mut unconflicted = BTreeMap::new();
+        unconflicted.insert(("type".into(), "key".into()), "id".into());
+
+        let conflicted = HashMap::new();
+        let resolved = resolve_lean(unconflicted.clone(), conflicted, StateResVersion::V2);
+        assert_eq!(resolved, unconflicted);
     }
 }

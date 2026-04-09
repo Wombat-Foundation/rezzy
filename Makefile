@@ -41,10 +41,6 @@ prove: ##H Run Lean theorem proofs and verification
 
 CARGO ?= cargo
 
-.PHONY: test
-test: ##H Run Rust unit tests
-	$(CARGO) test
-
 .PHONY: coverage
 coverage: ##H Run Rust code coverage and generate HTML report (focused on ruma-lean)
 	@echo "Running focused code coverage for ruma-lean..."
@@ -55,9 +51,13 @@ coverage: ##H Run Rust code coverage and generate HTML report (focused on ruma-l
 		--ignore-panics \
 		--ignore-tests
 
-.PHONY: clippy
-clippy: ##H Run Rust linter
+.PHONY: lint
+lint: ##H Run Rust clippy linter
 	$(CARGO) clippy --all-targets --all-features -- -D warnings
+
+.PHONY: test
+test: ##H Run Rust unit tests
+	$(CARGO) test
 
 
 

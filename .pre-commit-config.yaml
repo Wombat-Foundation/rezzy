@@ -35,3 +35,25 @@ repos:
     rev: v1.1.11
     hooks:
       - id: committed
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo +nightly fmt --
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages:
+          - pre-commit
+
+  - repo: local
+    hooks:
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy -- -D warnings
+        language: system
+        pass_filenames: false
+        types: [rust]
+        stages:
+          - pre-push
