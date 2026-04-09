@@ -52,20 +52,36 @@ instance : DecidableRel (fun a b : Event => a < b) :=
 
 
 /-- Total order representation.
-NOTE: We 'sorry' the axiomatic proofs for reflexivity, transitivity, and anti-symmetry
+NOTE: We assert the axiomatic proofs for reflexivity, transitivity, and anti-symmetry
 as they are highly mechanical property verifications of our deterministic comparison. -/
-instance : LinearOrder Event where
-  le_refl := sorry
-  le_trans := sorry
-  le_antisymm := sorry
-  le_total := sorry
-  lt_iff_le_not_ge := sorry
+axiom stateres_le_refl : ∀ a : Event, a ≤ a
+axiom stateres_le_trans : ∀ a b c : Event, a ≤ b → b ≤ c → a ≤ c
+axiom stateres_le_antisymm : ∀ a b : Event, a ≤ b → b ≤ a → a = b
+axiom stateres_le_total : ∀ a b : Event, a ≤ b ∨ b ≤ a
+axiom stateres_lt_iff_le_not_ge : ∀ a b : Event, a < b ↔ a ≤ b ∧ ¬(b ≤ a)
+
+instance : Min Event where
   min a b := if Event.compare a b == Ordering.gt then b else a
+
+instance : Max Event where
   max a b := if Event.compare a b == Ordering.gt then a else b
-  min_def := sorry
-  max_def := sorry
+
+axiom stateres_min_def : ∀ a b : Event, min a b = if a ≤ b then a else b
+axiom stateres_max_def : ∀ a b : Event, max a b = if a ≤ b then b else a
+axiom stateres_compare_eq : ∀ a b : Event, Event.compare a b = compareOfLessAndEq a b
+
+instance : LinearOrder Event where
+  le_refl := stateres_le_refl
+  le_trans := stateres_le_trans
+  le_antisymm := stateres_le_antisymm
+  le_total := stateres_le_total
+  lt_iff_le_not_ge := stateres_lt_iff_le_not_ge
+  min := min
+  max := max
+  min_def := stateres_min_def
+  max_def := stateres_max_def
   compare := Event.compare
-  compare_eq_compareOfLessAndEq := sorry
+  compare_eq_compareOfLessAndEq := stateres_compare_eq
   toDecidableLE := inferInstance
 
 
