@@ -51,6 +51,23 @@ impl PartialOrd for LeanEvent {
     }
 }
 
+/// A wrapper to ensure BinaryHeap pops the "smallest" (best) event first.
+#[derive(Eq, PartialEq)]
+struct SortPriority<'a>(&'a LeanEvent);
+
+impl<'a> Ord for SortPriority<'a> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reverse the comparison so the BinaryHeap (Max-Heap) acts as a Min-Heap.
+        other.0.cmp(self.0)
+    }
+}
+
+impl<'a> PartialOrd for SortPriority<'a> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// A simplified implementation of Kahn's Topological Sort.
 /// Equivalence proven via formal verification in RumaLean/Kahn.lean.
 pub fn lean_kahn_sort(events: &HashMap<String, LeanEvent>) -> Vec<String> {
@@ -67,24 +84,25 @@ pub fn lean_kahn_sort(events: &HashMap<String, LeanEvent>) -> Vec<String> {
         }
     }
 
-    let mut queue: BinaryHeap<&LeanEvent> = BinaryHeap::new();
+    let mut queue: BinaryHeap<SortPriority> = BinaryHeap::new();
     for (id, &degree) in &in_degree {
         if degree == 0 {
             if let Some(event) = events.get(id) {
-                queue.push(event);
+                queue.push(SortPriority(event));
             }
         }
     }
 
     let mut result = Vec::new();
-    while let Some(event) = queue.pop() {
+    while let Some(priority) = queue.pop() {
+        let event = priority.0;
         result.push(event.event_id.clone());
         if let Some(neighbors) = adjacency.get(&event.event_id) {
             for next_id in neighbors {
                 let degree = in_degree.get_mut(next_id).unwrap();
                 *degree -= 1;
                 if *degree == 0 {
-                    queue.push(events.get(next_id).unwrap());
+                    queue.push(SortPriority(events.get(next_id).unwrap()));
                 }
             }
         }
