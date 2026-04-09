@@ -35,6 +35,31 @@ prove: ##H Run Lean theorem proofs and verification
 	@printf "$${STYLE_GREEN}--------------------------------$${STYLE_RESET}\n"
 
 
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Rust development
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+CARGO ?= cargo
+
+.PHONY: test
+test: ##H Run Rust unit tests
+	$(CARGO) test
+
+.PHONY: coverage
+coverage: ##H Run Rust code coverage and generate HTML report (focused on ruma-lean)
+	@echo "Running focused code coverage for ruma-lean..."
+	$(CARGO) tarpaulin --out Html \
+		--output-dir ../.tmp/coverage-lean \
+		--packages ruma-lean \
+		--exclude-files "sp1/*" "src/*" "**/target/*" \
+		--ignore-panics \
+		--ignore-tests
+
+.PHONY: clippy
+clippy: ##H Run Rust linter
+	$(CARGO) clippy --all-targets --all-features -- -D warnings
+
+
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Help & support commands

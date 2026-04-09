@@ -42,7 +42,7 @@ The Matrix spec mandates tie-breaking by Power Level, Timestamp, and Event ID.
 
 | `lean
 def eventToLex (e : Event) : ℕᵒᵈ ×ₗ ℕ ×ₗ String :=
-  toLex (OrderDual.toDual e.power_level, 
+  toLex (OrderDual.toDual e.power_level,
     toLex (e.origin_server_ts, e.event_id))
 ` | ```rust
 impl Ord for LeanEvent {
