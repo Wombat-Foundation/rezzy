@@ -184,4 +184,95 @@ mod tests {
         let sorted = lean_kahn_sort(&events);
         assert_eq!(sorted, vec!["1", "2", "3"]);
     }
+
+    #[test]
+    fn test_complex_dag_sort() {
+        // Diamond shape DAG
+        //     1
+        //    / \
+        //   2   3
+        //    \ /
+        //     4
+        let mut events = HashMap::new();
+        events.insert(
+            "1".into(),
+            LeanEvent {
+                event_id: "1".into(),
+                power_level: 100,
+                origin_server_ts: 10,
+                prev_events: vec![],
+            },
+        );
+        events.insert(
+            "2".into(),
+            LeanEvent {
+                event_id: "2".into(),
+                power_level: 50,
+                origin_server_ts: 20,
+                prev_events: vec!["1".into()],
+            },
+        );
+        events.insert(
+            "3".into(),
+            LeanEvent {
+                event_id: "3".into(),
+                power_level: 50,
+                origin_server_ts: 15,
+                prev_events: vec!["1".into()],
+            },
+        );
+        events.insert(
+            "4".into(),
+            LeanEvent {
+                event_id: "4".into(),
+                power_level: 10,
+                origin_server_ts: 30,
+                prev_events: vec!["2".into(), "3".into()],
+            },
+        );
+
+        let sorted = lean_kahn_sort(&events);
+
+        // Sorting Logic:
+        // 1. Event '1' is the root (no dependencies).
+        // 2. Events '2' and '3' both depend on '1'.
+        // 3. Event '3' has an earlier timestamp (15) than '2' (20).
+        // 4. Matrix spec mandates that for equal power levels, the earlier event takes precedence.
+        // Expected Order: 1 -> 3 -> 2 -> 4
+        assert_eq!(sorted, vec!["1", "3", "2", "4"]);
+    }
+
+    #[test]
+    fn test_resolve_lean_with_conflicts() {
+        let unconflicted = BTreeMap::new();
+
+        let mut conflicted = HashMap::new();
+        // Event A: Sets name to "Alpha", PL 100, TS 100
+        conflicted.insert(
+            "$A".into(),
+            LeanEvent {
+                event_id: "$A".into(),
+                power_level: 100,
+                origin_server_ts: 100,
+                prev_events: vec![],
+            },
+        );
+        // Event B: Sets name to "Beta", PL 50, TS 50
+        conflicted.insert(
+            "$B".into(),
+            LeanEvent {
+                event_id: "$B".into(),
+                power_level: 50,
+                origin_server_ts: 50,
+                prev_events: vec![],
+            },
+        );
+
+        // Although B is earlier, A has higher power level.
+        let sorted = lean_kahn_sort(&conflicted);
+        assert_eq!(sorted, vec!["$A", "$B"]);
+
+        let resolved = resolve_lean(unconflicted, conflicted);
+        assert!(resolved.is_empty()); // resolve_lean currently doesn't apply transitions
+    }
 }
