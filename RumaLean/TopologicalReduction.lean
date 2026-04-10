@@ -59,23 +59,28 @@ structure HostMapping where
   left_inv : ∀ e, decode (encode e) = e
   right_inv : ∀ n, encode (decode n) = n
 
+/-- A valid traversal of Events implies that adjacent events in the sequence
+    satisfy the Host's adjacency mapping constraint. -/
+def isValidEventTraversal (mapping : HostMapping) : List Event → Prop
+  | [] => True
+  | [_] => True
+  | a :: b :: tail => isHypercubeStep (mapping.encode a) (mapping.encode b) ∧ isValidEventTraversal mapping (b :: tail)
+
 /--
 Theorem: If the Host provides a strictly ordered sequence of Events (the output of
-Kahn's Sort), and the Host can construct a Bijective Mapping such that adjacent
+Kahn's Sort), and the Host has a Bijective Mapping such that adjacent
 Events in the sorted list are mapped to adjacent coordinates in the Boolean Hypercube,
 then the mapped sequence is a perfectly valid Boolean Hypercube Traversal.
 
 This theorem bounds the security of the optimized zkVM. The zkVM circuit guarantees
 `isValidHypercubeTraversal`. Therefore, if the Host's `encode` function is proven
-or trusted to be Bijective and Adjacency-Preserving, the zkVM proof cryptographically
-binds the traversal of the Graph.
+or trusted to be Bijective and Adjacency-Preserving (`isValidEventTraversal`), the zkVM
+proof cryptographically binds the traversal of the Graph.
 -/
 theorem topological_reduction_validity
   (sorted_events : List Event)
   (mapping : HostMapping)
-  (host_claims_adjacency : ∀ (e1 e2 : Event),
-    List.Pairwise (λ a b => a = e1 ∧ b = e2) sorted_events →
-    isHypercubeStep (mapping.encode e1) (mapping.encode e2)) :
+  (h : isValidEventTraversal mapping sorted_events) :
   isValidHypercubeTraversal (sorted_events.map mapping.encode) := by
   induction sorted_events with
   | nil =>
@@ -85,13 +90,8 @@ theorem topological_reduction_validity
     | nil =>
       simp [isValidHypercubeTraversal]
     | cons next rest =>
+      dsimp [isValidEventTraversal] at h
       dsimp [List.map, isValidHypercubeTraversal]
-      apply And.intro
-      · -- Prove the head and next satisfy the step constraint
-        apply host_claims_adjacency head next
-        -- In a real proof, we'd extract the pairwise adjacency from the List structure here
-        sorry
-      · -- The rest of the list follows by inductive hypothesis
-        sorry
+      exact ⟨h.left, ih h.right⟩
 
 end RumaLean
