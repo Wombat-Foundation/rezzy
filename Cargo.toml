@@ -2,7 +2,7 @@
 
 [package]
 name = "ruma-lean"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
 description = "Formally verified, dependency-free Matrix State Resolution v2 logic."
