@@ -52,3 +52,17 @@ theorem kahn_sort_deterministic (G : DirectedGraph V)
     ∀ L1 L2, L1 = kahnSort G S → L2 = kahnSort G S → L1 = L2 := by
   intro L1 L2 h1 h2
   rw [h1, h2]
+
+/-- THEOREM: The output of Kahn's sorting algorithm is a permutation of the input elements.
+    Specifically, every element in `kahnSort G S` is in `S`, and vice versa. -/
+theorem kahn_sort_is_permutation (G : DirectedGraph V) [IsDAG G]
+    [DecidableRel G.edges] [LinearOrder V] (S : Finset V) :
+    ∀ v, v ∈ kahnSort G S ↔ v ∈ S := by
+  sorry
+
+/-- THEOREM: The output of Kahn's sort maintains topological ordering.
+    If `u` comes before `v` in the sorted list, then there is no edge from `v` to `u`. -/
+theorem kahn_sort_is_topological (G : DirectedGraph V) [IsDAG G]
+    [DecidableRel G.edges] [LinearOrder V] (S : Finset V) :
+    ∀ {u v}, (∃ l1 l2 l3, kahnSort G S = l1 ++ [u] ++ l2 ++ [v] ++ l3) → ¬ G.edges v u := by
+  sorry

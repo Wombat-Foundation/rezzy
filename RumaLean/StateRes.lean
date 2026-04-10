@@ -40,12 +40,12 @@ theorem eventToLex_inj : Function.Injective eventToLex := by
   subst h1 h3 h4
   rfl
 
-/-- Total order representation derived flawlessly from tuple components without any sorry endpoints. -/
+/-- Total order representation derived from tuple components. -/
 instance : LinearOrder Event := LinearOrder.lift' eventToLex eventToLex_inj
 
 /-- Syntactic sugar for topological comparing -/
 def Event.compare (a b : Event) : Ordering := Ord.compare a b
 
-/-- Total Order property is fulfilled by the StateRes algorithmic structure. -/
+/-- Total Order property is fulfilled by the StateRes algo structure. -/
 @[reducible]
 def stateres_is_total_order : LinearOrder Event := inferInstance
