@@ -63,6 +63,16 @@ lint:	##H Run rust and lean linters
 test: ##H Run Rust unit tests
 	$(CARGO) test
 
+.PHONY: publish
+publish: ##H Preview package file list and simulate a dry-run publish
+	@echo "Previewing packaged files..."
+	@echo "-----------------------------------"
+	$(CARGO) package --list
+	@echo ""
+	@echo "Simulating publish (--dry-run)"
+	@echo "-----------------------------------"
+	$(CARGO) publish --dry-run
+
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
