@@ -27,6 +27,7 @@ repos:
     rev: v1.44.0
     hooks:
       - id: typos
+        exclude: ^res/
       - id: typos
         name: commit-msg-typos
         stages: [commit-msg]

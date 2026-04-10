@@ -24,6 +24,9 @@ jobs:
       - name: Update specific cache
         run: make cache
 
+      - name: Generate synthetic data
+        run: make data
+
       - name: Run lean (lake)
         run: make prove
 

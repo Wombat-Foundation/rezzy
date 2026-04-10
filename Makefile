@@ -79,6 +79,21 @@ publish: ##H Preview package file list and simulate a dry-run publish
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Data Generation & Benchmarking
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.PHONY: data
+data: ##H Generate synthetic benchmark data and fetch matrix state if credentials exist
+	@mkdir -p res
+	python3 scripts/generate_benchmark_1k.py
+	@if [ -f .env ]; then \
+		echo "Found .env, attempting to fetch live matrix state..."; \
+		set -a && source .env && python3 scripts/fetch_matrix_state.py || echo "Warning: Fetch failed, continuing..."; \
+	else \
+		echo "No .env found, skipping live fetch."; \
+	fi
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Help & support commands
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
