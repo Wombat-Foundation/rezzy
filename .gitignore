@@ -2,3 +2,10 @@
 target/
 .gemini/
 .env
+.tmp/
+*.zip
+*.tar.*
+# force add something if you want it
+res/
+# python
+__pycache__

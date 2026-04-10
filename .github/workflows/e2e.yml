@@ -1,0 +1,52 @@
+---
+name: Ruma SDK E2E
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  equiv-determ:
+    runs-on: ubuntu-latest
+    env:
+      MATRIX_HOMESERVER: ${{ secrets.MATRIX_HOMESERVER }}
+      MATRIX_ROOM_ID: ${{ secrets.MATRIX_ROOM_ID }}
+      MATRIX_ROOM_ID_V2_1: ${{ secrets.MATRIX_ROOM_ID_V2_1 }}
+      MATRIX_TOKEN: ${{ secrets.MATRIX_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release crate
+        run: make build
+
+      - name: Generate benchmark data
+        run: make fixtures
+
+      - name: Setup Ruma Reference
+        run: bash scripts/setup_ruma_cli.sh
+
+      - name: Run E2E parity test
+        run: make e2e
+
+      - name: Upload E2E Diff on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-artifacts
+          path: |
+            *.diff
+            *.json
+            *.log
+            .lake/build/
+          retention-days: 5

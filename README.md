@@ -1,118 +1,26 @@
 <!-- markdownlint-disable MD013 MD033 -->
 
-# Ruma Lean
+# Ruma "Lean"
 
-[![CI](https://github.com/gamesguru/ruma-lean/actions/workflows/ci.yml/badge.svg)](https://github.com/gamesguru/ruma-lean/actions/workflows/ci.yml)
+[![Rust](https://github.com/gamesguru/ruma-lean/actions/workflows/rust.yml/badge.svg)](https://github.com/gamesguru/ruma-lean/actions/workflows/rust.yml)
+[![Lean](https://github.com/gamesguru/ruma-lean/actions/workflows/lean.yml/badge.svg)](https://github.com/gamesguru/ruma-lean/actions/workflows/lean.yml)
+[![Docs](https://github.com/gamesguru/ruma-lean/actions/workflows/docs.yml/badge.svg)](https://github.com/gamesguru/ruma-lean/actions/workflows/docs.yml)
+[![E2E](https://github.com/gamesguru/ruma-lean/actions/workflows/e2e.yml/badge.svg)](https://github.com/gamesguru/ruma-lean/actions/workflows/e2e.yml)
 
-Formal verification of Kahn's sort and State Res v2 using **Lean 4**.
+Formal proofs of **Kahn's sort** and **State Res** (v1, v2, and v2.1) using `Lean 4`.
 
-Reference standard implementation in `rust` for other homeservers.
+Reference standard and light-weight implementation in `rust`.
 
-## What's Inside?
+Used in zero-knowledge proofs by host homeservers, so they can sign off on zkVM-proofs as deterministically equivalent in output to their own.
 
-The project is structured into three main parts in `RumaLean/`:
+## Matrix Federation `send_join`
 
-1. **`DirectedAcyclicGraph.lean`**
+The `ruma-lean` CLI computes the exact `send_join` response payload required for "full joins" over the Matrix Server-Server (Federation) API.
 
-2. **`Kahn.lean`**
+When a server joins a room via `/send_join`, the resident homeserver must compute the resolved room state at the join event and recursively traverse the DAG to provide the `auth_chain` for that state. This state resolution and auth chain generation is the most computationally expensive part of serving full joins for large rooms. `ruma-lean` optimizes this exact workload and outputs the required JSON payload (using `--format federation`).
 
-3. **`StateRes.lean`**
+### The Fundamental Bottleneck
 
-## Equivalence Proof: Lean vs. Rust
+Matrix's State Resolution V2 requires resolving conflicted events via **Kahn's Topological Sort** over the `auth_events` DAG. In rooms with thousands of state events (and heavy `prev_events`/`auth_events` branching), finding cycles and breaking sorting ties using Deep Lexicographical Tie-Breaks (`power_level`, `origin_server_ts`, `event_id`) becomes a massive computational chokepoint. Doing this safely without breaking protocol consensus requires heavily defensive graph-traversal logic.
 
-### Tie-Breaking Rule
-
-The Matrix spec mandates tie-breaking by Power Level, Timestamp, and Event ID.
-
-<table>
-<tr>
-<th>Lean 4 (StateRes.lean)</th>
-<th>Rust (src/lib.rs)</th>
-</tr>
-<tr>
-<td valign="top">
-
-```lean
-def eventToLex (e : Event) : ℕᵒᵈ ×ₗ ℕ ×ₗ String :=
-  toLex (OrderDual.toDual e.power_level,
-    toLex (e.origin_server_ts, e.event_id))
-```
-
-</td>
-<td valign="top">
-
-```rust
-impl Ord for LeanEvent {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match other.power_level.cmp(&self.power_level) {
-            Ordering::Equal => match self.origin_server_ts.cmp(&other.origin_server_ts) {
-                Ordering::Equal => self.event_id.cmp(&other.event_id),
-                ord => ord,
-            },
-            ord => ord,
-        }
-    }
-}
-```
-
-</td>
-</tr>
-</table>
-
-### Topological Sort (Kahn's)
-
-The sorting algorithm must be deterministic to ensure state consistency across the Matrix.
-
-<table>
-<tr>
-<th>Lean 4 (Kahn.lean)</th>
-<th>Rust (src/lib.rs)</th>
-</tr>
-<tr>
-<td valign="top">
-
-```lean
-/-- Kahn's sort implementation -/
-def kahnSort (g : Graph) : List Event :=
-  -- Logic proven deterministic
-  -- in Lean's total order
-```
-
-</td>
-<td valign="top">
-
-```rust
-pub fn lean_kahn_sort(events: &HashMap<String, LeanEvent>, version: StateResVersion) -> Vec<String> {
-    let mut queue: BinaryHeap<SortPriority> = BinaryHeap::new();
-    while let Some(priority) = queue.pop() {
-        let event = priority.event;
-        result.push(event.event_id.clone());
-        // Update degrees and neighbors
-    }
-}
-```
-
-</td>
-</tr>
-</table>
-
-## Development
-
-You can run development tasks directly:
-
-```bash
-make test      # Run Rust unit tests (20+ verified cases)
-make coverage  # Generate focused HTML coverage report
-make lint      # Run clippy checks
-make prove     # Run Lean theorem proofs
-```
-
-## Why "Lean"?
-
-1. **Dependency Minimization**: The Rust implementation carries **zero** external dependencies, avoiding the 400-600 crate bloat of the full Ruma stack.
-2. **Formal Correctness**: Every line of the Rust implementation is mirrored by a mathematical proof in the Lean model.
-3. **ZK Efficiency**: Fewer instructions and smaller memory footprints result in significantly lower AIR trace rows in zkVMs.
-
----
-
-_Written securely with zero `sorry` proofs left behind._
+`ruma-lean` replaces this bottleneck by extracting the topological graph structures into hyper-optimized `BTreeMap` and `HashMap` iterations in native Rust, stripped of application-level overhead. Most crucially, because the core invariants (like acyclic verification and tie-breaker sorting logic) are formally verified via **Lean 4**, it removes the need for defensive, bloated tie-break checks during runtime—providing mathematical certainty that the highly-optimized execution exactly conforms to the Matrix spec, allowing it to easily outpace standard implementations like Synapse or Conduwuit.

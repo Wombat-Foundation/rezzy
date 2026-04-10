@@ -14,11 +14,17 @@ cache: ##H Update Lean cache
 
 
 LINT_LOCS_LEAN = $$(git ls-files '**/*.lean')
+LINT_LOCS_PY = $$(git ls-files '*.py')
+LINT_LOCS_SH = $$(git ls-files '*.sh')
 
 .PHONY: format
 format: ##H Format codebase
 	-prettier -w .
 	-pre-commit run --all-files
+	-black $(LINT_LOCS_PY)
+	-isort $(LINT_LOCS_PY)
+	-shfmt -w $(LINT_LOCS_SH)
+	cargo sort --workspace --grouped
 
 .PHONY: clean
 clean: ##H Remove build artifacts
@@ -26,14 +32,22 @@ clean: ##H Remove build artifacts
 	-$(CARGO) clean
 	# rm -rf res/ .tmp/ .lake/build/
 
+.PHONY: build
+build: ##H Compile Rust bin
+	$(CARGO) build --release --features cli
+
+.PHONY: install
+install: ##H Install the ruma-lean binary to your cargo bin directory
+	$(CARGO) install --features cli --path .
+
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Main target
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.PHONY: prove
-prove: ##H Run Lean theorem proofs and verification
+.PHONY: lean
+lean: ##H Run Lean theorem proofs and verification
 	$(LAKE) build
 	@printf "\n$${STYLE_GREEN}--- Verification Complete ---$${STYLE_RESET}\n"
 	@printf "$${STYLE_CYAN}Mapped Theorems & Definitions:$${STYLE_RESET}\n"
@@ -41,7 +55,7 @@ prove: ##H Run Lean theorem proofs and verification
 	@printf "$${STYLE_GREEN}--------------------------------$${STYLE_RESET}\n"
 
 .PHONY: docs
-docs: ##H Generate Lean documentation via doc-gen4 (skipping core libs and deps)
+docs: ##H Generate Lean docs
 	DOCGEN_SKIP_LEAN=1 DOCGEN_SKIP_STD=1 DOCGEN_SKIP_LAKE=1 DOCGEN_SKIP_DEPS=1 $(LAKE) build RumaLean:docs
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -64,13 +78,19 @@ coverage: ##H Run Rust code coverage and generate HTML report (focused on ruma-l
 	@echo "Coverage report updated in ../.tmp/coverage-lean/tarpaulin-report.html"
 
 .PHONY: lint
-lint:	##H Run rust and lean linters
+lint:   ##H Run rust and lean linters
 	$(CARGO) clippy --all-targets --all-features -- -D warnings
 	$(LAKE) build
 
 .PHONY: test
 test: ##H Run Rust unit tests
-	$(CARGO) test
+	$(CARGO) test --all-targets --all-features
+
+.PHONY: e2e
+e2e: ##H Run e2e integration test on real JSON
+	for f in res/*.json; do \
+		$(CARGO) run --release --features cli -- -i "$$f"; \
+	done
 
 .PHONY: publish
 publish: ##H Preview package file list and simulate a dry-run publish
@@ -88,16 +108,18 @@ publish: ##H Preview package file list and simulate a dry-run publish
 # Data Generation & Benchmarking
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.PHONY: data
-data: ##H Generate synthetic benchmark data and fetch matrix state if credentials exist
+.PHONY: fixtures
+fixtures: ##H Generate synthetic data and fetch matrix state if MATRIX_TOKEN is set
 	@mkdir -p res
 	python3 scripts/generate_benchmark_1k.py
-	@if [ -f .env ]; then \
-		echo "Found .env, attempting to fetch live matrix state..."; \
-		set -a && source .env && python3 scripts/fetch_matrix_state.py || echo "Warning: Fetch failed, continuing..."; \
+	@if [ -f .env ]; then set -a && source .env; fi; \
+	if [ -n "$$MATRIX_TOKEN" ]; then \
+		echo "Attempting to fetch live matrix state..."; \
+		python3 scripts/fetch_matrix_state.py || echo "Warning: Fetch failed, continuing..."; \
 	else \
-		echo "No .env found, skipping live fetch."; \
+		echo "No MATRIX_TOKEN found, skipping live fetch."; \
 	fi
+
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Help & support commands

@@ -1,0 +1,64 @@
+---
+name: Lean
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  math-proofs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install elan (Lean Toolchain Manager)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y
+          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - name: Cache Lean
+        uses: actions/cache@v4
+        with:
+          path: .lake
+          key: ${{ runner.os }}-lean-${{ hashFiles('lake-manifest.json', 'lean-toolchain') }}
+          restore-keys: |
+            ${{ runner.os }}-lean-
+
+      - name: Update specific cache
+        run: make cache
+
+      - name: Run lean (lake build)
+        run: make lean
+
+      - name: Build docs
+        run: make docs
+
+      # doc-gen4 outputs to .lake/build/doc by default. Upload it!
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .lake/build/doc
+
+  deploy-pages:
+    # Only deploy main/master, not PRs
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    needs: math-proofs
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
