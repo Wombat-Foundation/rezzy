@@ -30,7 +30,7 @@ jobs:
       - name: Format
         run: make format
 
-      - name: Lint
+      - name: Lint (Rust & Lean)
         run: make lint
 
       - name: Install cargo-tarpaulin

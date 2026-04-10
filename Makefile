@@ -55,8 +55,9 @@ coverage: ##H Run Rust code coverage and generate HTML report (focused on ruma-l
 	@echo "Coverage report updated in ../.tmp/coverage-lean/tarpaulin-report.html"
 
 .PHONY: lint
-lint: ##H Run Rust clippy linter
+lint:	##H Run rust and lean linters
 	$(CARGO) clippy --all-targets --all-features -- -D warnings
+	$(LAKE) build
 
 .PHONY: test
 test: ##H Run Rust unit tests
