@@ -2,7 +2,7 @@
 
 # Ruma Lean
 
-[![CI](https://github.com/gamesguru/ruma-zk/actions/workflows/ci.yml/badge.svg)](https://github.com/gamesguru/ruma-zk/actions/workflows/ci.yml)
+[![CI](https://github.com/gamesguru/ruma-lean/actions/workflows/ci.yml/badge.svg)](https://github.com/gamesguru/ruma-lean/actions/workflows/ci.yml)
 
 Formal verification of Kahn's sort and State Res v2 using **Lean 4**.
 

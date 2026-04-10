@@ -33,5 +33,8 @@ jobs:
       - name: Lint
         run: make lint
 
+      - name: Install cargo-tarpaulin
+        uses: taiki-e/install-action@cargo-tarpaulin
+
       - name: Test (w/ coverage)
         run: make coverage

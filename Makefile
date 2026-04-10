@@ -48,7 +48,6 @@ coverage: ##H Run Rust code coverage and generate HTML report (focused on ruma-l
 	$(CARGO) tarpaulin --out Html \
 		--output-dir ../.tmp/coverage-lean \
 		--packages ruma-lean \
-		--exclude-files "sp1/*" "src/*" "**/target/*" \
 		--ignore-panics \
 		--ignore-tests \
 		--skip-clean
