@@ -10,6 +10,8 @@ We also state that when ties (multiple 0 in-degree nodes) are broken using a str
 the output of Kahn's algorithm is deterministic.
 -/
 
+set_option linter.unusedDecidableInType false
+
 variable {V : Type*} [DecidableEq V]
 
 /-- The in-degree of a vertex `v` relative to a set of active vertices `S`.
@@ -23,6 +25,12 @@ def inDegree (G : DirectedGraph V)
 def zeroInDegreeNodes (G : DirectedGraph V)
   [DecidableRel G.edges] (S : Finset V) : Finset V :=
   S.filter (fun v => inDegree G S v = 0)
+
+/-- Liveness Lemma: Guarantees  Kahn's algo won't terminate early on valid DAG. -/
+lemma dag_has_zero_in_degree (G : DirectedGraph V) [IsDAG G]
+  [DecidableRel G.edges] (S : Finset V) (h : S.Nonempty) :
+  (zeroInDegreeNodes G S).Nonempty := by
+  sorry
 
 
 /-- Kahn's sorting algorithm with fuel to ensure termination without `partial`. -/

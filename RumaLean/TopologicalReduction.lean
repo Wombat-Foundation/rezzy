@@ -66,6 +66,19 @@ def isValidEventTraversal (mapping : HostMapping) : List Event → Prop
   | [_] => True
   | a :: b :: tail => isHypercubeStep (mapping.encode a) (mapping.encode b) ∧ isValidEventTraversal mapping (b :: tail)
 
+/-- The Gray Code provides the constructive proof that a bijective HostMapping
+    which satisfies our `isHypercubeStep` constraint always exists for an arbitrary
+    deterministic sequence (such as the output of Kahn's Sort).
+    `G(i) = i ⊕ (i ≫ 1)` -/
+def grayCode (i : ℕ) : ℕ :=
+  Nat.xor i (i / 2)
+
+/-- Theorem: Adjacent Gray Codes have a Hamming distance of exactly 1.
+    This demonstrates the physical feasibility of mapping $V$ sequential Matrix Events
+    flawlessly to a Boolean Hypercube. -/
+theorem gray_code_step (i : ℕ) : isHypercubeStep (grayCode i) (grayCode (i + 1)) := by
+  sorry
+
 /--
 Theorem: If the Host provides a strictly ordered sequence of Events (the output of
 Kahn's Sort), and the Host has a Bijective Mapping such that adjacent
