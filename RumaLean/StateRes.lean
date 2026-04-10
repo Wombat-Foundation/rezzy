@@ -65,6 +65,7 @@ def stateres_is_total_order_v1 : LinearOrder Event := LinearOrder.lift' eventToL
 @[reducible]
 def stateres_is_total_order_v2 : LinearOrder Event := LinearOrder.lift' eventToLexV2 eventToLexV2_inj
 
+@[reducible]
 def stateResLinearOrder (v : StateResVersion) : LinearOrder Event :=
   match v with
   | .V1 => stateres_is_total_order_v1
@@ -91,6 +92,7 @@ theorem stateres_convergence (v : StateResVersion) (G : DirectedGraph Event)
   letI := stateResLinearOrder v
   ∀ L1 L2, L1 = kahnSort G S → L2 = kahnSort G S →
   stateResAlgorithm initialState L1 = stateResAlgorithm initialState L2 := by
-  intro _ L1 L2 h1 h2
-  have h_eq : L1 = L2 := kahn_sort_deterministic G S L1 L2 h1 h2
+  intro L1 L2 h1 h2
+  let _inst := stateResLinearOrder v
+  have h_eq : L1 = L2 := @kahn_sort_deterministic Event _ G _ _inst S L1 L2 h1 h2
   rw [h_eq]

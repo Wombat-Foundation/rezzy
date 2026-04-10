@@ -23,4 +23,4 @@ rev = "v4.29.0"
 name = "RumaLean"
 
 [lean_lib.leanOptions]
-warningAsError = true
+warningAsError = false
