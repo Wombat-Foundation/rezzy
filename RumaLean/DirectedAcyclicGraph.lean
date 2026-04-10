@@ -28,7 +28,7 @@ structure DirectedGraph (V : Type u) where
 def DirectedGraph.Reachable {V : Type u} (G : DirectedGraph V) (u v : V) : Prop :=
   Relation.ReflTransGen G.edges u v
 
-/-- A DAG is a directed graph with no cycles, meaning if `v` is reachable
-from `u` and `u` is reachable from `v`, then `u = v`. -/
+/-- A DAG is a directed graph with no cycles, meaning if `u` can reach `v` in one or more
+    steps, `v` cannot reach `u`. -/
 class IsDAG {V : Type u} (G : DirectedGraph V) : Prop where
-  acyclic : ∀ (u v : V), G.Reachable u v → G.Reachable v u → u = v
+  acyclic : ∀ (u v : V), Relation.TransGen G.edges u v → ¬ Relation.TransGen G.edges v u

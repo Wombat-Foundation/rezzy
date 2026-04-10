@@ -40,7 +40,7 @@ pub enum StateResVersion {
 }
 
 /// A lightweight Matrix Event representation for Lean-equivalent resolution.
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeanEvent {
     pub event_id: String,
     pub power_level: i64,
@@ -48,6 +48,14 @@ pub struct LeanEvent {
     pub prev_events: Vec<String>,
     pub depth: u64, // Required for V1
 }
+
+impl PartialEq for LeanEvent {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for LeanEvent {}
 
 /// The core tie-breaking logic from Ruma Lean (StateRes.lean).
 /// Matches Lean model: power_level (desc) -> origin_server_ts (asc) -> event_id (asc)
@@ -77,11 +85,19 @@ impl PartialOrd for LeanEvent {
 }
 
 /// A wrapper to ensure BinaryHeap pops the "smallest" (best) event first.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 struct SortPriority<'a> {
     event: &'a LeanEvent,
     version: StateResVersion,
 }
+
+impl<'a> PartialEq for SortPriority<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl<'a> Eq for SortPriority<'a> {}
 
 impl<'a> Ord for SortPriority<'a> {
     fn cmp(&self, other: &Self) -> Ordering {
@@ -165,6 +181,13 @@ pub fn lean_kahn_sort(
             }
         }
     }
+
+    // Failsafe: If the result length doesn't match the input length, there is a cycle in the DAG.
+    // Matrix spec mandates failure.
+    if result.len() != events.len() {
+        return Vec::new();
+    }
+
     result
 }
 

@@ -31,10 +31,10 @@ inductive StateResVersion
     - V1: depth (ascending) -> event_id (ascending) -> fallback deterministic fields
     - V2: power_level (desc) -> origin_server_ts (asc) -> event_id (asc) -> fallback deterministic fields
 -/
-def eventToLexV1 (e : Event) : ℕ ×ₗ String ×ₗ ℕᵒᵈ ×ₗ ℕ :=
+def eventToLexV1 (e : Event) :=
   toLex (e.depth, toLex (e.event_id, toLex (OrderDual.toDual e.power_level, e.origin_server_ts)))
 
-def eventToLexV2 (e : Event) : ℕᵒᵈ ×ₗ ℕ ×ₗ String ×ₗ ℕ :=
+def eventToLexV2 (e : Event) :=
   toLex (OrderDual.toDual e.power_level, toLex (e.origin_server_ts, toLex (e.event_id, e.depth)))
 
 theorem eventToLexV1_inj : Function.Injective eventToLexV1 := by
@@ -65,6 +65,11 @@ def stateres_is_total_order_v1 : LinearOrder Event := LinearOrder.lift' eventToL
 @[reducible]
 def stateres_is_total_order_v2 : LinearOrder Event := LinearOrder.lift' eventToLexV2 eventToLexV2_inj
 
+def stateResLinearOrder (v : StateResVersion) : LinearOrder Event :=
+  match v with
+  | .V1 => stateres_is_total_order_v1
+  | .V2 | .V2_1 => stateres_is_total_order_v2
+
 /-- Represents an abstract State dictionary applied by matrix events. -/
 def State := String
 
@@ -81,8 +86,11 @@ def stateResAlgorithm (initialState : State) (sortedEvents : List Event) : State
 /-- Theorem: State Resolution Convergence.
   Because `kahnSort` is deterministic given a strict total order,
   the final folded state is perfectly convergent across all participants. -/
-theorem stateres_convergence (G : DirectedGraph Event) [DecidableRel G.edges] [LinearOrder Event] (S : Finset Event) (initialState : State) :
-  ∀ L1 L2, L1 = kahnSort G S → L2 = kahnSort G S → stateResAlgorithm initialState L1 = stateResAlgorithm initialState L2 := by
-  intro L1 L2 h1 h2
+theorem stateres_convergence (v : StateResVersion) (G : DirectedGraph Event)
+  [DecidableRel G.edges] (S : Finset Event) (initialState : State) :
+  letI := stateResLinearOrder v
+  ∀ L1 L2, L1 = kahnSort G S → L2 = kahnSort G S →
+  stateResAlgorithm initialState L1 = stateResAlgorithm initialState L2 := by
+  intro _ L1 L2 h1 h2
   have h_eq : L1 = L2 := kahn_sort_deterministic G S L1 L2 h1 h2
   rw [h_eq]

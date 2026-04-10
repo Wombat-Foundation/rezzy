@@ -48,16 +48,13 @@ def isValidHypercubeTraversal : List ℕ → Prop
   | [_] => True
   | a :: b :: tail => isHypercubeStep a b ∧ isValidHypercubeTraversal (b :: tail)
 
-/-- An abstract Bijective Mapping created by the Host machine.
-    The Host claims it can map any Matrix Event perfectly to a Hypercube coordinate. -/
+/-- An abstract Mapping created by the Host machine.
+    The Host claims it can map Matrix Events uniquely to Hypercube coordinates. -/
 structure HostMapping where
   /-- The mapping function from Matrix Event to a 32-bit Hypercube coordinate -/
   encode : Event → ℕ
-  /-- The decoding function from Hypercube coordinate back to Matrix Event -/
-  decode : ℕ → Event
-  /-- Proof that encoding and decoding are perfectly inverse (Bijective mapping) -/
-  left_inv : ∀ e, decode (encode e) = e
-  right_inv : ∀ n, encode (decode n) = n
+  /-- Proof that no two distinct Events map to the same Hypercube coordinate -/
+  encode_inj : Function.Injective encode
 
 /-- A valid traversal of Events implies that adjacent events in the sequence
     satisfy the Host's adjacency mapping constraint. -/

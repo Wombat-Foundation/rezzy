@@ -1,6 +1,7 @@
 import RumaLean.DirectedAcyclicGraph
 import Mathlib.Data.Finset.Card
 import Mathlib.Data.Finset.Max
+import Mathlib.Data.List.Permutation
 
 /-!
 # Kahn's Topological Sort
@@ -27,9 +28,9 @@ def zeroInDegreeNodes (G : DirectedGraph V)
   S.filter (fun v => inDegree G S v = 0)
 
 /-- Liveness Lemma: Guarantees  Kahn's algo won't terminate early on valid DAG. -/
-axiom dag_has_zero_in_degree (G : DirectedGraph V) [IsDAG G]
+lemma dag_has_zero_in_degree (G : DirectedGraph V) [IsDAG G]
   [DecidableRel G.edges] (S : Finset V) (h : S.Nonempty) :
-  (zeroInDegreeNodes G S).Nonempty
+  (zeroInDegreeNodes G S).Nonempty := by sorry
 
 
 /-- Kahn's sorting algorithm with fuel to ensure termination without `partial`. -/
@@ -61,13 +62,13 @@ theorem kahn_sort_deterministic (G : DirectedGraph V)
   rw [h1, h2]
 
 /-- THEOREM: The output of Kahn's sorting algorithm is a permutation of the input elements.
-    Specifically, every element in `kahnSort G S` is in `S`, and vice versa. -/
-axiom kahn_sort_is_permutation (G : DirectedGraph V) [IsDAG G]
+    Specifically, the output list is a permutation of the list of elements in `S`. -/
+theorem kahn_sort_is_permutation (G : DirectedGraph V) [IsDAG G]
     [DecidableRel G.edges] [LinearOrder V] (S : Finset V) :
-    ∀ v, v ∈ kahnSort G S ↔ v ∈ S
+    List.Perm (kahnSort G S) S.toList := by sorry
 
 /-- THEOREM: The output of Kahn's sort maintains topological ordering.
     If `u` comes before `v` in the sorted list, then there is no edge from `v` to `u`. -/
-axiom kahn_sort_is_topological (G : DirectedGraph V) [IsDAG G]
+theorem kahn_sort_is_topological (G : DirectedGraph V) [IsDAG G]
     [DecidableRel G.edges] [LinearOrder V] (S : Finset V) :
-    ∀ {u v}, (∃ l1 l2 l3, kahnSort G S = l1 ++ [u] ++ l2 ++ [v] ++ l3) → ¬ G.edges v u
+    ∀ {u v}, (∃ l1 l2 l3, kahnSort G S = l1 ++ [u] ++ l2 ++ [v] ++ l3) → ¬ G.edges v u := by sorry
