@@ -20,6 +20,12 @@ format: ##H Format codebase
 	-prettier -w .
 	-pre-commit run --all-files
 
+.PHONY: clean
+clean: ##H Remove build artifacts
+	-$(LAKE) clean
+	-$(CARGO) clean
+	# rm -rf res/ .tmp/ .lake/build/
+
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -35,8 +41,8 @@ prove: ##H Run Lean theorem proofs and verification
 	@printf "$${STYLE_GREEN}--------------------------------$${STYLE_RESET}\n"
 
 .PHONY: docs
-docs: ##H Generate Lean documentation via doc-gen4
-	$(LAKE) build RumaLean:docs
+docs: ##H Generate Lean documentation via doc-gen4 (skipping core libs and deps)
+	DOCGEN_SKIP_LEAN=1 DOCGEN_SKIP_STD=1 DOCGEN_SKIP_LAKE=1 DOCGEN_SKIP_DEPS=1 $(LAKE) build RumaLean:docs
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Rust development
