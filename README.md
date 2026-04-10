@@ -1,25 +1,24 @@
+<!-- markdownlint-disable MD013 MD033 -->
+
 # Ruma Lean
+
+[![CI](https://github.com/gamesguru/ruma-zk/actions/workflows/ci.yml/badge.svg)](https://github.com/gamesguru/ruma-zk/actions/workflows/ci.yml)
 
 Formal verification of Kahn's sort and State Res v2 using **Lean 4**.
 
+Reference standard implementation in `rust` for other homeservers.
+
 ## What's Inside?
 
-The project is structured into three primary modules located in `RumaLean/`:
+The project is structured into three main parts in `RumaLean/`:
 
-1. **`DirectedAcyclicGraph.lean`**: Provides structural foundations for
-   Directed Graphs and Reachability definitions.
+1. **`DirectedAcyclicGraph.lean`**
 
-2. **`Kahn.lean`**: Implements Kahn's Topological Sort. Executes on graphs
-   with proofs of deterministic resolution.
+2. **`Kahn.lean`**
 
-3. **`StateRes.lean`**: Contains the Matrix `Event` modeling.
-   Formalizes tricky V2 tie-breaking hierarchy
-   (Power Level, Origin Server TS, Event ID) natively onto
-   Lean's battle-tested lexicographical `LinearOrder` abstractions.
+3. **`StateRes.lean`**
 
 ## Equivalence Proof: Lean vs. Rust
-
-This repository provides both a **Lean 4 Formal Model** and a **Lightweight Rust Implementation** of Matrix State Resolution v2. Below is the side-by-side comparison proving their structural equivalence.
 
 ### Tie-Breaking Rule
 
@@ -99,7 +98,7 @@ pub fn lean_kahn_sort(events: &HashMap<String, LeanEvent>, version: StateResVers
 
 ## Development
 
-This crate is a first-class member of the workspace. You can run development tasks directly:
+You can run development tasks directly:
 
 ```bash
 make test      # Run Rust unit tests (20+ verified cases)
