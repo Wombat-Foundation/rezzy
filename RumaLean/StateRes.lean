@@ -28,23 +28,25 @@ inductive StateResVersion
   deriving Repr, Inhabited, DecidableEq
 
 /-- We map an Event into a lexicographical tuple representation depending on the state resolution version.
-    - V1: depth (ascending) -> event_id (ascending)
-    - V2: power_level (desc) -> origin_server_ts (asc) -> event_id (asc)
+    - V1: depth (ascending) -> event_id (ascending) -> fallback deterministic fields
+    - V2: power_level (desc) -> origin_server_ts (asc) -> event_id (asc) -> fallback deterministic fields
 -/
-def eventToLexV1 (e : Event) : ℕ ×ₗ String :=
-  toLex (e.depth, e.event_id)
+def eventToLexV1 (e : Event) : ℕ ×ₗ String ×ₗ ℕᵒᵈ ×ₗ ℕ :=
+  toLex (e.depth, toLex (e.event_id, toLex (OrderDual.toDual e.power_level, e.origin_server_ts)))
 
-def eventToLexV2 (e : Event) : ℕᵒᵈ ×ₗ ℕ ×ₗ String :=
-  toLex (OrderDual.toDual e.power_level, toLex (e.origin_server_ts, e.event_id))
+def eventToLexV2 (e : Event) : ℕᵒᵈ ×ₗ ℕ ×ₗ String ×ₗ ℕ :=
+  toLex (OrderDual.toDual e.power_level, toLex (e.origin_server_ts, toLex (e.event_id, e.depth)))
 
 theorem eventToLexV1_inj : Function.Injective eventToLexV1 := by
   intro a b h
   cases a; cases b
-  dsimp [eventToLexV1, toLex] at h
+  dsimp [eventToLexV1, toLex, OrderDual.toDual] at h
   injection h with h1 h2
-  change _ = _ at h1
-  -- Here we would also need full structure eq, but we assume event_id is primary key for now
-  sorry
+  injection h2 with h3 h4
+  injection h4 with h5 h6
+  change _ = _ at h5
+  subst h1 h3 h5 h6
+  rfl
 
 theorem eventToLexV2_inj : Function.Injective eventToLexV2 := by
   intro a b h
@@ -52,8 +54,10 @@ theorem eventToLexV2_inj : Function.Injective eventToLexV2 := by
   dsimp [eventToLexV2, toLex, OrderDual.toDual] at h
   injection h with h1 h2
   injection h2 with h3 h4
+  injection h4 with h5 h6
   change _ = _ at h1
-  sorry
+  subst h1 h3 h5 h6
+  rfl
 
 /-- Total order representation derived from tuple components. -/
 @[reducible]
