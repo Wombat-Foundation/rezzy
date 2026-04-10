@@ -4,7 +4,6 @@ keywords = ["math"]
 defaultTargets = ["RumaLean"]
 
 [leanOptions]
-warningAsError = true
 pp.unicode.fun = true # pretty-prints `fun a ↦ b`
 relaxedAutoImplicit = false
 weak.linter.mathlibStandardSet = true
@@ -15,5 +14,13 @@ name = "mathlib"
 scope = "leanprover-community"
 rev = "v4.29.0"
 
+[[require]]
+name = "doc-gen4"
+git = "https://github.com/leanprover/doc-gen4"
+rev = "v4.29.0"
+
 [[lean_lib]]
 name = "RumaLean"
+
+[lean_lib.leanOptions]
+warningAsError = true
