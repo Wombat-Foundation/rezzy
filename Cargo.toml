@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
 description = "Formally verified, dependency-free Matrix State Resolution v2 logic."
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/gamesguru/zk-snark-matrix-sdk"
+repository = "https://github.com/gamesguru/ruma-zk"
 
 [dependencies]
 hashbrown = { version = "0.14", optional = true }
