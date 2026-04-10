@@ -6,6 +6,15 @@ authors = ["Shane Jaroch <chown_tee@proton.me>"]
 description = "Formally verified, dependency-free Matrix State Resolution v2 logic."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/gamesguru/ruma-zk"
+exclude = [
+    ".github/",
+    ".gitignore",
+    ".pre-commit-config.yaml",
+    ".prettierignore",
+    ".prettierrc",
+    "Makefile",
+    "lake-manifest.json"
+]
 
 [dependencies]
 hashbrown = { version = "0.14", optional = true }
