@@ -4,6 +4,7 @@ keywords = ["math"]
 defaultTargets = ["RumaLean"]
 
 [leanOptions]
+warningAsError = true
 pp.unicode.fun = true # pretty-prints `fun a ↦ b`
 relaxedAutoImplicit = false
 weak.linter.mathlibStandardSet = true
