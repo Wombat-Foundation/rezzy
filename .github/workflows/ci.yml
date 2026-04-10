@@ -11,7 +11,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  prove:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,5 +24,14 @@ jobs:
       - name: Update specific cache
         run: make cache
 
-      - name: Run Prove
+      - name: Run lean (lake)
         run: make prove
+
+      - name: Format
+        run: make format
+
+      - name: Lint
+        run: make lint
+
+      - name: Test (w/ coverage)
+        run: make coverage
