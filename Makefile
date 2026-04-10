@@ -34,6 +34,9 @@ prove: ##H Run Lean theorem proofs and verification
 	@grep -E '^(theorem|def|class|instance|structure) ' RumaLean/*.lean RumaLean.lean || true
 	@printf "$${STYLE_GREEN}--------------------------------$${STYLE_RESET}\n"
 
+.PHONY: docs
+docs: ##H Generate Lean documentation via doc-gen4
+	$(LAKE) build RumaLean:docs
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Rust development
