@@ -21,53 +21,81 @@ The project is structured into three primary modules located in `RumaLean/`:
 
 This repository provides both a **Lean 4 Formal Model** and a **Lightweight Rust Implementation** of Matrix State Resolution v2. Below is the side-by-side comparison proving their structural equivalence.
 
-### 1. Tie-Breaking Rule
+### Tie-Breaking Rule
 
 The Matrix spec mandates tie-breaking by Power Level, Timestamp, and Event ID.
 
-| **Lean 4 (StateRes.lean)** | **Rust (src/lib.rs)** |
-| :------------------------- | :-------------------- |
+<table>
+<tr>
+<th>Lean 4 (StateRes.lean)</th>
+<th>Rust (src/lib.rs)</th>
+</tr>
+<tr>
+<td valign="top">
 
-| `lean
+```lean
 def eventToLex (e : Event) : ℕᵒᵈ ×ₗ ℕ ×ₗ String :=
   toLex (OrderDual.toDual e.power_level,
     toLex (e.origin_server_ts, e.event_id))
-` | ```rust
+```
+
+</td>
+<td valign="top">
+
+```rust
 impl Ord for LeanEvent {
-fn cmp(&self, other: &Self) -> Ordering {
-match other.power_level.cmp(&self.power_level) {
-Ordering::Equal => match self.origin_server_ts.cmp(&other.origin_server_ts) {
-Ordering::Equal => self.event_id.cmp(&other.event_id),
-ord => ord,
-},
-ord => ord,
+    fn cmp(&self, other: &Self) -> Ordering {
+        match other.power_level.cmp(&self.power_level) {
+            Ordering::Equal => match self.origin_server_ts.cmp(&other.origin_server_ts) {
+                Ordering::Equal => self.event_id.cmp(&other.event_id),
+                ord => ord,
+            },
+            ord => ord,
+        }
+    }
 }
-}
-}
+```
 
-````|
+</td>
+</tr>
+</table>
 
-### 2. Topological Sort (Kahn's)
+### Topological Sort (Kahn's)
 
 The sorting algorithm must be deterministic to ensure state consistency across the Matrix.
 
-| **Lean 4 (Kahn.lean)** | **Rust (src/lib.rs)** |
-| :--- | :--- |
-| ```lean
+<table>
+<tr>
+<th>Lean 4 (Kahn.lean)</th>
+<th>Rust (src/lib.rs)</th>
+</tr>
+<tr>
+<td valign="top">
+
+```lean
 /-- Kahn's sort implementation -/
 def kahnSort (g : Graph) : List Event :=
   -- Logic proven deterministic
   -- in Lean's total order
-``` | ```rust
+```
+
+</td>
+<td valign="top">
+
+```rust
 pub fn lean_kahn_sort(events: &HashMap<String, LeanEvent>, version: StateResVersion) -> Vec<String> {
     let mut queue: BinaryHeap<SortPriority> = BinaryHeap::new();
     while let Some(priority) = queue.pop() {
         let event = priority.event;
         result.push(event.event_id.clone());
-        -- Update degrees and neighbors
+        // Update degrees and neighbors
     }
 }
-``` |
+```
+
+</td>
+</tr>
+</table>
 
 ## Development
 
@@ -78,7 +106,7 @@ make test      # Run Rust unit tests (20+ verified cases)
 make coverage  # Generate focused HTML coverage report
 make lint      # Run clippy checks
 make prove     # Run Lean theorem proofs
-````
+```
 
 ## Why "Lean"?
 
