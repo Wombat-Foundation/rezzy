@@ -123,15 +123,15 @@ impl<'a> Ord for SortPriority<'a> {
                 // Lower power level is WORSE (pops first, overwritten).
                 match other.event.power_level.cmp(&self.event.power_level) {
                     Ordering::Equal => {
-                        // Earlier timestamp is WORSE (pops first, overwritten).
-                        match other
+                        // Later timestamp is WORSE (pops first, overwritten).
+                        match self
                             .event
                             .origin_server_ts
-                            .cmp(&self.event.origin_server_ts)
+                            .cmp(&other.event.origin_server_ts)
                         {
                             Ordering::Equal => {
-                                // Lexicographically SMALLER ID is WORSE (pops first, overwritten).
-                                other.event.event_id.cmp(&self.event.event_id)
+                                // Lexicographically LARGER ID is WORSE (pops first, overwritten).
+                                self.event.event_id.cmp(&other.event.event_id)
                             }
                             ord => ord,
                         }
@@ -357,34 +357,34 @@ mod tests {
             version: StateResVersion::V2,
         };
 
-        // Earlier ts / smaller id events should be GREATER so they pop FIRST from Max-Heap.
-        assert_eq!(p_base.cmp(&p_worst_pl), Ordering::Less); // p_worst_pl has power 50, p_base 100. Lower pl gets popped first, so it is Greater. p_worst_pl > p_base => p_base < p_worst_pl => Less
+        // Worse events (lower PL, later TS, larger ID) should be GREATER so they pop FIRST from Max-Heap.
+        assert_eq!(p_base.cmp(&p_worst_pl), Ordering::Less); // p_worst_pl has power 50, p_base 100. Lower pl gets popped first, so it is Greater.
 
-        let e_earlier_ts = LeanEvent {
+        let e_later_ts = LeanEvent {
             event_id: "$3".into(),
             power_level: 100,
-            origin_server_ts: 5,
+            origin_server_ts: 20,
             ..Default::default()
         };
-        let p_earlier_ts = SortPriority {
-            event: &e_earlier_ts,
+        let p_later_ts = SortPriority {
+            event: &e_later_ts,
             version: StateResVersion::V2,
         };
-        // p_earlier_ts has ts 5, p_base has ts 10. Earlier TS gets popped first, so it is Greater. p_earlier_ts > p_base => p_base < p_earlier_ts => Less
-        assert_eq!(p_base.cmp(&p_earlier_ts), Ordering::Less);
+        // p_later_ts has ts 20 (worse), p_base has ts 10 (better). Later TS gets popped first, so it is Greater.
+        assert_eq!(p_base.cmp(&p_later_ts), Ordering::Less);
 
-        let e_smaller_id = LeanEvent {
-            event_id: "$0".into(),
+        let e_larger_id = LeanEvent {
+            event_id: "$2".into(),
             power_level: 100,
             origin_server_ts: 10,
             ..Default::default()
         };
-        let p_smaller_id = SortPriority {
-            event: &e_smaller_id,
+        let p_larger_id = SortPriority {
+            event: &e_larger_id,
             version: StateResVersion::V2,
         };
-        // p_smaller_id has id "$0", p_base has id "$1". Smaller ID gets popped first, so it is Greater. p_smaller_id > p_base => p_base < p_smaller_id => Less
-        assert_eq!(p_base.cmp(&p_smaller_id), Ordering::Less);
+        // p_larger_id has id "$2", p_base has id "$1". Larger ID gets popped first, so it is Greater.
+        assert_eq!(p_base.cmp(&p_larger_id), Ordering::Less);
     }
 
     #[test]
@@ -572,8 +572,8 @@ mod tests {
             },
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V2);
-        // Best (B, larger ID) comes LAST.
-        assert_eq!(sorted, vec!["A", "B"]);
+        // Best (A, smaller ID) comes LAST.
+        assert_eq!(sorted, vec!["B", "A"]);
     }
 
     #[test]
@@ -801,10 +801,10 @@ mod tests {
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V2);
         // 1 pops first (only one with in-degree 0).
-        // Then 2 and 3 are in queue. 3 is earlier (TS 15 < 20), so 3 pops first.
-        // Then 2 pops.
+        // Then 2 and 3 are in queue. 2 is later (TS 20), so it is WORSE and pops first.
+        // Then 3 (TS 15) pops.
         // Then 4 pops.
-        assert_eq!(sorted, vec!["1", "3", "2", "4"]);
+        assert_eq!(sorted, vec!["1", "2", "3", "4"]);
     }
 
     #[test]
@@ -1197,8 +1197,8 @@ mod tests {
             event: &e_early_ts,
             version: StateResVersion::V2,
         };
-        // p_early_ts has TS 10, p_base has TS 50. Earlier TS pops first, so p_early_ts is GREATER. p_base < p_early_ts => Less.
-        assert_eq!(p_base.cmp(&p_early_ts), Ordering::Less);
+        // p_early_ts has TS 10, p_base has TS 50. Later TS pops first, so p_base is GREATER.
+        assert_eq!(p_base.cmp(&p_early_ts), Ordering::Greater);
         let e_early_id = LeanEvent {
             event_id: "a".into(),
             ..e_base.clone()
@@ -1207,8 +1207,8 @@ mod tests {
             event: &e_early_id,
             version: StateResVersion::V2,
         };
-        // p_early_id has ID "a", p_base has ID "m". Smaller ID pops first, so p_early_id is GREATER. p_base < p_early_id => Less.
-        assert_eq!(p_base.cmp(&p_early_id), Ordering::Less);
+        // p_early_id has ID "a", p_base has ID "m". Larger ID pops first, so p_base is GREATER.
+        assert_eq!(p_base.cmp(&p_early_id), Ordering::Greater);
         let p_v1_base = SortPriority {
             event: &e_base,
             version: StateResVersion::V1,
