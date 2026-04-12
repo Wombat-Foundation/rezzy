@@ -1,6 +1,7 @@
 import Mathlib.Data.Finset.Basic
 import Mathlib.Order.Basic
 import Mathlib.Data.Rel
+import Mathlib.Data.Finite.Defs
 
 /-!
 # Graphs

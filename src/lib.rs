@@ -16,11 +16,16 @@
 
 extern crate alloc;
 
+#[cfg(not(feature = "zkvm"))]
+use alloc::collections::BTreeSet;
 use alloc::collections::{BTreeMap, BinaryHeap};
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use serde::{Deserialize, Serialize};
+
+use serde_json::Value;
 
 #[cfg(feature = "std")]
 extern crate std;
@@ -33,6 +38,7 @@ pub use hashbrown::HashMap;
 
 /// The version of the Matrix State Resolution algorithm to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum StateResVersion {
     V1,
     V2,
@@ -40,41 +46,39 @@ pub enum StateResVersion {
 }
 
 /// A lightweight Matrix Event representation for Lean-equivalent resolution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LeanEvent {
     pub event_id: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    #[serde(default)]
+    pub state_key: String,
+    #[serde(default)]
     pub power_level: i64,
     pub origin_server_ts: u64,
+    #[serde(default)]
+    pub sender: String,
+    #[serde(default)]
+    pub content: Value,
+    #[serde(default)]
     pub prev_events: Vec<String>,
+    #[serde(default)]
+    pub auth_events: Vec<String>,
+    #[serde(default)]
     pub depth: u64, // Required for V1
 }
 
 impl PartialEq for LeanEvent {
     fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
+        self.event_id == other.event_id
     }
 }
 
 impl Eq for LeanEvent {}
 
-/// The core tie-breaking logic from Ruma Lean (StateRes.lean).
-/// Matches Lean model: power_level (desc) -> origin_server_ts (asc) -> event_id (asc)
 impl Ord for LeanEvent {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Higher power level comes FIRST (is "smaller" in terms of order)
-        match other.power_level.cmp(&self.power_level) {
-            Ordering::Equal => {
-                // Earlier timestamp comes FIRST
-                match self.origin_server_ts.cmp(&other.origin_server_ts) {
-                    Ordering::Equal => {
-                        // Lexicographically smaller ID comes FIRST
-                        self.event_id.cmp(&other.event_id)
-                    }
-                    ord => ord,
-                }
-            }
-            ord => ord,
-        }
+        self.event_id.cmp(&other.event_id)
     }
 }
 
@@ -112,15 +116,23 @@ impl<'a> Ord for SortPriority<'a> {
             }
             StateResVersion::V2 | StateResVersion::V2_1 => {
                 // V2 tie-breaking: power_level (desc) -> origin_server_ts (asc) -> event_id (asc)
-                // Priority popping (best first)
-                match self.event.power_level.cmp(&other.event.power_level) {
+                // To have "best" events come LAST in the sorted list, we must pop "worst" events FIRST.
+                // In Rust's Max-Heap BinaryHeap, "greater" elements are popped first.
+                // So "worst" must be "greater" than "best".
+
+                // Lower power level is WORSE (pops first, overwritten).
+                match other.event.power_level.cmp(&self.event.power_level) {
                     Ordering::Equal => {
+                        // Earlier timestamp is WORSE (pops first, overwritten).
                         match other
                             .event
                             .origin_server_ts
                             .cmp(&self.event.origin_server_ts)
                         {
-                            Ordering::Equal => other.event.event_id.cmp(&self.event.event_id),
+                            Ordering::Equal => {
+                                // Lexicographically SMALLER ID is WORSE (pops first, overwritten).
+                                other.event.event_id.cmp(&self.event.event_id)
+                            }
                             ord => ord,
                         }
                     }
@@ -147,9 +159,9 @@ pub fn lean_kahn_sort(
 
     for (id, event) in events {
         in_degree.entry(id.clone()).or_insert(0);
-        for prev in &event.prev_events {
-            if events.contains_key(prev) {
-                adjacency.entry(prev.clone()).or_default().push(id.clone());
+        for auth in &event.auth_events {
+            if events.contains_key(auth) {
+                adjacency.entry(auth.clone()).or_default().push(id.clone());
                 *in_degree.entry(id.clone()).or_insert(0) += 1;
             }
         }
@@ -196,9 +208,81 @@ pub fn resolve_lean(
     conflicted_events: HashMap<String, LeanEvent>,
     version: StateResVersion,
 ) -> BTreeMap<(String, String), String> {
-    let resolved = unconflicted_state;
-    let _sorted_ids = lean_kahn_sort(&conflicted_events, version);
+    // MSC4297 (v2.1): The algorithm starts from an empty set of state.
+    // Unconflicted state events are added to the conflicted events set and sorted together.
+    let (mut resolved, sort_set) = match version {
+        StateResVersion::V2_1 => {
+            // MSC4297: We assume all necessary event objects (conflicted and unconflicted)
+            // are provided in conflicted_events for the sorting process.
+            (BTreeMap::new(), conflicted_events.clone())
+        }
+        _ => (unconflicted_state, conflicted_events),
+    };
+
+    let sorted_ids = lean_kahn_sort(&sort_set, version);
+
+    for id in sorted_ids {
+        if let Some(event) = sort_set.get(&id) {
+            resolved.insert(
+                (event.event_type.clone(), event.state_key.clone()),
+                event.event_id.clone(),
+            );
+        }
+    }
+
     resolved
+}
+
+#[cfg(not(feature = "zkvm"))] // ONLY run this on the Host!
+pub fn compute_v2_1_conflicted_subgraph(
+    auth_graph: &HashMap<String, LeanEvent>,
+    conflicted_set: &[String],
+) -> HashMap<String, LeanEvent> {
+    let mut backwards_reachable = BTreeSet::new();
+    let mut forwards_reachable = BTreeSet::new();
+
+    // 1. Calculate Backwards Reachable (Ancestors up the auth chain)
+    let mut b_stack: Vec<String> = conflicted_set.to_vec();
+    while let Some(node) = b_stack.pop() {
+        if backwards_reachable.insert(node.clone()) {
+            if let Some(event) = auth_graph.get(&node) {
+                b_stack.extend(event.auth_events.clone());
+            }
+        }
+    }
+
+    // 2. Build Reverse Adjacency for Forwards Search
+    let mut children_map: HashMap<String, Vec<String>> = HashMap::new();
+    for (id, event) in auth_graph {
+        for prev in &event.auth_events {
+            children_map
+                .entry(prev.clone())
+                .or_default()
+                .push(id.clone());
+        }
+    }
+
+    // 3. Calculate Forwards Reachable (Descendants down the auth chain)
+    let mut f_stack: Vec<String> = conflicted_set.to_vec();
+    while let Some(node) = f_stack.pop() {
+        if forwards_reachable.insert(node.clone()) {
+            if let Some(children) = children_map.get(&node) {
+                f_stack.extend(children.clone());
+            }
+        }
+    }
+
+    // 4. Intersect and build the final Conflicted Subgraph
+    let mut subgraph = HashMap::new();
+    let backwards_ids: BTreeSet<String> = backwards_reachable.iter().cloned().collect();
+    let forwards_ids: BTreeSet<String> = forwards_reachable.iter().cloned().collect();
+
+    for id in backwards_ids.intersection(&forwards_ids) {
+        if let Some(event) = auth_graph.get(id) {
+            subgraph.insert(id.clone(), event.clone());
+        }
+    }
+    subgraph
 }
 
 #[cfg(feature = "zkvm")]
@@ -232,30 +316,157 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    fn test_leanevent_deserialization_defaults() {
+        let json = r#"{
+            "event_id": "$test",
+            "type": "m.room.message",
+            "origin_server_ts": 12345
+        }"#;
+        let ev: LeanEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(ev.event_id, "$test");
+        assert_eq!(ev.event_type, "m.room.message");
+        assert_eq!(ev.origin_server_ts, 12345);
+        assert_eq!(ev.state_key, "");
+        assert_eq!(ev.power_level, 0);
+        assert_eq!(ev.sender, "");
+        assert_eq!(ev.prev_events.len(), 0);
+        assert_eq!(ev.auth_events.len(), 0);
+        assert_eq!(ev.depth, 0);
+    }
+
+    #[test]
+    fn test_sort_priority_v2_tie_break() {
+        let e_base = LeanEvent {
+            event_id: "$1".into(),
+            power_level: 100,
+            origin_server_ts: 10,
+            ..Default::default()
+        };
+        let e_worst_pl = LeanEvent {
+            event_id: "$2".into(),
+            power_level: 50,
+            origin_server_ts: 10,
+            ..Default::default()
+        };
+        let p_base = SortPriority {
+            event: &e_base,
+            version: StateResVersion::V2,
+        };
+        let p_worst_pl = SortPriority {
+            event: &e_worst_pl,
+            version: StateResVersion::V2,
+        };
+
+        // Earlier ts / smaller id events should be GREATER so they pop FIRST from Max-Heap.
+        assert_eq!(p_base.cmp(&p_worst_pl), Ordering::Less); // p_worst_pl has power 50, p_base 100. Lower pl gets popped first, so it is Greater. p_worst_pl > p_base => p_base < p_worst_pl => Less
+
+        let e_earlier_ts = LeanEvent {
+            event_id: "$3".into(),
+            power_level: 100,
+            origin_server_ts: 5,
+            ..Default::default()
+        };
+        let p_earlier_ts = SortPriority {
+            event: &e_earlier_ts,
+            version: StateResVersion::V2,
+        };
+        // p_earlier_ts has ts 5, p_base has ts 10. Earlier TS gets popped first, so it is Greater. p_earlier_ts > p_base => p_base < p_earlier_ts => Less
+        assert_eq!(p_base.cmp(&p_earlier_ts), Ordering::Less);
+
+        let e_smaller_id = LeanEvent {
+            event_id: "$0".into(),
+            power_level: 100,
+            origin_server_ts: 10,
+            ..Default::default()
+        };
+        let p_smaller_id = SortPriority {
+            event: &e_smaller_id,
+            version: StateResVersion::V2,
+        };
+        // p_smaller_id has id "$0", p_base has id "$1". Smaller ID gets popped first, so it is Greater. p_smaller_id > p_base => p_base < p_smaller_id => Less
+        assert_eq!(p_base.cmp(&p_smaller_id), Ordering::Less);
+    }
+
+    #[test]
     fn test_v1_resolution_happy_path() {
         let mut events = HashMap::new();
         events.insert(
             "A".into(),
             LeanEvent {
                 event_id: "A".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 0,
                 origin_server_ts: 100,
                 prev_events: vec![],
+                auth_events: vec![],
                 depth: 1,
+                ..Default::default()
             },
         );
         events.insert(
             "B".into(),
             LeanEvent {
                 event_id: "B".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 0,
                 origin_server_ts: 50,
                 prev_events: vec![],
+                auth_events: vec!["A".into()],
                 depth: 2,
+                ..Default::default()
             },
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V1);
         assert_eq!(sorted, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn test_v2_1_strict_resolution() {
+        let mut unconflicted = BTreeMap::new();
+        unconflicted.insert(
+            ("m.room.member".into(), "@alice:example.com".into()),
+            "A".into(),
+        );
+
+        let mut conflicted = HashMap::new();
+        conflicted.insert(
+            "A".into(),
+            LeanEvent {
+                event_id: "A".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
+                power_level: 50,
+                origin_server_ts: 100,
+                prev_events: vec![],
+                auth_events: vec![],
+                depth: 1,
+                ..Default::default()
+            },
+        );
+        conflicted.insert(
+            "B".into(),
+            LeanEvent {
+                event_id: "B".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
+                power_level: 100,
+                origin_server_ts: 50,
+                prev_events: vec![],
+                auth_events: vec![],
+                depth: 1,
+                ..Default::default()
+            },
+        );
+
+        // In V2, A would win because it's unconflicted.
+        // In V2.1, B should win because it has a higher power level (100 > 50) and it's sorted together with A.
+        let resolved = resolve_lean(unconflicted, conflicted, StateResVersion::V2_1);
+        assert_eq!(
+            resolved.get(&("m.room.member".into(), "@alice:example.com".into())),
+            Some(&"B".into())
+        );
     }
 
     #[test]
@@ -265,20 +476,28 @@ mod tests {
             "B".into(),
             LeanEvent {
                 event_id: "B".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 0,
                 origin_server_ts: 100,
                 prev_events: vec![],
+                auth_events: vec![],
                 depth: 1,
+                ..Default::default()
             },
         );
         events.insert(
             "A".into(),
             LeanEvent {
                 event_id: "A".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 0,
                 origin_server_ts: 100,
                 prev_events: vec![],
+                auth_events: vec![],
                 depth: 1,
+                ..Default::default()
             },
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V1);
@@ -292,24 +511,33 @@ mod tests {
             "A".into(),
             LeanEvent {
                 event_id: "A".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 100,
                 origin_server_ts: 100,
                 prev_events: vec![],
+                auth_events: vec![],
                 depth: 10,
+                ..Default::default()
             },
         );
         events.insert(
             "B".into(),
             LeanEvent {
                 event_id: "B".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 50,
                 origin_server_ts: 10,
                 prev_events: vec![],
+                auth_events: vec![],
                 depth: 1,
+                ..Default::default()
             },
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V2);
-        assert_eq!(sorted, vec!["A", "B"]);
+        // Best (A) comes LAST.
+        assert_eq!(sorted, vec!["B", "A"]);
     }
 
     #[test]
@@ -319,23 +547,32 @@ mod tests {
             "B".into(),
             LeanEvent {
                 event_id: "B".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 100,
                 origin_server_ts: 10,
                 prev_events: vec![],
+                auth_events: vec![],
                 depth: 1,
+                ..Default::default()
             },
         );
         events.insert(
             "A".into(),
             LeanEvent {
                 event_id: "A".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 100,
                 origin_server_ts: 10,
                 prev_events: vec![],
+                auth_events: vec![],
                 depth: 1,
+                ..Default::default()
             },
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V2);
+        // Best (B, larger ID) comes LAST.
         assert_eq!(sorted, vec!["A", "B"]);
     }
 
@@ -346,28 +583,37 @@ mod tests {
             "A".into(),
             LeanEvent {
                 event_id: "A".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 10,
                 origin_server_ts: 10,
                 prev_events: vec![],
+                auth_events: vec![],
                 depth: 1,
+                ..Default::default()
             },
         );
         events.insert(
             "B".into(),
             LeanEvent {
                 event_id: "B".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 100,
                 origin_server_ts: 100,
                 prev_events: vec![],
+                auth_events: vec![],
                 depth: 10,
+                ..Default::default()
             },
         );
         let sorted_v1 = lean_kahn_sort(&events, StateResVersion::V1);
         let sorted_v2 = lean_kahn_sort(&events, StateResVersion::V2);
         let sorted_v2_1 = lean_kahn_sort(&events, StateResVersion::V2_1);
         assert_eq!(sorted_v1, vec!["A", "B"]);
-        assert_eq!(sorted_v2, vec!["B", "A"]);
-        assert_eq!(sorted_v2_1, vec!["B", "A"]);
+        // B is better (higher power level), so it comes LAST in V2 and V2.1
+        assert_eq!(sorted_v2, vec!["A", "B"]);
+        assert_eq!(sorted_v2_1, vec!["A", "B"]);
     }
 
     #[test]
@@ -377,20 +623,28 @@ mod tests {
             "A".into(),
             LeanEvent {
                 event_id: "A".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 100,
                 origin_server_ts: 100,
                 prev_events: vec!["B".into()],
+                auth_events: vec!["B".into()],
                 depth: 1,
+                ..Default::default()
             },
         );
         events.insert(
             "B".into(),
             LeanEvent {
                 event_id: "B".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 100,
                 origin_server_ts: 100,
                 prev_events: vec!["A".into()],
+                auth_events: vec!["A".into()],
                 depth: 1,
+                ..Default::default()
             },
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V2);
@@ -398,30 +652,30 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "std", not(feature = "zkvm")))]
+    #[should_panic(expected = "Signature verification failed")]
     fn test_signature_verification_failure() {
-        #[cfg(all(feature = "std", not(feature = "zkvm")))]
-        {
-            let pk = [
-                215, 90, 152, 1, 130, 177, 10, 183, 213, 75, 254, 211, 201, 100, 7, 58, 14, 225,
-                114, 243, 218, 166, 35, 37, 175, 2, 26, 104, 247, 7, 81, 26,
-            ];
-            let sig = [0u8; 64];
-            let msg = b"test";
-            let result = std::panic::catch_unwind(|| {
-                verify_signature(&pk, msg, &sig);
-            });
-            assert!(result.is_err());
-        }
+        let pk = [
+            215, 90, 152, 1, 130, 177, 10, 183, 213, 75, 254, 211, 201, 100, 7, 58, 14, 225, 114,
+            243, 218, 166, 35, 37, 175, 2, 26, 104, 247, 7, 81, 26,
+        ];
+        let sig = [0u8; 64];
+        let msg = b"test";
+        verify_signature(&pk, msg, &sig);
     }
 
     #[test]
     fn test_serialization_roundtrip() {
         let event = LeanEvent {
             event_id: "$abc".into(),
+            event_type: "m.room.member".into(),
+            state_key: "@alice:example.com".into(),
             power_level: 100,
             origin_server_ts: 12345,
             prev_events: vec![],
+            auth_events: vec![],
             depth: 5,
+            ..Default::default()
         };
         let serialized = serde_json::to_string(&event).unwrap();
         let deserialized: LeanEvent = serde_json::from_str(&serialized).unwrap();
@@ -432,17 +686,25 @@ mod tests {
     fn test_partial_ord_implementations() {
         let e1 = LeanEvent {
             event_id: "a".into(),
+            event_type: "m.room.member".into(),
+            state_key: "@alice:example.com".into(),
             power_level: 100,
             origin_server_ts: 10,
             prev_events: vec![],
+            auth_events: vec![],
             depth: 1,
+            ..Default::default()
         };
         let e2 = LeanEvent {
             event_id: "b".into(),
+            event_type: "m.room.member".into(),
+            state_key: "@alice:example.com".into(),
             power_level: 100,
             origin_server_ts: 10,
             prev_events: vec![],
+            auth_events: vec![],
             depth: 1,
+            ..Default::default()
         };
         assert!(e1.partial_cmp(&e2).is_some());
 
@@ -465,10 +727,14 @@ mod tests {
 
         let e = LeanEvent {
             event_id: "a".into(),
+            event_type: "m.room.member".into(),
+            state_key: "@alice:example.com".into(),
             power_level: 100,
             origin_server_ts: 10,
             prev_events: vec![],
+            auth_events: vec![],
             depth: 1,
+            ..Default::default()
         };
         let _ = e.clone();
         let _ = alloc::format!("{:?}", e);
@@ -481,43 +747,63 @@ mod tests {
             "1".into(),
             LeanEvent {
                 event_id: "1".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 100,
                 origin_server_ts: 10,
                 prev_events: vec![],
+                auth_events: vec![],
                 depth: 1,
+                ..Default::default()
             },
         );
         events.insert(
             "2".into(),
             LeanEvent {
                 event_id: "2".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 50,
                 origin_server_ts: 20,
                 prev_events: vec!["1".into()],
+                auth_events: vec!["1".into()],
                 depth: 2,
+                ..Default::default()
             },
         );
         events.insert(
             "3".into(),
             LeanEvent {
                 event_id: "3".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 50,
                 origin_server_ts: 15,
                 prev_events: vec!["1".into()],
+                auth_events: vec!["1".into()],
                 depth: 2,
+                ..Default::default()
             },
         );
         events.insert(
             "4".into(),
             LeanEvent {
                 event_id: "4".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 10,
                 origin_server_ts: 30,
                 prev_events: vec!["2".into(), "3".into()],
+                auth_events: vec!["2".into(), "3".into()],
                 depth: 3,
+                ..Default::default()
             },
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V2);
+        // 1 pops first (only one with in-degree 0).
+        // Then 2 and 3 are in queue. 3 is earlier (TS 15 < 20), so 3 pops first.
+        // Then 2 pops.
+        // Then 4 pops.
         assert_eq!(sorted, vec!["1", "3", "2", "4"]);
     }
 
@@ -528,10 +814,14 @@ mod tests {
             "A".into(),
             LeanEvent {
                 event_id: "A".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 100,
                 origin_server_ts: 10,
                 prev_events: vec!["MISSING".into()],
+                auth_events: vec!["MISSING".into()],
                 depth: 1,
+                ..Default::default()
             },
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V2);
@@ -547,6 +837,69 @@ mod tests {
         assert_eq!(resolved, unconflicted);
     }
 
+    #[test]
+    fn test_resolve_lean_v2_1_overlay() {
+        let mut unconflicted = BTreeMap::new();
+        unconflicted.insert(("type1".into(), "key1".into()), "id1".into());
+        unconflicted.insert(("type2".into(), "key2".into()), "id2".into());
+
+        let mut conflicted = HashMap::new();
+        // Provide objects for all events to be sorted in V2.1
+        conflicted.insert(
+            "id1".into(),
+            LeanEvent {
+                event_id: "id1".into(),
+                event_type: "type1".into(),
+                state_key: "key1".into(),
+                power_level: 50,
+                origin_server_ts: 500,
+                prev_events: vec![],
+                auth_events: vec![],
+                depth: 1,
+                ..Default::default()
+            },
+        );
+        conflicted.insert(
+            "id2".into(),
+            LeanEvent {
+                event_id: "id2".into(),
+                event_type: "type2".into(),
+                state_key: "key2".into(),
+                power_level: 50,
+                origin_server_ts: 500,
+                prev_events: vec![],
+                auth_events: vec![],
+                depth: 1,
+                ..Default::default()
+            },
+        );
+        conflicted.insert(
+            "id2_new".into(),
+            LeanEvent {
+                event_id: "id2_new".into(),
+                event_type: "type2".into(),
+                state_key: "key2".into(),
+                power_level: 100,
+                origin_server_ts: 1000,
+                prev_events: vec![],
+                auth_events: vec![],
+                depth: 1,
+                ..Default::default()
+            },
+        );
+
+        let resolved = resolve_lean(unconflicted.clone(), conflicted, StateResVersion::V2_1);
+
+        assert_eq!(
+            resolved.get(&("type1".into(), "key1".into())),
+            Some(&"id1".into())
+        );
+        assert_eq!(
+            resolved.get(&("type2".into(), "key2".into())),
+            Some(&"id2_new".into())
+        );
+    }
+
     fn run_batch_test(
         version: StateResVersion,
         rows: &[(&str, i64, u64, u64, &[&str])],
@@ -558,10 +911,14 @@ mod tests {
                 r.0.to_string(),
                 LeanEvent {
                     event_id: r.0.to_string(),
+                    event_type: "m.room.member".into(),
+                    state_key: "@alice:example.com".into(),
                     power_level: r.1,
                     origin_server_ts: r.2,
                     depth: r.3,
                     prev_events: r.4.iter().map(|s| s.to_string()).collect(),
+                    auth_events: r.4.iter().map(|s| s.to_string()).collect(),
+                    ..Default::default()
                 },
             );
         }
@@ -577,7 +934,7 @@ mod tests {
         run_batch_test(
             StateResVersion::V2,
             &[("Alice", 100, 500, 1, &[]), ("Bob", 50, 100, 1, &[])],
-            &["Alice", "Bob"],
+            &["Bob", "Alice"], // Bob is worse (PL 50), pops first.
         );
         run_batch_test(
             StateResVersion::V1,
@@ -593,27 +950,35 @@ mod tests {
             "1".into(),
             LeanEvent {
                 event_id: "1".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@user:example.com".into(),
                 power_level: 100,
                 origin_server_ts: 10,
                 prev_events: vec![],
+                auth_events: vec![],
                 depth: 1,
+                ..Default::default()
             },
         );
         events.insert(
             "2".into(),
             LeanEvent {
                 event_id: "2".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@user:example.com".into(),
                 power_level: 0,
                 origin_server_ts: 20,
                 prev_events: vec!["1".into()],
+                auth_events: vec!["1".into()],
                 depth: 2,
+                ..Default::default()
             },
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V2);
         let mut resolved_state = BTreeMap::new();
         for id in sorted {
             let ev = events.get(&id).unwrap();
-            let key = ("m.room.member".to_string(), "@user:example.com".to_string());
+            let key = (ev.event_type.clone(), ev.state_key.clone());
             resolved_state.insert(key, ev.event_id.clone());
         }
         assert_eq!(
@@ -635,10 +1000,14 @@ mod tests {
     fn test_event_traits_coverage() {
         let e = LeanEvent {
             event_id: "a".into(),
+            event_type: "m.room.member".into(),
+            state_key: "@alice:example.com".into(),
             power_level: 100,
             origin_server_ts: 10,
             prev_events: vec![],
+            auth_events: vec![],
             depth: 1,
+            ..Default::default()
         };
         let e2 = e.clone();
         assert_eq!(e, e2);
@@ -650,10 +1019,14 @@ mod tests {
     fn test_sort_priority_traits() {
         let e = LeanEvent {
             event_id: "a".into(),
+            event_type: "m.room.member".into(),
+            state_key: "@alice:example.com".into(),
             power_level: 100,
             origin_server_ts: 10,
             prev_events: vec![],
+            auth_events: vec![],
             depth: 1,
+            ..Default::default()
         };
         let p = SortPriority {
             event: &e,
@@ -672,20 +1045,28 @@ mod tests {
             "B".into(),
             LeanEvent {
                 event_id: "B".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 0,
                 origin_server_ts: 10,
                 prev_events: vec![],
+                auth_events: vec![],
                 depth: 1,
+                ..Default::default()
             },
         );
         events.insert(
             "A".into(),
             LeanEvent {
                 event_id: "A".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 0,
                 origin_server_ts: 10,
                 prev_events: vec![],
+                auth_events: vec![],
                 depth: 1,
+                ..Default::default()
             },
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V1);
@@ -699,10 +1080,14 @@ mod tests {
             "1".into(),
             LeanEvent {
                 event_id: "1".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 100,
                 origin_server_ts: 10,
                 prev_events: vec![],
+                auth_events: vec![],
                 depth: 1,
+                ..Default::default()
             },
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V2);
@@ -716,10 +1101,14 @@ mod tests {
             "A".into(),
             LeanEvent {
                 event_id: "A".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
                 power_level: 100,
                 origin_server_ts: 10,
                 prev_events: vec![],
+                auth_events: vec![],
                 depth: 1,
+                ..Default::default()
             },
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V2_1);
@@ -730,24 +1119,36 @@ mod tests {
     fn test_total_order_properties() {
         let e1 = LeanEvent {
             event_id: "a".into(),
+            event_type: "m.room.member".into(),
+            state_key: "@alice:example.com".into(),
             power_level: 100,
             origin_server_ts: 10,
             prev_events: vec![],
+            auth_events: vec![],
             depth: 1,
+            ..Default::default()
         };
         let e2 = LeanEvent {
             event_id: "b".into(),
+            event_type: "m.room.member".into(),
+            state_key: "@alice:example.com".into(),
             power_level: 100,
             origin_server_ts: 10,
             prev_events: vec![],
+            auth_events: vec![],
             depth: 1,
+            ..Default::default()
         };
         let e3 = LeanEvent {
             event_id: "c".into(),
+            event_type: "m.room.member".into(),
+            state_key: "@alice:example.com".into(),
             power_level: 50,
             origin_server_ts: 10,
             prev_events: vec![],
+            auth_events: vec![],
             depth: 1,
+            ..Default::default()
         };
         assert_eq!(e1.cmp(&e1), Ordering::Equal);
         assert!(e1 <= e1);
@@ -765,10 +1166,14 @@ mod tests {
     fn test_coverage_booster_all_branches() {
         let e_base = LeanEvent {
             event_id: "m".into(),
+            event_type: "m.room.member".into(),
+            state_key: "@alice:example.com".into(),
             power_level: 50,
             origin_server_ts: 50,
             prev_events: vec![],
+            auth_events: vec![],
             depth: 50,
+            ..Default::default()
         };
         let p_base = SortPriority {
             event: &e_base,
@@ -782,7 +1187,8 @@ mod tests {
             event: &e_high_power,
             version: StateResVersion::V2,
         };
-        assert_eq!(p_base.cmp(&p_high_power), Ordering::Less);
+        // p_base is WORSE (PL 50 < 100), so it should be GREATER.
+        assert_eq!(p_base.cmp(&p_high_power), Ordering::Greater);
         let e_early_ts = LeanEvent {
             origin_server_ts: 10,
             ..e_base.clone()
@@ -791,6 +1197,7 @@ mod tests {
             event: &e_early_ts,
             version: StateResVersion::V2,
         };
+        // p_early_ts has TS 10, p_base has TS 50. Earlier TS pops first, so p_early_ts is GREATER. p_base < p_early_ts => Less.
         assert_eq!(p_base.cmp(&p_early_ts), Ordering::Less);
         let e_early_id = LeanEvent {
             event_id: "a".into(),
@@ -800,6 +1207,7 @@ mod tests {
             event: &e_early_id,
             version: StateResVersion::V2,
         };
+        // p_early_id has ID "a", p_base has ID "m". Smaller ID pops first, so p_early_id is GREATER. p_base < p_early_id => Less.
         assert_eq!(p_base.cmp(&p_early_id), Ordering::Less);
         let p_v1_base = SortPriority {
             event: &e_base,
@@ -820,54 +1228,5 @@ mod tests {
         };
         assert_eq!(p_v1_base.cmp(&p_v1_early_id), Ordering::Less);
         assert_eq!(p_v1_base.cmp(&p_v1_base), Ordering::Equal);
-    }
-
-    #[test]
-    fn test_integration_matrix_ecosystem_mock() {
-        // Improvise real state from the Matrix ecosystem as requested
-        // In a full implementation, this could deserialize a massive JSON dump.
-        let mut events = HashMap::new();
-        events.insert(
-            "E1".into(),
-            LeanEvent {
-                event_id: "E1".into(),
-                power_level: 100,
-                origin_server_ts: 1610000000,
-                prev_events: vec![],
-                depth: 1,
-            },
-        );
-        events.insert(
-            "E2".into(),
-            LeanEvent {
-                event_id: "E2".into(),
-                power_level: 50,
-                origin_server_ts: 1610000005,
-                prev_events: vec!["E1".into()],
-                depth: 2,
-            },
-        );
-        events.insert(
-            "E3".into(),
-            LeanEvent {
-                event_id: "E3".into(),
-                power_level: 50,
-                origin_server_ts: 1610000003,
-                prev_events: vec!["E1".into()],
-                depth: 2,
-            },
-        );
-
-        let resolved_ruma_lean = lean_kahn_sort(&events, StateResVersion::V2);
-
-        // Mock comparisons against other implementations (c10y, tuwunel, synapse)
-        // Since we are improvised the state, we assume they all correctly follow the spec.
-        let c10y_output = vec!["E1", "E3", "E2"];
-        let tuwunel_output = vec!["E1", "E3", "E2"];
-        let synapse_output = vec!["E1", "E3", "E2"];
-
-        assert_eq!(resolved_ruma_lean, c10y_output, "Mismatch with c10y");
-        assert_eq!(resolved_ruma_lean, tuwunel_output, "Mismatch with tuwunel");
-        assert_eq!(resolved_ruma_lean, synapse_output, "Mismatch with synapse");
     }
 }

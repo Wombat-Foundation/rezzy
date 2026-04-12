@@ -1,0 +1,38 @@
+---
+name: Rust
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          pip install pre-commit
+          npm install -g prettier
+          cargo install cargo-sort
+
+      - name: Generate fixtures
+        run: make fixtures
+
+      - name: Format Check
+        run: make format
+
+      - name: Lint (Clippy)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Install cargo-tarpaulin
+        uses: taiki-e/install-action@cargo-tarpaulin
+
+      - name: Test (w/ coverage)
+        run: make coverage

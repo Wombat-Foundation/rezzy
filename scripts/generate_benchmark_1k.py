@@ -24,11 +24,13 @@ print(f"Generating {NUM_EVENTS} synthetic Matrix state events...", file=sys.stde
 
 events = []
 ROOM_ID = "!benchmark_room:example.com"
+members = [f"@user_{i}:example.com" for i in range(50)]
 
-# Create initial event
+# Create initial events
+create_event_id = "$00000-m-room-create"
 events.append(
     {
-        "event_id": "$00000-m-room-create",
+        "event_id": create_event_id,
         "room_id": ROOM_ID,
         "sender": "@creator:example.com",
         "type": "m.room.create",
@@ -37,18 +39,61 @@ events.append(
         "origin_server_ts": int(time.time() * 1000) - 10000000,
         "prev_events": [],
         "auth_events": [],
+        "power_level": 100,
+        "depth": 1,
+    }
+)
+
+creator_join_id = "$00000.5-creator-join"
+events.append(
+    {
+        "event_id": creator_join_id,
+        "room_id": ROOM_ID,
+        "sender": "@creator:example.com",
+        "type": "m.room.member",
+        "content": {"membership": "join"},
+        "state_key": "@creator:example.com",
+        "origin_server_ts": int(time.time() * 1000) - 9500000,
+        "prev_events": [create_event_id],
+        "auth_events": [create_event_id],
+        "power_level": 100,
+        "depth": 2,
+    }
+)
+
+power_levels_event_id = "$00001-power-levels"
+users_dict = {"@creator:example.com": 100}
+for m in members:
+    users_dict[m] = 100
+
+events.append(
+    {
+        "event_id": power_levels_event_id,
+        "room_id": ROOM_ID,
+        "sender": "@creator:example.com",
+        "type": "m.room.power_levels",
+        "content": {
+            "users_default": 100,
+            "events_default": 0,
+            "state_default": 0,
+            "users": users_dict,
+        },
+        "state_key": "",
+        "origin_server_ts": int(time.time() * 1000) - 9000000,
+        "prev_events": [create_event_id],
+        "auth_events": [create_event_id],
+        "power_level": 100,
+        "depth": 3,
     }
 )
 
 event_types = [
-    "m.room.member",
     "m.room.power_levels",
     "m.room.join_rules",
 ]
-members = [f"@user_{i}:example.com" for i in range(50)]
 
-for i in range(1, NUM_EVENTS):
-    sender = random.choice(members)
+for i in range(3, NUM_EVENTS):
+    sender = "@creator:example.com"
     ev_type = random.choice(event_types)
     ts = events[-1]["origin_server_ts"] + random.randint(1, 1000)
 
@@ -57,12 +102,12 @@ for i in range(1, NUM_EVENTS):
     content = {}
     state_key = ""
     if ev_type == "m.room.member":
-        content = {"membership": random.choice(["join", "leave", "invite"])}
+        content = {"membership": random.choice(["invite", "leave"])}
         state_key = random.choice(members)
     elif ev_type == "m.room.power_levels":
-        content = {"users": {sender: 100}}
+        content = {"users": users_dict}  # keep it the same to not lose power
     else:
-        content = {"join_rule": "public"}
+        content = {"join_rule": random.choice(["public", "invite"])}
 
     event_id = f"${sha256_hash(str(i))[:20]}"
 
@@ -76,11 +121,35 @@ for i in range(1, NUM_EVENTS):
             "state_key": state_key,
             "origin_server_ts": ts,
             "prev_events": [prev_event_id],
-            "auth_events": [events[0]["event_id"]],
+            "auth_events": [create_event_id, creator_join_id, power_levels_event_id],
+            "power_level": 100,
+            "depth": i + 1,
         }
     )
 
-with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-    json.dump(events, f, indent=2)
+# Create two heads for a fork
+head1 = events[-2]["event_id"]
+head2 = events[-1]["event_id"]
 
-print(f"Success! Generated {NUM_EVENTS} events to {OUTPUT_FILE}", file=sys.stderr)
+# V2 File
+v2_file = "res/benchmark_1k.json"
+with open(v2_file, "w", encoding="utf-8") as f:
+    output = {"events": events, "heads": [head1, head2]}
+    json.dump(output, f, indent=2)
+
+print(f"Success! Generated {NUM_EVENTS} events to {v2_file}", file=sys.stderr)
+
+# V2.1 File (Room Version 12)
+v2_1_file = "res/benchmark_1k_v2_1.json"
+events_v2_1 = []
+for ev in events:
+    new_ev = ev.copy()
+    if ev["type"] == "m.room.create":
+        new_ev["content"] = {"creator": ev["content"]["creator"], "room_version": "12"}
+    events_v2_1.append(new_ev)
+
+with open(v2_1_file, "w", encoding="utf-8") as f:
+    output = {"events": events_v2_1, "heads": [head1, head2]}
+    json.dump(output, f, indent=2)
+
+print(f"Success! Generated {NUM_EVENTS} events to {v2_1_file}", file=sys.stderr)
