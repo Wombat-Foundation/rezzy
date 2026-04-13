@@ -75,7 +75,15 @@ impl StarGraph {
 
         Self { nodes, next_step }
     }
+}
 
+impl Default for StarGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StarGraph {
     pub fn get_path(&self, mut u: usize, v: usize) -> Vec<u8> {
         let mut path = Vec::new();
         while u != v {

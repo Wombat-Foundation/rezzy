@@ -10,7 +10,16 @@ use std::time::Instant;
 #[command(author, version, about, long_about = None)]
 struct Args {
     #[arg(short, long)]
-    input: PathBuf,
+    input: Option<PathBuf>,
+
+    #[arg(short, long)]
+    room: Option<String>,
+
+    #[arg(long, env = "MATRIX_HOMESERVER")]
+    homeserver: Option<String>,
+
+    #[arg(long, env = "MATRIX_TOKEN")]
+    token: Option<String>,
 
     #[arg(short, long)]
     output: Option<PathBuf>,
@@ -23,6 +32,9 @@ struct Args {
 
     #[arg(long)]
     debug: bool,
+
+    #[arg(long)]
+    benchmark_trace: bool,
 
     #[arg(long, default_value = "matrix.org")]
     origin: String,
@@ -59,33 +71,67 @@ fn detect_version(events: &[serde_json::Value], debug: bool) -> anyhow::Result<S
     Ok(StateResVersion::V2) // Default
 }
 
+fn fetch_room_state(
+    homeserver: &str,
+    room_id: &str,
+    token: Option<&str>,
+) -> anyhow::Result<serde_json::Value> {
+    let url = format!("{}/_matrix/client/v3/rooms/{}/state", homeserver, room_id);
+    let mut request = ureq::get(&url);
+    if let Some(t) = token {
+        request = request.set("Authorization", &format!("Bearer {}", t));
+    }
+
+    let response = request.call()?;
+    if response.status() != 200 {
+        anyhow::bail!(
+            "Failed to fetch room state: {} {}",
+            response.status(),
+            response.into_string()?
+        );
+    }
+
+    let val: serde_json::Value = response.into_json()?;
+    Ok(val)
+}
+
 fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
-    let input_reader: Box<dyn Read> = if args.input.to_str() == Some("-") {
-        Box::new(io::stdin())
+    let input_val: serde_json::Value = if let Some(room_id) = &args.room {
+        let homeserver = args
+            .homeserver
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("--homeserver is required when using --room"))?;
+        fetch_room_state(homeserver, room_id, args.token.as_deref())?
+    } else if let Some(input_path) = &args.input {
+        let input_reader: Box<dyn Read> = if input_path.to_str() == Some("-") {
+            Box::new(io::stdin())
+        } else {
+            Box::new(File::open(input_path)?)
+        };
+
+        let mut reader = BufReader::new(input_reader);
+        let mut input_data = Vec::new();
+
+        loop {
+            let mut line = String::new();
+            let bytes_read = reader.read_line(&mut line)?;
+            if bytes_read == 0 {
+                break; // EOF
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            input_data.extend_from_slice(line.as_bytes());
+        }
+
+        if input_data.is_empty() {
+            anyhow::bail!("No input data provided before empty line or EOF.");
+        }
+
+        serde_json::from_slice(&input_data)?
     } else {
-        Box::new(File::open(&args.input)?)
+        anyhow::bail!("Either --input or --room must be provided.");
     };
-
-    let mut reader = BufReader::new(input_reader);
-    let mut input_data = Vec::new();
-
-    loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line)?;
-        if bytes_read == 0 {
-            break; // EOF
-        }
-        if line.trim().is_empty() {
-            continue;
-        }
-        input_data.extend_from_slice(line.as_bytes());
-    }
-
-    if input_data.is_empty() {
-        anyhow::bail!("No input data provided before empty line or EOF.");
-    }
-
-    let input_val: serde_json::Value = serde_json::from_slice(&input_data)?;
 
     let (raw_events, heads) = if let Some(obj) = input_val.as_object() {
         if obj.contains_key("events") && obj.contains_key("heads") {
