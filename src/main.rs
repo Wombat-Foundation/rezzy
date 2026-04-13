@@ -287,7 +287,35 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
         }
     }
 
-    let final_state_map = ruma_lean::resolve_lean(unconflicted_state, conflicted_events, version);
+    let final_state_map =
+        ruma_lean::resolve_lean(unconflicted_state, conflicted_events.clone(), version);
+
+    if args.benchmark_trace {
+        let compiler = ruma_lean::trace_compiler::TraceCompiler::new();
+        let trace = compiler.compile_trace(&conflicted_events, version);
+
+        let active_nodes = trace
+            .iter()
+            .filter(|r| {
+                let active_val: u32 = unsafe { std::mem::transmute_copy(&r.is_active) };
+                active_val == 1
+            })
+            .count();
+        let routing_nodes = trace.len() - active_nodes;
+        let routing_tax = if active_nodes > 0 {
+            routing_nodes as f64 / active_nodes as f64
+        } else {
+            0.0
+        };
+
+        return Ok(serde_json::json!({
+            "status": "benchmark_success",
+            "active_nodes": active_nodes,
+            "routing_nodes": routing_nodes,
+            "total_trace_len": trace.len(),
+            "routing_tax": routing_tax,
+        }));
+    }
 
     let duration = start.elapsed();
 

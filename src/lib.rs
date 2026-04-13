@@ -16,6 +16,9 @@
 
 extern crate alloc;
 
+pub mod ctopology;
+pub mod trace_compiler;
+
 #[cfg(not(feature = "zkvm"))]
 use alloc::collections::BTreeSet;
 use alloc::collections::{BTreeMap, BinaryHeap};
