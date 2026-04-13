@@ -27,7 +27,7 @@ struct Args {
     #[arg(short, long, value_enum)]
     state_res: Option<StateResVersion>,
 
-    #[arg(long, default_value = "default")]
+    #[arg(short, long, value_enum)]
     format: OutputFormat,
 
     #[arg(long)]
@@ -40,8 +40,10 @@ struct Args {
     origin: String,
 }
 
-#[derive(ValueEnum, Clone, Debug, PartialEq, Eq)]
+#[derive(ValueEnum, Clone, Debug, PartialEq, Eq, Default)]
 enum OutputFormat {
+    #[default]
+    Events,
     Default,
     Federation,
 }
@@ -369,6 +371,13 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
     let auth_chain_ids = compute_auth_chain(&resolved_state_list, &events_map);
 
     match args.format {
+        OutputFormat::Events => {
+            let state_events: Vec<&serde_json::Value> = resolved_state_list
+                .iter()
+                .filter_map(|id| raw_map.get(id))
+                .collect();
+            Ok(serde_json::json!(state_events))
+        }
         OutputFormat::Federation => {
             let state_events: Vec<&serde_json::Value> = resolved_state_list
                 .iter()
