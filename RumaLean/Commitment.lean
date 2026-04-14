@@ -110,15 +110,22 @@ theorem arrangement_graph_soundness {V : Type} (G : ArrangementGraph V) (state :
   -- Apply monotonicity of exponents: a ≤ b implies a^k ≤ b^k
   exact pow_le_pow_left₀ h_base_nonneg h_base_le k
 
--- THEOREM 2.4: Cryptographic Bound Verification
+-- THEOREM 2.4: Cryptographic Bound Verification (128-bit Security)
 -- Demonstrating that for an expansion error of 5% (epsilon * delta = 1/20),
 -- the Verifier only needs 1730 queries to achieve an unforgeable 2^-128 security bound.
 -- We formulate this with integer arithmetic for exact compiler verification:
 -- (19/20)^1730 <= (1/2)^128 is equivalent to 19^1730 * 2^128 <= 20^1730
-set_option exponentiation.threshold 2000
-set_option maxRecDepth 10000
-theorem topological_query_bound :
+set_option exponentiation.threshold 4000
+set_option maxRecDepth 20000
+theorem topological_query_bound_128 :
   19 ^ 1730 * 2 ^ 128 ≤ 20 ^ 1730 := by
+  decide
+
+-- THEOREM 2.5: Ultra-High Security (256-bit Security)
+-- For mission-critical or post-quantum requirements, 3460 queries
+-- achieve the 2^-256 security bound at the same 5% expansion error.
+theorem topological_query_bound_256 :
+  19 ^ 3460 * 2 ^ 256 ≤ 20 ^ 3460 := by
   decide
 
 end RumaLean
