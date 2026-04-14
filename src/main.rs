@@ -27,7 +27,7 @@ struct Args {
     #[arg(short, long, value_enum)]
     state_res: Option<StateResVersion>,
 
-    #[arg(short, long, value_enum)]
+    #[arg(short, long, value_enum, default_value = "default")]
     format: OutputFormat,
 
     #[arg(long)]
