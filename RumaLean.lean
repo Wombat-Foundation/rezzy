@@ -3,3 +3,6 @@ import RumaLean.Kahn
 import RumaLean.StateRes
 import RumaLean.StarGraph
 import RumaLean.TopologicalReduction
+import RumaLean.Commitment
+import RumaLean.Arithmetization
+import RumaLean.StarGraphEmbedding
