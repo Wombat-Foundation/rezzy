@@ -6,3 +6,6 @@ import RumaLean.TopologicalReduction
 import RumaLean.Commitment
 import RumaLean.Arithmetization
 import RumaLean.StarGraphEmbedding
+import RumaLean.Bitwise
+import RumaLean.Hypercube
+import RumaLean.GraphComparison
