@@ -26,14 +26,6 @@ jobs:
           curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y
           echo "$HOME/.elan/bin" >> $GITHUB_PATH
 
-      - name: Cache Lean
-        uses: actions/cache@v4
-        with:
-          path: .lake
-          key: ${{ runner.os }}-lean-${{ hashFiles('lake-manifest.json', 'lean-toolchain') }}
-          restore-keys: |
-            ${{ runner.os }}-lean-
-
       - name: Update specific cache
         run: make cache
 
