@@ -71,4 +71,50 @@ theorem topological_beats_von_neumann (N : ℕ) (hN : N > 2)
     (N : ℝ) = (N : ℝ) * 1 := by ring
     _ < (N : ℝ) * Real.log (N : ℝ) := mul_lt_mul_of_pos_left h_log h_pos
 
+/--
+  THEOREM 2: Asymptotic Dominance
+  For any constant multiplier c > 0, there exists a threshold size N₀
+  such that for all graphs larger than N₀, the topological cost is bounded
+  strictly below c * von_neumann_cost. This formally proves that topological
+  routing is asymptotically superior.
+-/
+theorem topological_asymptotically_optimal (c : ℝ) (hc : 0 < c) :
+  ∃ N₀ : ℕ, ∀ N : ℕ, N > N₀ →
+    ∀ (vn : VonNeumannMachine) (tg : TopologicalGraph),
+      vn.steps = tg.nodes ∧ vn.memory_accesses = tg.edges →
+      vn.steps + vn.memory_accesses = N →
+      topo_cost tg < c * vn_cost vn := by
+  -- We set N₀ to the integer ceiling of exp(1/c). Thus for N > N₀, N > exp(1/c).
+  use Nat.ceil (Real.exp (1 / c))
+  intro N hN vn tg h_iso h_size
+  unfold topo_cost vn_cost
+  have h_sum_vn : (vn.steps : ℝ) + (vn.memory_accesses : ℝ) = (N : ℝ) := by exact_mod_cast h_size
+  have h_sum_tg : (tg.nodes : ℝ) + (tg.edges : ℝ) = (N : ℝ) := by
+    rw [← h_iso.1, ← h_iso.2]
+    exact_mod_cast h_size
+  rw [h_sum_tg, h_sum_vn]
+
+  -- Connect Discrete N back to continuous analytical bounds
+  have h1 : Real.exp (1 / c) ≤ (Nat.ceil (Real.exp (1 / c)) : ℝ) := Nat.le_ceil (Real.exp (1 / c))
+  have h2 : (Nat.ceil (Real.exp (1 / c)) : ℝ) < (N : ℝ) := by exact_mod_cast hN
+  have heN : Real.exp (1 / c) < (N : ℝ) := lt_of_le_of_lt h1 h2
+
+  have hN_pos_real : (0 : ℝ) < (N : ℝ) := lt_trans (Real.exp_pos (1 / c)) heN
+
+  -- Take logarithms to show that 1/c < log N
+  have h_log : 1 / c < Real.log (N : ℝ) := by
+    rw [← Real.log_exp (1 / c)]
+    exact Real.log_lt_log (Real.exp_pos (1 / c)) heN
+
+  -- Multiply by c to get 1 < c * log N
+  have h_mul : 1 < c * Real.log (N : ℝ) := by
+    have h_tmp := (div_lt_iff₀ hc).mp h_log
+    rwa [mul_comm] at h_tmp
+
+  -- Finally show N < c * N * log N using calculation
+  calc
+    (N : ℝ) = (N : ℝ) * 1 := by ring
+    _ < (N : ℝ) * (c * Real.log (N : ℝ)) := mul_lt_mul_of_pos_left h_mul hN_pos_real
+    _ = c * ((N : ℝ) * Real.log (N : ℝ)) := by ring
+
 end RumaLean
