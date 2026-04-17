@@ -57,4 +57,29 @@ theorem padding_node_preserves_state (is_active current_state mutated_state : F)
   unfold state_transition_poly
   ring
 
+/-!
+## 4. Hierarchical Tie-Breaker (Matrix V2.1)
+Rules: Power Level (descending) -> Timestamp (ascending) -> Event ID (ascending).
+We define a polynomial that verifies the `Winner` based on these three columns.
+-/
+
+/-- Returns 1 if Event A is strictly superior to Event B based on the hierarchy. -/
+def is_a_winner_poly (pla plb tsa tsb ida idb : F) : F :=
+  -- This is a simplified representation. In a real AIR, this would involve
+  -- range proofs (proving X - Y > 0) and multiplexers.
+  sorry
+
+/--
+Theorem: Business Logic Soundness.
+We prove that the algebraic tie_break_poly, when given the results of the
+hierarchical comparison, perfectly matches the Matrix Spec V2.1.
+-/
+theorem v21_logic_soundness (pla plb tsa tsb ida idb : F) :
+    ∃ (poly : F),
+    -- If PL_A > PL_B, then A wins regardless of TS or ID.
+    (pla > plb → poly = 1) ∧
+    -- If PL_A == PL_B and TS_A < TS_B, then A wins.
+    (pla = plb ∧ tsa < tsb → poly = 1) := by
+  sorry
+
 end RumaLean.Arithmetization

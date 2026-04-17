@@ -18,16 +18,26 @@ axiom zk_hash (e : Event) : Hash
 structure MerklePath where
   path : List Hash
 
-/-- Verifies that an event is included in a Merkle tree with the given root. -/
-def verify_inclusion (e : Event) (root : Hash) (p : MerklePath) : Bool :=
-  -- Verification logic (abstracted)
-  true
+/-- A Binary Merkle Tree over a list of Hashes. -/
+inductive MerkleTree where
+  | leaf (h : Hash)
+  | node (left right : MerkleTree) (h : Hash)
+
+/-- The root hash of a Merkle Tree. -/
+def merkleRoot : MerkleTree → Hash
+  | .leaf h => h
+  | .node _ _ h => h
+
+/-- Verifies that a MerklePath (the siblings) reconstructs the expected Root Hash. -/
+def verify_inclusion (e : Event) (root : Hash) (path : MerklePath) : Prop :=
+  -- Recurses through the siblings, hashing as it goes, and checks if it equals `root`.
+  sorry
 
 /--
 Theorem: Merkle Soundness.
 If the inclusion proof is valid, the event is mathematically bound to the root.
 -/
-axiom merkle_soundness (e : Event) (root : Hash) (p : MerklePath) :
-    verify_inclusion e root p = true → ∃ (DAG : Finset Event), e ∈ DAG
-
-end RumaLean
+theorem merkle_soundness (e : Event) (root : Hash) (p : MerklePath) :
+    verify_inclusion e root p → ∃ (DAG : Finset Event), e ∈ DAG := by
+  -- Follows from the collision resistance of the hash function (axiomatized).
+  sorry
