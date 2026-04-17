@@ -345,6 +345,8 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
         let active_nodes = trace
             .iter()
             .filter(|r| {
+                // In Plonky3 BabyBear 0.2, the field element can be cast to u32
+                // if we are sure it fits, which it does for is_active (0 or 1).
                 let active_val: u32 = unsafe { std::mem::transmute_copy(&r.is_active) };
                 active_val == 1
             })
@@ -356,13 +358,16 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
             0.0
         };
 
-        return Ok(serde_json::json!({
+        let output = serde_json::json!({
             "status": "benchmark_success",
             "active_nodes": active_nodes,
             "routing_nodes": routing_nodes,
             "total_trace_len": trace.len(),
             "routing_tax": routing_tax,
-        }));
+            "hypercube_dimension": compiler.hypercube.dimension,
+            "hypercube_nodes": compiler.hypercube.num_nodes,
+        });
+        return Ok(output);
     }
 
     let duration = start.elapsed();

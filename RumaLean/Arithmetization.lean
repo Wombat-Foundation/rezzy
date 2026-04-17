@@ -1,120 +1,60 @@
-import Mathlib.Data.Real.Basic
-import Mathlib.Analysis.SpecialFunctions.Log.Basic
-import Mathlib.Analysis.SpecialFunctions.Exp
-import Mathlib.Tactic
+import Mathlib.Algebra.Ring.Basic
+import Mathlib.Tactic.Ring
 
-namespace RumaLean
+namespace RumaLean.Arithmetization
 
--- A Von Neumann Machine requires explicit memory routing (permutation/sorting arguments)
-structure VonNeumannMachine where
-  steps : ℕ
-  memory_accesses : ℕ
-
-/-- The cost includes a superlinear term for the permutation argument (RAM consistency) -/
-noncomputable def vn_cost (vn : VonNeumannMachine) : ℝ :=
-  (vn.steps + vn.memory_accesses : ℝ) * Real.log (vn.steps + vn.memory_accesses : ℝ)
-
--- A Topological Co-processor natively routes data via graph edges (DAG-based flow)
-structure TopologicalGraph where
-  nodes : ℕ
-  edges : ℕ
-
-/-- The cost is strictly linear in the topology -/
-def topo_cost (tg : TopologicalGraph) : ℝ :=
-  (tg.nodes + tg.edges : ℝ)
-
--- Analytic primitive: e < 3.
--- We declare this as a mathematically sound axiom. Formalizing the Maclaurin
--- series expansion of e (as seen in the calculus proofs) from scratch in Lean 4
--- requires massive Measure Theory imports. Isolating it here keeps the build fast.
-axiom exp_one_lt_three : Real.exp 1 < 3
-
-/--
-  THEOREM 1: The Topological Graph operates strictly in O(N) constraints,
-  bypassing the superlinear sorting tax of standard RAM models.
+/-!
+# Arithmetization Soundness
+We formalize the bridge between pure Matrix logic and the algebraic constraints
+used in the STARK prover. STARKs operate over Finite Fields (like BabyBear),
+which we abstract as a Commutative Ring `F`.
 -/
-theorem topological_beats_von_neumann (N : ℕ) (hN : N > 2)
-  (vn : VonNeumannMachine) (tg : TopologicalGraph)
-  (h_iso : vn.steps = tg.nodes ∧ vn.memory_accesses = tg.edges)
-  (h_size : vn.steps + vn.memory_accesses = N) :
-  topo_cost tg < vn_cost vn := by
 
-  unfold topo_cost vn_cost
+variable {F : Type} [CommRing F] [IsDomain F]
 
-  -- Substitute directly using h_iso and h_size
-  have h_sum_vn : (vn.steps : ℝ) + (vn.memory_accesses : ℝ) = (N : ℝ) := by exact_mod_cast h_size
-  have h_sum_tg : (tg.nodes : ℝ) + (tg.edges : ℝ) = (N : ℝ) := by
-    rw [← h_iso.1, ← h_iso.2]
-    exact_mod_cast h_size
-
-  rw [h_sum_tg, h_sum_vn]
-
-  -- Establish bounds cleanly using the modern `omega` tactic for integers
-  have h_pos_nat : 0 < N := by omega
-  have h_pos : (0 : ℝ) < (N : ℝ) := by exact_mod_cast h_pos_nat
-
-  -- Formally prove 1 < log(N) using monotonicity
-  have h_log : 1 < Real.log (N : ℝ) := by
-    have h3_nat : 3 ≤ N := by omega
-    have h3 : (3 : ℝ) ≤ (N : ℝ) := by exact_mod_cast h3_nat
-
-    -- Transitivity: e < 3 <= N  =>  e < N
-    have heN : Real.exp 1 < (N : ℝ) := lt_of_lt_of_le exp_one_lt_three h3
-
-    -- Since e < N, ln(e) < ln(N) => 1 < ln(N)
-    have h_exp_pos : (0 : ℝ) < Real.exp 1 := Real.exp_pos 1
-    rw [← Real.log_exp 1]
-    exact Real.log_lt_log h_exp_pos heN
-
-  -- Directly prove the multiplication using a robust calc block
-  calc
-    (N : ℝ) = (N : ℝ) * 1 := by ring
-    _ < (N : ℝ) * Real.log (N : ℝ) := mul_lt_mul_of_pos_left h_log h_pos
-
-/--
-  THEOREM 2: Asymptotic Dominance
-  For any constant multiplier c > 0, there exists a threshold size N₀
-  such that for all graphs larger than N₀, the topological cost is bounded
-  strictly below c * von_neumann_cost. This formally proves that topological
-  routing is asymptotically superior.
+/-!
+## 1. The Boolean Constraint
+Forces a value in the trace to be strictly 0 or 1 (e.g., `is_active`).
+Polynomial: x * (x - 1) = 0
 -/
-theorem topological_asymptotically_optimal (c : ℝ) (hc : 0 < c) :
-  ∃ N₀ : ℕ, ∀ N : ℕ, N > N₀ →
-    ∀ (vn : VonNeumannMachine) (tg : TopologicalGraph),
-      vn.steps = tg.nodes ∧ vn.memory_accesses = tg.edges →
-      vn.steps + vn.memory_accesses = N →
-      topo_cost tg < c * vn_cost vn := by
-  -- We set N₀ to the integer ceiling of exp(1/c). Thus for N > N₀, N > exp(1/c).
-  use Nat.ceil (Real.exp (1 / c))
-  intro N hN vn tg h_iso h_size
-  unfold topo_cost vn_cost
-  have h_sum_vn : (vn.steps : ℝ) + (vn.memory_accesses : ℝ) = (N : ℝ) := by exact_mod_cast h_size
-  have h_sum_tg : (tg.nodes : ℝ) + (tg.edges : ℝ) = (N : ℝ) := by
-    rw [← h_iso.1, ← h_iso.2]
-    exact_mod_cast h_size
-  rw [h_sum_tg, h_sum_vn]
+def is_bool_poly (x : F) : Prop := x * (x - 1) = 0
 
-  -- Connect Discrete N back to continuous analytical bounds
-  have h1 : Real.exp (1 / c) ≤ (Nat.ceil (Real.exp (1 / c)) : ℝ) := Nat.le_ceil (Real.exp (1 / c))
-  have h2 : (Nat.ceil (Real.exp (1 / c)) : ℝ) < (N : ℝ) := by exact_mod_cast hN
-  have heN : Real.exp (1 / c) < (N : ℝ) := lt_of_le_of_lt h1 h2
+/-- PROOF OF SOUNDNESS: The polynomial perfectly restricts the value to {0, 1}. -/
+theorem bool_poly_soundness (x : F) : is_bool_poly x ↔ (x = 0 ∨ x = 1) := by
+  unfold is_bool_poly
+  rw [mul_eq_zero, sub_eq_zero]
 
-  have hN_pos_real : (0 : ℝ) < (N : ℝ) := lt_trans (Real.exp_pos (1 / c)) heN
+/-!
+## 2. The V2.1 Tie-Breaker Constraint (Lexicographical Multiplexer)
+If `is_a_winner` is 1, the output must be `a_val`.
+If `is_a_winner` is 0, the output must be `b_val`.
+Polynomial: Winner = is_a_winner * a_val + (1 - is_a_winner) * b_val
+-/
+def tie_break_poly (is_a_winner a_val b_val : F) : F :=
+  is_a_winner * a_val + (1 - is_a_winner) * b_val
 
-  -- Take logarithms to show that 1/c < log N
-  have h_log : 1 / c < Real.log (N : ℝ) := by
-    rw [← Real.log_exp (1 / c)]
-    exact Real.log_lt_log (Real.exp_pos (1 / c)) heN
+/-- PROOF OF SOUNDNESS: The polynomial perfectly acts as an algebraic if/else statement. -/
+theorem tie_break_soundness (is_a_winner a_val b_val : F) (h_bool : is_a_winner = 0 ∨ is_a_winner = 1) :
+    (is_a_winner = 1 → tie_break_poly is_a_winner a_val b_val = a_val) ∧
+    (is_a_winner = 0 → tie_break_poly is_a_winner a_val b_val = b_val) := by
+  constructor
+  · intro h; rw [h]; unfold tie_break_poly; ring
+  · intro h; rw [h]; unfold tie_break_poly; ring
 
-  -- Multiply by c to get 1 < c * log N
-  have h_mul : 1 < c * Real.log (N : ℝ) := by
-    have h_tmp := (div_lt_iff₀ hc).mp h_log
-    rwa [mul_comm] at h_tmp
+/-!
+## 3. The Hypercube Padding Constraint
+Ensures that inactive "padding" nodes in the hypercube perfectly preserve the current state.
+Polynomial: NextState = is_active * mutated_state + (1 - is_active) * current_state
+-/
+def state_transition_poly (is_active current_state mutated_state : F) : F :=
+  is_active * mutated_state + (1 - is_active) * current_state
 
-  -- Finally show N < c * N * log N using calculation
-  calc
-    (N : ℝ) = (N : ℝ) * 1 := by ring
-    _ < (N : ℝ) * (c * Real.log (N : ℝ)) := mul_lt_mul_of_pos_left h_mul hN_pos_real
-    _ = c * ((N : ℝ) * Real.log (N : ℝ)) := by ring
+/-- PROOF OF SOUNDNESS: Dummy nodes do not alter the state. -/
+theorem padding_node_preserves_state (is_active current_state mutated_state : F) :
+    is_active = 0 → state_transition_poly is_active current_state mutated_state = current_state := by
+  intro h
+  rw [h]
+  unfold state_transition_poly
+  ring
 
-end RumaLean
+end RumaLean.Arithmetization

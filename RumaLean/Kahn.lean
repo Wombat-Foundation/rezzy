@@ -42,7 +42,10 @@ def kahnSortImpl (G : DirectedGraph V) (n : ℕ) (S : Finset V)
     else
       L.reverse
 
-/-- The main entry point for Kahn's topological sort. -/
+/-- The main entry point for Kahn's topological sort.
+  The input `S : Finset V` represents an unordered set of events.
+  Using a `Finset` ensures the sort depends only on the graph and deterministic tie-breaking,
+  not on the arrival order of events. -/
 def kahnSort (G : DirectedGraph V) [IsDAG G]
     [DecidableRel G.edges] [LinearOrder V] (S : Finset V) : List V :=
   kahnSortImpl G S.card S []

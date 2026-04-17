@@ -1,5 +1,5 @@
 import RumaLean.Hypercube
-import RumaLean.StarGraph
+import RumaLean.unstable.StarGraph
 import Mathlib.Data.Nat.Factorial.Basic
 
 namespace RumaLean

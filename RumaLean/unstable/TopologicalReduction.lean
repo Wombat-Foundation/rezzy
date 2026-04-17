@@ -1,6 +1,6 @@
 import RumaLean.StateRes
 import RumaLean.DirectedAcyclicGraph
-import RumaLean.StarGraph
+import RumaLean.unstable.StarGraph
 
 set_option linter.style.longLine false
 

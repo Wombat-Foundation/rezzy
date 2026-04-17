@@ -1,4 +1,4 @@
-use crate::ctopology::StarGraph;
+use crate::ctopology::Hypercube;
 use crate::{lean_kahn_sort, LeanEvent, StateResVersion};
 use p3_baby_bear::BabyBear;
 
@@ -10,15 +10,15 @@ use hashbrown::HashMap;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StarGraphTraceRow {
+pub struct HypercubeTraceRow {
     pub is_active: BabyBear,
-    pub permutation_id: BabyBear,
+    pub node_id: BabyBear,
     pub event_id: BabyBear,
-    pub swap_index: BabyBear,
+    pub dimension_flip: BabyBear,
 }
 
 pub struct TraceCompiler {
-    pub star_graph: StarGraph,
+    pub hypercube: Hypercube,
 }
 
 impl Default for TraceCompiler {
@@ -29,17 +29,18 @@ impl Default for TraceCompiler {
 
 impl TraceCompiler {
     pub fn new() -> Self {
+        // Defaulting to a reasonably sized hypercube for generic use.
         Self {
-            star_graph: StarGraph::new(),
+            hypercube: Hypercube::new(1024),
         }
     }
 
-    /// Compiles a sequence of unsorted Matrix events into a continuous Star Graph walk.
+    /// Compiles a sequence of unsorted Matrix events into a continuous Hypercube walk.
     pub fn compile_trace(
         &self,
         unsorted_events: &HashMap<String, LeanEvent>,
         version: StateResVersion,
-    ) -> Vec<StarGraphTraceRow> {
+    ) -> Vec<HypercubeTraceRow> {
         let sorted_ids = lean_kahn_sort(unsorted_events, version);
 
         // Map string IDs to BabyBear compatible u32s
@@ -53,68 +54,64 @@ impl TraceCompiler {
         }
         let events = &u32_events;
 
-        let mut trace = Vec::new();
         if events.is_empty() {
-            return trace;
+            return Vec::new();
         }
 
-        // For the benchmark, use a deterministic mapping heuristic:
-        // Map event `e` to node `e % 120`.
-        let mut current_node = (events[0] % 120) as usize;
+        // Dynamically size the hypercube based on the number of events.
+        let hypercube = Hypercube::new(events.len());
+        let mut trace = Vec::new();
 
-        trace.push(StarGraphTraceRow {
+        // Initial mapping: event 0 at node 0.
+        let mut current_node = 0;
+
+        trace.push(HypercubeTraceRow {
             is_active: create_babybear(1),
-            permutation_id: create_babybear(current_node as u32),
+            node_id: create_babybear(current_node as u32),
             event_id: create_babybear(events[0]),
-            swap_index: create_babybear(0), // Initial state has no incoming swap
+            dimension_flip: create_babybear(0), // No flip for the start
         });
 
         for &event in events.iter().skip(1) {
-            let target_node = (event % 120) as usize;
+            // Heuristic mapping: map event ID to a node ID within the hypercube range.
+            let target_node = (event as usize) % hypercube.num_nodes;
 
             // Route from current_node to target_node
-            let path = self.star_graph.get_path(current_node, target_node);
+            let path = hypercube.get_path(current_node, target_node);
 
-            // If they are already the same node (e.g. same hash mod 120), we don't need a path,
-            // but we must advance the state. Let's just swap 1 and then swap 1 again to stay active.
+            // In a hypercube, if current_node == target_node, the path is empty.
+            // We flip bit 0 and flip it back to ensure we have a valid trace step.
             if path.is_empty() {
-                // Dummy walk to allow adding the next active node on the same permutation.
-                let swap = 1;
-
-                // Step away
-                let next_node_p = self.star_graph.nodes[current_node].swap(swap);
-                current_node = self.star_graph.nodes.binary_search(&next_node_p).unwrap();
-                trace.push(StarGraphTraceRow {
+                let dim = 0;
+                current_node = hypercube.step(current_node, dim);
+                trace.push(HypercubeTraceRow {
                     is_active: create_babybear(0),
-                    permutation_id: create_babybear(current_node as u32),
+                    node_id: create_babybear(current_node as u32),
                     event_id: create_babybear(0),
-                    swap_index: create_babybear(swap as u32),
+                    dimension_flip: create_babybear(dim as u32),
                 });
 
-                // Step back
-                let next_node_p2 = self.star_graph.nodes[current_node].swap(swap);
-                current_node = self.star_graph.nodes.binary_search(&next_node_p2).unwrap();
-                trace.push(StarGraphTraceRow {
+                current_node = hypercube.step(current_node, dim);
+                trace.push(HypercubeTraceRow {
                     is_active: create_babybear(1),
-                    permutation_id: create_babybear(current_node as u32),
+                    node_id: create_babybear(current_node as u32),
                     event_id: create_babybear(event),
-                    swap_index: create_babybear(swap as u32),
+                    dimension_flip: create_babybear(dim as u32),
                 });
                 continue;
             }
 
-            for (step_idx, &swap) in path.iter().enumerate() {
-                let next_node_p = self.star_graph.nodes[current_node].swap(swap as usize);
-                current_node = self.star_graph.nodes.binary_search(&next_node_p).unwrap();
+            for (step_idx, &dim) in path.iter().enumerate() {
+                current_node = hypercube.step(current_node, dim);
 
                 let is_active = if step_idx == path.len() - 1 { 1 } else { 0 };
                 let current_event = if is_active == 1 { event } else { 0 };
 
-                trace.push(StarGraphTraceRow {
+                trace.push(HypercubeTraceRow {
                     is_active: create_babybear(is_active),
-                    permutation_id: create_babybear(current_node as u32),
+                    node_id: create_babybear(current_node as u32),
                     event_id: create_babybear(current_event),
-                    swap_index: create_babybear(swap as u32),
+                    dimension_flip: create_babybear(dim as u32),
                 });
             }
         }
@@ -123,13 +120,6 @@ impl TraceCompiler {
     }
 }
 
-// A generic helper to build BabyBear field elements robustly depending on the `p3` version.
-// Normally `AbstractField::from_canonical_u32(x)` is used.
 fn create_babybear(val: u32) -> BabyBear {
-    // In p3-baby-bear 0.2, BabyBear implements `From<u32>` or provides a `new` method.
-    // However, the easiest way without importing p3_field is using the internal representation or `new`.
-    // We can also just use `BabyBear::new(val)` if it exists.
-    // Wait, Plonky3 BabyBear struct is usually created via `BabyBear::new(val)` or via `p3_field::AbstractField`.
-    // Let's rely on standard STARK trait: we can use a simple cast.
     unsafe { core::mem::transmute::<u32, BabyBear>(val) }
 }

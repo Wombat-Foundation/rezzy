@@ -1,97 +1,68 @@
-use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
-pub const N: usize = 5;
-pub const NUM_NODES: usize = 120; // 5!
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct Permutation(pub [u8; N]);
-
-impl Permutation {
-    pub fn swap(&self, i: usize) -> Self {
-        let mut next = self.0;
-        next.swap(0, i);
-        Permutation(next)
-    }
+/// Boolean Hypercube (H_d) for event routing.
+/// In a hypercube of dimension d, there are 2^d nodes.
+/// A step is valid if the XOR of two node IDs has a Hamming weight of 1.
+pub struct Hypercube {
+    pub dimension: usize,
+    pub num_nodes: usize,
 }
 
-pub fn generate_permutations() -> Vec<Permutation> {
-    let mut perms = Vec::with_capacity(NUM_NODES);
-    let current = [0, 1, 2, 3, 4];
-    perms.push(Permutation(current));
-
-    fn recurse(arr: &mut [u8; N], start: usize, perms: &mut Vec<Permutation>) {
-        if start == N {
-            perms.push(Permutation(*arr));
-            return;
-        }
-        for i in start..N {
-            arr.swap(start, i);
-            recurse(arr, start + 1, perms);
-            arr.swap(start, i);
+impl Hypercube {
+    pub fn new(num_events: usize) -> Self {
+        // Calculate the minimum dimension d such that 2^d >= num_events.
+        let dimension = if num_events <= 1 {
+            1
+        } else {
+            (num_events as f64).log2().ceil() as usize
+        };
+        let num_nodes = 1 << dimension;
+        Self {
+            dimension,
+            num_nodes,
         }
     }
 
-    let mut all_perms = Vec::new();
-    let mut arr = [0, 1, 2, 3, 4];
-    recurse(&mut arr, 0, &mut all_perms);
-    all_perms.sort();
-    all_perms.dedup(); // recurse generates duplicates due to the naive algorithm, dedup removes them
-    all_perms
-}
-
-pub struct StarGraph {
-    pub nodes: Vec<Permutation>,
-    pub next_step: [[u8; NUM_NODES]; NUM_NODES],
-}
-
-impl StarGraph {
-    pub fn new() -> Self {
-        let nodes = generate_permutations();
-        assert_eq!(nodes.len(), NUM_NODES);
-
-        let mut next_step = [[0u8; NUM_NODES]; NUM_NODES];
-
-        for target in 0..NUM_NODES {
-            let mut queue = VecDeque::new();
-            let mut dist = [usize::MAX; NUM_NODES];
-
-            queue.push_back(target);
-            dist[target] = 0;
-
-            while let Some(u) = queue.pop_front() {
-                let p = &nodes[u];
-                for i in 1..N {
-                    let next_p = p.swap(i);
-                    let v = nodes.binary_search(&next_p).unwrap();
-                    if dist[v] == usize::MAX {
-                        dist[v] = dist[u] + 1;
-                        next_step[v][target] = i as u8;
-                        queue.push_back(v);
-                    }
-                }
+    /// Returns the shortest path between two nodes as a list of dimensions to flip.
+    /// In a hypercube, this is simply the indices of the bits that differ.
+    pub fn get_path(&self, u: usize, v: usize) -> Vec<usize> {
+        let mut path = Vec::new();
+        let diff = u ^ v;
+        for i in 0..self.dimension {
+            if (diff >> i) & 1 == 1 {
+                path.push(i);
             }
         }
-
-        Self { nodes, next_step }
-    }
-}
-
-impl Default for StarGraph {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl StarGraph {
-    pub fn get_path(&self, mut u: usize, v: usize) -> Vec<u8> {
-        let mut path = Vec::new();
-        while u != v {
-            let step = self.next_step[u][v];
-            path.push(step);
-            let next_p = self.nodes[u].swap(step as usize);
-            u = self.nodes.binary_search(&next_p).unwrap();
-        }
         path
+    }
+
+    /// Returns the neighbor of node `u` by flipping the bit at `dimension_idx`.
+    pub fn step(&self, u: usize, dimension_idx: usize) -> usize {
+        u ^ (1 << dimension_idx)
+    }
+}
+
+impl Default for Hypercube {
+    fn default() -> Self {
+        // Default to a 10-dimensional hypercube (1024 nodes) for baseline usage.
+        Self::new(1024)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hypercube_path() {
+        let h = Hypercube::new(100);
+        let u = 0b001; // 1
+        let v = 0b110; // 6
+        let path = h.get_path(u, v);
+        // Path should flip bits at indices 0, 1, 2.
+        assert_eq!(path.len(), 3);
+        assert!(path.contains(&0));
+        assert!(path.contains(&1));
+        assert!(path.contains(&2));
     }
 }

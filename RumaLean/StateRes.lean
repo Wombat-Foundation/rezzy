@@ -85,7 +85,9 @@ def stateResAlgorithm (v : StateResVersion) (unconflictedState : State) (sortedE
 
 /-- Theorem: State Resolution Convergence.
   Because `kahnSort` is deterministic given a strict total order,
-  the final folded state is perfectly convergent across all participants. -/
+  the final folded state is perfectly convergent across all participants.
+  The use of `Finset Event` reflects that state resolution is independent
+  of the physical arrival order of events in the database. -/
 theorem stateres_convergence (v : StateResVersion) (G : DirectedGraph Event)
     [IsDAG G] [DecidableRel G.edges] [LinearOrder Event] (S : Finset Event) (unconflictedState : State) :
     ∀ L1 L2, L1 = kahnSort G S → L2 = kahnSort G S →
