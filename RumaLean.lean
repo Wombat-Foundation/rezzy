@@ -9,6 +9,7 @@ import RumaLean.unstable.StarGraphEmbedding
 import RumaLean.Bitwise
 import RumaLean.Hypercube
 import RumaLean.unstable.GraphComparison
+import RumaLean.Field
 import RumaLean.MergeBase
 import RumaLean.Merkle
 import RumaLean.CustomAIR

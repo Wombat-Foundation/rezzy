@@ -340,7 +340,8 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
 
     if args.benchmark_trace {
         let compiler = ruma_lean::trace_compiler::TraceCompiler::new();
-        let trace = compiler.compile_trace(&conflicted_events, version);
+        // For a full system benchmark, trace all events, not just conflicted ones.
+        let trace = compiler.compile_trace(&events_map, version);
 
         let active_nodes = trace
             .iter()

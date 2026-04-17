@@ -10,7 +10,7 @@ used in the STARK prover. STARKs operate over Finite Fields (like BabyBear),
 which we abstract as a Commutative Ring `F`.
 -/
 
-variable {F : Type} [CommRing F] [IsDomain F]
+variable {F : Type} [CommRing F]
 
 /-!
 ## 1. The Boolean Constraint
@@ -20,7 +20,7 @@ Polynomial: x * (x - 1) = 0
 def is_bool_poly (x : F) : Prop := x * (x - 1) = 0
 
 /-- PROOF OF SOUNDNESS: The polynomial perfectly restricts the value to {0, 1}. -/
-theorem bool_poly_soundness (x : F) : is_bool_poly x ↔ (x = 0 ∨ x = 1) := by
+theorem bool_poly_soundness (x : F) [IsDomain F] : is_bool_poly x ↔ (x = 0 ∨ x = 1) := by
   unfold is_bool_poly
   rw [mul_eq_zero, sub_eq_zero]
 
@@ -34,7 +34,7 @@ def tie_break_poly (is_a_winner a_val b_val : F) : F :=
   is_a_winner * a_val + (1 - is_a_winner) * b_val
 
 /-- PROOF OF SOUNDNESS: The polynomial perfectly acts as an algebraic if/else statement. -/
-theorem tie_break_soundness (is_a_winner a_val b_val : F) (h_bool : is_a_winner = 0 ∨ is_a_winner = 1) :
+theorem tie_break_soundness (is_a_winner a_val b_val : F) :
     (is_a_winner = 1 → tie_break_poly is_a_winner a_val b_val = a_val) ∧
     (is_a_winner = 0 → tie_break_poly is_a_winner a_val b_val = b_val) := by
   constructor
@@ -64,7 +64,7 @@ We define a polynomial that verifies the `Winner` based on these three columns.
 -/
 
 /-- Returns 1 if Event A is strictly superior to Event B based on the hierarchy. -/
-def is_a_winner_poly (pla plb tsa tsb ida idb : F) : F :=
+def is_a_winner_poly (_pla _plb _tsa _tsb _ida _idb : F) : F :=
   -- This is a simplified representation. In a real AIR, this would involve
   -- range proofs (proving X - Y > 0) and multiplexers.
   sorry
@@ -74,7 +74,7 @@ Theorem: Business Logic Soundness.
 We prove that the algebraic tie_break_poly, when given the results of the
 hierarchical comparison, perfectly matches the Matrix Spec V2.1.
 -/
-theorem v21_logic_soundness (pla plb tsa tsb ida idb : F) :
+theorem v21_logic_soundness [LinearOrder F] (pla plb tsa tsb ida idb : F) :
     ∃ (poly : F),
     -- If PL_A > PL_B, then A wins regardless of TS or ID.
     (pla > plb → poly = 1) ∧
