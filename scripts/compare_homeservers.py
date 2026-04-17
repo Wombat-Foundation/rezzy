@@ -9,8 +9,13 @@ import requests
 ROOM_ID = os.environ.get("MATRIX_ROOM_ID_TARGET", "!4zKUu8M4fstFjTFZ9E:nutra.tk")
 TOKEN_DEV = os.environ.get("MATRIX_TOKEN", "").strip('"')
 TOKEN_NIGHTLY = os.environ.get("MATRIX_TOKEN_NIGHTLY", "").strip('"')
+TOKEN_UNREDACTED = os.environ.get("MATRIX_TOKEN_UNREDACTED", "").strip('"')
 
-SERVERS = {"dev": "https://matrix.nutra.tk", "nightly": "https://mdev.nutra.tk"}
+SERVERS = {
+    "dev": "https://matrix.nutra.tk",
+    "nightly": "https://mdev.nutra.tk",
+    "unredacted": "https://matrix.unredacted.org",
+}
 
 
 def fetch_state(server_url, room_id, token):
@@ -57,13 +62,17 @@ def run_ruma_lean(file_path):
 
 
 def main():
-    if not TOKEN_DEV or not TOKEN_NIGHTLY:
+    if not TOKEN_DEV or not TOKEN_NIGHTLY or not TOKEN_UNREDACTED:
         print(
-            "Error: Required environment variables (MATRIX_TOKEN and MATRIX_TOKEN_NIGHTLY) are not set."
+            "Error: Required environment variables (MATRIX_TOKEN, MATRIX_TOKEN_NIGHTLY, and MATRIX_TOKEN_UNREDACTED) are not set."
         )
         sys.exit(1)
 
-    tokens = {"dev": TOKEN_DEV, "nightly": TOKEN_NIGHTLY}
+    tokens = {
+        "dev": TOKEN_DEV,
+        "nightly": TOKEN_NIGHTLY,
+        "unredacted": TOKEN_UNREDACTED,
+    }
 
     states = {}
     for name, url in SERVERS.items():
@@ -75,7 +84,7 @@ def main():
             states[name] = file_path
 
     if len(states) < 2:
-        print("Error: Could not fetch state from both servers.")
+        print("Error: Could not fetch state from at least two servers.")
         return
 
     results = {}
@@ -86,68 +95,91 @@ def main():
     if not all(results.values()):
         return
 
-    print("\n" + "=" * 40)
-    print("      MATRIX FORK ACCURACY ANALYSIS")
-    print("=" * 40)
-    dev_res = results["dev"]
-    nightly_res = results["nightly"]
+    print("\n" + "=" * 50)
+    print("      MATRIX 3-WAY FORK ACCURACY ANALYSIS")
+    print("=" * 50)
 
-    print(f"Dev (nutra.tk) State Size: {dev_res.get('resolved_state_size')}")
-    print(
-        f"Nightly (mdev.nutra.tk) State Size: {nightly_res.get('resolved_state_size')}"
-    )
+    # Calculate unified canonical state
+    print("\nMerging all DAGs to find the mathematically canonical state...")
+    unified_map = {}
+    for name, path in states.items():
+        with open(path, "r") as f:
+            events = json.load(f)
+            for ev in events:
+                unified_map[ev["event_id"]] = ev
 
-    dev_ids = set(dev_res.get("state_event_ids", []))
-    nightly_ids = set(nightly_res.get("state_event_ids", []))
+    unified_path = "res/state_unified_3way.json"
+    with open(unified_path, "w") as f:
+        json.dump(list(unified_map.values()), f)
 
-    only_dev = dev_ids - nightly_ids
-    only_nightly = nightly_ids - dev_ids
+    canonical_res = run_ruma_lean(unified_path)
+    if not canonical_res:
+        return
 
-    if not only_dev and not only_nightly:
-        print("\n[RESULT] Perfect Consensus: Both servers agree exactly.")
-    else:
-        print(f"\n[DISCREPANCY] Fork detected!")
-        print(f" - Events only in Dev: {len(only_dev)}")
-        print(f" - Events only in Nightly: {len(only_nightly)}")
+    canonical_ids = set(canonical_res.get("state_event_ids", []))
+    print(f"Canonical State Size: {len(canonical_ids)}")
 
-        print("\nMerging both DAGs to find the mathematically canonical state...")
+    accuracies = {}
+    for name, res in results.items():
+        server_ids = set(res.get("state_event_ids", []))
+        accuracy = len(server_ids & canonical_ids) / len(canonical_ids) * 100
+        accuracies[name] = accuracy
+        print(f"{name.capitalize()} State Size: {res.get('resolved_state_size')}")
+        print(f"{name.capitalize()} Accuracy:   {accuracy:.2f}%")
 
-        with open(states["dev"], "r") as f:
-            dev_events = json.load(f)
-        with open(states["nightly"], "r") as f:
-            nightly_events = json.load(f)
+    print("\n" + "-" * 50)
+    winner = max(accuracies, key=accuracies.get)
+    print(f"VERDICT: {winner.capitalize()} is the Global Canonical Leader.")
+    print("-" * 50)
 
-        unified_map = {ev["event_id"]: ev for ev in dev_events}
-        for ev in nightly_events:
-            unified_map[ev["event_id"]] = ev
-
-        unified_path = "res/state_unified.json"
-        with open(unified_path, "w") as f:
-            json.dump(list(unified_map.values()), f)
-
-        canonical_res = run_ruma_lean(unified_path)
-        if canonical_res:
-            canonical_ids = set(canonical_res.get("state_event_ids", []))
-            print(f"Canonical State Size: {len(canonical_ids)}")
-
-            dev_accuracy = len(dev_ids & canonical_ids) / len(canonical_ids) * 100
-            nightly_accuracy = (
-                len(nightly_ids & canonical_ids) / len(canonical_ids) * 100
+    # Check for the specific Forestpunk discrepancy
+    # sukidusk6125:matrix.org
+    target_user = "@sukidusk6125:matrix.org"
+    print(f"\nTarget Analysis: {target_user}")
+    for name, path in states.items():
+        with open(path, "r") as f:
+            events = json.load(f)
+            member_ev = next(
+                (
+                    ev
+                    for ev in events
+                    if ev.get("type") == "m.room.member"
+                    and ev.get("state_key") == target_user
+                ),
+                None,
             )
-
-            print(f"Dev Accuracy: {dev_accuracy:.2f}%")
-            print(f"Nightly Accuracy: {nightly_accuracy:.2f}%")
-
-            print("\n" + "-" * 40)
-            if dev_accuracy > nightly_accuracy:
-                print("VERDICT: Dev (nutra.tk) is the Canonical Leader.")
-            elif nightly_accuracy > dev_accuracy:
-                print("VERDICT: Nightly (mdev.nutra.tk) is the Canonical Leader.")
-            else:
+            if member_ev:
                 print(
-                    "VERDICT: Tie. Both servers have diverged equally from the truth."
+                    f" - {name.capitalize()}: {member_ev['content'].get('membership')} (ID: {member_ev['event_id'][:12]}...)"
                 )
-            print("-" * 40)
+            else:
+                print(f" - {name.capitalize()}: MISSING")
+
+    # Canonical view
+    with open(unified_path, "r") as f:
+        all_events = json.load(f)
+        canonical_event_id = next(
+            (
+                eid
+                for eid in canonical_ids
+                if any(
+                    ev["event_id"] == eid
+                    and ev.get("type") == "m.room.member"
+                    and ev.get("state_key") == target_user
+                    for ev in all_events
+                )
+            ),
+            None,
+        )
+        if canonical_event_id:
+            canon_ev = next(
+                ev for ev in all_events if ev["event_id"] == canonical_event_id
+            )
+            print(
+                f" - CANONICAL: {canon_ev['content'].get('membership')} (ID: {canon_ev['event_id'][:12]}...)"
+            )
+        else:
+            print(" - CANONICAL: MISSING")
 
 
 if __name__ == "__main__":
