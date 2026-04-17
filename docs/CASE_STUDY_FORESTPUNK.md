@@ -1,35 +1,38 @@
-# Case Study: The "Forestpunk" Partition
+# Case Study: The "Forestpunk" Consensus Failure
 
 ## The Scenario
 
-In room `!4zKUu8M4fstFjTFZ9E:nutra.tk`, a user known as `forestpunk` (`@sukidusk6125:matrix.org`) was kicked on the **Dev** server, but remained joined on the **Nightly** server. Attempts to re-kick on Nightly resulted in **403 Forbidden** errors, even when performed by a Power Level 100 admin.
+In room `!4zKUu8M4fstFjTFZ9E:nutra.tk`, a "Ghost User" situation occurred.
 
-## The Technical Divergence
+- **Truth (Dev & Unredacted)**: `forestpunk` (@sukidusk6125:matrix.org) was kicked by an admin.
+- **Zombie State (Nightly & Matrix.org)**: The user remains joined. Nightly returns **403 Forbidden** on further kick attempts, effectively "protecting" a user who shouldn't be there.
 
-Using `ruma-lean` to analyze the unified DAG (60 events) from both servers, we identified the exact point of failure:
+## The Technical Failure
 
-| Property        | Dev Server (`nutra.tk`)     | Nightly Server (`mdev.nutra.tk`) |
-| :-------------- | :-------------------------- | :------------------------------- |
-| **Event State** | Kick (`leave`)              | Join (`join`)                    |
-| **Authority**   | Outlier PDU (No Auth Chain) | Self-Signed Join                 |
-| **Resolution**  | Accepted (Local trust)      | **Rejected** (Missing Auth)      |
+A 3-way analysis using `ruma-lean` revealed a profound split between **Human Consensus** and **Partial-DAG Math**:
 
-### The "Outlier Sabotage"
+| Server                            | View           | Status                  |
+| :-------------------------------- | :------------- | :---------------------- |
+| **Dev (`nutra.tk`)**              | Kick (`leave`) | **Correct (Canonical)** |
+| **Unredacted (`unredacted.org`)** | Kick (`leave`) | **Correct (Canonical)** |
+| **Nightly (`mdev.nutra.tk`)**     | Join (`join`)  | **Diverged (Zombie)**   |
+| **Matrix.org**                    | Join (`join`)  | **Diverged (Zombie)**   |
 
-The Dev server served the kick event as an **outlier**, meaning it did not include the `auth_events` or `prev_events` required by the Matrix V2 Spec to verify the sender's permission.
+### Why Nightly/Matrix.org are "Wrong"
 
-Because the Nightly server is a strict enforcer of State Resolution V2, it mathematically rejected the "unauthorized" kick. Without a valid kick to supersede it, the older `join` event remained the canonical truth in Nightly's view.
+Despite holding a majority of the federation's "older" events (the Join), Nightly and Matrix.org are failing to process the **supersession link**.
+
+1.  **The Outlier Bug**: The Kick event was likely served as an "outlier" from Dev.
+2.  **Auth-Chain Blindness**: Because the Zombie servers couldn't verify the power level of the kick at the moment it arrived, they discarded it.
+3.  **The Tie-Break Trap**: In the absence of a valid link, the resolution math defaults to "Lowest Timestamp Wins." Since the Join is older, it "wins" the state, effectively **immortalizing the user**.
 
 ## Why ZK Fixes This
 
-This case study represents the "Goldilocks Zone" for **Zero-Knowledge State Resolution**:
+This is the ultimate proof of why **RumaLean** is necessary:
 
-1.  **Proof-Carrying PDUs**: In a ZK-Matrix protocol, the kick event would be bundled with a tiny STARK proof.
-2.  **Instant Authority**: The Nightly server wouldn't need to "fetch" the missing auth chain to trust the kick. The ZK proof would mathematically guarantee that the kick was authorized by a Power Level 100 admin at the time of sending.
-3.  **Forced Convergence**: Any server receiving the kick would be **forced** to accept it, ensuring that "ghost users" like `forestpunk` can never persist across a network partition.
+- **No Discarding**: A ZK proof included with the Kick would have **forced** Nightly and Matrix.org to accept it instantly, even if they were missing parts of the historical auth chain.
+- **Global Consensus**: With ZK, the "Global Canonical Truth" is established by the math of the Proof, not the timestamp of the event.
 
-## Accuracy Verdict
+## Verdict
 
-- **Nightly** was 96.36% accurate to the _rules_ of the DAG.
-- **Dev** was 100% accurate to the _intent_ of the human admin.
-- **ZK** ensures that **Rules == Intent** across the entire federation.
+**Nightly and Matrix.org have diverged from the federation consensus.** They are technically following the "Older wins ties" rule, but they are doing so because they have "lost" the link to the Kick event that should have superseded it.
