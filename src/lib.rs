@@ -20,7 +20,6 @@ pub mod auth;
 pub mod ctopology;
 pub mod trace_compiler;
 
-#[cfg(not(feature = "zkvm"))]
 use alloc::collections::BTreeSet;
 use alloc::collections::{BTreeMap, BinaryHeap};
 
@@ -326,7 +325,6 @@ pub fn resolve_lean(
 }
 
 /// Result of conflicted subgraph computation with diagnostic info.
-#[cfg(not(feature = "zkvm"))]
 #[derive(Debug, Clone)]
 pub struct SubgraphResult {
     /// The computed conflicted subgraph.
@@ -335,7 +333,6 @@ pub struct SubgraphResult {
     pub missing_auth_events: Vec<String>,
 }
 
-#[cfg(not(feature = "zkvm"))] // ONLY run this on the Host!
 pub fn compute_v2_1_conflicted_subgraph(
     auth_graph: &HashMap<String, LeanEvent>,
     conflicted_set: &[String],
@@ -347,7 +344,6 @@ pub fn compute_v2_1_conflicted_subgraph(
 /// `max_auth_depth`: If set, limits backwards traversal depth to prevent
 /// history-flooding DoS attacks where a rogue admin generates millions of
 /// spoofed events on a dead-end fork.
-#[cfg(not(feature = "zkvm"))]
 pub fn compute_v2_1_conflicted_subgraph_bounded(
     auth_graph: &HashMap<String, LeanEvent>,
     conflicted_set: &[String],
@@ -1521,7 +1517,6 @@ mod tests {
         assert_eq!(sorted[999], "ev_999");
     }
 
-    #[cfg(not(feature = "zkvm"))]
     #[test]
     fn test_subgraph_bounded_depth() {
         // Chain: A <- B <- C <- D (all in conflicted set for proper subgraph)
@@ -1567,7 +1562,6 @@ mod tests {
         assert!(!bounded.subgraph.contains_key("B"));
     }
 
-    #[cfg(not(feature = "zkvm"))]
     #[test]
     fn test_subgraph_missing_auth_detection() {
         let mut graph = HashMap::new();
