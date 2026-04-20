@@ -13,3 +13,4 @@ import RumaLean.Field
 import RumaLean.MergeBase
 import RumaLean.Merkle
 import RumaLean.CustomAIR
+import RumaLean.AuthRules

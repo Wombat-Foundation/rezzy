@@ -16,6 +16,7 @@
 
 extern crate alloc;
 
+pub mod auth;
 pub mod ctopology;
 pub mod trace_compiler;
 
@@ -48,6 +49,75 @@ pub enum StateResVersion {
     V2_1,
 }
 
+/// Result of Kahn's topological sort with diagnostic information.
+#[derive(Debug, Clone)]
+pub enum KahnSortResult {
+    /// All events were successfully sorted.
+    Ok(Vec<String>),
+    /// A cycle was detected. `sorted` contains the partial ordering of events
+    /// that could be processed, `stuck` contains events that could not reach
+    /// in-degree 0 (involved in cycles).
+    CycleDetected {
+        sorted: Vec<String>,
+        stuck: Vec<String>,
+    },
+}
+
+impl KahnSortResult {
+    /// Returns the sorted event IDs, or an empty vec if a cycle was detected.
+    /// This preserves backward compatibility with the old API.
+    pub fn into_sorted(self) -> Vec<String> {
+        match self {
+            KahnSortResult::Ok(v) => v,
+            KahnSortResult::CycleDetected { .. } => Vec::new(),
+        }
+    }
+
+    /// Returns true if sorting completed without cycles.
+    pub fn is_ok(&self) -> bool {
+        matches!(self, KahnSortResult::Ok(_))
+    }
+}
+
+/// Synapse-compatible power level deserialization.
+/// Handles integer (100), string ("100"), and float (100.0) representations.
+fn deserialize_power_level<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct PowerLevelVisitor;
+
+    impl<'de> de::Visitor<'de> for PowerLevelVisitor {
+        type Value = i64;
+
+        fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+            formatter.write_str("an integer, float, or string representation of a power level")
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<i64, E> {
+            Ok(v)
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<i64, E> {
+            Ok(v as i64)
+        }
+
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<i64, E> {
+            Ok(v as i64)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<i64, E> {
+            Ok(v.parse::<i64>()
+                .or_else(|_| v.parse::<f64>().map(|f| f as i64))
+                .unwrap_or(0))
+        }
+    }
+
+    deserializer.deserialize_any(PowerLevelVisitor)
+}
+
 /// A lightweight Matrix Event representation for Lean-equivalent resolution.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LeanEvent {
@@ -56,7 +126,7 @@ pub struct LeanEvent {
     pub event_type: String,
     #[serde(default)]
     pub state_key: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_power_level")]
     pub power_level: i64,
     pub origin_server_ts: u64,
     #[serde(default)]
@@ -152,11 +222,13 @@ impl<'a> PartialOrd for SortPriority<'a> {
     }
 }
 
-/// A simplified implementation of Kahn's Topological Sort.
-pub fn lean_kahn_sort(
+/// Kahn's Topological Sort with full diagnostic output.
+/// Returns a `KahnSortResult` that distinguishes between successful sorts
+/// and cycle detection, providing the stuck set for debugging.
+pub fn lean_kahn_sort_detailed(
     events: &HashMap<String, LeanEvent>,
     version: StateResVersion,
-) -> Vec<String> {
+) -> KahnSortResult {
     let mut in_degree: HashMap<String, usize> = HashMap::new();
     let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -197,13 +269,30 @@ pub fn lean_kahn_sort(
         }
     }
 
-    // Failsafe: If the result length doesn't match the input length, there is a cycle in the DAG.
-    // Matrix spec mandates failure.
+    // Detect cycles: events that never reached in-degree 0.
     if result.len() != events.len() {
-        return Vec::new();
+        let sorted_set: alloc::collections::BTreeSet<&String> = result.iter().collect();
+        let stuck: Vec<String> = events
+            .keys()
+            .filter(|id| !sorted_set.contains(id))
+            .cloned()
+            .collect();
+        return KahnSortResult::CycleDetected {
+            sorted: result,
+            stuck,
+        };
     }
 
-    result
+    KahnSortResult::Ok(result)
+}
+
+/// A simplified implementation of Kahn's Topological Sort.
+/// Backward-compatible wrapper that returns an empty Vec on cycles.
+pub fn lean_kahn_sort(
+    events: &HashMap<String, LeanEvent>,
+    version: StateResVersion,
+) -> Vec<String> {
+    lean_kahn_sort_detailed(events, version).into_sorted()
 }
 
 pub fn resolve_lean(
@@ -236,20 +325,56 @@ pub fn resolve_lean(
     resolved
 }
 
+/// Result of conflicted subgraph computation with diagnostic info.
+#[cfg(not(feature = "zkvm"))]
+#[derive(Debug, Clone)]
+pub struct SubgraphResult {
+    /// The computed conflicted subgraph.
+    pub subgraph: HashMap<String, LeanEvent>,
+    /// Auth events referenced but not found in the graph (permanently lost to federation).
+    pub missing_auth_events: Vec<String>,
+}
+
 #[cfg(not(feature = "zkvm"))] // ONLY run this on the Host!
 pub fn compute_v2_1_conflicted_subgraph(
     auth_graph: &HashMap<String, LeanEvent>,
     conflicted_set: &[String],
 ) -> HashMap<String, LeanEvent> {
+    compute_v2_1_conflicted_subgraph_bounded(auth_graph, conflicted_set, None).subgraph
+}
+
+/// Bounded version of conflicted subgraph computation.
+/// `max_auth_depth`: If set, limits backwards traversal depth to prevent
+/// history-flooding DoS attacks where a rogue admin generates millions of
+/// spoofed events on a dead-end fork.
+#[cfg(not(feature = "zkvm"))]
+pub fn compute_v2_1_conflicted_subgraph_bounded(
+    auth_graph: &HashMap<String, LeanEvent>,
+    conflicted_set: &[String],
+    max_auth_depth: Option<usize>,
+) -> SubgraphResult {
     let mut backwards_reachable = BTreeSet::new();
     let mut forwards_reachable = BTreeSet::new();
+    let mut missing_auth_events = BTreeSet::new();
 
     // 1. Calculate Backwards Reachable (Ancestors up the auth chain)
-    let mut b_stack: Vec<String> = conflicted_set.to_vec();
-    while let Some(node) = b_stack.pop() {
+    // Each entry is (event_id, depth_from_conflicted_set)
+    let mut b_stack: Vec<(String, usize)> = conflicted_set.iter().map(|s| (s.clone(), 0)).collect();
+    while let Some((node, depth)) = b_stack.pop() {
+        // Anti-DoS: stop expanding beyond max depth
+        if let Some(max_depth) = max_auth_depth {
+            if depth > max_depth {
+                continue;
+            }
+        }
         if backwards_reachable.insert(node.clone()) {
             if let Some(event) = auth_graph.get(&node) {
-                b_stack.extend(event.auth_events.clone());
+                for auth_id in &event.auth_events {
+                    if !auth_graph.contains_key(auth_id) {
+                        missing_auth_events.insert(auth_id.clone());
+                    }
+                    b_stack.push((auth_id.clone(), depth + 1));
+                }
             }
         }
     }
@@ -285,7 +410,11 @@ pub fn compute_v2_1_conflicted_subgraph(
             subgraph.insert(id.clone(), event.clone());
         }
     }
-    subgraph
+
+    SubgraphResult {
+        subgraph,
+        missing_auth_events: missing_auth_events.into_iter().collect(),
+    }
 }
 
 #[cfg(feature = "zkvm")]
@@ -1231,5 +1360,230 @@ mod tests {
         };
         assert_eq!(p_v1_base.cmp(&p_v1_early_id), Ordering::Less);
         assert_eq!(p_v1_base.cmp(&p_v1_base), Ordering::Equal);
+    }
+
+    // ========================================================================
+    // Phase 2: Battle-Hardening Tests
+    // ========================================================================
+
+    #[test]
+    fn test_cycle_detection_detailed() {
+        let mut events = HashMap::new();
+        events.insert(
+            "A".into(),
+            LeanEvent {
+                event_id: "A".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
+                auth_events: vec!["B".into()],
+                ..Default::default()
+            },
+        );
+        events.insert(
+            "B".into(),
+            LeanEvent {
+                event_id: "B".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
+                auth_events: vec!["A".into()],
+                ..Default::default()
+            },
+        );
+        let result = lean_kahn_sort_detailed(&events, StateResVersion::V2);
+        match result {
+            KahnSortResult::CycleDetected { sorted, stuck } => {
+                assert!(sorted.is_empty());
+                assert_eq!(stuck.len(), 2);
+                let mut stuck_sorted = stuck.clone();
+                stuck_sorted.sort();
+                assert_eq!(stuck_sorted, vec!["A", "B"]);
+            }
+            KahnSortResult::Ok(_) => panic!("Expected cycle detection"),
+        }
+    }
+
+    #[test]
+    fn test_cycle_detection_partial_sort() {
+        // C -> A -> B -> A (cycle), but C is reachable
+        let mut events = HashMap::new();
+        events.insert(
+            "C".into(),
+            LeanEvent {
+                event_id: "C".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
+                auth_events: vec![],
+                ..Default::default()
+            },
+        );
+        events.insert(
+            "A".into(),
+            LeanEvent {
+                event_id: "A".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
+                auth_events: vec!["B".into(), "C".into()],
+                ..Default::default()
+            },
+        );
+        events.insert(
+            "B".into(),
+            LeanEvent {
+                event_id: "B".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
+                auth_events: vec!["A".into()],
+                ..Default::default()
+            },
+        );
+        let result = lean_kahn_sort_detailed(&events, StateResVersion::V2);
+        match result {
+            KahnSortResult::CycleDetected { sorted, stuck } => {
+                assert_eq!(sorted, vec!["C"]);
+                assert_eq!(stuck.len(), 2);
+            }
+            KahnSortResult::Ok(_) => panic!("Expected cycle detection"),
+        }
+    }
+
+    #[test]
+    fn test_kahn_sort_result_api() {
+        let ok = KahnSortResult::Ok(vec!["A".into()]);
+        assert!(ok.is_ok());
+        assert_eq!(ok.into_sorted(), vec!["A"]);
+
+        let cycle = KahnSortResult::CycleDetected {
+            sorted: vec!["C".into()],
+            stuck: vec!["A".into(), "B".into()],
+        };
+        assert!(!cycle.is_ok());
+        assert!(cycle.into_sorted().is_empty());
+    }
+
+    #[test]
+    fn test_power_level_coercion_integer() {
+        let json = r#"{"event_id": "$1", "type": "m.room.member", "origin_server_ts": 1, "power_level": 100}"#;
+        let ev: LeanEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(ev.power_level, 100);
+    }
+
+    #[test]
+    fn test_power_level_coercion_string() {
+        let json = r#"{"event_id": "$1", "type": "m.room.member", "origin_server_ts": 1, "power_level": "100"}"#;
+        let ev: LeanEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(ev.power_level, 100);
+    }
+
+    #[test]
+    fn test_power_level_coercion_float() {
+        let json = r#"{"event_id": "$1", "type": "m.room.member", "origin_server_ts": 1, "power_level": 100.0}"#;
+        let ev: LeanEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(ev.power_level, 100);
+    }
+
+    #[test]
+    fn test_power_level_coercion_invalid_string() {
+        let json = r#"{"event_id": "$1", "type": "m.room.member", "origin_server_ts": 1, "power_level": "abc"}"#;
+        let ev: LeanEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(ev.power_level, 0);
+    }
+
+    #[test]
+    fn test_deep_chain_stack_safety() {
+        // 1000-event deep chain: ev_0 <- ev_1 <- ev_2 <- ... <- ev_999
+        let mut events = HashMap::new();
+        for i in 0..1000u32 {
+            let id = alloc::format!("ev_{}", i);
+            let auth = if i > 0 {
+                vec![alloc::format!("ev_{}", i - 1)]
+            } else {
+                vec![]
+            };
+            events.insert(
+                id.clone(),
+                LeanEvent {
+                    event_id: id,
+                    event_type: "m.room.member".into(),
+                    state_key: "@alice:example.com".into(),
+                    power_level: 100,
+                    origin_server_ts: i as u64,
+                    auth_events: auth,
+                    depth: i as u64,
+                    ..Default::default()
+                },
+            );
+        }
+        let sorted = lean_kahn_sort(&events, StateResVersion::V2);
+        assert_eq!(sorted.len(), 1000);
+        // First element must be ev_0 (in-degree 0)
+        assert_eq!(sorted[0], "ev_0");
+        // Last element must be ev_999 (deepest)
+        assert_eq!(sorted[999], "ev_999");
+    }
+
+    #[cfg(not(feature = "zkvm"))]
+    #[test]
+    fn test_subgraph_bounded_depth() {
+        // Chain: A <- B <- C <- D (all in conflicted set for proper subgraph)
+        let mut graph = HashMap::new();
+        for (id, auths) in [
+            ("A", vec![]),
+            ("B", vec!["A"]),
+            ("C", vec!["B"]),
+            ("D", vec!["C"]),
+        ] {
+            graph.insert(
+                id.to_string(),
+                LeanEvent {
+                    event_id: id.into(),
+                    event_type: "m.room.member".into(),
+                    state_key: "@alice:example.com".into(),
+                    auth_events: auths.iter().map(|s| s.to_string()).collect(),
+                    ..Default::default()
+                },
+            );
+        }
+        // Unbounded with A and D as conflicted: full intersection includes all
+        let full = compute_v2_1_conflicted_subgraph_bounded(
+            &graph,
+            &["A".to_string(), "D".to_string()],
+            None,
+        );
+        assert!(full.subgraph.contains_key("A"));
+        assert!(full.subgraph.contains_key("D"));
+
+        // Bounded to depth 1: backwards from D only reaches C (depth 1),
+        // so the backwards set is {A, D, C} (A + D from seeds, C from D's auth).
+        // But A is not reachable forward from any of these at depth 1 only.
+        let bounded = compute_v2_1_conflicted_subgraph_bounded(
+            &graph,
+            &["A".to_string(), "D".to_string()],
+            Some(1),
+        );
+        // D at depth 0, C at depth 1 from D's backwards walk
+        assert!(bounded.subgraph.contains_key("D"));
+        assert!(bounded.subgraph.contains_key("A"));
+        // B is NOT reachable within depth 1 from D (it's at depth 2)
+        assert!(!bounded.subgraph.contains_key("B"));
+    }
+
+    #[cfg(not(feature = "zkvm"))]
+    #[test]
+    fn test_subgraph_missing_auth_detection() {
+        let mut graph = HashMap::new();
+        graph.insert(
+            "X".to_string(),
+            LeanEvent {
+                event_id: "X".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
+                auth_events: vec!["MISSING_1".into(), "MISSING_2".into()],
+                ..Default::default()
+            },
+        );
+        let result = compute_v2_1_conflicted_subgraph_bounded(&graph, &["X".to_string()], None);
+        let mut missing = result.missing_auth_events.clone();
+        missing.sort();
+        assert_eq!(missing, vec!["MISSING_1", "MISSING_2"]);
     }
 }
