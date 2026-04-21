@@ -472,3 +472,89 @@ fn test_real_room_v2_1_deserialization() {
         events.len()
     );
 }
+
+// ============================================================================
+// Real Room DAGs from conduwuit RocksDB (full auth_events + prev_events)
+// ============================================================================
+
+fn load_real_dag(path: &str) -> Vec<LeanEvent> {
+    let content = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("Missing {path}"));
+    let data: serde_json::Value = serde_json::from_str(&content).unwrap();
+    serde_json::from_value(data["events"].clone()).unwrap()
+}
+
+#[test]
+fn test_real_dag_52k_room_deserialization() {
+    let events = load_real_dag("res/real_dag_52k_room.json");
+    assert_eq!(events.len(), 10000);
+    // Every event should have auth_events (except possibly create)
+    let with_auth = events.iter().filter(|e| !e.auth_events.is_empty()).count();
+    assert!(
+        with_auth > 9990,
+        "Should have ~10K events with auth_events, got {}",
+        with_auth
+    );
+}
+
+#[test]
+fn test_real_dag_52k_room_sort() {
+    let events = load_real_dag("res/real_dag_52k_room.json");
+    let sorted = sort_and_verify(&events, StateResVersion::V2);
+    assert_eq!(sorted.len(), 10000);
+}
+
+#[test]
+fn test_real_dag_52k_room_v2_1_sort() {
+    let events = load_real_dag("res/real_dag_52k_room.json");
+    let sorted = sort_and_verify(&events, StateResVersion::V2_1);
+    assert_eq!(sorted.len(), 10000);
+}
+
+#[test]
+fn test_real_dag_52k_room_resolution() {
+    let events = load_real_dag("res/real_dag_52k_room.json");
+    let map = to_event_map(&events);
+    let resolved = resolve_lean(BTreeMap::new(), map, StateResVersion::V2);
+    assert!(!resolved.is_empty(), "Resolution should produce state");
+    // Determinism check
+    let events2 = load_real_dag("res/real_dag_52k_room.json");
+    let map2 = to_event_map(&events2);
+    let resolved2 = resolve_lean(BTreeMap::new(), map2, StateResVersion::V2);
+    assert_eq!(resolved, resolved2, "Resolution must be deterministic");
+}
+
+#[test]
+fn test_real_dag_nheko_room_sort() {
+    let events = load_real_dag("res/real_dag_nheko.json");
+    assert_eq!(events.len(), 6000);
+    let sorted = sort_and_verify(&events, StateResVersion::V2);
+    assert_eq!(sorted.len(), 6000);
+}
+
+#[test]
+fn test_real_dag_nheko_room_106_heads() {
+    // This room has 106 DAG heads — a real federation mess
+    let events = load_real_dag("res/real_dag_nheko.json");
+    let event_map = to_event_map(&events);
+
+    // Compute heads: events not referenced by any prev_events
+    let mut referenced = std::collections::HashSet::new();
+    for ev in &events {
+        for prev in &ev.prev_events {
+            referenced.insert(prev.clone());
+        }
+    }
+    let heads: Vec<_> = events
+        .iter()
+        .filter(|e| !referenced.contains(&e.event_id))
+        .collect();
+    assert!(
+        heads.len() > 50,
+        "Nheko room should have 50+ DAG heads (federation forks), got {}",
+        heads.len()
+    );
+
+    // Resolution must still complete on this messy DAG
+    let resolved = resolve_lean(BTreeMap::new(), event_map, StateResVersion::V2);
+    assert!(!resolved.is_empty(), "Resolution should produce state");
+}
