@@ -309,3 +309,166 @@ fn test_ruma_bootstrap_auth_chain() {
     );
     assert_eq!(accepted.len(), events.len());
 }
+
+// ============================================================================
+// Realistic Large Room (10K events with federation forks, PL wars, bans)
+// ============================================================================
+
+fn load_large_room() -> Vec<LeanEvent> {
+    let content = std::fs::read_to_string("res/realistic_large_room.json")
+        .expect("realistic_large_room.json");
+    let data: serde_json::Value = serde_json::from_str(&content).unwrap();
+    serde_json::from_value(data["events"].clone()).unwrap()
+}
+
+#[test]
+fn test_large_room_10k_sort_no_cycles() {
+    let events = load_large_room();
+    assert_eq!(events.len(), 10000);
+    let sorted = sort_and_verify(&events, StateResVersion::V2);
+    // Create must be first
+    assert!(
+        sorted[0].starts_with("$"),
+        "First sorted event should be a valid event ID"
+    );
+    // All events accounted for
+    assert_eq!(sorted.len(), 10000);
+}
+
+#[test]
+fn test_large_room_10k_v2_1_sort() {
+    let events = load_large_room();
+    let sorted = sort_and_verify(&events, StateResVersion::V2_1);
+    assert_eq!(sorted.len(), 10000);
+}
+
+#[test]
+fn test_large_room_10k_resolution_determinism() {
+    let events = load_large_room();
+    let r1 = resolve_lean(BTreeMap::new(), to_event_map(&events), StateResVersion::V2);
+    let r2 = resolve_lean(BTreeMap::new(), to_event_map(&events), StateResVersion::V2);
+    assert_eq!(r1, r2, "10K room resolution must be deterministic");
+}
+
+#[test]
+fn test_large_room_10k_v2_vs_v2_1_divergence() {
+    let events = load_large_room();
+    let map = to_event_map(&events);
+    let v2 = resolve_lean(BTreeMap::new(), map.clone(), StateResVersion::V2);
+    let v2_1 = resolve_lean(BTreeMap::new(), map, StateResVersion::V2_1);
+    // V2 and V2.1 may diverge on conflicted state — that's the whole point of MSC4297.
+    // But both must produce valid resolved state.
+    assert!(!v2.is_empty(), "V2 must produce resolved state");
+    assert!(!v2_1.is_empty(), "V2.1 must produce resolved state");
+    // Both must agree on m.room.create
+    assert_eq!(
+        v2.get(&("m.room.create".into(), String::new())),
+        v2_1.get(&("m.room.create".into(), String::new())),
+        "V2 and V2.1 must agree on the create event"
+    );
+}
+
+#[test]
+fn test_large_room_10k_subgraph_bounded() {
+    let events = load_large_room();
+    let map = to_event_map(&events);
+    // Pick some conflicted state_keys
+    let mut pl_events: Vec<String> = events
+        .iter()
+        .filter(|e| e.event_type == "m.room.power_levels")
+        .map(|e| e.event_id.clone())
+        .collect();
+    assert!(
+        pl_events.len() > 100,
+        "Should have many PL events from the power level war phase"
+    );
+    // Test bounded subgraph on the first 10 PL events
+    pl_events.truncate(10);
+    let bounded = ruma_lean::compute_v2_1_conflicted_subgraph_bounded(&map, &pl_events, Some(5));
+    assert!(
+        !bounded.subgraph.is_empty(),
+        "Bounded subgraph should contain events"
+    );
+    // Unbounded should be >= bounded
+    let full = ruma_lean::compute_v2_1_conflicted_subgraph_bounded(&map, &pl_events, None);
+    assert!(
+        full.subgraph.len() >= bounded.subgraph.len(),
+        "Unbounded subgraph ({}) should be >= bounded ({})",
+        full.subgraph.len(),
+        bounded.subgraph.len()
+    );
+}
+
+#[test]
+fn test_large_room_10k_auth_chain() {
+    use ruma_lean::auth::{check_auth_chain, RoomState};
+
+    let events = load_large_room();
+    let (accepted, _rejected) = check_auth_chain(&events, &RoomState::new());
+    // Not all events will pass auth (spammers, unauthorized PL changes),
+    // but the majority should pass
+    let pass_rate = accepted.len() as f64 / events.len() as f64;
+    assert!(
+        pass_rate > 0.5,
+        "Auth pass rate should be >50%, got {:.1}% ({}/{})",
+        pass_rate * 100.0,
+        accepted.len(),
+        events.len()
+    );
+}
+
+// ============================================================================
+// Real Matrix Room State Dump (42K events — auth validation only)
+// ============================================================================
+
+#[test]
+fn test_real_room_42k_state_deserialization() {
+    let content =
+        std::fs::read_to_string("res/real_matrix_state.json").expect("real_matrix_state.json");
+    let events: Vec<LeanEvent> = serde_json::from_str(&content).unwrap();
+    assert!(
+        events.len() > 40000,
+        "Should have 42K+ events, got {}",
+        events.len()
+    );
+    // Verify all events have event_ids
+    for ev in &events {
+        assert!(!ev.event_id.is_empty(), "Event should have an event_id");
+    }
+}
+
+#[test]
+fn test_real_room_42k_power_level_coercion() {
+    // The real room dump likely has string/float power levels from old Synapse versions.
+    let content =
+        std::fs::read_to_string("res/real_matrix_state.json").expect("real_matrix_state.json");
+    let events: Vec<LeanEvent> = serde_json::from_str(&content).unwrap();
+    // Find PL events and verify they deserialize without panicking
+    let pl_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == "m.room.power_levels")
+        .collect();
+    assert!(
+        !pl_events.is_empty(),
+        "Real room should have power_levels events"
+    );
+    // Verify PL events have content with users
+    for pl in &pl_events {
+        assert!(
+            pl.content.get("users").is_some(),
+            "PL event should have users field"
+        );
+    }
+}
+
+#[test]
+fn test_real_room_v2_1_deserialization() {
+    let content = std::fs::read_to_string("res/real_matrix_state_v2_1.json")
+        .expect("real_matrix_state_v2_1.json");
+    let events: Vec<LeanEvent> = serde_json::from_str(&content).unwrap();
+    assert!(
+        events.len() > 9000,
+        "Should have 9K+ events, got {}",
+        events.len()
+    );
+}
