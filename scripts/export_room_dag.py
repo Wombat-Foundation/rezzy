@@ -44,7 +44,9 @@ import urllib.error
 import urllib.request
 from urllib.parse import quote, urlencode
 
-MATRIX_SERVER = os.environ.get("MATRIX_SERVER", "")
+MATRIX_SERVER = os.environ.get("MATRIX_SERVER", "") or os.environ.get(
+    "MATRIX_HOMESERVER", ""
+)
 MATRIX_TOKEN = os.environ.get("MATRIX_TOKEN", "")
 
 # Known "Boss Battle" rooms from the gap document

@@ -109,16 +109,26 @@ publish: ##H Preview package file list and simulate a dry-run publish
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .PHONY: fixtures
-fixtures: ##H Generate synthetic data and fetch matrix state if MATRIX_TOKEN is set
-	@mkdir -p res
-	test -f res/benchmark_1k.json || python3 scripts/generate_benchmark_1k.py
-	test -f res/realistic_large_room.json || python3 scripts/gen_large_room.py
-	if [ -f .env ]; then set -a && source .env; fi; \
+fixtures: ##H Generate synthetic data and fetch real DAG exports if MATRIX_TOKEN is set
+	@mkdir -p res res/expected
+	@test -f res/benchmark_1k.json || python3 scripts/generate_benchmark_1k.py
+	@test -f res/realistic_large_room.json || python3 scripts/gen_large_room.py
+	@if [ -f .env ]; then set -a && source .env; fi; \
+	if [ -f ../.env ]; then set -a && source ../.env; fi; \
 	if [ -n "$$MATRIX_TOKEN" ]; then \
-		echo "Attempting to fetch live matrix state..."; \
-		python3 scripts/fetch_matrix_state.py || echo "Warning: Fetch failed, continuing..."; \
+		test -f res/real_dag_52k_room.json || \
+			python3 scripts/export_from_db.py '!da26JtAjE6APGLnX8ncWsvc-skF2KQZ9Nw_MbNpYD2k' \
+				--limit 10000 -o res/real_dag_52k_room.json; \
+		test -f res/real_dag_nheko.json || \
+			python3 scripts/export_from_db.py '!UbCmIlGTHNIgIRZcpt:nheko.im' \
+				--limit 6000 -o res/real_dag_nheko.json; \
+		test -f res/real_matrix_state_v2_1.json || \
+			python3 scripts/fetch_matrix_state.py || echo "Warning: v2.1 fetch failed"; \
+		test -f res/real_matrix_state.json || \
+			python3 scripts/fetch_matrix_state.py || echo "Warning: state fetch failed"; \
 	else \
 		echo "No MATRIX_TOKEN found, skipping live fetch."; \
+		echo "  Set MATRIX_TOKEN and MATRIX_SERVER in .env to generate real DAG fixtures."; \
 	fi
 
 
