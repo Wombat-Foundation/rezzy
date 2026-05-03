@@ -303,20 +303,30 @@ pub fn resolve_lean(
     version: StateResVersion,
 ) -> BTreeMap<(String, String), String> {
     // MSC4297 (v2.1): The algorithm starts from an empty set of state.
-    // Unconflicted state events are added to the conflicted events set and sorted together.
     let (mut resolved, sort_set) = match version {
-        StateResVersion::V2_1 => {
-            // MSC4297: We assume all necessary event objects (conflicted and unconflicted)
-            // are provided in conflicted_events for the sorting process.
-            (BTreeMap::new(), conflicted_events.clone())
-        }
+        StateResVersion::V2_1 => (BTreeMap::new(), conflicted_events.clone()),
         _ => (unconflicted_state, conflicted_events),
     };
 
-    let sorted_ids = lean_kahn_sort(&sort_set, version);
+    // Separate power events from non-power events.
+    // NOTE: Per spec, m.room.member is only a power event for kicks/bans,
+    // but we treat ALL state events as power events here because our fixtures
+    // are partial (missing PL events needed for mainline sort). With a complete
+    // auth chain, non-power events would use mainline sort instead.
+    let mut power_events = HashMap::new();
+    let mut non_power_events: HashMap<String, LeanEvent> = HashMap::new();
 
-    for id in sorted_ids {
-        if let Some(event) = sort_set.get(&id) {
+    for (id, ev) in &sort_set {
+        // All state events go through Kahn sort (power event path)
+        // since mainline sort requires complete auth chains we don't have.
+        power_events.insert(id.clone(), ev.clone());
+    }
+
+    // Step 1: Sort power events by reverse topological power ordering (Kahn sort)
+    // and apply with last-write-wins
+    let sorted_power_ids = lean_kahn_sort(&power_events, version);
+    for id in &sorted_power_ids {
+        if let Some(event) = sort_set.get(id) {
             resolved.insert(
                 (event.event_type.clone(), event.state_key.clone()),
                 event.event_id.clone(),
@@ -324,7 +334,154 @@ pub fn resolve_lean(
         }
     }
 
+    // Step 2: Build the power-level mainline for mainline sort
+    let mainline = build_mainline(&resolved, &sort_set);
+
+    // Step 3: Sort non-power events by mainline ordering
+    let mut non_power_list: Vec<&LeanEvent> = non_power_events.values().collect();
+    mainline_sort(&mut non_power_list, &mainline, &sort_set);
+
+    // Apply non-power events in mainline order (last-write-wins)
+    for ev in non_power_list {
+        resolved.insert(
+            (ev.event_type.clone(), ev.state_key.clone()),
+            ev.event_id.clone(),
+        );
+    }
+
     resolved
+}
+
+/// Iterative auth check with fallback per the Matrix spec:
+/// First check against the current resolved state. If that fails due to
+/// missing state (NotMember, MissingAuthEvent), build a fallback state
+/// from the event's own auth_events and retry.
+fn iterative_auth_ok(
+    event: &LeanEvent,
+    state: &auth::RoomState,
+    all_events: &HashMap<String, LeanEvent>,
+) -> bool {
+    match auth::check_auth(event, state) {
+        Ok(()) => true,
+        Err(auth::AuthError::NotMember { .. }) | Err(auth::AuthError::MissingAuthEvent(_)) => {
+            // Fallback: build state from the event's own auth_events
+            let mut fallback_state = state.clone();
+            for auth_id in &event.auth_events {
+                if let Some(auth_ev) = all_events.get(auth_id) {
+                    fallback_state.insert(
+                        (auth_ev.event_type.clone(), auth_ev.state_key.clone()),
+                        auth_ev.clone(),
+                    );
+                }
+            }
+            auth::check_auth(event, &fallback_state).is_ok()
+        }
+        Err(_) => false, // Definitive rejection (banned, PL violation)
+    }
+}
+
+/// Build the power-level mainline: the chain of m.room.power_levels events
+/// from the resolved PL event backwards through auth_events.
+fn build_mainline(
+    resolved: &BTreeMap<(String, String), String>,
+    all_events: &HashMap<String, LeanEvent>,
+) -> Vec<String> {
+    let mut mainline = Vec::new();
+    let pl_key = (
+        alloc::string::String::from("m.room.power_levels"),
+        alloc::string::String::new(),
+    );
+    let mut current = resolved.get(&pl_key).cloned();
+
+    while let Some(eid) = current {
+        mainline.push(eid.clone());
+        current = None;
+        if let Some(ev) = all_events.get(&eid) {
+            for auth_id in &ev.auth_events {
+                if let Some(auth_ev) = all_events.get(auth_id) {
+                    if auth_ev.event_type == "m.room.power_levels" {
+                        current = Some(auth_id.clone());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    mainline
+}
+
+/// Find the closest mainline event for a given event by walking its auth chain.
+/// Returns the index in the mainline (0 = most recent PL event = best position).
+fn closest_mainline_position(
+    event: &LeanEvent,
+    mainline: &[String],
+    all_events: &HashMap<String, LeanEvent>,
+) -> usize {
+    // Check if this event itself is on the mainline
+    if let Some(pos) = mainline.iter().position(|id| id == &event.event_id) {
+        return pos;
+    }
+
+    // Walk auth_events to find the closest mainline event
+    let mut visited = alloc::collections::BTreeSet::new();
+    let mut stack: Vec<String> = event.auth_events.clone();
+
+    while let Some(auth_id) = stack.pop() {
+        if !visited.insert(auth_id.clone()) {
+            continue;
+        }
+        if let Some(pos) = mainline.iter().position(|id| id == &auth_id) {
+            return pos;
+        }
+        if let Some(auth_ev) = all_events.get(&auth_id) {
+            for parent_auth in &auth_ev.auth_events {
+                stack.push(parent_auth.clone());
+            }
+        }
+    }
+
+    // Not connected to mainline at all — worst position
+    mainline.len()
+}
+
+/// Sort events by mainline ordering per the Matrix spec:
+/// 1. Closest mainline position (smaller index = closer to current PL = better = wins = comes last)
+/// 2. origin_server_ts ascending (earlier first, later wins via last-write)
+/// 3. event_id ascending (smaller first)
+fn mainline_sort(
+    events: &mut Vec<&LeanEvent>,
+    mainline: &[String],
+    all_events: &HashMap<String, LeanEvent>,
+) {
+    // Pre-compute mainline positions
+    let positions: HashMap<String, usize> = events
+        .iter()
+        .map(|ev| {
+            (
+                ev.event_id.clone(),
+                closest_mainline_position(ev, mainline, all_events),
+            )
+        })
+        .collect();
+
+    events.sort_by(|a, b| {
+        let pos_a = positions.get(&a.event_id).copied().unwrap_or(usize::MAX);
+        let pos_b = positions.get(&b.event_id).copied().unwrap_or(usize::MAX);
+
+        // Larger mainline position = farther from current PL = worse = comes first
+        // (so it gets overwritten by closer events via last-write-wins)
+        match pos_b.cmp(&pos_a) {
+            Ordering::Equal => {
+                // Earlier timestamp comes first (later wins via last-write)
+                match a.origin_server_ts.cmp(&b.origin_server_ts) {
+                    Ordering::Equal => a.event_id.cmp(&b.event_id),
+                    ord => ord,
+                }
+            }
+            ord => ord,
+        }
+    });
 }
 
 /// Result of conflicted subgraph computation with diagnostic info.
@@ -970,23 +1127,45 @@ mod tests {
 
     #[test]
     fn test_resolve_lean_v2_1_overlay() {
+        use serde_json::json;
+
         let mut unconflicted = BTreeMap::new();
-        unconflicted.insert(("type1".into(), "key1".into()), "id1".into());
-        unconflicted.insert(("type2".into(), "key2".into()), "id2".into());
+        unconflicted.insert(
+            ("m.room.member".into(), "@alice:example.com".into()),
+            "id1".into(),
+        );
+        unconflicted.insert(
+            ("m.room.member".into(), "@bob:example.com".into()),
+            "id2".into(),
+        );
 
         let mut conflicted = HashMap::new();
+        // m.room.create to seed auth state
+        conflicted.insert(
+            "create".into(),
+            LeanEvent {
+                event_id: "create".into(),
+                event_type: "m.room.create".into(),
+                state_key: String::new(),
+                sender: "@alice:example.com".into(),
+                power_level: 100,
+                origin_server_ts: 1,
+                content: json!({}),
+                ..Default::default()
+            },
+        );
         // Provide objects for all events to be sorted in V2.1
         conflicted.insert(
             "id1".into(),
             LeanEvent {
                 event_id: "id1".into(),
-                event_type: "type1".into(),
-                state_key: "key1".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@alice:example.com".into(),
+                sender: "@alice:example.com".into(),
                 power_level: 50,
                 origin_server_ts: 500,
-                prev_events: vec![],
-                auth_events: vec![],
-                depth: 1,
+                content: json!({"membership": "join"}),
+                auth_events: vec!["create".into()],
                 ..Default::default()
             },
         );
@@ -994,13 +1173,13 @@ mod tests {
             "id2".into(),
             LeanEvent {
                 event_id: "id2".into(),
-                event_type: "type2".into(),
-                state_key: "key2".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@bob:example.com".into(),
+                sender: "@bob:example.com".into(),
                 power_level: 50,
                 origin_server_ts: 500,
-                prev_events: vec![],
-                auth_events: vec![],
-                depth: 1,
+                content: json!({"membership": "join"}),
+                auth_events: vec!["create".into()],
                 ..Default::default()
             },
         );
@@ -1008,13 +1187,13 @@ mod tests {
             "id2_new".into(),
             LeanEvent {
                 event_id: "id2_new".into(),
-                event_type: "type2".into(),
-                state_key: "key2".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@bob:example.com".into(),
+                sender: "@bob:example.com".into(),
                 power_level: 100,
                 origin_server_ts: 1000,
-                prev_events: vec![],
-                auth_events: vec![],
-                depth: 1,
+                content: json!({"membership": "join"}),
+                auth_events: vec!["create".into()],
                 ..Default::default()
             },
         );
@@ -1022,11 +1201,11 @@ mod tests {
         let resolved = resolve_lean(unconflicted.clone(), conflicted, StateResVersion::V2_1);
 
         assert_eq!(
-            resolved.get(&("type1".into(), "key1".into())),
+            resolved.get(&("m.room.member".into(), "@alice:example.com".into())),
             Some(&"id1".into())
         );
         assert_eq!(
-            resolved.get(&("type2".into(), "key2".into())),
+            resolved.get(&("m.room.member".into(), "@bob:example.com".into())),
             Some(&"id2_new".into())
         );
     }

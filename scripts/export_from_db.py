@@ -142,8 +142,57 @@ def export_room(room_id, max_events=10000, output_path=None):
                         break
         sys.exit(1)
 
-    # Phase 3: Write output
-    print(f"[3/3] Writing {len(events)} events...")
+    # Phase 3: Chase missing auth chain references
+    # Collect all auth_events referenced but not in our set
+    missing_auth = set()
+    for ev in events.values():
+        for ae in ev.get("auth_events", []):
+            if ae not in events:
+                missing_auth.add(ae)
+
+    if missing_auth:
+        print(f"[3/4] Chasing {len(missing_auth)} missing auth chain events...")
+        # Build an index of all events in the room by scanning both CFs
+        auth_found = 0
+        rounds = 0
+        while missing_auth and rounds < 3:
+            rounds += 1
+            newly_found = {}
+            for key_hex, val_hex in ldb_scan("pduid_pdu"):
+                pdu = hex_to_json(val_hex)
+                if pdu and pdu.get("room_id") == room_id:
+                    eid = pdu.get("event_id", "")
+                    if eid in missing_auth and eid not in events:
+                        newly_found[eid] = normalize_pdu(pdu, room_id)
+            for key_hex, val_hex in ldb_scan("eventid_outlierpdu"):
+                pdu = hex_to_json(val_hex)
+                if pdu and pdu.get("room_id") == room_id:
+                    eid = pdu.get("event_id", "")
+                    if eid in missing_auth and eid not in events:
+                        newly_found[eid] = normalize_pdu(pdu, room_id)
+
+            events.update(newly_found)
+            auth_found += len(newly_found)
+            print(
+                f"  Round {rounds}: found {len(newly_found)} auth events ({auth_found} total)"
+            )
+
+            # Check if newly found events have their own missing auth
+            missing_auth = set()
+            for ev in events.values():
+                for ae in ev.get("auth_events", []):
+                    if ae not in events:
+                        missing_auth.add(ae)
+            if not missing_auth:
+                break
+
+        if missing_auth:
+            print(f"  ⚠ {len(missing_auth)} auth events still missing (not in DB)")
+    else:
+        print("[3/4] All auth events present ✓")
+
+    # Phase 4: Write output
+    print(f"[4/4] Writing {len(events)} events...")
     event_list = sorted(events.values(), key=lambda e: e.get("origin_server_ts", 0))
     write_output(event_list, room_id, output_path)
 
