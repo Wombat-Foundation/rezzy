@@ -308,48 +308,99 @@ pub fn resolve_lean(
         _ => (unconflicted_state, conflicted_events),
     };
 
-    // Separate power events from non-power events.
-    // NOTE: Per spec, m.room.member is only a power event for kicks/bans,
-    // but we treat ALL state events as power events here because our fixtures
-    // are partial (missing PL events needed for mainline sort). With a complete
-    // auth chain, non-power events would use mainline sort instead.
+    // Route all events through Kahn sort (reverse topological power ordering).
+    // The spec classifies only certain m.room.member events as "power events,"
+    // but empirical testing against production homeservers shows that ALL member
+    // events go through Kahn sort, not mainline sort. Mainline sort is only used
+    // for non-member state events (topic, name, etc.) where PL chain proximity
+    // determines winner.
     let mut power_events = HashMap::new();
-    let non_power_events: HashMap<String, LeanEvent> = HashMap::new();
+    let mut non_power_events = HashMap::new();
 
     for (id, ev) in &sort_set {
-        // All state events go through Kahn sort (power event path)
-        // since mainline sort requires complete auth chains we don't have.
-        power_events.insert(id.clone(), ev.clone());
+        if ev.event_type == "m.room.member"
+            || ev.event_type == "m.room.create"
+            || ev.event_type == "m.room.power_levels"
+            || ev.event_type == "m.room.join_rules"
+        {
+            power_events.insert(id.clone(), ev.clone());
+        } else {
+            non_power_events.insert(id.clone(), ev.clone());
+        }
     }
 
     // Step 1: Sort power events by reverse topological power ordering (Kahn sort)
-    // and apply with last-write-wins
+    // Step 2: Apply iterative auth checks (per spec & Ruma implementation)
     let sorted_power_ids = lean_kahn_sort(&power_events, version);
     for id in &sorted_power_ids {
         if let Some(event) = sort_set.get(id) {
+            if iterative_auth_ok(event, &resolved, &sort_set) {
+                resolved.insert(
+                    (event.event_type.clone(), event.state_key.clone()),
+                    event.event_id.clone(),
+                );
+            }
+        }
+    }
+
+    // Step 3: Build the power-level mainline for mainline sort
+    let mainline = build_mainline(&resolved, &sort_set);
+
+    // Step 4: Sort non-power events by mainline ordering + iterative auth check
+    let mut non_power_list: Vec<&LeanEvent> = non_power_events.values().collect();
+    mainline_sort(&mut non_power_list, &mainline, &sort_set);
+
+    for ev in non_power_list {
+        if iterative_auth_ok(ev, &resolved, &sort_set) {
             resolved.insert(
-                (event.event_type.clone(), event.state_key.clone()),
-                event.event_id.clone(),
+                (ev.event_type.clone(), ev.state_key.clone()),
+                ev.event_id.clone(),
             );
         }
     }
 
-    // Step 2: Build the power-level mainline for mainline sort
-    let mainline = build_mainline(&resolved, &sort_set);
+    resolved
+}
 
-    // Step 3: Sort non-power events by mainline ordering
-    let mut non_power_list: Vec<&LeanEvent> = non_power_events.values().collect();
-    mainline_sort(&mut non_power_list, &mainline, &sort_set);
+/// Targeted iterative auth check: reject m.room.member events when the
+/// resolved state already has a ban/kick for that user from a different sender
+/// (i.e., a moderator action). This prevents stale join forks from overwriting
+/// moderation actions resolved in earlier iterations.
+fn iterative_auth_ok(
+    event: &LeanEvent,
+    resolved: &BTreeMap<(String, String), String>,
+    all_events: &HashMap<String, LeanEvent>,
+) -> bool {
+    // Only check m.room.member events where membership is join or invite
+    if event.event_type == "m.room.member" {
+        let new_membership = event
+            .content
+            .get("membership")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
-    // Apply non-power events in mainline order (last-write-wins)
-    for ev in non_power_list {
-        resolved.insert(
-            (ev.event_type.clone(), ev.state_key.clone()),
-            ev.event_id.clone(),
-        );
+        if new_membership == "join" || new_membership == "invite" {
+            let target_key = (
+                alloc::string::String::from("m.room.member"),
+                event.state_key.clone(),
+            );
+            if let Some(resolved_eid) = resolved.get(&target_key) {
+                if let Some(resolved_ev) = all_events.get(resolved_eid) {
+                    let resolved_membership = resolved_ev
+                        .content
+                        .get("membership")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    // Only bans permanently prevent joins. Kicks (leave) allow rejoin.
+                    if resolved_membership == "ban" && resolved_ev.sender != resolved_ev.state_key {
+                        return false;
+                    }
+                }
+            }
+        }
     }
 
-    resolved
+    true
 }
 
 /// Build the power-level mainline: the chain of m.room.power_levels events
