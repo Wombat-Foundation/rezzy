@@ -99,29 +99,9 @@ fn strict_oracle_check(fixture_path: &str, oracle_path: &str, room_label: &str) 
     }
 
     assert!(matched > 0, "No state entries matched");
-
-    // Known limitation: resolve_lean uses simplified Kahn sort + last-write-wins,
-    // not the full spec algorithm (reverse topological power sort + iterative auth
-    // check + mainline sort). This causes ~1-2% mismatches on federation forks
-    // where DAG topology doesn't match depth ordering.
-    //
-    // Additionally, the oracle itself is imperfect: it uses "highest depth" from
-    // an ldb scan, which is non-deterministic at depth ties.
-    //
-    // TODO: Implement full spec state resolution to reduce mismatch_real to 0.
-    if mismatch_real > 0 {
-        eprintln!(
-            "  ⚠ {mismatch_real} real mismatches (known limitation: \
-             simplified resolution vs full spec algorithm)"
-        );
-    }
-    // Fail if real mismatches exceed 3% of comparable entries
-    let total_comparable = matched + mismatch_expected + mismatch_real;
-    let real_rate = mismatch_real as f64 / total_comparable.max(1) as f64;
-    assert!(
-        real_rate < 0.03,
-        "Real mismatch rate {:.1}% exceeds 3% threshold ({mismatch_real}/{total_comparable})",
-        real_rate * 100.0,
+    assert_eq!(
+        mismatch_real, 0,
+        "Oracle ({room_label}): {mismatch_real} real mismatches — ruma-lean picked wrong event"
     );
 }
 
@@ -144,6 +124,49 @@ fn oracle_nheko_room_strict() {
         "res/real_dag_nheko.json",
         "res/expected/oracle_nheko_room.json",
         "nheko room",
+    );
+}
+
+#[test]
+fn oracle_v2_1_room_strict() {
+    // v12 room — uses state resolution v2.1
+    let fixture_path = "res/real_matrix_state_v2_1.json";
+    let oracle_path = "res/expected/oracle_v2_1_room.json";
+
+    let fixture_events = load_fixture(fixture_path);
+    let our_eids: std::collections::HashSet<String> =
+        fixture_events.iter().map(|e| e.event_id.clone()).collect();
+    let oracle = load_oracle(oracle_path);
+
+    // Resolve using V2.1 (the correct version for room v12)
+    let ours = resolve_and_get_state(fixture_path, StateResVersion::V2_1);
+
+    let mut matched = 0;
+    let mut mismatch_expected = 0;
+    let mut mismatch_real = 0;
+
+    for (key, our_eid) in &ours {
+        if let Some(oracle_eid) = oracle.get(key) {
+            if our_eid == oracle_eid {
+                matched += 1;
+            } else if !our_eids.contains(oracle_eid) {
+                mismatch_expected += 1;
+            } else {
+                mismatch_real += 1;
+                eprintln!("  BUG {key}: ours={our_eid}, oracle={oracle_eid}");
+            }
+        }
+    }
+
+    eprintln!("Oracle cross-validation (v2.1 room):");
+    eprintln!("  Matched:              {matched}");
+    eprintln!("  Mismatch (expected):  {mismatch_expected}");
+    eprintln!("  Mismatch (REAL BUG):  {mismatch_real}");
+
+    assert!(matched > 0, "No state entries matched");
+    assert_eq!(
+        mismatch_real, 0,
+        "v2.1 oracle: {mismatch_real} real mismatches (ruma-lean picks wrong event)"
     );
 }
 

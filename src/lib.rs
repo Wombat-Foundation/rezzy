@@ -192,17 +192,20 @@ impl<'a> Ord for SortPriority<'a> {
                 // In Rust's Max-Heap BinaryHeap, "greater" elements are popped first.
                 // So "worst" must be "greater" than "best".
 
-                // Lower power level is WORSE (pops first, overwritten).
+                // Higher power level is BETTER (should win = come last = be smallest = pop last).
+                // So lower power_level pops first (is "greater" in max-heap).
                 match other.event.power_level.cmp(&self.event.power_level) {
                     Ordering::Equal => {
-                        // Later timestamp is WORSE (pops first, overwritten).
-                        match self
+                        // Later timestamp is BETTER (should win = come last = be smallest).
+                        // So earlier timestamp pops first (is "greater" in max-heap).
+                        match other
                             .event
                             .origin_server_ts
-                            .cmp(&other.event.origin_server_ts)
+                            .cmp(&self.event.origin_server_ts)
                         {
                             Ordering::Equal => {
-                                // Lexicographically LARGER ID is WORSE (pops first, overwritten).
+                                // Lexicographically SMALLER ID is BETTER (pops last).
+                                // Larger ID pops first (is "greater" in max-heap).
                                 self.event.event_id.cmp(&other.event.event_id)
                             }
                             ord => ord,
@@ -485,8 +488,8 @@ mod tests {
             version: StateResVersion::V2,
         };
 
-        // Worse events (lower PL, later TS, larger ID) should be GREATER so they pop FIRST from Max-Heap.
-        assert_eq!(p_base.cmp(&p_worst_pl), Ordering::Less); // p_worst_pl has power 50, p_base 100. Lower pl gets popped first, so it is Greater.
+        // Worse events (lower PL) should be GREATER so they pop FIRST from Max-Heap.
+        assert_eq!(p_base.cmp(&p_worst_pl), Ordering::Less); // p_worst_pl has power 50, p_base 100. Lower pl pops first = Greater.
 
         let e_later_ts = LeanEvent {
             event_id: "$3".into(),
@@ -498,8 +501,8 @@ mod tests {
             event: &e_later_ts,
             version: StateResVersion::V2,
         };
-        // p_later_ts has ts 20 (worse), p_base has ts 10 (better). Later TS gets popped first, so it is Greater.
-        assert_eq!(p_base.cmp(&p_later_ts), Ordering::Less);
+        // p_later_ts has ts 20 (better — wins), p_base has ts 10 (worse — pops first = Greater).
+        assert_eq!(p_base.cmp(&p_later_ts), Ordering::Greater);
 
         let e_larger_id = LeanEvent {
             event_id: "$2".into(),
@@ -511,7 +514,7 @@ mod tests {
             event: &e_larger_id,
             version: StateResVersion::V2,
         };
-        // p_larger_id has id "$2", p_base has id "$1". Larger ID gets popped first, so it is Greater.
+        // p_larger_id has id "$2", p_base has id "$1". Larger ID pops first = Greater.
         assert_eq!(p_base.cmp(&p_larger_id), Ordering::Less);
     }
 
@@ -929,10 +932,10 @@ mod tests {
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V2);
         // 1 pops first (only one with in-degree 0).
-        // Then 2 and 3 are in queue. 2 is later (TS 20), so it is WORSE and pops first.
-        // Then 3 (TS 15) pops.
+        // Then 2 and 3 are in queue. 3 has earlier TS (15, worse) so it pops first.
+        // Then 2 (TS 20, better) pops.
         // Then 4 pops.
-        assert_eq!(sorted, vec!["1", "2", "3", "4"]);
+        assert_eq!(sorted, vec!["1", "3", "2", "4"]);
     }
 
     #[test]
@@ -1325,8 +1328,8 @@ mod tests {
             event: &e_early_ts,
             version: StateResVersion::V2,
         };
-        // p_early_ts has TS 10, p_base has TS 50. Later TS pops first, so p_base is GREATER.
-        assert_eq!(p_base.cmp(&p_early_ts), Ordering::Greater);
+        // p_early_ts has TS 10 (worse, pops first = Greater), p_base has TS 50 (better, pops last = Less).
+        assert_eq!(p_base.cmp(&p_early_ts), Ordering::Less);
         let e_early_id = LeanEvent {
             event_id: "a".into(),
             ..e_base.clone()
