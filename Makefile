@@ -83,7 +83,7 @@ lint:   ##H Run rust and lean linters
 	#$(LAKE) build
 
 .PHONY: test
-test: ##H Run Rust unit tests
+test: fixtures ##H Run Rust unit tests
 	$(CARGO) test --all-targets --all-features
 
 .PHONY: e2e
@@ -111,8 +111,9 @@ publish: ##H Preview package file list and simulate a dry-run publish
 .PHONY: fixtures
 fixtures: ##H Generate synthetic data and fetch matrix state if MATRIX_TOKEN is set
 	@mkdir -p res
-	python3 scripts/generate_benchmark_1k.py
-	@if [ -f .env ]; then set -a && source .env; fi; \
+	test -f res/benchmark_1k.json || python3 scripts/generate_benchmark_1k.py
+	test -f res/realistic_large_room.json || python3 scripts/gen_large_room.py
+	if [ -f .env ]; then set -a && source .env; fi; \
 	if [ -n "$$MATRIX_TOKEN" ]; then \
 		echo "Attempting to fetch live matrix state..."; \
 		python3 scripts/fetch_matrix_state.py || echo "Warning: Fetch failed, continuing..."; \
