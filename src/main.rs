@@ -194,55 +194,94 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
         }
     }
 
-    let state_maps = if heads.is_empty() {
-        let mut state_map = std::collections::HashMap::new();
+    // Auto-compute heads from prev_events graph when none provided
+    let heads = if heads.is_empty() {
+        let all_ids: std::collections::HashSet<String> = events_map.keys().cloned().collect();
+        let mut referenced: std::collections::HashSet<String> = std::collections::HashSet::new();
         for ev in events_map.values() {
-            let key = (ev.event_type.clone(), ev.state_key.clone());
-            match state_map.get(&key) {
-                Some(existing_ev_id) if existing_ev_id >= &ev.event_id => {}
-                _ => {
-                    state_map.insert(key, ev.event_id.clone());
+            for pe in &ev.prev_events {
+                referenced.insert(pe.clone());
+            }
+        }
+        let mut auto_heads: Vec<String> = all_ids.difference(&referenced).cloned().collect();
+        auto_heads.sort();
+        if args.debug {
+            eprintln!(
+                "[DEBUG] Auto-computed {} heads: {:?}",
+                auto_heads.len(),
+                auto_heads
+            );
+        }
+        auto_heads
+    } else {
+        heads
+    };
+
+    let state_maps = if heads.len() <= 1 {
+        // Single head (or no heads): forward walk — sort by Matrix depth ascending,
+        // keep the highest-depth (most recent) event for each (type, state_key).
+        // This correctly matches production server state resolution for linear DAGs.
+        let reachable: std::collections::HashSet<String> = if heads.len() == 1 {
+            // Only include events reachable from the head via prev_events
+            let mut visited = std::collections::HashSet::new();
+            let mut stack = vec![heads[0].clone()];
+            while let Some(ev_id) = stack.pop() {
+                if visited.insert(ev_id.clone()) {
+                    if let Some(ev) = events_map.get(&ev_id) {
+                        for pe in &ev.prev_events {
+                            stack.push(pe.clone());
+                        }
+                    }
                 }
             }
+            visited
+        } else {
+            events_map.keys().cloned().collect()
+        };
+
+        let mut sorted_events: Vec<&LeanEvent> = events_map
+            .values()
+            .filter(|ev| reachable.contains(&ev.event_id))
+            .collect();
+        sorted_events.sort_by_key(|ev| ev.depth);
+
+        let mut state_map = std::collections::HashMap::new();
+        for ev in sorted_events {
+            let key = (ev.event_type.clone(), ev.state_key.clone());
+            // Later (higher depth) events overwrite earlier ones
+            state_map.insert(key, ev.event_id.clone());
         }
         vec![state_map]
     } else {
+        // Multi-head (forked DAG): compute separate state sets per head
+        // via backward walk, then let resolve_lean handle conflicts.
         let mut maps = Vec::new();
         for head_id in &heads {
-            let mut best_state = std::collections::HashMap::new();
-            let mut visited_depth = std::collections::HashMap::new();
-            let mut stack = vec![(head_id.clone(), 0usize)];
+            // Collect all reachable events and their depths
+            let mut reachable_events: Vec<(u64, String)> = Vec::new();
+            let mut visited = std::collections::HashSet::new();
+            let mut stack = vec![head_id.clone()];
 
-            while let Some((ev_id, depth)) = stack.pop() {
-                if let Some(best_seen_depth) = visited_depth.get(&ev_id) {
-                    if *best_seen_depth <= depth {
-                        continue;
-                    }
-                }
-                visited_depth.insert(ev_id.clone(), depth);
-
-                if let Some(ev) = events_map.get(&ev_id) {
-                    // Deterministic approximation: for each (type, state_key), keep the
-                    // reachable event that is closest to the head. This avoids depending on
-                    // DFS traversal order, which can otherwise retain an older event.
-                    let key = (ev.event_type.clone(), ev.state_key.clone());
-                    match best_state.get(&key) {
-                        Some((best_depth, best_ev_id))
-                            if *best_depth < depth
-                                || (*best_depth == depth && *best_ev_id >= ev_id) => {}
-                        _ => {
-                            best_state.insert(key, (depth, ev_id.clone()));
+            while let Some(ev_id) = stack.pop() {
+                if visited.insert(ev_id.clone()) {
+                    if let Some(ev) = events_map.get(&ev_id) {
+                        reachable_events.push((ev.depth, ev_id.clone()));
+                        for prev_ev_id in &ev.prev_events {
+                            stack.push(prev_ev_id.clone());
                         }
-                    }
-                    for prev_ev_id in &ev.prev_events {
-                        stack.push((prev_ev_id.clone(), depth + 1));
                     }
                 }
             }
-            let state_map = best_state
-                .into_iter()
-                .map(|(key, (_, ev_id))| (key, ev_id))
-                .collect();
+
+            // Sort by depth ascending, keep latest for each key
+            reachable_events.sort();
+            let mut state_map = std::collections::HashMap::new();
+            for (_, ev_id) in reachable_events {
+                if let Some(ev) = events_map.get(&ev_id) {
+                    let key = (ev.event_type.clone(), ev.state_key.clone());
+                    state_map.insert(key, ev.event_id.clone());
+                }
+            }
             maps.push(state_map);
         }
         maps

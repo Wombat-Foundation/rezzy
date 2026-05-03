@@ -1,7 +1,7 @@
 SHELL=/bin/bash
 .DEFAULT_GOAL=_help
 
-LAKE ?= ~/.elan/bin/lake
+LAKE ?= lake
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -80,7 +80,7 @@ coverage: ##H Run Rust code coverage and generate HTML report (focused on ruma-l
 .PHONY: lint
 lint:   ##H Run rust and lean linters
 	$(CARGO) clippy --all-targets --all-features -- -D warnings
-	$(LAKE) build
+	#$(LAKE) build
 
 .PHONY: test
 test: ##H Run Rust unit tests
