@@ -314,7 +314,7 @@ pub fn resolve_lean(
     // are partial (missing PL events needed for mainline sort). With a complete
     // auth chain, non-power events would use mainline sort instead.
     let mut power_events = HashMap::new();
-    let mut non_power_events: HashMap<String, LeanEvent> = HashMap::new();
+    let non_power_events: HashMap<String, LeanEvent> = HashMap::new();
 
     for (id, ev) in &sort_set {
         // All state events go through Kahn sort (power event path)
@@ -350,34 +350,6 @@ pub fn resolve_lean(
     }
 
     resolved
-}
-
-/// Iterative auth check with fallback per the Matrix spec:
-/// First check against the current resolved state. If that fails due to
-/// missing state (NotMember, MissingAuthEvent), build a fallback state
-/// from the event's own auth_events and retry.
-fn iterative_auth_ok(
-    event: &LeanEvent,
-    state: &auth::RoomState,
-    all_events: &HashMap<String, LeanEvent>,
-) -> bool {
-    match auth::check_auth(event, state) {
-        Ok(()) => true,
-        Err(auth::AuthError::NotMember { .. }) | Err(auth::AuthError::MissingAuthEvent(_)) => {
-            // Fallback: build state from the event's own auth_events
-            let mut fallback_state = state.clone();
-            for auth_id in &event.auth_events {
-                if let Some(auth_ev) = all_events.get(auth_id) {
-                    fallback_state.insert(
-                        (auth_ev.event_type.clone(), auth_ev.state_key.clone()),
-                        auth_ev.clone(),
-                    );
-                }
-            }
-            auth::check_auth(event, &fallback_state).is_ok()
-        }
-        Err(_) => false, // Definitive rejection (banned, PL violation)
-    }
 }
 
 /// Build the power-level mainline: the chain of m.room.power_levels events

@@ -382,7 +382,7 @@ fn test_large_room_10k_subgraph_bounded() {
         .filter(|e| e.event_type == "m.room.power_levels")
         .map(|e| e.event_id.clone())
         .collect();
-    assert!(pl_events.len() > 0, "Should have PL events");
+    assert!(!pl_events.is_empty(), "Should have PL events");
     // Test bounded subgraph on the first 10 PL events
     pl_events.truncate(10);
     let bounded = ruma_lean::compute_v2_1_conflicted_subgraph_bounded(&map, &pl_events, Some(5));
