@@ -17,8 +17,6 @@
 extern crate alloc;
 
 pub mod auth;
-pub mod ctopology;
-pub mod trace_compiler;
 
 use alloc::collections::BTreeSet;
 use alloc::collections::{BTreeMap, BinaryHeap};

@@ -33,9 +33,6 @@ struct Args {
     #[arg(long)]
     debug: bool,
 
-    #[arg(long)]
-    benchmark_trace: bool,
-
     #[arg(long, default_value = "matrix.org")]
     origin: String,
 }
@@ -376,39 +373,6 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
 
     let final_state_map =
         ruma_lean::resolve_lean(unconflicted_state, conflicted_events.clone(), version);
-
-    if args.benchmark_trace {
-        let compiler = ruma_lean::trace_compiler::TraceCompiler::new();
-        // For a full system benchmark, trace all events, not just conflicted ones.
-        let trace = compiler.compile_trace(&events_map, version);
-
-        let active_nodes = trace
-            .iter()
-            .filter(|r| {
-                // In Plonky3 BabyBear 0.2, the field element can be cast to u32
-                // if we are sure it fits, which it does for is_active (0 or 1).
-                let active_val: u32 = unsafe { std::mem::transmute_copy(&r.is_active) };
-                active_val == 1
-            })
-            .count();
-        let routing_nodes = trace.len() - active_nodes;
-        let routing_tax = if active_nodes > 0 {
-            routing_nodes as f64 / active_nodes as f64
-        } else {
-            0.0
-        };
-
-        let output = serde_json::json!({
-            "status": "benchmark_success",
-            "active_nodes": active_nodes,
-            "routing_nodes": routing_nodes,
-            "total_trace_len": trace.len(),
-            "routing_tax": routing_tax,
-            "hypercube_dimension": compiler.hypercube.dimension,
-            "hypercube_nodes": compiler.hypercube.num_nodes,
-        });
-        return Ok(output);
-    }
 
     let duration = start.elapsed();
 
