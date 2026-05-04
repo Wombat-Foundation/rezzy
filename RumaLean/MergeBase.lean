@@ -36,10 +36,7 @@ def mergeBase (G : DirectedGraph Event) [DecidableRel G.edges] (S : Finset Event
 
 theorem state_recovery_via_merge_base (G : DirectedGraph Event) [IsDAG G] [DecidableRel G.edges]
     [LinearOrder Event] (mergeBaseState : State) (relativeEvents : Finset Event) :
-    ∀ L1 L2, L1 = kahnSort G relativeEvents → L2 = kahnSort G relativeEvents →
-    stateResAlgorithm .V2_1 mergeBaseState L1 = stateResAlgorithm .V2_1 mergeBaseState L2 := by
-  intro L1 L2 h1 h2
-  subst h1 h2
+    stateResAlgorithm .V2_1 mergeBaseState relativeEvents G = stateResAlgorithm .V2_1 mergeBaseState relativeEvents G := by
   rfl
 
 end RumaLean

@@ -31,6 +31,6 @@ axiom hypercube_air_soundness (G : DirectedGraph Event) [IsDAG G] [DecidableRel 
       let curr := trace.get ⟨i.val, by rw [h_len]; omega⟩
       let next := trace.get ⟨i.val + 1, by rw [h_len]; omega⟩
       hypercube_constraints curr next) →
-    ∃ (S : Finset Event), stateResAlgorithm .V2_1 emptyState (kahnSort G S) = emptyState
+    ∃ (S : Finset Event), stateResAlgorithm .V2_1 emptyState S G = emptyState
 
 end RumaLean

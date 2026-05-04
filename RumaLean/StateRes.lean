@@ -5,6 +5,7 @@ import Mathlib.Data.String.Basic
 
 set_option linter.style.emptyLine false
 set_option linter.style.longLine false
+set_option linter.unusedVariables false
 
 /-!
 # Matrix State Resolution
@@ -36,7 +37,7 @@ inductive StateResVersion
     Best (smallest depth) should come LAST, so it must be LARGER.
     Therefore, we use OrderDual for both. -/
 def eventToLexV1 (e : Event) :=
-  toLex (OrderDual.toDual e.depth, toLex (OrderDual.toDual e.event_id, e.power_level))
+  toLex (OrderDual.toDual e.depth, toLex (OrderDual.toDual e.event_id, toLex (e.power_level, e.origin_server_ts)))
 
 /-- V2 Tie-breaking: power_level (desc) -> origin_server_ts (asc) -> event_id (asc).
     Matrix Spec says: high power level wins.
@@ -45,25 +46,33 @@ def eventToLexV1 (e : Event) :=
     - origin_server_ts: lower is better -> lower should be LARGER (use dual).
     - event_id: smaller is better -> smaller should be LARGER (use dual). -/
 def eventToLexV2 (e : Event) :=
-  toLex (e.power_level, toLex (OrderDual.toDual e.origin_server_ts, OrderDual.toDual e.event_id))
+  toLex (e.power_level, toLex (OrderDual.toDual e.origin_server_ts, toLex (OrderDual.toDual e.event_id, e.depth)))
 
 theorem eventToLexV1_inj : Function.Injective eventToLexV1 := by
-  rintro ⟨id1, pl1, ts1, d1⟩ ⟨id2, pl2, ts2, d2⟩ h
-  simp only [eventToLexV1, toLex, OrderDual.toDual] at h
-  obtain ⟨rfl, rfl, rfl⟩ := h
-  rfl
+  intro ⟨id1, pl1, ts1, d1⟩ ⟨id2, pl2, ts2, d2⟩ h
+  simp only [eventToLexV1] at h
+  have hd := congr_arg (fun x => (ofLex x).1) h
+  have hid := congr_arg (fun x => (ofLex (ofLex x).2).1) h
+  have hpl := congr_arg (fun x => (ofLex (ofLex (ofLex x).2).2).1) h
+  have hts := congr_arg (fun x => (ofLex (ofLex (ofLex x).2).2).2) h
+  dsimp [OrderDual.toDual, ofLex] at hd hid hpl hts
+  exact congr (congr (congr (congr_arg Event.mk hid) hpl) hts) hd
 
 theorem eventToLexV2_inj : Function.Injective eventToLexV2 := by
-  rintro ⟨id1, pl1, ts1, d1⟩ ⟨id2, pl2, ts2, d2⟩ h
-  simp only [eventToLexV2, toLex, OrderDual.toDual] at h
-  obtain ⟨rfl, rfl, rfl⟩ := h
-  rfl
+  intro ⟨id1, pl1, ts1, d1⟩ ⟨id2, pl2, ts2, d2⟩ h
+  simp only [eventToLexV2] at h
+  have hpl := congr_arg (fun x => (ofLex x).1) h
+  have hts := congr_arg (fun x => (ofLex (ofLex x).2).1) h
+  have hid := congr_arg (fun x => (ofLex (ofLex (ofLex x).2).2).1) h
+  have hdp := congr_arg (fun x => (ofLex (ofLex (ofLex x).2).2).2) h
+  dsimp [OrderDual.toDual, ofLex] at hpl hts hid hdp
+  exact congr (congr (congr (congr_arg Event.mk hid) hpl) hts) hdp
 
 /-- Total order representation derived from tuple components. -/
-@[reducible] def stateres_is_total_order_v1 : LinearOrder Event := LinearOrder.lift' eventToLexV1 eventToLexV1_inj
-@[reducible] def stateres_is_total_order_v2 : LinearOrder Event := LinearOrder.lift' eventToLexV2 eventToLexV2_inj
+@[reducible] noncomputable def stateres_is_total_order_v1 : LinearOrder Event := LinearOrder.lift' eventToLexV1 eventToLexV1_inj
+@[reducible] noncomputable def stateres_is_total_order_v2 : LinearOrder Event := LinearOrder.lift' eventToLexV2 eventToLexV2_inj
 
-@[reducible] def stateResLinearOrder (v : StateResVersion) : LinearOrder Event :=
+@[reducible] noncomputable def stateResLinearOrder (v : StateResVersion) : LinearOrder Event :=
   match v with
   | .V1 => stateres_is_total_order_v1
   | .V2 | .V2_1 => stateres_is_total_order_v2
@@ -108,13 +117,13 @@ def mainlineSort (mainline : List String) (events : List Event) : List Event :=
   Implements the two-stage resolution process:
   1. Resolve power events via Kahn sort.
   2. Resolve non-power events via Mainline sort. -/
-def stateResAlgorithm (v : StateResVersion) (unconflictedState : State) (S : Finset Event) (G : DirectedGraph Event) [IsDAG G] [DecidableRel G.edges] : State :=
+noncomputable def stateResAlgorithm (v : StateResVersion) (unconflictedState : State) (S : Finset Event) (G : DirectedGraph Event) [IsDAG G] [DecidableRel G.edges] [LinearOrder Event] : State :=
   let initialState := match v with
     | .V2_1 => emptyState
     | _ => unconflictedState
 
   -- Step 1: Resolve Power Events
-  let powerEvents := S.filter (isPowerEvent)
+  let powerEvents := S.filter (fun e => isPowerEvent e = true)
   let sortedPower := kahnSort G powerEvents
   let stateAfterPower := sortedPower.foldl applyEvent initialState
 
