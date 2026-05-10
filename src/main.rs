@@ -45,28 +45,60 @@ enum OutputFormat {
     Federation,
 }
 
+fn parse_room_version(ver: &str) -> anyhow::Result<StateResVersion> {
+    match ver {
+        "1" => Ok(StateResVersion::V1),
+        "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" => Ok(StateResVersion::V2),
+        "12" => Ok(StateResVersion::V2_1),
+        _ => anyhow::bail!("Unsupported room version: {ver}"),
+    }
+}
+
 fn detect_version(events: &[serde_json::Value], debug: bool) -> anyhow::Result<StateResVersion> {
+    // First pass: look for a top-level m.room.create event
     for ev in events {
-        if let Some(ev_type) = ev.get("type").and_then(|t| t.as_str()) {
-            if ev_type == "m.room.create" {
-                if let Some(content) = ev.get("content") {
-                    if let Some(ver) = content.get("room_version").and_then(|v| v.as_str()) {
+        if ev.get("type").and_then(|t| t.as_str()) == Some("m.room.create") {
+            if let Some(ver) = ev
+                .get("content")
+                .and_then(|c| c.get("room_version"))
+                .and_then(|v| v.as_str())
+            {
+                if debug {
+                    eprintln!("[DEBUG] Found m.room.create with version: {}", ver);
+                }
+                return parse_room_version(ver);
+            }
+        }
+    }
+
+    // Fallback: scan unsigned.invite_room_state for a nested m.room.create
+    // (DAG exports often lack the standalone create event, but invites carry it)
+    for ev in events {
+        if let Some(stripped) = ev
+            .get("unsigned")
+            .and_then(|u| u.get("invite_room_state"))
+            .and_then(|s| s.as_array())
+        {
+            for entry in stripped {
+                if entry.get("type").and_then(|t| t.as_str()) == Some("m.room.create") {
+                    if let Some(ver) = entry
+                        .get("content")
+                        .and_then(|c| c.get("room_version"))
+                        .and_then(|v| v.as_str())
+                    {
                         if debug {
-                            eprintln!("[DEBUG] Found m.room.create with version: {}", ver);
+                            eprintln!(
+                                "[DEBUG] Found m.room.create in invite_room_state with version: {}",
+                                ver
+                            );
                         }
-                        match ver {
-                            "1" => return Ok(StateResVersion::V1),
-                            "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" => {
-                                return Ok(StateResVersion::V2)
-                            }
-                            "12" => return Ok(StateResVersion::V2_1),
-                            _ => return Ok(StateResVersion::V2), // Default fallback
-                        }
+                        return parse_room_version(ver);
                     }
                 }
             }
         }
     }
+
     Ok(StateResVersion::V2) // Default
 }
 
