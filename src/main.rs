@@ -108,26 +108,46 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
             Box::new(File::open(input_path)?)
         };
 
+        let is_jsonl = input_path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"));
+
         let mut reader = BufReader::new(input_reader);
-        let mut input_data = Vec::new();
 
-        loop {
-            let mut line = String::new();
-            let bytes_read = reader.read_line(&mut line)?;
-            if bytes_read == 0 {
-                break; // EOF
+        if is_jsonl {
+            // JSONL: parse each line as a separate JSON value, collect into array
+            let mut values = Vec::new();
+            for line in reader.lines() {
+                let line = line?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let val: serde_json::Value = serde_json::from_str(&line)?;
+                values.push(val);
             }
-            if line.trim().is_empty() {
-                continue;
+            if values.is_empty() {
+                anyhow::bail!("No input data provided in JSONL file.");
             }
-            input_data.extend_from_slice(line.as_bytes());
+            serde_json::Value::Array(values)
+        } else {
+            // Single JSON document: read all non-empty lines and parse as one value
+            let mut input_data = Vec::new();
+            loop {
+                let mut line = String::new();
+                let bytes_read = reader.read_line(&mut line)?;
+                if bytes_read == 0 {
+                    break; // EOF
+                }
+                if line.trim().is_empty() {
+                    continue;
+                }
+                input_data.extend_from_slice(line.as_bytes());
+            }
+            if input_data.is_empty() {
+                anyhow::bail!("No input data provided before empty line or EOF.");
+            }
+            serde_json::from_slice(&input_data)?
         }
-
-        if input_data.is_empty() {
-            anyhow::bail!("No input data provided before empty line or EOF.");
-        }
-
-        serde_json::from_slice(&input_data)?
     } else {
         anyhow::bail!("Either --input or --room must be provided.");
     };
