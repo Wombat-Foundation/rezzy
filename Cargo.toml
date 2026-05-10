@@ -1,11 +1,30 @@
 [package]
 name = "ruma-lean"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
 description = "Formally verified, dependency-free Matrix State Resolution v2 logic."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/gamesguru/ruma-lean"
+exclude = [
+    "res/",
+    "scripts/",
+    "docs/",
+    "RumaLean/",
+    "RumaLean.lean",
+    "lake*",
+    "lean-toolchain",
+    ".envrc",
+    ".env.example",
+    ".github",
+    ".gitignore",
+    ".editorconfig",
+    ".pre-commit-config.yaml",
+    ".prettierignore",
+    ".prettierrc",
+    ".rgignore",
+    "tests/",
+]
 
 [[bin]]
 name = "ruma-lean"
