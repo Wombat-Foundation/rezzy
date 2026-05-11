@@ -43,10 +43,11 @@ def eventToLexV1 (e : Event) :=
     Matrix Spec says: high power level wins.
     In overwrite order, winner comes LAST (must be LARGER).
     - power_level: higher is better -> higher should be LARGER (no dual).
-    - origin_server_ts: lower is better -> lower should be LARGER (use dual).
+    - origin_server_ts: later is better -> later should be LARGER (no dual).
+      Earlier events are sorted first and get overwritten; later events come last and win.
     - event_id: smaller is better -> smaller should be LARGER (use dual). -/
 def eventToLexV2 (e : Event) :=
-  toLex (e.power_level, toLex (OrderDual.toDual e.origin_server_ts, toLex (OrderDual.toDual e.event_id, e.depth)))
+  toLex (e.power_level, toLex (e.origin_server_ts, toLex (OrderDual.toDual e.event_id, e.depth)))
 
 theorem eventToLexV1_inj : Function.Injective eventToLexV1 := by
   intro ⟨id1, pl1, ts1, d1⟩ ⟨id2, pl2, ts2, d2⟩ h
