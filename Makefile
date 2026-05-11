@@ -2,23 +2,17 @@ SHELL=/bin/bash
 .DEFAULT_GOAL=_help
 
 LAKE ?= lake
+CARGO ?= cargo
 
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Init and format
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.PHONY: cache
-cache: ##H Update Lean cache
-	$(LAKE) exe cache get
-
-
-LINT_LOCS_LEAN = $$(git ls-files '**/*.lean')
 LINT_LOCS_PY = $$(git ls-files '*.py')
 LINT_LOCS_SH = $$(git ls-files '*.sh')
 
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Formatting & linting (shared)
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 .PHONY: format
-format: ##H Format codebase
+format: ##H Format codebase (Rust + Lean + scripts)
 	-prettier -w .
 	-pre-commit run --all-files
 	-black $(LINT_LOCS_PY)
@@ -26,74 +20,83 @@ format: ##H Format codebase
 	-shfmt -w $(LINT_LOCS_SH)
 	cargo sort --workspace --grouped
 
-.PHONY: clean
-clean: ##H Remove build artifacts
-	-$(LAKE) clean
-	-$(CARGO) clean
-	# rm -rf res/ .tmp/ .lake/build/
-
-.PHONY: build
-build: ##H Compile Rust bin
-	$(CARGO) build --release --features cli
-
-.PHONY: install
-install: ##H Install the ruma-lean binary to your cargo bin directory
-	$(CARGO) install --features cli --path .
-
+.PHONY: lint
+lint: ##H Run all linters
+	$(CARGO) clippy --all-targets --all-features -- -D warnings
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Main target
+# Lean targets
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.PHONY: lean
-lean: ##H Run Lean theorem proofs and verification
+.PHONY: lean/build
+lean/build: ##H Build Lean proofs
 	$(LAKE) build
 	@printf "\n$${STYLE_GREEN}--- Verification Complete ---$${STYLE_RESET}\n"
 	@printf "$${STYLE_CYAN}Mapped Theorems & Definitions:$${STYLE_RESET}\n"
 	@grep -E '^(theorem|def|class|instance|structure) ' RumaLean/*.lean RumaLean.lean || true
 	@printf "$${STYLE_GREEN}--------------------------------$${STYLE_RESET}\n"
 
-.PHONY: docs
-docs: ##H Generate Lean docs
+.PHONY: lean/clean
+lean/clean: ##H Remove Lean build artifacts (preserves packages)
+	rm -rf .lake/build/
+
+.PHONY: lean/cache
+lean/cache: ##H Fetch Lean/Mathlib oleans from cache
+	$(LAKE) exe cache get
+
+.PHONY: lean/docs
+lean/docs: ##H Generate Lean docs
 	DOCGEN_SKIP_LEAN=1 DOCGEN_SKIP_STD=1 DOCGEN_SKIP_LAKE=1 DOCGEN_SKIP_DEPS=1 $(LAKE) build RumaLean:docs
 
+.PHONY: lean/nuke
+lean/nuke: ##H Full Lean reset (removes packages too — will re-clone)
+	rm -rf .lake/
+
+# Convenience alias
+.PHONY: lean
+lean: lean/build ##H Alias for lean/build
+
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Rust development
+# Rust targets
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-CARGO ?= cargo
+.PHONY: rust/build
+rust/build: ##H Compile Rust binary (release)
+	$(CARGO) build --release --features cli
 
-.PHONY: coverage
-coverage: ##H Run Rust code coverage and generate HTML report (focused on ruma-lean)
-	@echo "Running focused code coverage for ruma-lean (std and no_std)..."
-	# Run std coverage
+.PHONY: rust/test
+rust/test: fixtures ##H Run Rust tests
+	$(CARGO) test --all-targets --all-features
+
+.PHONY: rust/clean
+rust/clean: ##H Remove Rust build artifacts
+	-$(CARGO) clean
+
+.PHONY: rust/install
+rust/install: ##H Install ruma-lean binary to cargo bin
+	$(CARGO) install --features cli --path .
+
+.PHONY: rust/coverage
+rust/coverage: ##H Run code coverage and generate HTML report
+	@echo "Running focused code coverage for ruma-lean..."
 	$(CARGO) tarpaulin --out Html \
 		--output-dir ../.tmp/coverage-lean \
 		--packages ruma-lean \
 		--ignore-panics \
 		--ignore-tests \
 		--skip-clean
-	# Append alloc-only coverage if possible, or just note that 100% requires feature toggling
 	@echo "Coverage report updated in ../.tmp/coverage-lean/tarpaulin-report.html"
 
-.PHONY: lint
-lint:   ##H Run rust and lean linters
-	$(CARGO) clippy --all-targets --all-features -- -D warnings
-	#$(LAKE) build
-
-.PHONY: test
-test: fixtures ##H Run Rust unit tests
-	$(CARGO) test --all-targets --all-features
-
-.PHONY: e2e
-e2e: ##H Run e2e integration test on real JSON
+.PHONY: rust/e2e
+rust/e2e: ##H Run e2e integration test on real JSON
 	for f in res/*.json; do \
 		$(CARGO) run --release --features cli -- -i "$$f"; \
 	done
 
-.PHONY: publish
-publish: ##H Preview package file list and simulate a dry-run publish
+.PHONY: rust/publish
+rust/publish: ##H Preview package and simulate dry-run publish
 	@echo "Previewing packaged files..."
 	@echo "-----------------------------------"
 	$(CARGO) package --list
@@ -102,14 +105,20 @@ publish: ##H Preview package file list and simulate a dry-run publish
 	@echo "-----------------------------------"
 	$(CARGO) publish --dry-run
 
+# Convenience aliases
+.PHONY: build test install clean
+build:   rust/build   ##H Alias for rust/build
+test:    rust/test    ##H Alias for rust/test
+install: rust/install ##H Alias for rust/install
+clean:   rust/clean lean/clean ##H Remove all build artifacts
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Data Generation & Benchmarking
+# Data generation
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .PHONY: fixtures
-fixtures: ##H Generate synthetic data and fetch real DAG exports if MATRIX_TOKEN is set
+fixtures: ##H Generate synthetic data and fetch real DAGs if MATRIX_TOKEN is set
 	@mkdir -p res res/expected
 	@test -f res/benchmark_1k.json || python3 scripts/generate_benchmark_1k.py
 	@test -f res/realistic_large_room.json || python3 scripts/gen_large_room.py
@@ -133,7 +142,7 @@ fixtures: ##H Generate synthetic data and fetch real DAG exports if MATRIX_TOKEN
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Help & support commands
+# Help
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 # [ENUM] Styling / Colors
@@ -145,4 +154,4 @@ export STYLE_CYAN STYLE_GREEN STYLE_RESET
 .PHONY: _help
 _help:
 	@grep -hE '^[a-zA-Z0-9_\/-]+:[[:space:]]*##H .*$$' $(MAKEFILE_LIST) \
-		| awk 'BEGIN {FS = ":[[:space:]]*##H "}; {printf "$(STYLE_CYAN)%-15s$(STYLE_RESET) %s\n", $$1, $$2}'
+		| awk 'BEGIN {FS = ":[[:space:]]*##H "}; {printf "$(STYLE_CYAN)%-18s$(STYLE_RESET) %s\n", $$1, $$2}'
