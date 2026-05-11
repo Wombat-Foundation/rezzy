@@ -594,25 +594,6 @@ pub fn compute_v2_1_conflicted_subgraph_bounded(
     }
 }
 
-#[cfg(feature = "zkvm")]
-pub fn verify_signature(_public_key: &[u8; 32], _message: &[u8], _signature: &[u8; 64]) {
-    // Verifiable signature check for ZKVM environment
-}
-
-#[cfg(all(feature = "std", not(feature = "zkvm")))]
-pub fn verify_signature(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) {
-    use ed25519_consensus::{Signature, VerificationKey};
-    let vk = VerificationKey::try_from(*public_key).expect("Invalid public key");
-    let sig = Signature::from(*signature);
-    vk.verify(&sig, message)
-        .expect("Signature verification failed");
-}
-
-#[cfg(all(not(feature = "std"), not(feature = "zkvm")))]
-pub fn verify_signature(_public_key: &[u8; 32], _message: &[u8], _signature: &[u8; 64]) {
-    // No-op for other configurations
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -958,19 +939,6 @@ mod tests {
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V2);
         assert!(sorted.is_empty());
-    }
-
-    #[test]
-    #[cfg(all(feature = "std", not(feature = "zkvm")))]
-    #[should_panic(expected = "Signature verification failed")]
-    fn test_signature_verification_failure() {
-        let pk = [
-            215, 90, 152, 1, 130, 177, 10, 183, 213, 75, 254, 211, 201, 100, 7, 58, 14, 225, 114,
-            243, 218, 166, 35, 37, 175, 2, 26, 104, 247, 7, 81, 26,
-        ];
-        let sig = [0u8; 64];
-        let msg = b"test";
-        verify_signature(&pk, msg, &sig);
     }
 
     #[test]
