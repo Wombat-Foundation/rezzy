@@ -120,7 +120,20 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
             .homeserver
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("--homeserver is required when using --room"))?;
-        fetch_room_state(homeserver, room_id, args.token.as_deref())?
+
+        // Token priority: --token / MATRIX_TOKEN > MTOKEN_{SERVER} > None
+        let token = args.token.clone().or_else(|| {
+            let env_key = format!(
+                "MTOKEN_{}",
+                homeserver
+                    .trim_start_matches("https://")
+                    .trim_start_matches("http://")
+                    .to_uppercase()
+                    .replace(['.', '-'], "_")
+            );
+            std::env::var(&env_key).ok()
+        });
+        fetch_room_state(homeserver, room_id, token.as_deref())?
     } else if let Some(input_path) = &args.input {
         let input_reader: Box<dyn Read> = if input_path.to_str() == Some("-") {
             Box::new(io::stdin())
