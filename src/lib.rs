@@ -194,12 +194,12 @@ impl<'a> Ord for SortPriority<'a> {
                 // So lower power_level pops first (is "greater" in max-heap).
                 match other.event.power_level.cmp(&self.event.power_level) {
                     Ordering::Equal => {
-                        // Later timestamp is BETTER (should win = come last = be smallest).
-                        // So earlier timestamp pops first (is "greater" in max-heap).
-                        match other
+                        // Earlier timestamp is BETTER (should win = come last = be smallest).
+                        // So later timestamp pops first (is "greater" in max-heap).
+                        match self
                             .event
                             .origin_server_ts
-                            .cmp(&self.event.origin_server_ts)
+                            .cmp(&other.event.origin_server_ts)
                         {
                             Ordering::Equal => {
                                 // Lexicographically SMALLER ID is BETTER (pops last).
@@ -660,8 +660,8 @@ mod tests {
             event: &e_later_ts,
             version: StateResVersion::V2,
         };
-        // p_later_ts has ts 20 (better — wins), p_base has ts 10 (worse — pops first = Greater).
-        assert_eq!(p_base.cmp(&p_later_ts), Ordering::Greater);
+        // p_later_ts has ts 20 (worse — pops first = Greater), p_base has ts 10 (better — wins = Less).
+        assert_eq!(p_base.cmp(&p_later_ts), Ordering::Less);
 
         let e_larger_id = LeanEvent {
             event_id: "$2".into(),
@@ -1078,10 +1078,10 @@ mod tests {
         );
         let sorted = lean_kahn_sort(&events, StateResVersion::V2);
         // 1 pops first (only one with in-degree 0).
-        // Then 2 and 3 are in queue. 3 has earlier TS (15, worse) so it pops first.
-        // Then 2 (TS 20, better) pops.
+        // Then 2 and 3 are in queue. 2 has later TS (20, worse) so it pops first.
+        // Then 3 (TS 15, better = earlier) pops.
         // Then 4 pops.
-        assert_eq!(sorted, vec!["1", "3", "2", "4"]);
+        assert_eq!(sorted, vec!["1", "2", "3", "4"]);
     }
 
     #[test]
@@ -1414,6 +1414,81 @@ mod tests {
         assert_eq!(sorted, vec!["A"]);
     }
 
+    /// Regression test: V2_1 must use "earlier timestamp wins" tie-break.
+    /// This was missed when the project was refactored to sort earlier-first.
+    #[test]
+    fn test_v2_1_earlier_timestamp_wins() {
+        // Two events at the same power level, different timestamps, no auth chain.
+        // The event with the EARLIER timestamp should come LAST (= win via last-write).
+        let mut events = HashMap::new();
+        events.insert(
+            "$early".into(),
+            LeanEvent {
+                event_id: "$early".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@user:example.com".into(),
+                power_level: 100,
+                origin_server_ts: 1000,
+                auth_events: vec![],
+                ..Default::default()
+            },
+        );
+        events.insert(
+            "$late".into(),
+            LeanEvent {
+                event_id: "$late".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@user:example.com".into(),
+                power_level: 100,
+                origin_server_ts: 2000,
+                auth_events: vec![],
+                ..Default::default()
+            },
+        );
+        let sorted = lean_kahn_sort(&events, StateResVersion::V2_1);
+        // $late (ts 2000) is worse, should pop first.
+        // $early (ts 1000) is better, should come last = win.
+        assert_eq!(sorted, vec!["$late", "$early"]);
+
+        // Same test with V2 to confirm parity
+        let sorted_v2 = lean_kahn_sort(&events, StateResVersion::V2);
+        assert_eq!(sorted_v2, vec!["$late", "$early"]);
+    }
+
+    /// Regression test: V2_1 timestamp tie-break with millisecond-close events
+    /// (the exact pattern seen in production Draupnir ban races).
+    #[test]
+    fn test_v2_1_millisecond_race_tiebreak() {
+        let mut events = HashMap::new();
+        events.insert(
+            "$ban_a".into(),
+            LeanEvent {
+                event_id: "$ban_a".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@spammer:evil.com".into(),
+                power_level: 50,
+                origin_server_ts: 1772724243891,
+                auth_events: vec![],
+                ..Default::default()
+            },
+        );
+        events.insert(
+            "$ban_b".into(),
+            LeanEvent {
+                event_id: "$ban_b".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@spammer:evil.com".into(),
+                power_level: 50,
+                origin_server_ts: 1772724243893, // 2ms later
+                auth_events: vec![],
+                ..Default::default()
+            },
+        );
+        let sorted = lean_kahn_sort(&events, StateResVersion::V2_1);
+        // $ban_b (later ts) is worse, pops first. $ban_a (earlier ts) wins.
+        assert_eq!(sorted, vec!["$ban_b", "$ban_a"]);
+    }
+
     #[test]
     fn test_total_order_properties() {
         let e1 = LeanEvent {
@@ -1496,8 +1571,8 @@ mod tests {
             event: &e_early_ts,
             version: StateResVersion::V2,
         };
-        // p_early_ts has TS 10 (worse, pops first = Greater), p_base has TS 50 (better, pops last = Less).
-        assert_eq!(p_base.cmp(&p_early_ts), Ordering::Less);
+        // p_early_ts has TS 10 (better, pops last = Less), p_base has TS 50 (worse, pops first = Greater).
+        assert_eq!(p_base.cmp(&p_early_ts), Ordering::Greater);
         let e_early_id = LeanEvent {
             event_id: "a".into(),
             ..e_base.clone()
