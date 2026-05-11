@@ -82,22 +82,35 @@ fn fetch_room_state(
     room_id: &str,
     token: Option<&str>,
 ) -> anyhow::Result<serde_json::Value> {
-    let url = format!("{}/_matrix/client/v3/rooms/{}/state", homeserver, room_id);
+    let base = if homeserver.starts_with("http://") || homeserver.starts_with("https://") {
+        homeserver.to_string()
+    } else {
+        format!("https://{}", homeserver)
+    };
+    let url = format!("{}/_matrix/client/v3/rooms/{}/state", base, room_id);
+    eprintln!("Fetching {}", url);
     let mut request = ureq::get(&url);
     if let Some(t) = token {
         request = request.set("Authorization", &format!("Bearer {}", t));
     }
 
-    let response = request.call()?;
-    if response.status() != 200 {
-        anyhow::bail!(
-            "Failed to fetch room state: {} {}",
-            response.status(),
-            response.into_string()?
-        );
-    }
+    let response = match request.call() {
+        Ok(resp) => resp,
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            anyhow::bail!("HTTP {}: {}", code, body);
+        }
+        Err(e) => anyhow::bail!("Request failed: {}", e),
+    };
+    let body = response.into_string()?;
 
-    let val: serde_json::Value = response.into_json()?;
+    let val: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to parse JSON: {}. Response: {}",
+            e,
+            &body[..body.len().min(500)]
+        )
+    })?;
     Ok(val)
 }
 
