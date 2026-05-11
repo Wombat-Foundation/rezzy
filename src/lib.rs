@@ -1414,6 +1414,82 @@ mod tests {
         assert_eq!(sorted, vec!["A"]);
     }
 
+    /// Regression test: V2_1 uses the same "later timestamp wins" tie-break as V2.
+    /// Earlier events are sorted first (popped first from heap), later events
+    /// come last and win via last-write-wins. This matches the Matrix spec.
+    #[test]
+    fn test_v2_1_later_timestamp_wins() {
+        let mut events = HashMap::new();
+        events.insert(
+            "$early".into(),
+            LeanEvent {
+                event_id: "$early".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@user:example.com".into(),
+                power_level: 100,
+                origin_server_ts: 1000,
+                auth_events: vec![],
+                ..Default::default()
+            },
+        );
+        events.insert(
+            "$late".into(),
+            LeanEvent {
+                event_id: "$late".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@user:example.com".into(),
+                power_level: 100,
+                origin_server_ts: 2000,
+                auth_events: vec![],
+                ..Default::default()
+            },
+        );
+        // Earlier ts pops first (worse), later ts comes last (wins).
+        let sorted = lean_kahn_sort(&events, StateResVersion::V2_1);
+        assert_eq!(sorted, vec!["$early", "$late"]);
+
+        // V2 must match V2_1
+        let sorted_v2 = lean_kahn_sort(&events, StateResVersion::V2);
+        assert_eq!(sorted_v2, vec!["$early", "$late"]);
+    }
+
+    /// Regression test: millisecond-close Draupnir ban races resolve identically
+    /// in V2 and V2_1 when processed through Kahn sort alone.
+    #[test]
+    fn test_v2_1_millisecond_race_tiebreak() {
+        let mut events = HashMap::new();
+        events.insert(
+            "$ban_a".into(),
+            LeanEvent {
+                event_id: "$ban_a".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@spammer:evil.com".into(),
+                power_level: 50,
+                origin_server_ts: 1772724243891,
+                auth_events: vec![],
+                ..Default::default()
+            },
+        );
+        events.insert(
+            "$ban_b".into(),
+            LeanEvent {
+                event_id: "$ban_b".into(),
+                event_type: "m.room.member".into(),
+                state_key: "@spammer:evil.com".into(),
+                power_level: 50,
+                origin_server_ts: 1772724243893, // 2ms later
+                auth_events: vec![],
+                ..Default::default()
+            },
+        );
+        // $ban_a (earlier ts) pops first, $ban_b (later ts) comes last = wins.
+        let sorted_v2 = lean_kahn_sort(&events, StateResVersion::V2);
+        assert_eq!(sorted_v2, vec!["$ban_a", "$ban_b"]);
+
+        let sorted_v2_1 = lean_kahn_sort(&events, StateResVersion::V2_1);
+        assert_eq!(sorted_v2_1, vec!["$ban_a", "$ban_b"]);
+    }
+
     #[test]
     fn test_total_order_properties() {
         let e1 = LeanEvent {
