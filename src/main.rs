@@ -33,6 +33,9 @@ struct Args {
     #[arg(long)]
     debug: bool,
 
+    #[arg(short, long)]
+    quiet: bool,
+
     #[arg(long, default_value = "matrix.org")]
     origin: String,
 }
@@ -43,6 +46,7 @@ enum OutputFormat {
     Events,
     Default,
     Federation,
+    Summary,
 }
 
 fn parse_room_version(ver: &str) -> anyhow::Result<StateResVersion> {
@@ -171,6 +175,7 @@ fn load_file(input_path: &PathBuf) -> anyhow::Result<Vec<serde_json::Value>> {
 fn merge_event_sets(
     file_sets: Vec<(String, Vec<serde_json::Value>)>,
     debug: bool,
+    quiet: bool,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
     let num_files = file_sets.len();
     let mut seen_ids: HashSet<String> = HashSet::new();
@@ -198,13 +203,15 @@ fn merge_event_sets(
             }
         }
 
-        eprintln!(
-            "[merge] {}: {} events ({} new, {} shared)",
-            label,
-            events.len(),
-            added,
-            dupes
-        );
+        if !quiet {
+            eprintln!(
+                "[merge] {}: {} events ({} new, {} shared)",
+                label,
+                events.len(),
+                added,
+                dupes
+            );
+        }
         per_file_ids.push(file_ids);
     }
 
@@ -242,10 +249,12 @@ fn merge_event_sets(
             shared_ids.len()
         };
 
-        eprintln!(
-            "[merge] merge-base: {} shared events across {} inputs",
-            total_shared, num_files
-        );
+        if !quiet {
+            eprintln!(
+                "[merge] merge-base: {} shared events across {} inputs",
+                total_shared, num_files
+            );
+        }
 
         if debug {
             // Find the merge-base frontier: shared events with the highest depths
@@ -279,7 +288,9 @@ fn merge_event_sets(
         }
     }
 
-    eprintln!("[merge] total: {} unique events", merged.len());
+    if !quiet {
+        eprintln!("[merge] total: {} unique events", merged.len());
+    }
     Ok(merged)
 }
 
@@ -319,7 +330,7 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
                 let events = load_file(path)?;
                 file_sets.push((label, events));
             }
-            let merged = merge_event_sets(file_sets, args.debug)?;
+            let merged = merge_event_sets(file_sets, args.debug, args.quiet)?;
             serde_json::Value::Array(merged)
         }
     } else {
@@ -602,6 +613,99 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
             "auth_chain_size": auth_chain_ids.len(),
             "state_event_ids": resolved_state_list
         })),
+        OutputFormat::Summary => {
+            let mut state_entries: Vec<serde_json::Value> = Vec::new();
+            let mut members: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+
+            for ((typ, sk), eid) in &final_state_map {
+                let ev = events_map.get(eid);
+                if typ == "m.room.member" {
+                    let membership = ev
+                        .and_then(|e| e.content.get("membership"))
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("unknown");
+                    let displayname = ev
+                        .and_then(|e| e.content.get("displayname"))
+                        .and_then(|d| d.as_str())
+                        .unwrap_or("");
+                    members
+                        .entry(membership.to_string())
+                        .or_default()
+                        .push(serde_json::json!({
+                            "user_id": sk,
+                            "displayname": displayname,
+                            "event_id": eid,
+                            "depth": ev.map(|e| e.depth).unwrap_or(0),
+                        }));
+                } else {
+                    state_entries.push(serde_json::json!({
+                        "type": typ,
+                        "state_key": sk,
+                        "event_id": eid,
+                        "sender": ev.map(|e| e.sender.as_str()).unwrap_or("?"),
+                        "depth": ev.map(|e| e.depth).unwrap_or(0),
+                    }));
+                }
+            }
+
+            state_entries.sort_by(|a, b| {
+                let ta = a["type"].as_str().unwrap_or("");
+                let tb = b["type"].as_str().unwrap_or("");
+                ta.cmp(tb).then_with(|| {
+                    let sa = a["state_key"].as_str().unwrap_or("");
+                    let sb = b["state_key"].as_str().unwrap_or("");
+                    sa.cmp(sb)
+                })
+            });
+
+            // Sort members within each group by user_id
+            for list in members.values_mut() {
+                list.sort_by(|a, b| {
+                    let ua = a["user_id"].as_str().unwrap_or("");
+                    let ub = b["user_id"].as_str().unwrap_or("");
+                    ua.cmp(ub)
+                });
+            }
+
+            // Build ordered membership object
+            let membership_order = ["join", "invite", "knock", "leave", "ban"];
+            let mut membership_obj = serde_json::Map::new();
+            for status in &membership_order {
+                if let Some(list) = members.get(*status) {
+                    membership_obj.insert(
+                        status.to_string(),
+                        serde_json::json!({
+                            "count": list.len(),
+                            "users": list
+                        }),
+                    );
+                }
+            }
+            // Include any unexpected membership values
+            for (status, list) in &members {
+                if !membership_order.contains(&status.as_str()) {
+                    membership_obj.insert(
+                        status.clone(),
+                        serde_json::json!({
+                            "count": list.len(),
+                            "users": list
+                        }),
+                    );
+                }
+            }
+
+            Ok(serde_json::json!({
+                "status": "success",
+                "version": version,
+                "duration_ms": duration.as_millis(),
+                "total_events": event_count,
+                "resolved_state_size": state_entries.len() + members.values().map(|v| v.len()).sum::<usize>(),
+                "auth_chain_size": auth_chain_ids.len(),
+                "heads": heads,
+                "membership": membership_obj,
+                "state": state_entries
+            }))
+        }
     }
 }
 
@@ -683,8 +787,12 @@ mod tests {
     fn test_merge_dedup_by_event_id() {
         let a = vec![ev("$1", 1), ev("$2", 2), ev("$3", 3)];
         let b = vec![ev("$2", 2), ev("$3", 3), ev("$4", 4)];
-        let result =
-            merge_event_sets(vec![("a.jsonl".into(), a), ("b.jsonl".into(), b)], false).unwrap();
+        let result = merge_event_sets(
+            vec![("a.jsonl".into(), a), ("b.jsonl".into(), b)],
+            false,
+            true,
+        )
+        .unwrap();
 
         let ids: Vec<&str> = result
             .iter()
@@ -697,7 +805,11 @@ mod tests {
     fn test_merge_disjoint_fails() {
         let a = vec![ev("$1", 1), ev("$2", 2)];
         let b = vec![ev("$3", 3), ev("$4", 4)];
-        let result = merge_event_sets(vec![("a.jsonl".into(), a), ("b.jsonl".into(), b)], false);
+        let result = merge_event_sets(
+            vec![("a.jsonl".into(), a), ("b.jsonl".into(), b)],
+            false,
+            true,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Disjoint DAGs"));
     }
@@ -716,6 +828,7 @@ mod tests {
                 ("c.jsonl".into(), c),
             ],
             false,
+            true,
         )
         .unwrap();
 
@@ -729,7 +842,7 @@ mod tests {
     #[test]
     fn test_merge_single_file() {
         let a = vec![ev("$1", 1), ev("$2", 2)];
-        let result = merge_event_sets(vec![("a.jsonl".into(), a)], false).unwrap();
+        let result = merge_event_sets(vec![("a.jsonl".into(), a)], false, true).unwrap();
         assert_eq!(result.len(), 2);
     }
 
@@ -737,8 +850,12 @@ mod tests {
     fn test_merge_complete_overlap() {
         let a = vec![ev("$1", 1), ev("$2", 2), ev("$3", 3)];
         let b = vec![ev("$1", 1), ev("$2", 2), ev("$3", 3)];
-        let result =
-            merge_event_sets(vec![("a.jsonl".into(), a), ("b.jsonl".into(), b)], false).unwrap();
+        let result = merge_event_sets(
+            vec![("a.jsonl".into(), a), ("b.jsonl".into(), b)],
+            false,
+            true,
+        )
+        .unwrap();
         assert_eq!(result.len(), 3);
     }
 
@@ -750,6 +867,7 @@ mod tests {
         let result = merge_event_sets(
             vec![("large.jsonl".into(), large), ("small.jsonl".into(), small)],
             false,
+            true,
         )
         .unwrap();
         assert_eq!(result.len(), 4);
@@ -760,8 +878,12 @@ mod tests {
         let a = vec![ev("$1", 10), ev("$2", 20)];
         let b = vec![ev("$2", 20), ev("$3", 30)];
         // Should not panic with debug=true
-        let result =
-            merge_event_sets(vec![("a.jsonl".into(), a), ("b.jsonl".into(), b)], true).unwrap();
+        let result = merge_event_sets(
+            vec![("a.jsonl".into(), a), ("b.jsonl".into(), b)],
+            true,
+            true,
+        )
+        .unwrap();
         assert_eq!(result.len(), 3);
     }
 
@@ -769,8 +891,12 @@ mod tests {
     fn test_merge_single_event_per_file() {
         let a = vec![ev("$1", 1)];
         let b = vec![ev("$1", 1)];
-        let result =
-            merge_event_sets(vec![("a.jsonl".into(), a), ("b.jsonl".into(), b)], false).unwrap();
+        let result = merge_event_sets(
+            vec![("a.jsonl".into(), a), ("b.jsonl".into(), b)],
+            false,
+            true,
+        )
+        .unwrap();
         assert_eq!(result.len(), 1);
     }
 
@@ -778,7 +904,11 @@ mod tests {
     fn test_merge_two_single_events_disjoint() {
         let a = vec![ev("$1", 1)];
         let b = vec![ev("$2", 2)];
-        let result = merge_event_sets(vec![("a.jsonl".into(), a), ("b.jsonl".into(), b)], false);
+        let result = merge_event_sets(
+            vec![("a.jsonl".into(), a), ("b.jsonl".into(), b)],
+            false,
+            true,
+        );
         assert!(result.is_err());
     }
 
@@ -786,15 +916,19 @@ mod tests {
     fn test_merge_two_events_one_shared() {
         let a = vec![ev("$1", 1), ev("$2", 2)];
         let b = vec![ev("$2", 2), ev("$3", 3)];
-        let result =
-            merge_event_sets(vec![("a.jsonl".into(), a), ("b.jsonl".into(), b)], false).unwrap();
+        let result = merge_event_sets(
+            vec![("a.jsonl".into(), a), ("b.jsonl".into(), b)],
+            false,
+            true,
+        )
+        .unwrap();
         assert_eq!(result.len(), 3);
     }
 
     #[test]
     fn test_merge_one_file_only() {
         let a = vec![ev("$1", 1)];
-        let result = merge_event_sets(vec![("a.jsonl".into(), a)], false).unwrap();
+        let result = merge_event_sets(vec![("a.jsonl".into(), a)], false, true).unwrap();
         assert_eq!(result.len(), 1);
     }
 }
