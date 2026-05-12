@@ -47,6 +47,7 @@ enum OutputFormat {
     Default,
     Federation,
     Summary,
+    Timeline,
 }
 
 fn parse_room_version(ver: &str) -> anyhow::Result<StateResVersion> {
@@ -694,6 +695,14 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
                 }
             }
 
+            let min_depth = events_map.values().map(|e| e.depth).min().unwrap_or(0);
+            let max_depth = events_map.values().map(|e| e.depth).max().unwrap_or(0);
+            let root_event_id = events_map
+                .values()
+                .min_by_key(|e| e.depth)
+                .map(|e| e.event_id.as_str())
+                .unwrap_or("");
+
             Ok(serde_json::json!({
                 "status": "success",
                 "version": version,
@@ -701,12 +710,200 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
                 "total_events": event_count,
                 "resolved_state_size": state_entries.len() + members.values().map(|v| v.len()).sum::<usize>(),
                 "auth_chain_size": auth_chain_ids.len(),
+                "min_depth": min_depth,
+                "max_depth": max_depth,
+                "root_event_id": root_event_id,
                 "heads": heads,
                 "membership": membership_obj,
                 "state": state_entries
             }))
         }
+        OutputFormat::Timeline => {
+            // Build displayname lookup from m.room.member events
+            let mut displaynames: HashMap<String, String> = HashMap::new();
+            let mut sorted_events: Vec<&LeanEvent> = events_map.values().collect();
+            sorted_events.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.event_id.cmp(&b.event_id)));
+
+            // First pass: collect displaynames
+            for ev in &sorted_events {
+                if ev.event_type == "m.room.member" {
+                    if let Some(dn) = ev.content.get("displayname").and_then(|v| v.as_str()) {
+                        if !dn.is_empty() {
+                            displaynames.insert(ev.state_key.clone(), dn.to_string());
+                        }
+                    }
+                }
+            }
+
+            let get_name = |user_id: &str| -> String {
+                displaynames.get(user_id).cloned().unwrap_or_else(|| {
+                    user_id
+                        .split(':')
+                        .next()
+                        .unwrap_or(user_id)
+                        .trim_start_matches('@')
+                        .to_string()
+                })
+            };
+
+            let mut output = String::new();
+            let mut last_date = String::new();
+
+            for ev in &sorted_events {
+                let ts_ms = ev.origin_server_ts;
+                let ts_secs = (ts_ms / 1000) as i64;
+                let time_of_day = ((ts_secs % 86400 + 86400) % 86400) as u64;
+                let hours = time_of_day / 3600;
+                let minutes = (time_of_day % 3600) / 60;
+                let days = ts_secs.div_euclid(86400);
+
+                let (y, m, d) = epoch_days_to_ymd(days);
+                let month_names = [
+                    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov",
+                    "Dec",
+                ];
+                let month_str = month_names.get((m - 1) as usize).unwrap_or(&"???");
+                let ampm = if hours < 12 { "AM" } else { "PM" };
+                let h12 = if hours == 0 {
+                    12
+                } else if hours > 12 {
+                    hours - 12
+                } else {
+                    hours
+                };
+                let date = format!(
+                    "{} {} {} {:02}:{:02} {}",
+                    d, month_str, y, h12, minutes, ampm
+                );
+
+                let sender = get_name(&ev.sender);
+                let desc = match ev.event_type.as_str() {
+                    "m.room.create" => format!("{} sent m.room.create state event", sender),
+                    "m.room.member" => {
+                        let membership = ev
+                            .content
+                            .get("membership")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        let target = get_name(&ev.state_key);
+                        let reason = ev
+                            .content
+                            .get("reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        match membership {
+                            "join" => format!("{} joined the room", target),
+                            "leave" if ev.sender == ev.state_key => {
+                                format!("{} left the room", target)
+                            }
+                            "leave" => format!(
+                                "{} kicked {}{}",
+                                sender,
+                                target,
+                                if reason.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" {}", reason)
+                                }
+                            ),
+                            "ban" => format!(
+                                "{} banned {}{}",
+                                sender,
+                                target,
+                                if reason.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" {}", reason)
+                                }
+                            ),
+                            "invite" => format!("{} invited {}", sender, target),
+                            "knock" => format!("{} knocked", target),
+                            _ => {
+                                format!("{} set {}'s membership to {}", sender, target, membership)
+                            }
+                        }
+                    }
+                    "m.room.message" => {
+                        let body = ev
+                            .content
+                            .get("body")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let msgtype = ev
+                            .content
+                            .get("msgtype")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("m.text");
+                        match msgtype {
+                            "m.text" | "m.notice" => format!("{}: {}", sender, body),
+                            "m.image" => format!("{} sent an image", sender),
+                            "m.video" => format!("{} sent a video", sender),
+                            "m.audio" => format!("{} sent an audio file", sender),
+                            "m.file" => format!("{} sent a file", sender),
+                            "m.emote" => format!("* {} {}", sender, body),
+                            _ => format!("{} sent {}", sender, msgtype),
+                        }
+                    }
+                    "m.room.name" => {
+                        let name = ev
+                            .content
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        format!("{} changed room name to \"{}\"", sender, name)
+                    }
+                    "m.room.topic" => {
+                        let topic = ev
+                            .content
+                            .get("topic")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        format!("{} changed room topic to \"{}\"", sender, topic)
+                    }
+                    "m.room.avatar" => format!("{} changed room avatar", sender),
+                    "m.room.redaction" => format!("{} redacted an event", sender),
+                    "m.reaction" => continue,
+                    "m.sticker" => format!("{} sent a sticker", sender),
+                    typ => format!("{} sent {} state event", sender, typ),
+                };
+
+                if date != last_date {
+                    if !last_date.is_empty() {
+                        output.push('\n');
+                    }
+                    last_date = date.clone();
+                }
+
+                output.push_str(&desc);
+                output.push('\n');
+                output.push_str(&date);
+                output.push('\n');
+            }
+
+            eprint!("{}", output);
+            Ok(serde_json::json!({
+                "status": "success",
+                "format": "timeline",
+                "events": event_count
+            }))
+        }
     }
+}
+
+/// Convert days since Unix epoch to (year, month, day).
+fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
+    // Civil calendar algorithm from Howard Hinnant
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 fn compute_auth_chain(
