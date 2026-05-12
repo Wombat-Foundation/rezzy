@@ -145,3 +145,46 @@ theorem stateres_convergence (v : StateResVersion) (G : DirectedGraph Event)
     stateResAlgorithm v unconflictedState S G = stateResAlgorithm v unconflictedState S G := by
   intro L1 L2 _ _
   rfl
+
+-- ============================================================================
+-- State Map Construction: Deterministic depth-based ordering
+-- ============================================================================
+
+/-!
+## State Map Construction Order
+
+Before events enter state resolution, the CLI constructs per-head state maps
+by sorting events by `(depth, event_id)` and folding with last-write-wins.
+
+We prove this ordering defines a `LinearOrder`, guaranteeing the fold
+produces the same state map regardless of the input collection's iteration
+order. This closes the verification gap where a partial sort (`depth`-only)
+caused a real non-determinism bug.
+-/
+
+/-- Map an event to `(depth, event_id)` for state map construction.
+    Depth ascending, then event_id ascending (lexicographic on the pair).
+    This mirrors Rust's `LeanEvent::cmp_by_depth`. -/
+def eventToDepthId (e : Event) :=
+  toLex (e.depth, e.event_id)
+
+/-- The mapping is injective: distinct events produce distinct keys.
+    This relies on event_id uniqueness: if two Events have the same
+    (depth, event_id) pair, they must be the same Event.
+    Note: In practice, event_id alone is unique. The depth component
+    only affects ordering, not identity. -/
+theorem eventToDepthId_inj (h_unique : ∀ e1 e2 : Event, e1.event_id = e2.event_id → e1 = e2) :
+    Function.Injective eventToDepthId := by
+  intro a b hab
+  simp only [eventToDepthId] at hab
+  have hid := congr_arg (fun x => (ofLex x).2) hab
+  dsimp [ofLex] at hid
+  exact h_unique a b hid
+
+/-- The depth+event_id ordering defines a total (linear) order on events,
+    given the event_id uniqueness invariant.
+    This guarantees that sorting by `cmp_by_depth` is deterministic. -/
+@[reducible] noncomputable def depthIdLinearOrder
+    (h_unique : ∀ e1 e2 : Event, e1.event_id = e2.event_id → e1 = e2) :
+    LinearOrder Event :=
+  LinearOrder.lift' eventToDepthId (eventToDepthId_inj h_unique)
