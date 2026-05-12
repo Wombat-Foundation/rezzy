@@ -1,10 +1,17 @@
 use clap::{Parser, ValueEnum};
 use ruma_lean::{lean_kahn_sort, LeanEvent, StateResVersion};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::time::Instant;
+
+/// Deterministic sort ordering for events: depth ascending, then event_id ascending.
+/// This ensures stable output regardless of HashMap iteration order.
+fn cmp_depth_then_id(a: &LeanEvent, b: &LeanEvent) -> Ordering {
+    a.depth.cmp(&b.depth).then(a.event_id.cmp(&b.event_id))
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -293,7 +300,7 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
             .values()
             .filter(|ev| reachable.contains(&ev.event_id))
             .collect();
-        sorted_events.sort_by_key(|ev| ev.depth);
+        sorted_events.sort_by(|a, b| cmp_depth_then_id(a, b));
 
         let mut state_map = std::collections::HashMap::new();
         for ev in sorted_events {
