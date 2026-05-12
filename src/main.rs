@@ -208,29 +208,57 @@ fn merge_event_sets(
         per_file_ids.push(file_ids);
     }
 
-    // Merge-base check: verify DAGs share history
+    // Merge-base check: verify each file shares at least one event with another
     if num_files >= 2 {
-        let shared: HashSet<&String> = per_file_ids[0]
-            .iter()
-            .filter(|id| per_file_ids[1..].iter().all(|s| s.contains(*id)))
-            .collect();
+        let mut any_shared = false;
+        for i in 0..num_files {
+            for j in (i + 1)..num_files {
+                let pair_shared = per_file_ids[i].intersection(&per_file_ids[j]).count();
+                if pair_shared > 0 {
+                    any_shared = true;
+                    break;
+                }
+            }
+            if any_shared {
+                break;
+            }
+        }
 
-        if shared.is_empty() {
+        if !any_shared {
             anyhow::bail!(
                 "Disjoint DAGs: no shared events found across inputs. \
                  Cannot compute meaningful merge — the DAGs share no history."
             );
         }
 
+        // Report total shared count (union of all pairwise intersections)
+        let total_shared: usize = {
+            let mut shared_ids: HashSet<&String> = HashSet::new();
+            for i in 0..num_files {
+                for j in (i + 1)..num_files {
+                    shared_ids.extend(per_file_ids[i].intersection(&per_file_ids[j]));
+                }
+            }
+            shared_ids.len()
+        };
+
         eprintln!(
-            "[merge] merge-base: {} shared events across all {} inputs",
-            shared.len(),
-            num_files
+            "[merge] merge-base: {} shared events across {} inputs",
+            total_shared, num_files
         );
 
         if debug {
             // Find the merge-base frontier: shared events with the highest depths
-            let mut shared_depths: Vec<(&String, u64)> = shared
+            let shared_all: HashSet<&String> = {
+                let mut s: HashSet<&String> = HashSet::new();
+                for i in 0..num_files {
+                    for j in (i + 1)..num_files {
+                        s.extend(per_file_ids[i].intersection(&per_file_ids[j]));
+                    }
+                }
+                s
+            };
+            let mut shared_depths: Vec<(&String, u64)> = shared_all
                 .iter()
                 .filter_map(|id| {
                     merged.iter().find_map(|v| {
@@ -628,6 +656,7 @@ fn main() {
                 "error": e.to_string()
             });
             serde_json::to_writer_pretty(io::stderr(), &err_json).ok();
+            eprintln!();
             std::process::exit(1);
         }
     }
