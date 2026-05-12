@@ -158,6 +158,17 @@ impl PartialOrd for LeanEvent {
     }
 }
 
+impl LeanEvent {
+    /// Deterministic ordering: depth ascending, then event_id ascending.
+    /// Use this instead of `sort_by_key(|ev| ev.depth)` to avoid
+    /// non-determinism from HashMap iteration order on equal depths.
+    pub fn cmp_by_depth(&self, other: &Self) -> Ordering {
+        self.depth
+            .cmp(&other.depth)
+            .then(self.event_id.cmp(&other.event_id))
+    }
+}
+
 /// A wrapper to ensure BinaryHeap pops the "smallest" (best) event first.
 #[derive(Debug, Clone, Copy)]
 struct SortPriority<'a> {
@@ -534,7 +545,7 @@ pub fn compute_v2_1_conflicted_subgraph_bounded(
     let mut forwards_reachable = BTreeSet::new();
     let mut missing_auth_events = BTreeSet::new();
 
-    // 1. Calculate Backwards Reachable (Ancestors up the auth chain)
+    // Calculate Backwards Reachable (Ancestors up the auth chain)
     // Each entry is (event_id, depth_from_conflicted_set)
     let mut b_stack: Vec<(String, usize)> = conflicted_set.iter().map(|s| (s.clone(), 0)).collect();
     while let Some((node, depth)) = b_stack.pop() {
@@ -556,7 +567,7 @@ pub fn compute_v2_1_conflicted_subgraph_bounded(
         }
     }
 
-    // 2. Build Reverse Adjacency for Forwards Search
+    // Build Reverse Adjacency for Forwards Search
     let mut children_map: HashMap<String, Vec<String>> = HashMap::new();
     for (id, event) in auth_graph {
         for prev in &event.auth_events {
@@ -567,7 +578,7 @@ pub fn compute_v2_1_conflicted_subgraph_bounded(
         }
     }
 
-    // 3. Calculate Forwards Reachable (Descendants down the auth chain)
+    // Calculate Forwards Reachable (Descendants down the auth chain)
     let mut f_stack: Vec<String> = conflicted_set.to_vec();
     while let Some(node) = f_stack.pop() {
         if forwards_reachable.insert(node.clone()) {
@@ -577,7 +588,7 @@ pub fn compute_v2_1_conflicted_subgraph_bounded(
         }
     }
 
-    // 4. Intersect and build the final Conflicted Subgraph
+    // Intersect and build the final Conflicted Subgraph
     let mut subgraph = HashMap::new();
     let backwards_ids: BTreeSet<String> = backwards_reachable.iter().cloned().collect();
     let forwards_ids: BTreeSet<String> = forwards_reachable.iter().cloned().collect();

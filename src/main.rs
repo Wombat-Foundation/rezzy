@@ -1,17 +1,10 @@
 use clap::{Parser, ValueEnum};
 use ruma_lean::{lean_kahn_sort, LeanEvent, StateResVersion};
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::time::Instant;
-
-/// Deterministic sort ordering for events: depth ascending, then event_id ascending.
-/// This ensures stable output regardless of HashMap iteration order.
-fn cmp_depth_then_id(a: &LeanEvent, b: &LeanEvent) -> Ordering {
-    a.depth.cmp(&b.depth).then(a.event_id.cmp(&b.event_id))
-}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -300,7 +293,7 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
             .values()
             .filter(|ev| reachable.contains(&ev.event_id))
             .collect();
-        sorted_events.sort_by(|a, b| cmp_depth_then_id(a, b));
+        sorted_events.sort_by(|a, b| a.cmp_by_depth(b));
 
         let mut state_map = std::collections::HashMap::new();
         for ev in sorted_events {
@@ -314,15 +307,14 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
         // via backward walk, then let resolve_lean handle conflicts.
         let mut maps = Vec::new();
         for head_id in &heads {
-            // Collect all reachable events and their depths
-            let mut reachable_events: Vec<(u64, String)> = Vec::new();
+            let mut reachable: Vec<&LeanEvent> = Vec::new();
             let mut visited = std::collections::HashSet::new();
             let mut stack = vec![head_id.clone()];
 
             while let Some(ev_id) = stack.pop() {
                 if visited.insert(ev_id.clone()) {
                     if let Some(ev) = events_map.get(&ev_id) {
-                        reachable_events.push((ev.depth, ev_id.clone()));
+                        reachable.push(ev);
                         for prev_ev_id in &ev.prev_events {
                             stack.push(prev_ev_id.clone());
                         }
@@ -331,13 +323,11 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
             }
 
             // Sort by depth ascending, keep latest for each key
-            reachable_events.sort();
+            reachable.sort_by(|a, b| a.cmp_by_depth(b));
             let mut state_map = std::collections::HashMap::new();
-            for (_, ev_id) in reachable_events {
-                if let Some(ev) = events_map.get(&ev_id) {
-                    let key = (ev.event_type.clone(), ev.state_key.clone());
-                    state_map.insert(key, ev.event_id.clone());
-                }
+            for ev in reachable {
+                let key = (ev.event_type.clone(), ev.state_key.clone());
+                state_map.insert(key, ev.event_id.clone());
             }
             maps.push(state_map);
         }
