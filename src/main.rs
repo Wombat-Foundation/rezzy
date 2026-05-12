@@ -1,6 +1,6 @@
 use clap::{Parser, ValueEnum};
 use ruma_lean::{lean_kahn_sort, LeanEvent, StateResVersion};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
@@ -10,7 +10,7 @@ use std::time::Instant;
 #[command(author, version, about, long_about = None)]
 struct Args {
     #[arg(short, long)]
-    input: Option<PathBuf>,
+    input: Vec<PathBuf>,
 
     #[arg(short, long)]
     room: Option<String>,
@@ -114,6 +114,147 @@ fn fetch_room_state(
     Ok(val)
 }
 
+/// Load events from a single file path. Returns a Vec of raw JSON values.
+fn load_file(input_path: &PathBuf) -> anyhow::Result<Vec<serde_json::Value>> {
+    let input_reader: Box<dyn Read> = if input_path.to_str() == Some("-") {
+        Box::new(io::stdin())
+    } else {
+        Box::new(File::open(input_path)?)
+    };
+
+    let is_jsonl = input_path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"));
+
+    let mut reader = BufReader::new(input_reader);
+
+    if is_jsonl {
+        let mut values = Vec::new();
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let val: serde_json::Value = serde_json::from_str(&line)?;
+            values.push(val);
+        }
+        if values.is_empty() {
+            anyhow::bail!("No input data provided in JSONL file.");
+        }
+        Ok(values)
+    } else {
+        let mut input_data = Vec::new();
+        loop {
+            let mut line = String::new();
+            let bytes_read = reader.read_line(&mut line)?;
+            if bytes_read == 0 {
+                break;
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            input_data.extend_from_slice(line.as_bytes());
+        }
+        if input_data.is_empty() {
+            anyhow::bail!("No input data provided before empty line or EOF.");
+        }
+        let val: serde_json::Value = serde_json::from_slice(&input_data)?;
+        match val {
+            serde_json::Value::Array(arr) => Ok(arr),
+            other => Ok(vec![other]),
+        }
+    }
+}
+
+/// Merge multiple event sets by event_id (first-seen wins, PDUs are immutable).
+/// Returns the merged events and reports stats to stderr.
+fn merge_event_sets(
+    file_sets: Vec<(String, Vec<serde_json::Value>)>,
+    debug: bool,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let num_files = file_sets.len();
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    let mut merged: Vec<serde_json::Value> = Vec::new();
+    let mut per_file_ids: Vec<HashSet<String>> = Vec::with_capacity(num_files);
+
+    for (label, events) in &file_sets {
+        let mut file_ids = HashSet::with_capacity(events.len());
+        let mut added = 0usize;
+        let mut dupes = 0usize;
+
+        for val in events {
+            let event_id = val
+                .get("event_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            file_ids.insert(event_id.clone());
+            if seen_ids.insert(event_id) {
+                merged.push(val.clone());
+                added += 1;
+            } else {
+                dupes += 1;
+            }
+        }
+
+        eprintln!(
+            "[merge] {}: {} events ({} new, {} shared)",
+            label,
+            events.len(),
+            added,
+            dupes
+        );
+        per_file_ids.push(file_ids);
+    }
+
+    // Merge-base check: verify DAGs share history
+    if num_files >= 2 {
+        let shared: HashSet<&String> = per_file_ids[0]
+            .iter()
+            .filter(|id| per_file_ids[1..].iter().all(|s| s.contains(*id)))
+            .collect();
+
+        if shared.is_empty() {
+            anyhow::bail!(
+                "Disjoint DAGs: no shared events found across inputs. \
+                 Cannot compute meaningful merge — the DAGs share no history."
+            );
+        }
+
+        eprintln!(
+            "[merge] merge-base: {} shared events across all {} inputs",
+            shared.len(),
+            num_files
+        );
+
+        if debug {
+            // Find the merge-base frontier: shared events with the highest depths
+            let mut shared_depths: Vec<(&String, u64)> = shared
+                .iter()
+                .filter_map(|id| {
+                    merged.iter().find_map(|v| {
+                        let eid = v.get("event_id")?.as_str()?;
+                        if eid == id.as_str() {
+                            Some((*id, v.get("depth")?.as_u64().unwrap_or(0)))
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+            shared_depths.sort_by_key(|b| std::cmp::Reverse(b.1));
+            eprintln!(
+                "[merge] highest shared depths: {:?}",
+                &shared_depths[..shared_depths.len().min(5)]
+            );
+        }
+    }
+
+    eprintln!("[merge] total: {} unique events", merged.len());
+    Ok(merged)
+}
+
 fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
     let input_val: serde_json::Value = if let Some(room_id) = &args.room {
         let homeserver = args
@@ -134,52 +275,24 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
             std::env::var(&env_key).ok()
         });
         fetch_room_state(homeserver, room_id, token.as_deref())?
-    } else if let Some(input_path) = &args.input {
-        let input_reader: Box<dyn Read> = if input_path.to_str() == Some("-") {
-            Box::new(io::stdin())
+    } else if !args.input.is_empty() {
+        if args.input.len() == 1 {
+            // Single input: preserve existing behavior (supports {events, heads} wrapper)
+            let events = load_file(&args.input[0])?;
+            serde_json::Value::Array(events)
         } else {
-            Box::new(File::open(input_path)?)
-        };
-
-        let is_jsonl = input_path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"));
-
-        let mut reader = BufReader::new(input_reader);
-
-        if is_jsonl {
-            // JSONL: parse each line as a separate JSON value, collect into array
-            let mut values = Vec::new();
-            for line in reader.lines() {
-                let line = line?;
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let val: serde_json::Value = serde_json::from_str(&line)?;
-                values.push(val);
+            // Multiple inputs: merge DAGs by event_id
+            let mut file_sets = Vec::with_capacity(args.input.len());
+            for path in &args.input {
+                let label = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.display().to_string());
+                let events = load_file(path)?;
+                file_sets.push((label, events));
             }
-            if values.is_empty() {
-                anyhow::bail!("No input data provided in JSONL file.");
-            }
-            serde_json::Value::Array(values)
-        } else {
-            // Single JSON document: read all non-empty lines and parse as one value
-            let mut input_data = Vec::new();
-            loop {
-                let mut line = String::new();
-                let bytes_read = reader.read_line(&mut line)?;
-                if bytes_read == 0 {
-                    break; // EOF
-                }
-                if line.trim().is_empty() {
-                    continue;
-                }
-                input_data.extend_from_slice(line.as_bytes());
-            }
-            if input_data.is_empty() {
-                anyhow::bail!("No input data provided before empty line or EOF.");
-            }
-            serde_json::from_slice(&input_data)?
+            let merged = merge_event_sets(file_sets, args.debug)?;
+            serde_json::Value::Array(merged)
         }
     } else {
         anyhow::bail!("Either --input or --room must be provided.");
