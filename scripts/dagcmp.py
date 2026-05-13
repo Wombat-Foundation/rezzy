@@ -152,11 +152,17 @@ def analyze(
         sys.exit(1)
 
     # Group files by base domain
+    # Domains don't contain dashes after TLD, so iteratively strip
+    # user-added suffixes like -d, -22807, -base99, -tip, etc.
     domain_files: dict[str, list[Path]] = defaultdict(list)
     for f in files:
         fname = f.name
         server = fname.replace(f"{prefix}-{room}-", "").replace(".jsonl", "")
-        base = re.sub(r"-(\d+|tip|[a-z]{1,4}\d*)$", "", server)
+        base = server
+        prev = None
+        while base != prev:
+            prev = base
+            base = re.sub(r"-(\d+|tip|[a-z]{1,4}\d*)$", "", base)
         domain_files[base].append(f)
 
     # Ground truth: merge all
