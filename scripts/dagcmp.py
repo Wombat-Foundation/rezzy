@@ -28,6 +28,8 @@ class ServerReport:
     res_left: int = 0
     res_banned: int = 0
 
+    bf: float = 0.0  # branching factor (avg prev_events per event)
+
     missing: int = 0
     extra: int = 0
     missing_users: list[str] = field(default_factory=list)
@@ -77,11 +79,13 @@ def load_event_ids(path: str) -> set[str]:
     return ids
 
 
-def get_depth_stats(path: str) -> tuple[int, int, str]:
-    """Get min_depth, max_depth, and root_event_id."""
+def get_depth_stats(path: str) -> tuple[int, int, str, float]:
+    """Get min_depth, max_depth, root_event_id, and branching factor."""
     min_d = float("inf")
     max_d = 0
     root_id = ""
+    total_prev = 0
+    n_events = 0
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -95,12 +99,17 @@ def get_depth_stats(path: str) -> tuple[int, int, str]:
                     root_id = obj.get("event_id", "")
                 if d > max_d:
                     max_d = d
+                prev = obj.get("prev_events", [])
+                total_prev += len(prev) if isinstance(prev, list) else 0
+                n_events += 1
             except json.JSONDecodeError:
                 continue
+    bf = total_prev / n_events if n_events > 0 else 0.0
     return (
         (int(min_d) if min_d != float("inf") else 0),
         max_d,
         root_id,
+        bf,
     )
 
 
@@ -189,14 +198,20 @@ def analyze(
         min_d = float("inf")
         max_d = 0
         root_id = ""
+        total_prev = 0
+        n_events = 0
         for f in dfiles:
             srv_eids |= load_event_ids(str(f))
-            f_min, f_max, f_root = get_depth_stats(str(f))
+            f_min, f_max, f_root, f_bf = get_depth_stats(str(f))
             if f_min < min_d:
                 min_d = f_min
                 root_id = f_root
             if f_max > max_d:
                 max_d = f_max
+            # Accumulate for BF
+            n_f = len(load_event_ids(str(f)))
+            total_prev += int(f_bf * n_f)
+            n_events += n_f
 
         domain_eids[domain] = srv_eids
 
@@ -205,6 +220,7 @@ def analyze(
         r.min_depth = int(min_d) if min_d != float("inf") else 0
         r.max_depth = max_d
         r.root = root_id
+        r.bf = total_prev / n_events if n_events > 0 else 0.0
 
         # State-res on this domain's files alone
         srv_summary = run_ruma([str(f) for f in dfiles])
@@ -245,7 +261,7 @@ def analyze(
         cols = (
             f"{'#':<3} {'SERVER':<26} {'JOINED':>6} "
             f"{'LEFT':>5} {'BAN':>4} "
-            f"{'EVENTS':>6} {'PREC':>6} {'RECALL':>6} "
+            f"{'EVENTS':>6} {'BF':>5} {'PREC':>6} {'RECALL':>6} "
             f"{'F1':>6} "
             f"{'DIFF':>10} {'DEPTH':<14} ROOT"
         )
@@ -253,7 +269,7 @@ def analyze(
         cols = (
             f"{'SERVER':<26} {'JOINED':>6} "
             f"{'LEFT':>5} {'BAN':>4} "
-            f"{'EVENTS':>6} {'DEPTH':<14} "
+            f"{'EVENTS':>6} {'BF':>5} {'DEPTH':<14} "
             f"{'DIFF':>10} ROOT"
         )
     print(cols)
@@ -265,6 +281,8 @@ def analyze(
             depth = f"{r.min_depth}.?.{r.max_depth}"
         else:
             depth = f"{r.min_depth}..{r.max_depth}"
+
+        bf_str = f"{r.bf:.3f}"
 
         if r.res_joined == -1:
             j_str, l_str, b_str = "ERR", "ERR", "ERR"
@@ -284,7 +302,7 @@ def analyze(
                 f"{i:<3} {r.server:<26} "
                 f"{j_str:>6} {l_str:>5} "
                 f"{b_str:>4} "
-                f"{r.events:>6} {prec_str:>6} "
+                f"{r.events:>6} {bf_str:>5} {prec_str:>6} "
                 f"{rec_str:>6} "
                 f"{f1_str:>6} {diff:>10} "
                 f"{depth:<14} {r.root}"
@@ -293,7 +311,7 @@ def analyze(
             print(
                 f"{r.server:<26} {j_str:>6} "
                 f"{l_str:>5} {b_str:>4} "
-                f"{r.events:>6} {depth:<14} "
+                f"{r.events:>6} {bf_str:>5} {depth:<14} "
                 f"{diff:>10} {r.root}"
             )
 
@@ -402,8 +420,9 @@ def analyze(
         )
         n = len(chain_results)
         print("\n    strongest links:")
+        max_srv = max(len(srv) for srv, _ in top[:5])
         for srv, count in top[:5]:
-            print(f"      {srv}: {count}/{n} chains")
+            print(f"      {srv + ':':<{max_srv + 1}} {count:>2}/{n} chains")
 
 
 def main():
