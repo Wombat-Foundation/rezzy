@@ -588,9 +588,24 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
                 .iter()
                 .filter_map(|id| raw_map.get(id))
                 .collect();
-            state_events.sort_by_key(|ev| {
-                let id = ev.get("event_id").and_then(|id| id.as_str()).unwrap_or("");
-                events_map.get(id).map(|e| e.origin_server_ts).unwrap_or(0)
+            state_events.sort_by(|a, b| {
+                let a_ev = a
+                    .get("event_id")
+                    .and_then(|id| id.as_str())
+                    .and_then(|id| events_map.get(id));
+                let b_ev = b
+                    .get("event_id")
+                    .and_then(|id| id.as_str())
+                    .and_then(|id| events_map.get(id));
+
+                let a_depth = a_ev.map(|e| e.depth).unwrap_or(0);
+                let b_depth = b_ev.map(|e| e.depth).unwrap_or(0);
+
+                a_depth.cmp(&b_depth).then_with(|| {
+                    let a_id = a_ev.map(|e| e.event_id.as_str()).unwrap_or("");
+                    let b_id = b_ev.map(|e| e.event_id.as_str()).unwrap_or("");
+                    a_id.cmp(b_id)
+                })
             });
             Ok(serde_json::json!(state_events))
         }
