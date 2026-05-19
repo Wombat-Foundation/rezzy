@@ -584,10 +584,14 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
 
     match args.format {
         OutputFormat::Events => {
-            let state_events: Vec<&serde_json::Value> = resolved_state_list
+            let mut state_events: Vec<&serde_json::Value> = resolved_state_list
                 .iter()
                 .filter_map(|id| raw_map.get(id))
                 .collect();
+            state_events.sort_by_key(|ev| {
+                let id = ev.get("event_id").and_then(|id| id.as_str()).unwrap_or("");
+                events_map.get(id).map(|e| e.origin_server_ts).unwrap_or(0)
+            });
             Ok(serde_json::json!(state_events))
         }
         OutputFormat::Federation => {

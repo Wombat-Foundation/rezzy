@@ -260,7 +260,9 @@ def analyze(
         reports.append(r)
 
     # Assign join order based on min_depth (lowest = first to join)
-    by_depth = sorted(reports, key=lambda r: (r.min_depth if r.min_depth > 0 else float('inf')))
+    by_depth = sorted(
+        reports, key=lambda r: (r.min_depth if r.min_depth > 0 else float("inf"))
+    )
     join_order: dict[str, int] = {}
     for idx, r in enumerate(by_depth, 1):
         join_order[r.server] = idx
