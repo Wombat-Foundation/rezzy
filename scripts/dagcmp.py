@@ -259,13 +259,19 @@ def analyze(
 
         reports.append(r)
 
+    # Assign join order based on min_depth (lowest = first to join)
+    by_depth = sorted(reports, key=lambda r: (r.min_depth if r.min_depth > 0 else float('inf')))
+    join_order: dict[str, int] = {}
+    for idx, r in enumerate(by_depth, 1):
+        join_order[r.server] = idx
+
     if rank:
         reports.sort(key=lambda r: r.f1, reverse=True)
 
     # Display
     if rank:
         cols = (
-            f"{'#':<3} {'SERVER':<26} {'JOINED':>6} "
+            f"{'#':<3} {'SERVER':<26} {'ORD':>3} {'JOINED':>6} "
             f"{'LEFT':>5} {'BAN':>4} "
             f"{'EVENTS':>6} {'BF':>5} {'PREC':>6} {'RECALL':>6} "
             f"{'F1':>6} "
@@ -273,7 +279,7 @@ def analyze(
         )
     else:
         cols = (
-            f"{'SERVER':<26} {'JOINED':>6} "
+            f"{'SERVER':<26} {'ORD':>3} {'JOINED':>6} "
             f"{'LEFT':>5} {'BAN':>4} "
             f"{'EVENTS':>6} {'BF':>5} {'DEPTH':<14} "
             f"{'DIFF':>10} ROOT"
@@ -303,10 +309,12 @@ def analyze(
             f1_str = f"{r.f1:>5.1%}"
             diff = f"-{r.missing}/+{r.extra}" if (r.missing or r.extra) else "✓"
 
+        ord_num = join_order.get(r.server, 0)
+
         if rank:
             print(
                 f"{i:<3} {r.server:<26} "
-                f"{j_str:>6} {l_str:>5} "
+                f"{ord_num:>3} {j_str:>6} {l_str:>5} "
                 f"{b_str:>4} "
                 f"{r.events:>6} {bf_str:>5} {prec_str:>6} "
                 f"{rec_str:>6} "
@@ -315,7 +323,7 @@ def analyze(
             )
         else:
             print(
-                f"{r.server:<26} {j_str:>6} "
+                f"{r.server:<26} {ord_num:>3} {j_str:>6} "
                 f"{l_str:>5} {b_str:>4} "
                 f"{r.events:>6} {bf_str:>5} {depth:<14} "
                 f"{diff:>10} {r.root}"
