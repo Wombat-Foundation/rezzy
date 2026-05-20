@@ -33,7 +33,7 @@ jobs:
         run: make lean
 
       - name: Build docs
-        run: make docs
+        run: make lean/docs
 
       # doc-gen4 outputs to .lake/build/doc by default. Upload it!
       - name: Upload Pages artifact

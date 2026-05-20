@@ -37,7 +37,7 @@ jobs:
         run: bash scripts/setup_ruma_cli.sh
 
       - name: Run E2E parity test
-        run: make e2e
+        run: make rust/e2e
 
       - name: Upload E2E Diff on Failure
         if: failure()
