@@ -27,7 +27,7 @@ jobs:
           echo "$HOME/.elan/bin" >> $GITHUB_PATH
 
       - name: Update specific cache
-        run: make cache
+        run: make lean/cache
 
       - name: Run lean (lake build)
         run: make lean

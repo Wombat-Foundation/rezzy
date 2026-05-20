@@ -35,4 +35,4 @@ jobs:
         uses: taiki-e/install-action@cargo-tarpaulin
 
       - name: Test (w/ coverage)
-        run: make coverage
+        run: make rust/coverage
