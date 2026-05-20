@@ -6,6 +6,7 @@ authors = ["Shane Jaroch <chown_tee@proton.me>"]
 description = "Formally verified, dependency-free Matrix State Resolution v2 logic."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/gamesguru/ruma-lean"
+autotests = false
 exclude = [
     "res/",
     "scripts/",

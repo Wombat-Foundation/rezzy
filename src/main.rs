@@ -9,7 +9,7 @@ use std::time::Instant;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long)]
+    #[arg(short, long, num_args(1..))]
     input: Vec<PathBuf>,
 
     #[arg(short, long)]
