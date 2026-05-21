@@ -450,9 +450,11 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
 
         let mut state_map = std::collections::HashMap::new();
         for ev in sorted_events {
-            let key = (ev.event_type.clone(), ev.state_key.clone());
-            // Later (higher depth) events overwrite earlier ones
-            state_map.insert(key, ev.event_id.clone());
+            if raw_map.get(&ev.event_id).map_or(false, |r| r.get("state_key").is_some()) {
+                let key = (ev.event_type.clone(), ev.state_key.clone());
+                // Later (higher depth) events overwrite earlier ones
+                state_map.insert(key, ev.event_id.clone());
+            }
         }
         vec![state_map]
     } else {
@@ -479,8 +481,10 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
             reachable.sort_by(|a, b| a.cmp_by_depth(b));
             let mut state_map = std::collections::HashMap::new();
             for ev in reachable {
-                let key = (ev.event_type.clone(), ev.state_key.clone());
-                state_map.insert(key, ev.event_id.clone());
+                if raw_map.get(&ev.event_id).map_or(false, |r| r.get("state_key").is_some()) {
+                    let key = (ev.event_type.clone(), ev.state_key.clone());
+                    state_map.insert(key, ev.event_id.clone());
+                }
             }
             maps.push(state_map);
         }
