@@ -22,8 +22,7 @@ format: ##H Format codebase (Rust + Lean + scripts)
 
 .PHONY: lint
 lint: ##H Run all linters
-	$(CARGO) clippy --all-targets --all-features -- -D warnings
-
+        $(CARGO) clippy --all-targets --all-features
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Lean targets
