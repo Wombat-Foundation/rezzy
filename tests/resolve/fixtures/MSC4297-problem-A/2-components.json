@@ -1,0 +1,36 @@
+[
+  {
+    "event_id": "$A1",
+    "type": "m.room.create",
+    "state_key": "",
+    "sender": "@alice:example.com",
+    "origin_server_ts": 0,
+    "prev_events": [],
+    "content": {}
+  },
+  {
+    "event_id": "$A2",
+    "type": "m.room.message",
+    "sender": "@alice:example.com",
+    "origin_server_ts": 1,
+    "prev_events": ["$A1"],
+    "content": {}
+  },
+  {
+    "event_id": "$B1",
+    "type": "m.room.create",
+    "state_key": "",
+    "sender": "@bob:example.com",
+    "origin_server_ts": 0,
+    "prev_events": [],
+    "content": {}
+  },
+  {
+    "event_id": "$B2",
+    "type": "m.room.message",
+    "sender": "@bob:example.com",
+    "origin_server_ts": 1,
+    "prev_events": ["$B1"],
+    "content": {}
+  }
+]
