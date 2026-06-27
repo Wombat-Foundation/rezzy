@@ -5,7 +5,16 @@ target/
 .tmp/
 *.zip
 *.tar.*
+/*.txt
+# misc
+/*.log
+/*.jsonl
+# paper
+paper.aux
+paper.log
+paper.out
+paper.pdf
 # force add something if you want it
-res/
+# res/
 # python
 __pycache__

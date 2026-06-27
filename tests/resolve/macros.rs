@@ -429,9 +429,10 @@ where
         }
     }
 
-    let pdus_map: EventIdMap<OwnedEventId, Pdu> = EventIdMap::from_iter(
-        pdus.into_iter().map(|pdu| (pdu.event_id().to_owned(), pdu.to_owned())),
-    );
+    let pdus_map: EventIdMap<OwnedEventId, Pdu> = pdus
+        .into_iter()
+        .map(|pdu| (pdu.event_id().to_owned(), pdu.to_owned()))
+        .collect();
 
     let auth_chain_from_state_map =
         |state_map: &StateMap<OwnedEventId>| -> Result<_, Box<dyn Error>> {

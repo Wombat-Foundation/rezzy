@@ -22,39 +22,39 @@ format: ##H Format codebase (Rust + Lean + scripts)
 
 .PHONY: lint
 lint: ##H Run all linters
-	$(CARGO) clippy --all-targets --all-features
+	$(CARGO) +nightly clippy --all-targets --all-features -- -W clippy::perf -W clippy::pedantic
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Lean targets
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.PHONY: lean/build
-lean/build: ##H Build Lean proofs
-	$(LAKE) build
-	@printf "\n$${STYLE_GREEN}--- Verification Complete ---$${STYLE_RESET}\n"
-	@printf "$${STYLE_CYAN}Mapped Theorems & Definitions:$${STYLE_RESET}\n"
-	@grep -E '^(theorem|def|class|instance|structure) ' RumaLean/*.lean RumaLean.lean || true
-	@printf "$${STYLE_GREEN}--------------------------------$${STYLE_RESET}\n"
-
-.PHONY: lean/clean
-lean/clean: ##H Remove Lean build artifacts (preserves packages)
-	rm -rf .lake/build/
-
-.PHONY: lean/cache
-lean/cache: ##H Fetch Lean/Mathlib oleans from cache
-	$(LAKE) exe cache get
-
-.PHONY: lean/docs
-lean/docs: ##H Generate Lean docs
-	DOCGEN_SKIP_LEAN=1 DOCGEN_SKIP_STD=1 DOCGEN_SKIP_LAKE=1 DOCGEN_SKIP_DEPS=1 $(LAKE) build RumaLean:docs
-
-.PHONY: lean/nuke
-lean/nuke: ##H Full Lean reset (removes packages too — will re-clone)
-	rm -rf .lake/
-
-# Convenience alias
-.PHONY: lean
-lean: lean/build ##H Alias for lean/build
+#.PHONY: lean/build
+#lean/build: ##H Build Lean proofs
+#	$(LAKE) build
+#	@printf "\n$${STYLE_GREEN}--- Verification Complete ---$${STYLE_RESET}\n"
+#	@printf "$${STYLE_CYAN}Mapped Theorems & Definitions:$${STYLE_RESET}\n"
+#	@grep -E '^(theorem|def|class|instance|structure) ' RumaLean/*.lean RumaLean.lean || true
+#	@printf "$${STYLE_GREEN}--------------------------------$${STYLE_RESET}\n"
+#
+#.PHONY: lean/clean
+#lean/clean: ##H Remove Lean build artifacts (preserves packages)
+#	rm -rf .lake/build/
+#
+#.PHONY: lean/cache
+#lean/cache: ##H Fetch Lean/Mathlib oleans from cache
+#	$(LAKE) exe cache get
+#
+#.PHONY: lean/docs
+#lean/docs: ##H Generate Lean docs
+#	DOCGEN_SKIP_LEAN=1 DOCGEN_SKIP_STD=1 DOCGEN_SKIP_LAKE=1 DOCGEN_SKIP_DEPS=1 $(LAKE) build RumaLean:docs
+#
+#.PHONY: lean/nuke
+#lean/nuke: ##H Full Lean reset (removes packages too — will re-clone)
+#	rm -rf .lake/
+#
+## Convenience alias
+#.PHONY: lean
+#lean: lean/build ##H Alias for lean/build
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -63,11 +63,11 @@ lean: lean/build ##H Alias for lean/build
 
 .PHONY: rust/build
 rust/build: ##H Compile Rust binary (release)
-	$(CARGO) build --release --features cli
+	$(CARGO) build --release --features cli,hashing
 
 .PHONY: rust/test
 rust/test: fixtures ##H Run Rust tests
-	$(CARGO) test --all-targets --all-features
+	$(CARGO) test --release --all-targets --all-features
 
 .PHONY: rust/clean
 rust/clean: ##H Remove Rust build artifacts
@@ -75,7 +75,11 @@ rust/clean: ##H Remove Rust build artifacts
 
 .PHONY: rust/install
 rust/install: ##H Install ruma-lean binary to cargo bin
-	$(CARGO) install --features cli --path .
+	$(CARGO) install --features cli,hashing --path . --bin ruma-lean
+
+.PHONY: rust/uninstall
+rust/uninstall: ##H Uninstall ruma-lean binary from cargo bin
+	$(CARGO) uninstall ruma-lean
 
 .PHONY: rust/coverage
 rust/coverage: ##H Run code coverage and generate HTML report
@@ -90,8 +94,11 @@ rust/coverage: ##H Run code coverage and generate HTML report
 
 .PHONY: rust/e2e
 rust/e2e: ##H Run e2e integration test on real JSON
-	for f in res/*.json; do \
-		$(CARGO) run --release --features cli -- -i "$$f"; \
+	for f in res/*.json res/*jsonl; do \
+		ARGS=""; \
+		if [ "$$f" = "res/real_dag_52k_room.json" -o "$$f" = "res/real_dag_nheko.json" ]; then ARGS="--state-res v2"; fi; \
+		if [ "$$f" = "res/remote-dag-sM2LwqNHGQOgLf35gqxPMy9D7oYde2q9ADg8HPBM3kE-v12-unredacted.org-PARTIAL.jsonl" ]; then ARGS="--state-res v2-1"; fi; \
+		$(CARGO) run --release --features cli,hashing -- $$ARGS -i "$$f" || exit 1; \
 	done
 
 .PHONY: rust/publish
@@ -105,19 +112,36 @@ rust/publish: ##H Preview package and simulate dry-run publish
 	$(CARGO) publish --dry-run
 
 # Convenience aliases
-.PHONY: build test install clean
+.PHONY: build test install clean uninstall
 build:   rust/build   ##H Alias for rust/build
 test:    rust/test    ##H Alias for rust/test
 install: rust/install ##H Alias for rust/install
-clean:   rust/clean lean/clean ##H Remove all build artifacts
+uninstall: rust/uninstall ##H Alias for rust/uninstall
+
+clean:   rust/clean	##H Remove all build artifacts
+	find . -name __pycache__ | xargs -r rm -rf
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Data generation
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+.PHONY: fetch-stateres-vectors
+fetch-stateres-vectors: ##H Fetch Ruma state resolution test vectors
+	@mkdir -p res/ruma_upstream/MSC4297-problem-A res/ruma_upstream/MSC4297-problem-B
+	@echo "Fetching MSC4297-problem-A vectors..."
+	@test -f res/ruma_upstream/MSC4297-problem-A/pdus-v11.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-A/pdus-v11.json -o res/ruma_upstream/MSC4297-problem-A/pdus-v11.json
+	@test -f res/ruma_upstream/MSC4297-problem-A/pdus-v12.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-A/pdus-v12.json -o res/ruma_upstream/MSC4297-problem-A/pdus-v12.json
+	@test -f res/ruma_upstream/MSC4297-problem-A/state-bob.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-A/state-bob.json -o res/ruma_upstream/MSC4297-problem-A/state-bob.json
+	@test -f res/ruma_upstream/MSC4297-problem-A/state-charlie.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-A/state-charlie.json -o res/ruma_upstream/MSC4297-problem-A/state-charlie.json
+	@echo "Fetching MSC4297-problem-B vectors..."
+	@test -f res/ruma_upstream/MSC4297-problem-B/pdus-v11.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-B/pdus-v11.json -o res/ruma_upstream/MSC4297-problem-B/pdus-v11.json
+	@test -f res/ruma_upstream/MSC4297-problem-B/pdus-v12.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-B/pdus-v12.json -o res/ruma_upstream/MSC4297-problem-B/pdus-v12.json
+	@test -f res/ruma_upstream/MSC4297-problem-B/state-eve.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-B/state-eve.json -o res/ruma_upstream/MSC4297-problem-B/state-eve.json
+	@test -f res/ruma_upstream/MSC4297-problem-B/state-zara.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-B/state-zara.json -o res/ruma_upstream/MSC4297-problem-B/state-zara.json
+
 .PHONY: fixtures
-fixtures: ##H Generate synthetic data and fetch real DAGs if MATRIX_TOKEN is set
+fixtures: fetch-stateres-vectors ##H Generate synthetic data and fetch real DAGs if MATRIX_TOKEN is set
 	@mkdir -p res res/expected
 	@test -f res/benchmark_1k.json || python3 scripts/generate_benchmark_1k.py
 	@test -f res/realistic_large_room.json || python3 scripts/gen_large_room.py

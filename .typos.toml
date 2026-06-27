@@ -1,0 +1,6 @@
+[default.extend-words]
+cna = "cna"
+NAX = "NAX"
+
+[files]
+extend-exclude = ["tests/critique_data/**"]

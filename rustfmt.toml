@@ -1,0 +1,7 @@
+unstable_features = true
+ignore = [
+    "ruma/",
+    "tests/resolve.rs",   # symlink -> ruma/crates/ruma-state-res/tests/it/resolve.rs
+    "tests/resolve/",     # macros.rs is a copy of upstream ruma style
+    "tests/it/",          # copied upstream test files
+]
