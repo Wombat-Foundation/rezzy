@@ -1416,11 +1416,11 @@ mod tests {
 
     #[test]
     fn test_kahn_sort_result_api() {
-        let ok = KahnSortResult::Ok(vec!["A".into()]);
+        let ok: KahnSortResult<String> = KahnSortResult::Ok(vec!["A".into()]);
         assert!(ok.is_ok());
-        assert_eq!(ok.into_sorted(), vec!["A"]);
+        assert_eq!(ok.into_sorted(), vec!["A".to_string()]);
 
-        let cycle = KahnSortResult::CycleDetected {
+        let cycle: KahnSortResult<String> = KahnSortResult::CycleDetected {
             sorted: vec!["C".into()],
             stuck: vec!["A".into(), "B".into()],
         };

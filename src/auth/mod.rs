@@ -45,12 +45,12 @@ pub enum AuthError<Id = String> {
     /// The `m.room.create` event has `prev_events`, which is forbidden.
     CreateWithPrevEvents,
     /// An auth event referenced by this event is missing from the provided state.
-    MissingAuthEvent(String),
+    MissingAuthEvent(Id),
     /// The event failed basic syntactic validation (e.g. invalid event type, too many `prev_events`).
     InvalidSyntax(String),
 }
 
-impl<Id> fmt::Display for AuthError<Id> {
+impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AuthError::NotMember { sender, .. } => {

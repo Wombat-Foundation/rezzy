@@ -381,7 +381,7 @@ pub fn apply_cdo_filter<Id, S1: core::hash::BuildHasher, S2: core::hash::BuildHa
     // jscpd:ignore-end
 ) -> HashMap<Id, LeanEvent<Id>>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    Id: Clone + Eq + core::hash::Hash + Ord,
 {
     let adj = build_adjacency_structures(conflicted_events, auth_context);
     let prioritized = prioritize_events(conflicted_events);

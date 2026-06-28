@@ -89,11 +89,11 @@ pub enum KahnSortResult<Id = String> {
     CycleDetected { sorted: Vec<Id>, stuck: Vec<Id> },
 }
 
-impl KahnSortResult {
+impl<Id> KahnSortResult<Id> {
     /// Returns the sorted event IDs, or an empty vec if a cycle was detected.
     /// This preserves backward compatibility with the old API.
     #[must_use]
-    pub fn into_sorted(self) -> Vec<String> {
+    pub fn into_sorted(self) -> Vec<Id> {
         match self {
             KahnSortResult::Ok(v) => v,
             KahnSortResult::CycleDetected { .. } => Vec::new(),
