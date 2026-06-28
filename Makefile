@@ -67,7 +67,7 @@ rust/build: ##H Compile Rust binary (release)
 
 .PHONY: rust/test
 rust/test: fixtures ##H Run Rust tests
-	$(CARGO) test --release --all-targets --all-features
+	$(CARGO) test --all-targets --all-features
 
 .PHONY: rust/clean
 rust/clean: ##H Remove Rust build artifacts

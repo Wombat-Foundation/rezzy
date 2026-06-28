@@ -255,7 +255,8 @@ where
     let actual_target_id = events_map.get_key_value(target_event_id).map(|(k, _)| k)?;
 
     let (id_to_index, index_to_id) = collect_ancestor_short_ids(actual_target_id, events_map);
-    let mut state_after_map = run_state_pipeline(&index_to_id, &id_to_index, events_map);
+    let mut state_after_map =
+        run_state_pipeline(&index_to_id, &id_to_index, &[actual_target_id], events_map);
 
     let target_idx = id_to_index[actual_target_id];
     state_after_map[target_idx].take().map(|arc| {
@@ -294,7 +295,8 @@ where
 
     let (id_to_index, index_to_id) =
         collect_ancestor_short_ids_batch(&actual_target_ids, events_map);
-    let state_after_map = run_state_pipeline(&index_to_id, &id_to_index, events_map);
+    let state_after_map =
+        run_state_pipeline(&index_to_id, &id_to_index, &actual_target_ids, events_map);
 
     let mut results = HashMap::with_capacity(actual_target_ids.len());
     for &actual_tid in &actual_target_ids {
@@ -313,24 +315,42 @@ where
 fn run_state_pipeline<'a, Id, S>(
     index_to_id: &[&'a Id],
     id_to_index: &HashMap<&'a Id, usize>,
+    target_event_ids: &[&'a Id],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
 ) -> Vec<Option<SharedState<Id>>>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
 {
-    let sorted_ancestors = topological_sort_short_ids(index_to_id, id_to_index, events_map);
+    let (sorted_ancestors, mut out_degree) =
+        topological_sort_short_ids(index_to_id, id_to_index, events_map);
+
+    // Artificially increment the out_degree of final target events by 1
+    // to ensure they are never consumed and remain in state_after_map.
+    for &tid in target_event_ids {
+        if let Some(&target_idx) = id_to_index.get(tid) {
+            out_degree[target_idx] = out_degree[target_idx].saturating_add(1);
+        }
+    }
+
     let mut state_after_map: Vec<Option<SharedState<Id>>> = alloc::vec![None; index_to_id.len()];
 
     for idx in sorted_ancestors {
         let id_val = index_to_id[idx];
         let ev = events_map.get(id_val).unwrap();
 
-        let mut prev_states: Vec<&SharedState<Id>> = Vec::with_capacity(ev.prev_events.len());
+        let mut prev_states = Vec::with_capacity(ev.prev_events.len());
         for pe in &ev.prev_events {
             if let Some(&pe_idx) = id_to_index.get(pe) {
-                if let Some(ref pe_state) = state_after_map[pe_idx] {
-                    prev_states.push(pe_state);
+                if out_degree[pe_idx] > 0 {
+                    out_degree[pe_idx] = out_degree[pe_idx].saturating_sub(1);
+                    if out_degree[pe_idx] == 0 {
+                        if let Some(pe_state) = state_after_map[pe_idx].take() {
+                            prev_states.push(pe_state);
+                        }
+                    } else if let Some(ref pe_state) = state_after_map[pe_idx] {
+                        prev_states.push(alloc::sync::Arc::clone(pe_state));
+                    }
                 }
             }
         }
@@ -338,7 +358,7 @@ where
         let mut state_before: SharedState<Id> = if prev_states.is_empty() {
             alloc::sync::Arc::new(BTreeMap::new())
         } else if prev_states.len() == 1 {
-            alloc::sync::Arc::clone(prev_states[0])
+            prev_states.into_iter().next().unwrap()
         } else {
             resolve_merge_fast_path(&prev_states, events_map)
         };
@@ -413,7 +433,7 @@ fn topological_sort_short_ids<Id, S>(
     index_to_id: &[&Id],
     id_to_index: &HashMap<&Id, usize>,
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
-) -> Vec<usize>
+) -> (Vec<usize>, Vec<usize>)
 where
     Id: Clone + Eq + core::hash::Hash,
     S: core::hash::BuildHasher,
@@ -421,6 +441,7 @@ where
     let num_reachable = index_to_id.len();
     let mut in_degree = alloc::vec![0usize; num_reachable];
     let mut adjacency = alloc::vec![Vec::new(); num_reachable];
+    let mut out_degree = alloc::vec![0usize; num_reachable];
 
     for (i, id) in index_to_id.iter().enumerate() {
         if let Some(ev) = events_map.get(*id) {
@@ -428,6 +449,7 @@ where
                 if let Some(&parent_idx) = id_to_index.get(parent) {
                     in_degree[i] = in_degree[i].saturating_add(1);
                     adjacency[parent_idx].push(i);
+                    out_degree[parent_idx] = out_degree[parent_idx].saturating_add(1);
                 }
             }
         }
@@ -451,11 +473,11 @@ where
         }
     }
 
-    sorted_ancestors
+    (sorted_ancestors, out_degree)
 }
 
 fn resolve_merge_fast_path<Id, S>(
-    prev_states: &[&SharedState<Id>],
+    prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
 ) -> SharedState<Id>
 where
@@ -463,9 +485,9 @@ where
     S: core::hash::BuildHasher,
 {
     let mut all_match = true;
-    let first = prev_states[0];
+    let first = &prev_states[0];
     for state in &prev_states[1..] {
-        if !alloc::sync::Arc::ptr_eq(first, state) && **first != ***state {
+        if !alloc::sync::Arc::ptr_eq(first, state) && **first != **state {
             all_match = false;
             break;
         }
@@ -475,7 +497,7 @@ where
         alloc::sync::Arc::clone(first)
     } else {
         let unwrapped_prev_states: Vec<BTreeMap<_, _>> =
-            prev_states.iter().map(|&arc| (**arc).clone()).collect();
+            prev_states.iter().map(|arc| (**arc).clone()).collect();
         alloc::sync::Arc::new(resolve_multiple_prev_states(
             &unwrapped_prev_states,
             events_map,
