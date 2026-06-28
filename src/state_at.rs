@@ -255,10 +255,7 @@ where
     let actual_target_id = events_map.get_key_value(target_event_id).map(|(k, _)| k)?;
 
     let (id_to_index, index_to_id) = collect_ancestor_short_ids(actual_target_id, events_map);
-    let sorted_ancestors = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
-
-    let mut state_after_map =
-        compute_state_after_for_ancestors(sorted_ancestors, &index_to_id, &id_to_index, events_map);
+    let mut state_after_map = run_state_pipeline(&index_to_id, &id_to_index, events_map);
 
     let target_idx = id_to_index[actual_target_id];
     state_after_map[target_idx].take().map(|arc| {
@@ -297,10 +294,7 @@ where
 
     let (id_to_index, index_to_id) =
         collect_ancestor_short_ids_batch(&actual_target_ids, events_map);
-    let sorted_ancestors = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
-
-    let state_after_map =
-        compute_state_after_for_ancestors(sorted_ancestors, &index_to_id, &id_to_index, events_map);
+    let state_after_map = run_state_pipeline(&index_to_id, &id_to_index, events_map);
 
     let mut results = HashMap::with_capacity(actual_target_ids.len());
     for &actual_tid in &actual_target_ids {
@@ -315,16 +309,17 @@ where
     results
 }
 
-fn compute_state_after_for_ancestors<Id, S>(
-    sorted_ancestors: Vec<usize>,
-    index_to_id: &[&Id],
-    id_to_index: &HashMap<&Id, usize>,
+/// Shared method for `compute_state_at` and `compute_state_at_batch`.
+fn run_state_pipeline<'a, Id, S>(
+    index_to_id: &[&'a Id],
+    id_to_index: &HashMap<&'a Id, usize>,
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
 ) -> Vec<Option<SharedState<Id>>>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
 {
+    let sorted_ancestors = topological_sort_short_ids(index_to_id, id_to_index, events_map);
     let mut state_after_map: Vec<Option<SharedState<Id>>> = alloc::vec![None; index_to_id.len()];
 
     for idx in sorted_ancestors {
