@@ -82,7 +82,7 @@ fn test_compute_state_at_correctness_and_performance() {
     let mid_id = "$500";
     let tip_id = "$1000";
 
-    // 1. Correctness Checks
+    // Correctness Checks
     let early_state = compute_state_at(early_id, &events_map).expect("should compute");
     let mid_state = compute_state_at(mid_id, &events_map).expect("should compute");
     let tip_state = compute_state_at(tip_id, &events_map).expect("should compute");
@@ -101,7 +101,7 @@ fn test_compute_state_at_correctness_and_performance() {
     assert_eq!(mid_state.get(&test_key), Some(&"$400".to_string()));
     assert_eq!(tip_state.get(&test_key), Some(&"$400".to_string()));
 
-    // 2. Performance Benchmark (average of 50 runs in debug, 500 in release)
+    // Performance Benchmark (average of 50 runs in debug, 500 in release)
     #[cfg(debug_assertions)]
     let runs = 50;
     #[cfg(not(debug_assertions))]
@@ -132,6 +132,81 @@ fn test_compute_state_at_correctness_and_performance() {
     println!("Early Event (depth 100):  {dur_early:?}");
     println!("Mid Event (depth 500):    {dur_mid:?}");
     println!("Tip Event (depth 1000):   {dur_tip:?}");
+}
+
+#[test]
+fn test_compute_state_at_batch() {
+    use rezzy::{compute_state_at, compute_state_at_batch, LeanEvent};
+    use std::collections::HashMap;
+
+    let mut events_map = HashMap::new();
+
+    // Create 1000 events in a single linear chain
+    for i in 1..=1000 {
+        let event_id = format!("${i}");
+        let prev_events = if i > 1 {
+            vec![format!("${}", i - 1)]
+        } else {
+            Vec::new()
+        };
+
+        // Every 10th event is state
+        let (state_key, event_type) = if i % 10 == 0 {
+            (Some(format!("user_{i}")), "m.room.member".to_string())
+        } else {
+            (None, "m.room.message".to_string())
+        };
+
+        let u_i = u64::try_from(i).unwrap();
+        let ev = LeanEvent {
+            event_id: event_id.clone(),
+            event_type,
+            state_key,
+            power_level: 0,
+            origin_server_ts: u_i * 1000,
+            sender: "alice".to_string(),
+            content: serde_json::Value::Null,
+            prev_events,
+            auth_events: Vec::new(),
+            depth: u_i,
+        };
+
+        events_map.insert(event_id, ev);
+    }
+
+    let early_id = "$100";
+    let mid_id = "$500";
+    let tip_id = "$1000";
+
+    // 1. Correctness Checks
+    let early_state = compute_state_at(early_id, &events_map).expect("should compute");
+    let mid_state = compute_state_at(mid_id, &events_map).expect("should compute");
+    let tip_state = compute_state_at(tip_id, &events_map).expect("should compute");
+
+    // Run batch computation
+    let batch_ids = vec![early_id, mid_id, tip_id];
+    let batch_results = compute_state_at_batch(&batch_ids, &events_map);
+
+    // Verify batch results exactly match individual results
+    assert_eq!(batch_results.len(), 3);
+    assert_eq!(&batch_results[early_id], &early_state);
+    assert_eq!(&batch_results[mid_id], &mid_state);
+    assert_eq!(&batch_results[tip_id], &tip_state);
+
+    // Check sizes of the state maps
+    assert_eq!(batch_results[early_id].len(), 10);
+    assert_eq!(batch_results[mid_id].len(), 50);
+    assert_eq!(batch_results[tip_id].len(), 100);
+
+    // Verify empty batch handles gracefully
+    let empty_results = compute_state_at_batch::<String, str, _>(&[], &events_map);
+    assert!(empty_results.is_empty());
+
+    // Verify missing / invalid IDs are ignored or skipped gracefully without panics
+    let invalid_ids = vec!["$missing_1", early_id, "$missing_2"];
+    let partial_results = compute_state_at_batch(&invalid_ids, &events_map);
+    assert_eq!(partial_results.len(), 1);
+    assert_eq!(&partial_results[early_id], &early_state);
 }
 
 // Helper FNV-1a state hash calculation to match main.rs
@@ -253,7 +328,7 @@ fn test_delta_chain_generation_correctness() {
         checkpoints.push((hash_str, parent_hash, ev.event_id.clone(), deltas));
     }
 
-    // 3. Verification of Chaining logic
+    // Verification of Chaining logic
     assert_eq!(checkpoints.len(), 3);
 
     let (h1, p1, id1, d1) = &checkpoints[0];
