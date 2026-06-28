@@ -24,6 +24,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
+use crate::types::StateResVersion;
 use crate::LeanEvent;
 
 /// An error indicating why an event failed authorization.
@@ -586,6 +587,10 @@ pub fn check_auth_chain<Id: Clone + Ord>(
 }
 
 /// Returns the state event types required to authorize an event.
+///
+/// For state resolution V2.1 and later, `m.room.create` is no longer
+/// included in auth events. The room's existence is implied via `room_id`.
+///
 /// Equivalent to Ruma's `state_res::auth_types_for_event`.
 #[must_use]
 pub fn auth_types_for_event(
@@ -593,6 +598,7 @@ pub fn auth_types_for_event(
     sender: &str,
     state_key: Option<&str>,
     content: &serde_json::Value,
+    version: StateResVersion,
 ) -> Vec<(String, String)> {
     let mut auth_types = Vec::new();
 
@@ -600,7 +606,13 @@ pub fn auth_types_for_event(
         return auth_types;
     }
 
-    auth_types.push((String::from("m.room.create"), String::new()));
+    // V2.1+ omits m.room.create from auth events (spec change)
+    if !matches!(
+        version,
+        StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
+    ) {
+        auth_types.push((String::from("m.room.create"), String::new()));
+    }
     auth_types.push((String::from("m.room.member"), String::from(sender)));
     auth_types.push((String::from("m.room.power_levels"), String::new()));
 
