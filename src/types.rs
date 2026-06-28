@@ -149,42 +149,20 @@ impl<Id: serde::Serialize> serde::Serialize for LeanEvent<Id> {
 }
 
 impl<Id> LeanEvent<Id> {
-    /// Validates basic syntactic limits and strict event whitelists as defined by the custom subset.
+    /// Validates basic syntactic limits (`prev_events`, `auth_events` array sizes).
+    ///
+    /// NOTE: Event types are NOT whitelisted — the spec does not restrict types at the auth level.
+    /// Any event type is valid as long as the sender has sufficient PL.
     ///
     /// # Errors
     ///
-    /// Returns static string error if syntactic checks fail.
+    /// Returns static string error if structural limits are exceeded.
     pub fn validate_syntactic(&self) -> Result<(), &'static str> {
-        const ALLOWED_EVENT_TYPES: &[&str] = &[
-            "m.room.create",
-            "m.room.join_rules",
-            "m.room.power_levels",
-            "m.room.member",
-            "m.room.name",
-            "m.room.topic",
-            "m.room.avatar",
-            "m.room.canonical_alias",
-            "m.room.history_visibility",
-            "m.room.guest_access",
-            "m.room.server_acl",
-            "m.room.tombstone",
-            "m.room.encryption",
-            "m.room.pinned_events",
-            "m.room.message",
-            "m.room.redaction",
-            "m.space.child",
-            "m.space.parent",
-        ];
-
         if self.prev_events.len() > 20 {
             return Err("prev_events exceeds maximum allowed length of 20");
         }
         if self.auth_events.len() > 10 {
             return Err("auth_events exceeds maximum allowed length of 10");
-        }
-
-        if !ALLOWED_EVENT_TYPES.contains(&self.event_type.as_str()) {
-            return Err("event_type is not a recognized Matrix specification event");
         }
 
         Ok(())

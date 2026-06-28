@@ -2646,8 +2646,10 @@ fn test_types_validate_syntactic() {
     };
     assert!(ev.validate_syntactic().is_ok());
 
-    ev.event_type = "invalid.type".to_string();
-    assert!(ev.validate_syntactic().is_err());
+    // Custom/unknown event types are allowed
+    // (spec doesn't whitelist types for auth)
+    ev.event_type = "org.custom.whatever".to_string();
+    assert!(ev.validate_syntactic().is_ok());
 
     ev.event_type = "m.room.message".to_string();
     ev.prev_events = vec!["a".to_string(); 21];
