@@ -43,7 +43,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 /// A single state delta entry — an addition, modification, or deletion.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StateDelta {
     /// The event type (e.g. `"m.room.member"`).
     pub event_type: String,
@@ -54,7 +54,7 @@ pub struct StateDelta {
 }
 
 /// A state checkpoint — a snapshot's hash, its parent, and the delta from parent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StateCheckpoint {
     /// FNV-1a hash of the state map at this point.
     pub state_hash: String,
@@ -164,6 +164,67 @@ pub fn compute_state_hash(state: &BTreeMap<(String, Option<String>), String>) ->
         hash = hash.wrapping_mul(1_099_511_628_211);
     }
     alloc::format!("{hash:016x}")
+}
+
+/// Walks a topologically-ordered slice of events and produces a
+/// [`StateCheckpoint`] for each one, chaining parent hashes and deltas.
+///
+/// Events **must** be in topological order (parents before children).
+/// Non-state events (where `state_key` is `None`) still produce a checkpoint
+/// but with an empty delta and the same state hash as their parent.
+///
+/// This is the high-level API that replaces manual delta-chain loops.
+///
+/// # Arguments
+///
+/// * `events` — a topologically-ordered slice of [`LeanEvent`]s.
+///
+/// # Returns
+///
+/// A `Vec<StateCheckpoint>` with one entry per input event.
+#[must_use]
+pub fn compute_delta_chain(events: &[crate::types::LeanEvent]) -> Vec<StateCheckpoint> {
+    use crate::HashMap;
+
+    let mut state_after_map: HashMap<String, BTreeMap<(String, Option<String>), String>> =
+        HashMap::new();
+    let mut state_hash_map: HashMap<String, String> = HashMap::new();
+    let mut checkpoints = Vec::with_capacity(events.len());
+
+    for ev in events {
+        let mut state_before = BTreeMap::new();
+        let mut parent_hash = None;
+
+        if let Some(prev_id) = ev.prev_events.first() {
+            if let Some(prev_state) = state_after_map.get(prev_id) {
+                state_before = prev_state.clone();
+                parent_hash = state_hash_map.get(prev_id).cloned();
+            }
+        }
+
+        let mut state_after = state_before.clone();
+        if ev.state_key.is_some() {
+            state_after.insert(
+                (ev.event_type.clone(), ev.state_key.clone()),
+                ev.event_id.clone(),
+            );
+        }
+
+        let state_hash = compute_state_hash(&state_after);
+        let deltas = compute_state_delta(&state_before, &state_after);
+
+        state_after_map.insert(ev.event_id.clone(), state_after);
+        state_hash_map.insert(ev.event_id.clone(), state_hash.clone());
+
+        checkpoints.push(StateCheckpoint {
+            state_hash,
+            parent_hash,
+            event_id: ev.event_id.clone(),
+            deltas,
+        });
+    }
+
+    checkpoints
 }
 
 #[cfg(test)]
