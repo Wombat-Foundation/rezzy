@@ -217,12 +217,22 @@ pub fn route_power_events<
     sort_set: &HashMap<Id, LeanEvent<Id>, S1>,
     power_events: &mut HashMap<Id, LeanEvent<Id>, S2>,
     non_power_events: &mut HashMap<Id, LeanEvent<Id>, S3>,
+    version: crate::StateResVersion,
 ) {
     for (id, ev) in sort_set {
         let is_power = ev.event_type == "m.room.create"
             || ev.event_type == "m.room.power_levels"
             || ev.event_type == "m.room.join_rules"
-            || ev.is_ban_or_kick();
+            || if matches!(
+                version,
+                crate::StateResVersion::V2_1
+                    | crate::StateResVersion::V2_1_1
+                    | crate::StateResVersion::V2_2
+            ) {
+                ev.is_ban_or_kick()
+            } else {
+                ev.event_type == "m.room.member"
+            };
 
         if is_power {
             power_events.insert(id.clone(), ev.clone());
@@ -261,7 +271,7 @@ where
     // Route power and non-power events
     let mut power_events = HashMap::new();
     let mut non_power_events = HashMap::new();
-    route_power_events(sort_set, &mut power_events, &mut non_power_events);
+    route_power_events(sort_set, &mut power_events, &mut non_power_events, version);
 
     if version != crate::StateResVersion::V1 {
         crate::resolve::expand_v2_power_events_auth_chains(

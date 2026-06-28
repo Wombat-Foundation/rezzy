@@ -137,7 +137,12 @@ mod tests {
 
         let mut power_events = HashMap::new();
         let mut non_power_events = HashMap::new();
-        rezzy::route_power_events(&sort_set, &mut power_events, &mut non_power_events);
+        rezzy::route_power_events(
+            &sort_set,
+            &mut power_events,
+            &mut non_power_events,
+            rezzy::StateResVersion::V2_1_1,
+        );
 
         // create, power_levels, join_rules, and kick are power events
         assert!(power_events.contains_key("$create"));
@@ -181,7 +186,12 @@ mod tests {
 
         let mut power_events = HashMap::new();
         let mut non_power_events = HashMap::new();
-        rezzy::route_power_events(&sort_set, &mut power_events, &mut non_power_events);
+        rezzy::route_power_events(
+            &sort_set,
+            &mut power_events,
+            &mut non_power_events,
+            rezzy::StateResVersion::V2_1_1,
+        );
 
         // Before expansion, only $kick is a power event. $auth_in_set is non-power.
         assert!(power_events.contains_key("$kick"));

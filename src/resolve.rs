@@ -207,7 +207,7 @@ where
     // Route all events through Kahn sort (reverse topological power ordering).
     let mut power_events = HashMap::new();
     let mut non_power_events = HashMap::new();
-    crate::lattice::route_power_events(sort_set, &mut power_events, &mut non_power_events);
+    crate::lattice::route_power_events(sort_set, &mut power_events, &mut non_power_events, version);
 
     if version != StateResVersion::V1 {
         expand_v2_power_events_auth_chains(&mut power_events, &mut non_power_events, sort_set);
