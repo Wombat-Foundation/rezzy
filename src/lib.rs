@@ -2,8 +2,8 @@
 //! # Rezzy — Matrix State Resolution Engine
 //!
 //! A high-performance, spec-compliant implementation of [Matrix](https://spec.matrix.org/)
-//! state resolution versions **V1**, **V2**, **V2.1** ([MSC4297]), and **V2.1.1** (ban evasion fix),
-//! with experimental **V2.2** (State DAGs / [MSC4242]) support.
+//! state resolution versions **V1**, **V2**, **V2.1** ([MSC4297]), **V2.1.1**
+//! (experimental), and **V2.2** (experimental [MSC4242]) support.
 //!
 //! Rezzy is designed for correctness-first operation inside homeservers, bridges,
 //! and formal-verification toolchains. It runs in `#![no_std]` environments (with
