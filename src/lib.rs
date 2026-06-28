@@ -34,8 +34,9 @@
 //! | [`cdo`] | Causal Domination Operator — vectorized pre-filter for conflicted events. |
 //! | [`lattice`] | Lattice-coordinatized resolution — `O(1)` projection with semilattice folding. |
 //! | [`resolve`] | Core state resolution entry point ([`resolve_lean`]). |
-//! | [`sorting`] | Topological (Kahn's) and mainline sorting for event ordering. |
-//! | [`state_at`] | Incremental state computation at arbitrary DAG positions. |
+//! | [`sorting`] | Topological and mainline sorting for the conflicted event set. |
+//! | [`state_at`] | Incremental state computation — room state at arbitrary DAG positions. |
+//! | [`state_delta`] | State delta compression — efficient incremental state storage. |
 //! | [`subgraph`] | Conflicted subgraph extraction for MSC4297 (V2.1+). |
 //! | [`types`] | Core data types: [`LeanEvent`], [`StateResVersion`], [`SortPriority`]. |
 //!
@@ -86,6 +87,7 @@ pub mod merge;
 pub mod resolve;
 pub mod sorting;
 pub mod state_at;
+pub mod state_delta;
 pub mod subgraph;
 pub mod types;
 
@@ -99,8 +101,14 @@ pub use state_at::*;
 pub use subgraph::*;
 pub use types::*;
 
+/// Re-exported hashmap — uses `std::collections::HashMap` when `std` is
+/// enabled, falls back to `hashbrown::HashMap` for `no_std` targets.
+///
+/// All resolution functions are generic over `BuildHasher`, so this is
+/// purely a convenience for callers who don't need a specific hasher.
 #[cfg(feature = "std")]
 pub use std::collections::HashMap;
 
+/// See the `std` variant's documentation.
 #[cfg(not(feature = "std"))]
 pub use hashbrown::HashMap;
