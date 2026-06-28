@@ -94,7 +94,7 @@ rust/coverage: ##H Run code coverage and generate HTML report
 
 .PHONY: rust/doc
 rust/doc: ##H Generate rustdoc API documentation
-	$(CARGO) doc --no-deps
+	$(CARGO) doc --no-deps --features hashing
 	@echo "Docs generated in target/doc/rezzy/index.html"
 
 .PHONY: rust/e2e

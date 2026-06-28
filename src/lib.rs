@@ -9,7 +9,7 @@
 //! and formal-verification toolchains. It runs in `#![no_std]` environments (with
 //! `alloc`) and optionally leverages SIMD-width bitmask sweeps for CDO filtering.
 //!
-//! ## Quick Start
+//! ## Quick Start Example (Room V11 / State Res V2)
 //!
 //! ```rust,no_run
 //! use rezzy::{resolve_lean, LeanEvent, StateResVersion, HashMap};
@@ -22,9 +22,8 @@
 //! let conflicted: HashMap<String, LeanEvent> = HashMap::new();
 //! let auth_context: HashMap<String, LeanEvent> = HashMap::new();
 //!
-//! // Resolve!
+//! // Resolve the winning state.
 //! let resolved = resolve_lean(unconflicted, conflicted, &auth_context, StateResVersion::V2);
-//! // `resolved` is a BTreeMap<(type, state_key), event_id> — the winning state.
 //! ```
 //!
 //! ## Modules
@@ -48,7 +47,6 @@
 //! | `alloc`     | ✓       | Bare `alloc` support for `no_std` targets (implied by `std`). |
 //! | `cli`       | ✗       | Builds the `rezzy` CLI binary and the `merge` module. |
 //! | `hashing`   | ✗       | SHA-256 content-hashing for events missing an `event_id`. |
-//! | `zkvm`      | ✗       | Reserved for zero-knowledge VM targets. |
 //! | `mock-ruma` | ✗       | Enables Ruma SDK interop for upstream parity testing. |
 //!
 //! ## Spec References

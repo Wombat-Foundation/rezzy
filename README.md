@@ -96,7 +96,7 @@ Expose a pure function that returns the list of `(event_type, state_key)` pairs 
 
 Accept `HashMap<u32, LeanEvent>` instead of `HashMap<String, LeanEvent>`. All internal lookups use `u32` keys instead of hashing 44-byte base64 event ID strings.
 
-- The caller builds a `String → u32` intern table once and remaps all event IDs
+- The caller builds a `String -> u32` intern table once and remaps all event IDs
 - `LeanEvent::auth_events` and `LeanEvent::prev_events` become `Vec<u32>` instead of `Vec<String>`
 - **Impact**: 10-40x faster HashMap lookups in debug mode, measurable improvement in release
 
@@ -126,6 +126,6 @@ Compute state at N events in topological order, reusing the resolved state from 
 
 Internalizing this in rezzy would:
 
-- Eliminate per-event adapter overhead (PDU→LeanEvent conversion, auth chain fetch)
+- Eliminate per-event adapter overhead (PDU->LeanEvent conversion, auth chain fetch)
 - Allow rezzy to skip resolution entirely when an event has a single parent (fast-path)
 - Enable internal caching of power level context across consecutive events

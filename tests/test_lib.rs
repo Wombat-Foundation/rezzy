@@ -1886,7 +1886,7 @@ mod tests {
         // All events have same PL=0 and ts=0, so tie-break is by event_id.
         // Smaller id pops first (loses). Sorted: $o (root), then $l < $n < $p in id order,
         // $m waits for $n. After $n pops, $m becomes eligible and beats $p ("m" > "p"? no:
-        // "$m" < "$p" → $m pops first). So order: [$o, $l, $n, $m, $p].
+        // "$m" < "$p" -> $m pops first). So order: [$o, $l, $n, $m, $p].
         assert_eq!(sorted_ids, vec!["$o", "$l", "$n", "$m", "$p"]);
     }
 

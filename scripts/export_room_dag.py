@@ -138,7 +138,7 @@ def export_via_cs_api(room_id, max_events=5000):
             eid = ev.get("event_id", "")
             if eid:
                 events[eid] = normalize_event(ev, room_id)
-        print(f"  → {len(events)} state events")
+        print(f"  -> {len(events)} state events")
     else:
         print("  ⚠ Could not fetch state — are you joined to this room?")
 
@@ -154,7 +154,7 @@ def export_via_cs_api(room_id, max_events=5000):
 
         chunk = data.get("chunk", [])
         if not chunk:
-            print(f"  → No more events at page {page}")
+            print(f"  -> No more events at page {page}")
             break
 
         new = 0
@@ -169,11 +169,11 @@ def export_via_cs_api(room_id, max_events=5000):
             break
 
         if page % 10 == 0:
-            print(f"  → Page {page}: {len(events)} events (+{new} new)")
+            print(f"  -> Page {page}: {len(events)} events (+{new} new)")
 
         time.sleep(0.05)
 
-    print(f"  → {len(events)} total events from timeline")
+    print(f"  -> {len(events)} total events from timeline")
 
     # Step 3: For events missing auth/prev, try fetching individually
     missing_dag = [
@@ -192,9 +192,9 @@ def export_via_cs_api(room_id, max_events=5000):
                     events[eid] = norm
                     fetched += 1
             if fetched % 50 == 0 and fetched > 0:
-                print(f"  → {fetched} events enriched with DAG edges")
+                print(f"  -> {fetched} events enriched with DAG edges")
             time.sleep(0.02)
-        print(f"  → {fetched} events enriched")
+        print(f"  -> {fetched} events enriched")
     else:
         print("[3/4] All events already have DAG edges ✓")
 
@@ -215,9 +215,9 @@ def export_via_cs_api(room_id, max_events=5000):
             events[ref] = normalize_event(ev, room_id)
             chased += 1
         if chased % 50 == 0 and chased > 0:
-            print(f"  → {chased} auth chain events fetched")
+            print(f"  -> {chased} auth chain events fetched")
         time.sleep(0.02)
-    print(f"  → {chased} auth chain events added")
+    print(f"  -> {chased} auth chain events added")
 
     return list(events.values())
 
@@ -333,7 +333,7 @@ def main():
     if room_id.startswith("#"):
         resolved = resolve_alias(room_id)
         if resolved:
-            print(f"Resolved {room_id} → {resolved}")
+            print(f"Resolved {room_id} -> {resolved}")
             room_id = resolved
         else:
             print(f"Could not resolve alias {room_id}")

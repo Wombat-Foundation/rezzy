@@ -98,7 +98,7 @@ def export_room(room_id, max_events=10000, output_path=None):
         if scanned % 50000 == 0:
             print(f"  Scanned {scanned} PDUs, found {matched} matching events...")
 
-    print(f"  → {matched} events from pduid_pdu (scanned {scanned} total)")
+    print(f"  -> {matched} events from pduid_pdu (scanned {scanned} total)")
 
     # Phase 2: Scan eventid_outlierpdu (outlier/backfilled events)
     if matched < max_events:
@@ -120,7 +120,9 @@ def export_room(room_id, max_events=10000, output_path=None):
                     f"  Scanned {outlier_scanned} outliers, "
                     f"found {outlier_matched} matching..."
                 )
-        print(f"  → {outlier_matched} events from outliers (scanned {outlier_scanned})")
+        print(
+            f"  -> {outlier_matched} events from outliers (scanned {outlier_scanned})"
+        )
     else:
         print("[2/3] Already at limit, skipping outliers.")
 

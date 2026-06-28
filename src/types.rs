@@ -493,8 +493,8 @@ impl<Id: Ord> LeanEvent<Id> {
 /// event must be applied first so that better events overwrite it via
 /// last-write-wins. Therefore:
 ///
-/// - **V1**: Greater = deeper depth (applied first → loses).
-/// - **V2+**: Greater = higher PL (applied first → sets auth context, then
+/// - **V1**: Greater = deeper depth (applied first -> loses).
+/// - **V2+**: Greater = higher PL (applied first -> sets auth context, then
 ///   lower-PL events overwrite for same-key conflicts).
 ///
 /// See the [`Ord`] implementation for the full tie-breaking cascade.
@@ -547,14 +547,14 @@ impl<Id: Ord> Ord for SortPriority<'_, Id> {
                 // V2 reverse topological power ordering: worst events pop FIRST.
                 //
                 // Ruma uses Reverse(TieBreaker) on a BinaryHeap where TieBreaker.cmp is:
-                //   other.pl.cmp(&self.pl)  → higher PL = smaller TieBreaker → larger Reverse → pops first
-                //   self.ts.cmp(&other.ts)  → earlier ts = smaller TieBreaker → larger Reverse → pops first
-                //   self.id.cmp(&other.id)  → smaller id = smaller TieBreaker → larger Reverse → pops first
+                //   other.pl.cmp(&self.pl)  -> higher PL = smaller TieBreaker -> larger Reverse -> pops first
+                //   self.ts.cmp(&other.ts)  -> earlier ts = smaller TieBreaker -> larger Reverse -> pops first
+                //   self.id.cmp(&other.id)  -> smaller id = smaller TieBreaker -> larger Reverse -> pops first
                 //
                 // In our direct max-heap (no Reverse) we invert each: Greater = pops first.
-                //   higher PL → Greater  → use self.pl.cmp(&other.pl)
-                //   earlier ts → Greater → use other.ts.cmp(&self.ts)
-                //   smaller id → Greater → use other.id.cmp(&self.id)
+                //   higher PL -> Greater  -> use self.pl.cmp(&other.pl)
+                //   earlier ts -> Greater -> use other.ts.cmp(&self.ts)
+                //   smaller id -> Greater -> use other.id.cmp(&self.id)
                 //
                 // Net result: high-PL events pop first (losing for same-key conflicts but
                 // setting auth context before lower-PL events are checked — this is what

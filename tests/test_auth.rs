@@ -283,7 +283,7 @@ fn test_moderator_can_override_admin_ban() {
     );
 
     // NOTE: the spec does not mandate a "previous sender" check.
-    // Per spec §5.5: sender PL (50) >= ban level (50) and target PL (0) < sender PL (50) → allow.
+    // Per spec §5.5: sender PL (50) >= ban level (50) and target PL (0) < sender PL (50) -> allow.
     let result = check_auth(&mod_kick, &state);
     assert!(
         result.is_ok(),

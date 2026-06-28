@@ -286,7 +286,7 @@ pub(crate) fn execute_power_phase<
 /// # Parameters
 ///
 /// - `unconflicted_state`: State entries that all forks agree on, keyed by
-///   `(event_type, state_key) → event_id`.
+///   `(event_type, state_key) -> event_id`.
 /// - `conflicted_events`: Events that differ across forks. These will be
 ///   sorted, auth-checked, and selectively applied.
 /// - `auth_context`: The full set of events reachable via `auth_events`

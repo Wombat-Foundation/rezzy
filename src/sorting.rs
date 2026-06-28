@@ -380,7 +380,7 @@ where
 ///
 /// This approach instead:
 /// 1. Seeds the BFS from ALL mainline events simultaneously at their positions.
-/// 2. Builds reverse auth-edges (`auth_ev` → events that list it) once: O(V+E).
+/// 2. Builds reverse auth-edges (`auth_ev` -> events that list it) once: O(V+E).
 /// 3. BFS outward through those reverse edges; since we process in ascending
 ///    position order, the first time an event is reached gives the minimum
 ///    (closest) mainline position.

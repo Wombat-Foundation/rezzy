@@ -45,12 +45,12 @@ pub struct LocalAuthEntry<Id> {
     /// The auth event itself.
     pub event: LeanEvent<Id>,
     /// Number of auth-chain hops from the original event to this one.
-    pub depth: usize,
+    pub auth_depth: usize,
 }
 
 /// Memoization cache for local auth context computation.
 ///
-/// Maps `event_id → BTreeMap<(type, state_key) → LocalAuthEntry>`, allowing
+/// Maps `event_id -> BTreeMap<(type, state_key) -> LocalAuthEntry>`, allowing
 /// the local auth context to be computed once and reused for all events that
 /// share auth chain prefixes.
 pub type LocalAuthCache<Id = String> =
@@ -208,14 +208,14 @@ pub(crate) fn update_local_auth<Id: Clone>(
         alloc::collections::btree_map::Entry::Vacant(e) => {
             e.insert(LocalAuthEntry {
                 event: aev.clone(),
-                depth: current_depth,
+                auth_depth: current_depth,
             });
         }
         alloc::collections::btree_map::Entry::Occupied(mut e) => {
-            if current_depth < e.get().depth {
+            if current_depth < e.get().auth_depth {
                 e.insert(LocalAuthEntry {
                     event: aev.clone(),
-                    depth: current_depth,
+                    auth_depth: current_depth,
                 });
             }
         }
@@ -267,19 +267,19 @@ pub(crate) fn compute_local_auth<
             }
 
             for (key, entry) in cached_ancestor {
-                let total_depth = current_depth.saturating_add(entry.depth);
+                let total_depth = current_depth.saturating_add(entry.auth_depth);
                 match local_auth.entry(key.clone()) {
                     alloc::collections::btree_map::Entry::Vacant(e) => {
                         e.insert(LocalAuthEntry {
                             event: entry.event.clone(),
-                            depth: total_depth,
+                            auth_depth: total_depth,
                         });
                     }
                     alloc::collections::btree_map::Entry::Occupied(mut e) => {
-                        if total_depth < e.get().depth {
+                        if total_depth < e.get().auth_depth {
                             e.insert(LocalAuthEntry {
                                 event: entry.event.clone(),
-                                depth: total_depth,
+                                auth_depth: total_depth,
                             });
                         }
                     }
