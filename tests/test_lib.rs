@@ -38,7 +38,7 @@ mod tests {
         use serde_json::json;
 
         // Ban event: state_key doesn't matter (though typically is the target), is_ban_or_kick should be true
-        let ban_event = LeanEvent {
+        let ban_event: LeanEvent = LeanEvent {
             event_id: "$ban".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
@@ -49,7 +49,7 @@ mod tests {
         assert!(ban_event.is_ban_or_kick());
 
         // Self-leave event: state_key == sender, is_ban_or_kick should be false
-        let self_leave_event = LeanEvent {
+        let self_leave_event: LeanEvent = LeanEvent {
             event_id: "$self_leave".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -60,7 +60,7 @@ mod tests {
         assert!(!self_leave_event.is_ban_or_kick());
 
         // Kick event: state_key != sender, is_ban_or_kick should be true
-        let kick_event = LeanEvent {
+        let kick_event: LeanEvent = LeanEvent {
             event_id: "$kick".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
@@ -71,7 +71,7 @@ mod tests {
         assert!(kick_event.is_ban_or_kick());
 
         // Leave event with state_key missing: is_ban_or_kick should be false
-        let leave_no_state_key_event = LeanEvent {
+        let leave_no_state_key_event: LeanEvent = LeanEvent {
             event_id: "$leave_no_sk".into(),
             event_type: "m.room.member".into(),
             state_key: None,
@@ -82,7 +82,7 @@ mod tests {
         assert!(!leave_no_state_key_event.is_ban_or_kick());
 
         // Non-member leave event: is_ban_or_kick should be false
-        let non_member_event = LeanEvent {
+        let non_member_event: LeanEvent = LeanEvent {
             event_id: "$non_member".into(),
             event_type: "m.room.message".into(),
             state_key: None,
@@ -95,13 +95,13 @@ mod tests {
 
     #[test]
     fn test_sort_priority_v2_tie_break() {
-        let e_base = LeanEvent {
+        let e_base: LeanEvent = LeanEvent {
             event_id: "$1".into(),
             power_level: 100,
             origin_server_ts: 10,
             ..Default::default()
         };
-        let e_worst_pl = LeanEvent {
+        let e_worst_pl: LeanEvent = LeanEvent {
             event_id: "$2".into(),
             power_level: 50,
             origin_server_ts: 10,
@@ -123,7 +123,7 @@ mod tests {
         // Higher PL is GREATER (pops first, loses for same key, but sets auth context first).
         assert_eq!(p_base.cmp(&p_worst_pl), Ordering::Greater); // p_base 100 > p_worst_pl 50.
 
-        let e_later_ts = LeanEvent {
+        let e_later_ts: LeanEvent = LeanEvent {
             event_id: "$3".into(),
             power_level: 100,
             origin_server_ts: 20,
@@ -139,7 +139,7 @@ mod tests {
         // p_base has ts 10 (worse) = Greater (pops first, loses).
         assert_eq!(p_base.cmp(&p_later_ts), Ordering::Greater);
 
-        let e_larger_id = LeanEvent {
+        let e_larger_id: LeanEvent = LeanEvent {
             event_id: "$2".into(),
             power_level: 100,
             origin_server_ts: 10,
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn test_v1_resolution_happy_path() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         events.insert(
             "A".into(),
             LeanEvent {
@@ -204,7 +204,7 @@ mod tests {
             "A".into(),
         );
 
-        let mut conflicted = HashMap::new();
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
         conflicted.insert(
             "A".into(),
             LeanEvent {
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_v1_tie_break_by_id() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         events.insert(
             "B".into(),
             LeanEvent {
@@ -290,8 +290,8 @@ mod tests {
 
     #[test]
     fn test_v2_resolution_happy_path() {
-        let mut auth = HashMap::new();
-        let create_ev = LeanEvent {
+        let mut auth: HashMap<String, LeanEvent> = HashMap::new();
+        let create_ev: LeanEvent = LeanEvent {
             event_id: "create".into(),
             event_type: "m.room.create".into(),
             sender: "@creator:example.com".into(),
@@ -299,7 +299,7 @@ mod tests {
         };
         auth.insert("create".into(), create_ev.clone());
 
-        let pl_ev = LeanEvent {
+        let pl_ev: LeanEvent = LeanEvent {
             event_id: "pl".into(),
             event_type: "m.room.power_levels".into(),
             sender: "@creator:example.com".into(),
@@ -313,8 +313,8 @@ mod tests {
         };
         auth.insert("pl".into(), pl_ev.clone());
 
-        let mut events = HashMap::new();
-        let ev_a = LeanEvent {
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
+        let ev_a: LeanEvent = LeanEvent {
             event_id: "A".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -325,7 +325,7 @@ mod tests {
             depth: 10,
             ..Default::default()
         };
-        let ev_b = LeanEvent {
+        let ev_b: LeanEvent = LeanEvent {
             event_id: "B".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn test_v2_deep_tie_break() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         events.insert(
             "B".into(),
             LeanEvent {
@@ -391,8 +391,8 @@ mod tests {
 
     #[test]
     fn test_v1_v2_v2_1_comparison_determinism() {
-        let mut auth = HashMap::new();
-        let create_ev = LeanEvent {
+        let mut auth: HashMap<String, LeanEvent> = HashMap::new();
+        let create_ev: LeanEvent = LeanEvent {
             event_id: "create".into(),
             event_type: "m.room.create".into(),
             sender: "@creator:example.com".into(),
@@ -400,7 +400,7 @@ mod tests {
         };
         auth.insert("create".into(), create_ev.clone());
 
-        let pl_ev = LeanEvent {
+        let pl_ev: LeanEvent = LeanEvent {
             event_id: "pl".into(),
             event_type: "m.room.power_levels".into(),
             sender: "@creator:example.com".into(),
@@ -414,8 +414,8 @@ mod tests {
         };
         auth.insert("pl".into(), pl_ev.clone());
 
-        let mut events = HashMap::new();
-        let ev_a = LeanEvent {
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
+        let ev_a: LeanEvent = LeanEvent {
             event_id: "A".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -426,7 +426,7 @@ mod tests {
             depth: 1,
             ..Default::default()
         };
-        let ev_b = LeanEvent {
+        let ev_b: LeanEvent = LeanEvent {
             event_id: "B".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn test_unhappy_path_cycle_detection() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         events.insert(
             "A".into(),
             LeanEvent {
@@ -502,7 +502,7 @@ mod tests {
 
     #[test]
     fn test_serialization_roundtrip() {
-        let event = LeanEvent {
+        let event: LeanEvent = LeanEvent {
             event_id: "$abc".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn test_partial_ord_implementations() {
-        let e1 = LeanEvent {
+        let e1: LeanEvent = LeanEvent {
             event_id: "a".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -531,7 +531,7 @@ mod tests {
             depth: 1,
             ..Default::default()
         };
-        let e2 = LeanEvent {
+        let e2: LeanEvent = LeanEvent {
             event_id: "b".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -565,7 +565,7 @@ mod tests {
         assert_eq!(v, rezzy::StateResVersion::V2);
         let _ = alloc::format!("{v:?}");
 
-        let e = LeanEvent {
+        let e: LeanEvent = LeanEvent {
             event_id: "a".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -582,7 +582,7 @@ mod tests {
 
     #[test]
     fn test_complex_dag_sort() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         events.insert(
             "1".into(),
             LeanEvent {
@@ -654,7 +654,7 @@ mod tests {
 
     #[test]
     fn test_kahn_missing_parents() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         events.insert(
             "A".into(),
             LeanEvent {
@@ -682,7 +682,7 @@ mod tests {
     fn test_resolve_lean_functionality() {
         let mut unconflicted = BTreeMap::new();
         unconflicted.insert(("type".into(), Some("key".into())), "id".into());
-        let conflicted = HashMap::new();
+        let conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let resolved = resolve_lean(
             unconflicted.clone(),
             conflicted.clone(),
@@ -708,7 +708,7 @@ mod tests {
         );
 
         // Auth context: uncontested background events needed to validate the conflicted ones.
-        let mut auth_context = HashMap::new();
+        let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
         auth_context.insert(
             "create".into(),
             LeanEvent {
@@ -787,7 +787,7 @@ mod tests {
         );
 
         // The conflict: two competing versions of Bob's membership.
-        let mut conflicted = HashMap::new();
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
         conflicted.insert(
             "id2".into(),
             LeanEvent {
@@ -849,7 +849,7 @@ mod tests {
         rows: &[(&str, i64, u64, u64, &[&str])],
         expected: &[&str],
     ) {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         for r in rows {
             events.insert(
                 r.0.to_string(),
@@ -897,7 +897,7 @@ mod tests {
 
     #[test]
     fn test_native_resolution_bootstrap_parity() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         events.insert(
             "1".into(),
             LeanEvent {
@@ -958,7 +958,7 @@ mod tests {
 
     #[test]
     fn test_event_traits_coverage() {
-        let e = LeanEvent {
+        let e: LeanEvent = LeanEvent {
             event_id: "a".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -977,7 +977,7 @@ mod tests {
 
     #[test]
     fn test_sort_priority_traits() {
-        let e = LeanEvent {
+        let e: LeanEvent = LeanEvent {
             event_id: "a".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -1002,7 +1002,7 @@ mod tests {
 
     #[test]
     fn test_v1_equal_depth_tie_break() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         events.insert(
             "B".into(),
             LeanEvent {
@@ -1042,7 +1042,7 @@ mod tests {
 
     #[test]
     fn test_kahn_no_neighbors() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         events.insert(
             "1".into(),
             LeanEvent {
@@ -1068,7 +1068,7 @@ mod tests {
 
     #[test]
     fn test_v2_1_full_coverage() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         events.insert(
             "A".into(),
             LeanEvent {
@@ -1097,7 +1097,7 @@ mod tests {
     /// come last and win via last-write-wins. This matches the Matrix spec.
     #[test]
     fn test_v2_1_later_timestamp_wins() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         events.insert(
             "$early".into(),
             LeanEvent {
@@ -1145,7 +1145,7 @@ mod tests {
     /// in V2 and `V2_1` when processed through Kahn sort alone.
     #[test]
     fn test_v2_1_millisecond_race_tiebreak() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         events.insert(
             "$ban_a".into(),
             LeanEvent {
@@ -1190,7 +1190,7 @@ mod tests {
 
     #[test]
     fn test_total_order_properties() {
-        let e1 = LeanEvent {
+        let e1: LeanEvent = LeanEvent {
             event_id: "a".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -1201,7 +1201,7 @@ mod tests {
             depth: 1,
             ..Default::default()
         };
-        let e2 = LeanEvent {
+        let e2: LeanEvent = LeanEvent {
             event_id: "b".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -1212,7 +1212,7 @@ mod tests {
             depth: 1,
             ..Default::default()
         };
-        let e3 = LeanEvent {
+        let e3: LeanEvent = LeanEvent {
             event_id: "c".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -1237,7 +1237,7 @@ mod tests {
 
     #[test]
     fn test_coverage_booster_all_branches() {
-        let e_base = LeanEvent {
+        let e_base: LeanEvent = LeanEvent {
             event_id: "m".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -1254,7 +1254,7 @@ mod tests {
             auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
-        let e_high_power = LeanEvent {
+        let e_high_power: LeanEvent = LeanEvent {
             power_level: 100,
             ..e_base.clone()
         };
@@ -1266,7 +1266,7 @@ mod tests {
         };
         // p_base is WORSE (PL 50 < 100). Higher PL is Greater (pops first). So p_base < p_high_power.
         assert_eq!(p_base.cmp(&p_high_power), Ordering::Less);
-        let e_best = LeanEvent {
+        let e_best: LeanEvent = LeanEvent {
             origin_server_ts: 100,
             ..e_base.clone()
         };
@@ -1279,7 +1279,7 @@ mod tests {
         // p_best has TS 100 (better: later wins). Better must be Smaller (pops last).
         // So p_base > p_best.
         assert_eq!(p_base.cmp(&p_best), Ordering::Greater);
-        let e_early_id = LeanEvent {
+        let e_early_id: LeanEvent = LeanEvent {
             event_id: "a".into(),
             ..e_base.clone()
         };
@@ -1297,7 +1297,7 @@ mod tests {
             auth_chain_distance: 0,
             version: rezzy::StateResVersion::V1,
         };
-        let e_shallow = LeanEvent {
+        let e_shallow: LeanEvent = LeanEvent {
             depth: 1,
             ..e_base.clone()
         };
@@ -1326,7 +1326,7 @@ mod tests {
 
     #[test]
     fn test_cycle_detection_detailed() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         events.insert(
             "A".into(),
             LeanEvent {
@@ -1368,7 +1368,7 @@ mod tests {
     #[test]
     fn test_cycle_detection_partial_sort() {
         // C -> A -> B -> A (cycle), but C is reachable
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         events.insert(
             "C".into(),
             LeanEvent {
@@ -1416,11 +1416,11 @@ mod tests {
 
     #[test]
     fn test_kahn_sort_result_api() {
-        let ok = KahnSortResult::Ok(vec!["A".into()]);
+        let ok: KahnSortResult<String> = KahnSortResult::Ok(vec!["A".into()]);
         assert!(ok.is_ok());
-        assert_eq!(ok.into_sorted(), vec!["A"]);
+        assert_eq!(ok.into_sorted(), vec!["A".to_string()]);
 
-        let cycle = KahnSortResult::CycleDetected {
+        let cycle: KahnSortResult<String> = KahnSortResult::CycleDetected {
             sorted: vec!["C".into()],
             stuck: vec!["A".into(), "B".into()],
         };
@@ -1430,7 +1430,7 @@ mod tests {
 
     #[test]
     fn test_lean_kahn_sort_empty_vec_on_cycles() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         events.insert(
             "C".into(),
             LeanEvent {
@@ -1505,7 +1505,7 @@ mod tests {
     #[test]
     fn test_deep_chain_stack_safety() {
         // 1000-event deep chain: ev_0 <- ev_1 <- ev_2 <- ... <- ev_999
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         for i in 0..1000u32 {
             let id = alloc::format!("ev_{i}");
             let auth = if i > 0 {
@@ -1543,7 +1543,7 @@ mod tests {
     #[test]
     fn test_subgraph_bounded_depth() {
         // Chain: A <- B <- C <- D (all in conflicted set for proper subgraph)
-        let mut graph = HashMap::new();
+        let mut graph: HashMap<String, LeanEvent> = HashMap::new();
         for (id, auths) in [
             ("A", vec![]),
             ("B", vec!["A"]),
@@ -1590,7 +1590,7 @@ mod tests {
 
     #[test]
     fn test_subgraph_missing_auth_detection() {
-        let mut graph = HashMap::new();
+        let mut graph: HashMap<String, LeanEvent> = HashMap::new();
         graph.insert(
             "X".to_string(),
             LeanEvent {
@@ -1615,7 +1615,7 @@ mod tests {
         // D auths: C
         // conflicted_set: [D, E]
         // max_depth: 1
-        let mut graph = HashMap::new();
+        let mut graph: HashMap<String, LeanEvent> = HashMap::new();
         graph.insert(
             "E".to_string(),
             LeanEvent {
@@ -1662,7 +1662,7 @@ mod tests {
 
     #[test]
     fn test_subgraph_empty_input() {
-        let mut graph = HashMap::new();
+        let mut graph: HashMap<String, LeanEvent> = HashMap::new();
         graph.insert(
             "A".to_string(),
             LeanEvent {
@@ -1701,7 +1701,7 @@ mod tests {
             "$pl-1".to_string(),
         ];
 
-        let mut auth_context = HashMap::new();
+        let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
         // Mock auth context to build the paths
         auth_context.insert(
             "$msg-old".into(),
@@ -1743,7 +1743,7 @@ mod tests {
 
     #[test]
     fn test_reverse_topological_power_sort() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
         // Graph structure from Ruma test:
         // l -> o
         // m -> n, o
@@ -1777,10 +1777,10 @@ mod tests {
     fn test_cdo_causal_domination_filter() {
         use serde_json::json;
 
-        let mut conflicted = HashMap::new();
-        let mut auth = HashMap::new();
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let mut auth: HashMap<String, LeanEvent> = HashMap::new();
 
-        let root = LeanEvent {
+        let root: LeanEvent = LeanEvent {
             event_id: "$root".into(),
             event_type: "m.room.create".into(),
             state_key: Some(String::new()),
@@ -1790,7 +1790,7 @@ mod tests {
         };
         auth.insert(root.event_id.clone(), root.clone());
 
-        let alice_join = LeanEvent {
+        let alice_join: LeanEvent = LeanEvent {
             event_id: "$alice_join".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -1802,7 +1802,7 @@ mod tests {
         };
         auth.insert(alice_join.event_id.clone(), alice_join.clone());
 
-        let bob_join = LeanEvent {
+        let bob_join: LeanEvent = LeanEvent {
             event_id: "$bob_join".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
@@ -1815,7 +1815,7 @@ mod tests {
         auth.insert(bob_join.event_id.clone(), bob_join.clone());
 
         // Concurrent events (conflicted)
-        let alice_bans_bob = LeanEvent {
+        let alice_bans_bob: LeanEvent = LeanEvent {
             event_id: "$alice_bans_bob".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
@@ -1828,7 +1828,7 @@ mod tests {
         };
         conflicted.insert(alice_bans_bob.event_id.clone(), alice_bans_bob.clone());
 
-        let bob_name_change = LeanEvent {
+        let bob_name_change: LeanEvent = LeanEvent {
             event_id: "$bob_name_change".into(),
             event_type: "m.room.name".into(),
             state_key: Some(String::new()),
@@ -1852,10 +1852,10 @@ mod tests {
     fn test_anomaly_06b_mod_membership_evaporation() {
         use serde_json::json;
 
-        let mut conflicted = HashMap::new();
-        let mut auth = HashMap::new();
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let mut auth: HashMap<String, LeanEvent> = HashMap::new();
 
-        let root = LeanEvent {
+        let root: LeanEvent = LeanEvent {
             event_id: "$root".into(),
             event_type: "m.room.create".into(),
             state_key: Some(String::new()),
@@ -1865,7 +1865,7 @@ mod tests {
         };
         auth.insert(root.event_id.clone(), root.clone());
 
-        let alice_join = LeanEvent {
+        let alice_join: LeanEvent = LeanEvent {
             event_id: "$alice_join".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -1877,7 +1877,7 @@ mod tests {
         };
         auth.insert(alice_join.event_id.clone(), alice_join.clone());
 
-        let jr_pub = LeanEvent {
+        let jr_pub: LeanEvent = LeanEvent {
             event_id: "$jr_pub".into(),
             event_type: "m.room.join_rules".into(),
             state_key: Some(String::new()),
@@ -1890,7 +1890,7 @@ mod tests {
         };
         auth.insert(jr_pub.event_id.clone(), jr_pub.clone());
 
-        let pl_init = LeanEvent {
+        let pl_init: LeanEvent = LeanEvent {
             event_id: "$pl_init".into(),
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
@@ -1904,7 +1904,7 @@ mod tests {
         auth.insert(pl_init.event_id.clone(), pl_init.clone());
 
         // Fork A: Lockdown to invite
-        let rules_invite = LeanEvent {
+        let rules_invite: LeanEvent = LeanEvent {
             event_id: "$rules_invite".into(),
             event_type: "m.room.join_rules".into(),
             state_key: Some(String::new()),
@@ -1918,7 +1918,7 @@ mod tests {
         conflicted.insert(rules_invite.event_id.clone(), rules_invite.clone());
 
         // Fork B: Nexy's actions (dependent on public join rules)
-        let nexy_join = LeanEvent {
+        let nexy_join: LeanEvent = LeanEvent {
             event_id: "$nexy_join".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@nexy:example.com".into()),
@@ -1936,7 +1936,7 @@ mod tests {
         };
         conflicted.insert(nexy_join.event_id.clone(), nexy_join.clone());
 
-        let nexy_promo = LeanEvent {
+        let nexy_promo: LeanEvent = LeanEvent {
             event_id: "$nexy_promo".into(),
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
@@ -1954,7 +1954,7 @@ mod tests {
         };
         conflicted.insert(nexy_promo.event_id.clone(), nexy_promo.clone());
 
-        let nexy_bans_spammer = LeanEvent {
+        let nexy_bans_spammer: LeanEvent = LeanEvent {
             event_id: "$nexy_bans_spammer".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@spammer:example.com".into()),
@@ -2020,7 +2020,7 @@ mod tests {
                 expected: "x".into(),
                 actual: "y".into(),
             },
-            AuthError::CreateWithPrevEvents,
+            AuthError::<String>::CreateWithPrevEvents,
             AuthError::MissingAuthEvent("3".into()),
             AuthError::InvalidSyntax("invalid JSON".into()),
         ];
@@ -2046,7 +2046,7 @@ mod tests {
 
         // 3. Test room_creators and additional_creators array parses in get_sender_power_level
         let mut state = RoomState::new();
-        let create_ev = LeanEvent {
+        let create_ev: LeanEvent = LeanEvent {
             event_id: "$create".into(),
             event_type: "m.room.create".into(),
             sender: "@alice:example.com".into(),
@@ -2063,7 +2063,7 @@ mod tests {
         );
 
         // Test check_auth for m.room.create with prev_events (should fail with CreateWithPrevEvents)
-        let bad_create = LeanEvent {
+        let bad_create: LeanEvent = LeanEvent {
             event_id: "$bad_create".into(),
             event_type: "m.room.create".into(),
             prev_events: vec!["$create".into()],
@@ -2071,11 +2071,11 @@ mod tests {
         };
         assert_eq!(
             check_auth(&bad_create, &state),
-            Err(AuthError::CreateWithPrevEvents)
+            Err(AuthError::<String>::CreateWithPrevEvents)
         );
 
         // Test non-member rejection with RoomState containing no membership
-        let name_change = LeanEvent {
+        let name_change: LeanEvent = LeanEvent {
             event_id: "$name".into(),
             event_type: "m.room.name".into(),
             sender: "@bob:example.com".into(),
@@ -2090,7 +2090,7 @@ mod tests {
         );
 
         // Creator should be allowed implied join if no member event is present
-        let creator_name_change = LeanEvent {
+        let creator_name_change: LeanEvent = LeanEvent {
             event_id: "$name2".into(),
             event_type: "m.room.name".into(),
             sender: "@alice:example.com".into(),
@@ -2104,7 +2104,7 @@ mod tests {
             ("m.room.create".into(), Some(String::new())),
             create_ev.clone(),
         );
-        let banned_member = LeanEvent {
+        let banned_member: LeanEvent = LeanEvent {
             event_id: "$ban_member".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
@@ -2118,7 +2118,7 @@ mod tests {
         );
 
         // A banned user cannot join or send events
-        let join_ev = LeanEvent {
+        let join_ev: LeanEvent = LeanEvent {
             event_id: "$join".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
@@ -2135,7 +2135,7 @@ mod tests {
         );
 
         // Invalid state key self-invite
-        let self_invite = LeanEvent {
+        let self_invite: LeanEvent = LeanEvent {
             event_id: "$invite".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -2146,7 +2146,7 @@ mod tests {
         assert!(check_auth(&self_invite, &state2).is_err());
 
         // Invalid transition target user != sender for join
-        let bad_join = LeanEvent {
+        let bad_join: LeanEvent = LeanEvent {
             event_id: "$bad_join".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
@@ -2163,7 +2163,7 @@ mod tests {
         );
 
         // Missing PL event defaults testing
-        let low_power_state_change = LeanEvent {
+        let low_power_state_change: LeanEvent = LeanEvent {
             event_id: "$low_pl".into(),
             event_type: "m.room.name".into(),
             state_key: Some(String::new()),
@@ -2176,7 +2176,7 @@ mod tests {
             ("m.room.create".into(), Some(String::new())),
             create_ev.clone(),
         );
-        let bob_joined = LeanEvent {
+        let bob_joined: LeanEvent = LeanEvent {
             event_id: "$bob_joined".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
@@ -2198,7 +2198,7 @@ mod tests {
         );
 
         // Invite a banned user check
-        let invite_banned = LeanEvent {
+        let invite_banned: LeanEvent = LeanEvent {
             event_id: "$invite_banned".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
@@ -2215,7 +2215,7 @@ mod tests {
         );
 
         // 4. Test check_auth_chain with m.room.create lacking state_key fallback
-        let create_no_key = LeanEvent {
+        let create_no_key: LeanEvent = LeanEvent {
             event_id: "$create_no_key".into(),
             event_type: "m.room.create".into(),
             sender: "@alice:example.com".into(),
@@ -2231,18 +2231,18 @@ mod tests {
     fn test_resolve_lean_cycle_power_events() {
         use std::collections::{BTreeMap, HashMap};
 
-        let mut conflicted = HashMap::new();
-        let auth = HashMap::new();
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let auth: HashMap<String, LeanEvent> = HashMap::new();
 
         // Create cyclic power events: A auths B, B authed by A, etc.
-        let a = LeanEvent {
+        let a: LeanEvent = LeanEvent {
             event_id: "A".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
             auth_events: vec!["B".into()],
             ..Default::default()
         };
-        let b = LeanEvent {
+        let b: LeanEvent = LeanEvent {
             event_id: "B".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -2266,10 +2266,10 @@ mod tests {
     fn test_cdo_unbounded_stride_overflow() {
         use serde_json::json;
 
-        let mut conflicted = HashMap::new();
-        let mut auth = HashMap::new();
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let mut auth: HashMap<String, LeanEvent> = HashMap::new();
 
-        let root = LeanEvent {
+        let root: LeanEvent = LeanEvent {
             event_id: "$root".into(),
             event_type: "m.room.create".into(),
             state_key: Some(String::new()),
@@ -2281,7 +2281,7 @@ mod tests {
         // We create 65 admin actions (e.g. bans/demotions/lockdowns)
         for i in 0..65 {
             let admin_id = format!("$admin_{i}");
-            let admin_ev = LeanEvent {
+            let admin_ev: LeanEvent = LeanEvent {
                 event_id: admin_id.clone(),
                 event_type: "m.room.member".into(),
                 state_key: Some(format!("@spammer_{i}:example.com")),
@@ -2300,17 +2300,17 @@ mod tests {
 
     #[test]
     fn test_compute_state_at_with_missing_and_foreign_prev_events() {
-        let mut events = HashMap::new();
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
 
         // C is a valid create event
-        let c = LeanEvent {
+        let c: LeanEvent = LeanEvent {
             event_id: "C".into(),
             event_type: "m.room.create".into(),
             state_key: Some(String::new()),
             ..Default::default()
         };
         // A has prev_events: B (missing) and C (existing)
-        let a = LeanEvent {
+        let a: LeanEvent = LeanEvent {
             event_id: "A".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -2336,11 +2336,11 @@ mod tests {
 
     #[test]
     fn test_msc4297_problem_b_regression() {
-        let mut conflicted_events = HashMap::new();
-        let mut auth_context = HashMap::new();
+        let mut conflicted_events: HashMap<String, LeanEvent> = HashMap::new();
+        let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
 
         // 1. Create room
-        let create_ev = LeanEvent {
+        let create_ev: LeanEvent = LeanEvent {
             event_id: "$create".into(),
             event_type: "m.room.create".into(),
             state_key: Some(String::new()),
@@ -2350,7 +2350,7 @@ mod tests {
         auth_context.insert("$create".into(), create_ev.clone());
 
         // 2. Alice joins
-        let join_alice = LeanEvent {
+        let join_alice: LeanEvent = LeanEvent {
             event_id: "$join_alice".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -2361,7 +2361,7 @@ mod tests {
         auth_context.insert("$join_alice".into(), join_alice.clone());
 
         // 3. Alice sets Bob to PL 50 (Unconflicted Ancestral PL Event)
-        let pl_alice = LeanEvent {
+        let pl_alice: LeanEvent = LeanEvent {
             event_id: "$pl_alice".into(),
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
@@ -2375,7 +2375,7 @@ mod tests {
         auth_context.insert("$pl_alice".into(), pl_alice.clone());
 
         // 4. Bob joins
-        let join_bob = LeanEvent {
+        let join_bob: LeanEvent = LeanEvent {
             event_id: "$join_bob".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
@@ -2386,7 +2386,7 @@ mod tests {
         auth_context.insert("$join_bob".into(), join_bob.clone());
 
         // 5. Conflicted Power Level events sent by Bob
-        let pl_bob_1 = LeanEvent {
+        let pl_bob_1: LeanEvent = LeanEvent {
             event_id: "$pl_bob_1".into(),
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
@@ -2398,7 +2398,7 @@ mod tests {
             ..Default::default()
         };
 
-        let pl_bob_2 = LeanEvent {
+        let pl_bob_2: LeanEvent = LeanEvent {
             event_id: "$pl_bob_2".into(),
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
@@ -2429,7 +2429,7 @@ mod tests {
     #[test]
     fn test_self_leave_vs_kick_classification() {
         // Self-leave (sender == state_key): not a kick/ban
-        let self_leave = LeanEvent {
+        let self_leave: LeanEvent = LeanEvent {
             event_id: "1".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
@@ -2440,7 +2440,7 @@ mod tests {
         assert!(!self_leave.is_ban_or_kick());
 
         // Kick (sender != state_key): is a kick/ban
-        let kick = LeanEvent {
+        let kick: LeanEvent = LeanEvent {
             event_id: "2".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
@@ -2451,7 +2451,7 @@ mod tests {
         assert!(kick.is_ban_or_kick());
 
         // Ban (sender != state_key): is a kick/ban
-        let ban = LeanEvent {
+        let ban: LeanEvent = LeanEvent {
             event_id: "3".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
@@ -2465,16 +2465,16 @@ mod tests {
     #[test]
     fn test_create_event_determinism() {
         use rezzy::types::find_deterministic_create_event;
-        let mut conflicted = HashMap::new();
-        let auth = HashMap::new();
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let auth: HashMap<String, LeanEvent> = HashMap::new();
 
-        let c1 = LeanEvent {
+        let c1: LeanEvent = LeanEvent {
             event_id: "$create_1".into(),
             event_type: "m.room.create".into(),
             state_key: Some(String::new()),
             ..Default::default()
         };
-        let c2 = LeanEvent {
+        let c2: LeanEvent = LeanEvent {
             event_id: "$create_2".into(),
             event_type: "m.room.create".into(),
             state_key: Some(String::new()),
@@ -2711,7 +2711,7 @@ fn test_cdo_coverage_branches() {
     let auth_context: HashMap<String, LeanEvent> = HashMap::new();
 
     let admin_id = "admin1".to_string();
-    let admin_ev = LeanEvent {
+    let admin_ev: LeanEvent = LeanEvent {
         event_id: admin_id.clone(),
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
@@ -2722,7 +2722,7 @@ fn test_cdo_coverage_branches() {
     events_map.insert(admin_id.clone(), admin_ev.clone());
 
     let event_id = "event1".to_string();
-    let ev1 = LeanEvent {
+    let ev1: LeanEvent = LeanEvent {
         event_id: event_id.clone(),
         event_type: "m.room.member".into(),
         state_key: Some("bob".into()),
@@ -2816,7 +2816,7 @@ fn test_sorting_coverage() {
     let mut events: HashMap<String, LeanEvent> = HashMap::new();
     let mut auth: HashMap<String, LeanEvent> = HashMap::new();
 
-    let create_ev = LeanEvent {
+    let create_ev: LeanEvent = LeanEvent {
         event_id: "create".into(),
         event_type: "m.room.create".into(),
         state_key: Some(String::new()),
@@ -2826,7 +2826,7 @@ fn test_sorting_coverage() {
     };
     events.insert("create".into(), create_ev.clone());
 
-    let pl_ev = LeanEvent {
+    let pl_ev: LeanEvent = LeanEvent {
         event_id: "pl".into(),
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
@@ -2835,14 +2835,14 @@ fn test_sorting_coverage() {
     };
     auth.insert("pl".into(), pl_ev.clone());
 
-    let missing_pl_ev = LeanEvent {
+    let missing_pl_ev: LeanEvent = LeanEvent {
         event_id: "missing_pl".into(),
         sender: "bob".into(),
         ..Default::default()
     };
     events.insert("missing_pl".into(), missing_pl_ev);
 
-    let empty_auth_ev = LeanEvent {
+    let empty_auth_ev: LeanEvent = LeanEvent {
         event_id: "empty_auth".into(),
         auth_events: vec![],
         ..Default::default()

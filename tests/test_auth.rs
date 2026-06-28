@@ -196,7 +196,7 @@ fn test_iterative_auth_chain() {
 
 #[test]
 fn test_auth_error_display() {
-    let err = AuthError::NotMember {
+    let err: AuthError = AuthError::NotMember {
         sender: "@bob:example.com".into(),
         event_id: "$unused".into(),
     };

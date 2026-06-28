@@ -14,19 +14,22 @@
 
 use crate::sorting::{build_mainline, precompute_mainline_positions};
 use crate::state_at::{compute_local_auth, iterative_auth_ok, LocalAuthCache};
-use crate::types::{find_deterministic_create_event, LeanEvent, StateResVersion};
+use crate::types::{LeanEvent, StateResVersion};
 use crate::HashMap;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 #[must_use]
-pub fn is_lattice_winner_better<S: core::hash::BuildHasher>(
-    ev: &LeanEvent,
-    current_winner: &LeanEvent,
-    mainline_distances: &HashMap<String, usize, S>,
+pub fn is_lattice_winner_better<Id, S: core::hash::BuildHasher>(
+    ev: &LeanEvent<Id>,
+    current_winner: &LeanEvent<Id>,
+    mainline_distances: &HashMap<Id, usize, S>,
     mainline_len: usize,
-) -> bool {
+) -> bool
+where
+    Id: Clone + Eq + core::hash::Hash + Ord,
+{
     let ev_pos = mainline_distances
         .get(&ev.event_id)
         .copied()
@@ -51,13 +54,15 @@ pub fn is_lattice_winner_better<S: core::hash::BuildHasher>(
     }
 }
 
-fn update_winner_if_better<'a>(
-    winners: &mut HashMap<(String, Option<String>), &'a LeanEvent>,
+fn update_winner_if_better<'a, Id>(
+    winners: &mut HashMap<(String, Option<String>), &'a LeanEvent<Id>>,
     key: (String, Option<String>),
-    ev: &'a LeanEvent,
-    mainline_distances: &HashMap<String, usize>,
+    ev: &'a LeanEvent<Id>,
+    mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
-) {
+) where
+    Id: Clone + Eq + core::hash::Hash + Ord,
+{
     let is_better = if let Some(current_winner) = winners.get(&key) {
         is_lattice_winner_better(ev, current_winner, mainline_distances, mainline_len)
     } else {
@@ -70,19 +75,22 @@ fn update_winner_if_better<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn fold_lattice_chunk<'a, S2: core::hash::BuildHasher, S3: core::hash::BuildHasher>(
+fn fold_lattice_chunk<'a, Id, S2: core::hash::BuildHasher, S3: core::hash::BuildHasher>(
     // jscpd:ignore-start
-    chunk: &[&'a LeanEvent],
-    mainline_distances: &HashMap<String, usize>,
+    chunk: &[&'a LeanEvent<Id>],
+    mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
-    terminal_power_state: &BTreeMap<(String, Option<String>), String>,
-    auth_context: &HashMap<String, LeanEvent, S2>,
-    sort_set: &HashMap<String, LeanEvent, S3>,
+    terminal_power_state: &BTreeMap<(String, Option<String>), Id>,
+    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
+    sort_set: &HashMap<Id, LeanEvent<Id>, S3>,
     version: StateResVersion,
-    create_ev: Option<&LeanEvent>,
+    create_ev: Option<&LeanEvent<Id>>,
     // jscpd:ignore-end
-) -> HashMap<(String, Option<String>), &'a LeanEvent> {
-    let mut thread_res: HashMap<(String, Option<String>), &'a LeanEvent> = HashMap::new();
+) -> HashMap<(String, Option<String>), &'a LeanEvent<Id>>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+{
+    let mut thread_res: HashMap<(String, Option<String>), &'a LeanEvent<Id>> = HashMap::new();
     let mut local_auth_cache = HashMap::new();
 
     for &ev in chunk {
@@ -109,12 +117,14 @@ fn fold_lattice_chunk<'a, S2: core::hash::BuildHasher, S3: core::hash::BuildHash
     thread_res
 }
 
-fn merge_lattice_winners<'a>(
-    key_winners: &mut HashMap<(String, Option<String>), &'a LeanEvent>,
-    thread_res: HashMap<(String, Option<String>), &'a LeanEvent>,
-    mainline_distances: &HashMap<String, usize>,
+fn merge_lattice_winners<'a, Id>(
+    key_winners: &mut HashMap<(String, Option<String>), &'a LeanEvent<Id>>,
+    thread_res: HashMap<(String, Option<String>), &'a LeanEvent<Id>>,
+    mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
-) {
+) where
+    Id: Clone + Eq + core::hash::Hash + Ord,
+{
     for (key, ev) in thread_res {
         update_winner_if_better(key_winners, key, ev, mainline_distances, mainline_len);
     }
@@ -123,28 +133,31 @@ fn merge_lattice_winners<'a>(
 #[allow(clippy::too_many_arguments)]
 fn compute_lattice_coordinatized_winners<
     'a,
+    Id,
     S1: core::hash::BuildHasher + Sync + Send,
     S2: core::hash::BuildHasher + Sync + Send,
     S3: core::hash::BuildHasher + Sync + Send,
 >(
     // jscpd:ignore-start
-    non_power_events: &'a HashMap<String, LeanEvent, S1>,
-    mainline_distances: &HashMap<String, usize>,
+    non_power_events: &'a HashMap<Id, LeanEvent<Id>, S1>,
+    mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
-    terminal_power_state: &BTreeMap<(String, Option<String>), String>,
-    auth_context: &HashMap<String, LeanEvent, S2>,
-    sort_set: &HashMap<String, LeanEvent, S3>,
+    terminal_power_state: &BTreeMap<(String, Option<String>), Id>,
+    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
+    sort_set: &HashMap<Id, LeanEvent<Id>, S3>,
     version: StateResVersion,
-    create_ev: Option<&LeanEvent>,
+    create_ev: Option<&LeanEvent<Id>>,
     // jscpd:ignore-end
-    key_winners: &mut HashMap<(String, Option<String>), &'a LeanEvent>,
-) {
-    let v: Vec<&'a LeanEvent> = non_power_events.values().collect();
+    key_winners: &mut HashMap<(String, Option<String>), &'a LeanEvent<Id>>,
+) where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + Sync + Send,
+{
+    let v: Vec<&'a LeanEvent<Id>> = non_power_events.values().collect();
 
     #[cfg(feature = "std")]
     {
         let num_threads = std::thread::available_parallelism().map_or(4, core::num::NonZero::get);
-        let chunks: Vec<&[&'a LeanEvent]> = v
+        let chunks: Vec<&[&'a LeanEvent<Id>]> = v
             .chunks(
                 (non_power_events
                     .len()
@@ -196,13 +209,14 @@ fn compute_lattice_coordinatized_winners<
 }
 
 pub fn route_power_events<
+    Id: Clone + Eq + core::hash::Hash,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
     S3: core::hash::BuildHasher,
 >(
-    sort_set: &HashMap<String, LeanEvent, S1>,
-    power_events: &mut HashMap<String, LeanEvent, S2>,
-    non_power_events: &mut HashMap<String, LeanEvent, S3>,
+    sort_set: &HashMap<Id, LeanEvent<Id>, S1>,
+    power_events: &mut HashMap<Id, LeanEvent<Id>, S2>,
+    non_power_events: &mut HashMap<Id, LeanEvent<Id>, S3>,
 ) {
     for (id, ev) in sort_set {
         if ev.event_type == "m.room.member"
@@ -222,14 +236,18 @@ pub fn route_power_events<
 // jscpd:ignore-start
 #[must_use]
 pub fn resolve_lattice_coordinatized<
+    Id,
     S1: core::hash::BuildHasher + Sync + Send,
     S2: core::hash::BuildHasher + Sync + Send,
 >(
-    unconflicted_state: BTreeMap<(String, Option<String>), String>,
-    mut conflicted_events: HashMap<String, LeanEvent, S1>,
-    auth_context: &HashMap<String, LeanEvent, S2>,
+    unconflicted_state: BTreeMap<(String, Option<String>), Id>,
+    mut conflicted_events: HashMap<Id, LeanEvent<Id>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
     version: StateResVersion,
-) -> BTreeMap<(String, Option<String>), String> {
+) -> BTreeMap<(String, Option<String>), Id>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + Sync + Send,
+{
     // jscpd:ignore-end
     let original_conflicted_keys =
         crate::resolve::prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
@@ -251,11 +269,10 @@ pub fn resolve_lattice_coordinatized<
         version,
     );
 
-    let create_ev = find_deterministic_create_event(auth_context, sort_set);
+    let create_ev = crate::types::find_deterministic_create_event(auth_context, sort_set);
 
-    let mut local_auth_cache: LocalAuthCache = HashMap::new();
+    let mut local_auth_cache: LocalAuthCache<Id> = HashMap::new();
 
-    // Power Phase remains sequential to establish the authoritative administrative framework
     crate::resolve::run_power_phase_iterative_checks(
         &mut resolved,
         &power_events,
@@ -267,16 +284,17 @@ pub fn resolve_lattice_coordinatized<
         version,
     );
 
-    // Step 3: Build the power-level mainline for coordinatization
+    // Coordinate Projection Phase (Mainline distance mapping)
     let mainline = build_mainline(&resolved, &sort_context);
     let mainline_distances = precompute_mainline_positions(&mainline, &sort_context);
+    let mainline_len = mainline.len();
 
-    // Step 4: Commutative Join-Semilattice reduction over all non-power events in a single O(C) pass!
+    // Semilattice Fold Phase
     let mut key_winners = HashMap::new();
     compute_lattice_coordinatized_winners(
         &non_power_events,
         &mainline_distances,
-        mainline.len(),
+        mainline_len,
         &resolved,
         auth_context,
         sort_set,
@@ -285,13 +303,15 @@ pub fn resolve_lattice_coordinatized<
         &mut key_winners,
     );
 
+    // Merge Winners into Final Resolved State
     let mut final_resolved = unconflicted_state;
-    for (k, ev) in key_winners {
-        final_resolved.insert(k, ev.event_id.clone());
-    }
     for (k, v) in resolved {
         final_resolved.insert(k, v);
     }
+    for (k, ev) in key_winners {
+        final_resolved.insert(k, ev.event_id.clone());
+    }
+
     drop(conflicted_events);
     final_resolved
 }
