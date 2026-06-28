@@ -99,36 +99,32 @@ fn compute_cdo_bit_masks_chunk<Id, S: core::hash::BuildHasher>(
 
     for (i, admin_id) in admin_chunk.iter().enumerate() {
         if let Some(&idx) = id_to_idx.get(admin_id) {
-            let word = i / 64;
-            let bit = 1u64 << (i % 64);
-            let pos = idx.wrapping_mul(WORDS_PER_CHUNK).wrapping_add(word);
-            and_masks[pos] |= bit;
-            desc_masks[pos] |= bit;
+            let word = i >> 6;
+            let bit = 1u64 << (i & 63);
+            let target_idx = idx.saturating_mul(WORDS_PER_CHUNK).saturating_add(word);
+            and_masks[target_idx] |= bit;
+            desc_masks[target_idx] |= bit;
         }
     }
 
     // Forward Sweep (Ancestors) - Pure array iteration
     for &(u, _) in sorted_events {
-        let u_base = u.wrapping_mul(WORDS_PER_CHUNK);
+        let u_base = u.saturating_mul(WORDS_PER_CHUNK);
         for &p in &parents[u] {
-            let p_base = p.wrapping_mul(WORDS_PER_CHUNK);
+            let p_base = p.saturating_mul(WORDS_PER_CHUNK);
             for w in 0..WORDS_PER_CHUNK {
-                let u_pos = u_base.wrapping_add(w);
-                let p_pos = p_base.wrapping_add(w);
-                and_masks[u_pos] |= and_masks[p_pos];
+                and_masks[u_base.saturating_add(w)] |= and_masks[p_base.saturating_add(w)];
             }
         }
     }
 
     // Backward Sweep (Descendants) - Pure array iteration
     for &(u, _) in sorted_events.iter().rev() {
-        let u_base = u.wrapping_mul(WORDS_PER_CHUNK);
+        let u_base = u.saturating_mul(WORDS_PER_CHUNK);
         for &c in &children[u] {
-            let c_base = c.wrapping_mul(WORDS_PER_CHUNK);
+            let c_base = c.saturating_mul(WORDS_PER_CHUNK);
             for w in 0..WORDS_PER_CHUNK {
-                let u_pos = u_base.wrapping_add(w);
-                let c_pos = c_base.wrapping_add(w);
-                desc_masks[u_pos] |= desc_masks[c_pos];
+                desc_masks[u_base.saturating_add(w)] |= desc_masks[c_base.saturating_add(w)];
             }
         }
     }
@@ -264,10 +260,10 @@ where
     let mut dropped_ids = BTreeSet::new();
 
     // Allocate a strict O(N * WORDS_PER_CHUNK) matrix once, reused forever across passes
-    let mut and_masks = alloc::vec![0u64; n.wrapping_mul(WORDS_PER_CHUNK)];
-    let mut desc_masks = alloc::vec![0u64; n.wrapping_mul(WORDS_PER_CHUNK)];
+    let mut and_masks = alloc::vec![0u64; n.saturating_mul(WORDS_PER_CHUNK)];
+    let mut desc_masks = alloc::vec![0u64; n.saturating_mul(WORDS_PER_CHUNK)];
 
-    let chunk_size = WORDS_PER_CHUNK * 64; // 256 actions per pass
+    let chunk_size = WORDS_PER_CHUNK.saturating_mul(64);
 
     // Helper references to map inputs to compute_cdo_bit_masks_chunk
     let sorted_events_refs: Vec<(usize, &LeanEvent<Id>)> = adj
@@ -316,12 +312,12 @@ where
                         }
                     }
 
-                    let word = orig_idx / 64;
-                    let bit = 1u64 << (orig_idx % 64);
+                    let word = orig_idx >> 6;
+                    let bit = 1u64 << (orig_idx & 63);
 
-                    let pos = ev_idx.wrapping_mul(WORDS_PER_CHUNK).wrapping_add(word);
-                    let is_ancestor_admin = (and_masks[pos] & bit) != 0;
-                    let is_descendant_admin = (desc_masks[pos] & bit) != 0;
+                    let target_idx = ev_idx.saturating_mul(WORDS_PER_CHUNK).saturating_add(word);
+                    let is_ancestor_admin = (and_masks[target_idx] & bit) != 0;
+                    let is_descendant_admin = (desc_masks[target_idx] & bit) != 0;
 
                     // Fast-path bitwise check first!
                     if !is_ancestor_admin && !is_descendant_admin {
@@ -378,11 +374,11 @@ where
 pub fn apply_cdo_filter<Id, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
     conflicted_events: &HashMap<Id, LeanEvent<Id>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
-    // jscpd:ignore-end
 ) -> HashMap<Id, LeanEvent<Id>>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord,
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
 {
+    // jscpd:ignore-end
     let adj = build_adjacency_structures(conflicted_events, auth_context);
     let prioritized = prioritize_events(conflicted_events);
     let dropped_ids = process_direct_domination_chunks(&adj, &prioritized, conflicted_events);

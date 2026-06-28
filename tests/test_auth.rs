@@ -220,7 +220,7 @@ fn test_moderator_cannot_override_admin_ban() {
         ),
     );
 
-    // 2. Power levels event (admin = 100, mod = 50)
+    // 2. Power levels event (admin = 100, mod = 50, target_admin = 100)
     state.insert(
         ("m.room.power_levels".into(), Some(String::new())),
         make_event(
@@ -231,7 +231,8 @@ fn test_moderator_cannot_override_admin_ban() {
             json!({
                 "users": {
                     "@admin:example.com": 100,
-                    "@mod:example.com": 50
+                    "@mod:example.com": 50,
+                    "@target_admin:example.com": 100
                 }
             }),
         ),
@@ -261,28 +262,28 @@ fn test_moderator_cannot_override_admin_ban() {
         ),
     );
 
-    // 5. Target is banned by @admin (PL 100)
+    // 5. Target (who is also an admin) is banned by @admin (PL 100)
     state.insert(
-        ("m.room.member".into(), Some("@target:example.com".into())),
+        ("m.room.member".into(), Some("@target_admin:example.com".into())),
         make_event(
             "$ban_target",
             "m.room.member",
-            Some("@target:example.com"),
+            Some("@target_admin:example.com"),
             "@admin:example.com",
             json!({"membership": "ban"}),
         ),
     );
 
-    // 6. Moderator (PL 50) attempts to kick/leave the target
+    // 6. Moderator (PL 50) attempts to unban/leave the target admin
     let mod_kick = make_event(
         "$mod_kick",
         "m.room.member",
-        Some("@target:example.com"),
+        Some("@target_admin:example.com"),
         "@mod:example.com",
         json!({"membership": "leave"}),
     );
 
-    // Should fail because moderator's power level (50) is <= admin's power level (100) who set the current ban
+    // Should fail because moderator's power level (50) is <= target admin's power level (100)
     let result = check_auth(&mod_kick, &state);
     assert!(
         matches!(
@@ -291,8 +292,8 @@ fn test_moderator_cannot_override_admin_ban() {
                 required: 101,
                 actual: 50,
                 ref event_type,
-            }) if event_type == "m.rezzy.member_pl_greater_than_current_sender"
+            }) if event_type == "m.rezzy.member_pl_greater_than_target"
         ),
-        "Expected InsufficientPowerLevel (101 required, 50 actual) for m.rezzy.member_pl_greater_than_current_sender, got {result:?}"
+        "Expected InsufficientPowerLevel (101 required, 50 actual) for m.rezzy.member_pl_greater_than_target, got {result:?}"
     );
 }

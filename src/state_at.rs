@@ -1,3 +1,17 @@
+// Copyright 2026 Shane Jaroch
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use crate::types::{LeanEvent, StateResVersion};
 use crate::HashMap;
 use alloc::collections::BTreeMap;
@@ -67,8 +81,9 @@ impl<
                             ev.content.get("membership").and_then(|m| m.as_str())
                         {
                             let is_ban = membership == "ban";
-                            let is_kick =
-                                membership == "leave" && Some(ev.sender.as_str()) != state_key;
+                            let is_kick = membership == "leave"
+                                && state_key.is_some()
+                                && Some(ev.sender.as_str()) != state_key;
                             if is_ban || is_kick {
                                 return Some(ev);
                             }
@@ -279,20 +294,20 @@ pub fn compute_state_at<Id, Q, S>(
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
 ) -> Option<BTreeMap<(String, Option<String>), Id>>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
-    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    Id: Clone + Eq + Ord + core::fmt::Debug + core::hash::Hash + core::borrow::Borrow<Q>,
+    Q: ?Sized + Eq + Ord + core::hash::Hash,
     S: core::hash::BuildHasher,
 {
     let actual_target_id = events_map.get_key_value(target_event_id).map(|(k, _)| k)?;
 
     let (id_to_index, index_to_id) = collect_ancestor_short_ids(actual_target_id, events_map);
+    let target_array = [actual_target_id];
     let mut state_after_map =
-        run_state_pipeline(&index_to_id, &id_to_index, &[actual_target_id], events_map);
+        run_state_pipeline(&index_to_id, &id_to_index, &target_array, events_map);
 
     let target_idx = id_to_index[actual_target_id];
     state_after_map[target_idx].take().map(|arc| {
-        let cloned_arc = arc.clone();
-        alloc::sync::Arc::into_inner(arc).unwrap_or_else(|| (*cloned_arc).clone())
+        alloc::sync::Arc::try_unwrap(arc).unwrap_or_else(|failed_arc| (*failed_arc).clone())
     })
 }
 
@@ -313,10 +328,13 @@ where
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
 {
-    let mut actual_target_ids = Vec::with_capacity(target_event_ids.len());
+    let mut actual_target_ids = Vec::new();
+    let mut seen = alloc::collections::BTreeSet::new();
     for &tid in target_event_ids {
         if let Some((k, _)) = events_map.get_key_value(tid) {
-            actual_target_ids.push(k);
+            if seen.insert(k) {
+                actual_target_ids.push(k);
+            }
         }
     }
 
@@ -326,14 +344,15 @@ where
 
     let (id_to_index, index_to_id) =
         collect_ancestor_short_ids_batch(&actual_target_ids, events_map);
-    let state_after_map =
+    let mut state_after_map =
         run_state_pipeline(&index_to_id, &id_to_index, &actual_target_ids, events_map);
 
     let mut results = HashMap::with_capacity(actual_target_ids.len());
     for &actual_tid in &actual_target_ids {
         if let Some(&target_idx) = id_to_index.get(actual_tid) {
-            if let Some(ref shared_state) = state_after_map[target_idx] {
-                let btree = (**shared_state).clone();
+            if let Some(shared_state) = state_after_map[target_idx].take() {
+                let btree =
+                    alloc::sync::Arc::try_unwrap(shared_state).unwrap_or_else(|arc| (*arc).clone());
                 results.insert(actual_tid.clone(), btree);
             }
         }
@@ -364,7 +383,9 @@ where
         }
     }
 
-    let mut state_after_map: Vec<Option<SharedState<Id>>> = alloc::vec![None; index_to_id.len()];
+    let mut state_after_map: Vec<Option<SharedState<Id>>> = core::iter::repeat_with(|| None)
+        .take(index_to_id.len())
+        .collect();
 
     for idx in sorted_ancestors {
         let id_val = index_to_id[idx];
@@ -527,17 +548,12 @@ where
     if all_match {
         alloc::sync::Arc::clone(first)
     } else {
-        let unwrapped_prev_states: Vec<BTreeMap<_, _>> =
-            prev_states.iter().map(|arc| (**arc).clone()).collect();
-        alloc::sync::Arc::new(resolve_multiple_prev_states(
-            &unwrapped_prev_states,
-            events_map,
-        ))
+        alloc::sync::Arc::new(resolve_multiple_prev_states(prev_states, events_map))
     }
 }
 
 fn resolve_multiple_prev_states<Id, S>(
-    prev_states: &[BTreeMap<(String, Option<String>), Id>],
+    prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
 ) -> BTreeMap<(String, Option<String>), Id>
 where
@@ -547,7 +563,7 @@ where
     let mut occurrences: HashMap<(String, Option<String>), HashMap<Id, usize>> = HashMap::new();
     let num_sets = prev_states.len();
     for map in prev_states {
-        for (key, val) in map {
+        for (key, val) in map.iter() {
             let val_entry = occurrences
                 .entry(key.clone())
                 .or_default()

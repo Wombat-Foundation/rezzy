@@ -342,12 +342,32 @@ fn check_membership_rules<Id: Clone>(
         .and_then(|m| m.as_str())
         .unwrap_or("");
 
+    let current_membership = state
+        .get_event("m.room.member", Some(target_user))
+        .and_then(|ev| ev.content.get("membership"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("");
+
     match new_membership {
         "join" => check_join_rules(event, state, target_user)?,
-        "leave"
-            // If target_user != sender, this is a kick — requires power level
-            if target_user != event.sender => {
+        "leave" => {
+            // If target_user != sender, this is a kick or unban — requires power level
+            if target_user != event.sender {
                 let sender_pl = get_sender_power_level(&event.sender, state);
+
+                // OFFICIAL UNBAN RULE: If the user was banned, the sender needs ban_pl to unban them.
+                if current_membership == "ban" {
+                    let ban_pl = get_ban_power_level(state);
+                    if sender_pl < ban_pl {
+                        return Err(AuthError::InsufficientPowerLevel {
+                            required: ban_pl,
+                            actual: sender_pl,
+                            event_type: "unban".into(),
+                        });
+                    }
+                }
+
+                // KICK RULE
                 let kick_pl = get_kick_power_level(state);
                 if sender_pl < kick_pl {
                     return Err(AuthError::InsufficientPowerLevel {
@@ -357,6 +377,7 @@ fn check_membership_rules<Id: Clone>(
                     });
                 }
             }
+        }
         "ban" => {
             // Banning requires the ban power level
             let sender_pl = get_sender_power_level(&event.sender, state);
@@ -389,61 +410,28 @@ fn check_membership_rules<Id: Clone>(
             }
 
             // Check target isn't already banned
-            if let Some(target_member) = state.get_event("m.room.member", Some(target_user)) {
-                if target_member
-                    .content
-                    .get("membership")
-                    .and_then(|m| m.as_str())
-                    == Some("ban")
-                {
-                    return Err(AuthError::BannedUser {
-                        sender: target_user.into(),
-                        event_id: event.event_id.clone(),
-                    });
-                }
+            if current_membership == "ban" {
+                return Err(AuthError::BannedUser {
+                    sender: target_user.into(),
+                    event_id: event.event_id.clone(),
+                });
             }
         }
         _ => {}
     }
 
-    // If target_user != event.sender and the transition is a kick, ban, or unban (membership is leave or ban),
-    // check sender power level against target user and existing membership sender.
+    // SPEC RULE: If target_user != event.sender and the transition is a kick or ban (membership is leave or ban),
+    // the sender power level must be strictly greater than target power level.
     if target_user != event.sender && (new_membership == "leave" || new_membership == "ban") {
         let sender_pl = get_sender_power_level(&event.sender, state);
-
-        // 1. Sender power level must be strictly greater than target power level.
         let target_pl = get_sender_power_level(target_user, state);
+
         if sender_pl <= target_pl {
             return Err(AuthError::InsufficientPowerLevel {
                 required: target_pl.saturating_add(1),
                 actual: sender_pl,
                 event_type: "m.rezzy.member_pl_greater_than_target".into(),
             });
-        }
-
-        // 2. If the target has a current active membership (joined, invited, or banned),
-        // sender power level must be strictly greater than the power level of the user who set the current membership.
-        if let Some(current_member_event) = state.get_event("m.room.member", Some(target_user)) {
-            if let Some(current_membership) = current_member_event
-                .content
-                .get("membership")
-                .and_then(|m| m.as_str())
-            {
-                if current_membership == "join"
-                    || current_membership == "invite"
-                    || current_membership == "ban"
-                {
-                    let current_sender_pl =
-                        get_sender_power_level(&current_member_event.sender, state);
-                    if sender_pl <= current_sender_pl {
-                        return Err(AuthError::InsufficientPowerLevel {
-                            required: current_sender_pl.saturating_add(1),
-                            actual: sender_pl,
-                            event_type: "m.rezzy.member_pl_greater_than_current_sender".into(),
-                        });
-                    }
-                }
-            }
         }
     }
 

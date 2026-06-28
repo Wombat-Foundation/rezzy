@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::sorting::{build_mainline, precompute_mainline_positions};
-use crate::state_at::{compute_local_auth, iterative_auth_ok, LocalAuthCache};
-use crate::types::{LeanEvent, StateResVersion};
-use crate::HashMap;
-use alloc::collections::BTreeMap;
-use alloc::string::String;
-use alloc::vec::Vec;
+use crate::{
+    sorting::{build_mainline, precompute_mainline_positions},
+    state_at::{compute_local_auth, iterative_auth_ok},
+    types::{LeanEvent, StateResVersion},
+    HashMap,
+};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
 #[must_use]
 pub fn is_lattice_winner_better<Id, S: core::hash::BuildHasher>(
@@ -257,51 +257,24 @@ pub fn resolve_lattice_coordinatized<
     version: StateResVersion,
 ) -> BTreeMap<(String, Option<String>), Id>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + Sync + Send,
+    Id: crate::types::EventId + Sync + Send,
 {
     // jscpd:ignore-end
     let original_conflicted_keys =
         crate::resolve::prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
-    let sort_context = crate::resolve::build_sort_context(&conflicted_events, auth_context);
 
     let mut resolved = crate::resolve::get_initial_resolved_state(&unconflicted_state, version);
 
-    let sort_set = &conflicted_events;
-
-    // Route power and non-power events
-    let mut power_events = HashMap::new();
-    let mut non_power_events = HashMap::new();
-    route_power_events(sort_set, &mut power_events, &mut non_power_events, version);
-
-    if version != crate::StateResVersion::V1 {
-        crate::resolve::expand_v2_power_events_auth_chains(
-            &mut power_events,
-            &mut non_power_events,
-            sort_set,
+    let (sort_context, _power_events, non_power_events, mut _local_auth_cache, create_ev) =
+        crate::resolve::execute_power_phase(
+            &conflicted_events,
+            auth_context,
+            &original_conflicted_keys,
+            &mut resolved,
+            version,
         );
-    }
 
-    crate::resolve::route_msc4297_ancestral_power_events(
-        &mut power_events,
-        auth_context,
-        &original_conflicted_keys,
-        version,
-    );
-
-    let create_ev = crate::types::find_deterministic_create_event(auth_context, sort_set);
-
-    let mut local_auth_cache: LocalAuthCache<Id> = HashMap::new();
-
-    crate::resolve::run_power_phase_iterative_checks(
-        &mut resolved,
-        &power_events,
-        &sort_context,
-        auth_context,
-        sort_set,
-        create_ev,
-        &mut local_auth_cache,
-        version,
-    );
+    let sort_set = &conflicted_events;
 
     // Coordinate Projection Phase (Mainline distance mapping)
     let mainline = build_mainline(&resolved, &sort_context);

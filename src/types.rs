@@ -19,6 +19,9 @@ use core::cmp::Ordering;
 use serde::Deserialize;
 use serde_json::Value;
 
+pub trait EventId: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug {}
+impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug> EventId for T {}
+
 pub const MAX_POWER_LEVEL: i64 = 9_007_199_254_740_991; // 2^53 - 1
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
