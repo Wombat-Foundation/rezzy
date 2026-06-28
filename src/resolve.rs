@@ -23,13 +23,14 @@ use alloc::vec::Vec;
 
 /// Prepares the conflicted events map and tracks original conflicted keys before CDO pre-filtering.
 pub(crate) fn prepare_conflicted_and_keys<
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
-    conflicted_events: &mut HashMap<String, LeanEvent, S1>,
-    auth_context: &HashMap<String, LeanEvent, S2>,
+    conflicted_events: &mut HashMap<Id, LeanEvent<Id>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
     version: StateResVersion,
-) -> alloc::collections::BTreeSet<String> {
+) -> alloc::collections::BTreeSet<Id> {
     let original_conflicted_keys = conflicted_events.keys().cloned().collect();
     if version == StateResVersion::V2_1_1 {
         let filtered = apply_cdo_filter(conflicted_events, auth_context);
@@ -43,11 +44,15 @@ pub(crate) fn prepare_conflicted_and_keys<
 
 // jscpd:ignore-start
 /// Builds a merged lookup map (`sort_context`) for sorting and mainline operations.
-pub(crate) fn build_sort_context<S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
-    conflicted_events: &HashMap<String, LeanEvent, S1>,
-    auth_context: &HashMap<String, LeanEvent, S2>,
+pub(crate) fn build_sort_context<
+    Id: Clone + Eq + core::hash::Hash,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+>(
+    conflicted_events: &HashMap<Id, LeanEvent<Id>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
     // jscpd:ignore-end
-) -> HashMap<String, LeanEvent> {
+) -> HashMap<Id, LeanEvent<Id>> {
     auth_context
         .iter()
         .chain(conflicted_events.iter())
@@ -57,12 +62,13 @@ pub(crate) fn build_sort_context<S1: core::hash::BuildHasher, S2: core::hash::Bu
 
 /// MSC4297 (v2.1+): Routes administrative ancestral power events from `auth_context` into `power_events`.
 pub(crate) fn route_msc4297_ancestral_power_events<
+    Id: Clone + Eq + core::hash::Hash + Ord,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
-    power_events: &mut HashMap<String, LeanEvent, S1>,
-    auth_context: &HashMap<String, LeanEvent, S2>,
-    original_conflicted_keys: &alloc::collections::BTreeSet<String>,
+    power_events: &mut HashMap<Id, LeanEvent<Id>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
+    original_conflicted_keys: &alloc::collections::BTreeSet<Id>,
     version: StateResVersion,
 ) {
     if matches!(
@@ -102,18 +108,19 @@ pub(crate) fn route_msc4297_ancestral_power_events<
 /// Runs the sequential power phase iterative auth checks to establish the authoritative administrative framework.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_power_phase_iterative_checks<
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
     S3: core::hash::BuildHasher,
     S4: core::hash::BuildHasher,
 >(
-    resolved: &mut BTreeMap<(String, Option<String>), String>,
-    power_events: &HashMap<String, LeanEvent, S4>,
-    sort_context: &HashMap<String, LeanEvent, S1>,
-    auth_context: &HashMap<String, LeanEvent, S2>,
-    sort_set: &HashMap<String, LeanEvent, S3>,
-    create_ev: Option<&LeanEvent>,
-    local_auth_cache: &mut LocalAuthCache,
+    resolved: &mut BTreeMap<(String, Option<String>), Id>,
+    power_events: &HashMap<Id, LeanEvent<Id>, S4>,
+    sort_context: &HashMap<Id, LeanEvent<Id>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
+    sort_set: &HashMap<Id, LeanEvent<Id>, S3>,
+    create_ev: Option<&LeanEvent<Id>>,
+    local_auth_cache: &mut LocalAuthCache<Id>,
     version: StateResVersion,
 ) {
     let sorted_power_ids = lean_kahn_sort(power_events, sort_context, create_ev, version);
@@ -140,10 +147,10 @@ pub(crate) fn run_power_phase_iterative_checks<
     }
 }
 
-pub(crate) fn get_initial_resolved_state(
-    unconflicted_state: &BTreeMap<(String, Option<String>), String>,
+pub(crate) fn get_initial_resolved_state<Id: Clone>(
+    unconflicted_state: &BTreeMap<(String, Option<String>), Id>,
     version: StateResVersion,
-) -> BTreeMap<(String, Option<String>), String> {
+) -> BTreeMap<(String, Option<String>), Id> {
     match version {
         StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2 => BTreeMap::new(),
         _ => unconflicted_state.clone(),
@@ -151,12 +158,15 @@ pub(crate) fn get_initial_resolved_state(
 }
 
 #[must_use]
-pub fn resolve_lean<S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
-    unconflicted_state: BTreeMap<(String, Option<String>), String>,
-    mut conflicted_events: HashMap<String, LeanEvent, S1>,
-    auth_context: &HashMap<String, LeanEvent, S2>,
+pub fn resolve_lean<Id, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
+    unconflicted_state: BTreeMap<(String, Option<String>), Id>,
+    mut conflicted_events: HashMap<Id, LeanEvent<Id>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
     version: StateResVersion,
-) -> BTreeMap<(String, Option<String>), String> {
+) -> BTreeMap<(String, Option<String>), Id>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+{
     let original_conflicted_keys =
         prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
     let sort_context = build_sort_context(&conflicted_events, auth_context);
@@ -182,7 +192,7 @@ pub fn resolve_lean<S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
 
     // Step 1: Sort power events by reverse topological power ordering (Kahn sort)
     // Step 2: Apply iterative auth checks (per spec & Ruma implementation)
-    let mut local_auth_cache: LocalAuthCache = HashMap::new();
+    let mut local_auth_cache: LocalAuthCache<Id> = HashMap::new();
 
     run_power_phase_iterative_checks(
         &mut resolved,
@@ -199,7 +209,7 @@ pub fn resolve_lean<S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
     let mainline = build_mainline(&resolved, &sort_context);
 
     // Step 4: Sort non-power events by mainline ordering + iterative auth check
-    let mut non_power_list: Vec<&LeanEvent> = non_power_events.values().collect();
+    let mut non_power_list: Vec<&LeanEvent<Id>> = non_power_events.values().collect();
     mainline_sort(&mut non_power_list, &mainline, &sort_context);
 
     for ev in non_power_list {

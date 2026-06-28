@@ -5,22 +5,32 @@ use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-pub type LocalAuthCache = HashMap<String, BTreeMap<(String, Option<String>), (LeanEvent, usize)>>;
+#[derive(Debug, Clone)]
+pub struct LocalAuthEntry<Id> {
+    pub event: LeanEvent<Id>,
+    pub depth: usize,
+}
 
-pub(crate) struct OverlayState<'a, S1, S2> {
-    pub(crate) resolved: &'a BTreeMap<(String, Option<String>), String>,
-    pub(crate) auth_context: &'a HashMap<String, LeanEvent, S1>,
-    pub(crate) conflicted: &'a HashMap<String, LeanEvent, S2>,
-    pub(crate) local_auth: BTreeMap<(String, Option<String>), LeanEvent>,
-    pub(crate) create_ev: Option<&'a LeanEvent>,
+pub type LocalAuthCache<Id = String> =
+    HashMap<Id, BTreeMap<(String, Option<String>), LocalAuthEntry<Id>>>;
+
+pub(crate) struct OverlayState<'a, Id, S1, S2> {
+    pub(crate) resolved: &'a BTreeMap<(String, Option<String>), Id>,
+    pub(crate) auth_context: &'a HashMap<Id, LeanEvent<Id>, S1>,
+    pub(crate) conflicted: &'a HashMap<Id, LeanEvent<Id>, S2>,
+    pub(crate) local_auth: BTreeMap<(String, Option<String>), LeanEvent<Id>>,
+    pub(crate) create_ev: Option<&'a LeanEvent<Id>>,
     pub(crate) version: StateResVersion,
     pub(crate) is_power_phase: bool,
 }
 
-impl<S1: core::hash::BuildHasher, S2: core::hash::BuildHasher> crate::auth::StateProvider
-    for OverlayState<'_, S1, S2>
+impl<
+        Id: Clone + Eq + core::hash::Hash,
+        S1: core::hash::BuildHasher,
+        S2: core::hash::BuildHasher,
+    > crate::auth::StateProvider<Id> for OverlayState<'_, Id, S1, S2>
 {
-    fn get_event(&self, event_type: &str, state_key: Option<&str>) -> Option<&LeanEvent> {
+    fn get_event(&self, event_type: &str, state_key: Option<&str>) -> Option<&LeanEvent<Id>> {
         let query: &dyn crate::auth::StateKeyDyn = &(event_type, state_key);
 
         // In V2.1 (Stock MSC4297), we supplement with ONLY m.room.power_levels during Step 2 (power phase).
@@ -83,13 +93,17 @@ impl<S1: core::hash::BuildHasher, S2: core::hash::BuildHasher> crate::auth::Stat
 /// Evaluates whether an event passes authentication checks given a resolved state map,
 /// delegating to the core `crate::auth::check_auth` logic via a temporary `OverlayState` view.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn iterative_auth_ok<S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
-    event: &LeanEvent,
-    resolved: &BTreeMap<(String, Option<String>), String>,
-    auth_context: &HashMap<String, LeanEvent, S1>,
-    conflicted_events: &HashMap<String, LeanEvent, S2>,
-    local_auth: BTreeMap<(String, Option<String>), LeanEvent>,
-    cached_create: Option<&LeanEvent>,
+pub(crate) fn iterative_auth_ok<
+    Id: Clone + Eq + core::hash::Hash,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+>(
+    event: &LeanEvent<Id>,
+    resolved: &BTreeMap<(String, Option<String>), Id>,
+    auth_context: &HashMap<Id, LeanEvent<Id>, S1>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id>, S2>,
+    local_auth: BTreeMap<(String, Option<String>), LeanEvent<Id>>,
+    cached_create: Option<&LeanEvent<Id>>,
     version: StateResVersion,
     is_power_phase: bool,
 ) -> bool {
@@ -106,19 +120,25 @@ pub(crate) fn iterative_auth_ok<S1: core::hash::BuildHasher, S2: core::hash::Bui
     crate::auth::check_auth(event, &overlay).is_ok()
 }
 
-pub(crate) fn update_local_auth(
-    local_auth: &mut BTreeMap<(String, Option<String>), (LeanEvent, usize)>,
-    aev: &LeanEvent,
+pub(crate) fn update_local_auth<Id: Clone>(
+    local_auth: &mut BTreeMap<(String, Option<String>), LocalAuthEntry<Id>>,
+    aev: &LeanEvent<Id>,
     current_depth: usize,
 ) {
     let key = (aev.event_type.clone(), aev.state_key.clone());
     match local_auth.entry(key) {
         alloc::collections::btree_map::Entry::Vacant(e) => {
-            e.insert((aev.clone(), current_depth));
+            e.insert(LocalAuthEntry {
+                event: aev.clone(),
+                depth: current_depth,
+            });
         }
         alloc::collections::btree_map::Entry::Occupied(mut e) => {
-            if current_depth < e.get().1 {
-                e.insert((aev.clone(), current_depth));
+            if current_depth < e.get().depth {
+                e.insert(LocalAuthEntry {
+                    event: aev.clone(),
+                    depth: current_depth,
+                });
             }
         }
     }
@@ -128,22 +148,26 @@ pub(crate) fn update_local_auth(
 /// to avoid redundant graph walks. The context is represented as a map of
 /// (type, `state_key`) -> (`LeanEvent`, depth), ensuring that for each key, the "closest"
 /// auth event in the chain is preserved (shortest path).
-pub(crate) fn compute_local_auth<S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
-    event: &LeanEvent,
-    auth_context: &HashMap<String, LeanEvent, S1>,
-    conflicted_events: &HashMap<String, LeanEvent, S2>,
-    cache: &mut LocalAuthCache,
+pub(crate) fn compute_local_auth<
+    Id: Clone + Eq + core::hash::Hash + Ord,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+>(
+    event: &LeanEvent<Id>,
+    auth_context: &HashMap<Id, LeanEvent<Id>, S1>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id>, S2>,
+    cache: &mut LocalAuthCache<Id>,
     version: StateResVersion,
-) -> BTreeMap<(String, Option<String>), LeanEvent> {
+) -> BTreeMap<(String, Option<String>), LeanEvent<Id>> {
     if let Some(cached) = cache.get(&event.event_id) {
         return cached
             .clone()
             .into_iter()
-            .map(|(k, (v, _))| (k, v))
+            .map(|(k, entry)| (k, entry.event))
             .collect();
     }
 
-    let mut local_auth: BTreeMap<(String, Option<String>), (LeanEvent, usize)> = BTreeMap::new();
+    let mut local_auth: BTreeMap<(String, Option<String>), LocalAuthEntry<Id>> = BTreeMap::new();
     let mut queue = alloc::collections::VecDeque::new();
     for aid in &event.auth_events {
         queue.push_back((aid.clone(), 1));
@@ -164,15 +188,21 @@ pub(crate) fn compute_local_auth<S1: core::hash::BuildHasher, S2: core::hash::Bu
                 update_local_auth(&mut local_auth, aev, current_depth);
             }
 
-            for (key, (ev, cached_depth)) in cached_ancestor {
-                let total_depth = current_depth.saturating_add(*cached_depth);
+            for (key, entry) in cached_ancestor {
+                let total_depth = current_depth.saturating_add(entry.depth);
                 match local_auth.entry(key.clone()) {
                     alloc::collections::btree_map::Entry::Vacant(e) => {
-                        e.insert((ev.clone(), total_depth));
+                        e.insert(LocalAuthEntry {
+                            event: entry.event.clone(),
+                            depth: total_depth,
+                        });
                     }
                     alloc::collections::btree_map::Entry::Occupied(mut e) => {
-                        if total_depth < e.get().1 {
-                            e.insert((ev.clone(), total_depth));
+                        if total_depth < e.get().depth {
+                            e.insert(LocalAuthEntry {
+                                event: entry.event.clone(),
+                                depth: total_depth,
+                            });
                         }
                     }
                 }
@@ -197,10 +227,13 @@ pub(crate) fn compute_local_auth<S1: core::hash::BuildHasher, S2: core::hash::Bu
     }
 
     cache.insert(event.event_id.clone(), local_auth.clone());
-    local_auth.into_iter().map(|(k, (v, _))| (k, v)).collect()
+    local_auth
+        .into_iter()
+        .map(|(k, entry)| (k, entry.event))
+        .collect()
 }
 
-type SharedState = alloc::sync::Arc<BTreeMap<(String, Option<String>), String>>;
+type SharedState<Id = String> = alloc::sync::Arc<BTreeMap<(String, Option<String>), Id>>;
 
 /// Computes the state map at (after) a given target event ID,
 /// assuming all ancestral events are present in `events_map`.
@@ -210,33 +243,36 @@ type SharedState = alloc::sync::Arc<BTreeMap<(String, Option<String>), String>>;
 /// Will panic if graph invariants are violated (specifically, if an ancestor event
 /// present in the reachable subgraph is missing from `events_map` during topological processing).
 #[must_use]
-pub fn compute_state_at<S: core::hash::BuildHasher>(
-    target_event_id: &str,
-    events_map: &HashMap<String, LeanEvent, S>,
-) -> Option<BTreeMap<(String, Option<String>), String>> {
-    if !events_map.contains_key(target_event_id) {
-        return None;
-    }
+pub fn compute_state_at<Id, Q, S>(
+    target_event_id: &Q,
+    events_map: &HashMap<Id, LeanEvent<Id>, S>,
+) -> Option<BTreeMap<(String, Option<String>), Id>>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
+    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    S: core::hash::BuildHasher,
+{
+    let actual_target_id = events_map.get_key_value(target_event_id).map(|(k, _)| k)?;
 
-    let (id_to_index, index_to_id) = collect_ancestor_short_ids(target_event_id, events_map);
+    let (id_to_index, index_to_id) = collect_ancestor_short_ids(actual_target_id, events_map);
     let sorted_ancestors = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
 
-    let mut state_after_map: Vec<Option<SharedState>> = alloc::vec![None; index_to_id.len()];
+    let mut state_after_map: Vec<Option<SharedState<Id>>> = alloc::vec![None; index_to_id.len()];
 
     for idx in sorted_ancestors {
-        let id_str = index_to_id[idx];
-        let ev = events_map.get(id_str).unwrap();
+        let id_val = index_to_id[idx];
+        let ev = events_map.get(id_val.borrow()).unwrap();
 
-        let mut prev_states: Vec<&SharedState> = Vec::with_capacity(ev.prev_events.len());
+        let mut prev_states: Vec<&SharedState<Id>> = Vec::with_capacity(ev.prev_events.len());
         for pe in &ev.prev_events {
-            if let Some(&pe_idx) = id_to_index.get(pe.as_str()) {
+            if let Some(&pe_idx) = id_to_index.get(pe) {
                 if let Some(ref pe_state) = state_after_map[pe_idx] {
                     prev_states.push(pe_state);
                 }
             }
         }
 
-        let mut state_before: SharedState = if prev_states.is_empty() {
+        let mut state_before: SharedState<Id> = if prev_states.is_empty() {
             alloc::sync::Arc::new(BTreeMap::new())
         } else if prev_states.len() == 1 {
             alloc::sync::Arc::clone(prev_states[0])
@@ -255,19 +291,23 @@ pub fn compute_state_at<S: core::hash::BuildHasher>(
         state_after_map[idx] = Some(state_before);
     }
 
-    let target_idx = id_to_index[target_event_id];
+    let target_idx = id_to_index[actual_target_id];
     state_after_map[target_idx].take().map(|arc| {
         let cloned_arc = arc.clone();
         alloc::sync::Arc::into_inner(arc).unwrap_or_else(|| (*cloned_arc).clone())
     })
 }
 
-fn collect_ancestor_short_ids<'a, S: core::hash::BuildHasher>(
-    target_event_id: &'a str,
-    events_map: &'a HashMap<String, LeanEvent, S>,
-) -> (HashMap<&'a str, usize>, Vec<&'a str>) {
-    let mut id_to_index: HashMap<&str, usize> = HashMap::new();
-    let mut index_to_id: Vec<&str> = Vec::new();
+fn collect_ancestor_short_ids<'a, Id, S>(
+    target_event_id: &'a Id,
+    events_map: &'a HashMap<Id, LeanEvent<Id>, S>,
+) -> (HashMap<&'a Id, usize>, Vec<&'a Id>)
+where
+    Id: Clone + Eq + core::hash::Hash,
+    S: core::hash::BuildHasher,
+{
+    let mut id_to_index: HashMap<&Id, usize> = HashMap::new();
+    let mut index_to_id: Vec<&Id> = Vec::new();
     let mut queue = alloc::vec![target_event_id];
     let mut head = 0;
 
@@ -280,12 +320,11 @@ fn collect_ancestor_short_ids<'a, S: core::hash::BuildHasher>(
 
         if let Some(ev) = events_map.get(current_id) {
             for pe in &ev.prev_events {
-                let pe_str = pe.as_str();
-                if events_map.contains_key(pe_str) && !id_to_index.contains_key(pe_str) {
+                if events_map.contains_key(pe) && !id_to_index.contains_key(pe) {
                     let next_idx = index_to_id.len();
-                    id_to_index.insert(pe_str, next_idx);
-                    index_to_id.push(pe_str);
-                    queue.push(pe_str);
+                    id_to_index.insert(pe, next_idx);
+                    index_to_id.push(pe);
+                    queue.push(pe);
                 }
             }
         }
@@ -294,11 +333,15 @@ fn collect_ancestor_short_ids<'a, S: core::hash::BuildHasher>(
     (id_to_index, index_to_id)
 }
 
-fn topological_sort_short_ids<S: core::hash::BuildHasher>(
-    index_to_id: &[&str],
-    id_to_index: &HashMap<&str, usize>,
-    events_map: &HashMap<String, LeanEvent, S>,
-) -> Vec<usize> {
+fn topological_sort_short_ids<Id, S>(
+    index_to_id: &[&Id],
+    id_to_index: &HashMap<&Id, usize>,
+    events_map: &HashMap<Id, LeanEvent<Id>, S>,
+) -> Vec<usize>
+where
+    Id: Clone + Eq + core::hash::Hash,
+    S: core::hash::BuildHasher,
+{
     let num_reachable = index_to_id.len();
     let mut in_degree = alloc::vec![0usize; num_reachable];
     let mut adjacency = alloc::vec![Vec::new(); num_reachable];
@@ -306,7 +349,7 @@ fn topological_sort_short_ids<S: core::hash::BuildHasher>(
     for (i, id) in index_to_id.iter().enumerate() {
         if let Some(ev) = events_map.get(*id) {
             for parent in &ev.prev_events {
-                if let Some(&parent_idx) = id_to_index.get(parent.as_str()) {
+                if let Some(&parent_idx) = id_to_index.get(parent) {
                     in_degree[i] = in_degree[i].saturating_add(1);
                     adjacency[parent_idx].push(i);
                 }
@@ -335,10 +378,14 @@ fn topological_sort_short_ids<S: core::hash::BuildHasher>(
     sorted_ancestors
 }
 
-fn resolve_merge_fast_path<S: core::hash::BuildHasher>(
-    prev_states: &[&SharedState],
-    events_map: &HashMap<String, LeanEvent, S>,
-) -> SharedState {
+fn resolve_merge_fast_path<Id, S>(
+    prev_states: &[&SharedState<Id>],
+    events_map: &HashMap<Id, LeanEvent<Id>, S>,
+) -> SharedState<Id>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    S: core::hash::BuildHasher,
+{
     let mut all_match = true;
     let first = prev_states[0];
     for state in &prev_states[1..] {
@@ -360,11 +407,15 @@ fn resolve_merge_fast_path<S: core::hash::BuildHasher>(
     }
 }
 
-fn resolve_multiple_prev_states<S: core::hash::BuildHasher>(
-    prev_states: &[BTreeMap<(String, Option<String>), String>],
-    events_map: &HashMap<String, LeanEvent, S>,
-) -> BTreeMap<(String, Option<String>), String> {
-    let mut occurrences: HashMap<(String, Option<String>), HashMap<String, usize>> = HashMap::new();
+fn resolve_multiple_prev_states<Id, S>(
+    prev_states: &[BTreeMap<(String, Option<String>), Id>],
+    events_map: &HashMap<Id, LeanEvent<Id>, S>,
+) -> BTreeMap<(String, Option<String>), Id>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    S: core::hash::BuildHasher,
+{
+    let mut occurrences: HashMap<(String, Option<String>), HashMap<Id, usize>> = HashMap::new();
     let num_sets = prev_states.len();
     for map in prev_states {
         for (key, val) in map {
@@ -399,7 +450,7 @@ fn resolve_multiple_prev_states<S: core::hash::BuildHasher>(
     }
 
     let mut auth_chain_ids = std::collections::HashSet::new();
-    let mut b_stack: Vec<String> = conflicted_state_set.into_iter().collect();
+    let mut b_stack: Vec<Id> = conflicted_state_set.into_iter().collect();
     while let Some(node) = b_stack.pop() {
         if auth_chain_ids.insert(node.clone()) {
             if let Some(event) = events_map.get(&node) {

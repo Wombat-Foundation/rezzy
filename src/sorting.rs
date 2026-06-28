@@ -22,12 +22,15 @@ use crate::HashMap;
 
 /// Dynamically fetches the sender's power level by inspecting the event's immediate `auth_events`.
 /// Recursive traversal of the auth chain is avoided to prevent bypassing immediate restrictions.
-pub(crate) fn get_power_level_from_auth_chain<S: core::hash::BuildHasher>(
-    event: &LeanEvent,
-    auth_context: &HashMap<String, LeanEvent, S>,
-    create_ev: Option<&LeanEvent>,
+pub(crate) fn get_power_level_from_auth_chain<Id, S: core::hash::BuildHasher>(
+    event: &LeanEvent<Id>,
+    auth_context: &HashMap<Id, LeanEvent<Id>, S>,
+    create_ev: Option<&LeanEvent<Id>>,
     version: StateResVersion,
-) -> i64 {
+) -> i64
+where
+    Id: Clone + Eq + core::hash::Hash,
+{
     let mut pl_event = None;
 
     // Spec compliance: only check immediate auth_events.
@@ -46,7 +49,6 @@ pub(crate) fn get_power_level_from_auth_chain<S: core::hash::BuildHasher>(
     if let Some(create_ev) = create_ev {
         let is_primary_creator = create_ev.sender == event.sender;
         let mut is_additional_creator = false;
-
         if let Some(creators) = create_ev
             .content
             .get("room_creators")
@@ -104,14 +106,17 @@ pub(crate) fn get_power_level_from_auth_chain<S: core::hash::BuildHasher>(
 }
 
 /// Computes the shortest distance from the event to the m.room.create event via `auth_events`.
-pub(crate) fn memoized_auth_distance<'a, S: core::hash::BuildHasher>(
-    curr_id: &'a str,
-    auth_context: &'a HashMap<String, LeanEvent, S>,
-    create_id: &str,
-    memo: &mut HashMap<&'a str, u64>,
-    in_progress: &mut alloc::collections::BTreeSet<&'a str>,
-) -> u64 {
-    if curr_id == create_id {
+pub(crate) fn memoized_auth_distance<'a, Id, S: core::hash::BuildHasher>(
+    curr_id: &'a Id,
+    auth_context: &'a HashMap<Id, LeanEvent<Id>, S>,
+    create_id: Option<&Id>,
+    memo: &mut HashMap<&'a Id, u64>,
+    in_progress: &mut alloc::collections::BTreeSet<&'a Id>,
+) -> u64
+where
+    Id: Clone + Eq + core::hash::Hash + Ord,
+{
+    if Some(curr_id) == create_id {
         return 0;
     }
 
@@ -154,14 +159,17 @@ pub(crate) fn memoized_auth_distance<'a, S: core::hash::BuildHasher>(
 ///
 /// Will panic if graph invariants are violated during topological sorting (specifically, if
 /// the in-degree map lacks an entry for a child event during the queue processing phase).
-pub fn lean_kahn_sort_detailed<S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
-    events: &HashMap<String, LeanEvent, S1>,
-    auth_context: &HashMap<String, LeanEvent, S2>,
-    create_ev: Option<&LeanEvent>,
+pub fn lean_kahn_sort_detailed<Id, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
+    events: &HashMap<Id, LeanEvent<Id>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
+    create_ev: Option<&LeanEvent<Id>>,
     version: StateResVersion,
-) -> KahnSortResult {
-    let mut in_degree: HashMap<String, usize> = HashMap::new();
-    let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+) -> KahnSortResult<Id>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+{
+    let mut in_degree: HashMap<Id, usize> = HashMap::new();
+    let mut adjacency: HashMap<Id, Vec<Id>> = HashMap::new();
 
     for (id, event) in events {
         in_degree.entry(id.clone()).or_insert(0);
@@ -179,7 +187,7 @@ pub fn lean_kahn_sort_detailed<S1: core::hash::BuildHasher, S2: core::hash::Buil
 
     // Pre-compute power levels once per event to avoid redundant auth chain walks
     // inside the hot BinaryHeap push path.
-    let pl_cache: HashMap<String, i64> = events
+    let pl_cache: HashMap<Id, i64> = events
         .iter()
         .map(|(id, ev)| {
             (
@@ -189,9 +197,9 @@ pub fn lean_kahn_sort_detailed<S1: core::hash::BuildHasher, S2: core::hash::Buil
         })
         .collect();
 
-    let depth_cache: HashMap<String, u64> = if version == StateResVersion::V2_2 {
+    let depth_cache: HashMap<Id, u64> = if version == StateResVersion::V2_2 {
         let mut memo = HashMap::new();
-        let create_id = create_ev.map_or("", |e| e.event_id.as_str());
+        let create_id = create_ev.map(|e| &e.event_id);
         events
             .keys()
             .map(|id| {
@@ -212,7 +220,7 @@ pub fn lean_kahn_sort_detailed<S1: core::hash::BuildHasher, S2: core::hash::Buil
         HashMap::new()
     };
 
-    let mut queue: BinaryHeap<SortPriority> = BinaryHeap::new();
+    let mut queue: BinaryHeap<SortPriority<'_, Id>> = BinaryHeap::new();
     for (id, &degree) in &in_degree {
         if degree == 0 {
             if let Some(event) = events.get(id) {
@@ -250,8 +258,8 @@ pub fn lean_kahn_sort_detailed<S1: core::hash::BuildHasher, S2: core::hash::Buil
 
     // Detect cycles: events that never reached in-degree 0.
     if result.len() != events.len() {
-        let sorted_set: alloc::collections::BTreeSet<&String> = result.iter().collect();
-        let stuck: Vec<String> = events
+        let sorted_set: alloc::collections::BTreeSet<&Id> = result.iter().collect();
+        let stuck: Vec<Id> = events
             .keys()
             .filter(|id| !sorted_set.contains(id))
             .cloned()
@@ -274,12 +282,15 @@ pub fn lean_kahn_sort_detailed<S1: core::hash::BuildHasher, S2: core::hash::Buil
 /// in the cycle-breaking list of stuck nodes is missing from the input `events` map).
 // jscpd:ignore-start
 #[must_use]
-pub fn lean_kahn_sort<S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
-    events: &HashMap<String, LeanEvent, S1>,
-    auth_context: &HashMap<String, LeanEvent, S2>,
-    create_ev: Option<&LeanEvent>,
+pub fn lean_kahn_sort<Id, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
+    events: &HashMap<Id, LeanEvent<Id>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
+    create_ev: Option<&LeanEvent<Id>>,
     version: StateResVersion,
-) -> Vec<String> {
+) -> Vec<Id>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+{
     // jscpd:ignore-end
     match lean_kahn_sort_detailed(events, auth_context, create_ev, version) {
         KahnSortResult::Ok(sorted) => sorted,
@@ -303,10 +314,13 @@ pub fn lean_kahn_sort<S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
     }
 }
 
-pub(crate) fn build_mainline(
-    resolved: &BTreeMap<(String, Option<String>), String>,
-    auth_context: &HashMap<String, LeanEvent>,
-) -> Vec<String> {
+pub(crate) fn build_mainline<Id, S: core::hash::BuildHasher>(
+    resolved: &BTreeMap<(String, Option<String>), Id>,
+    auth_context: &HashMap<Id, LeanEvent<Id>, S>,
+) -> Vec<Id>
+where
+    Id: Clone + Eq + core::hash::Hash,
+{
     let mut mainline = Vec::new();
     let pl_key = (
         alloc::string::String::from("m.room.power_levels"),
@@ -357,34 +371,34 @@ pub(crate) fn build_mainline(
 ///    (closest) mainline position.
 ///
 /// Total: O(V+E) — each vertex and edge touched at most once.
-pub(crate) fn precompute_mainline_positions<S: ::core::hash::BuildHasher>(
-    mainline: &[String],
-    auth_context: &HashMap<String, LeanEvent, S>,
-) -> HashMap<String, usize> {
+pub(crate) fn precompute_mainline_positions<Id, S: ::core::hash::BuildHasher>(
+    mainline: &[Id],
+    auth_context: &HashMap<Id, LeanEvent<Id>, S>,
+) -> HashMap<Id, usize>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord,
+{
     let mainline_len = mainline.len();
 
     // Build reverse adjacency over the full auth context once.
     // reverse_adj[A] = [E1, E2, ...] means E1, E2, ... list A in their auth_events.
-    let mut reverse_adj: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut reverse_adj: HashMap<&Id, Vec<&Id>> = HashMap::new();
     for (id, ev) in auth_context {
         for auth_id in &ev.auth_events {
-            reverse_adj
-                .entry(auth_id.as_str())
-                .or_default()
-                .push(id.as_str());
+            reverse_adj.entry(auth_id).or_default().push(id);
         }
     }
 
-    let mut dist: HashMap<String, usize> = HashMap::with_capacity(auth_context.len());
+    let mut dist: HashMap<Id, usize> = HashMap::with_capacity(auth_context.len());
 
     // Seed: process mainline events in position order (0 = closest = best).
     // Using a VecDeque gives BFS ordering; since positions only increase along
     // the mainline and edges carry zero additional cost, this is correct.
-    let mut queue: VecDeque<(&str, usize)> = VecDeque::new();
+    let mut queue: VecDeque<(&Id, usize)> = VecDeque::new();
 
     for (pos, id) in mainline.iter().enumerate() {
         dist.insert(id.clone(), pos);
-        queue.push_back((id.as_str(), pos));
+        queue.push_back((id, pos));
     }
 
     // Flood-fill outward through reverse auth-edges.
@@ -400,7 +414,7 @@ pub(crate) fn precompute_mainline_positions<S: ::core::hash::BuildHasher>(
             for &child_id in children {
                 let current_child_best = dist.get(child_id).copied();
                 if current_child_best.is_none() || pos < current_child_best.unwrap() {
-                    dist.insert(child_id.into(), pos);
+                    dist.insert(child_id.clone(), pos);
                     queue.push_back((child_id, pos));
                 }
             }
@@ -417,11 +431,13 @@ pub(crate) fn precompute_mainline_positions<S: ::core::hash::BuildHasher>(
 /// 1. Closest mainline position (smaller index = closer to current PL = comes last)
 /// 2. `origin_server_ts` ascending (earlier first, later wins via last-write)
 /// 3. `event_id` ascending (smaller first)
-pub fn mainline_sort<S: ::core::hash::BuildHasher>(
-    events: &mut Vec<&LeanEvent>,
-    mainline: &[String],
-    auth_context: &HashMap<String, LeanEvent, S>,
-) {
+pub fn mainline_sort<Id, S: ::core::hash::BuildHasher>(
+    events: &mut Vec<&LeanEvent<Id>>,
+    mainline: &[Id],
+    auth_context: &HashMap<Id, LeanEvent<Id>, S>,
+) where
+    Id: Clone + Eq + core::hash::Hash + Ord,
+{
     let mainline_len = mainline.len();
 
     // Single O(V+E) pass over the full auth context.

@@ -80,16 +80,13 @@ impl<'de> serde::Deserialize<'de> for StateResVersion {
 
 /// Result of Kahn's topological sort with diagnostic information.
 #[derive(Debug, Clone)]
-pub enum KahnSortResult {
+pub enum KahnSortResult<Id = String> {
     /// All events were successfully sorted.
-    Ok(Vec<String>),
+    Ok(Vec<Id>),
     /// A cycle was detected. `sorted` contains the partial ordering of events
     /// that could be processed, `stuck` contains events that could not reach
     /// in-degree 0 (involved in cycles).
-    CycleDetected {
-        sorted: Vec<String>,
-        stuck: Vec<String>,
-    },
+    CycleDetected { sorted: Vec<Id>, stuck: Vec<Id> },
 }
 
 impl KahnSortResult {
@@ -112,20 +109,20 @@ impl KahnSortResult {
 
 /// A lightweight Matrix Event representation for Lean-equivalent resolution.
 #[derive(Debug, Clone, Default)]
-pub struct LeanEvent {
-    pub event_id: String,
+pub struct LeanEvent<Id = String> {
+    pub event_id: Id,
     pub event_type: String,
     pub state_key: Option<String>,
     pub power_level: i64,
     pub origin_server_ts: u64,
     pub sender: String,
     pub content: Value,
-    pub prev_events: Vec<String>,
-    pub auth_events: Vec<String>,
+    pub prev_events: Vec<Id>,
+    pub auth_events: Vec<Id>,
     pub depth: u64, // Required for V1
 }
 
-impl serde::Serialize for LeanEvent {
+impl<Id: serde::Serialize> serde::Serialize for LeanEvent<Id> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -148,7 +145,7 @@ impl serde::Serialize for LeanEvent {
     }
 }
 
-impl LeanEvent {
+impl<Id> LeanEvent<Id> {
     /// Validates basic syntactic limits and strict event whitelists as defined by the custom subset.
     ///
     /// # Errors
@@ -191,7 +188,7 @@ impl LeanEvent {
     }
 }
 
-impl<'de> Deserialize<'de> for LeanEvent {
+impl<'de> Deserialize<'de> for LeanEvent<String> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -304,37 +301,27 @@ impl<'de> Deserialize<'de> for LeanEvent {
     }
 }
 
-impl PartialEq for LeanEvent {
+impl<Id: PartialEq> PartialEq for LeanEvent<Id> {
     fn eq(&self, other: &Self) -> bool {
         self.event_id == other.event_id
     }
 }
 
-impl Eq for LeanEvent {}
+impl<Id: Eq> Eq for LeanEvent<Id> {}
 
-impl Ord for LeanEvent {
+impl<Id: Ord> Ord for LeanEvent<Id> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.event_id.cmp(&other.event_id)
     }
 }
 
-impl PartialOrd for LeanEvent {
+impl<Id: Ord> PartialOrd for LeanEvent<Id> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl LeanEvent {
-    /// Deterministic ordering: depth ascending, then `event_id` ascending.
-    /// Use this instead of `sort_by_key(|ev| ev.depth)` to avoid
-    /// non-determinism from `HashMap` iteration order on equal depths.
-    #[must_use]
-    pub fn cmp_by_depth(&self, other: &Self) -> Ordering {
-        self.depth
-            .cmp(&other.depth)
-            .then(self.event_id.cmp(&other.event_id))
-    }
-
+impl<Id> LeanEvent<Id> {
     #[must_use]
     pub fn is_ban_or_kick(&self) -> bool {
         if self.event_type == "m.room.member" {
@@ -387,7 +374,7 @@ impl LeanEvent {
     }
 
     #[must_use]
-    pub fn restricts_event(&self, other: &LeanEvent) -> bool {
+    pub fn restricts_event(&self, other: &LeanEvent<Id>) -> bool {
         if self.is_ban_or_kick() || self.is_demotion() {
             return self.restricts_sender(&other.sender);
         }
@@ -400,16 +387,36 @@ impl LeanEvent {
     }
 }
 
+impl<Id: Ord> LeanEvent<Id> {
+    /// Deterministic ordering: depth ascending, then `event_id` ascending.
+    /// Use this instead of `sort_by_key(|ev| ev.depth)` to avoid
+    /// non-determinism from `HashMap` iteration order on equal depths.
+    #[must_use]
+    pub fn cmp_by_depth(&self, other: &Self) -> Ordering {
+        self.depth
+            .cmp(&other.depth)
+            .then(self.event_id.cmp(&other.event_id))
+    }
+}
+
 /// A wrapper to ensure `BinaryHeap` pops the "Best" event FIRST.
-#[derive(Debug, Clone, Copy)]
-pub struct SortPriority<'a> {
-    pub event: &'a LeanEvent,
+#[derive(Debug)]
+pub struct SortPriority<'a, Id = String> {
+    pub event: &'a LeanEvent<Id>,
     pub power_level: i64,
     pub auth_chain_distance: u64,
     pub version: StateResVersion,
 }
 
-impl PartialEq for SortPriority<'_> {
+impl<Id> Clone for SortPriority<'_, Id> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<Id> Copy for SortPriority<'_, Id> {}
+
+impl<Id: Eq> PartialEq for SortPriority<'_, Id> {
     fn eq(&self, other: &Self) -> bool {
         self.power_level == other.power_level
             && self.event.origin_server_ts == other.event.origin_server_ts
@@ -417,9 +424,9 @@ impl PartialEq for SortPriority<'_> {
     }
 }
 
-impl Eq for SortPriority<'_> {}
+impl<Id: Eq> Eq for SortPriority<'_, Id> {}
 
-impl Ord for SortPriority<'_> {
+impl<Id: Ord> Ord for SortPriority<'_, Id> {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.version {
             StateResVersion::V1 => {
@@ -480,7 +487,7 @@ impl Ord for SortPriority<'_> {
     }
 }
 
-impl PartialOrd for SortPriority<'_> {
+impl<Id: Ord> PartialOrd for SortPriority<'_, Id> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
@@ -504,13 +511,14 @@ pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
 
 pub fn find_deterministic_create_event<
     'a,
+    Id: Ord + Eq + core::hash::Hash,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
-    auth_context: &'a HashMap<String, LeanEvent, S1>,
-    sort_set: &'a HashMap<String, LeanEvent, S2>,
-) -> Option<&'a LeanEvent> {
-    let mut create_events: Vec<&LeanEvent> = auth_context
+    auth_context: &'a HashMap<Id, LeanEvent<Id>, S1>,
+    sort_set: &'a HashMap<Id, LeanEvent<Id>, S2>,
+) -> Option<&'a LeanEvent<Id>> {
+    let mut create_events: Vec<&LeanEvent<Id>> = auth_context
         .values()
         .chain(sort_set.values())
         .filter(|ev| ev.event_type == "m.room.create")
