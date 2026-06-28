@@ -409,6 +409,11 @@ pub fn reconstruct_state_at(
 ///
 /// A `BTreeMap<usize, state_map>` keyed by the requested indices. Missing
 /// entries indicate broken chains or out-of-bounds indices.
+///
+/// # Panics
+///
+/// Panics if an internal index increment overflows `usize` (should never
+/// happen with valid checkpoint data).
 #[must_use]
 pub fn reconstruct_state_batch(
     checkpoints: &[CompactedCheckpoint],
@@ -444,9 +449,8 @@ pub fn reconstruct_state_batch(
         if checkpoints[snapshot_idx].snapshot.is_some() {
             break;
         }
-        let parent_hash = match checkpoints[snapshot_idx].parent_hash.as_ref() {
-            Some(h) => h,
-            None => return BTreeMap::new(), // broken chain
+        let Some(parent_hash) = checkpoints[snapshot_idx].parent_hash.as_ref() else {
+            return BTreeMap::new(); // broken chain
         };
         match hash_to_idx.get(parent_hash.as_str()) {
             Some(&idx) => snapshot_idx = idx,
@@ -462,11 +466,11 @@ pub fn reconstruct_state_batch(
     // Check if the snapshot itself is a target
     while target_ptr < sorted_targets.len() && sorted_targets[target_ptr] == snapshot_idx {
         results.insert(snapshot_idx, state.clone());
-        target_ptr += 1;
+        target_ptr = target_ptr.checked_add(1).expect("target_ptr overflow");
     }
 
     // Walk forward, applying deltas and capturing at each target
-    for i in (snapshot_idx + 1)..=latest {
+    for i in (snapshot_idx.checked_add(1).expect("snapshot_idx overflow"))..=latest {
         if i >= checkpoints.len() {
             break;
         }
@@ -491,7 +495,7 @@ pub fn reconstruct_state_batch(
         // Capture if this is a target
         while target_ptr < sorted_targets.len() && sorted_targets[target_ptr] == i {
             results.insert(i, state.clone());
-            target_ptr += 1;
+            target_ptr = target_ptr.checked_add(1).expect("target_ptr overflow");
         }
     }
 
