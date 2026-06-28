@@ -298,6 +298,126 @@ where
     })
 }
 
+/// Computes the state map at (after) a batch of target event IDs,
+/// assuming all ancestral events are present in `events_map`.
+///
+/// # Panics
+///
+/// Will panic if graph invariants are violated (specifically, if an ancestor event
+/// present in the reachable subgraph is missing from `events_map` during topological processing).
+#[must_use]
+pub fn compute_state_at_batch<Id, Q, S>(
+    target_event_ids: &[&Q],
+    events_map: &HashMap<Id, LeanEvent<Id>, S>,
+) -> HashMap<Id, BTreeMap<(String, Option<String>), Id>>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
+    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    S: core::hash::BuildHasher,
+{
+    let mut actual_target_ids = Vec::with_capacity(target_event_ids.len());
+    for &tid in target_event_ids {
+        if let Some((k, _)) = events_map.get_key_value(tid) {
+            actual_target_ids.push(k);
+        }
+    }
+
+    if actual_target_ids.is_empty() {
+        return HashMap::new();
+    }
+
+    let (id_to_index, index_to_id) =
+        collect_ancestor_short_ids_batch(&actual_target_ids, events_map);
+    let sorted_ancestors = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
+
+    let mut state_after_map: Vec<Option<SharedState<Id>>> = alloc::vec![None; index_to_id.len()];
+
+    for idx in sorted_ancestors {
+        let id_val = index_to_id[idx];
+        let ev = events_map.get(id_val.borrow()).unwrap();
+
+        let mut prev_states: Vec<&SharedState<Id>> = Vec::with_capacity(ev.prev_events.len());
+        for pe in &ev.prev_events {
+            if let Some(&pe_idx) = id_to_index.get(pe) {
+                if let Some(ref pe_state) = state_after_map[pe_idx] {
+                    prev_states.push(pe_state);
+                }
+            }
+        }
+
+        let mut state_before: SharedState<Id> = if prev_states.is_empty() {
+            alloc::sync::Arc::new(BTreeMap::new())
+        } else if prev_states.len() == 1 {
+            alloc::sync::Arc::clone(prev_states[0])
+        } else {
+            resolve_merge_fast_path(&prev_states, events_map)
+        };
+
+        if ev.state_key.is_some() {
+            let mut_state = alloc::sync::Arc::make_mut(&mut state_before);
+            mut_state.insert(
+                (ev.event_type.clone(), ev.state_key.clone()),
+                ev.event_id.clone(),
+            );
+        }
+
+        state_after_map[idx] = Some(state_before);
+    }
+
+    let mut results = HashMap::with_capacity(actual_target_ids.len());
+    for &actual_tid in &actual_target_ids {
+        if let Some(&target_idx) = id_to_index.get(actual_tid) {
+            if let Some(ref shared_state) = state_after_map[target_idx] {
+                let btree = (**shared_state).clone();
+                results.insert(actual_tid.clone(), btree);
+            }
+        }
+    }
+
+    results
+}
+
+fn collect_ancestor_short_ids_batch<'a, Id, S>(
+    target_event_ids: &[&'a Id],
+    events_map: &'a HashMap<Id, LeanEvent<Id>, S>,
+) -> (HashMap<&'a Id, usize>, Vec<&'a Id>)
+where
+    Id: Clone + Eq + core::hash::Hash,
+    S: core::hash::BuildHasher,
+{
+    let mut id_to_index: HashMap<&Id, usize> = HashMap::new();
+    let mut index_to_id: Vec<&Id> = Vec::new();
+    let mut queue = Vec::new();
+
+    for &tid in target_event_ids {
+        if !id_to_index.contains_key(tid) {
+            let next_idx = index_to_id.len();
+            id_to_index.insert(tid, next_idx);
+            index_to_id.push(tid);
+            queue.push(tid);
+        }
+    }
+
+    let mut head = 0;
+    while head < queue.len() {
+        let current_id = queue[head];
+        head = head.saturating_add(1);
+
+        if let Some(ev) = events_map.get(current_id) {
+            for pe in &ev.prev_events {
+                if events_map.contains_key(pe) && !id_to_index.contains_key(pe) {
+                    let next_idx = index_to_id.len();
+                    id_to_index.insert(pe, next_idx);
+                    index_to_id.push(pe);
+                    queue.push(pe);
+                }
+            }
+        }
+    }
+
+    (id_to_index, index_to_id)
+}
+
 fn collect_ancestor_short_ids<'a, Id, S>(
     target_event_id: &'a Id,
     events_map: &'a HashMap<Id, LeanEvent<Id>, S>,
