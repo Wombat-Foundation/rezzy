@@ -316,7 +316,7 @@ def write_output(events, room_id, output_path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Export a Matrix room DAG for ruma-lean stress testing"
+        description="Export a Matrix room DAG for rezzy stress testing"
     )
     parser.add_argument(
         "room",

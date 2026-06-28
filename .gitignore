@@ -6,9 +6,12 @@ target/
 *.zip
 *.tar.*
 /*.txt
-# misc
+
+# misc / top-level stuff
 /*.log
 /*.jsonl
+/*.html
+
 # paper
 paper.aux
 paper.log

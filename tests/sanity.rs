@@ -36,7 +36,7 @@ fn test_heap_order() {
 
 #[test]
 fn test_compute_state_at_correctness_and_performance() {
-    use ruma_lean::{compute_state_at, LeanEvent};
+    use rezzy::{compute_state_at, LeanEvent};
     use std::collections::HashMap;
     use std::time::Instant;
 
@@ -101,7 +101,10 @@ fn test_compute_state_at_correctness_and_performance() {
     assert_eq!(mid_state.get(&test_key), Some(&"$400".to_string()));
     assert_eq!(tip_state.get(&test_key), Some(&"$400".to_string()));
 
-    // 2. Performance Benchmark (average of 500 runs)
+    // 2. Performance Benchmark (average of 50 runs in debug, 500 in release)
+    #[cfg(debug_assertions)]
+    let runs = 50;
+    #[cfg(not(debug_assertions))]
     let runs = 500;
 
     // Early
@@ -161,8 +164,8 @@ fn compute_state_hash(
     format!("{hash:016x}")
 }
 
-fn make_chronological_test_events() -> Vec<ruma_lean::LeanEvent> {
-    use ruma_lean::LeanEvent;
+fn make_chronological_test_events() -> Vec<rezzy::LeanEvent> {
+    use rezzy::LeanEvent;
     // 1. Create three chronological events
     let ev1 = LeanEvent {
         event_id: "$1".to_string(),
@@ -288,7 +291,7 @@ fn test_delta_chain_generation_correctness() {
 
 #[test]
 fn test_state_delta_compression_robustness() {
-    use ruma_lean::LeanEvent;
+    use rezzy::LeanEvent;
     use std::collections::{BTreeMap, HashMap};
 
     // Construct a micro-history with a merge where some state key gets deleted/overwritten

@@ -8,11 +8,13 @@ use ruma_common::{
     room_version_rules::{AuthorizationRules, StateResolutionV2Rules},
 };
 use ruma_events::{StateEventType, TimelineEventType};
-use ruma_state_res::{
+//
+use crate::mock_ruma;
+use mock_ruma::{
     Event, StateMap,
-    events::RoomCreateEvent,
+    RoomCreateEvent,
     resolve,
-    utils::{event_id_map::EventIdMap, event_id_set::EventIdSet},
+    EventIdMap, EventIdSet,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{

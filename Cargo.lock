@@ -1159,6 +1159,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "rezzy"
+version = "0.1.5-rc.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "clap",
+ "hashbrown 0.15.5",
+ "insta",
+ "roaring",
+ "ruma-common",
+ "ruma-events",
+ "ruma-state-res",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "similar 3.1.1",
+ "test-log",
+ "tracing-subscriber",
+ "ureq",
+]
+
+[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1239,28 +1261,6 @@ checksum = "9d6cff00317675f487c4e7ccfb18875a14c5a14867b51d13f2a826053f03c432"
 dependencies = [
  "js_int",
  "thiserror",
-]
-
-[[package]]
-name = "ruma-lean"
-version = "0.1.5-rc.0"
-dependencies = [
- "anyhow",
- "base64",
- "clap",
- "hashbrown 0.15.5",
- "insta",
- "roaring",
- "ruma-common",
- "ruma-events",
- "ruma-state-res",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "similar 3.1.1",
- "test-log",
- "tracing-subscriber",
- "ureq",
 ]
 
 [[package]]

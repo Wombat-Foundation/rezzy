@@ -1,44 +1,131 @@
-# Ruma-Lean: Matrix State Resolution v2.1.1
+# Rezzy: Matrix State Resolution Engine
 
-Ruma-Lean is a dependency-free, high-performance Rust reference engine for Matrix State Resolution. It serves as the reference implementation for the proposed **v2.1.1** standard, addressing critical topological anomalies and accumulator-retention defects found in production implementations (like Ruma v2.1 and Synapse).
+Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolution — both a research model and highly-efficient reference implementation for Matrix state resolution `v2`, `v2.1`, and `v2.1.1`, designed for correctness and compliance (soon to support `v2.2` or State DAGs, too).
 
-_Note: Lean theorem-proving and ZK (Zero-Knowledge) acceleration experiments are no longer at the forefront of this repository, which is now primarily focused on stable algorithmic research, correctness, and reference compliance._
+## Features
 
-## Architectural Innovations
-
-Ruma-Lean introduces several mathematically rigorous solutions to state resolution, heavily leveraging applied graph theory and distributed systems security:
-
-### 1. The Causal Domination Operator (CDO)
-
-A vectorized topological filter executing on the Conflicted State Subgraph. By enforcing a strict partial order of administrative actions via a Bounded BFS algorithmic fix, CDO eliminates bypass windows like Phantom Join Rules and Mod Membership Evaporation.
-
-### 2. $I_{\text{PL}}$ Fallback Context (Semantic vs. Syntactic)
-
-Production engines often conflate **Syntactic Representation** (JSON payloads) with **Semantic Authority** (evaluated permissions), leading to strict schema panics when `m.room.power_levels` are redacted. Ruma-Lean decouples evaluation from validation: $I_{\text{PL}}$ is defined purely as an Evaluation-Time Closure parameterized by the immutable `m.room.create` event. It bypasses schema assertions while preserving total function safety.
-
-### 3. $\mathcal{O}(1)$ Lazy Projection
-
-To solve the accumulator-retention defect without the massive memory bottleneck of _Eager State Supplementation_, Ruma-Lean employs a Lazy Projection closure (`.or_else(|| unconflicted_state.get(&key))`). This $\mathcal{O}(1)$ memory/time logical union safely preloads unconflicted memberships into the initial auth overlay ($S_0$), completely neutralizing state reset attacks without scaling penalties.
-
-### 4. Z3 SMT Verification
-
-Instead of interactive game-theoretic models, safety is proven using a post-hoc Z3 SMT/CDCL topological framework. By universally quantifying over the unbounded space of all topologically valid partial orders (DAG configurations), the solver inherently proves deterministic safety against _any_ adversarial server collusion or network scheduler.
-
-## Limitations: Model vs. Upstream Code
-
-To ensure the highest level of scientific integrity, we explicitly distinguish between this research model and production homeserver libraries:
-
-- **`ruma-lean` Model:** This repository serves as a _formal verification reference model_. While it strictly replicates the core state resolution equations and implements the proposed CDO and Lazy Projection logic, it operates in a clean, dependency-free environment. Its evaluation results should be read as **ruma-lean Model (v2.1)** and **ruma-lean Model (v2.1.1)**. It does not contain the millions of lines of real-world asynchronous networking code found in production libraries.
-- **Synapse Baseline:** In contrast, references to Synapse in our test harnesses invoke the _actual, unmodified upstream production `matrix-synapse` Python library_, capturing authentic production exploits.
+- **Causal domination operator (CDO)**: Safely and optimally resolves conflicting state in DAGs.
+- **Lazy projection**: Fast, memory-efficient state resolution by only loading required membership events.
+- **Topological & mainline Sorting**: Fast and robust DAG sorting to order events correctly.
+- **Pure lattice-coordinatized projection**: Employs `O(1)` causal coordinatization projection and commutative join-semilattice folding.
 
 ## Usage
 
-## Usage
+### Build
 
 ```bash
-# Run the core standard compliance test suite
-cargo test
-
-# Run the upstream runner against official Ruma integration tests
-cargo test --test upstream_runner --features="mock-ruma"
+cargo build --release
 ```
+
+### Test
+
+```bash
+make test         # Run unit and integration tests
+make rust/e2e     # Run E2E parity tests
+```
+
+### Test Coverage
+
+To install and run test coverage via `cargo-tarpaulin`:
+
+```bash
+cargo install cargo-tarpaulin --features vendored-openssl
+cargo tarpaulin
+```
+
+### Format & Lint
+
+```bash
+make format
+make lint
+```
+
+## Algorithmic & architectural engineering
+
+Because we care about raw performance and mechanical efficiency, `rezzy` is built on a foundation of blazingly fast ideas. Under the hood of our production code, you will find:
+
+- _Causal domination_ operator (CDO) filtering
+- Batched/strip-mined **SWAR** (SIMD within a register) matrix sweeps
+- `O(1)` _causal coordinatization_ projection
+- Filtered _commutative join-semilattice_ folding
+- Integer "interning" (`ShortID`) graph-based traversal
+- Flat-array "stride matrices"
+- Reverse topological power ordering (Kahn's algorithm)
+- `Arc`-based copy-on-write (CoW) structural sharing
+- `O(1)` fast-path _merge resolution_ via "pointer-equality bypass"
+- Zero-allocation stack-safe DAG crawling
+- Generic `BuildHasher` decoupling
+- Supremum deletion attack (Byzantine fault mitigation)
+- Optimal conflicted state sub-graph computation (MSC4297)
+- **Roaring bitmaps** (SIMD-optimized set operations)
+- `FNV-1a` lexicographical state hashing
+
+## TODO
+
+### Per-Event State Deltas (`resolve_with_deltas`)
+
+Currently `resolve_lean` only outputs the final resolved state snapshot. For observability and debugging (e.g. visualizing state evolution through a fork), we need a variant that emits per-step deltas:
+
+- Hook into the iterative auth-check loop and capture insertions/replacements at each step
+- Emit a `Vec<StateDelta>` alongside the final `BTreeMap` result
+- Each delta captures: event_id applied, (type, state_key) modified, old value evicted, new value inserted
+- Useful for: timeline replay, state-res visualization, debugging ban/PL conflicts
+
+### Checkpoint / Partial-Join Support
+
+For simulating partial joins (e.g. federated rooms where a server doesn't have the full history):
+
+- Allow starting resolution from a trusted state snapshot (checkpoint) as the unconflicted base
+- Still require the full auth chain for any _conflicting_ events that diverge from the checkpoint
+- Truncating the auth chain for conflicted events breaks topological ordering and can cause state resets (ref: CVE-2025-49090)
+- API: accept an optional `checkpoint: BTreeMap<(String, Option<String>), String>` as the pre-resolved base state
+
+### Auth Chain Subset Safety
+
+Document and enforce the invariant: you can trust a snapshot for the unconflicted base, but the auth chain for conflicted events must be complete and uninterrupted. Partial auth chains lead to:
+
+- Sorting failures (cannot establish mainline order)
+- Auth check failures (missing historical power levels)
+- Potential state reset attacks
+
+### `auth_types_for_event`
+
+Expose a pure function that returns the list of `(event_type, state_key)` pairs required in auth state for a given event type. Currently only available in ruma's `state_res` — adding it to rezzy would eliminate the last ruma `state_res` dependency for downstream consumers.
+
+### Integer-Keyed Resolution (`resolve_lean_indexed`)
+
+Accept `HashMap<u32, LeanEvent>` instead of `HashMap<String, LeanEvent>`. All internal lookups use `u32` keys instead of hashing 44-byte base64 event ID strings.
+
+- The caller builds a `String → u32` intern table once and remaps all event IDs
+- `LeanEvent::auth_events` and `LeanEvent::prev_events` become `Vec<u32>` instead of `Vec<String>`
+- **Impact**: 10-40x faster HashMap lookups in debug mode, measurable improvement in release
+
+This is especially valuable for homeservers like continuwuity that already maintain `shorteventid: u64` mappings — they can go straight from DB shorts to rezzy without any string conversion.
+
+### Typed Content Fields (`LeanEventTyped`)
+
+Replace `content: serde_json::Value` with pre-extracted typed fields to eliminate JSON parsing in the hot path:
+
+```rust
+pub struct LeanEventTyped {
+    pub membership: Option<String>,
+    pub users_pl: Option<BTreeMap<String, i64>>,
+    pub join_rule: Option<String>,
+    pub ban_level: Option<i64>,
+    pub kick_level: Option<i64>,
+    pub events_default: Option<i64>,
+    pub creator: Option<String>,
+}
+```
+
+The caller's PDU type already has typed access to these fields (via ruma deserialization). Currently the adapter serializes them back to JSON, and rezzy re-parses them — a completely redundant round-trip.
+
+### Batch State Computation (`compute_state_at_batch`)
+
+Compute state at N events in topological order, reusing the resolved state from previous events. This is the incremental state walk pattern that homeservers implement manually in their `rebuild-state` commands.
+
+Internalizing this in rezzy would:
+
+- Eliminate per-event adapter overhead (PDU→LeanEvent conversion, auth chain fetch)
+- Allow rezzy to skip resolution entirely when an event has a single parent (fast-path)
+- Enable internal caching of power level context across consecutive events

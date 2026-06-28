@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a realistic large Matrix room fixture for stress-testing ruma-lean.
+"""Generate a realistic large Matrix room fixture for stress-testing rezzy.
 
 Simulates a room like Matrix HQ (#matrix:matrix.org) with:
 - 10,000+ events with proper auth_events and prev_events DAG structure
@@ -149,9 +149,7 @@ add_event(
 add_event("m.room.join_rules", "", ADMINS[0], {"join_rule": "public"})
 add_event("m.room.history_visibility", "", ADMINS[0], {"history_visibility": "shared"})
 add_event("m.room.name", "", ADMINS[0], {"name": "Stress Test Room"})
-add_event(
-    "m.room.topic", "", ADMINS[0], {"topic": "Testing ruma-lean state resolution"}
-)
+add_event("m.room.topic", "", ADMINS[0], {"topic": "Testing rezzy state resolution"})
 
 # Moderator joins
 add_event("m.room.member", ADMINS[1], ADMINS[1], {"membership": "join"})
@@ -235,7 +233,7 @@ for i in range(4800):
         # Topic change
         topics = [
             "Testing state resolution",
-            "ruma-lean stress test",
+            "rezzy stress test",
             "Matrix protocol development",
             "State res v2.1 validation",
             "Auth chain verification",

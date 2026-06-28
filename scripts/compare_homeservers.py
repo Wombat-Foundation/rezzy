@@ -54,10 +54,10 @@ def run_ruma_lean(file_path):
         try:
             return json.loads(result.stdout)
         except:
-            print(f"Failed to parse JSON output from ruma-lean for {file_path}")
+            print(f"Failed to parse JSON output from rezzy for {file_path}")
             return None
     else:
-        print(f"Error running ruma-lean on {file_path}: {result.stderr}")
+        print(f"Error running rezzy on {file_path}: {result.stderr}")
         return None
 
 
@@ -89,7 +89,7 @@ def main():
 
     results = {}
     for name, path in states.items():
-        print(f"Processing {name} state with ruma-lean...")
+        print(f"Processing {name} state with rezzy...")
         results[name] = run_ruma_lean(path)
 
     if not all(results.values()):

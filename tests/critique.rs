@@ -1,4 +1,4 @@
-use ruma_lean::{resolve_lean, LeanEvent, StateResVersion};
+use rezzy::{resolve_lean, LeanEvent, StateResVersion};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -112,11 +112,12 @@ fn resolve_full(events: &[LeanEvent], version: StateResVersion) -> ResolvedState
     let mut occurrences: HashMap<(String, Option<String>), HashMap<String, usize>> = HashMap::new();
     for map in &state_maps {
         for (key, id) in map {
-            *occurrences
+            let val = occurrences
                 .entry(key.clone())
                 .or_default()
                 .entry(id.clone())
-                .or_insert(0) += 1;
+                .or_insert(0);
+            *val = val.wrapping_add(1);
         }
     }
 
@@ -170,8 +171,7 @@ fn resolve_full(events: &[LeanEvent], version: StateResVersion) -> ResolvedState
 
     // Add conflicted state subgraph (MSC4297 / v2.1+)
     if version == StateResVersion::V2_1 || version == StateResVersion::V2_1_1 {
-        let subgraph =
-            ruma_lean::compute_v2_1_conflicted_subgraph(&events_map, &conflicted_state_set);
+        let subgraph = rezzy::compute_v2_1_conflicted_subgraph(&events_map, &conflicted_state_set);
         for (id, ev) in subgraph {
             conflicted_events.insert(id, ev);
         }

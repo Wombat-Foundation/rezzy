@@ -18,6 +18,8 @@
 //! their `prev_events` — never the current time. This is the core security
 //! invariant that prevents retroactive authorization tampering.
 
+pub mod roaring;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
@@ -396,6 +398,47 @@ fn check_membership_rules(event: &LeanEvent, state: &impl StateProvider) -> Resu
         _ => {}
     }
 
+    // If target_user != event.sender and the transition is a kick, ban, or unban (membership is leave or ban),
+    // check sender power level against target user and existing membership sender.
+    if target_user != event.sender && (new_membership == "leave" || new_membership == "ban") {
+        let sender_pl = get_sender_power_level(&event.sender, state);
+
+        // 1. Sender power level must be strictly greater than target power level.
+        let target_pl = get_sender_power_level(target_user, state);
+        if sender_pl <= target_pl {
+            return Err(AuthError::InsufficientPowerLevel {
+                required: target_pl.saturating_add(1),
+                actual: sender_pl,
+                event_type: "m.rezzy.member_pl_greater_than_target".into(),
+            });
+        }
+
+        // 2. If the target has a current active membership (joined, invited, or banned),
+        // sender power level must be strictly greater than the power level of the user who set the current membership.
+        if let Some(current_member_event) = state.get_event("m.room.member", Some(target_user)) {
+            if let Some(current_membership) = current_member_event
+                .content
+                .get("membership")
+                .and_then(|m| m.as_str())
+            {
+                if current_membership == "join"
+                    || current_membership == "invite"
+                    || current_membership == "ban"
+                {
+                    let current_sender_pl =
+                        get_sender_power_level(&current_member_event.sender, state);
+                    if sender_pl <= current_sender_pl {
+                        return Err(AuthError::InsufficientPowerLevel {
+                            required: current_sender_pl.saturating_add(1),
+                            actual: sender_pl,
+                            event_type: "m.rezzy.member_pl_greater_than_current_sender".into(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -533,4 +576,56 @@ pub fn check_auth_chain(
     }
 
     (accepted, rejected)
+}
+
+/// Returns the state event types required to authorize an event.
+/// Equivalent to Ruma's `state_res::auth_types_for_event`.
+#[must_use]
+pub fn auth_types_for_event(
+    event_type: &str,
+    sender: &str,
+    state_key: Option<&str>,
+    content: &serde_json::Value,
+) -> Vec<(String, String)> {
+    let mut auth_types = Vec::new();
+
+    if event_type == "m.room.create" {
+        return auth_types;
+    }
+
+    auth_types.push((String::from("m.room.create"), String::new()));
+    auth_types.push((String::from("m.room.member"), String::from(sender)));
+    auth_types.push((String::from("m.room.power_levels"), String::new()));
+
+    if event_type == "m.room.member" {
+        if let Some(sk) = state_key {
+            if sender != sk {
+                auth_types.push((String::from("m.room.member"), String::from(sk)));
+            }
+        }
+
+        let membership = content.get("membership").and_then(|v| v.as_str());
+        if membership == Some("join") || membership == Some("invite") {
+            auth_types.push((String::from("m.room.join_rules"), String::new()));
+        }
+
+        let third_party_invite = content
+            .get("third_party_invite")
+            .and_then(|v| v.as_object());
+        if let Some(tpi) = third_party_invite {
+            if let Some(token) = tpi
+                .get("signed")
+                .and_then(|s| s.as_object())
+                .and_then(|s| s.get("token"))
+                .and_then(|t| t.as_str())
+            {
+                auth_types.push((
+                    String::from("m.room.third_party_invite"),
+                    String::from(token),
+                ));
+            }
+        }
+    }
+
+    auth_types
 }

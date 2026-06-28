@@ -4,7 +4,7 @@
 Uses the Client-Server API to get the current resolved state of a room,
 which was computed by the server's own state resolution implementation
 (ruma-state-res in conduwuit). This serves as the external oracle to
-validate ruma-lean's output against.
+validate rezzy's output against.
 
 Usage:
   export MATRIX_SERVER=https://your-server.example.com
@@ -158,7 +158,7 @@ def write_oracle(state_map, room_id, output_path):
         "source": "conduwuit state resolution (ruma-state-res)",
         "description": (
             "Ground-truth resolved state as computed by the server's own "
-            "state resolution engine. ruma-lean's output must match this."
+            "state resolution engine. rezzy's output must match this."
         ),
         "resolved_state": state_list,
         "total_resolved": len(state_list),

@@ -4,7 +4,7 @@ Fetches raw Matrix DAG state resolution arrays dynamically from live Server inst
 NOTE: The default endpoint (`/_matrix/client/v3/rooms/{ROOM_ID}/state`) returns
 Client-Server API state events. These events STRIP out the `auth_events` and
 `prev_events` properties which are required to compute an auth chain for full
-joins (yielding an `auth_chain_size` of 0 in `ruma-lean` testing).
+joins (yielding an `auth_chain_size` of 0 in `rezzy` testing).
 
 To fetch full PDUs (which include these fields), use the `--full-pdus` flag.
 This flag requires a Server Admin token and uses the Synapse Admin API.

@@ -1,4 +1,4 @@
-use ruma_lean::merge_event_sets;
+use rezzy::merge_event_sets;
 use serde_json::json;
 
 fn ev(id: &str, depth: u64) -> serde_json::Value {
@@ -6,7 +6,7 @@ fn ev(id: &str, depth: u64) -> serde_json::Value {
         "event_id": id,
         "type": "m.room.member",
         "state_key": format!("@user:{id}"),
-        "origin_server_ts": 1000 + depth,
+        "origin_server_ts": 1000_u64.wrapping_add(depth),
         "depth": depth,
         "prev_events": [],
         "auth_events": []

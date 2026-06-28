@@ -1,5 +1,5 @@
-use ruma_lean::auth::*;
-use ruma_lean::*;
+use rezzy::auth::*;
+use rezzy::*;
 use serde_json::json;
 
 fn make_event(
@@ -202,4 +202,97 @@ fn test_auth_error_display() {
     };
     let msg = format!("{err}");
     assert!(msg.contains("bob"));
+}
+
+#[test]
+fn test_moderator_cannot_override_admin_ban() {
+    let mut state = RoomState::new();
+
+    // 1. Create event
+    state.insert(
+        ("m.room.create".into(), Some(String::new())),
+        make_event(
+            "$create",
+            "m.room.create",
+            Some(""),
+            "@creator:example.com",
+            json!({}),
+        ),
+    );
+
+    // 2. Power levels event (admin = 100, mod = 50)
+    state.insert(
+        ("m.room.power_levels".into(), Some(String::new())),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@admin:example.com",
+            json!({
+                "users": {
+                    "@admin:example.com": 100,
+                    "@mod:example.com": 50
+                }
+            }),
+        ),
+    );
+
+    // 3. Admin join
+    state.insert(
+        ("m.room.member".into(), Some("@admin:example.com".into())),
+        make_event(
+            "$join_admin",
+            "m.room.member",
+            Some("@admin:example.com"),
+            "@admin:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // 4. Mod join
+    state.insert(
+        ("m.room.member".into(), Some("@mod:example.com".into())),
+        make_event(
+            "$join_mod",
+            "m.room.member",
+            Some("@mod:example.com"),
+            "@mod:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // 5. Target is banned by @admin (PL 100)
+    state.insert(
+        ("m.room.member".into(), Some("@target:example.com".into())),
+        make_event(
+            "$ban_target",
+            "m.room.member",
+            Some("@target:example.com"),
+            "@admin:example.com",
+            json!({"membership": "ban"}),
+        ),
+    );
+
+    // 6. Moderator (PL 50) attempts to kick/leave the target
+    let mod_kick = make_event(
+        "$mod_kick",
+        "m.room.member",
+        Some("@target:example.com"),
+        "@mod:example.com",
+        json!({"membership": "leave"}),
+    );
+
+    // Should fail because moderator's power level (50) is <= admin's power level (100) who set the current ban
+    let result = check_auth(&mod_kick, &state);
+    assert!(
+        matches!(
+            result,
+            Err(AuthError::InsufficientPowerLevel {
+                required: 101,
+                actual: 50,
+                ref event_type,
+            }) if event_type == "m.rezzy.member_pl_greater_than_current_sender"
+        ),
+        "Expected InsufficientPowerLevel (101 required, 50 actual) for m.rezzy.member_pl_greater_than_current_sender, got {result:?}"
+    );
 }

@@ -1,13 +1,14 @@
 [package]
-name = "ruma-lean"
+name = "rezzy"
 version = "0.1.5-rc.0"
 edition = "2021"
+autobins = false
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
 description = "Lightweight and formally verified: State Res v1, v2, and v2.1 reference implementations in Rust."
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/gamesguru/ruma-lean"
+repository = "https://github.com/gamesguru/rezzy"
 autotests = false
-default-run = "ruma-lean"
+default-run = "rezzy"
 exclude = [
     "res/",
     "scripts/",
@@ -33,9 +34,14 @@ exclude = [
 ]
 
 [[bin]]
-name = "ruma-lean"
-path = "src/main.rs"
+name = "rezzy"
+path = "src/bin/rezzy/main.rs"
 required-features = ["cli"]
+
+[[bin]]
+name = "regen_oracles"
+path = "tests/regen_oracles.rs"
+required-features = ["regen"]
 
 [features]
 default = ["std"]
@@ -43,9 +49,9 @@ std = ["alloc", "serde_json/std", "serde/std"]
 alloc = []
 zkvm = []
 cli = ["std", "dep:clap", "dep:anyhow", "dep:ureq"]
-mock-ruma = ["dep:ruma-state-res", "dep:ruma-common", "dep:ruma-events"]
 regen = ["std"]
 hashing = ["dep:sha2", "dep:base64"]
+mock-ruma = ["dep:ruma-state-res", "dep:ruma-events", "dep:ruma-common"]
 
 [dependencies]
 anyhow = { version = "1.0", optional = true }
@@ -58,7 +64,7 @@ roaring = "0.11.4"
 ruma-common = { version = "0.19.0", optional = true }
 ruma-events = { version = "0.34.0", optional = true }
 ruma-state-res = { version = "0.17.0", features = ["__criterion"], optional = true }
-serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde = { version = "1.0", default-features = false, features = ["alloc"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.11.0", optional = true }
 ureq = { version = "2.9", optional = true, features = ["json"] }
@@ -102,12 +108,6 @@ name = "critique"
 path = "tests/critique.rs"
 
 [[test]]
-name = "regen_oracles"
-path = "tests/regen_oracles.rs"
-harness = false
-required-features = ["regen"]
-
-[[test]]
 name = "test_auth"
 path = "tests/test_auth.rs"
 
@@ -119,3 +119,20 @@ path = "tests/test_lib.rs"
 name = "test_main"
 path = "tests/test_main.rs"
 required-features = ["cli"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = "warn"
+perf = "warn"
+complexity = "warn"
+style = "warn"
+correctness = "warn"
+suspicious = "warn"
+
+# High-Value Security & Robustness restrictions
+arithmetic_side_effects = "warn"
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+get_unwrap = "warn"

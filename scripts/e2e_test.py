@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-E2E Test Runner for Ruma-Lean.
+E2E Test Runner for Rezzy.
 Verifies that the resolution output is consistent and follows Matrix protocol rules.
 """
 
@@ -14,7 +14,7 @@ def run_ruma_lean(input_file, hs_name):
     print(f"Running E2E test for homeserver: {hs_name} using {input_file}")
 
     cmd = [
-        "./target/release/ruma-lean",
+        "./target/release/rezzy",
         "--input",
         input_file,
         "--format",
@@ -25,11 +25,11 @@ def run_ruma_lean(input_file, hs_name):
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         return json.loads(result.stdout)
     except subprocess.CalledProcessError as e:
-        print(f"Error: ruma-lean failed with exit code {e.returncode}")
+        print(f"Error: rezzy failed with exit code {e.returncode}")
         print(f"Stderr: {e.stderr}")
         sys.exit(1)
     except json.JSONDecodeError as e:
-        print(f"Error: Failed to parse ruma-lean output as JSON: {e}")
+        print(f"Error: Failed to parse rezzy output as JSON: {e}")
         sys.exit(1)
 
 

@@ -31,7 +31,8 @@ impl AuthGraph {
                         .entry(auth_id.as_str())
                         .or_default()
                         .push(id.as_str());
-                    *in_degree.entry(id.as_str()).or_insert(0) += 1;
+                    let val = in_degree.entry(id.as_str()).or_insert(0);
+                    *val = val.saturating_add(1);
                 }
             }
         }
@@ -49,7 +50,7 @@ impl AuthGraph {
             if let Some(children) = adjacency.get(id) {
                 for child in children {
                     let deg = in_degree.get_mut(child).unwrap();
-                    *deg -= 1;
+                    *deg = deg.saturating_sub(1);
                     if *deg == 0 {
                         queue.push_back(*child);
                     }
@@ -83,5 +84,72 @@ impl AuthGraph {
             index_to_id,
             auth_bitmaps,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_auth_graph_build() {
+        let mut sort_context = HashMap::new();
+
+        // Create events:
+        // A is the creator / pl event (no auth events)
+        // B auths with A
+        // C auths with B
+        let ev_a = LeanEvent {
+            event_id: "A".to_string(),
+            event_type: "m.room.create".to_string(),
+            auth_events: vec![],
+            ..Default::default()
+        };
+        let ev_b = LeanEvent {
+            event_id: "B".to_string(),
+            event_type: "m.room.member".to_string(),
+            auth_events: vec!["A".to_string()],
+            ..Default::default()
+        };
+        let ev_c = LeanEvent {
+            event_id: "C".to_string(),
+            event_type: "m.room.message".to_string(),
+            auth_events: vec!["B".to_string()],
+            ..Default::default()
+        };
+
+        sort_context.insert("A".to_string(), ev_a);
+        sort_context.insert("B".to_string(), ev_b);
+        sort_context.insert("C".to_string(), ev_c);
+
+        let graph = AuthGraph::build(&sort_context);
+
+        assert_eq!(graph.id_to_index.len(), 3);
+        assert_eq!(graph.index_to_id.len(), 3);
+
+        let idx_a = graph.id_to_index["A"];
+        let idx_b = graph.id_to_index["B"];
+        let idx_c = graph.id_to_index["C"];
+
+        // Verify topological sorting holds (A is parent, so it should be processed before B, B before C)
+        assert!(idx_a < idx_b);
+        assert!(idx_b < idx_c);
+
+        // Verify auth bitmaps
+        let bitmap_a = &graph.auth_bitmaps[idx_a as usize];
+        let bitmap_b = &graph.auth_bitmaps[idx_b as usize];
+        let bitmap_c = &graph.auth_bitmaps[idx_c as usize];
+
+        // A has no auth events
+        assert!(bitmap_a.is_empty());
+
+        // B has A as auth event
+        assert!(bitmap_b.contains(idx_a));
+        assert_eq!(bitmap_b.len(), 1);
+
+        // C has B as auth event, and B transitively has A
+        assert!(bitmap_c.contains(idx_b));
+        assert!(bitmap_c.contains(idx_a));
+        assert_eq!(bitmap_c.len(), 2);
     }
 }

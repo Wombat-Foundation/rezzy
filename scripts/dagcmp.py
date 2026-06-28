@@ -45,7 +45,7 @@ def run_ruma(files: list[str], version: str = "v2-1") -> dict | None:
     for f in files:
         inputs.extend(["-i", f])
     cmd = [
-        "ruma-lean",
+        "rezzy",
         "-q",
         *inputs,
         "--state-res",

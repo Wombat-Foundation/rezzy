@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate reference/expected output JSON for all test fixtures.
 
-Runs ruma-lean's resolution engine via a helper binary and captures
+Runs rezzy's resolution engine via a helper binary and captures
 the resolved state as golden snapshots for regression testing.
 
 Since we can't easily call Rust from Python, this script instead

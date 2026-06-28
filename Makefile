@@ -74,19 +74,19 @@ rust/clean: ##H Remove Rust build artifacts
 	-$(CARGO) clean
 
 .PHONY: rust/install
-rust/install: ##H Install ruma-lean binary to cargo bin
-	$(CARGO) install --features cli,hashing --path . --bin ruma-lean
+rust/install: ##H Install rezzy binary to cargo bin
+	$(CARGO) install --features cli,hashing --path . --bin rezzy
 
 .PHONY: rust/uninstall
-rust/uninstall: ##H Uninstall ruma-lean binary from cargo bin
-	$(CARGO) uninstall ruma-lean
+rust/uninstall: ##H Uninstall rezzy binary from cargo bin
+	$(CARGO) uninstall rezzy
 
 .PHONY: rust/coverage
 rust/coverage: ##H Run code coverage and generate HTML report
-	@echo "Running focused code coverage for ruma-lean..."
+	@echo "Running focused code coverage for rezzy..."
 	$(CARGO) tarpaulin --out Html \
 		--output-dir ../.tmp/coverage-lean \
-		--packages ruma-lean \
+		--packages rezzy \
 		--ignore-panics \
 		--ignore-tests \
 		--skip-clean
