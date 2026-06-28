@@ -367,3 +367,121 @@ fn test_moderator_can_unban_self_ban() {
     let result = check_auth(&mod_unban, &state);
     assert!(result.is_ok(), "Expected Ok(()), got {result:?}");
 }
+
+#[test]
+fn test_equal_power_invite_override_allowed() {
+    let mut state = RoomState::new();
+
+    // Create event
+    state.insert(
+        ("m.room.create".into(), Some(String::new())),
+        make_event(
+            "$create",
+            "m.room.create",
+            Some(""),
+            "@creator:example.com",
+            json!({}),
+        ),
+    );
+
+    // Power levels event (admin = 100, mod1 = 50, mod2 = 50)
+    state.insert(
+        ("m.room.power_levels".into(), Some(String::new())),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@admin:example.com",
+            json!({
+                "users": {
+                    "@admin:example.com": 100,
+                    "@mod1:example.com": 50,
+                    "@mod2:example.com": 50
+                }
+            }),
+        ),
+    );
+
+    // Mod1 join
+    state.insert(
+        ("m.room.member".into(), Some("@mod1:example.com".into())),
+        make_event(
+            "$join_mod1",
+            "m.room.member",
+            Some("@mod1:example.com"),
+            "@mod1:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Mod2 join
+    state.insert(
+        ("m.room.member".into(), Some("@mod2:example.com".into())),
+        make_event(
+            "$join_mod2",
+            "m.room.member",
+            Some("@mod2:example.com"),
+            "@mod2:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Target is invited by @mod1 (PL 50)
+    state.insert(
+        ("m.room.member".into(), Some("@target:example.com".into())),
+        make_event(
+            "$invite_target",
+            "m.room.member",
+            Some("@target:example.com"),
+            "@mod1:example.com",
+            json!({"membership": "invite"}),
+        ),
+    );
+
+    // Moderator 2 (PL 50) attempts to invite the target again (equal power override)
+    let mod2_invite = make_event(
+        "$mod2_invite",
+        "m.room.member",
+        Some("@target:example.com"),
+        "@mod2:example.com",
+        json!({"membership": "invite"}),
+    );
+
+    // Should succeed because previous membership is invite (not ban or join), and Mod2 has invite power
+    let result = check_auth(&mod2_invite, &state);
+    assert!(result.is_ok(), "Expected Ok(()), got {result:?}");
+
+    // Target is now banned by @mod1 (PL 50)
+    state.insert(
+        ("m.room.member".into(), Some("@target:example.com".into())),
+        make_event(
+            "$ban_target",
+            "m.room.member",
+            Some("@target:example.com"),
+            "@mod1:example.com",
+            json!({"membership": "ban"}),
+        ),
+    );
+
+    // Moderator 2 (PL 50) attempts to invite the banned target
+    let mod2_invite_banned = make_event(
+        "$mod2_invite_banned",
+        "m.room.member",
+        Some("@target:example.com"),
+        "@mod2:example.com",
+        json!({"membership": "invite"}),
+    );
+
+    // Should fail because you can't invite a banned user (rule 4.4.3)
+    let result = check_auth(&mod2_invite_banned, &state);
+    assert!(
+        matches!(
+            result,
+            Err(AuthError::BannedUser {
+                ref sender,
+                ..
+            }) if sender == "@target:example.com"
+        ),
+        "Expected BannedUser error, got {result:?}"
+    );
+}

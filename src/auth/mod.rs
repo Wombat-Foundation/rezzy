@@ -440,11 +440,9 @@ fn check_membership_pl_hierarchies<Id: Clone>(
         }
     }
 
-    // 2. Previous Sender Rule: Applies to leave/kick, ban, AND invite transitions
+    // 2. Previous Sender Rule: Applies to leave/kick and ban transitions
     // if the previous membership was ban or invite.
-    if target_user != event.sender
-        && (new_membership == "leave" || new_membership == "ban" || new_membership == "invite")
-    {
+    if target_user != event.sender && (new_membership == "leave" || new_membership == "ban") {
         if let Some(current_member_event) = state.get_event("m.room.member", Some(target_user)) {
             if event.sender != current_member_event.sender {
                 if let Some(current_membership_str) = current_member_event
