@@ -2456,7 +2456,7 @@ mod tests {
         let mut conflicted_events: HashMap<String, LeanEvent> = HashMap::new();
         let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
 
-        // 1. Create room
+        // Create room
         let create_ev: LeanEvent = LeanEvent {
             event_id: "$create".into(),
             event_type: "m.room.create".into(),
@@ -2466,7 +2466,7 @@ mod tests {
         };
         auth_context.insert("$create".into(), create_ev.clone());
 
-        // 2. Alice joins
+        // Alice joins
         let join_alice: LeanEvent = LeanEvent {
             event_id: "$join_alice".into(),
             event_type: "m.room.member".into(),
@@ -2477,7 +2477,7 @@ mod tests {
         };
         auth_context.insert("$join_alice".into(), join_alice.clone());
 
-        // 3. Alice sets Bob to PL 50 (Unconflicted Ancestral PL Event)
+        // Alice sets Bob to PL 50 (Unconflicted Ancestral PL Event)
         let pl_alice: LeanEvent = LeanEvent {
             event_id: "$pl_alice".into(),
             event_type: "m.room.power_levels".into(),
@@ -2491,7 +2491,7 @@ mod tests {
         };
         auth_context.insert("$pl_alice".into(), pl_alice.clone());
 
-        // 4. Bob joins
+        // Bob joins
         let join_bob: LeanEvent = LeanEvent {
             event_id: "$join_bob".into(),
             event_type: "m.room.member".into(),
@@ -2502,7 +2502,7 @@ mod tests {
         };
         auth_context.insert("$join_bob".into(), join_bob.clone());
 
-        // 5. Conflicted Power Level events sent by Bob
+        // Conflicted Power Level events sent by Bob
         let pl_bob_1: LeanEvent = LeanEvent {
             event_id: "$pl_bob_1".into(),
             event_type: "m.room.power_levels".into(),

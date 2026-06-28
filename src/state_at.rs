@@ -22,6 +22,7 @@ pub(crate) struct OverlayState<'a, Id, S1, S2> {
     pub(crate) create_ev: Option<&'a LeanEvent<Id>>,
     pub(crate) version: StateResVersion,
     pub(crate) is_power_phase: bool,
+    pub(crate) event_sender: Option<&'a str>,
 }
 
 impl<
@@ -58,8 +59,11 @@ impl<
                     .get(eid)
                     .or_else(|| self.conflicted.get(eid))
                 {
-                    if self.version == StateResVersion::V2_1_1 && event_type == "m.room.member" {
-                        // V2.1.1 Fix: Only supplement bans and kicks
+                    if self.version == StateResVersion::V2_1_1
+                        && self.is_power_phase
+                        && event_type == "m.room.member"
+                    {
+                        // V2.1.1 Fix: Only supplement bans and kicks in power phase
                         if let Some(membership) =
                             ev.content.get("membership").and_then(|m| m.as_str())
                         {
@@ -78,15 +82,44 @@ impl<
             }
         }
 
-        // Check local auth chain (BFS result)
+        // Check local auth chain (BFS result) second!
         if let Some(ev) = self.local_auth.get(query) {
-            return Some(ev);
+            // Under Matrix State Resolution, during the power phase, a required auth event in the conflicted set
+            // can ONLY be used if it has been successfully authorized and resolved
+            // (i.e. is present in the resolved state).
+            let is_required_type = event_type == "m.room.power_levels"
+                || event_type == "m.room.join_rules"
+                || (event_type == "m.room.member" && state_key == self.event_sender);
+
+            let is_v2_1_or_above = self.version == StateResVersion::V2_1
+                || self.version == StateResVersion::V2_1_1
+                || self.version == StateResVersion::V2_2;
+
+            if self.is_power_phase
+                && is_v2_1_or_above
+                && is_required_type
+                && self.conflicted.contains_key(&ev.event_id)
+            {
+                if let Some(resolved_id) = self.resolved.get(query) {
+                    if let Some(resolved_ev) = self
+                        .auth_context
+                        .get(resolved_id)
+                        .or_else(|| self.conflicted.get(resolved_id))
+                    {
+                        return Some(resolved_ev);
+                    }
+                }
+                None
+            } else {
+                Some(ev)
+            }
+        } else {
+            // Fallback for create
+            if event_type == "m.room.create" && state_key == Some("") {
+                return self.create_ev;
+            }
+            None
         }
-        // Fallback for create
-        if event_type == "m.room.create" && state_key == Some("") {
-            return self.create_ev;
-        }
-        None
     }
 }
 
@@ -115,6 +148,7 @@ pub(crate) fn iterative_auth_ok<
         create_ev: cached_create,
         version,
         is_power_phase,
+        event_sender: Some(event.sender.as_str()),
     };
 
     crate::auth::check_auth(event, &overlay).is_ok()
@@ -571,4 +605,114 @@ where
         events_map,
         StateResVersion::V2,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+    use alloc::vec;
+    use serde_json::json;
+
+    #[test]
+    fn test_conflicted_auth_event_validation_in_power_phase() {
+        // Create a minimal room context
+        let create_ev = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            sender: "@admin:example.com".into(),
+            content: json!({ "room_version": "11" }),
+            ..Default::default()
+        };
+
+        // A conflicted power level event where @bot has PL 100
+        let pl_bot = LeanEvent {
+            event_id: "$pl_bot".into(),
+            event_type: "m.room.power_levels".into(),
+            sender: "@admin:example.com".into(),
+            content: json!({ "users": { "@bot:example.com": 100 } }),
+            prev_events: vec!["$create".to_string()],
+            auth_events: vec!["$create".to_string()],
+            ..Default::default()
+        };
+
+        // A conflicted join event of the sender (@bot)
+        let bot_join = LeanEvent {
+            event_id: "$bot_join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bot:example.com".into()),
+            sender: "@bot:example.com".into(),
+            content: json!({ "membership": "join" }),
+            prev_events: vec!["$pl_bot".to_string()],
+            auth_events: vec!["$create".to_string(), "$pl_bot".to_string()],
+            ..Default::default()
+        };
+
+        // A message event sent by @bot (which requires the sender to be joined)
+        let bot_msg = LeanEvent {
+            event_id: "$bot_msg".into(),
+            event_type: "m.room.message".into(),
+            state_key: None,
+            sender: "@bot:example.com".into(),
+            content: json!({ "body": "hello" }),
+            prev_events: vec!["$bot_join".to_string()],
+            auth_events: vec![
+                "$create".to_string(),
+                "$pl_bot".to_string(),
+                "$bot_join".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let mut auth_context = HashMap::new();
+        auth_context.insert("$create".to_string(), create_ev.clone());
+        auth_context.insert("$pl_bot".to_string(), pl_bot.clone());
+        auth_context.insert("$bot_join".to_string(), bot_join.clone());
+        auth_context.insert("$bot_msg".to_string(), bot_msg.clone());
+
+        let mut conflicted = HashMap::new();
+        // Mark the bot's join as conflicted
+        conflicted.insert("$bot_join".to_string(), bot_join.clone());
+
+        // Create a resolved map where $bot_join is NOT resolved yet (empty resolved map)
+        let resolved = BTreeMap::new();
+
+        let local_auth = vec![
+            (
+                ("m.room.create".to_string(), Some(String::new())),
+                create_ev.clone(),
+            ),
+            (
+                ("m.room.power_levels".to_string(), Some(String::new())),
+                pl_bot.clone(),
+            ),
+            (
+                (
+                    "m.room.member".to_string(),
+                    Some("@bot:example.com".to_string()),
+                ),
+                bot_join.clone(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        // Under V2.1.1, during the power phase, a conflicted required auth event ($bot_join)
+        // that is NOT in resolved MUST be rejected!
+        let is_ok = iterative_auth_ok(
+            &bot_msg,
+            &resolved,
+            &auth_context,
+            &conflicted,
+            local_auth,
+            Some(&create_ev),
+            StateResVersion::V2_1_1,
+            true, // is_power_phase
+        );
+
+        assert!(
+            !is_ok,
+            "The message must be rejected because the sender's conflicted join event was not resolved!"
+        );
+    }
 }
