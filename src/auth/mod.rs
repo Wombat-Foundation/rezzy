@@ -440,32 +440,11 @@ fn check_membership_pl_hierarchies<Id: Clone>(
         }
     }
 
-    // 2. Previous Sender Rule: Applies to leave/kick and ban transitions
-    // if the previous membership was ban or invite.
-    if target_user != event.sender && (new_membership == "leave" || new_membership == "ban") {
-        if let Some(current_member_event) = state.get_event("m.room.member", Some(target_user)) {
-            if event.sender != current_member_event.sender {
-                if let Some(current_membership_str) = current_member_event
-                    .content
-                    .get("membership")
-                    .and_then(|m| m.as_str())
-                {
-                    if current_membership_str == "ban" || current_membership_str == "invite" {
-                        let sender_pl = get_sender_power_level(&event.sender, state);
-                        let current_sender_pl =
-                            get_sender_power_level(&current_member_event.sender, state);
-                        if sender_pl <= current_sender_pl {
-                            return Err(AuthError::InsufficientPowerLevel {
-                                required: current_sender_pl.saturating_add(1),
-                                actual: sender_pl,
-                                event_type: "m.rezzy.member_pl_greater_than_current_sender".into(),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // NOTE: The spec does not mandate a "previous sender" check.
+    // A moderator (PL 50) can unban or re-ban a user previously banned by an admin (PL 100),
+    // as long as the moderator meets the standard ban/kick PL requirements and has PL > target PL.
+    // See Matrix spec room v12 §5.5 (leave) and §5.6 (ban).
+
     Ok(())
 }
 

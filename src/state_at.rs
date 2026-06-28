@@ -138,6 +138,10 @@ impl<
 
 /// Evaluates whether an event passes authentication checks given a resolved state map,
 /// delegating to the core `crate::auth::check_auth` logic via a temporary `OverlayState` view.
+///
+/// NOTE: In V2.1/MSC4297, progressive state starts empty. The first event's sender membership
+/// check must use its own `auth_events` (via `local_auth` / `OverlayState` fallback), not the
+/// empty state. This is critical for competing bans where both senders need membership validation.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn iterative_auth_ok<
     Id: Clone + Eq + core::hash::Hash,

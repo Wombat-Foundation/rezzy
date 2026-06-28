@@ -205,7 +205,7 @@ fn test_auth_error_display() {
 }
 
 #[test]
-fn test_moderator_cannot_override_admin_ban() {
+fn test_moderator_can_override_admin_ban() {
     let mut state = RoomState::new();
 
     // Create event
@@ -282,18 +282,12 @@ fn test_moderator_cannot_override_admin_ban() {
         json!({"membership": "leave"}),
     );
 
-    // Should fail because moderator's power level (50) is <= admin's power level (100) who set the current ban
+    // NOTE: the spec does not mandate a "previous sender" check.
+    // Per spec §5.5: sender PL (50) >= ban level (50) and target PL (0) < sender PL (50) → allow.
     let result = check_auth(&mod_kick, &state);
     assert!(
-        matches!(
-            result,
-            Err(AuthError::InsufficientPowerLevel {
-                required: 101,
-                actual: 50,
-                ref event_type,
-            }) if event_type == "m.rezzy.member_pl_greater_than_current_sender"
-        ),
-        "Expected InsufficientPowerLevel (101 required, 50 actual) for m.rezzy.member_pl_greater_than_current_sender, got {result:?}"
+        result.is_ok(),
+        "Per spec, mod (PL 50) can unban target (PL 0) even if banned by admin (PL 100). Got {result:?}"
     );
 }
 
