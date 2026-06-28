@@ -208,7 +208,7 @@ fn test_auth_error_display() {
 fn test_moderator_cannot_override_admin_ban() {
     let mut state = RoomState::new();
 
-    // 1. Create event
+    // Create event
     state.insert(
         ("m.room.create".into(), Some(String::new())),
         make_event(
@@ -220,7 +220,7 @@ fn test_moderator_cannot_override_admin_ban() {
         ),
     );
 
-    // 2. Power levels event (admin = 100, mod = 50, target_admin = 100)
+    // Power levels event (admin = 100, mod = 50)
     state.insert(
         ("m.room.power_levels".into(), Some(String::new())),
         make_event(
@@ -231,14 +231,13 @@ fn test_moderator_cannot_override_admin_ban() {
             json!({
                 "users": {
                     "@admin:example.com": 100,
-                    "@mod:example.com": 50,
-                    "@target_admin:example.com": 100
+                    "@mod:example.com": 50
                 }
             }),
         ),
     );
 
-    // 3. Admin join
+    // Admin join
     state.insert(
         ("m.room.member".into(), Some("@admin:example.com".into())),
         make_event(
@@ -250,7 +249,7 @@ fn test_moderator_cannot_override_admin_ban() {
         ),
     );
 
-    // 4. Mod join
+    // Mod join
     state.insert(
         ("m.room.member".into(), Some("@mod:example.com".into())),
         make_event(
@@ -262,28 +261,28 @@ fn test_moderator_cannot_override_admin_ban() {
         ),
     );
 
-    // 5. Target (who is also an admin) is banned by @admin (PL 100)
+    // Target is banned by @admin (PL 100)
     state.insert(
-        ("m.room.member".into(), Some("@target_admin:example.com".into())),
+        ("m.room.member".into(), Some("@target:example.com".into())),
         make_event(
             "$ban_target",
             "m.room.member",
-            Some("@target_admin:example.com"),
+            Some("@target:example.com"),
             "@admin:example.com",
             json!({"membership": "ban"}),
         ),
     );
 
-    // 6. Moderator (PL 50) attempts to unban/leave the target admin
+    // Moderator (PL 50) attempts to kick/unban the target
     let mod_kick = make_event(
         "$mod_kick",
         "m.room.member",
-        Some("@target_admin:example.com"),
+        Some("@target:example.com"),
         "@mod:example.com",
         json!({"membership": "leave"}),
     );
 
-    // Should fail because moderator's power level (50) is <= target admin's power level (100)
+    // Should fail because moderator's power level (50) is <= admin's power level (100) who set the current ban
     let result = check_auth(&mod_kick, &state);
     assert!(
         matches!(
@@ -292,8 +291,79 @@ fn test_moderator_cannot_override_admin_ban() {
                 required: 101,
                 actual: 50,
                 ref event_type,
-            }) if event_type == "m.rezzy.member_pl_greater_than_target"
+            }) if event_type == "m.rezzy.member_pl_greater_than_current_sender"
         ),
-        "Expected InsufficientPowerLevel (101 required, 50 actual) for m.rezzy.member_pl_greater_than_target, got {result:?}"
+        "Expected InsufficientPowerLevel (101 required, 50 actual) for m.rezzy.member_pl_greater_than_current_sender, got {result:?}"
     );
+}
+
+#[test]
+fn test_moderator_can_unban_self_ban() {
+    let mut state = RoomState::new();
+
+    // Create event
+    state.insert(
+        ("m.room.create".into(), Some(String::new())),
+        make_event(
+            "$create",
+            "m.room.create",
+            Some(""),
+            "@creator:example.com",
+            json!({}),
+        ),
+    );
+
+    // Power levels event (admin = 100, mod = 50)
+    state.insert(
+        ("m.room.power_levels".into(), Some(String::new())),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@admin:example.com",
+            json!({
+                "users": {
+                    "@admin:example.com": 100,
+                    "@mod:example.com": 50
+                }
+            }),
+        ),
+    );
+
+    // Mod join
+    state.insert(
+        ("m.room.member".into(), Some("@mod:example.com".into())),
+        make_event(
+            "$join_mod",
+            "m.room.member",
+            Some("@mod:example.com"),
+            "@mod:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Target is banned by @mod (PL 50)
+    state.insert(
+        ("m.room.member".into(), Some("@target:example.com".into())),
+        make_event(
+            "$ban_target",
+            "m.room.member",
+            Some("@target:example.com"),
+            "@mod:example.com",
+            json!({"membership": "ban"}),
+        ),
+    );
+
+    // Moderator (PL 50) attempts to unban/leave their own ban
+    let mod_unban = make_event(
+        "$mod_unban",
+        "m.room.member",
+        Some("@target:example.com"),
+        "@mod:example.com",
+        json!({"membership": "leave"}),
+    );
+
+    // Should succeed because current sender matches previous sender (the mod themselves)
+    let result = check_auth(&mod_unban, &state);
+    assert!(result.is_ok(), "Expected Ok(()), got {result:?}");
 }

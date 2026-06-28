@@ -330,6 +330,147 @@ fn get_required_power_level<Id>(event: &LeanEvent<Id>, state: &impl StateProvide
     }
 }
 
+/// Validate leave/kick transition rules.
+fn check_leave_rules<Id: Clone>(
+    event: &LeanEvent<Id>,
+    state: &impl StateProvider<Id>,
+    target_user: &str,
+    current_membership: &str,
+) -> Result<(), AuthError<Id>> {
+    // If target_user != sender, this is a kick or unban — requires power level
+    if target_user != event.sender {
+        let sender_pl = get_sender_power_level(&event.sender, state);
+
+        // OFFICIAL UNBAN RULE: If the user was banned, the sender needs ban_pl to unban them.
+        if current_membership == "ban" {
+            let ban_pl = get_ban_power_level(state);
+            if sender_pl < ban_pl {
+                return Err(AuthError::InsufficientPowerLevel {
+                    required: ban_pl,
+                    actual: sender_pl,
+                    event_type: "unban".into(),
+                });
+            }
+        }
+
+        // KICK RULE
+        let kick_pl = get_kick_power_level(state);
+        if sender_pl < kick_pl {
+            return Err(AuthError::InsufficientPowerLevel {
+                required: kick_pl,
+                actual: sender_pl,
+                event_type: "kick".into(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Validate ban transition rules.
+fn check_ban_rules<Id: Clone>(
+    event: &LeanEvent<Id>,
+    state: &impl StateProvider<Id>,
+) -> Result<(), AuthError<Id>> {
+    // Banning requires the ban power level
+    let sender_pl = get_sender_power_level(&event.sender, state);
+    let ban_pl = get_ban_power_level(state);
+    if sender_pl < ban_pl {
+        return Err(AuthError::InsufficientPowerLevel {
+            required: ban_pl,
+            actual: sender_pl,
+            event_type: "ban".into(),
+        });
+    }
+    Ok(())
+}
+
+/// Validate invite transition rules.
+fn check_invite_rules<Id: Clone>(
+    event: &LeanEvent<Id>,
+    state: &impl StateProvider<Id>,
+    target_user: &str,
+    current_membership: &str,
+) -> Result<(), AuthError<Id>> {
+    // Inviting requires invite power level, and sender != target
+    if target_user == event.sender {
+        return Err(AuthError::InvalidStateKey {
+            expected: alloc::format!("!= {}", event.sender),
+            actual: target_user.into(),
+        });
+    }
+
+    let sender_pl = get_sender_power_level(&event.sender, state);
+    let invite_pl = get_invite_power_level(state);
+    if sender_pl < invite_pl {
+        return Err(AuthError::InsufficientPowerLevel {
+            required: invite_pl,
+            actual: sender_pl,
+            event_type: "invite".into(),
+        });
+    }
+
+    // Check target isn't already banned
+    if current_membership == "ban" {
+        return Err(AuthError::BannedUser {
+            sender: target_user.into(),
+            event_id: event.event_id.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// Validate sender power level hierarchies (sender PL vs target PL, and previous sender rules).
+fn check_membership_pl_hierarchies<Id: Clone>(
+    event: &LeanEvent<Id>,
+    state: &impl StateProvider<Id>,
+    target_user: &str,
+    new_membership: &str,
+) -> Result<(), AuthError<Id>> {
+    // 1. Kick/Ban power vs Target power: ONLY for "leave" (kick) or "ban" transitions.
+    if target_user != event.sender && (new_membership == "leave" || new_membership == "ban") {
+        let sender_pl = get_sender_power_level(&event.sender, state);
+        let target_pl = get_sender_power_level(target_user, state);
+
+        if sender_pl <= target_pl {
+            return Err(AuthError::InsufficientPowerLevel {
+                required: target_pl.saturating_add(1),
+                actual: sender_pl,
+                event_type: "m.rezzy.member_pl_greater_than_target".into(),
+            });
+        }
+    }
+
+    // 2. Previous Sender Rule: Applies to leave/kick, ban, AND invite transitions
+    // if the previous membership was ban or invite.
+    if target_user != event.sender
+        && (new_membership == "leave" || new_membership == "ban" || new_membership == "invite")
+    {
+        if let Some(current_member_event) = state.get_event("m.room.member", Some(target_user)) {
+            if event.sender != current_member_event.sender {
+                if let Some(current_membership_str) = current_member_event
+                    .content
+                    .get("membership")
+                    .and_then(|m| m.as_str())
+                {
+                    if current_membership_str == "ban" || current_membership_str == "invite" {
+                        let sender_pl = get_sender_power_level(&event.sender, state);
+                        let current_sender_pl =
+                            get_sender_power_level(&current_member_event.sender, state);
+                        if sender_pl <= current_sender_pl {
+                            return Err(AuthError::InsufficientPowerLevel {
+                                required: current_sender_pl.saturating_add(1),
+                                actual: sender_pl,
+                                event_type: "m.rezzy.member_pl_greater_than_current_sender".into(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Validate membership transition rules for `m.room.member` events.
 fn check_membership_rules<Id: Clone>(
     event: &LeanEvent<Id>,
@@ -350,90 +491,13 @@ fn check_membership_rules<Id: Clone>(
 
     match new_membership {
         "join" => check_join_rules(event, state, target_user)?,
-        "leave" => {
-            // If target_user != sender, this is a kick or unban — requires power level
-            if target_user != event.sender {
-                let sender_pl = get_sender_power_level(&event.sender, state);
-
-                // OFFICIAL UNBAN RULE: If the user was banned, the sender needs ban_pl to unban them.
-                if current_membership == "ban" {
-                    let ban_pl = get_ban_power_level(state);
-                    if sender_pl < ban_pl {
-                        return Err(AuthError::InsufficientPowerLevel {
-                            required: ban_pl,
-                            actual: sender_pl,
-                            event_type: "unban".into(),
-                        });
-                    }
-                }
-
-                // KICK RULE
-                let kick_pl = get_kick_power_level(state);
-                if sender_pl < kick_pl {
-                    return Err(AuthError::InsufficientPowerLevel {
-                        required: kick_pl,
-                        actual: sender_pl,
-                        event_type: "kick".into(),
-                    });
-                }
-            }
-        }
-        "ban" => {
-            // Banning requires the ban power level
-            let sender_pl = get_sender_power_level(&event.sender, state);
-            let ban_pl = get_ban_power_level(state);
-            if sender_pl < ban_pl {
-                return Err(AuthError::InsufficientPowerLevel {
-                    required: ban_pl,
-                    actual: sender_pl,
-                    event_type: "ban".into(),
-                });
-            }
-        }
-        "invite" => {
-            // Inviting requires invite power level, and sender != target
-            if target_user == event.sender {
-                return Err(AuthError::InvalidStateKey {
-                    expected: alloc::format!("!= {}", event.sender),
-                    actual: target_user.into(),
-                });
-            }
-
-            let sender_pl = get_sender_power_level(&event.sender, state);
-            let invite_pl = get_invite_power_level(state);
-            if sender_pl < invite_pl {
-                return Err(AuthError::InsufficientPowerLevel {
-                    required: invite_pl,
-                    actual: sender_pl,
-                    event_type: "invite".into(),
-                });
-            }
-
-            // Check target isn't already banned
-            if current_membership == "ban" {
-                return Err(AuthError::BannedUser {
-                    sender: target_user.into(),
-                    event_id: event.event_id.clone(),
-                });
-            }
-        }
+        "leave" => check_leave_rules(event, state, target_user, current_membership)?,
+        "ban" => check_ban_rules(event, state)?,
+        "invite" => check_invite_rules(event, state, target_user, current_membership)?,
         _ => {}
     }
 
-    // SPEC RULE: If target_user != event.sender and the transition is a kick or ban (membership is leave or ban),
-    // the sender power level must be strictly greater than target power level.
-    if target_user != event.sender && (new_membership == "leave" || new_membership == "ban") {
-        let sender_pl = get_sender_power_level(&event.sender, state);
-        let target_pl = get_sender_power_level(target_user, state);
-
-        if sender_pl <= target_pl {
-            return Err(AuthError::InsufficientPowerLevel {
-                required: target_pl.saturating_add(1),
-                actual: sender_pl,
-                event_type: "m.rezzy.member_pl_greater_than_target".into(),
-            });
-        }
-    }
+    check_membership_pl_hierarchies(event, state, target_user, new_membership)?;
 
     Ok(())
 }
