@@ -94,6 +94,113 @@ mod tests {
     }
 
     #[test]
+    fn test_route_power_events_excludes_third_party_invite() {
+        use serde_json::json;
+        use std::collections::HashMap;
+
+        let mut sort_set = HashMap::new();
+
+        let create_ev = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            ..Default::default()
+        };
+        let pl_ev = LeanEvent {
+            event_id: "$pl".into(),
+            event_type: "m.room.power_levels".into(),
+            ..Default::default()
+        };
+        let jr_ev = LeanEvent {
+            event_id: "$jr".into(),
+            event_type: "m.room.join_rules".into(),
+            ..Default::default()
+        };
+        let tpi_ev = LeanEvent {
+            event_id: "$tpi".into(),
+            event_type: "m.room.third_party_invite".into(),
+            ..Default::default()
+        };
+        let kick_ev = LeanEvent {
+            event_id: "$kick".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@alice:example.com".into(),
+            content: json!({ "membership": "leave" }),
+            ..Default::default()
+        };
+
+        sort_set.insert("$create".to_string(), create_ev);
+        sort_set.insert("$pl".to_string(), pl_ev);
+        sort_set.insert("$jr".to_string(), jr_ev);
+        sort_set.insert("$tpi".to_string(), tpi_ev);
+        sort_set.insert("$kick".to_string(), kick_ev);
+
+        let mut power_events = HashMap::new();
+        let mut non_power_events = HashMap::new();
+        rezzy::route_power_events(&sort_set, &mut power_events, &mut non_power_events);
+
+        // create, power_levels, join_rules, and kick are power events
+        assert!(power_events.contains_key("$create"));
+        assert!(power_events.contains_key("$pl"));
+        assert!(power_events.contains_key("$jr"));
+        assert!(power_events.contains_key("$kick"));
+
+        // m.room.third_party_invite MUST be a non-power event
+        assert!(non_power_events.contains_key("$tpi"));
+        assert!(!power_events.contains_key("$tpi"));
+    }
+
+    #[test]
+    fn test_expand_v2_power_events_auth_chains_functionality() {
+        use std::collections::HashMap;
+
+        let mut sort_set = HashMap::new();
+
+        // Let's have a kick event whose auth chain contains an event in the conflicted set ($auth_in_set).
+        // Since $kick is a power event, $auth_in_set should be promoted to a power event as well.
+        let kick_ev = LeanEvent {
+            event_id: "$kick".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "membership": "leave" }),
+            auth_events: vec!["$auth_in_set".to_string()],
+            ..Default::default()
+        };
+        let auth_in_set = LeanEvent {
+            event_id: "$auth_in_set".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@alice:example.com".into()),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "membership": "join" }),
+            ..Default::default()
+        };
+
+        sort_set.insert("$kick".to_string(), kick_ev);
+        sort_set.insert("$auth_in_set".to_string(), auth_in_set);
+
+        let mut power_events = HashMap::new();
+        let mut non_power_events = HashMap::new();
+        rezzy::route_power_events(&sort_set, &mut power_events, &mut non_power_events);
+
+        // Before expansion, only $kick is a power event. $auth_in_set is non-power.
+        assert!(power_events.contains_key("$kick"));
+        assert!(non_power_events.contains_key("$auth_in_set"));
+
+        // Run recursive V2 expansion
+        rezzy::expand_v2_power_events_auth_chains(
+            &mut power_events,
+            &mut non_power_events,
+            &sort_set,
+        );
+
+        // After expansion, $auth_in_set is promoted to a power event!
+        assert!(power_events.contains_key("$kick"));
+        assert!(power_events.contains_key("$auth_in_set"));
+        assert!(!non_power_events.contains_key("$auth_in_set"));
+    }
+
+    #[test]
     fn test_sort_priority_v2_tie_break() {
         let e_base: LeanEvent = LeanEvent {
             event_id: "$1".into(),
@@ -840,7 +947,7 @@ mod tests {
         );
         assert_eq!(
             resolved.get(&("m.room.member".into(), Some("@bob:example.com".into()))),
-            Some(&"id2".into()) // id2_new (PL=100) pops first, id2 (PL=50) pops last and wins.
+            Some(&"id2_new".into()) // id2_new wins because voluntary joins are non-power events sorted chronologically.
         );
     }
 

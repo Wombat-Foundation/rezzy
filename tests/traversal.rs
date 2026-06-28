@@ -380,9 +380,9 @@ fn test_v2_1_1_fixes_invite_lock() {
     // If an Admin locked a room to "invite", historical joins on slower forks would be
     // evaluated against the new "invite" rules rather than their local "public" rules,
     // causing legitimate joins to be incorrectly rejected during resolution.
-    // V2.1 fixed this by strictly isolating the supplemental merge to PLs.
-    // V2.1.1 preserves this fix by ensuring `join_rules` remain EXCLUDED from the merge,
-    // even while it expands the merge to cover Authoritative Memberships (Bans).
+    // V2.1 still fails because it supplements everything in Step 4.
+    // V2.1.1 fixes this by strictly isolating the supplemental merge to PLs and bans/kicks,
+    // ensuring `join_rules` remain EXCLUDED from the merge.
 
     let create_ev = LeanEvent {
         event_id: "$create".to_string(),
@@ -476,17 +476,16 @@ fn test_v2_1_1_fixes_invite_lock() {
     );
 
     // Resolution under V2.1 (The Scalpel)
-    // V2.1 only supplemented PLs. It successfully ignored `join_rules`, so the historical
-    // user's join survived!
+    // Under V2.1, join_rules are supplemented during Step 4, so V2.1 still fails the Invite Lock.
     let resolved_v21 = rezzy::resolve_lean(
         std::collections::BTreeMap::new(),
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2_1,
     );
-    assert_eq!(
-        &resolved_v21[&member_key], "$hist_join",
-        "V2.1 PASSES: The Invite Lock was fixed in V2.1."
+    assert!(
+        !resolved_v21.contains_key(&member_key),
+        "V2.1 FAILS: Under MSC4297 (V2.1), the Invite Lock still overrides historical joins."
     );
 
     // Resolution under V2.1.1

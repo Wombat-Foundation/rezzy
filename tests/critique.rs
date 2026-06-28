@@ -467,3 +467,14 @@ fn test_anomaly_18_unauthorized_admin_amplification() {
     let (resolved, map) = resolve_pathology("18_unauthorized_admin_amplification.jsonl");
     assert_eq!(get_membership(&resolved, &map, "@bob:example.com"), "ban");
 }
+
+#[test]
+#[ignore = "Sliced production DAG with missing heads/ancestors; cannot be traversed in isolation without a full database"]
+fn test_anomaly_17_sliced_dag_membership_desync() {
+    let path =
+        std::path::Path::new("tests/critique_data").join("17_sliced_dag_membership_desync.jsonl");
+    let events = load_fixture(&path);
+    println!("Loaded events: {}", events.len());
+    let (resolved, _map) = resolve_pathology("17_sliced_dag_membership_desync.jsonl");
+    println!("Resolved size: {}", resolved.len());
+}

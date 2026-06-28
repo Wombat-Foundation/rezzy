@@ -60,6 +60,34 @@ pub(crate) fn build_sort_context<
         .collect()
 }
 
+/// Spec-compliant State Res V2 expansion: recursively add all events in the auth chain
+/// of each power event that are also in the conflicted set (`sort_set`).
+pub fn expand_v2_power_events_auth_chains<
+    Id: Clone + Eq + core::hash::Hash,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+    S3: core::hash::BuildHasher,
+>(
+    power_events: &mut HashMap<Id, LeanEvent<Id>, S1>,
+    non_power_events: &mut HashMap<Id, LeanEvent<Id>, S2>,
+    sort_set: &HashMap<Id, LeanEvent<Id>, S3>,
+) {
+    let mut queue: alloc::collections::VecDeque<Id> = power_events.keys().cloned().collect();
+    while let Some(id) = queue.pop_front() {
+        if let Some(ev) = sort_set.get(&id) {
+            for aid in &ev.auth_events {
+                if !power_events.contains_key(aid) {
+                    if let Some(aev) = sort_set.get(aid) {
+                        power_events.insert(aid.clone(), aev.clone());
+                        non_power_events.remove(aid);
+                        queue.push_back(aid.clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// MSC4297 (v2.1+): Routes administrative ancestral power events from `auth_context` into `power_events`.
 pub(crate) fn route_msc4297_ancestral_power_events<
     Id: Clone + Eq + core::hash::Hash + Ord,
@@ -180,6 +208,10 @@ where
     let mut power_events = HashMap::new();
     let mut non_power_events = HashMap::new();
     crate::lattice::route_power_events(sort_set, &mut power_events, &mut non_power_events);
+
+    if version != StateResVersion::V1 {
+        expand_v2_power_events_auth_chains(&mut power_events, &mut non_power_events, sort_set);
+    }
 
     route_msc4297_ancestral_power_events(
         &mut power_events,

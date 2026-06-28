@@ -1,6 +1,6 @@
 ---
-source: crates/ruma-state-res/tests/it/resolve.rs
-assertion_line: 64
+source: tests/resolve.rs
+assertion_line: 65
 description: Resolved state
 ---
 [

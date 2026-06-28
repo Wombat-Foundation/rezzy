@@ -188,6 +188,29 @@ impl<Id> LeanEvent<Id> {
     }
 }
 
+#[cfg(feature = "hashing")]
+fn sort_json_value_keys(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            let mut sorted = alloc::collections::BTreeMap::new();
+            let taken = core::mem::take(map);
+            for (k, mut v) in taken {
+                sort_json_value_keys(&mut v);
+                sorted.insert(k, v);
+            }
+            for (k, v) in sorted {
+                map.insert(k, v);
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                sort_json_value_keys(v);
+            }
+        }
+        _ => {}
+    }
+}
+
 impl<'de> Deserialize<'de> for LeanEvent<String> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -208,6 +231,7 @@ impl<'de> Deserialize<'de> for LeanEvent<String> {
                     obj.remove("unsigned");
                     obj.remove("signatures");
                 }
+                sort_json_value_keys(&mut hash_value);
 
                 let canonical_json =
                     serde_json::to_string(&hash_value).map_err(serde::de::Error::custom)?;
