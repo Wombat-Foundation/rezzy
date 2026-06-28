@@ -120,6 +120,10 @@ name = "test_main"
 path = "tests/test_main.rs"
 required-features = ["cli"]
 
+[[test]]
+name = "unredacted_lounge"
+path = "tests/unredacted_lounge.rs"
+
 [lints.rust]
 unsafe_code = "forbid"
 
