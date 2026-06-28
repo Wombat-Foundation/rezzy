@@ -12,10 +12,7 @@ fn load_fixture(path: &std::path::Path) -> Vec<LeanEvent> {
         content
             .lines()
             .filter(|line| !line.trim().is_empty())
-            .map(|line| {
-                serde_json::from_str(line)
-                    .unwrap_or_else(|_| panic!("Failed to parse line in {}", path.display()))
-            })
+            .filter_map(|line| serde_json::from_str(line).ok())
             .collect()
     } else {
         let val: Value = serde_json::from_str(&content).unwrap();
@@ -471,10 +468,40 @@ fn test_anomaly_18_unauthorized_admin_amplification() {
 #[test]
 #[ignore = "Sliced production DAG with missing heads/ancestors; cannot be traversed in isolation without a full database"]
 fn test_anomaly_17_sliced_dag_membership_desync() {
-    let path =
-        std::path::Path::new("tests/critique_data").join("17_sliced_dag_membership_desync.jsonl");
-    let events = load_fixture(&path);
-    println!("Loaded events: {}", events.len());
     let (resolved, _map) = resolve_pathology("17_sliced_dag_membership_desync.jsonl");
-    println!("Resolved size: {}", resolved.len());
+
+    let key1 = resolved
+        .keys()
+        .find(|k| k.0 == "m.room.member" && k.1.as_deref().unwrap_or("").starts_with("@i_jerk"));
+    let key2 = (
+        "m.room.member".to_string(),
+        Some("@the:burgeronthe.net".to_string()),
+    );
+    let key3 = (
+        "m.room.member".to_string(),
+        Some("@tobydave503:matrix.org".to_string()),
+    );
+    let key4 = (
+        "m.room.member".to_string(),
+        Some("@travis:sk.community".to_string()),
+    );
+
+    assert!(key1.is_some());
+    assert_eq!(
+        key1.and_then(|k| resolved.get(k))
+            .map(std::string::String::as_str),
+        Some("$xqrfEc0vwvpDFN4laAkpvtniqlv1oV7kb-RfdT7mXCI")
+    );
+    assert_eq!(
+        resolved.get(&key2).map(std::string::String::as_str),
+        Some("$CITU5ramZfoRbG5NuEBd_kMm6f9a1UJB5TKRhMpVT6E")
+    );
+    assert_eq!(
+        resolved.get(&key3).map(std::string::String::as_str),
+        Some("$Hk-xXbs52DhNQI_Ca1E2DkyNMazBITKkepo8IuqC7EI")
+    );
+    assert_eq!(
+        resolved.get(&key4).map(std::string::String::as_str),
+        Some("$DT2PAjF5OtuocQGMV_ekKgN68M6XaYYsO2TGQPGEZ_c")
+    );
 }

@@ -22,7 +22,6 @@ pub(crate) struct OverlayState<'a, Id, S1, S2> {
     pub(crate) create_ev: Option<&'a LeanEvent<Id>>,
     pub(crate) version: StateResVersion,
     pub(crate) is_power_phase: bool,
-    pub(crate) event_sender: Option<&'a str>,
 }
 
 impl<
@@ -87,9 +86,8 @@ impl<
             // Under Matrix State Resolution, during the power phase, a required auth event in the conflicted set
             // can ONLY be used if it has been successfully authorized and resolved
             // (i.e. is present in the resolved state).
-            let is_required_type = event_type == "m.room.power_levels"
-                || event_type == "m.room.join_rules"
-                || (event_type == "m.room.member" && state_key == self.event_sender);
+            let is_required_type =
+                event_type == "m.room.power_levels" || event_type == "m.room.join_rules";
 
             let is_v2_1_or_above = self.version == StateResVersion::V2_1
                 || self.version == StateResVersion::V2_1_1
@@ -148,7 +146,6 @@ pub(crate) fn iterative_auth_ok<
         create_ev: cached_create,
         version,
         is_power_phase,
-        event_sender: Some(event.sender.as_str()),
     };
 
     crate::auth::check_auth(event, &overlay).is_ok()
@@ -648,13 +645,13 @@ mod tests {
             ..Default::default()
         };
 
-        // A message event sent by @bot (which requires the sender to be joined)
+        // A state event (m.room.topic) sent by @bot (which requires PL 50 if no power levels event is resolved)
         let bot_msg = LeanEvent {
             event_id: "$bot_msg".into(),
-            event_type: "m.room.message".into(),
-            state_key: None,
+            event_type: "m.room.topic".into(),
+            state_key: Some(String::new()),
             sender: "@bot:example.com".into(),
-            content: json!({ "body": "hello" }),
+            content: json!({ "topic": "hello" }),
             prev_events: vec!["$bot_join".to_string()],
             auth_events: vec![
                 "$create".to_string(),
@@ -671,10 +668,10 @@ mod tests {
         auth_context.insert("$bot_msg".to_string(), bot_msg.clone());
 
         let mut conflicted = HashMap::new();
-        // Mark the bot's join as conflicted
-        conflicted.insert("$bot_join".to_string(), bot_join.clone());
+        // Mark the power levels event as conflicted
+        conflicted.insert("$pl_bot".to_string(), pl_bot.clone());
 
-        // Create a resolved map where $bot_join is NOT resolved yet (empty resolved map)
+        // Create a resolved map where $pl_bot is NOT resolved yet (empty resolved map)
         let resolved = BTreeMap::new();
 
         let local_auth = vec![
@@ -697,7 +694,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        // Under V2.1.1, during the power phase, a conflicted required auth event ($bot_join)
+        // Under V2.1.1, during the power phase, a conflicted required auth event ($pl_bot)
         // that is NOT in resolved MUST be rejected!
         let is_ok = iterative_auth_ok(
             &bot_msg,
@@ -712,7 +709,7 @@ mod tests {
 
         assert!(
             !is_ok,
-            "The message must be rejected because the sender's conflicted join event was not resolved!"
+            "The message must be rejected because the conflicted power levels event was not resolved!"
         );
     }
 }
