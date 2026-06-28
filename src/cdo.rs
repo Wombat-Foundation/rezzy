@@ -12,6 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Causal Domination Operator (CDO) — vectorized pre-filter for conflicted events.
+//!
+//! The CDO is a V2.1.1 optimization that runs *before* the main resolution
+//! algorithm. It identifies conflicted events that are **causally dominated**
+//! by a higher-priority administrative action (ban, kick, PL demotion, or
+//! join-rules lockdown) and removes them from the conflicted set entirely.
+//!
+//! An event is "causally dominated" if:
+//! 1. A higher-priority admin action *restricts* it (see [`LeanEvent::restricts_event`]).
+//! 2. The admin action is **not** an ancestor or descendant of the event
+//!    (i.e. they are on independent causal branches).
+//!
+//! ## Implementation
+//!
+//! Ancestor/descendant relationships are computed via SWAR (SIMD-within-a-register)
+//! bitmask sweeps over a topologically-sorted event array. The chunk size is
+//! auto-selected at compile time: 512 bits on AVX-512, 256 bits otherwise.
+//!
+//! Entry point: [`apply_cdo_filter`].
+
 use crate::types::LeanEvent;
 use crate::HashMap;
 use alloc::collections::BTreeSet;
@@ -78,10 +98,12 @@ where
 }
 
 #[cfg(target_feature = "avx512f")]
-const WORDS_PER_CHUNK: usize = 8; // 512 bits (Matches 64-byte cache line)
+/// Number of `u64` words per bitmask chunk (8 × 64 = 512 bits on AVX-512).
+const WORDS_PER_CHUNK: usize = 8;
 
 #[cfg(not(target_feature = "avx512f"))]
-const WORDS_PER_CHUNK: usize = 4; // 256 bits (AVX2 / unrolled NEON baseline)
+/// Number of `u64` words per bitmask chunk (4 × 64 = 256 bits on AVX2/NEON).
+const WORDS_PER_CHUNK: usize = 4;
 
 fn compute_cdo_bit_masks_chunk<Id, S: core::hash::BuildHasher>(
     admin_chunk: &[Id],
@@ -367,8 +389,19 @@ where
     dropped_ids
 }
 
-/// Cycle 0 Topological Filter: Vectorized Causal Domination Operator (CDO)
-/// Executes strictly on the Conflicted State Subgraph (C).
+/// Cycle-0 Topological Filter: Vectorized Causal Domination Operator (CDO).
+///
+/// Executes strictly on the conflicted state subgraph. Returns the **safe set**
+/// of events that survived CDO filtering — i.e. events that are *not* causally
+/// dominated by any higher-priority administrative action.
+///
+/// The pipeline is:
+/// 1. **Build adjacency** — merge conflicted + auth context into a single DAG.
+/// 2. **Prioritize** — identify admin actions (bans, kicks, demotions, lockdowns)
+///    and sort all events by priority.
+/// 3. **Chunk-process** — compute ancestor/descendant bitmasks in SWAR chunks
+///    and mark dominated events.
+/// 4. **Propagate** — transitively drop any event whose auth dependency was dropped.
 // jscpd:ignore-start
 #[must_use]
 pub fn apply_cdo_filter<Id, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(

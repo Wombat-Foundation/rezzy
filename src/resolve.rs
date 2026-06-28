@@ -12,6 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! State resolution entry point — the [`resolve_lean`] function.
+//!
+//! This module implements the full Matrix state resolution pipeline:
+//!
+//! 1. **CDO pre-filter** (V2.1.1 only): removes causally dominated events.
+//! 2. **Power phase**: classifies events as power vs. non-power, expands auth
+//!    chains, then iteratively auth-checks power events in reverse topological order.
+//! 3. **Non-power phase**: sorts remaining events by mainline distance and
+//!    iteratively auth-checks them against the progressively-built resolved state.
+//!
+//! For the lattice-coordinatized variant (parallel, `O(1)` projection), see
+//! [`crate::lattice::resolve_lattice_coordinatized`].
+
 use crate::{
     cdo::apply_cdo_filter,
     sorting::{build_mainline, lean_kahn_sort, mainline_sort},
@@ -60,8 +73,18 @@ pub(crate) fn build_sort_context<
         .collect()
 }
 
-/// Spec-compliant State Res V2 expansion: recursively add all events in the auth chain
-/// of each power event that are also in the conflicted set (`sort_set`).
+/// State Resolution V2+ auth-chain expansion (room versions 2 - 11+, Spec [§State Resolution]).
+///
+/// After the initial power/non-power classification, this function recursively
+/// walks the `auth_events` of each power event. Any event found in the
+/// conflicted set (`sort_set`) is promoted from `non_power_events` to
+/// `power_events`. This ensures that the auth chain dependencies of power
+/// events are resolved in the correct (power) phase.
+///
+/// This is specified in the [V2 state resolution algorithm][v2-spec], Step 3,
+/// and applies to all versions that use V2-derived resolution: V2, V2.1, V2.1.1, and V2.2.
+///
+/// [v2-spec]: https://spec.matrix.org/v1.13/rooms/v2/#state-resolution
 pub fn expand_v2_power_events_auth_chains<
     Id: Clone + Eq + core::hash::Hash,
     S1: core::hash::BuildHasher,
@@ -253,6 +276,39 @@ pub(crate) fn execute_power_phase<
     )
 }
 
+/// Resolves conflicted Matrix room state using the specified algorithm version.
+///
+/// This is the primary entry point for state resolution. Given the set of
+/// unconflicted state (agreed upon by all forks), the conflicted events
+/// (present in some forks but not others), and the full auth context,
+/// it produces the single deterministic resolved state map.
+///
+/// # Parameters
+///
+/// - `unconflicted_state`: State entries that all forks agree on, keyed by
+///   `(event_type, state_key) → event_id`.
+/// - `conflicted_events`: Events that differ across forks. These will be
+///   sorted, auth-checked, and selectively applied.
+/// - `auth_context`: The full set of events reachable via `auth_events`
+///   from the conflicted set. Must include all power-level, membership,
+///   and join-rules events needed for authorization.
+/// - `version`: Which resolution algorithm to use (see [`StateResVersion`]).
+///
+/// # Returns
+///
+/// A `BTreeMap<(event_type, state_key), event_id>` representing the resolved
+/// room state — the union of unconflicted state and the winners from the
+/// conflicted set.
+///
+/// # Algorithm overview
+///
+/// 1. Classify conflicted events into **power events** (create, PL, join rules,
+///    bans/kicks) and **non-power events**.
+/// 2. Sort power events via [`lean_kahn_sort`] and iteratively auth-check them
+///    to build the authoritative administrative state.
+/// 3. Sort non-power events via [`mainline_sort`] (by proximity to the resolved
+///    power-levels chain) and iteratively auth-check them.
+/// 4. Merge winners into the unconflicted base.
 #[must_use]
 pub fn resolve_lean<Id, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
     unconflicted_state: BTreeMap<(String, Option<String>), Id>,

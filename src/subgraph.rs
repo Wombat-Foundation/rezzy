@@ -1,18 +1,38 @@
+//! Conflicted subgraph extraction for MSC4297 (V2.1+).
+//!
+//! When resolving state under V2.1+, the algorithm needs the **conflicted
+//! subgraph** — the intersection of events reachable *backwards* (ancestors)
+//! and *forwards* (descendants) from the conflicted set through the auth DAG.
+//!
+//! This ensures that only events causally relevant to the conflict are
+//! considered, preventing unrelated auth chain history from influencing
+//! the outcome.
+//!
+//! Entry point: [`compute_v2_1_conflicted_subgraph`] (unbounded) or
+//! [`compute_v2_1_conflicted_subgraph_bounded`] (with `DoS` depth limit).
+
 use crate::types::LeanEvent;
 use crate::HashMap;
 use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// Result of conflicted subgraph computation with diagnostic info.
+/// Result of conflicted subgraph computation.
 #[derive(Debug, Clone)]
 pub struct SubgraphResult {
-    /// The computed conflicted subgraph.
+    /// The computed conflicted subgraph — events at the intersection of
+    /// backwards-reachable (ancestors) and forwards-reachable (descendants)
+    /// sets from the conflicted event IDs.
     pub subgraph: HashMap<String, LeanEvent>,
-    /// Auth events referenced but not found in the graph (permanently lost to federation).
+    /// Auth event IDs that were referenced but not found in the input graph.
+    /// These represent events permanently lost to federation gaps.
     pub missing_auth_events: Vec<String>,
 }
 
+/// Computes the V2.1+ conflicted subgraph without a depth bound.
+///
+/// This is a convenience wrapper around [`compute_v2_1_conflicted_subgraph_bounded`]
+/// with `max_auth_depth = None`.
 #[must_use]
 pub fn compute_v2_1_conflicted_subgraph<S: core::hash::BuildHasher>(
     auth_graph: &HashMap<String, LeanEvent, S>,
@@ -21,10 +41,19 @@ pub fn compute_v2_1_conflicted_subgraph<S: core::hash::BuildHasher>(
     compute_v2_1_conflicted_subgraph_bounded(auth_graph, conflicted_set, None).subgraph
 }
 
-/// Bounded version of conflicted subgraph computation.
-/// `max_auth_depth`: If set, limits backwards traversal depth to prevent
-/// history-flooding `DoS` attacks where a rogue admin generates millions of
-/// spoofed events on a dead-end fork.
+/// Computes the V2.1+ conflicted subgraph with an optional depth bound.
+///
+/// The algorithm:
+/// 1. **Backwards pass**: BFS up the `auth_events` from the conflicted set,
+///    collecting all ancestor event IDs.
+/// 2. **Forwards pass**: BFS down through reverse auth edges from the
+///    conflicted set, collecting all descendant event IDs.
+/// 3. **Intersect**: the subgraph is the set of events in *both* the
+///    backwards-reachable and forwards-reachable sets.
+///
+/// `max_auth_depth`: If `Some(n)`, limits the backwards traversal to `n` hops.
+/// This prevents history-flooding `DoS` attacks where a rogue admin generates
+/// millions of spoofed events on a dead-end fork.
 #[must_use]
 pub fn compute_v2_1_conflicted_subgraph_bounded<S: core::hash::BuildHasher>(
     auth_graph: &HashMap<String, LeanEvent, S>,

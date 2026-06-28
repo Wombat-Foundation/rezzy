@@ -12,6 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Incremental state computation — room state at arbitrary DAG positions.
+//!
+//! This module computes the resolved room state *after* any given event in the
+//! DAG, without requiring external state snapshots. It walks the `prev_events`
+//! graph backwards, builds the state at each ancestor, and merges fork points
+//! via [`crate::resolve::resolve_lean`].
+//!
+//! Key optimizations:
+//!
+//! - **`Arc`-based structural sharing**: parent states are shared via
+//!   `Arc<BTreeMap>` and cloned only when modified (copy-on-write).
+//! - **Pointer-equality fast path**: when all parents share the same `Arc`,
+//!   no merge is needed.
+//! - **Batch mode** ([`compute_state_at_batch`]): computes state at multiple
+//!   targets in a single topological pass, amortizing the cost of shared ancestors.
+
 use crate::types::{LeanEvent, StateResVersion};
 use crate::HashMap;
 use alloc::collections::BTreeMap;
@@ -19,12 +35,24 @@ use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// An entry in the local auth cache, pairing an event with its discovery depth.
+///
+/// The `depth` field tracks how many hops through `auth_events` it took to
+/// reach this event. When the same `(type, state_key)` is found at multiple
+/// depths, the shallowest (closest) entry wins.
 #[derive(Debug, Clone)]
 pub struct LocalAuthEntry<Id> {
+    /// The auth event itself.
     pub event: LeanEvent<Id>,
+    /// Number of auth-chain hops from the original event to this one.
     pub depth: usize,
 }
 
+/// Memoization cache for local auth context computation.
+///
+/// Maps `event_id → BTreeMap<(type, state_key) → LocalAuthEntry>`, allowing
+/// the local auth context to be computed once and reused for all events that
+/// share auth chain prefixes.
 pub type LocalAuthCache<Id = String> =
     HashMap<Id, BTreeMap<(String, Option<String>), LocalAuthEntry<Id>>>;
 
@@ -285,8 +313,14 @@ pub(crate) fn compute_local_auth<
 
 type SharedState<Id = String> = alloc::sync::Arc<BTreeMap<(String, Option<String>), Id>>;
 
-/// Computes the state map at (after) a given target event ID,
-/// assuming all ancestral events are present in `events_map`.
+/// Computes the resolved room state *after* a given event.
+///
+/// This walks the `prev_events` graph backwards from `target_event_id`,
+/// topologically sorts all reachable ancestors, and incrementally builds
+/// the state by applying each state event in order. Fork points are resolved
+/// via [`crate::resolve::resolve_lean`] with V2 semantics.
+///
+/// Returns `None` if `target_event_id` is not found in `events_map`.
 ///
 /// # Panics
 ///
@@ -315,8 +349,14 @@ where
     })
 }
 
-/// Computes the state map at (after) a batch of target event IDs,
-/// assuming all ancestral events are present in `events_map`.
+/// Computes the resolved room state at multiple target events in a single pass.
+///
+/// This is the batch variant of [`compute_state_at`]. It shares the topological
+/// sort and ancestor traversal across all targets, which is significantly faster
+/// than calling `compute_state_at` in a loop when the targets share ancestors.
+///
+/// Returns a map from each found target event ID to its resolved state.
+/// Target IDs not found in `events_map` are silently skipped.
 ///
 /// # Panics
 ///

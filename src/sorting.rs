@@ -12,6 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Topological and mainline sorting for Matrix state resolution.
+//!
+//! This module provides two complementary sorting strategies:
+//!
+//! - **Kahn's topological sort** ([`lean_kahn_sort`], [`lean_kahn_sort_detailed`]):
+//!   Orders events by auth-chain dependencies with tie-breaking by power level,
+//!   timestamp, and event ID. Used for the power-events phase.
+//!
+//! - **Mainline sort** ([`mainline_sort`]): Orders non-power events by their
+//!   proximity to the resolved power-levels chain (the "mainline"). Events
+//!   closer to the current PL event are applied last and therefore win.
+//!
+//! Both sorts are deterministic — given the same inputs, all implementations
+//! must produce the identical ordering.
+
 use alloc::collections::{BTreeMap, BinaryHeap, VecDeque};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -427,10 +442,18 @@ where
     dist
 }
 
-/// Sort events by mainline ordering per the Matrix spec:
-/// 1. Closest mainline position (smaller index = closer to current PL = comes last)
-/// 2. `origin_server_ts` ascending (earlier first, later wins via last-write)
-/// 3. `event_id` ascending (smaller first)
+/// Sorts non-power events by mainline ordering per the Matrix spec.
+///
+/// The mainline is the chain of `m.room.power_levels` events reachable from
+/// the currently resolved PL state. Each event's "mainline position" is the
+/// closest PL event in its auth chain. The sort order is:
+///
+/// 1. **Mainline position** descending (farther = worse = applied first).
+/// 2. **`origin_server_ts`** ascending (earlier = applied first, later wins).
+/// 3. **`event_id`** ascending (lexicographic tie-break).
+///
+/// Events closer to the current power-levels event are applied **last**
+/// and therefore win for same-key conflicts (last-write-wins).
 pub fn mainline_sort<Id, S: ::core::hash::BuildHasher>(
     events: &mut Vec<&LeanEvent<Id>>,
     mainline: &[Id],

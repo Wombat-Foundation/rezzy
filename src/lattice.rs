@@ -12,6 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Lattice-coordinatized state resolution.
+//!
+//! This module provides [`resolve_lattice_coordinatized`], an alternative to
+//! [`crate::resolve::resolve_lean`] that replaces the sequential mainline sort
+//! with a parallel, `O(1)` causal coordinatization projection and commutative
+//! join-semilattice fold.
+//!
+//! ## How it works
+//!
+//! 1. The **power phase** is identical to [`resolve_lean`](crate::resolve::resolve_lean).
+//! 2. Instead of sorting non-power events, each event is assigned a **mainline
+//!    coordinate** (its closest position on the power-levels chain).
+//! 3. Events are folded per `(type, state_key)` using a commutative **Least
+//!    Upper Bound** (LUB) operator — the event with the best coordinate wins.
+//! 4. The fold is embarrassingly parallel and runs on `std::thread::scope`
+//!    when the `std` feature is enabled.
+//!
+//! Also contains [`route_power_events`], which classifies events into
+//! power vs. non-power buckets.
+
 use crate::{
     sorting::{build_mainline, precompute_mainline_positions},
     state_at::{compute_local_auth, iterative_auth_ok},
@@ -20,6 +40,16 @@ use crate::{
 };
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
+/// Determines whether `ev` beats `current_winner` under the Least Upper Bound (LUB)
+/// tie-breaking rules.
+///
+/// The comparison cascade is:
+/// 1. **Mainline position**: closer to the current PL event (smaller index) wins.
+/// 2. **`origin_server_ts`**: later timestamp wins.
+/// 3. **`event_id`**: lexicographically largest ID wins.
+///
+/// This operator is **commutative** and **associative**, which is what allows
+/// the fold to be parallelized without affecting the result.
 #[must_use]
 pub fn is_lattice_winner_better<Id, S: core::hash::BuildHasher>(
     ev: &LeanEvent<Id>,
@@ -208,6 +238,16 @@ fn compute_lattice_coordinatized_winners<
     }
 }
 
+/// Classifies conflicted events into power events and non-power events.
+///
+/// Power events are those that affect the room's administrative state:
+/// - `m.room.create`
+/// - `m.room.power_levels`
+/// - `m.room.join_rules`
+/// - `m.room.member` events that are bans or kicks (V2.1+ only; V2 treats
+///   **all** member events as power events)
+///
+/// Non-power events are everything else (messages, topics, `m.room.third_party_invite`, etc.).
 pub fn route_power_events<
     Id: Clone + Eq + core::hash::Hash,
     S1: core::hash::BuildHasher,
@@ -242,8 +282,19 @@ pub fn route_power_events<
     }
 }
 
-/// Employs O(1) Causal Coordinatization Projection and Commutative Join-Semilattice folding
-/// to completely eliminate sequential sorting and backward graph traversals.
+/// Resolves conflicted state using `O(1)` causal coordinatization projection
+/// and commutative join-semilattice folding.
+///
+/// This is functionally equivalent to [`crate::resolve::resolve_lean`] but
+/// replaces the sequential mainline sort + iterative auth-check loop with a
+/// parallel per-key fold. Each non-power event competes for its `(type, state_key)`
+/// slot via the [`is_lattice_winner_better`] LUB operator.
+///
+/// Use this variant when:
+/// - The conflicted set is large (thousands of events).
+/// - The `std` feature is enabled (to benefit from thread parallelism).
+///
+/// The power phase (Steps 1–2) is shared with `resolve_lean`.
 // jscpd:ignore-start
 #[must_use]
 pub fn resolve_lattice_coordinatized<

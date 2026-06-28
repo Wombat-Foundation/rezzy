@@ -12,6 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Core data types for Matrix state resolution.
+//!
+//! This module defines the fundamental types used across all resolution algorithms:
+//!
+//! - [`LeanEvent`] — a lightweight, serializable Matrix event representation.
+//! - [`StateResVersion`] — selects the resolution algorithm variant.
+//! - [`SortPriority`] — a `BinaryHeap` wrapper encoding the V1/V2 sort semantics.
+//! - [`KahnSortResult`] — the result of topological sorting, with cycle diagnostics.
+
 use crate::HashMap;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -19,20 +28,50 @@ use core::cmp::Ordering;
 use serde::Deserialize;
 use serde_json::Value;
 
+/// Trait alias for types that can serve as event identifiers.
+///
+/// Any type that is `Clone + Eq + Hash + Ord + Debug` automatically implements
+/// this trait via a blanket impl. In practice, this is either `String` (for
+/// human-readable event IDs like `$abc123:example.com`) or `u32`/`u64` (for
+/// integer-interned short IDs used by homeservers).
 pub trait EventId: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug {}
 impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug> EventId for T {}
 
+/// Maximum safe power level value: 2^53 − 1 (the JavaScript `Number.MAX_SAFE_INTEGER`).
+///
+/// The Matrix spec constrains power levels to this bound because clients and
+/// servers in the ecosystem use JSON numbers, which are IEEE 754 doubles.
+/// Values above this lose integer precision.
 pub const MAX_POWER_LEVEL: i64 = 9_007_199_254_740_991; // 2^53 - 1
 
+/// Selects which state resolution algorithm to use.
+///
+/// Each variant corresponds to a set of Matrix room versions and spec behaviors:
+///
+/// | Variant | Room Versions | Key Change |
+/// |---------|:---:|---|
+/// | [`V1`](Self::V1) | 1–2 | Depth-based topological sort, all `m.room.member` events are power events. |
+/// | [`V2`](Self::V2) | 3–10 | Reverse topological power ordering via Kahn's algorithm, mainline sort. |
+/// | [`V2_1`](Self::V2_1) | 11+ ([MSC4297]) | Empty initial state, conflicted subgraph extraction, CDO filtering. |
+/// | [`V2_1_1`](Self::V2_1_1) | — | Ban evasion fix: restricts power-phase state supplementation. |
+/// | [`V2_2`](Self::V2_2) | — | Reserved for State DAGs ([MSC4242]). |
+///
+/// [MSC4297]: https://github.com/matrix-org/matrix-spec-proposals/pull/4297
+/// [MSC4242]: https://github.com/matrix-org/matrix-spec-proposals/pull/4242
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 #[allow(non_camel_case_types)]
 pub enum StateResVersion {
+    /// State Resolution V1 (room version 1).
     V1,
+    /// State Resolution V2 (room versions 2–11).
     V2,
+    /// State Resolution V2.1 — [MSC4297](https://github.com/matrix-org/matrix-spec-proposals/pull/4297) (room version 12+).
     V2_1,
-    V2_1_1, // The V3 / Ban Evasion Fix
-    V2_2,   // Reserved for State DAGs (MSC4242)
+    /// State Resolution V2.1.1 — ban evasion fix (restricts power-phase supplementation).
+    V2_1_1,
+    /// State Resolution V2.2 — reserved for State DAGs ([MSC4242](https://github.com/matrix-org/matrix-spec-proposals/pull/4242)).
+    V2_2,
 }
 
 impl serde::Serialize for StateResVersion {
@@ -110,19 +149,49 @@ impl<Id> KahnSortResult<Id> {
     }
 }
 
-/// A lightweight Matrix Event representation for Lean-equivalent resolution.
+/// A lightweight Matrix event representation optimized for state resolution.
+///
+/// `LeanEvent` strips away fields irrelevant to state resolution (e.g. `unsigned`,
+/// `signatures`, `hashes`) and retains only the fields needed for topological
+/// sorting, power-level lookups, and auth checks.
+///
+/// The generic `Id` parameter defaults to `String` but can be substituted with
+/// `u32` or `u64` for integer-interned resolution (see [`EventId`]).
+///
+/// # Deserialization
+///
+/// `LeanEvent<String>` implements `Deserialize` with the following behaviors:
+/// - `event_id`: If absent and the `hashing` feature is enabled, a SHA-256
+///   content hash is computed and used as the ID.
+/// - `power_level`: Accepts integers, unsigned integers, or string-encoded
+///   integers, clamped to [`MAX_POWER_LEVEL`].
+/// - All other fields default to empty/zero if absent.
 #[derive(Debug, Clone, Default)]
 pub struct LeanEvent<Id = String> {
+    /// Unique event identifier (e.g. `$abc123:example.com`).
     pub event_id: Id,
+    /// Matrix event type (e.g. `m.room.member`, `m.room.power_levels`).
     pub event_type: String,
+    /// State key for state events; `None` for timeline (non-state) events.
+    /// For `m.room.member` events this is the target user's MXID.
     pub state_key: Option<String>,
+    /// Sender's power level at the time of the event, used for sort priority.
+    /// This is a pre-computed cache — the authoritative PL is derived from the
+    /// auth chain during resolution.
     pub power_level: i64,
+    /// Origin server timestamp in milliseconds since Unix epoch.
+    /// Used as a tie-breaker in V2+ topological sort ordering.
     pub origin_server_ts: u64,
+    /// The MXID of the user who sent the event.
     pub sender: String,
+    /// The event's JSON `content` field (membership, power levels, join rules, etc.).
     pub content: Value,
+    /// Event IDs of this event's parents in the DAG (timeline graph).
     pub prev_events: Vec<Id>,
+    /// Event IDs of the authorization events for this event (auth DAG).
     pub auth_events: Vec<Id>,
-    pub depth: u64, // Required for V1
+    /// DAG depth (distance from the root). Required for V1 sort ordering.
+    pub depth: u64,
 }
 
 impl<Id: serde::Serialize> serde::Serialize for LeanEvent<Id> {
@@ -327,6 +396,10 @@ impl<Id: Ord> PartialOrd for LeanEvent<Id> {
 }
 
 impl<Id> LeanEvent<Id> {
+    /// Returns `true` if this event is a ban (`membership: "ban"`) or a kick
+    /// (`membership: "leave"` where `state_key ≠ sender`).
+    ///
+    /// Self-leaves (where the user removes themselves) return `false`.
     #[must_use]
     pub fn is_ban_or_kick(&self) -> bool {
         if self.event_type == "m.room.member" {
@@ -344,11 +417,13 @@ impl<Id> LeanEvent<Id> {
         false
     }
 
+    /// Returns `true` if this is a `m.room.power_levels` event (a potential demotion).
     #[must_use]
     pub fn is_demotion(&self) -> bool {
         self.event_type == "m.room.power_levels"
     }
 
+    /// Returns `true` if this is a `m.room.join_rules` event setting the room to invite-only.
     #[must_use]
     pub fn is_lockdown(&self) -> bool {
         if self.event_type == "m.room.join_rules" {
@@ -359,6 +434,8 @@ impl<Id> LeanEvent<Id> {
         false
     }
 
+    /// Returns `true` if this event restricts the given `sender` — either by
+    /// banning/kicking them or by demoting their power level to zero.
     #[must_use]
     pub fn restricts_sender(&self, sender: &str) -> bool {
         if self.is_ban_or_kick() {
@@ -378,6 +455,10 @@ impl<Id> LeanEvent<Id> {
         false
     }
 
+    /// Returns `true` if this administrative event causally restricts `other`.
+    ///
+    /// Checks whether `self` is a ban/kick/demotion targeting `other`'s sender,
+    /// or a join-rules lockdown that blocks `other`'s join attempt.
     #[must_use]
     pub fn restricts_event(&self, other: &LeanEvent<Id>) -> bool {
         if self.is_ban_or_kick() || self.is_demotion() {
@@ -404,12 +485,28 @@ impl<Id: Ord> LeanEvent<Id> {
     }
 }
 
-/// A wrapper to ensure `BinaryHeap` pops the "Best" event FIRST.
+/// A priority wrapper for [`BinaryHeap`](alloc::collections::BinaryHeap)-based
+/// topological sorting of events.
+///
+/// Rust's `BinaryHeap` is a **max-heap** — the element with the greatest `Ord`
+/// value is popped first. In state resolution, the *worst* (lowest-priority)
+/// event must be applied first so that better events overwrite it via
+/// last-write-wins. Therefore:
+///
+/// - **V1**: Greater = deeper depth (applied first → loses).
+/// - **V2+**: Greater = higher PL (applied first → sets auth context, then
+///   lower-PL events overwrite for same-key conflicts).
+///
+/// See the [`Ord`] implementation for the full tie-breaking cascade.
 #[derive(Debug)]
 pub struct SortPriority<'a, Id = String> {
+    /// Reference to the event being sorted.
     pub event: &'a LeanEvent<Id>,
+    /// The sender's power level, derived from the auth chain (not `event.power_level`).
     pub power_level: i64,
+    /// Shortest auth-chain distance to the `m.room.create` event (V2.2 only).
     pub auth_chain_distance: u64,
+    /// The resolution version, which selects the comparison strategy.
     pub version: StateResVersion,
 }
 
@@ -498,6 +595,12 @@ impl<Id: Ord> PartialOrd for SortPriority<'_, Id> {
     }
 }
 
+/// Coerces a JSON value to `i64`, accepting integers, unsigned integers, or
+/// string-encoded integers.
+///
+/// Returns `None` if the value cannot be interpreted as an integer.
+/// This three-way coercion handles the real-world inconsistency where some
+/// homeservers encode power levels as strings in their JSON.
 #[must_use]
 pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
     if let Some(i) = pl.as_i64() {
@@ -514,6 +617,11 @@ pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
     None
 }
 
+/// Finds the `m.room.create` event deterministically across the auth context and sort set.
+///
+/// If multiple create events exist (which would be a protocol violation), the
+/// one with the lexicographically smallest `event_id` is chosen to ensure
+/// deterministic behavior across all implementations.
 pub fn find_deterministic_create_event<
     'a,
     Id: Ord + Eq + core::hash::Hash,

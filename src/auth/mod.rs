@@ -84,8 +84,15 @@ impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
 use core::borrow::Borrow;
 use core::cmp::Ordering;
 
+/// Trait for zero-copy lookups into `BTreeMap<(String, Option<String>), _>`.
+///
+/// This enables querying a `BTreeMap` keyed by owned `(String, Option<String>)`
+/// using borrowed `(&str, Option<&str>)` tuples — avoiding allocation for
+/// every state lookup during auth checking.
 pub trait StateKeyDyn {
+    /// The event type (e.g. `"m.room.member"`).
     fn ev_type(&self) -> &str;
+    /// The state key (e.g. `Some("@alice:example.com")` or `Some("")`).
     fn state_key(&self) -> Option<&str>;
 }
 
@@ -135,7 +142,14 @@ impl Ord for dyn StateKeyDyn + '_ {
     }
 }
 
+/// Trait for providing room state to the authorization engine.
+///
+/// Implementors supply state events by `(event_type, state_key)` lookups.
+/// The built-in implementation is [`RoomState`] (a `BTreeMap`), but the
+/// resolution engine uses a more complex `OverlayState` internally
+/// that layers resolved state, local auth context, and the create event.
 pub trait StateProvider<Id = String> {
+    /// Look up a state event by its type and state key.
     fn get_event(&self, event_type: &str, state_key: Option<&str>) -> Option<&LeanEvent<Id>>;
 }
 
