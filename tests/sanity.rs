@@ -216,6 +216,63 @@ fn test_compute_state_at_batch() {
     assert_eq!(&partial_results[early_id], &early_state);
 }
 
+#[test]
+fn test_streaming_parity() {
+    use rezzy::state_at::{compute_state_at_batch, compute_state_at_streaming};
+    use rezzy::{LeanEvent, StateResVersion};
+    use std::collections::HashMap;
+
+    let mut events_map = HashMap::new();
+
+    // Create chronological sequence of events
+    for i in 1..=200 {
+        let event_id = format!("${i}");
+        let prev_events = if i > 1 {
+            vec![format!("${}", i - 1)]
+        } else {
+            Vec::new()
+        };
+
+        let (state_key, event_type) = if i % 10 == 0 {
+            (Some(format!("user_{i}")), "m.room.member".to_string())
+        } else {
+            (None, "m.room.message".to_string())
+        };
+
+        let u_i = u64::try_from(i).unwrap();
+        let ev = LeanEvent {
+            event_id: event_id.clone(),
+            event_type,
+            state_key,
+            power_level: 0,
+            origin_server_ts: u_i * 1000,
+            sender: "alice".to_string(),
+            content: serde_json::Value::Null,
+            prev_events,
+            auth_events: Vec::new(),
+            depth: u_i,
+        };
+
+        events_map.insert(event_id, ev);
+    }
+
+    let batch_ids = vec!["$50", "$100", "$150", "$200"];
+    let batch_results = compute_state_at_batch(&batch_ids, &events_map, StateResVersion::V2);
+
+    let mut streaming_results = HashMap::new();
+    compute_state_at_streaming(&batch_ids, &events_map, StateResVersion::V2, |id, state| {
+        streaming_results.insert(id, state);
+    });
+
+    assert_eq!(batch_results.len(), streaming_results.len());
+    for id in &batch_ids {
+        assert_eq!(
+            batch_results[*id], streaming_results[*id],
+            "Mismatch at target event {id}"
+        );
+    }
+}
+
 fn make_chronological_test_events() -> Vec<rezzy::LeanEvent> {
     use rezzy::LeanEvent;
     // 1. Create three chronological events

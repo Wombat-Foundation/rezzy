@@ -404,20 +404,16 @@ where
 {
     let actual_target_id = events_map.get_key_value(target_event_id).map(|(k, _)| k)?;
 
-    let (id_to_index, index_to_id) = collect_ancestor_short_ids(actual_target_id, events_map);
-    let target_array = [actual_target_id];
-    let mut state_after_map = run_state_pipeline(
-        &index_to_id,
-        &id_to_index,
-        &target_array,
+    let mut result = None;
+    compute_state_at_streaming_internal(
+        core::slice::from_ref(actual_target_id),
         events_map,
         version,
+        |_, state| {
+            result = Some(state);
+        },
     );
-
-    let target_idx = id_to_index[actual_target_id];
-    state_after_map[target_idx]
-        .take()
-        .map(shared_state_into_btree)
+    result
 }
 
 /// Computes the resolved room state at multiple target events in a single pass.
@@ -459,7 +455,7 @@ where
     for &tid in target_event_ids {
         if let Some((k, _)) = events_map.get_key_value(tid) {
             if seen.insert(k) {
-                actual_target_ids.push(k);
+                actual_target_ids.push(k.clone());
             }
         }
     }
@@ -470,14 +466,9 @@ where
 
     let mut results = HashMap::with_capacity(actual_target_ids.len());
 
-    compute_state_at_streaming_internal(
-        &actual_target_ids,
-        events_map,
-        version,
-        |id, state| {
-            results.insert(id, state);
-        },
-    );
+    compute_state_at_streaming_internal(&actual_target_ids, events_map, version, |id, state| {
+        results.insert(id, state);
+    });
 
     results
 }
@@ -488,7 +479,7 @@ where
 /// This function is **strictly superior** to [`compute_state_at_batch`] for
 /// large-scale state reconstruction (e.g. homeserver full state rebuilds).
 /// By passing ownership of the computed state to the callback, callers can
-/// immediately compress and store the state (e.g. into RocksDB), keeping the
+/// immediately compress and store the state (e.g. into `RocksDB`), keeping the
 /// peak memory usage bounded strictly to the width of the DAG.
 ///
 /// Target IDs not found in `events_map` are silently skipped.
@@ -497,12 +488,11 @@ where
 ///
 /// Will panic if graph invariants are violated (specifically, if an ancestor event
 /// present in the reachable subgraph is missing from `events_map` during topological processing).
-#[must_use]
 pub fn compute_state_at_streaming<Id, Q, S, F>(
     target_event_ids: &[&Q],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
     version: StateResVersion,
-    mut on_target_resolved: F,
+    on_target_resolved: F,
 ) where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
@@ -541,9 +531,8 @@ fn compute_state_at_streaming_internal<Id, S, F>(
     S: core::hash::BuildHasher,
     F: FnMut(Id, BTreeMap<(String, Option<String>), Id>),
 {
-    let mut target_refs: Vec<&Id> = actual_target_ids.iter().collect();
-    let (id_to_index, index_to_id) =
-        collect_ancestor_short_ids_batch(&target_refs, events_map);
+    let target_refs: Vec<&Id> = actual_target_ids.iter().collect();
+    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&target_refs, events_map);
 
     let mut is_target = alloc::vec![false; index_to_id.len()];
     for tid in actual_target_ids {
