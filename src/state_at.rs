@@ -16,16 +16,15 @@
 //!
 //! This module computes the resolved room state *after* any given event in the
 //! DAG, without requiring external state snapshots. It walks the `prev_events`
-//! graph backwards, builds the state at each ancestor, and merges fork points
-//! via [`crate::resolve::resolve_lean`].
+//! graph backwards, builds the state at each ancestor, and merges fork points.
 //!
 //! Key optimizations:
 //!
-//! - **$O(1)$ structural sharing**: persistent state is represented via
-//!   [`imbl::OrdMap`] (`SharedState`). Fork branches are created and merged
+//! - `O(1)` structural sharing: persistent state is represented via
+//!   [`imbl::OrdMap`](`SharedState`). Fork branches are created and merged
 //!   incrementally with zero allocations for identical shared subtrees.
-//! - **Batch mode** ([`compute_state_at_batch`]): computes state at multiple
-//!   targets in a single topological pass, amortizing the graph traversal cost.
+//! - **Batch mode:** computes state at multiple targets in a single topological
+//!   pass, amortizing the graph traversal cost.
 
 use crate::types::{LeanEvent, StateResVersion};
 use crate::HashMap;
@@ -444,17 +443,17 @@ impl<E: core::fmt::Display> core::fmt::Display for StateComputationError<E> {
 #[cfg(feature = "std")]
 impl<E: core::fmt::Debug + core::fmt::Display> std::error::Error for StateComputationError<E> {}
 
-/// Computes the resolved room state at multiple target events in a single pass,
-/// yielding each resolved state to a callback as soon as it is ready.
+/// Same as [`compute_state_at_batch`] but yields each resolved room state
+/// to a callback (as soon as it is ready).
 ///
 /// This function is **strictly superior** to [`compute_state_at_batch`] for
 /// large-scale state reconstruction (e.g. homeserver full state rebuilds).
 /// By passing ownership of the computed state to the callback, callers can
-/// immediately compress and store the state (e.g. into `RocksDB`), keeping the
-/// peak memory for materialized state maps bounded to the live frontier/DAG
-/// width, while still retaining O(reachable ancestors) indexing metadata.
+/// immediately compress and store the state (e.g. directly into a `RocksDB`
+/// buffer), bounding the peak memory for materialized state maps to the live
+/// frontier/DAG width under strict `O(n_reachable_ancestors)` indexing metadata.
 ///
-/// Target IDs not found in `events_map` are silently skipped.
+/// **NOTE:** Target IDs not found in `events_map` are silently skipped!
 ///
 /// # Panics
 ///
@@ -642,10 +641,16 @@ where
 ///
 /// # Complexity
 ///
-/// - **Time**: O(V + E) bounded to the subgraph between the extremities and
+/// - **Time**: `O(V + E)` bounded to the subgraph between the extremities and
 ///   their merge base. Events below the merge base are never visited.
-/// - **Space**: O(V) for the bitmask map, where each bitmask is a compressed
+/// - **Space**: `O(V)` for the bitmask map, where each bitmask is a compressed
 ///   roaring bitmap.
+///
+/// ## **TODO:** Future optimization
+///
+/// With offline preprocessing (binary lifting or Euler tour + sparse table),
+/// repeated LCA queries against the same DAG could be answered in `O(log V)`
+/// per query after `O(V log V)` pre-processing.
 ///
 /// # Panics
 ///

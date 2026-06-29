@@ -13,20 +13,6 @@
 // limitations under the License.
 
 //! Topological and mainline sorting for Matrix state resolution.
-//!
-//! This module provides two complementary sorting strategies:
-//!
-//! - **Kahn's topological sort** ([`lean_kahn_sort`], [`lean_kahn_sort_detailed`]):
-//!   Orders events by auth-chain dependencies with tie-breaking by power level,
-//!   timestamp, and event ID. Used for the power-events phase.
-//!
-//! - **Mainline sort** ([`mainline_sort`]): Orders non-power events by their
-//!   proximity to the resolved power-levels chain (the "mainline"). Events
-//!   closer to the current PL event are applied last and therefore win.
-//!
-//! Both sorts are deterministic — given the same inputs, all implementations
-//! must produce the identical ordering.
-
 use alloc::collections::{BTreeMap, BinaryHeap, VecDeque};
 use alloc::string::String;
 use alloc::vec::Vec;

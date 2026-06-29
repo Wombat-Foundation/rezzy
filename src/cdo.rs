@@ -29,8 +29,6 @@
 //! Ancestor/descendant relationships are computed via SWAR (SIMD-within-a-register)
 //! bitmask sweeps over a topologically-sorted event array. The chunk size is
 //! auto-selected at compile time: 512 bits on AVX-512, 256 bits otherwise.
-//!
-//! Entry point: [`apply_cdo_filter`].
 
 use crate::types::LeanEvent;
 use crate::HashMap;

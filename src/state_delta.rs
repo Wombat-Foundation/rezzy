@@ -14,29 +14,9 @@
 
 //! State delta compression — efficient incremental state storage.
 //!
-//! Instead of storing the full `BTreeMap<(type, state_key), event_id>` at every
-//! event, homeservers can store a base snapshot and a chain of deltas.
+//! Instead of storing the full `state_map` at *every* event, homeservers can
+//! store a base snapshot and a chain of deltas.
 //! This module provides the primitives for computing and applying those deltas.
-//!
-//! ## Usage
-//!
-//! ```rust,no_run
-//! use rezzy::state_delta::{compute_state_delta, apply_state_delta, compute_state_hash};
-//! use std::collections::BTreeMap;
-//!
-//! let parent: BTreeMap<(String, Option<String>), String> = BTreeMap::new();
-//! let current: BTreeMap<(String, Option<String>), String> = BTreeMap::new();
-//!
-//! let delta = compute_state_delta(&parent, &current);
-//! let reconstructed = apply_state_delta(&parent, &delta);
-//! assert_eq!(current, reconstructed);
-//! ```
-//!
-//! ## Hashing
-//!
-//! [`compute_state_hash`] produces a deterministic FNV-1a fingerprint of a
-//! state map, suitable for fast equality checks and delta chain bookkeeping.
-//! It is **not** cryptographic — use the `hashing` feature for SHA-256.
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -208,12 +188,13 @@ pub fn compute_state_hash(state: &BTreeMap<(String, Option<String>), String>) ->
     alloc::format!("{hash:032x}")
 }
 
-/// Maximum number of delta hops before a full snapshot is inserted.
+/// Maximum number of delta hops before a full snapshot is inserted (default: 100,
+/// configurable: true).
 ///
 /// Matches Synapse's `MAX_STATE_DELTA_HOPS`. When a delta chain would exceed
-/// this length, [`compute_compacted_delta_chain`] inserts a full base snapshot
-/// instead of another delta, bounding reconstruction cost to at most this many
-/// hops.
+/// this length, [`compute_compacted_delta_chain_from_resolved`] inserts a full
+/// base snapshot instead of another delta, bounding reconstruction cost to at
+/// most this many hops.
 pub const MAX_DELTA_CHAIN_HOPS: usize = 100;
 
 /// A checkpoint that may be either a delta from a parent or a full snapshot.

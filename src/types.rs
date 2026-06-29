@@ -13,14 +13,6 @@
 // limitations under the License.
 
 //! Core data types for Matrix state resolution.
-//!
-//! This module defines the fundamental types used across all resolution algorithms:
-//!
-//! - [`LeanEvent`] — a lightweight, serializable Matrix event representation.
-//! - [`StateResVersion`] — selects the resolution algorithm variant.
-//! - [`SortPriority`] — a `BinaryHeap` wrapper encoding the V1/V2 sort semantics.
-//! - [`KahnSortResult`] — the result of topological sorting, with cycle diagnostics.
-//! - [`DagNode`] — a trait for generic topological traversal without requiring `LeanEvent`.
 
 use alloc::string::String;
 use alloc::vec::Vec;
