@@ -181,6 +181,12 @@ fn sort_cdo_events<Id: Ord + Clone, C: Clone>(
     sorted
 }
 
+// TODO(perf): Refactor to zero-copy `AdjacencyStructures<'a, Id, C>` storing
+// `&'a LeanEvent` references instead of owned clones. Currently clones every
+// event from auth_context + conflicted_events into `dag_context`, then clones
+// again into `sorted_events` — two O(N) allocation passes. Threading `'a`
+// lifetimes through `AdjacencyStructures`, `PrioritizedEvents`, and the bitmask
+// chunker would eliminate 100% of the cloning. See advisor update 2026-06-29.
 struct AdjacencyStructures<Id, C> {
     dag_context: HashMap<Id, LeanEvent<Id, C>>,
     id_to_idx: HashMap<Id, usize>,

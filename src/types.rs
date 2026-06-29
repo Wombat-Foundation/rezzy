@@ -853,18 +853,12 @@ pub fn find_deterministic_create_event<
     auth_context: &'a crate::HashMap<Id, LeanEvent<Id, C>, S1>,
     sort_set: &'a crate::HashMap<Id, LeanEvent<Id, C>, S2>,
 ) -> Option<&'a LeanEvent<Id, C>> {
-    let mut create_events: alloc::vec::Vec<&LeanEvent<Id, C>> = auth_context
+    // Quick filter by M_ROOM_CREATE
+    auth_context
         .values()
         .chain(sort_set.values())
         .filter(|ev| ev.event_type == crate::event_types::M_ROOM_CREATE)
-        .collect();
-
-    if create_events.is_empty() {
-        return None;
-    }
-
-    create_events.sort_by(|a, b| a.event_id.cmp(&b.event_id));
-    create_events.first().copied()
+        .min_by(|a, b| a.event_id.cmp(&b.event_id))
 }
 
 pub trait EventProvider<Id, C> {
