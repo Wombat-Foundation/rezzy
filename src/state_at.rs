@@ -429,6 +429,14 @@ where
 /// Returns a map from each found target event ID to its resolved state.
 /// Target IDs not found in `events_map` are silently skipped.
 ///
+/// # Future work
+///
+/// **Streaming API**: This function materializes a full `BTreeMap` for every
+/// target, which negates the `O(1)` cloning benefit of `imbl::OrdMap` at the
+/// API boundary. A callback-based `compute_state_at_streaming` variant should
+/// yield each resolved `SharedState` directly, letting callers delta-compress
+/// and drop immediately without peak-memory blowup.
+///
 /// # Panics
 ///
 /// Will panic if graph invariants are violated (specifically, if an ancestor event
@@ -481,6 +489,14 @@ where
 }
 
 /// Shared method for `compute_state_at` and `compute_state_at_batch`.
+///
+/// # Future work
+///
+/// **Auth cache hoisting**: `resolve_lean` currently allocates a fresh
+/// `LocalAuthCache` per fork resolution. Instantiating one at the top of
+/// this pipeline and threading `&mut global_auth_cache` through
+/// `resolve_merge_fast_path` → `resolve_multiple_prev_states` → `resolve_lean`
+/// would amortize auth chain traversal cost across all forks in the batch.
 fn run_state_pipeline<'a, Id, S>(
     index_to_id: &[&'a Id],
     id_to_index: &HashMap<&'a Id, usize>,
