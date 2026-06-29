@@ -553,18 +553,9 @@ pub fn reconstruct_state_at(
     checkpoints: &[CompactedCheckpoint],
     target_index: usize,
 ) -> Option<BTreeMap<(String, Option<String>), String>> {
-    use crate::HashMap;
-
     if target_index >= checkpoints.len() {
         return None;
     }
-
-    // Build an index from state_hash -> checkpoint index for parent lookups
-    let hash_to_idx: HashMap<&str, usize> = checkpoints
-        .iter()
-        .enumerate()
-        .map(|(i, cp)| (cp.state_hash.as_str(), i))
-        .collect();
 
     // Collect deltas by walking backwards until we hit a snapshot
     let mut delta_stack: Vec<&[StateDelta]> = Vec::new();
@@ -593,15 +584,16 @@ pub fn reconstruct_state_at(
         delta_stack.push(&cp.deltas);
 
         let parent_hash = cp.parent_hash.as_ref()?;
-        // Prefer sequential index to avoid hash collisions when consecutive
-        // states are identical (same state_hash would self-loop in hash_to_idx).
+        // Prefer immediate predecessor; fall back to scanning earlier checkpoints.
         if let Some(prev) = current_idx
             .checked_sub(1)
             .filter(|&pi| checkpoints[pi].state_hash == *parent_hash)
         {
             current_idx = prev;
         } else {
-            current_idx = *hash_to_idx.get(parent_hash.as_str())?;
+            current_idx = checkpoints[..current_idx]
+                .iter()
+                .rposition(|cp| cp.state_hash.as_str() == parent_hash.as_str())?;
         }
     }
 }
@@ -668,7 +660,10 @@ pub fn reconstruct_state_batch(
                     .filter(|&pi| checkpoints[pi].state_hash == *parent_hash)
                 {
                     queue.push(prev);
-                } else if let Some(&p_idx) = hash_to_idx.get(parent_hash.as_str()) {
+                } else if let Some(&p_idx) = hash_to_idx
+                    .get(parent_hash.as_str())
+                    .filter(|&&pi| pi < idx)
+                {
                     queue.push(p_idx);
                 }
             }
@@ -690,7 +685,10 @@ pub fn reconstruct_state_batch(
                 .filter(|&pi| checkpoints[pi].state_hash == *parent_hash)
             {
                 prev
-            } else if let Some(&pi) = hash_to_idx.get(parent_hash.as_str()) {
+            } else if let Some(&pi) = hash_to_idx
+                .get(parent_hash.as_str())
+                .filter(|&&pi| pi < idx)
+            {
                 pi
             } else {
                 continue; // Broken chain
@@ -1123,5 +1121,128 @@ mod tests {
             assert!(result.is_some(), "event ID lookup failed for ${i}");
             assert_eq!(result.unwrap(), state);
         }
+    }
+
+    /// Regression: `hash_to_idx` used to map duplicate hashes to the *last*
+    /// occurrence, which could cause `reconstruct_state_at` to jump *forward*
+    /// instead of backward, corrupting or hanging reconstruction.
+    #[test]
+    fn test_no_forward_jump_on_duplicate_hashes() {
+        // Craft a chain where checkpoints 0 and 2 share the same state hash
+        // but checkpoint 1 has a different hash. Without the guard,
+        // reconstructing checkpoint 2 would jump to checkpoint 2 (self-loop)
+        // or a later index instead of walking backward.
+        let shared_hash: String = "HASH_A".into();
+        let different_hash: String = "HASH_B".into();
+
+        let state_a = {
+            let mut s = BTreeMap::new();
+            s.insert(("m.room.create".into(), Some(String::new())), "$c".into());
+            s
+        };
+        let state_b = {
+            let mut s = state_a.clone();
+            s.insert(("m.room.topic".into(), Some(String::new())), "$t".into());
+            s
+        };
+
+        let checkpoints = alloc::vec![
+            CompactedCheckpoint {
+                state_hash: shared_hash.clone(),
+                parent_hash: None,
+                event_id: "$0".into(),
+                deltas: alloc::vec![],
+                snapshot: Some(state_a.clone()),
+            },
+            CompactedCheckpoint {
+                state_hash: different_hash.clone(),
+                parent_hash: Some(shared_hash.clone()),
+                event_id: "$1".into(),
+                deltas: alloc::vec![StateDelta {
+                    event_type: "m.room.topic".into(),
+                    state_key: Some(String::new()),
+                    event_id: Some("$t".into()),
+                }],
+                snapshot: None,
+            },
+            CompactedCheckpoint {
+                state_hash: shared_hash.clone(), // same as checkpoint 0!
+                parent_hash: Some(different_hash),
+                event_id: "$2".into(),
+                deltas: alloc::vec![StateDelta {
+                    event_type: "m.room.topic".into(),
+                    state_key: Some(String::new()),
+                    event_id: None, // deletion — reverts to state_a
+                }],
+                snapshot: None,
+            },
+        ];
+
+        // Without the forward-jump guard, hash_to_idx["HASH_A"] = 2 (last),
+        // and checkpoint 1's parent lookup would jump to 2 (forward!) instead of 0.
+        let result_0 = reconstruct_state_at(&checkpoints, 0).expect("cp 0");
+        assert_eq!(result_0, state_a);
+
+        let result_1 = reconstruct_state_at(&checkpoints, 1).expect("cp 1");
+        assert_eq!(result_1, state_b);
+
+        let result_2 = reconstruct_state_at(&checkpoints, 2).expect("cp 2");
+        assert_eq!(result_2, state_a);
+    }
+
+    /// Same forward-jump regression but for the batch reconstruction path.
+    #[test]
+    fn test_no_forward_jump_batch_reconstruction() {
+        let shared_hash: String = "HASH_A".into();
+        let different_hash: String = "HASH_B".into();
+
+        let state_a = {
+            let mut s = BTreeMap::new();
+            s.insert(("m.room.create".into(), Some(String::new())), "$c".into());
+            s
+        };
+        let state_b = {
+            let mut s = state_a.clone();
+            s.insert(("m.room.topic".into(), Some(String::new())), "$t".into());
+            s
+        };
+
+        let checkpoints = alloc::vec![
+            CompactedCheckpoint {
+                state_hash: shared_hash.clone(),
+                parent_hash: None,
+                event_id: "$0".into(),
+                deltas: alloc::vec![],
+                snapshot: Some(state_a.clone()),
+            },
+            CompactedCheckpoint {
+                state_hash: different_hash.clone(),
+                parent_hash: Some(shared_hash.clone()),
+                event_id: "$1".into(),
+                deltas: alloc::vec![StateDelta {
+                    event_type: "m.room.topic".into(),
+                    state_key: Some(String::new()),
+                    event_id: Some("$t".into()),
+                }],
+                snapshot: None,
+            },
+            CompactedCheckpoint {
+                state_hash: shared_hash.clone(),
+                parent_hash: Some(different_hash),
+                event_id: "$2".into(),
+                deltas: alloc::vec![StateDelta {
+                    event_type: "m.room.topic".into(),
+                    state_key: Some(String::new()),
+                    event_id: None,
+                }],
+                snapshot: None,
+            },
+        ];
+
+        let results = reconstruct_state_batch(&checkpoints, &[0, 1, 2]);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[&0], state_a);
+        assert_eq!(results[&1], state_b);
+        assert_eq!(results[&2], state_a);
     }
 }
