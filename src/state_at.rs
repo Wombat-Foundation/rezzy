@@ -287,21 +287,23 @@ where
                 update_local_auth(&mut local_auth, aev, current_depth);
             }
 
-            for (key, entry) in cached_ancestor {
-                let total_depth = current_depth.saturating_add(entry.auth_depth);
-                match local_auth.entry(key.clone()) {
-                    alloc::collections::btree_map::Entry::Vacant(e) => {
-                        e.insert(LocalAuthEntry {
-                            event: entry.event.clone(),
-                            auth_depth: total_depth,
-                        });
-                    }
-                    alloc::collections::btree_map::Entry::Occupied(mut e) => {
-                        if total_depth < e.get().auth_depth {
+            if version == StateResVersion::V2_2 {
+                for (key, entry) in cached_ancestor {
+                    let total_depth = current_depth.saturating_add(entry.auth_depth);
+                    match local_auth.entry(key.clone()) {
+                        alloc::collections::btree_map::Entry::Vacant(e) => {
                             e.insert(LocalAuthEntry {
                                 event: entry.event.clone(),
                                 auth_depth: total_depth,
                             });
+                        }
+                        alloc::collections::btree_map::Entry::Occupied(mut e) => {
+                            if total_depth < e.get().auth_depth {
+                                e.insert(LocalAuthEntry {
+                                    event: entry.event.clone(),
+                                    auth_depth: total_depth,
+                                });
+                            }
                         }
                     }
                 }
@@ -532,6 +534,16 @@ where
 {
     let (sorted_ancestors, mut out_degree) =
         topological_sort_short_ids(index_to_id, id_to_index, events_map);
+
+    if sorted_ancestors.len() != index_to_id.len() {
+        // Cycle detected or partial sort! The reachable subgraph is malformed.
+        std::eprintln!(
+            "rezzy::compute_state_at: Cycle detected! Sorted {}/{} events.",
+            sorted_ancestors.len(),
+            index_to_id.len()
+        );
+        return Ok(());
+    }
 
     let mut global_auth_cache = LocalAuthCache::new(version);
 
