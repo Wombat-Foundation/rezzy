@@ -3380,3 +3380,186 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
         "V2.1 should route self-leave to non-power phase"
     );
 }
+
+/// Hypothetical comparison: proves `resolve_lean` produces different resolved
+/// state for V2 vs V2.1 given identical inputs.
+///
+/// NOTE: V2 and V2.1 are orthogonal due to the breaking changes between room
+/// v11 and v12 PDU syntax. This test is performed purely for hypothetical
+/// comparison to validate that the version parameter flows through and
+/// changes resolution semantics.
+///
+/// Based on the Complement test `TestMSC4297StateResolutionV2_1_starts_from_empty_set`:
+/// - Unconflicted: everyone agrees alice=leave, create, pl exist
+/// - Conflicted: `join_rules` is disputed ($`jr_invite` vs $`jr_public`)
+/// - $`jr_invite` was sent by alice while she was JOINED (`auth_events` prove this)
+///
+/// V2: Starts from unconflicted state (alice=leave) → alice's $`jr_invite` fails
+///     auth → only $`jr_public` survives.
+/// V2.1: Starts from empty state → `local_auth` fallback sees alice=joined from
+///       her auth chain → $`jr_invite` passes auth → both survive, later one wins.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_compute_state_at_v2_vs_v2_1_divergence() {
+    use alloc::collections::BTreeMap;
+    use rezzy::{resolve_lean, LeanEvent, StateResVersion};
+    use std::collections::HashMap;
+
+    // === Auth context: all events available for auth chain lookups ===
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+
+    auth_context.insert(
+        "$create".into(),
+        LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "creator": "@alice:example.com" }),
+            prev_events: vec![],
+            auth_events: vec![],
+            depth: 1,
+            origin_server_ts: 1000,
+            ..Default::default()
+        },
+    );
+
+    auth_context.insert(
+        "$pl".into(),
+        LeanEvent {
+            event_id: "$pl".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({
+                "users": { "@alice:example.com": 100 },
+                "users_default": 0,
+                "state_default": 50,
+                "events_default": 0
+            }),
+            prev_events: vec!["$create".into()],
+            auth_events: vec!["$create".into()],
+            depth: 2,
+            origin_server_ts: 2000,
+            ..Default::default()
+        },
+    );
+
+    auth_context.insert(
+        "$alice_join".into(),
+        LeanEvent {
+            event_id: "$alice_join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@alice:example.com".into()),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "membership": "join" }),
+            prev_events: vec!["$pl".into()],
+            auth_events: vec!["$create".into(), "$pl".into()],
+            depth: 3,
+            origin_server_ts: 3000,
+            ..Default::default()
+        },
+    );
+
+    auth_context.insert(
+        "$alice_leave".into(),
+        LeanEvent {
+            event_id: "$alice_leave".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@alice:example.com".into()),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "membership": "leave" }),
+            prev_events: vec!["$alice_join".into()],
+            auth_events: vec!["$create".into(), "$pl".into(), "$alice_join".into()],
+            depth: 10,
+            origin_server_ts: 10000,
+            ..Default::default()
+        },
+    );
+
+    // === Unconflicted state: everyone agrees on these ===
+    let mut unconflicted: BTreeMap<(String, Option<String>), String> = BTreeMap::new();
+    unconflicted.insert(
+        ("m.room.create".into(), Some(String::new())),
+        "$create".into(),
+    );
+    unconflicted.insert(
+        ("m.room.power_levels".into(), Some(String::new())),
+        "$pl".into(),
+    );
+    // KEY: alice is LEAVE in unconflicted — both sides agree she left
+    unconflicted.insert(
+        ("m.room.member".into(), Some("@alice:example.com".into())),
+        "$alice_leave".into(),
+    );
+
+    // === Conflicted events: join_rules is disputed ===
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+
+    // Alice's join_rules="invite" — sent while she was still JOINED
+    // (her auth_events include $alice_join, not $alice_leave)
+    conflicted.insert(
+        "$jr_invite".into(),
+        LeanEvent {
+            event_id: "$jr_invite".into(),
+            event_type: "m.room.join_rules".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "join_rule": "invite" }),
+            prev_events: vec!["$alice_join".into()],
+            auth_events: vec!["$create".into(), "$pl".into(), "$alice_join".into()],
+            depth: 5,
+            origin_server_ts: 5000,
+            ..Default::default()
+        },
+    );
+
+    // Original join_rules="public" — from earlier
+    conflicted.insert(
+        "$jr_public".into(),
+        LeanEvent {
+            event_id: "$jr_public".into(),
+            event_type: "m.room.join_rules".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "join_rule": "public" }),
+            prev_events: vec!["$alice_join".into()],
+            auth_events: vec!["$create".into(), "$pl".into(), "$alice_join".into()],
+            depth: 4,
+            origin_server_ts: 4000,
+            ..Default::default()
+        },
+    );
+
+    // Resolve with V2
+    let state_v2 = resolve_lean(
+        unconflicted.clone(),
+        conflicted.clone(),
+        &auth_context,
+        StateResVersion::V2,
+    );
+
+    // Resolve with V2.1
+    let state_v2_1 = resolve_lean(
+        unconflicted,
+        conflicted,
+        &auth_context,
+        StateResVersion::V2_1,
+    );
+
+    // V2: unconflicted alice=leave → alice's $jr_invite fails auth → $jr_public wins
+    // V2.1: empty initial state + local_auth alice=joined → $jr_invite passes → later event wins
+    let jr_key: (String, Option<String>) = ("m.room.join_rules".into(), Some(String::new()));
+
+    assert_ne!(
+        state_v2.get(&jr_key),
+        state_v2_1.get(&jr_key),
+        "V2 and V2.1 must resolve join_rules differently.\n\
+         V2 join_rules: {:?}\n\
+         V2.1 join_rules: {:?}\n\
+         V2 full state: {state_v2:?}\n\
+         V2.1 full state: {state_v2_1:?}",
+        state_v2.get(&jr_key),
+        state_v2_1.get(&jr_key),
+    );
+}
