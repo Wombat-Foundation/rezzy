@@ -593,7 +593,16 @@ pub fn reconstruct_state_at(
         delta_stack.push(&cp.deltas);
 
         let parent_hash = cp.parent_hash.as_ref()?;
-        current_idx = *hash_to_idx.get(parent_hash.as_str())?;
+        // Prefer sequential index to avoid hash collisions when consecutive
+        // states are identical (same state_hash would self-loop in hash_to_idx).
+        if let Some(prev) = current_idx
+            .checked_sub(1)
+            .filter(|&pi| checkpoints[pi].state_hash == *parent_hash)
+        {
+            current_idx = prev;
+        } else {
+            current_idx = *hash_to_idx.get(parent_hash.as_str())?;
+        }
     }
 }
 
@@ -653,7 +662,13 @@ pub fn reconstruct_state_batch(
     while let Some(idx) = queue.pop() {
         if required_indices.insert(idx) && checkpoints[idx].snapshot.is_none() {
             if let Some(parent_hash) = &checkpoints[idx].parent_hash {
-                if let Some(&p_idx) = hash_to_idx.get(parent_hash.as_str()) {
+                // Prefer sequential index to avoid hash collisions
+                if let Some(prev) = idx
+                    .checked_sub(1)
+                    .filter(|&pi| checkpoints[pi].state_hash == *parent_hash)
+                {
+                    queue.push(prev);
+                } else if let Some(&p_idx) = hash_to_idx.get(parent_hash.as_str()) {
                     queue.push(p_idx);
                 }
             }
@@ -669,12 +684,19 @@ pub fn reconstruct_state_batch(
         let state = if let Some(ref snapshot) = cp.snapshot {
             snapshot.clone()
         } else if let Some(parent_hash) = &cp.parent_hash {
-            if let Some(&p_idx) = hash_to_idx.get(parent_hash.as_str()) {
-                if let Some(parent_state) = known_states.get(&p_idx) {
-                    apply_state_delta(parent_state, &cp.deltas)
-                } else {
-                    continue; // Broken chain
-                }
+            // Prefer sequential index to avoid hash collisions
+            let p_idx = if let Some(prev) = idx
+                .checked_sub(1)
+                .filter(|&pi| checkpoints[pi].state_hash == *parent_hash)
+            {
+                prev
+            } else if let Some(&pi) = hash_to_idx.get(parent_hash.as_str()) {
+                pi
+            } else {
+                continue; // Broken chain
+            };
+            if let Some(parent_state) = known_states.get(&p_idx) {
+                apply_state_delta(parent_state, &cp.deltas)
             } else {
                 continue; // Broken chain
             }
@@ -956,6 +978,13 @@ mod tests {
                 Some(checkpoints[i - 1].state_hash.clone())
             );
         }
+
+        // Verify deltas reconstruct the original resolved states
+        let mut reconstructed = BTreeMap::new();
+        for (i, cp) in checkpoints.iter().enumerate() {
+            reconstructed = apply_state_delta(&reconstructed, &cp.deltas);
+            assert_eq!(&reconstructed, &states[i].1);
+        }
     }
 
     #[test]
@@ -1005,6 +1034,21 @@ mod tests {
         // Verify all states are reconstructable
         let last_state = reconstruct_state_at(&checkpoints, 249).expect("should reconstruct last");
         assert_eq!(last_state.len(), 250);
+
+        // Verify no checkpoint is more than max_hops deltas away from a snapshot
+        let mut hops = 0_usize;
+        for cp in &checkpoints {
+            if cp.snapshot.is_some() {
+                hops = 0;
+            } else {
+                hops += 1;
+                assert!(
+                    hops < 100,
+                    "checkpoint {} is {hops} hops from nearest snapshot, exceeds max_hops=100",
+                    cp.event_id
+                );
+            }
+        }
     }
 
     #[test]
@@ -1037,5 +1081,47 @@ mod tests {
 
         // Missing event ID
         assert!(reconstruct_state_at_by_event_id(&checkpoints, "$999").is_none());
+    }
+
+    #[test]
+    fn test_consecutive_identical_states_reconstruction() {
+        // Consecutive states with identical content produce identical hashes.
+        // This must not break backward reconstruction.
+        let state = {
+            let mut s = BTreeMap::new();
+            s.insert(
+                ("m.room.create".into(), Some(String::new())),
+                "$create".into(),
+            );
+            s
+        };
+
+        // 5 events, all producing the same state (non-state events)
+        let states: ResolvedStates = (1..=5)
+            .map(|i| (alloc::format!("${i}"), state.clone()))
+            .collect();
+
+        let checkpoints = compute_compacted_delta_chain_from_resolved(states, Some(100));
+        assert_eq!(checkpoints.len(), 5);
+
+        // All hashes should be identical
+        let first_hash = &checkpoints[0].state_hash;
+        for cp in &checkpoints[1..] {
+            assert_eq!(&cp.state_hash, first_hash);
+        }
+
+        // Every checkpoint must still reconstruct correctly
+        for i in 0..5 {
+            let reconstructed = reconstruct_state_at(&checkpoints, i)
+                .unwrap_or_else(|| panic!("failed to reconstruct checkpoint {i}"));
+            assert_eq!(reconstructed, state, "mismatch at checkpoint {i}");
+        }
+
+        // Event ID lookup must also work
+        for i in 1..=5 {
+            let result = reconstruct_state_at_by_event_id(&checkpoints, &alloc::format!("${i}"));
+            assert!(result.is_some(), "event ID lookup failed for ${i}");
+            assert_eq!(result.unwrap(), state);
+        }
     }
 }
