@@ -16,7 +16,7 @@ fn ruma_to_lean_event<E: Event>(ev: &E) -> LeanEvent {
         serde_json::from_str(ev.content().get()).unwrap_or(serde_json::Value::Null);
     let power_level = content_val
         .get("power_level")
-        .and_then(rezzy::types::coerce_json_to_i64)
+        .and_then(rezzy::basespec::rezzy_types::coerce_json_to_i64)
         .unwrap_or(0);
     LeanEvent {
         event_id: ev.event_id().to_string(),

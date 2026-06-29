@@ -75,7 +75,7 @@ rust/test: fixtures ##H Run Rust tests
 	$(CARGO) test --all-targets --all-features
 
 .PHONY: rust/coverage
-rust/coverage: ##H Run code coverage and generate HTML report
+rust/coverage: fixtures ##H Run code coverage and generate HTML report
 	# TODO: include `src/bin/` in coverage
 	$(CARGO) tarpaulin --all-features --all-targets \
 		--out Html Xml \

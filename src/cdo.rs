@@ -30,7 +30,7 @@
 //! bitmask sweeps over a topologically-sorted event array. The chunk size is
 //! auto-selected at compile time: 512 bits on AVX-512, 256 bits otherwise.
 
-use crate::types::LeanEvent;
+use crate::basespec::rezzy_types::LeanEvent;
 use crate::HashMap;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
@@ -269,7 +269,7 @@ struct PrioritizedEvents<Id> {
     priority_pos: HashMap<Id, usize>,
 }
 
-fn prioritize_events<Id, C: crate::types::EventContent + Clone, S1>(
+fn prioritize_events<Id, C: crate::basespec::rezzy_types::EventContent + Clone, S1>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
 ) -> PrioritizedEvents<Id>
 where
@@ -301,7 +301,7 @@ where
 
 fn process_direct_domination_chunks<
     Id,
-    C: crate::types::EventContent + Clone,
+    C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
 >(
     adj: &AdjacencyStructures<'_, Id, C>,
@@ -437,7 +437,7 @@ where
 #[must_use]
 pub fn apply_cdo_filter<
     Id,
-    C: crate::types::EventContent + Clone,
+    C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(

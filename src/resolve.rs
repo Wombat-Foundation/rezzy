@@ -25,10 +25,10 @@
 //! For the lattice-coordinatized variant (parallel, `O(1)` projection), see
 //! [`crate::lattice::resolve_lattice_coordinatized`].
 
+use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::{
     sorting::{build_mainline, lean_kahn_sort, mainline_sort},
     state_at::{compute_local_auth, iterative_auth_ok, LocalAuthCache},
-    types::{LeanEvent, StateResVersion},
     HashMap,
 };
 use alloc::{string::String, vec::Vec};
@@ -36,7 +36,7 @@ use alloc::{string::String, vec::Vec};
 /// Prepares the conflicted events map and tracks original conflicted keys before CDO pre-filtering.
 pub(crate) fn prepare_conflicted_and_keys<
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
@@ -98,7 +98,7 @@ pub fn expand_v2_power_events_auth_chains<
 /// MSC4297 (v2.1+): Routes administrative ancestral power events from `auth_context` into `power_events`.
 pub(crate) fn route_msc4297_ancestral_power_events<
     Id: Clone + Eq + core::hash::Hash + Ord,
-    C: crate::types::EventContent + Clone,
+    C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
@@ -155,18 +155,18 @@ pub(crate) fn route_msc4297_ancestral_power_events<
 pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4>(
     resolved: &mut crate::state_at::SharedState<Id>,
     power_events: &HashMap<Id, LeanEvent<Id, C>, S4>,
-    sort_context: &impl crate::types::EventProvider<Id, C>,
+    sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S3>,
     version: StateResVersion,
     local_auth_cache: &mut LocalAuthCache<Id, C>,
     create_ev: Option<&LeanEvent<Id, C>>,
 ) where
-    Id: crate::types::EventId,
+    Id: crate::basespec::rezzy_types::EventId,
     S2: core::hash::BuildHasher,
     S3: core::hash::BuildHasher,
     S4: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 {
     let sorted_power_ids = lean_kahn_sort(power_events, sort_context, create_ev, version);
     for id in &sorted_power_ids {
@@ -227,18 +227,18 @@ pub(crate) fn execute_power_phase<'a, Id, C, S1, S2>(
     original_conflicted_keys: &alloc::collections::BTreeSet<Id>,
     version: StateResVersion,
 ) -> (
-    crate::types::SortContext<'a, Id, C, S1, S2>, // sort_context
-    HashMap<Id, LeanEvent<Id, C>>,                // power_events
-    HashMap<Id, LeanEvent<Id, C>>,                // non_power_events
-    Option<&'a LeanEvent<Id, C>>,                 // m.room.create event
+    crate::basespec::rezzy_types::SortContext<'a, Id, C, S1, S2>, // sort_context
+    HashMap<Id, LeanEvent<Id, C>>,                                // power_events
+    HashMap<Id, LeanEvent<Id, C>>,                                // non_power_events
+    Option<&'a LeanEvent<Id, C>>,                                 // m.room.create event
 )
 where
-    Id: crate::types::EventId,
+    Id: crate::basespec::rezzy_types::EventId,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 {
-    let sort_context = crate::types::SortContext {
+    let sort_context = crate::basespec::rezzy_types::SortContext {
         primary: conflicted_events,
         secondary: auth_context,
     };
@@ -268,7 +268,7 @@ where
     );
 
     let create_key = (
-        String::from(crate::event_types::M_ROOM_CREATE),
+        String::from(crate::basespec::event_types::M_ROOM_CREATE),
         Some(String::new()),
     );
 
@@ -281,7 +281,7 @@ where
         .or_else(|| {
             conflicted_events
                 .values()
-                .filter(|ev| ev.event_type == crate::event_types::M_ROOM_CREATE)
+                .filter(|ev| ev.event_type == crate::basespec::event_types::M_ROOM_CREATE)
                 .min_by_key(|ev| &ev.event_id)
         });
 
@@ -365,8 +365,8 @@ where
 /// 4. Merge winners into the unconflicted base.
 #[must_use]
 pub fn resolve_lean<
-    Id: crate::types::EventId,
-    C: crate::types::EventContent + Clone,
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
@@ -388,8 +388,8 @@ pub fn resolve_lean<
 /// allocation costs across multiple invocations.
 #[must_use]
 pub fn resolve_lean_with_cache<
-    Id: crate::types::EventId,
-    C: crate::types::EventContent + Clone,
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
@@ -488,8 +488,8 @@ pub fn resolve_lean_with_cache<
 #[must_use]
 #[allow(clippy::type_complexity, clippy::too_many_lines)]
 pub fn resolve_lean_with_deltas<
-    Id: crate::types::EventId,
-    C: crate::types::EventContent + Clone,
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
@@ -515,8 +515,8 @@ pub fn resolve_lean_with_deltas<
 #[must_use]
 #[allow(clippy::type_complexity, clippy::too_many_lines)]
 pub fn resolve_lean_with_cache_and_deltas<
-    Id: crate::types::EventId,
-    C: crate::types::EventContent + Clone,
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(

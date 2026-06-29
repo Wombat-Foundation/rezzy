@@ -12,6 +12,9 @@ matrix-spec-txt/
 *cov
 /*.info
 
+# IDEs
+.idea/
+
 # misc / top-level stuff
 /*.log
 /*.jsonl

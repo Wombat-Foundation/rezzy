@@ -44,10 +44,10 @@
 //!    fan-out via `std::thread::scope`, splits events into chunks, and coordinates
 //!    the fold-then-merge pipeline.
 
+use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::{
     sorting::{build_mainline, compute_closest_mainline_positions},
     state_at::{compute_local_auth, iterative_auth_ok},
-    types::{LeanEvent, StateResVersion},
     HashMap,
 };
 use alloc::{string::String, vec::Vec};
@@ -71,7 +71,7 @@ pub fn is_lattice_winner_better<Id, C, S: core::hash::BuildHasher>(
 ) -> bool
 where
     Id: Clone + Eq + core::hash::Hash + Ord,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 {
     let ev_pos = mainline_distances
         .get(&ev.event_id)
@@ -105,7 +105,7 @@ fn update_winner_if_better<'a, Id, C>(
     mainline_len: usize,
 ) where
     Id: Clone + Eq + core::hash::Hash + Ord,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 {
     let is_better = if let Some(current_winner) = winners.get(&key) {
         is_lattice_winner_better(ev, current_winner, mainline_distances, mainline_len)
@@ -133,7 +133,7 @@ fn fold_lattice_chunk<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash::Bu
 ) -> HashMap<(String, Option<String>), &'a LeanEvent<Id, C>>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
-    C: crate::types::EventContent + Clone,
+    C: crate::basespec::rezzy_types::EventContent + Clone,
 {
     let mut thread_res: HashMap<(String, Option<String>), &'a LeanEvent<Id, C>> = HashMap::new();
     let mut local_auth_cache = crate::state_at::LocalAuthCache::<Id, C>::new(version);
@@ -169,7 +169,7 @@ fn merge_lattice_winners<'a, Id, C>(
     mainline_len: usize,
 ) where
     Id: Clone + Eq + core::hash::Hash + Ord,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 {
     for (key, ev) in thread_res {
         update_winner_if_better(key_winners, key, ev, mainline_distances, mainline_len);
@@ -198,7 +198,7 @@ fn compute_lattice_coordinatized_winners<
     key_winners: &mut HashMap<(String, Option<String>), &'a LeanEvent<Id, C>>,
 ) where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + Sync + Send,
-    C: crate::types::EventContent + Clone + Sync + Send,
+    C: crate::basespec::rezzy_types::EventContent + Clone + Sync + Send,
 {
     let v: Vec<&'a LeanEvent<Id, C>> = non_power_events.values().collect();
 
@@ -268,7 +268,7 @@ fn compute_lattice_coordinatized_winners<
 /// Non-power events are everything else (messages, topics, `m.room.third_party_invite`, etc.).
 pub fn route_power_events<
     Id: Clone + Eq + core::hash::Hash,
-    C: Clone + crate::types::EventContent,
+    C: Clone + crate::basespec::rezzy_types::EventContent,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
     S3: core::hash::BuildHasher,
@@ -279,9 +279,9 @@ pub fn route_power_events<
     version: crate::StateResVersion,
 ) {
     for (id, ev) in sort_set {
-        let is_power = ev.event_type == crate::event_types::M_ROOM_CREATE
-            || ev.event_type == crate::event_types::M_ROOM_POWER_LEVELS
-            || ev.event_type == crate::event_types::M_ROOM_JOIN_RULES
+        let is_power = ev.event_type == crate::basespec::event_types::M_ROOM_CREATE
+            || ev.event_type == crate::basespec::event_types::M_ROOM_POWER_LEVELS
+            || ev.event_type == crate::basespec::event_types::M_ROOM_JOIN_RULES
             || if matches!(
                 version,
                 // MSC4297 (State Resolution v2.1 onwards): Only member events that are bans or kicks
@@ -293,7 +293,7 @@ pub fn route_power_events<
             ) {
                 ev.is_ban_or_kick()
             } else {
-                ev.event_type == crate::event_types::M_ROOM_MEMBER
+                ev.event_type == crate::basespec::event_types::M_ROOM_MEMBER
             };
 
         if is_power {
@@ -331,8 +331,8 @@ pub fn resolve_lattice_coordinatized<
     version: StateResVersion,
 ) -> crate::state_at::SharedState<Id>
 where
-    Id: crate::types::EventId + Sync + Send,
-    C: crate::types::EventContent + Sync + Send + Clone,
+    Id: crate::basespec::rezzy_types::EventId + Sync + Send,
+    C: crate::basespec::rezzy_types::EventContent + Sync + Send + Clone,
 {
     // jscpd:ignore-end
     let original_conflicted_keys =

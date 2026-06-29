@@ -23,13 +23,13 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::event_types::{
+use crate::basespec::event_types::{
     FIELD_MEMBERSHIP, FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE,
     MEM_JOIN, MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
     M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_PUBLIC,
 };
-use crate::types::LeanEvent;
-use crate::types::StateResVersion;
+use crate::basespec::rezzy_types::LeanEvent;
+use crate::basespec::rezzy_types::StateResVersion;
 
 /// An error indicating why an event failed authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,7 +180,7 @@ impl<Id, C> StateProvider<Id, C> for RoomState<Id, C> {
 /// # Errors
 ///
 /// Returns an `AuthError` if the event fails authorization validation.
-pub fn check_auth<Id: Clone, C: crate::types::EventContent>(
+pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
     version: StateResVersion,
@@ -270,7 +270,7 @@ const MAX_POWER_LEVEL: i64 = i64::MAX; // INTERNAL max for creators
 const MAX_POWER_LEVEL_JSON: i64 = 9_007_199_254_740_991; // 2^53 - 1;
 
 /// Get the power level of a user from the current room state.
-fn get_sender_power_level<Id, C: crate::types::EventContent>(
+fn get_sender_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     sender: &str,
     state: &impl StateProvider<Id, C>,
     version: StateResVersion,
@@ -306,7 +306,7 @@ fn get_sender_power_level<Id, C: crate::types::EventContent>(
 }
 
 /// Get the required power level to send an event based on room state.
-fn get_required_power_level<Id, C: crate::types::EventContent>(
+fn get_required_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
@@ -331,7 +331,7 @@ fn get_required_power_level<Id, C: crate::types::EventContent>(
 }
 
 /// Validate leave/kick transition rules.
-fn check_leave_rules<Id: Clone, C: crate::types::EventContent>(
+fn check_leave_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
     target_user: &str,
@@ -366,7 +366,7 @@ fn check_leave_rules<Id: Clone, C: crate::types::EventContent>(
 }
 
 /// Validate ban transition rules.
-fn check_ban_rules<Id: Clone, C: crate::types::EventContent>(
+fn check_ban_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
     version: StateResVersion,
@@ -385,7 +385,7 @@ fn check_ban_rules<Id: Clone, C: crate::types::EventContent>(
 }
 
 /// Validate invite transition rules.
-fn check_invite_rules<Id: Clone, C: crate::types::EventContent>(
+fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
     target_user: &str,
@@ -421,7 +421,7 @@ fn check_invite_rules<Id: Clone, C: crate::types::EventContent>(
 }
 
 /// Validate sender power level hierarchies (sender PL vs target PL, and previous sender rules).
-fn check_membership_pl_hierarchies<Id: Clone, C: crate::types::EventContent>(
+fn check_membership_pl_hierarchies<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
     target_user: &str,
@@ -451,7 +451,7 @@ fn check_membership_pl_hierarchies<Id: Clone, C: crate::types::EventContent>(
 }
 
 /// Validate membership transition rules for `m.room.member` events.
-fn check_membership_rules<Id: Clone, C: crate::types::EventContent>(
+fn check_membership_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
     version: StateResVersion,
@@ -485,7 +485,7 @@ fn check_membership_rules<Id: Clone, C: crate::types::EventContent>(
     Ok(())
 }
 
-fn check_join_rules<Id: Clone, C: crate::types::EventContent>(
+fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
     target_user: &str,
@@ -540,7 +540,7 @@ fn check_join_rules<Id: Clone, C: crate::types::EventContent>(
 }
 
 /// Get the kick power level from room state.
-fn get_kick_power_level<Id, C: crate::types::EventContent>(
+fn get_kick_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
@@ -552,7 +552,7 @@ fn get_kick_power_level<Id, C: crate::types::EventContent>(
 }
 
 /// Get the ban power level from room state.
-fn get_invite_power_level<Id, C: crate::types::EventContent>(
+fn get_invite_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
@@ -563,7 +563,7 @@ fn get_invite_power_level<Id, C: crate::types::EventContent>(
     0 // Default invite power level per Matrix spec (v12)
 }
 
-fn get_ban_power_level<Id, C: crate::types::EventContent>(
+fn get_ban_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
@@ -578,7 +578,7 @@ fn get_ban_power_level<Id, C: crate::types::EventContent>(
 /// Returns the list of events that passed auth checks, and the list that failed
 /// with their respective errors.
 #[must_use]
-pub fn check_auth_chain<Id: Clone + Ord, C: crate::types::EventContent>(
+pub fn check_auth_chain<Id: Clone + Ord, C: crate::basespec::rezzy_types::EventContent>(
     sorted_events: &[LeanEvent<Id, C>],
     initial_state: &RoomState<Id, C>,
     version: StateResVersion,

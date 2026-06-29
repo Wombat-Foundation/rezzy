@@ -106,7 +106,7 @@ fn test_ruma_bootstrap_auth_chain() {
     let (accepted, rejected) = check_auth_chain(
         &events,
         &RoomState::new(),
-        rezzy::types::StateResVersion::V2_1,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
     );
 
     // All bootstrap events should pass auth
@@ -237,7 +237,7 @@ fn test_large_room_10k_auth_chain() {
     let (accepted, _rejected) = check_auth_chain(
         &events,
         &RoomState::new(),
-        rezzy::types::StateResVersion::V2_1,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
     );
     // Not all events will pass auth (spammers, unauthorized PL changes),
     // but the generator tries to keep it somewhat coherent.

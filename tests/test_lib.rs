@@ -2208,7 +2208,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_auth(&bad_create, &state, rezzy::types::StateResVersion::V2_1),
+            check_auth(
+                &bad_create,
+                &state,
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            ),
             Err(AuthError::<String>::CreateWithPrevEvents)
         );
 
@@ -2220,7 +2224,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_auth(&name_change, &state, rezzy::types::StateResVersion::V2_1),
+            check_auth(
+                &name_change,
+                &state,
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            ),
             Err(AuthError::NotMember {
                 sender: "@bob:example.com".into(),
                 event_id: "$name".into()
@@ -2237,7 +2245,7 @@ mod tests {
         assert!(check_auth(
             &creator_name_change,
             &state,
-            rezzy::types::StateResVersion::V2_1
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1
         )
         .is_ok());
 
@@ -2270,7 +2278,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_auth(&join_ev, &state2, rezzy::types::StateResVersion::V2_1),
+            check_auth(
+                &join_ev,
+                &state2,
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            ),
             Err(AuthError::BannedUser {
                 sender: "@bob:example.com".into(),
                 event_id: "$join".into()
@@ -2286,7 +2298,12 @@ mod tests {
             content: json!({ "membership": "invite" }),
             ..Default::default()
         };
-        assert!(check_auth(&self_invite, &state2, rezzy::types::StateResVersion::V2_1).is_err());
+        assert!(check_auth(
+            &self_invite,
+            &state2,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+        )
+        .is_err());
 
         // Invalid transition target user != sender for join
         let bad_join: LeanEvent = LeanEvent {
@@ -2298,7 +2315,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_auth(&bad_join, &state2, rezzy::types::StateResVersion::V2_1),
+            check_auth(
+                &bad_join,
+                &state2,
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            ),
             Err(AuthError::InvalidStateKey {
                 expected: "@alice:example.com".into(),
                 actual: "@bob:example.com".into()
@@ -2335,7 +2356,7 @@ mod tests {
             check_auth(
                 &low_power_state_change,
                 &state3,
-                rezzy::types::StateResVersion::V2_1
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1
             ),
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
@@ -2354,7 +2375,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_auth(&invite_banned, &state2, rezzy::types::StateResVersion::V2_1),
+            check_auth(
+                &invite_banned,
+                &state2,
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            ),
             Err(AuthError::BannedUser {
                 sender: "@bob:example.com".into(),
                 event_id: "$invite_banned".into()
@@ -2372,7 +2397,7 @@ mod tests {
         let (accepted_ids, rejected_ids) = check_auth_chain(
             &[create_no_key],
             &RoomState::new(),
-            rezzy::types::StateResVersion::V2_1,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
         );
         assert_eq!(accepted_ids, vec!["$create_no_key"]);
         assert!(rejected_ids.is_empty());
@@ -2628,7 +2653,7 @@ mod tests {
 
     #[test]
     fn test_overflowing_power_level_coercion_values_clamping() {
-        use rezzy::types::coerce_json_to_i64;
+        use rezzy::basespec::rezzy_types::coerce_json_to_i64;
 
         // Value beyond standard i64 should return None securely so it defaults/clamps to 0 (minimum power/most secure fallback)
         let large_positive = serde_json::Value::String("99999999999999999999999999999".to_string());
@@ -3458,7 +3483,7 @@ fn test_lean_event_serialize_roundtrip() {
 
 #[test]
 fn test_event_content_blanket_impl_all_methods() {
-    use rezzy::types::EventContent;
+    use rezzy::basespec::rezzy_types::EventContent;
 
     let content = serde_json::json!({
         "membership": "join",
@@ -3491,7 +3516,7 @@ fn test_event_content_blanket_impl_all_methods() {
 
 #[test]
 fn test_additional_creators_version_gating() {
-    use rezzy::types::EventContent;
+    use rezzy::basespec::rezzy_types::EventContent;
     let content = serde_json::json!({
         "additional_creators": ["@ac:x.com"]
     });
@@ -3734,7 +3759,7 @@ fn test_state_res_version_from_room_version() {
 
 #[test]
 fn test_dag_node_trait_on_lean_event() {
-    use rezzy::types::DagNode;
+    use rezzy::basespec::rezzy_types::DagNode;
     let ev = LeanEvent::<String> {
         event_id: "ev".into(),
         depth: 42,
@@ -3766,11 +3791,11 @@ fn test_lean_event_get_redact_and_creator() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn test_coverage_sweeper_for_unreachable_edges() {
+    use rezzy::basespec::rezzy_types::{EventProvider, SortPriority};
     use rezzy::cdo::is_ancestor;
     use rezzy::lattice::resolve_lattice_coordinatized;
     use rezzy::state_at::StateComputationError;
     use rezzy::state_delta::{reconstruct_state_batch, CompactedCheckpoint};
-    use rezzy::types::{EventProvider, SortPriority};
     use rezzy::{resolve_lean_with_deltas, LeanEvent, StateResVersion};
     use std::collections::{BTreeMap, HashMap};
 

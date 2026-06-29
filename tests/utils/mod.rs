@@ -1,4 +1,4 @@
-use rezzy::types::LeanEvent;
+use rezzy::basespec::rezzy_types::LeanEvent;
 use std::collections::HashMap;
 
 /// Builds an initial unconflicted state map containing only the `m.room.create` event
@@ -12,7 +12,7 @@ pub fn build_unconflicted_state_test_helper(
     // Find the create event in the auth_context
     let mut create_events = auth_context
         .values()
-        .filter(|ev| ev.event_type == rezzy::event_types::M_ROOM_CREATE);
+        .filter(|ev| ev.event_type == rezzy::basespec::event_types::M_ROOM_CREATE);
     let create_ev = create_events
         .next()
         .expect("fixture auth_context must contain exactly one m.room.create event");
@@ -60,6 +60,7 @@ pub fn print_canonical_hash(json_str: &str) {
 
     let mut value: serde_json::Value = serde_json::from_str(json_str).expect("Invalid JSON");
     if let Some(obj) = value.as_object_mut() {
+        obj.remove("event_id");
         obj.remove("unsigned");
         obj.remove("signatures");
     }

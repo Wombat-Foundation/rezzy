@@ -26,7 +26,7 @@
 //! - **Batch mode:** computes state at multiple targets in a single topological
 //!   pass, amortizing the graph traversal cost.
 
-use crate::types::{LeanEvent, StateResVersion};
+use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::HashMap;
 use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
@@ -85,7 +85,7 @@ pub(crate) struct OverlayState<'a, Id, C, S1, S2> {
 
 impl<
         Id: Clone + Eq + core::hash::Hash + Ord,
-        C: crate::types::EventContent,
+        C: crate::basespec::rezzy_types::EventContent,
         S1: core::hash::BuildHasher,
         S2: core::hash::BuildHasher,
     > crate::auth::StateProvider<Id, C> for OverlayState<'_, Id, C, S1, S2>
@@ -193,7 +193,7 @@ pub(crate) fn iterative_auth_ok<
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 >(
     ev: &LeanEvent<Id, C>,
     resolved: &crate::state_at::SharedState<Id>,
@@ -362,7 +362,7 @@ where
     Id: Clone + Eq + Ord + core::fmt::Debug + core::hash::Hash + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + Ord + core::hash::Hash,
     S: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 {
     if !events_map.contains_key(target_event_id) {
         return None;
@@ -409,7 +409,7 @@ where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 {
     let mut results = HashMap::with_capacity(target_event_ids.len());
 
@@ -468,7 +468,7 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F>(
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
     F: FnMut(Id, SharedState<Id>),
 {
     let result = try_compute_state_at_streaming(
@@ -511,7 +511,7 @@ where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
     F: FnMut(Id, SharedState<Id>) -> Result<(), E>,
 {
     let mut actual_target_ids = Vec::new();
@@ -566,7 +566,7 @@ fn run_state_pipeline_streaming<'a, Id, C, S, F, E>(
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
     F: FnMut(usize, SharedState<Id>) -> Result<(), E>,
 {
     let (sorted_ancestors, mut out_degree) =
@@ -677,7 +677,7 @@ where
     Id: Clone + Eq + core::hash::Hash + Ord + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
-    Node: crate::types::DagNode<Id>,
+    Node: crate::basespec::rezzy_types::DagNode<Id>,
 {
     use alloc::collections::BinaryHeap;
 
@@ -846,7 +846,7 @@ fn resolve_merge_fast_path<Id, C, S>(
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 {
     let first = &prev_states[0];
     let all_match = prev_states[1..].iter().all(|state| first == state);
@@ -872,7 +872,7 @@ fn resolve_multiple_prev_states<Id, C, S>(
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 {
     let mut conflicted_keys = hashbrown::HashSet::new();
     let mut conflicted_state_set = hashbrown::HashSet::new();
