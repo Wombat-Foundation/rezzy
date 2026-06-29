@@ -342,6 +342,7 @@ where
 
     let (sort_context, power_events, non_power_events, create_ev) =
         crate::resolve::execute_power_phase(
+            &unconflicted_state,
             &conflicted_events,
             auth_context,
             &original_conflicted_keys,

@@ -220,6 +220,7 @@ where
 /// for subsequent Kahn sorting and iterative auth checks.
 #[allow(clippy::type_complexity)]
 pub(crate) fn execute_power_phase<'a, Id, C, S1, S2>(
+    unconflicted_state: &BTreeMap<(String, Option<String>), Id>,
     conflicted_events: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
     original_conflicted_keys: &alloc::collections::BTreeSet<Id>,
@@ -265,7 +266,28 @@ where
         version,
     );
 
-    let create_ev = crate::types::find_deterministic_create_event(auth_context, conflicted_events);
+    let create_key = (
+        String::from(crate::event_types::M_ROOM_CREATE),
+        Some(String::new()),
+    );
+
+    let create_ev = unconflicted_state
+        .get(&create_key)
+        // 1. O(1) Fast Path: It's already in the agreed unconflicted state
+        .and_then(|id| auth_context.get(id).or_else(|| conflicted_events.get(id)))
+        // 2. Slow Path: It's currently in conflict (e.g. root of DAG)
+        // We only scan the tiny `conflicted_events` set, NEVER the massive `auth_context`!
+        .or_else(|| {
+            conflicted_events
+                .values()
+                .find(|ev| ev.event_type == crate::event_types::M_ROOM_CREATE)
+        })
+        .or_else(|| {
+            // Fallback only for weird test fixtures where create is completely missing from state
+            auth_context
+                .values()
+                .find(|ev| ev.event_type == crate::event_types::M_ROOM_CREATE)
+        });
 
     // Return updated refs
     (sort_context, power_events, non_power_events, create_ev)
@@ -388,6 +410,7 @@ pub fn resolve_lean_with_cache<
     let mut resolved = get_initial_resolved_state(&unconflicted_state, version);
 
     let (sort_context, power_events, non_power_events, create_ev) = execute_power_phase(
+        &unconflicted_state,
         &conflicted_events,
         auth_context,
         &original_conflicted_keys,
@@ -522,6 +545,7 @@ pub fn resolve_lean_with_cache_and_deltas<
     // --- Power phase (with delta tracking) ---
 
     let (sort_context, power_events, non_power_events, create_ev) = execute_power_phase(
+        &unconflicted_state,
         &conflicted_events,
         auth_context,
         &original_conflicted_keys,

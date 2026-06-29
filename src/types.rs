@@ -851,29 +851,6 @@ pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
     val.map(|v| v.clamp(-MAX_POWER_LEVEL, MAX_POWER_LEVEL))
 }
 
-/// Finds the `m.room.create` event deterministically across the auth context and sort set.
-///
-/// If multiple create events exist (which would be a protocol violation), the
-/// one with the lexicographically smallest `event_id` is chosen to ensure
-/// deterministic behavior across all implementations.
-pub fn find_deterministic_create_event<
-    'a,
-    Id: Ord + Eq + core::hash::Hash,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
-    C: EventContent,
->(
-    auth_context: &'a crate::HashMap<Id, LeanEvent<Id, C>, S1>,
-    sort_set: &'a crate::HashMap<Id, LeanEvent<Id, C>, S2>,
-) -> Option<&'a LeanEvent<Id, C>> {
-    // Quick filter by M_ROOM_CREATE
-    auth_context
-        .values()
-        .chain(sort_set.values())
-        .filter(|ev| ev.event_type == crate::event_types::M_ROOM_CREATE)
-        .min_by(|a, b| a.event_id.cmp(&b.event_id))
-}
-
 pub trait EventProvider<Id, C> {
     fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>>;
 }

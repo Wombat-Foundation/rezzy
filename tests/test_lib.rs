@@ -2619,34 +2619,6 @@ mod tests {
     }
 
     #[test]
-    fn test_create_event_determinism() {
-        use rezzy::types::find_deterministic_create_event;
-        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
-        let auth: HashMap<String, LeanEvent> = HashMap::new();
-
-        let c1: LeanEvent = LeanEvent {
-            event_id: "$create_1".into(),
-            event_type: "m.room.create".into(),
-            state_key: Some(String::new()),
-            ..Default::default()
-        };
-        let c2: LeanEvent = LeanEvent {
-            event_id: "$create_2".into(),
-            event_type: "m.room.create".into(),
-            state_key: Some(String::new()),
-            ..Default::default()
-        };
-
-        conflicted.insert("$create_1".into(), c1);
-        conflicted.insert("$create_2".into(), c2);
-
-        let chosen = find_deterministic_create_event(&auth, &conflicted);
-        assert!(chosen.is_some());
-        // Should choose lexicographically smaller id deterministically
-        assert_eq!(chosen.unwrap().event_id, "$create_1");
-    }
-
-    #[test]
     fn test_overflowing_power_level_coercion_values_clamping() {
         use rezzy::types::coerce_json_to_i64;
 
