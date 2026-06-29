@@ -272,9 +272,9 @@ pub fn route_power_events<
     version: crate::StateResVersion,
 ) {
     for (id, ev) in sort_set {
-        let is_power = ev.event_type == "m.room.create"
-            || ev.event_type == "m.room.power_levels"
-            || ev.event_type == "m.room.join_rules"
+        let is_power = ev.event_type == crate::event_types::M_ROOM_CREATE
+            || ev.event_type == crate::event_types::M_ROOM_POWER_LEVELS
+            || ev.event_type == crate::event_types::M_ROOM_JOIN_RULES
             || if matches!(
                 version,
                 crate::StateResVersion::V2
@@ -284,7 +284,7 @@ pub fn route_power_events<
             ) {
                 ev.is_ban_or_kick()
             } else {
-                ev.event_type == "m.room.member"
+                ev.event_type == crate::event_types::M_ROOM_MEMBER
             };
 
         if is_power {
