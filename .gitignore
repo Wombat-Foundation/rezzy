@@ -8,6 +8,10 @@ target/
 /*.txt
 matrix-spec-txt/
 
+# cargo
+*cov
+/*.info
+
 # misc / top-level stuff
 /*.log
 /*.jsonl
