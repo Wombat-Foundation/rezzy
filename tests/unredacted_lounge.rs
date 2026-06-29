@@ -256,3 +256,186 @@ fn test_unredacted_lounge_diagnostic_dump() {
         }
     }
 }
+
+/// Checkpoint/partial-join test: simulates a server that received a trusted
+/// state snapshot from `/send_join`, then resolves only the events received
+/// after joining.
+///
+/// The test splits the unredacted lounge subgraph at depth 100:
+/// - Events with depth <= 100 form the bootstrap state (the "checkpoint")
+/// - Events with depth > 100 are the partial DAG received after joining
+///
+/// The resolved state from (checkpoint + partial DAG) must match the full
+/// resolution result, proving that `unconflicted_state` works correctly as
+/// a trusted base.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_checkpoint_partial_join_resolution() {
+    use std::collections::BTreeMap;
+
+    let path = "res/pathology_data/unredacted_lounge_mismatch.jsonl";
+    if !Path::new(path).exists() {
+        println!("Skipping: {path} not found");
+        return;
+    }
+    let events = parse_jsonl_dag(path);
+    println!("Loaded {} events from subgraph", events.len());
+
+    // --- Full resolution (ground truth) ---
+    let mut member_events_by_sk: HashMap<String, Vec<String>> = HashMap::new();
+    for ev in &events {
+        if ev.event_type == "m.room.member" {
+            if let Some(ref sk) = ev.state_key {
+                member_events_by_sk
+                    .entry(sk.clone())
+                    .or_default()
+                    .push(ev.event_id.clone());
+            }
+        }
+    }
+    let conflicted_eids: Vec<String> = member_events_by_sk
+        .values()
+        .filter(|ids| ids.len() > 1)
+        .flat_map(|ids| ids.iter().cloned())
+        .collect();
+
+    let full_resolved = resolve_v2_1_from_subgraph(&events, &conflicted_eids);
+    println!("Full resolution: {} entries", full_resolved.len());
+
+    // --- Checkpoint resolution (partial join simulation) ---
+    // Split at depth 100: bootstrap events form the trusted checkpoint.
+    let depth_threshold = 100;
+
+    let bootstrap_events: Vec<&LeanEvent> = events
+        .iter()
+        .filter(|ev| ev.depth <= depth_threshold)
+        .collect();
+    let post_join_events: Vec<&LeanEvent> = events
+        .iter()
+        .filter(|ev| ev.depth > depth_threshold)
+        .collect();
+
+    println!(
+        "Split: {} bootstrap (depth <= {depth_threshold}), {} post-join",
+        bootstrap_events.len(),
+        post_join_events.len(),
+    );
+
+    // Build trusted checkpoint state: for each (type, state_key) slot in the
+    // bootstrap set, take the event with the highest depth (latest).
+    let mut checkpoint_state: BTreeMap<(String, Option<String>), String> = BTreeMap::new();
+    for ev in &bootstrap_events {
+        if ev.state_key.is_some() {
+            let key = (ev.event_type.clone(), ev.state_key.clone());
+            let should_insert = match checkpoint_state.get(&key) {
+                Some(existing_id) => {
+                    let existing_ev = bootstrap_events.iter().find(|e| e.event_id == *existing_id);
+                    existing_ev.is_none_or(|e| ev.depth > e.depth)
+                }
+                None => true,
+            };
+            if should_insert {
+                checkpoint_state.insert(key, ev.event_id.clone());
+            }
+        }
+    }
+    println!("Checkpoint state: {} entries", checkpoint_state.len());
+
+    // Build auth context + conflicted set from post-join events.
+    // Auth context includes bootstrap events (they're trusted but needed
+    // for auth checks on the new events).
+    let mut full_context: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in &events {
+        full_context.insert(ev.event_id.clone(), ev.clone());
+    }
+
+    // Identify conflicted events in the post-join set
+    let mut post_join_member_by_sk: HashMap<String, Vec<String>> = HashMap::new();
+    for ev in &post_join_events {
+        if ev.event_type == "m.room.member" {
+            if let Some(ref sk) = ev.state_key {
+                post_join_member_by_sk
+                    .entry(sk.clone())
+                    .or_default()
+                    .push(ev.event_id.clone());
+            }
+        }
+    }
+    let post_join_conflicted: Vec<String> = post_join_member_by_sk
+        .values()
+        .filter(|ids| ids.len() > 1)
+        .flat_map(|ids| ids.iter().cloned())
+        .collect();
+
+    // Use V2.1 conflicted subgraph computation on the post-join events
+    let v2_1_conflicted =
+        rezzy::compute_v2_1_conflicted_subgraph(&full_context, &post_join_conflicted);
+
+    let mut auth_context: HashMap<String, LeanEvent> = full_context;
+    for id in v2_1_conflicted.keys() {
+        auth_context.remove(id);
+    }
+
+    println!(
+        "Post-join: {} conflicted, {} auth context",
+        v2_1_conflicted.len(),
+        auth_context.len(),
+    );
+
+    // Resolve from checkpoint
+    let checkpoint_resolved = resolve_lean(
+        checkpoint_state,
+        v2_1_conflicted,
+        &auth_context,
+        StateResVersion::V2_1,
+    );
+    println!(
+        "Checkpoint resolution: {} entries",
+        checkpoint_resolved.len()
+    );
+
+    // --- Compare ---
+    // full_resolved ⊆ checkpoint_resolved: every slot the full resolution
+    // produced must appear in the checkpoint result with the same winner.
+    let mut mismatches = 0u32;
+    let mut missing = 0u32;
+    for (key, full_eid) in &full_resolved {
+        match checkpoint_resolved.get(key) {
+            Some(cp_eid) if full_eid != cp_eid => {
+                println!(
+                    "MISMATCH: ({}, {:?}): full={full_eid}, checkpoint={cp_eid}",
+                    key.0, key.1,
+                );
+                mismatches += 1;
+            }
+            None => {
+                println!(
+                    "MISSING: ({}, {:?}): full={full_eid}, not in checkpoint",
+                    key.0, key.1,
+                );
+                missing += 1;
+            }
+            _ => {} // match
+        }
+    }
+
+    println!(
+        "\nFull resolved: {} keys, Checkpoint resolved: {} keys",
+        full_resolved.len(),
+        checkpoint_resolved.len(),
+    );
+    println!("Mismatches: {mismatches}, Missing: {missing}");
+
+    assert!(
+        mismatches == 0 && missing == 0,
+        "{mismatches} mismatches + {missing} missing keys (see above)",
+    );
+
+    // Checkpoint is a superset (includes bootstrap state entries too)
+    assert!(
+        checkpoint_resolved.len() >= full_resolved.len(),
+        "checkpoint should have >= full resolution entries ({} < {})",
+        checkpoint_resolved.len(),
+        full_resolved.len(),
+    );
+}
