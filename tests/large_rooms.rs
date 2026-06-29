@@ -103,7 +103,11 @@ fn test_ruma_bootstrap_auth_chain() {
     use rezzy::auth::{check_auth_chain, RoomState};
 
     let events = load_fixture(&format!("{FIXTURE_DIR}/bootstrap-public-chat.json"));
-    let (accepted, rejected) = check_auth_chain(&events, &RoomState::new());
+    let (accepted, rejected) = check_auth_chain(
+        &events,
+        &RoomState::new(),
+        rezzy::types::StateResVersion::V2_1,
+    );
 
     // All bootstrap events should pass auth
     assert!(
@@ -220,7 +224,11 @@ fn test_large_room_10k_auth_chain() {
     use rezzy::auth::{check_auth_chain, RoomState};
 
     let events = load_large_room();
-    let (accepted, _rejected) = check_auth_chain(&events, &RoomState::new());
+    let (accepted, _rejected) = check_auth_chain(
+        &events,
+        &RoomState::new(),
+        rezzy::types::StateResVersion::V2_1,
+    );
     // Not all events will pass auth (spammers, unauthorized PL changes),
     // but the generator tries to keep it somewhat coherent.
     let pass_rate = f64::from(u32::try_from(accepted.len()).unwrap())

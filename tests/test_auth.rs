@@ -51,7 +51,7 @@ fn test_self_ban_rejected() {
         json!({"membership": "ban"}),
     );
     assert!(
-        check_auth(&self_ban, &state).is_err(),
+        check_auth(&self_ban, &state, rezzy::types::StateResVersion::V2_1).is_err(),
         "Self-bans must be rejected"
     );
 }
@@ -97,7 +97,7 @@ fn test_invite_banned_user_rejected() {
         json!({"membership": "invite"}),
     );
     assert!(
-        check_auth(&invite_banned, &state).is_err(),
+        check_auth(&invite_banned, &state, rezzy::types::StateResVersion::V2_1).is_err(),
         "Inviting a banned user must fail"
     );
 }
@@ -138,7 +138,7 @@ fn test_invite_insufficient_power_level() {
     );
     assert!(
         matches!(
-            check_auth(&invite, &state),
+            check_auth(&invite, &state, rezzy::types::StateResVersion::V2_1),
             Err(AuthError::InsufficientPowerLevel { .. })
         ),
         "Invite with PL 10 < invite PL 75 must fail"
@@ -170,7 +170,7 @@ fn test_self_invite_rejected() {
         json!({"membership": "invite"}),
     );
     assert!(
-        check_auth(&self_invite, &state).is_err(),
+        check_auth(&self_invite, &state, rezzy::types::StateResVersion::V2_1).is_err(),
         "Self-invites must be rejected"
     );
 }
@@ -211,7 +211,7 @@ fn test_join_banned_user_rejected() {
     );
     assert!(
         matches!(
-            check_auth(&join_attempt, &state),
+            check_auth(&join_attempt, &state, rezzy::types::StateResVersion::V2_1),
             Err(AuthError::BannedUser { .. })
         ),
         "Banned user joining must fail"
@@ -243,7 +243,7 @@ fn test_public_room_join_allowed() {
         json!({"membership": "join"}),
     );
     assert!(
-        check_auth(&join, &state).is_ok(),
+        check_auth(&join, &state, rezzy::types::StateResVersion::V2_1).is_ok(),
         "Public room join must succeed"
     );
 }
@@ -295,7 +295,7 @@ fn test_member_pl_hierarchy_enforcement() {
         json!({"membership": "leave"}),
     );
     assert!(
-        check_auth(&kick, &state).is_err(),
+        check_auth(&kick, &state, rezzy::types::StateResVersion::V2_1).is_err(),
         "Equal PL kick must fail"
     );
 }
@@ -330,7 +330,7 @@ fn test_create_event_no_prev_events() {
         json!({}),
     );
     let state = RoomState::new();
-    assert!(check_auth(&create, &state).is_ok());
+    assert!(check_auth(&create, &state, rezzy::types::StateResVersion::V2_1).is_ok());
 }
 
 #[test]
@@ -345,7 +345,7 @@ fn test_create_event_with_prev_events() {
     create.prev_events = vec!["$other".into()];
     let state = RoomState::new();
     assert_eq!(
-        check_auth(&create, &state),
+        check_auth(&create, &state, rezzy::types::StateResVersion::V2_1),
         Err(AuthError::CreateWithPrevEvents)
     );
 }
@@ -361,7 +361,7 @@ fn test_non_member_rejection() {
     );
     let state = RoomState::new();
     assert!(matches!(
-        check_auth(&msg, &state),
+        check_auth(&msg, &state, rezzy::types::StateResVersion::V2_1),
         Err(AuthError::NotMember { .. })
     ));
 }
@@ -386,7 +386,7 @@ fn test_joined_member_can_send() {
             json!({"membership": "join"}),
         ),
     );
-    assert!(check_auth(&msg, &state).is_ok());
+    assert!(check_auth(&msg, &state, rezzy::types::StateResVersion::V2_1).is_ok());
 }
 
 #[test]
@@ -410,7 +410,7 @@ fn test_banned_user_rejected() {
         ),
     );
     assert!(matches!(
-        check_auth(&msg, &state),
+        check_auth(&msg, &state, rezzy::types::StateResVersion::V2_1),
         Err(AuthError::BannedUser { .. })
     ));
 }
@@ -446,7 +446,7 @@ fn test_insufficient_power_level() {
         ),
     );
     assert!(matches!(
-        check_auth(&msg, &state),
+        check_auth(&msg, &state, rezzy::types::StateResVersion::V2_1),
         Err(AuthError::InsufficientPowerLevel { .. })
     ));
 }
@@ -462,7 +462,7 @@ fn test_join_self_only() {
     );
     let state = RoomState::new();
     assert!(matches!(
-        check_auth(&join, &state),
+        check_auth(&join, &state, rezzy::types::StateResVersion::V2_1),
         Err(AuthError::NotMember { .. })
     ));
 }
@@ -490,7 +490,11 @@ fn test_iterative_auth_chain() {
         "@alice:example.com",
         json!({"body": "hello"}),
     );
-    let (accepted, rejected) = check_auth_chain(&[create, join, msg], &RoomState::new());
+    let (accepted, rejected) = check_auth_chain(
+        &[create, join, msg],
+        &RoomState::new(),
+        rezzy::types::StateResVersion::V2_1,
+    );
     assert_eq!(accepted, vec!["$create", "$join", "$msg"]);
     assert!(rejected.is_empty());
 }
@@ -585,7 +589,7 @@ fn test_moderator_can_override_admin_ban() {
 
     // NOTE: the spec does not mandate a "previous sender" check.
     // Per spec §5.5: sender PL (50) >= ban level (50) and target PL (0) < sender PL (50) -> allow.
-    let result = check_auth(&mod_kick, &state);
+    let result = check_auth(&mod_kick, &state, rezzy::types::StateResVersion::V2_1);
     assert!(
         result.is_ok(),
         "Per spec, mod (PL 50) can unban target (PL 0) even if banned by admin (PL 100). Got {result:?}"
@@ -659,7 +663,7 @@ fn test_moderator_can_unban_self_ban() {
     );
 
     // Should succeed because current sender matches previous sender (the mod themselves)
-    let result = check_auth(&mod_unban, &state);
+    let result = check_auth(&mod_unban, &state, rezzy::types::StateResVersion::V2_1);
     assert!(result.is_ok(), "Expected Ok(()), got {result:?}");
 }
 
@@ -743,7 +747,7 @@ fn test_equal_power_invite_override_allowed() {
     );
 
     // Should succeed because previous membership is invite (not ban or join), and Mod2 has invite power
-    let result = check_auth(&mod2_invite, &state);
+    let result = check_auth(&mod2_invite, &state, rezzy::types::StateResVersion::V2_1);
     assert!(result.is_ok(), "Expected Ok(()), got {result:?}");
 
     // Target is now banned by @mod1 (PL 50)
@@ -768,7 +772,11 @@ fn test_equal_power_invite_override_allowed() {
     );
 
     // Should fail because you can't invite a banned user (rule 4.4.3)
-    let result = check_auth(&mod2_invite_banned, &state);
+    let result = check_auth(
+        &mod2_invite_banned,
+        &state,
+        rezzy::types::StateResVersion::V2_1,
+    );
     assert!(
         matches!(
             result,
@@ -854,7 +862,7 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
     );
 
     // Should succeed: unban only requires ban_pl (30), not kick_pl (60)
-    let result = check_auth(&unban, &state);
+    let result = check_auth(&unban, &state, rezzy::types::StateResVersion::V2_1);
     assert!(
         result.is_ok(),
         "Unban should succeed when sender PL (50) >= ban_pl (30), \
@@ -883,7 +891,7 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
     );
 
     // Should fail: kick requires kick_pl (60), mod only has 50
-    let result = check_auth(&kick, &state);
+    let result = check_auth(&kick, &state, rezzy::types::StateResVersion::V2_1);
     assert!(
         matches!(
             result,
@@ -1003,18 +1011,23 @@ fn test_creator_implicit_power_level() {
 
     // Asserts
     assert!(
-        check_auth(&creator_kick, &state).is_ok(),
+        check_auth(&creator_kick, &state, rezzy::types::StateResVersion::V2_1).is_ok(),
         "Primary creator should have implicit MAX_POWER_LEVEL and succeed."
     );
 
     assert!(
-        check_auth(&additional_kick, &state).is_ok(),
+        check_auth(
+            &additional_kick,
+            &state,
+            rezzy::types::StateResVersion::V2_1
+        )
+        .is_ok(),
         "Additional creator should have implicit MAX_POWER_LEVEL and succeed."
     );
 
     assert!(
         matches!(
-            check_auth(&normal_kick, &state),
+            check_auth(&normal_kick, &state, rezzy::types::StateResVersion::V2_1),
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,

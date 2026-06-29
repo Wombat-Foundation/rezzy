@@ -214,7 +214,7 @@ pub(crate) fn iterative_auth_ok<
         is_power_phase,
     };
 
-    crate::auth::check_auth(ev, &overlay).is_ok()
+    crate::auth::check_auth(ev, &overlay, version).is_ok()
 }
 
 /// Merges an event into a local auth map if it is an auth event (e.g. power levels, join rules).

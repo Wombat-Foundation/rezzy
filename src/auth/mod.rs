@@ -183,6 +183,7 @@ impl<Id, C> StateProvider<Id, C> for RoomState<Id, C> {
 pub fn check_auth<Id: Clone, C: crate::types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
+    version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     // Rule 0: Custom syntactic validation
     event
@@ -240,7 +241,7 @@ pub fn check_auth<Id: Clone, C: crate::types::EventContent>(
 
     // Rule 4: Check power level requirements
     if event.event_type != M_ROOM_MEMBER {
-        let sender_pl = get_sender_power_level(&event.sender, state);
+        let sender_pl = get_sender_power_level(&event.sender, state, version);
         let required_pl = get_required_power_level(event, state);
 
         let _pl_ev_id = state
@@ -258,7 +259,7 @@ pub fn check_auth<Id: Clone, C: crate::types::EventContent>(
 
     // Rule 5: m.room.member state_key validation
     if event.event_type == M_ROOM_MEMBER {
-        check_membership_rules(event, state)?;
+        check_membership_rules(event, state, version)?;
     }
 
     Ok(())
@@ -272,22 +273,22 @@ const MAX_POWER_LEVEL_JSON: i64 = 9_007_199_254_740_991; // 2^53 - 1;
 fn get_sender_power_level<Id, C: crate::types::EventContent>(
     sender: &str,
     state: &impl StateProvider<Id, C>,
+    version: StateResVersion,
 ) -> i64 {
-    // TODO(correctness): creator privileges must be version-gated:
-    //   - v1-v10: creator = content.creator, implicit PL 100
-    //   - v11: creator = sender, implicit PL 100, no additional_creators
-    //   - v12+: creator = sender, implicit MAX_POWER_LEVEL, additional_creators supported
     if let Some(create_event) = state.get_event(M_ROOM_CREATE, Some("")) {
-        let is_primary_creator = create_event.sender == sender;
-        let mut is_additional_creator = false;
+        let is_creator = create_event.sender == sender
+            || matches!(
+                version,
+                StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
+            ) && create_event.has_additional_creator(sender);
 
-        // V2.1+ additional creators extension
-        if create_event.has_additional_creator(sender) {
-            is_additional_creator = true;
-        }
-
-        if is_primary_creator || is_additional_creator {
-            return MAX_POWER_LEVEL;
+        if is_creator {
+            return match version {
+                StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2 => {
+                    MAX_POWER_LEVEL
+                }
+                _ => 100,
+            };
         }
     }
 
@@ -335,6 +336,7 @@ fn check_leave_rules<Id: Clone, C: crate::types::EventContent>(
     state: &impl StateProvider<Id, C>,
     target_user: &str,
     current_membership: &str,
+    version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     // Self-leave is always allowed (no power level check needed).
     if target_user == event.sender {
@@ -342,7 +344,7 @@ fn check_leave_rules<Id: Clone, C: crate::types::EventContent>(
     }
 
     // If target_user != sender, this is a kick or unban — requires power level
-    let sender_pl = get_sender_power_level(&event.sender, state);
+    let sender_pl = get_sender_power_level(&event.sender, state, version);
 
     // Unban: requires ban_pl. Kick: requires kick_pl.
     // Mutually exclusive per spec §10.2.1.
@@ -367,9 +369,10 @@ fn check_leave_rules<Id: Clone, C: crate::types::EventContent>(
 fn check_ban_rules<Id: Clone, C: crate::types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
+    version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     // Banning requires the ban power level
-    let sender_pl = get_sender_power_level(&event.sender, state);
+    let sender_pl = get_sender_power_level(&event.sender, state, version);
     let ban_pl = get_ban_power_level(state);
     if sender_pl < ban_pl {
         return Err(AuthError::InsufficientPowerLevel {
@@ -387,6 +390,7 @@ fn check_invite_rules<Id: Clone, C: crate::types::EventContent>(
     state: &impl StateProvider<Id, C>,
     target_user: &str,
     current_membership: &str,
+    version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     // Inviting requires invite power level, and sender != target
     if target_user == event.sender {
@@ -396,7 +400,7 @@ fn check_invite_rules<Id: Clone, C: crate::types::EventContent>(
         });
     }
 
-    let sender_pl = get_sender_power_level(&event.sender, state);
+    let sender_pl = get_sender_power_level(&event.sender, state, version);
     let invite_pl = get_invite_power_level(state);
     if sender_pl < invite_pl {
         return Err(AuthError::InsufficientPowerLevel {
@@ -422,11 +426,12 @@ fn check_membership_pl_hierarchies<Id: Clone, C: crate::types::EventContent>(
     state: &impl StateProvider<Id, C>,
     target_user: &str,
     new_membership: &str,
+    version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     // 1. Kick/Ban power vs Target power: ONLY for "leave" (kick) or "ban" transitions.
     if target_user != event.sender && (new_membership == "leave" || new_membership == "ban") {
-        let sender_pl = get_sender_power_level(&event.sender, state);
-        let target_pl = get_sender_power_level(target_user, state);
+        let sender_pl = get_sender_power_level(&event.sender, state, version);
+        let target_pl = get_sender_power_level(target_user, state, version);
 
         if sender_pl <= target_pl {
             return Err(AuthError::InsufficientPowerLevel {
@@ -449,6 +454,7 @@ fn check_membership_pl_hierarchies<Id: Clone, C: crate::types::EventContent>(
 fn check_membership_rules<Id: Clone, C: crate::types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
+    version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     let target_user = event.state_key.as_deref().unwrap_or("");
     let new_membership = event.get_membership().unwrap_or("");
@@ -468,13 +474,13 @@ fn check_membership_rules<Id: Clone, C: crate::types::EventContent>(
 
     match new_membership {
         MEM_JOIN => check_join_rules(event, state, target_user)?,
-        MEM_LEAVE => check_leave_rules(event, state, target_user, current_membership)?,
-        MEM_BAN => check_ban_rules(event, state)?,
-        MEM_INVITE => check_invite_rules(event, state, target_user, current_membership)?,
+        MEM_LEAVE => check_leave_rules(event, state, target_user, current_membership, version)?,
+        MEM_BAN => check_ban_rules(event, state, version)?,
+        MEM_INVITE => check_invite_rules(event, state, target_user, current_membership, version)?,
         _ => {}
     }
 
-    check_membership_pl_hierarchies(event, state, target_user, new_membership)?;
+    check_membership_pl_hierarchies(event, state, target_user, new_membership, version)?;
 
     Ok(())
 }
@@ -575,13 +581,14 @@ fn get_ban_power_level<Id, C: crate::types::EventContent>(
 pub fn check_auth_chain<Id: Clone + Ord, C: crate::types::EventContent>(
     sorted_events: &[LeanEvent<Id, C>],
     initial_state: &RoomState<Id, C>,
+    version: StateResVersion,
 ) -> (Vec<Id>, Vec<(Id, AuthError<Id>)>) {
     let mut state = initial_state.clone();
     let mut accepted = Vec::new();
     let mut rejected = Vec::new();
 
     for event in sorted_events {
-        match check_auth(event, &state) {
+        match check_auth(event, &state, version) {
             Ok(()) => {
                 // Apply event to state if it's a state event
                 if let Some(state_key) = &event.state_key {
@@ -706,7 +713,8 @@ mod tests {
         );
 
         // Assert that the primary creator gets i64::MAX
-        let creator_pl = get_sender_power_level("@creator:example.com", &state);
+        let creator_pl =
+            get_sender_power_level("@creator:example.com", &state, StateResVersion::V2_1);
         assert_eq!(
             creator_pl,
             i64::MAX,
@@ -714,7 +722,8 @@ mod tests {
         );
 
         // Assert that the additional creator gets i64::MAX
-        let additional_pl = get_sender_power_level("@additional:example.com", &state);
+        let additional_pl =
+            get_sender_power_level("@additional:example.com", &state, StateResVersion::V2_1);
         assert_eq!(
             additional_pl,
             i64::MAX,
@@ -722,7 +731,8 @@ mod tests {
         );
 
         // Normal user should have default (0)
-        let normal_pl = get_sender_power_level("@normal:example.com", &state);
+        let normal_pl =
+            get_sender_power_level("@normal:example.com", &state, StateResVersion::V2_1);
         assert_eq!(normal_pl, 0, "Normal user should have default 0 power");
     }
 }

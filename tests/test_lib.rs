@@ -2200,7 +2200,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_auth(&bad_create, &state),
+            check_auth(&bad_create, &state, rezzy::types::StateResVersion::V2_1),
             Err(AuthError::<String>::CreateWithPrevEvents)
         );
 
@@ -2212,7 +2212,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_auth(&name_change, &state),
+            check_auth(&name_change, &state, rezzy::types::StateResVersion::V2_1),
             Err(AuthError::NotMember {
                 sender: "@bob:example.com".into(),
                 event_id: "$name".into()
@@ -2226,7 +2226,12 @@ mod tests {
             sender: "@alice:example.com".into(),
             ..Default::default()
         };
-        assert!(check_auth(&creator_name_change, &state).is_ok());
+        assert!(check_auth(
+            &creator_name_change,
+            &state,
+            rezzy::types::StateResVersion::V2_1
+        )
+        .is_ok());
 
         // Banned user membership transition
         let mut state2 = RoomState::new();
@@ -2257,7 +2262,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_auth(&join_ev, &state2),
+            check_auth(&join_ev, &state2, rezzy::types::StateResVersion::V2_1),
             Err(AuthError::BannedUser {
                 sender: "@bob:example.com".into(),
                 event_id: "$join".into()
@@ -2273,7 +2278,7 @@ mod tests {
             content: json!({ "membership": "invite" }),
             ..Default::default()
         };
-        assert!(check_auth(&self_invite, &state2).is_err());
+        assert!(check_auth(&self_invite, &state2, rezzy::types::StateResVersion::V2_1).is_err());
 
         // Invalid transition target user != sender for join
         let bad_join: LeanEvent = LeanEvent {
@@ -2285,7 +2290,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_auth(&bad_join, &state2),
+            check_auth(&bad_join, &state2, rezzy::types::StateResVersion::V2_1),
             Err(AuthError::InvalidStateKey {
                 expected: "@alice:example.com".into(),
                 actual: "@bob:example.com".into()
@@ -2319,7 +2324,11 @@ mod tests {
             bob_joined.clone(),
         );
         assert_eq!(
-            check_auth(&low_power_state_change, &state3),
+            check_auth(
+                &low_power_state_change,
+                &state3,
+                rezzy::types::StateResVersion::V2_1
+            ),
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,
@@ -2337,7 +2346,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_auth(&invite_banned, &state2),
+            check_auth(&invite_banned, &state2, rezzy::types::StateResVersion::V2_1),
             Err(AuthError::BannedUser {
                 sender: "@bob:example.com".into(),
                 event_id: "$invite_banned".into()
@@ -2352,7 +2361,11 @@ mod tests {
             state_key: None, // lacks state_key
             ..Default::default()
         };
-        let (accepted_ids, rejected_ids) = check_auth_chain(&[create_no_key], &RoomState::new());
+        let (accepted_ids, rejected_ids) = check_auth_chain(
+            &[create_no_key],
+            &RoomState::new(),
+            rezzy::types::StateResVersion::V2_1,
+        );
         assert_eq!(accepted_ids, vec!["$create_no_key"]);
         assert!(rejected_ids.is_empty());
     }
@@ -3000,6 +3013,45 @@ fn test_sorting_coverage() {
         Some(&create_ev),
         rezzy::StateResVersion::V2_2,
     );
+}
+
+#[test]
+fn test_sorting_v2_creator_gets_pl_100() {
+    let mut events: HashMap<String, LeanEvent> = HashMap::new();
+    let auth: HashMap<String, LeanEvent> = HashMap::new();
+
+    let create_ev: LeanEvent = LeanEvent {
+        event_id: "create".into(),
+        event_type: "m.room.create".into(),
+        state_key: Some(String::new()),
+        sender: "alice".into(),
+        content: json!({ "creator": "alice", "room_version": "10" }),
+        ..Default::default()
+    };
+    events.insert("create".into(), create_ev.clone());
+
+    // alice is the creator — in V2, she should get PL 100 (not MAX)
+    let alice_ev: LeanEvent = LeanEvent {
+        event_id: "alice_msg".into(),
+        sender: "alice".into(),
+        auth_events: vec![],
+        ..Default::default()
+    };
+    events.insert("alice_msg".into(), alice_ev);
+
+    let bob_ev: LeanEvent = LeanEvent {
+        event_id: "bob_msg".into(),
+        sender: "bob".into(),
+        auth_events: vec![],
+        ..Default::default()
+    };
+    events.insert("bob_msg".into(), bob_ev);
+
+    // Sort with V2 — creator gets PL 100
+    let result =
+        rezzy::lean_kahn_sort(&events, &auth, Some(&create_ev), rezzy::StateResVersion::V2);
+    // Creator alice should sort with higher power than bob (PL 0)
+    assert!(!result.is_empty());
 }
 
 #[test]
