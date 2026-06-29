@@ -10,7 +10,6 @@
 extern crate alloc;
 extern crate std;
 
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use rezzy::{resolve_lean, LeanEvent, StateResVersion};
@@ -80,13 +79,13 @@ fn test_benchmark_1k_resolution_determinism() {
 
     // Run resolution twice and verify determinism
     let resolved1 = resolve_lean(
-        BTreeMap::new(),
+        imbl::OrdMap::new(),
         to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
     );
     let resolved2 = resolve_lean(
-        BTreeMap::new(),
+        imbl::OrdMap::new(),
         to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
@@ -159,13 +158,13 @@ fn test_large_room_10k_v2_1_sort() {
 fn test_large_room_10k_resolution_determinism() {
     let events = load_large_room();
     let r1 = resolve_lean(
-        BTreeMap::new(),
+        imbl::OrdMap::new(),
         to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
     );
     let r2 = resolve_lean(
-        BTreeMap::new(),
+        imbl::OrdMap::new(),
         to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
@@ -177,8 +176,13 @@ fn test_large_room_10k_resolution_determinism() {
 fn test_large_room_10k_v2_vs_v2_1_divergence() {
     let events = load_large_room();
     let map = to_event_map(&events);
-    let v2 = resolve_lean(BTreeMap::new(), map.clone(), &map, StateResVersion::V2);
-    let v2_1 = resolve_lean(BTreeMap::new(), map.clone(), &map, StateResVersion::V2_1);
+    let v2 = resolve_lean(imbl::OrdMap::new(), map.clone(), &map, StateResVersion::V2);
+    let v2_1 = resolve_lean(
+        imbl::OrdMap::new(),
+        map.clone(),
+        &map,
+        StateResVersion::V2_1,
+    );
     // V2 and V2.1 may diverge on conflicted state — that's the whole point of MSC4297.
     // But both must produce valid resolved state.
     assert!(!v2.is_empty(), "V2 must produce resolved state");
@@ -361,12 +365,17 @@ fn test_real_dag_52k_room_v2_1_sort() {
 fn test_real_dag_52k_room_resolution() {
     let events = load_real_dag("res/real_dag_52k_room.json");
     let map = to_event_map(&events);
-    let resolved = resolve_lean(BTreeMap::new(), map.clone(), &map, StateResVersion::V2);
+    let resolved = resolve_lean(imbl::OrdMap::new(), map.clone(), &map, StateResVersion::V2);
     assert!(!resolved.is_empty(), "Resolution should produce state");
     // Determinism check
     let events2 = load_real_dag("res/real_dag_52k_room.json");
     let map2 = to_event_map(&events2);
-    let resolved2 = resolve_lean(BTreeMap::new(), map2.clone(), &map2, StateResVersion::V2);
+    let resolved2 = resolve_lean(
+        imbl::OrdMap::new(),
+        map2.clone(),
+        &map2,
+        StateResVersion::V2,
+    );
     assert_eq!(resolved, resolved2, "Resolution must be deterministic");
 }
 
@@ -407,7 +416,7 @@ fn test_real_dag_nheko_room_106_heads() {
 
     // Resolution must still complete on this messy DAG
     let resolved = resolve_lean(
-        BTreeMap::new(),
+        imbl::OrdMap::new(),
         event_map.clone(),
         &event_map,
         StateResVersion::V2,
@@ -508,7 +517,7 @@ fn test_unredacted_spam_storm_v2_1_1() {
     let map = to_event_map(&events);
 
     let start_v2 = std::time::Instant::now();
-    let resolved_v2 = resolve_lean(BTreeMap::new(), map.clone(), &map, StateResVersion::V2);
+    let resolved_v2 = resolve_lean(imbl::OrdMap::new(), map.clone(), &map, StateResVersion::V2);
     let dur_v2 = start_v2.elapsed();
     println!(
         "V2.0 State Resolution of {} events took: {:?}",
@@ -517,7 +526,12 @@ fn test_unredacted_spam_storm_v2_1_1() {
     );
 
     let start_v21 = std::time::Instant::now();
-    let resolved_v21 = resolve_lean(BTreeMap::new(), map.clone(), &map, StateResVersion::V2_1);
+    let resolved_v21 = resolve_lean(
+        imbl::OrdMap::new(),
+        map.clone(),
+        &map,
+        StateResVersion::V2_1,
+    );
     let dur_v21 = start_v21.elapsed();
     println!(
         "V2.1 State Resolution of {} events took: {:?}",
@@ -526,7 +540,12 @@ fn test_unredacted_spam_storm_v2_1_1() {
     );
 
     let start_v211 = std::time::Instant::now();
-    let resolved_v211 = resolve_lean(BTreeMap::new(), map.clone(), &map, StateResVersion::V2_1_1);
+    let resolved_v211 = resolve_lean(
+        imbl::OrdMap::new(),
+        map.clone(),
+        &map,
+        StateResVersion::V2_1_1,
+    );
     let dur_v211 = start_v211.elapsed();
     println!(
         "V2.1.1 State Resolution of {} events took: {:?}",
@@ -536,7 +555,7 @@ fn test_unredacted_spam_storm_v2_1_1() {
 
     let start_lattice = std::time::Instant::now();
     let resolved_lattice = rezzy::resolve_lattice_coordinatized(
-        BTreeMap::new(),
+        imbl::OrdMap::new(),
         map.clone(),
         &map,
         StateResVersion::V2_1_1,
@@ -569,10 +588,10 @@ fn test_unredacted_spam_storm_v2_1_1() {
 #[allow(clippy::too_many_lines)]
 fn verify_spam_storm_results(
     events: &[LeanEvent],
-    resolved_v2: &BTreeMap<(String, Option<String>), String>,
-    resolved_v21: &BTreeMap<(String, Option<String>), String>,
-    resolved_v211: &BTreeMap<(String, Option<String>), String>,
-    resolved_lattice: &BTreeMap<(String, Option<String>), String>,
+    resolved_v2: &imbl::OrdMap<(String, Option<String>), String>,
+    resolved_v21: &imbl::OrdMap<(String, Option<String>), String>,
+    resolved_v211: &imbl::OrdMap<(String, Option<String>), String>,
+    resolved_lattice: &imbl::OrdMap<(String, Option<String>), String>,
     durs: (
         std::time::Duration,
         std::time::Duration,

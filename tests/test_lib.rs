@@ -5,7 +5,6 @@ extern crate alloc;
 #[allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
 mod tests {
 
-    use alloc::collections::BTreeMap;
     use alloc::string::ToString;
     use alloc::vec;
     use core::cmp::Ordering;
@@ -328,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_v2_1_strict_resolution() {
-        let mut unconflicted = BTreeMap::new();
+        let mut unconflicted = imbl::OrdMap::new();
         unconflicted.insert(
             ("m.room.member".into(), Some("@alice:example.com".into())),
             "A".into(),
@@ -810,7 +809,7 @@ mod tests {
 
     #[test]
     fn test_resolve_lean_functionality() {
-        let mut unconflicted = BTreeMap::new();
+        let mut unconflicted = imbl::OrdMap::new();
         unconflicted.insert(("type".into(), Some("key".into())), "id".into());
         let conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let resolved = resolve_lean(
@@ -827,7 +826,7 @@ mod tests {
         use serde_json::json;
 
         // Uncontested state: Alice is already joined, Bob's old event is the prior state.
-        let mut unconflicted = BTreeMap::new();
+        let mut unconflicted = imbl::OrdMap::new();
         unconflicted.insert(
             ("m.room.member".into(), Some("@alice:example.com".into())),
             "id1".into(),
@@ -1062,7 +1061,7 @@ mod tests {
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2,
         );
-        let mut resolved_state = BTreeMap::new();
+        let mut resolved_state = imbl::OrdMap::new();
         for id in sorted {
             let ev = &events[&id];
             let key = (ev.event_type.clone(), ev.state_key.clone());
@@ -2372,7 +2371,7 @@ mod tests {
 
     #[test]
     fn test_resolve_lean_cycle_power_events() {
-        use std::collections::{BTreeMap, HashMap};
+        use std::collections::HashMap;
 
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let mut auth: HashMap<String, LeanEvent> = HashMap::new();
@@ -2406,7 +2405,7 @@ mod tests {
         conflicted.insert("A".into(), a);
         conflicted.insert("B".into(), b);
 
-        let unconflicted = BTreeMap::new();
+        let unconflicted = imbl::OrdMap::new();
         // This will run kahn sort on power_events, detect a cycle, and print/handle it safely.
         let resolved = resolve_lean(unconflicted, conflicted, &auth, rezzy::StateResVersion::V2);
         assert!(!resolved.is_empty());
@@ -2572,7 +2571,7 @@ mod tests {
         // Resolve using V2_1 (MSC4297). This starts with an empty state.
         // It must successfully route and validate `$pl_alice` in order to authorize Bob's PL events.
         let resolved = resolve_lean(
-            BTreeMap::new(),
+            imbl::OrdMap::new(),
             conflicted_events,
             &auth_context,
             rezzy::StateResVersion::V2_1,
@@ -3029,7 +3028,6 @@ fn test_sorting_v2_creator_gets_pl_100() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn test_resolve_lean_with_deltas_parity() {
-    use alloc::collections::BTreeMap;
     use rezzy::state_delta::ResolvePhase;
     use rezzy::{resolve_lean, resolve_lean_with_deltas, LeanEvent, StateResVersion};
     use serde_json::json;
@@ -3092,7 +3090,7 @@ fn test_resolve_lean_with_deltas_parity() {
         },
     );
 
-    let mut unconflicted = BTreeMap::new();
+    let mut unconflicted = imbl::OrdMap::new();
     unconflicted.insert(
         ("m.room.member".into(), Some("@alice:example.com".into())),
         "alice_join".into(),
@@ -3198,9 +3196,9 @@ fn test_resolve_lean_with_deltas_parity() {
 #[test]
 fn test_resolve_lean_with_deltas_no_duplicate_power_events() {
     use rezzy::{resolve_lean_with_deltas, LeanEvent, StateResVersion};
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::HashMap;
 
-    let mut unconflicted = BTreeMap::new();
+    let mut unconflicted = imbl::OrdMap::new();
     unconflicted.insert(
         ("m.room.create".into(), Some(String::new())),
         "$create".into(),
@@ -3501,7 +3499,6 @@ fn test_additional_creators_version_gating() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn test_compute_state_at_v2_vs_v2_1_divergence() {
-    use alloc::collections::BTreeMap;
     use rezzy::{resolve_lean, LeanEvent, StateResVersion};
     use std::collections::HashMap;
 
@@ -3578,7 +3575,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
     );
 
     // === Unconflicted state: everyone agrees on these ===
-    let mut unconflicted: BTreeMap<(String, Option<String>), String> = BTreeMap::new();
+    let mut unconflicted: imbl::OrdMap<(String, Option<String>), String> = imbl::OrdMap::new();
     unconflicted.insert(
         ("m.room.create".into(), Some(String::new())),
         "$create".into(),

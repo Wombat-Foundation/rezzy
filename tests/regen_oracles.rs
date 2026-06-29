@@ -7,7 +7,7 @@
 
 use rezzy::{resolve_lean, LeanEvent, StateResVersion};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 fn load_fixture(path: &str) -> Vec<LeanEvent> {
     let content = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("Missing {path}"));
@@ -40,7 +40,7 @@ fn write_oracle(fixture_path: &str, oracle_path: &str, version: StateResVersion)
     eprintln!("Resolving {fixture_path}...");
     let events = load_fixture(fixture_path);
     let map = to_event_map(&events);
-    let resolved = resolve_lean(BTreeMap::new(), map.clone(), &map, version);
+    let resolved = resolve_lean(imbl::OrdMap::new(), map.clone(), &map, version);
 
     let mut entries: Vec<Value> = resolved
         .into_iter()

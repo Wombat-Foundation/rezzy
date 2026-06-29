@@ -31,7 +31,7 @@ use crate::{
     types::{LeanEvent, StateResVersion},
     HashMap,
 };
-use alloc::{collections::BTreeMap, string::String, vec::Vec};
+use alloc::{string::String, vec::Vec};
 
 /// Prepares the conflicted events map and tracks original conflicted keys before CDO pre-filtering.
 pub(crate) fn prepare_conflicted_and_keys<
@@ -153,14 +153,13 @@ pub(crate) fn route_msc4297_ancestral_power_events<
 /// Runs the sequential power phase iterative auth checks to establish the authoritative administrative framework.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4>(
-    resolved: &mut BTreeMap<(String, Option<String>), Id>,
+    resolved: &mut crate::state_at::SharedState<Id>,
     power_events: &HashMap<Id, LeanEvent<Id, C>, S4>,
     sort_context: &impl crate::types::EventProvider<Id, C>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S3>,
-    _original_conflicted_keys: &alloc::collections::BTreeSet<Id>,
     version: StateResVersion,
-    local_auth_cache: &mut crate::state_at::LocalAuthCache<Id, C>,
+    local_auth_cache: &mut LocalAuthCache<Id, C>,
     create_ev: Option<&LeanEvent<Id, C>>,
 ) where
     Id: crate::types::EventId,
@@ -201,14 +200,16 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4>(
 /// Returns the starting point for state resolution based on the algorithm version.
 /// V1 and V2 inherit the unconflicted state as their base, whereas V2.1+ starts from an empty set.
 pub(crate) fn get_initial_resolved_state<Id>(
-    unconflicted_state: &BTreeMap<(String, Option<String>), Id>,
+    unconflicted_state: &crate::state_at::SharedState<Id>,
     version: StateResVersion,
-) -> BTreeMap<(String, Option<String>), Id>
+) -> crate::state_at::SharedState<Id>
 where
     Id: Clone,
 {
     match version {
-        StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2 => BTreeMap::new(),
+        StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2 => {
+            imbl::OrdMap::new()
+        }
         _ => unconflicted_state.clone(),
     }
 }
@@ -220,7 +221,7 @@ where
 /// for subsequent Kahn sorting and iterative auth checks.
 #[allow(clippy::type_complexity)]
 pub(crate) fn execute_power_phase<'a, Id, C, S1, S2>(
-    unconflicted_state: &BTreeMap<(String, Option<String>), Id>,
+    unconflicted_state: &crate::state_at::SharedState<Id>,
     conflicted_events: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
     original_conflicted_keys: &alloc::collections::BTreeSet<Id>,
@@ -315,7 +316,7 @@ where
 ///
 /// # Returns
 ///
-/// A `BTreeMap<(event_type, state_key), event_id>` representing the resolved
+/// A `imbl::OrdMap<(event_type, state_key), event_id>` representing the resolved
 /// room state — the union of unconflicted state and the winners from the
 /// conflicted set.
 ///
@@ -326,10 +327,10 @@ where
 ///
 /// ```rust,no_run
 /// # use rezzy::{resolve_lean, LeanEvent, StateResVersion, HashMap};
-/// # use std::collections::BTreeMap;
+/// # use imbl::OrdMap;
 /// // State snapshot from /send_join response
-/// let checkpoint: BTreeMap<(String, Option<String>), String> = /* ... */
-/// # BTreeMap::new();
+/// let checkpoint: imbl::OrdMap<(String, Option<String>), String> = /* ... */
+/// # imbl::OrdMap::new();
 /// let new_events: HashMap<String, LeanEvent> = /* events since join */
 /// # HashMap::new();
 /// let auth_ctx: HashMap<String, LeanEvent> = /* auth chain for new_events */
@@ -374,11 +375,11 @@ pub fn resolve_lean<
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
-    unconflicted_state: BTreeMap<(String, Option<String>), Id>,
+    unconflicted_state: crate::state_at::SharedState<Id>,
     conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     version: StateResVersion,
-) -> BTreeMap<(String, Option<String>), Id> {
+) -> crate::state_at::SharedState<Id> {
     resolve_lean_with_cache::<Id, C, S1, S2>(
         unconflicted_state,
         conflicted_events,
@@ -397,12 +398,12 @@ pub fn resolve_lean_with_cache<
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
-    unconflicted_state: BTreeMap<(String, Option<String>), Id>,
+    unconflicted_state: crate::state_at::SharedState<Id>,
     mut conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C>>,
     version: StateResVersion,
-) -> BTreeMap<(String, Option<String>), Id> {
+) -> crate::state_at::SharedState<Id> {
     let original_conflicted_keys =
         prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
 
@@ -433,7 +434,6 @@ pub fn resolve_lean_with_cache<
         &sort_context,
         auth_context,
         &conflicted_events,
-        &original_conflicted_keys,
         version,
         local_auth_cache,
         create_ev,
@@ -498,12 +498,12 @@ pub fn resolve_lean_with_deltas<
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
-    unconflicted_state: BTreeMap<(String, Option<String>), Id>,
+    unconflicted_state: crate::state_at::SharedState<Id>,
     conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     version: StateResVersion,
 ) -> (
-    BTreeMap<(String, Option<String>), Id>,
+    crate::state_at::SharedState<Id>,
     alloc::vec::Vec<crate::state_delta::ResolutionDelta<Id>>,
 ) {
     resolve_lean_with_cache_and_deltas::<Id, C, S1, S2>(
@@ -525,13 +525,13 @@ pub fn resolve_lean_with_cache_and_deltas<
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
-    unconflicted_state: BTreeMap<(String, Option<String>), Id>,
+    unconflicted_state: crate::state_at::SharedState<Id>,
     mut conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C>>,
     version: StateResVersion,
 ) -> (
-    BTreeMap<(String, Option<String>), Id>,
+    crate::state_at::SharedState<Id>,
     alloc::vec::Vec<crate::state_delta::ResolutionDelta<Id>>,
 ) {
     use crate::state_delta::{ResolutionDelta, ResolvePhase};

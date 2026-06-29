@@ -13,10 +13,10 @@
 //!
 //! ```rust,no_run
 //! use rezzy::{resolve_lean, LeanEvent, StateResVersion, HashMap};
-//! use std::collections::BTreeMap;
+//! use imbl::OrdMap;
 //!
 //! // Build the unconflicted state (agreed upon by all forks).
-//! let unconflicted_state: BTreeMap<(String, Option<String>), String> = BTreeMap::new();
+//! let unconflicted_state: imbl::OrdMap<(String, Option<String>), String> = imbl::OrdMap::new();
 //!
 //! // Populate conflicted events and full auth context.
 //! let conflicted_subgraph: HashMap<String, LeanEvent> = HashMap::new();

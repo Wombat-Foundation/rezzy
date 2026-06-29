@@ -39,7 +39,7 @@ fn ruma_to_lean_event<E: Event>(ev: &E) -> LeanEvent {
 }
 
 type PartitionedState = (
-    std::collections::BTreeMap<(String, Option<String>), String>,
+    imbl::OrdMap<(String, Option<String>), String>,
     std::collections::HashSet<(ruma_events::StateEventType, String)>,
 );
 
@@ -49,7 +49,7 @@ where
     E::Id: 'a,
 {
     use alloc::string::ToString;
-    use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::collections::{HashMap, HashSet};
 
     let mut counts: HashMap<(&(ruma_events::StateEventType, String), &E::Id), usize> =
         HashMap::new();
@@ -62,7 +62,7 @@ where
 
     let num_maps = state_sets.len();
     let mut conflicted_keys = HashSet::new();
-    let mut unconflicted_state = BTreeMap::new();
+    let mut unconflicted_state = imbl::OrdMap::new();
 
     for map in state_sets {
         for (key, id) in map {

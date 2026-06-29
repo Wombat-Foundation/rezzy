@@ -11,7 +11,7 @@
 
 use rezzy::{resolve_lean, LeanEvent, StateResVersion};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 fn to_event_map(events: &[LeanEvent]) -> HashMap<String, LeanEvent> {
     events
@@ -47,7 +47,7 @@ fn load_oracle(path: &str) -> HashMap<String, String> {
 fn resolve_and_get_state(fixture_path: &str, version: StateResVersion) -> HashMap<String, String> {
     let events = load_fixture(fixture_path);
     let map = to_event_map(&events);
-    let resolved = resolve_lean(BTreeMap::new(), map.clone(), &map, version);
+    let resolved = resolve_lean(imbl::OrdMap::new(), map.clone(), &map, version);
     resolved
         .into_iter()
         .map(|((t, sk), eid)| (format!("{}|{}", t, sk.unwrap_or_default()), eid))

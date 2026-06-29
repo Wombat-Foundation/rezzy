@@ -13,8 +13,7 @@
 // limitations under the License.
 
 //! Topological and mainline sorting for Matrix state resolution.
-use alloc::collections::{BTreeMap, BinaryHeap, VecDeque};
-use alloc::string::String;
+use alloc::collections::{BinaryHeap, VecDeque};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
@@ -312,7 +311,7 @@ where
 }
 
 pub(crate) fn build_mainline<Id, C>(
-    resolved: &BTreeMap<(String, Option<String>), Id>,
+    resolved: &crate::state_at::SharedState<Id>,
     auth_context: &impl crate::types::EventProvider<Id, C>,
 ) -> Vec<Id>
 where
@@ -477,6 +476,7 @@ pub fn mainline_sort<Id, C>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::{string::String, vec::Vec};
 
     #[test]
     fn test_build_mainline_cycle_detection() {
@@ -499,7 +499,7 @@ mod tests {
         auth_context.insert(alloc::string::String::from("B"), b);
 
         // Initial state sets A as the power levels event.
-        let mut resolved = BTreeMap::new();
+        let mut resolved = imbl::OrdMap::new();
         resolved.insert(
             (
                 alloc::string::String::from("m.room.power_levels"),

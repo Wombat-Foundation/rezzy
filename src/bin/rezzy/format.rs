@@ -15,14 +15,14 @@
 use crate::utils::{compute_state_hash, epoch_days_to_ymd, resolve_parent_states, SharedStateMap};
 use crate::{Args, OutputFormat};
 use rezzy::{LeanEvent, StateResVersion};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 pub struct FormattingContext<'a> {
     pub args: &'a Args,
     pub events_map: &'a HashMap<String, LeanEvent>,
     pub raw_map: &'a HashMap<String, serde_json::Value>,
     pub heads: &'a [String],
-    pub final_state_map: &'a BTreeMap<(String, Option<String>), String>,
+    pub final_state_map: &'a imbl::OrdMap<(String, Option<String>), String>,
     pub resolved_state_list: &'a [String],
     pub auth_chain_ids: &'a [String],
     pub version: StateResVersion,
@@ -39,7 +39,7 @@ pub fn format_deltas_output(ctx: &FormattingContext) -> serde_json::Value {
     let mut checkpoints = Vec::new();
 
     for ev in &sorted_events {
-        let mut state_before = std::sync::Arc::new(std::collections::BTreeMap::new());
+        let mut state_before = std::sync::Arc::new(imbl::OrdMap::new());
         let mut parent_hash = None;
 
         if ev.prev_events.is_empty() {

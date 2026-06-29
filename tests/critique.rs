@@ -1,6 +1,6 @@
 use rezzy::{resolve_lean, LeanEvent, StateResVersion};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 type ResolvedStateMap = HashMap<(String, Option<String>), String>;
 type EventMap = HashMap<String, LeanEvent>;
@@ -121,7 +121,7 @@ fn resolve_full(events: &[LeanEvent], version: StateResVersion) -> ResolvedState
         }
     }
 
-    let mut unconflicted_state = BTreeMap::new();
+    let mut unconflicted_state = imbl::OrdMap::new();
     let mut conflicted_state_set = Vec::new();
     for (key, ids) in occurrences {
         if ids.len() == 1 && ids.values().next().unwrap() == &num_sets {

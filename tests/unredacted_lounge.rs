@@ -41,7 +41,7 @@ fn parse_jsonl_dag<P: AsRef<Path>>(path: P) -> Vec<LeanEvent> {
 fn resolve_v2_1_from_subgraph(
     all_events: &[LeanEvent],
     conflicted_eids: &[String],
-) -> std::collections::BTreeMap<(String, Option<String>), String> {
+) -> imbl::OrdMap<(String, Option<String>), String> {
     // Build full context map
     let mut full_context: HashMap<String, LeanEvent> = HashMap::new();
     for ev in all_events {
@@ -58,7 +58,7 @@ fn resolve_v2_1_from_subgraph(
     }
 
     // Unconflicted state = empty for V2.1+ (MSC4297: start from empty)
-    let unconflicted = std::collections::BTreeMap::new();
+    let unconflicted = imbl::OrdMap::new();
 
     resolve_lean(
         unconflicted,
@@ -271,8 +271,6 @@ fn test_unredacted_lounge_diagnostic_dump() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn test_checkpoint_partial_join_resolution() {
-    use std::collections::BTreeMap;
-
     let path = "res/pathology_data/unredacted_lounge_mismatch.jsonl";
     if !Path::new(path).exists() {
         println!("Skipping: {path} not found");
@@ -323,7 +321,7 @@ fn test_checkpoint_partial_join_resolution() {
 
     // Build trusted checkpoint state: for each (type, state_key) slot in the
     // bootstrap set, take the event with the highest depth (latest).
-    let mut checkpoint_state: BTreeMap<(String, Option<String>), String> = BTreeMap::new();
+    let mut checkpoint_state: imbl::OrdMap<(String, Option<String>), String> = imbl::OrdMap::new();
     for ev in &bootstrap_events {
         if ev.state_key.is_some() {
             let key = (ev.event_type.clone(), ev.state_key.clone());

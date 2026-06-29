@@ -50,7 +50,7 @@ use crate::{
     types::{LeanEvent, StateResVersion},
     HashMap,
 };
-use alloc::{collections::BTreeMap, string::String, vec::Vec};
+use alloc::{string::String, vec::Vec};
 
 /// Determines whether `ev` beats `current_winner` under the Least Upper Bound (LUB)
 /// tie-breaking rules.
@@ -124,7 +124,7 @@ fn fold_lattice_chunk<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash::Bu
     chunk: &[&'a LeanEvent<Id, C>],
     mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
-    terminal_power_state: &BTreeMap<(String, Option<String>), Id>,
+    terminal_power_state: &crate::state_at::SharedState<Id>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     sort_set: &HashMap<Id, LeanEvent<Id, C>, S3>,
     version: StateResVersion,
@@ -189,7 +189,7 @@ fn compute_lattice_coordinatized_winners<
     non_power_events: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
     mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
-    terminal_power_state: &BTreeMap<(String, Option<String>), Id>,
+    terminal_power_state: &crate::state_at::SharedState<Id>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     sort_set: &HashMap<Id, LeanEvent<Id, C>, S3>,
     version: StateResVersion,
@@ -325,11 +325,11 @@ pub fn resolve_lattice_coordinatized<
     S1: core::hash::BuildHasher + Sync + Send,
     S2: core::hash::BuildHasher + Sync + Send,
 >(
-    unconflicted_state: BTreeMap<(String, Option<String>), Id>,
+    unconflicted_state: crate::state_at::SharedState<Id>,
     mut conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     version: StateResVersion,
-) -> BTreeMap<(String, Option<String>), Id>
+) -> crate::state_at::SharedState<Id>
 where
     Id: crate::types::EventId + Sync + Send,
     C: crate::types::EventContent + Sync + Send + Clone,
@@ -358,7 +358,6 @@ where
         &sort_context,
         auth_context,
         &conflicted_events,
-        &original_conflicted_keys,
         version,
         &mut local_auth_cache,
         create_ev,
