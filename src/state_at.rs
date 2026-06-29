@@ -322,14 +322,14 @@ type SharedState<Id = String> = alloc::sync::Arc<BTreeMap<(String, Option<String
 
 /// Convert `SharedState` → `BTreeMap` at the public API boundary.
 #[cfg(feature = "std")]
-fn shared_state_into_btree<Id: Clone + Ord>(
+fn shared_state_into_btree<Id: Clone>(
     state: SharedState<Id>,
 ) -> BTreeMap<(String, Option<String>), Id> {
     state.into_iter().collect()
 }
 
 #[cfg(not(feature = "std"))]
-fn shared_state_into_btree<Id: Clone + Ord>(
+fn shared_state_into_btree<Id: Clone>(
     state: SharedState<Id>,
 ) -> BTreeMap<(String, Option<String>), Id> {
     alloc::sync::Arc::try_unwrap(state).unwrap_or_else(|arc| (*arc).clone())
@@ -367,16 +367,14 @@ fn shared_states_equal<Id: PartialEq>(a: &SharedState<Id>, b: &SharedState<Id>) 
 
 /// Convert `BTreeMap` → `SharedState` (e.g. after resolution).
 #[cfg(feature = "std")]
-fn btree_into_shared_state<Id: Clone + Ord>(
+fn btree_into_shared_state<Id: Clone>(
     btree: BTreeMap<(String, Option<String>), Id>,
 ) -> SharedState<Id> {
     btree.into_iter().collect()
 }
 
 #[cfg(not(feature = "std"))]
-fn btree_into_shared_state<Id: Clone + Ord>(
-    btree: BTreeMap<(String, Option<String>), Id>,
-) -> SharedState<Id> {
+fn btree_into_shared_state<Id>(btree: BTreeMap<(String, Option<String>), Id>) -> SharedState<Id> {
     alloc::sync::Arc::new(btree)
 }
 
@@ -530,7 +528,7 @@ where
         }
 
         let mut state_before: SharedState<Id> = if prev_states.is_empty() {
-            SharedState::new()
+            btree_into_shared_state(BTreeMap::new())
         } else if prev_states.len() == 1 {
             prev_states.into_iter().next().unwrap()
         } else {
