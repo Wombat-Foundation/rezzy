@@ -529,4 +529,130 @@ mod tests {
         assert_eq!(mainline[0], "A");
         assert_eq!(mainline[1], "B");
     }
+
+    /// Events with no auth chain to a mainline event get clamped to `mainline.len()`.
+    #[test]
+    fn test_closest_mainline_no_path_clamps_to_len() {
+        let ev = LeanEvent::<String> {
+            event_id: "orphan".into(),
+            event_type: "m.room.topic".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let auth_ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
+        let mainline: Vec<String> = alloc::vec!["pl0".into()];
+        let mut events = alloc::vec![&ev];
+        let dist = compute_closest_mainline_positions(&mut events, &mainline, &auth_ctx);
+        // No path found → clamped to mainline.len() = 1, not usize::MAX
+        assert_eq!(dist["orphan"], 1);
+    }
+
+    /// An event whose auth chain leads directly to a mainline event gets that position.
+    #[test]
+    fn test_closest_mainline_direct_hit() {
+        let pl = LeanEvent::<String> {
+            event_id: "pl0".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let ev = LeanEvent::<String> {
+            event_id: "msg".into(),
+            event_type: "m.room.message".into(),
+            auth_events: alloc::vec!["pl0".into()],
+            ..Default::default()
+        };
+        let mut auth_ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
+        auth_ctx.insert("pl0".into(), pl);
+        auth_ctx.insert("msg".into(), ev.clone());
+
+        let mainline = alloc::vec!["pl0".into()];
+        let mut events = alloc::vec![&ev];
+        let dist = compute_closest_mainline_positions(&mut events, &mainline, &auth_ctx);
+        assert_eq!(dist["msg"], 0);
+    }
+
+    /// Deep auth chain: event → intermediate → mainline event.
+    #[test]
+    fn test_closest_mainline_deep_chain() {
+        let pl = LeanEvent::<String> {
+            event_id: "pl0".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let mid = LeanEvent::<String> {
+            event_id: "mid".into(),
+            event_type: "m.room.member".into(),
+            auth_events: alloc::vec!["pl0".into()],
+            ..Default::default()
+        };
+        let leaf = LeanEvent::<String> {
+            event_id: "leaf".into(),
+            event_type: "m.room.topic".into(),
+            auth_events: alloc::vec!["mid".into()],
+            ..Default::default()
+        };
+        let mut ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
+        ctx.insert("pl0".into(), pl);
+        ctx.insert("mid".into(), mid);
+        ctx.insert("leaf".into(), leaf.clone());
+
+        let mainline = alloc::vec!["pl0".into()];
+        let mut events = alloc::vec![&leaf];
+        let dist = compute_closest_mainline_positions(&mut events, &mainline, &ctx);
+        assert_eq!(dist["leaf"], 0);
+    }
+
+    /// Empty mainline: all events should clamp to 0 (`mainline.len()`).
+    #[test]
+    fn test_closest_mainline_empty_mainline() {
+        let ev = LeanEvent::<String> {
+            event_id: "x".into(),
+            event_type: "m.room.topic".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
+        let mainline: Vec<String> = alloc::vec![];
+        let mut events = alloc::vec![&ev];
+        let dist = compute_closest_mainline_positions(&mut events, &mainline, &ctx);
+        assert_eq!(dist["x"], 0);
+    }
+
+    /// `SortContext` merged provider correctly finds events across both maps.
+    #[test]
+    fn test_sort_context_merged_lookup() {
+        use crate::types::SortContext;
+
+        let pl = LeanEvent::<String> {
+            event_id: "pl0".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let topic = LeanEvent::<String> {
+            event_id: "topic".into(),
+            event_type: "m.room.topic".into(),
+            auth_events: alloc::vec!["pl0".into()],
+            ..Default::default()
+        };
+
+        // pl0 in primary (auth_context), topic in secondary (conflicted)
+        let mut primary: HashMap<String, LeanEvent<String>> = HashMap::new();
+        primary.insert("pl0".into(), pl);
+        let mut secondary: HashMap<String, LeanEvent<String>> = HashMap::new();
+        secondary.insert("topic".into(), topic.clone());
+
+        let sort_ctx = SortContext {
+            primary: &primary,
+            secondary: &secondary,
+        };
+
+        let mainline = alloc::vec!["pl0".into()];
+        let mut events = alloc::vec![&topic];
+        let dist = compute_closest_mainline_positions(&mut events, &mainline, &sort_ctx);
+        // topic's auth chain → pl0 (position 0)
+        assert_eq!(dist["topic"], 0);
+    }
 }
