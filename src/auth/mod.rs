@@ -273,7 +273,11 @@ fn get_sender_power_level<Id, C: crate::types::EventContent>(
     sender: &str,
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
-    // 1. Absolute Priority: Room Creator and additional creators (INFINITE power)
+    // TODO(security): has_room_creator checks non-spec `room_creators` field — remove it.
+    // TODO(correctness): creator privileges must be version-gated:
+    //   - v1-v10: creator = content.creator, implicit PL 100
+    //   - v11: creator = sender, implicit PL 100, no additional_creators
+    //   - v12+: creator = sender, implicit MAX_POWER_LEVEL, additional_creators supported
     if let Some(create_event) = state.get_event(M_ROOM_CREATE, Some("")) {
         let is_primary_creator = create_event.sender == sender;
         let mut is_additional_creator = false;

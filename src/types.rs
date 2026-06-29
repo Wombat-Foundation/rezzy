@@ -324,6 +324,16 @@ impl<Id, C> LeanEvent<Id, C> {
     /// # Errors
     ///
     /// Returns static string error if structural limits are exceeded.
+    ///
+    /// # TODO(compliance): PDU structural invariants not yet enforced
+    /// - `content` is required (must be present, even if `{}`)
+    /// - `hashes` is required (sha256 content hash)
+    /// - `signatures` is required
+    /// - `room_id` is version-dependent (present in v1-v11, omitted from create in v12+)
+    /// - `sender` must be a valid MXID
+    /// - `depth` must be < 2^53 - 1
+    ///
+    /// These should be validated and tested per room version.
     pub fn validate_syntactic(&self) -> Result<(), &'static str> {
         if self.prev_events.len() > 20 {
             return Err("prev_events exceeds maximum allowed length of 20");
