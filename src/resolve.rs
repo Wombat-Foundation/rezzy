@@ -148,20 +148,21 @@ pub(crate) fn route_msc4297_ancestral_power_events<
         }
 
         for id in &conflicted_power_ancestry {
-            if !original_conflicted_keys.contains(id) {
-                if let Some(ev) = auth_context.get(id) {
-                    // NOTE: V2.1.1+ strictly isolates the supplemental merge to PLs and creates.
-                    // V2.1 (MSC4297) supplemented `m.room.join_rules`, which inadvertently caused the
-                    // Invite Lock bug (evaluating historical joins against newer invite-only rules).
-                    let is_join_rules_allowed =
-                        ev.event_type == "m.room.join_rules" && version == StateResVersion::V2_1;
+            if original_conflicted_keys.contains(id) {
+                continue;
+            }
+            if let Some(ev) = auth_context.get(id) {
+                // NOTE: V2.1.1+ strictly isolates the supplemental merge to PLs and creates.
+                // V2.1 (MSC4297) supplemented `m.room.join_rules`, which inadvertently caused the
+                // Invite Lock bug (evaluating historical joins against newer invite-only rules).
+                let is_join_rules_allowed =
+                    ev.event_type == "m.room.join_rules" && version == StateResVersion::V2_1;
 
-                    if ev.event_type == "m.room.power_levels"
-                        || ev.event_type == "m.room.create"
-                        || is_join_rules_allowed
-                    {
-                        power_events.insert(id.clone(), ev.clone());
-                    }
+                if ev.event_type == "m.room.power_levels"
+                    || ev.event_type == "m.room.create"
+                    || is_join_rules_allowed
+                {
+                    power_events.insert(id.clone(), ev.clone());
                 }
             }
         }
