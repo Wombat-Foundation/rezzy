@@ -65,6 +65,11 @@ lint: ##H Run all linters
 rust/build: ##H Compile Rust binary (release)
 	$(CARGO) build --release --features cli,hashing
 
+.PHONY: rust/doc
+rust/doc: ##H Generate rustdoc API documentation
+	$(CARGO) doc --no-deps --features hashing
+	echo '<meta http-equiv="refresh" content="0;url=rezzy/index.html">' > target/doc/index.html
+
 .PHONY: rust/test
 rust/test: fixtures ##H Run Rust tests
 	$(CARGO) test --all-targets --all-features
