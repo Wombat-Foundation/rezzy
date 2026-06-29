@@ -56,23 +56,20 @@ pub type LocalAuthCacheMap<Id, C> = BTreeMap<(String, Option<String>), LocalAuth
 /// the local auth context to be computed once and reused for all events that
 /// share auth chain prefixes.
 ///
-/// This cache is version-aware. Reusing it across resolutions with different
-/// `StateResVersions` will safely clear the cache to prevent incorrect auth chains.
-pub struct LocalAuthCache<
-    Id = String,
-    C = serde_json::Value,
-    S = std::collections::hash_map::RandomState,
-> {
+/// This cache tracks which `StateResVersion` its entries were computed for.
+/// Callers must clear the cache when reusing it with a different `StateResVersion`
+/// (higher-level helpers like `resolve_lean_with_cache*` do this automatically).
+pub struct LocalAuthCache<Id = String, C = serde_json::Value> {
     pub version: StateResVersion,
-    pub map: HashMap<Id, LocalAuthCacheMap<Id, C>, S>,
+    pub map: crate::HashMap<Id, LocalAuthCacheMap<Id, C>>,
 }
 
-impl<Id, C, S: Default> LocalAuthCache<Id, C, S> {
+impl<Id, C> LocalAuthCache<Id, C> {
     #[must_use]
     pub fn new(version: StateResVersion) -> Self {
         Self {
             version,
-            map: HashMap::default(),
+            map: crate::HashMap::default(),
         }
     }
 }
@@ -191,6 +188,8 @@ impl<
 /// check must use its own `auth_events` (via `local_auth` / `OverlayState` fallback), not the
 /// empty state. This is critical for competing bans where both senders need membership validation.
 #[allow(clippy::too_many_arguments)]
+/// Authenticates an event against the current resolved state and an optional local auth context.
+/// Ensures the event complies with the Matrix spec rules for its given type.
 pub(crate) fn iterative_auth_ok<
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S1: core::hash::BuildHasher,
@@ -219,6 +218,8 @@ pub(crate) fn iterative_auth_ok<
     crate::auth::check_auth(ev, &overlay).is_ok()
 }
 
+/// Merges an event into a local auth map if it is an auth event (e.g. power levels, join rules).
+/// Ensures that newer auth events replace older ones during chain traversal.
 pub(crate) fn update_local_auth<Id: Clone + Ord, C: Clone>(
     local_auth: &mut BTreeMap<(String, Option<String>), LocalAuthEntry<Id, C>>,
     aev: &LeanEvent<Id, C>,
@@ -244,19 +245,18 @@ pub(crate) fn update_local_auth<Id: Clone + Ord, C: Clone>(
 }
 
 /// Resolves the auth chain context incrementally and stores it in the shared cache.
-pub(crate) fn compute_local_auth<Id, C, S1, S2, S3>(
+pub(crate) fn compute_local_auth<Id, C, S1, S2>(
     event: &LeanEvent<Id, C>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S1>,
     conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S2>,
-    cache: &mut LocalAuthCache<Id, C, S3>,
+    cache: &mut LocalAuthCache<Id, C>,
     version: StateResVersion,
 ) -> BTreeMap<(String, Option<String>), LeanEvent<Id, C>>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord,
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     C: Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
-    S3: core::hash::BuildHasher,
 {
     if let Some(cached) = cache.map.get(&event.event_id) {
         return cached
@@ -360,20 +360,14 @@ where
     S: core::hash::BuildHasher,
     C: crate::types::EventContent,
 {
-    let actual_target_id = events_map
-        .get_key_value(target_event_id)
-        .map(|(k, _)| k.clone())?;
+    if !events_map.contains_key(target_event_id) {
+        return None;
+    }
 
     let mut result = None;
-    let _ = compute_state_at_streaming_internal(
-        core::slice::from_ref(&actual_target_id),
-        events_map,
-        version,
-        |_, state| -> Result<(), core::convert::Infallible> {
-            result = Some(state.into_iter().collect());
-            Ok(())
-        },
-    );
+    compute_state_at_streaming(&[target_event_id], events_map, version, |_, state| {
+        result = Some(state.into_iter().collect());
+    });
     result
 }
 
@@ -412,31 +406,11 @@ where
     S: core::hash::BuildHasher,
     C: crate::types::EventContent,
 {
-    let mut actual_target_ids = Vec::new();
-    let mut seen = alloc::collections::BTreeSet::new();
-    for &tid in target_event_ids {
-        if let Some((k, _)) = events_map.get_key_value(tid) {
-            if seen.insert(k) {
-                actual_target_ids.push(k.clone());
-            }
-        }
-    }
+    let mut results = HashMap::with_capacity(target_event_ids.len());
 
-    if actual_target_ids.is_empty() {
-        return HashMap::new();
-    }
-
-    let mut results = HashMap::with_capacity(actual_target_ids.len());
-
-    let _ = compute_state_at_streaming_internal(
-        &actual_target_ids,
-        events_map,
-        version,
-        |id, state| -> Result<(), core::convert::Infallible> {
-            results.insert(id, state.into_iter().collect());
-            Ok(())
-        },
-    );
+    compute_state_at_streaming(target_event_ids, events_map, version, |id, state| {
+        results.insert(id, state.into_iter().collect());
+    });
 
     results
 }
@@ -469,29 +443,16 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F>(
     C: crate::types::EventContent,
     F: FnMut(Id, SharedState<Id>),
 {
-    let mut actual_target_ids = Vec::new();
-    let mut seen = alloc::collections::BTreeSet::new();
-    for &tid in target_event_ids {
-        if let Some((k, _)) = events_map.get_key_value(tid) {
-            if seen.insert(k) {
-                actual_target_ids.push(k.clone());
-            }
-        }
-    }
-
-    if actual_target_ids.is_empty() {
-        return;
-    }
-
-    let _ = compute_state_at_streaming_internal(
-        &actual_target_ids,
+    try_compute_state_at_streaming(
+        target_event_ids,
         events_map,
         version,
         |id, state| -> Result<(), core::convert::Infallible> {
             on_target_resolved(id, state);
             Ok(())
         },
-    );
+    )
+    .unwrap();
 }
 
 /// A fallible variant of [`compute_state_at_streaming`].
@@ -505,7 +466,7 @@ pub fn try_compute_state_at_streaming<Id, C, Q, S, F, E>(
     target_event_ids: &[&Q],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     version: StateResVersion,
-    on_target_resolved: F,
+    mut on_target_resolved: F,
 ) -> Result<(), E>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
@@ -528,28 +489,11 @@ where
         return Ok(());
     }
 
-    compute_state_at_streaming_internal(&actual_target_ids, events_map, version, on_target_resolved)
-}
-
-/// Internal helper that orchestrates the streaming topological sort and graph traversal
-/// for `compute_state_at_streaming`.
-fn compute_state_at_streaming_internal<Id, C, S, F, E>(
-    actual_target_ids: &[Id],
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
-    version: StateResVersion,
-    mut on_target_resolved: F,
-) -> Result<(), E>
-where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
-    S: core::hash::BuildHasher,
-    C: crate::types::EventContent,
-    F: FnMut(Id, SharedState<Id>) -> Result<(), E>,
-{
     let target_refs: Vec<&Id> = actual_target_ids.iter().collect();
     let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&target_refs, events_map);
 
     let mut is_target = alloc::vec![false; index_to_id.len()];
-    for tid in actual_target_ids {
+    for tid in &actual_target_ids {
         if let Some(&idx) = id_to_index.get(tid) {
             is_target[idx] = true;
         }
@@ -568,15 +512,6 @@ where
     )
 }
 
-/// Shared method for `compute_state_at` and `compute_state_at_batch`.
-///
-/// # Future work
-///
-/// **Auth cache hoisting**: `resolve_lean` currently allocates a fresh
-/// `LocalAuthCache` per fork resolution. Instantiating one at the top of
-/// this pipeline and threading `&mut global_auth_cache` through
-/// `resolve_merge_fast_path` → `resolve_multiple_prev_states` → `resolve_lean`
-/// would amortize auth chain traversal cost across all forks in the batch.
 /// Core topological graph traversal loop for batch state reconstruction.
 ///
 /// Topologically sorts all reachable ancestors, incrementally merges state at forks,
@@ -756,6 +691,8 @@ where
     None // Disjoint DAGs (no common ancestor)
 }
 
+/// Collects all reachable ancestor events across a batch of target events and assigns them
+/// contiguous integer IDs (short IDs) for fast topological processing and array lookups.
 fn collect_ancestor_short_ids_batch<'a, Id, C, S>(
     target_event_ids: &[&'a Id],
     events_map: &'a HashMap<Id, LeanEvent<Id, C>, S>,
@@ -799,6 +736,8 @@ where
 }
 
 /// Performs a topological sort of the graph represented by short `usize` indexes.
+/// Performs Kahn's topological sort on the collected ancestor graph.
+/// Returns the events sorted such that parents always appear before their children.
 fn topological_sort_short_ids<Id, C, S>(
     index_to_id: &[&Id],
     id_to_index: &HashMap<&Id, usize>,
@@ -847,7 +786,8 @@ where
     (sorted_ancestors, out_degree)
 }
 
-/// Fast path for merging multiple states when they all share the identical underlying pointer.
+/// Fast-path resolution for DAG nodes with exactly one parent.
+/// Bypasses full state resolution by simply cloning the parent's resolved state.
 fn resolve_merge_fast_path<Id, C, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
@@ -872,6 +812,8 @@ where
 }
 
 /// Slow path for merging multiple parent states via the state resolution algorithm.
+/// Full state resolution path for DAG nodes with multiple parents (forks).
+/// Groups the unconflicted state and runs `resolve_lean` on the conflicted subset.
 fn resolve_multiple_prev_states<Id, C, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,

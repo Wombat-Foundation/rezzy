@@ -162,7 +162,7 @@ pub(crate) fn route_msc4297_ancestral_power_events<
 
 /// Runs the sequential power phase iterative auth checks to establish the authoritative administrative framework.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_power_phase_iterative_checks<Id, C, S1, S2, S3, S4, S5>(
+pub(crate) fn run_power_phase_iterative_checks<Id, C, S1, S2, S3, S4>(
     resolved: &mut BTreeMap<(String, Option<String>), Id>,
     power_events: &HashMap<Id, LeanEvent<Id, C>, S4>,
     sort_context: &HashMap<Id, LeanEvent<Id, C>, S1>,
@@ -170,7 +170,7 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S1, S2, S3, S4, S5>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S3>,
     _original_conflicted_keys: &alloc::collections::BTreeSet<Id>,
     version: StateResVersion,
-    local_auth_cache: &mut crate::state_at::LocalAuthCache<Id, C, S5>,
+    local_auth_cache: &mut crate::state_at::LocalAuthCache<Id, C>,
     create_ev: Option<&LeanEvent<Id, C>>,
 ) where
     Id: crate::types::EventId,
@@ -178,7 +178,6 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S1, S2, S3, S4, S5>(
     S2: core::hash::BuildHasher,
     S3: core::hash::BuildHasher,
     S4: core::hash::BuildHasher,
-    S5: core::hash::BuildHasher,
     C: crate::types::EventContent,
 {
     let sorted_power_ids = lean_kahn_sort(power_events, sort_context, create_ev, version);
@@ -210,6 +209,8 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S1, S2, S3, S4, S5>(
     }
 }
 
+/// Returns the starting point for state resolution based on the algorithm version.
+/// V1 inherits the unconflicted state as its base, whereas V2+ starts from an empty set.
 pub(crate) fn get_initial_resolved_state<Id>(
     unconflicted_state: &BTreeMap<(String, Option<String>), Id>,
     version: StateResVersion,
@@ -223,6 +224,11 @@ where
     }
 }
 
+/// Executes the first half of the Matrix State Resolution algorithm (the power phase).
+///
+/// This involves setting up the sorting context, dividing events into power and non-power events,
+/// tracking the deterministically chosen `m.room.create` event, and yielding the separated subsets
+/// for subsequent Kahn sorting and iterative auth checks.
 #[allow(clippy::type_complexity)]
 pub(crate) fn execute_power_phase<Id, C, S1, S2>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
@@ -364,7 +370,7 @@ pub fn resolve_lean<
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     version: StateResVersion,
 ) -> BTreeMap<(String, Option<String>), Id> {
-    resolve_lean_with_cache::<Id, C, S1, S2, std::collections::hash_map::RandomState>(
+    resolve_lean_with_cache::<Id, C, S1, S2>(
         unconflicted_state,
         conflicted_events,
         auth_context,
@@ -381,12 +387,11 @@ pub fn resolve_lean_with_cache<
     C: crate::types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
-    S3: core::hash::BuildHasher + Default,
 >(
     unconflicted_state: BTreeMap<(String, Option<String>), Id>,
     mut conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
-    external_auth_cache: Option<&mut LocalAuthCache<Id, C, S3>>,
+    external_auth_cache: Option<&mut LocalAuthCache<Id, C>>,
     version: StateResVersion,
 ) -> BTreeMap<(String, Option<String>), Id> {
     let original_conflicted_keys =
@@ -402,8 +407,11 @@ pub fn resolve_lean_with_cache<
         version,
     );
 
-    let mut fallback_cache = crate::state_at::LocalAuthCache::<Id, C, S3>::new(version);
-    let local_auth_cache = external_auth_cache.unwrap_or(&mut fallback_cache);
+    let mut fallback_cache = crate::state_at::LocalAuthCache::<Id, C>::new(version);
+    let local_auth_cache = match external_auth_cache {
+        Some(cache) => cache,
+        None => &mut fallback_cache,
+    };
     if local_auth_cache.version != version {
         local_auth_cache.map.clear();
         local_auth_cache.version = version;
@@ -474,19 +482,21 @@ pub fn resolve_lean_with_cache<
 /// Same conditions as [`resolve_lean`].
 #[must_use]
 #[allow(clippy::type_complexity, clippy::too_many_lines)]
-pub fn resolve_lean_with_deltas<Id, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
+pub fn resolve_lean_with_deltas<
+    Id: crate::types::EventId,
+    C: crate::types::EventContent + Clone,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+>(
     unconflicted_state: BTreeMap<(String, Option<String>), Id>,
-    conflicted_events: HashMap<Id, LeanEvent<Id>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
+    conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     version: StateResVersion,
 ) -> (
     BTreeMap<(String, Option<String>), Id>,
     alloc::vec::Vec<crate::state_delta::ResolutionDelta<Id>>,
-)
-where
-    Id: crate::types::EventId,
-{
-    resolve_lean_with_cache_and_deltas(
+) {
+    resolve_lean_with_cache_and_deltas::<Id, C, S1, S2>(
         unconflicted_state,
         conflicted_events,
         auth_context,
@@ -500,22 +510,20 @@ where
 #[must_use]
 #[allow(clippy::type_complexity, clippy::too_many_lines)]
 pub fn resolve_lean_with_cache_and_deltas<
-    Id,
+    Id: crate::types::EventId,
+    C: crate::types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
     unconflicted_state: BTreeMap<(String, Option<String>), Id>,
-    mut conflicted_events: HashMap<Id, LeanEvent<Id>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
-    external_auth_cache: Option<&mut LocalAuthCache<Id>>,
+    mut conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    external_auth_cache: Option<&mut LocalAuthCache<Id, C>>,
     version: StateResVersion,
 ) -> (
     BTreeMap<(String, Option<String>), Id>,
     alloc::vec::Vec<crate::state_delta::ResolutionDelta<Id>>,
-)
-where
-    Id: crate::types::EventId,
-{
+) {
     use crate::state_delta::{ResolutionDelta, ResolvePhase};
 
     let original_conflicted_keys =
@@ -534,7 +542,10 @@ where
     );
 
     let mut fallback_cache = LocalAuthCache::new(version);
-    let local_auth_cache = external_auth_cache.unwrap_or(&mut fallback_cache);
+    let local_auth_cache = match external_auth_cache {
+        Some(cache) => cache,
+        None => &mut fallback_cache,
+    };
     if local_auth_cache.version != version {
         local_auth_cache.map.clear();
         local_auth_cache.version = version;
@@ -581,7 +592,8 @@ where
     // --- Non-power phase (with delta tracking) ---
 
     let mainline = build_mainline(&resolved, &sort_context);
-    let mut non_power_list: alloc::vec::Vec<&LeanEvent<Id>> = non_power_events.values().collect();
+    let mut non_power_list: alloc::vec::Vec<&LeanEvent<Id, C>> =
+        non_power_events.values().collect();
     mainline_sort(&mut non_power_list, &mainline, &sort_context);
 
     for ev in non_power_list {
