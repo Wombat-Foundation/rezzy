@@ -339,7 +339,7 @@ where
             version,
         );
 
-    // Initialize global auth cache
+    // Initialize local auth cache for power-phase checks
     let mut local_auth_cache = crate::HashMap::new();
 
     crate::resolve::run_power_phase_iterative_checks(

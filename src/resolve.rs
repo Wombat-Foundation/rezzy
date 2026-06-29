@@ -379,7 +379,6 @@ where
 
     let mut fallback_cache = HashMap::new();
     let local_auth_cache = external_auth_cache.unwrap_or(&mut fallback_cache);
-    local_auth_cache.clear();
 
     run_power_phase_iterative_checks(
         &mut resolved,
@@ -506,7 +505,6 @@ where
 
     let mut fallback_cache = HashMap::new();
     let local_auth_cache = external_auth_cache.unwrap_or(&mut fallback_cache);
-    local_auth_cache.clear();
 
     let sort_set = &conflicted_events;
 
