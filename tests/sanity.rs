@@ -313,7 +313,7 @@ fn test_state_delta_compression_robustness() {
 
     // Construct a micro-history with a merge where some state key gets deleted/overwritten
     // E1: Create room (state: m.room.create => $1)
-    let ev1 = LeanEvent {
+    let ev1: LeanEvent = LeanEvent {
         event_id: "$1".to_string(),
         event_type: "m.room.create".to_string(),
         state_key: Some(String::new()),

@@ -2666,7 +2666,7 @@ fn test_types_kahn_sort_result_methods() {
 
 #[test]
 fn test_types_validate_syntactic() {
-    let mut ev = LeanEvent {
+    let mut ev: LeanEvent = LeanEvent {
         event_type: "m.room.message".to_string(),
         ..Default::default()
     };
@@ -3268,9 +3268,9 @@ fn test_types_clamp_power_levels() {
         "sender": "@alice:example.com",
         "content": {
             "users": {
-                "@bob:example.com": 9999999999999999999_u64
+                "@bob:example.com": 9_999_999_999_999_999_999_u64
             },
-            "ban": 10000000000000000000_u64
+            "ban": 10_000_000_000_000_000_000_u64
         }
     });
 
@@ -3320,63 +3320,63 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
     sort_set.insert("$self_leave".into(), self_leave);
 
     // Test V2 (Rooms 2-11)
-    let mut v2_power = HashMap::new();
-    let mut v2_non_power = HashMap::new();
+    let mut set1_v2_power = HashMap::new();
+    let mut set1_v2_non_power = HashMap::new();
     rezzy::lattice::route_power_events(
         &sort_set,
-        &mut v2_power,
-        &mut v2_non_power,
+        &mut set1_v2_power,
+        &mut set1_v2_non_power,
         StateResVersion::V2,
     );
 
     // In V2, ALL member events are power events.
     assert!(
-        v2_power.contains_key("$self_join"),
+        set1_v2_power.contains_key("$self_join"),
         "V2 should treat self-join as power event"
     );
     assert!(
-        v2_power.contains_key("$kick"),
+        set1_v2_power.contains_key("$kick"),
         "V2 should treat kick as power event"
     );
     assert!(
-        v2_power.contains_key("$self_leave"),
+        set1_v2_power.contains_key("$self_leave"),
         "V2 should treat self-leave as power event"
     );
     assert!(
-        v2_non_power.is_empty(),
+        set1_v2_non_power.is_empty(),
         "V2 should have no non-power member events"
     );
 
     // Test V2.1 (Room 12+)
-    let mut v21_power = HashMap::new();
-    let mut v21_non_power = HashMap::new();
+    let mut set2_v21_power = HashMap::new();
+    let mut set2_v21_non_power = HashMap::new();
     rezzy::lattice::route_power_events(
         &sort_set,
-        &mut v21_power,
-        &mut v21_non_power,
+        &mut set2_v21_power,
+        &mut set2_v21_non_power,
         StateResVersion::V2_1,
     );
 
     // In V2.1, only bans/kicks are power events!
     assert!(
-        !v21_power.contains_key("$self_join"),
+        !set2_v21_power.contains_key("$self_join"),
         "V2.1 should NOT treat self-join as power event"
     );
     assert!(
-        v21_power.contains_key("$kick"),
+        set2_v21_power.contains_key("$kick"),
         "V2.1 should treat kick as power event"
     );
     assert!(
-        !v21_power.contains_key("$self_leave"),
+        !set2_v21_power.contains_key("$self_leave"),
         "V2.1 should NOT treat self-leave as power event"
     );
 
     assert!(
-        v21_non_power.contains_key("$self_join"),
+        set2_v21_non_power.contains_key("$self_join"),
         "V2.1 should route self-join to non-power phase"
     );
     assert!(
-        v21_non_power.contains_key("$self_leave"),
+        set2_v21_non_power.contains_key("$self_leave"),
         "V2.1 should route self-leave to non-power phase"
     );
 }

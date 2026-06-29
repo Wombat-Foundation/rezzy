@@ -160,7 +160,7 @@ pub trait DagNode<Id> {
     fn auth_events(&self) -> &[Id];
 }
 
-impl<Id> DagNode<Id> for LeanEvent<Id> {
+impl<Id, C> DagNode<Id> for LeanEvent<Id, C> {
     fn depth(&self) -> u64 {
         self.depth
     }
@@ -191,7 +191,7 @@ impl<Id> DagNode<Id> for LeanEvent<Id> {
 /// - `typed_content`: Populated from `content` for auth-relevant events.
 /// - All other fields default to empty/zero if absent.
 #[derive(Debug, Clone, Default)]
-pub struct LeanEvent<Id = String> {
+pub struct LeanEvent<Id = String, C = Value> {
     /// Unique event identifier (e.g. `$abc123:example.com`).
     pub event_id: Id,
     /// Matrix event type (e.g. `m.room.member`, `m.room.power_levels`).
@@ -208,8 +208,8 @@ pub struct LeanEvent<Id = String> {
     pub origin_server_ts: u64,
     /// The MXID of the user who sent the event.
     pub sender: String,
-    /// The event's JSON `content` field (membership, power levels, join rules, etc.).
-    pub content: Value,
+    /// The event's content field (membership, power levels, join rules, etc.).
+    pub content: C,
     /// Event IDs of this event's parents in the DAG (timeline graph).
     pub prev_events: Vec<Id>,
     /// Event IDs of the authorization events for this event (auth DAG).
@@ -218,7 +218,7 @@ pub struct LeanEvent<Id = String> {
     pub depth: u64,
 }
 
-impl<Id: serde::Serialize> serde::Serialize for LeanEvent<Id> {
+impl<Id: serde::Serialize, C: serde::Serialize> serde::Serialize for LeanEvent<Id, C> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -241,7 +241,98 @@ impl<Id: serde::Serialize> serde::Serialize for LeanEvent<Id> {
     }
 }
 
-impl<Id> LeanEvent<Id> {
+/// Trait abstracting event content access for state resolution.
+///
+/// Implement this for custom content types to avoid `serde_json::Value` overhead.
+/// The default `Value` implementation preserves full backwards compatibility.
+pub trait EventContent: Clone + core::fmt::Debug + Default {
+    fn get_membership(&self) -> Option<&str>;
+    fn get_join_rule(&self) -> Option<&str>;
+    fn get_user_power_level(&self, user: &str) -> Option<i64>;
+    fn get_event_power_level(&self, event_type: &str) -> Option<i64>;
+    fn get_users_default(&self) -> Option<i64>;
+    fn get_events_default(&self) -> Option<i64>;
+    fn get_state_default(&self) -> Option<i64>;
+    fn get_ban(&self) -> Option<i64>;
+    fn get_kick(&self) -> Option<i64>;
+    fn get_invite(&self) -> Option<i64>;
+    fn get_redact(&self) -> Option<i64>;
+    fn get_creator(&self) -> Option<&str>;
+    fn has_room_creator(&self, sender: &str) -> bool;
+    fn has_additional_creator(&self, sender: &str) -> bool;
+}
+
+impl EventContent for Value {
+    fn get_membership(&self) -> Option<&str> {
+        self.get(crate::event_types::FIELD_MEMBERSHIP)?.as_str()
+    }
+
+    fn get_join_rule(&self) -> Option<&str> {
+        self.get(crate::event_types::FIELD_JOIN_RULE)?.as_str()
+    }
+
+    fn get_user_power_level(&self, user: &str) -> Option<i64> {
+        let users = self.get(crate::event_types::FIELD_USERS)?.as_object()?;
+        coerce_json_to_i64(users.get(user)?).map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    }
+
+    fn get_event_power_level(&self, event_type: &str) -> Option<i64> {
+        let events = self.get(crate::event_types::FIELD_EVENTS)?.as_object()?;
+        coerce_json_to_i64(events.get(event_type)?).map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    }
+
+    fn get_users_default(&self) -> Option<i64> {
+        coerce_json_to_i64(self.get(crate::event_types::FIELD_USERS_DEFAULT)?)
+            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    }
+
+    fn get_events_default(&self) -> Option<i64> {
+        coerce_json_to_i64(self.get(crate::event_types::FIELD_EVENTS_DEFAULT)?)
+            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    }
+
+    fn get_state_default(&self) -> Option<i64> {
+        coerce_json_to_i64(self.get(crate::event_types::FIELD_STATE_DEFAULT)?)
+            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    }
+
+    fn get_ban(&self) -> Option<i64> {
+        coerce_json_to_i64(self.get(crate::event_types::FIELD_BAN)?)
+            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    }
+
+    fn get_kick(&self) -> Option<i64> {
+        coerce_json_to_i64(self.get(crate::event_types::FIELD_KICK)?)
+            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    }
+
+    fn get_invite(&self) -> Option<i64> {
+        coerce_json_to_i64(self.get(crate::event_types::FIELD_INVITE)?)
+            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    }
+
+    fn get_redact(&self) -> Option<i64> {
+        coerce_json_to_i64(self.get(crate::event_types::FIELD_REDACT)?)
+    }
+
+    fn get_creator(&self) -> Option<&str> {
+        self.get(crate::event_types::FIELD_CREATOR)?.as_str()
+    }
+
+    fn has_room_creator(&self, sender: &str) -> bool {
+        self.get(crate::event_types::FIELD_ROOM_CREATORS)
+            .and_then(|v| v.as_array())
+            .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(sender)))
+    }
+
+    fn has_additional_creator(&self, sender: &str) -> bool {
+        self.get(crate::event_types::FIELD_ADDITIONAL_CREATORS)
+            .and_then(|v| v.as_array())
+            .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(sender)))
+    }
+}
+
+impl<Id, C> LeanEvent<Id, C> {
     /// Validates basic syntactic limits (`prev_events`, `auth_events` array sizes).
     ///
     /// NOTE: Event types are NOT whitelisted — the spec does not restrict types at the auth level.
@@ -264,88 +355,104 @@ impl<Id> LeanEvent<Id> {
         Ok(())
     }
 
-    // --- Typed Content Accessors ---
+    // --- Typed Content Accessors (delegate to EventContent) ---
 
-    pub fn get_membership(&self) -> Option<&str> {
-        self.content
-            .get(crate::event_types::FIELD_MEMBERSHIP)?
-            .as_str()
+    pub fn get_membership(&self) -> Option<&str>
+    where
+        C: EventContent,
+    {
+        self.content.get_membership()
     }
 
-    pub fn get_join_rule(&self) -> Option<&str> {
-        self.content
-            .get(crate::event_types::FIELD_JOIN_RULE)?
-            .as_str()
+    pub fn get_join_rule(&self) -> Option<&str>
+    where
+        C: EventContent,
+    {
+        self.content.get_join_rule()
     }
 
-    pub fn get_user_power_level(&self, user: &str) -> Option<i64> {
-        let users = self
-            .content
-            .get(crate::event_types::FIELD_USERS)?
-            .as_object()?;
-        coerce_json_to_i64(users.get(user)?).map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    pub fn get_user_power_level(&self, user: &str) -> Option<i64>
+    where
+        C: EventContent,
+    {
+        self.content.get_user_power_level(user)
     }
 
-    pub fn get_event_power_level(&self, event_type: &str) -> Option<i64> {
-        let events = self
-            .content
-            .get(crate::event_types::FIELD_EVENTS)?
-            .as_object()?;
-        coerce_json_to_i64(events.get(event_type)?).map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    pub fn get_event_power_level(&self, event_type: &str) -> Option<i64>
+    where
+        C: EventContent,
+    {
+        self.content.get_event_power_level(event_type)
     }
 
-    pub fn get_users_default(&self) -> Option<i64> {
-        coerce_json_to_i64(self.content.get(crate::event_types::FIELD_USERS_DEFAULT)?)
-            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    pub fn get_users_default(&self) -> Option<i64>
+    where
+        C: EventContent,
+    {
+        self.content.get_users_default()
     }
 
-    pub fn get_events_default(&self) -> Option<i64> {
-        coerce_json_to_i64(self.content.get(crate::event_types::FIELD_EVENTS_DEFAULT)?)
-            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    pub fn get_events_default(&self) -> Option<i64>
+    where
+        C: EventContent,
+    {
+        self.content.get_events_default()
     }
 
-    pub fn get_state_default(&self) -> Option<i64> {
-        coerce_json_to_i64(self.content.get(crate::event_types::FIELD_STATE_DEFAULT)?)
-            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    pub fn get_state_default(&self) -> Option<i64>
+    where
+        C: EventContent,
+    {
+        self.content.get_state_default()
     }
 
-    pub fn get_ban(&self) -> Option<i64> {
-        coerce_json_to_i64(self.content.get(crate::event_types::FIELD_BAN)?)
-            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    pub fn get_ban(&self) -> Option<i64>
+    where
+        C: EventContent,
+    {
+        self.content.get_ban()
     }
 
-    pub fn get_kick(&self) -> Option<i64> {
-        coerce_json_to_i64(self.content.get(crate::event_types::FIELD_KICK)?)
-            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    pub fn get_kick(&self) -> Option<i64>
+    where
+        C: EventContent,
+    {
+        self.content.get_kick()
     }
 
-    pub fn get_invite(&self) -> Option<i64> {
-        coerce_json_to_i64(self.content.get(crate::event_types::FIELD_INVITE)?)
-            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
+    pub fn get_invite(&self) -> Option<i64>
+    where
+        C: EventContent,
+    {
+        self.content.get_invite()
     }
 
-    pub fn get_redact(&self) -> Option<i64> {
-        coerce_json_to_i64(self.content.get(crate::event_types::FIELD_REDACT)?)
+    pub fn get_redact(&self) -> Option<i64>
+    where
+        C: EventContent,
+    {
+        self.content.get_redact()
     }
 
-    pub fn get_creator(&self) -> Option<&str> {
-        self.content
-            .get(crate::event_types::FIELD_CREATOR)?
-            .as_str()
+    pub fn get_creator(&self) -> Option<&str>
+    where
+        C: EventContent,
+    {
+        self.content.get_creator()
     }
 
-    pub fn has_room_creator(&self, sender: &str) -> bool {
-        self.content
-            .get(crate::event_types::FIELD_ROOM_CREATORS)
-            .and_then(|v| v.as_array())
-            .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(sender)))
+    pub fn has_room_creator(&self, sender: &str) -> bool
+    where
+        C: EventContent,
+    {
+        self.content.has_room_creator(sender)
     }
 
-    pub fn has_additional_creator(&self, sender: &str) -> bool {
-        self.content
-            .get(crate::event_types::FIELD_ADDITIONAL_CREATORS)
-            .and_then(|v| v.as_array())
-            .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(sender)))
+    pub fn has_additional_creator(&self, sender: &str) -> bool
+    where
+        C: EventContent,
+    {
+        self.content.has_additional_creator(sender)
     }
 }
 
@@ -372,7 +479,7 @@ fn sort_json_value_keys(value: &mut Value) {
     }
 }
 
-impl<'de> Deserialize<'de> for LeanEvent<String> {
+impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -492,27 +599,27 @@ impl<'de> Deserialize<'de> for LeanEvent<String> {
     }
 }
 
-impl<Id: PartialEq> PartialEq for LeanEvent<Id> {
+impl<Id: PartialEq, C> PartialEq for LeanEvent<Id, C> {
     fn eq(&self, other: &Self) -> bool {
         self.event_id == other.event_id
     }
 }
 
-impl<Id: Eq> Eq for LeanEvent<Id> {}
+impl<Id: Eq, C> Eq for LeanEvent<Id, C> {}
 
-impl<Id: Ord> Ord for LeanEvent<Id> {
+impl<Id: Ord, C> Ord for LeanEvent<Id, C> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.event_id.cmp(&other.event_id)
     }
 }
 
-impl<Id: Ord> PartialOrd for LeanEvent<Id> {
+impl<Id: Ord, C> PartialOrd for LeanEvent<Id, C> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<Id> LeanEvent<Id> {
+impl<Id, C: EventContent> LeanEvent<Id, C> {
     /// Returns `true` if this event is a ban (`membership: "ban"`) or a kick
     /// (`membership: "leave"` where `state_key ≠ sender`).
     ///
@@ -572,7 +679,7 @@ impl<Id> LeanEvent<Id> {
     /// Checks whether `self` is a ban/kick/demotion targeting `other`'s sender,
     /// or a join-rules lockdown that blocks `other`'s join attempt.
     #[must_use]
-    pub fn restricts_event(&self, other: &LeanEvent<Id>) -> bool {
+    pub fn restricts_event(&self, other: &LeanEvent<Id, C>) -> bool {
         if self.is_ban_or_kick() || self.is_demotion() {
             return self.restricts_sender(&other.sender);
         }
@@ -585,7 +692,7 @@ impl<Id> LeanEvent<Id> {
     }
 }
 
-impl<Id: Ord> LeanEvent<Id> {
+impl<Id: Ord, C> LeanEvent<Id, C> {
     /// Deterministic ordering: depth ascending, then `event_id` ascending.
     /// Use this instead of `sort_by_key(|ev| ev.depth)` to avoid
     /// non-determinism from `HashMap` iteration order on equal depths.
@@ -611,9 +718,9 @@ impl<Id: Ord> LeanEvent<Id> {
 ///
 /// See the [`Ord`] implementation for the full tie-breaking cascade.
 #[derive(Debug)]
-pub struct SortPriority<'a, Id = String> {
+pub struct SortPriority<'a, Id = String, C = Value> {
     /// Reference to the event being sorted.
-    pub event: &'a LeanEvent<Id>,
+    pub event: &'a LeanEvent<Id, C>,
     /// The sender's power level, derived from the auth chain (not `event.power_level`).
     pub power_level: i64,
     /// Shortest auth-chain distance to the `m.room.create` event (V2.2 only).
@@ -622,15 +729,15 @@ pub struct SortPriority<'a, Id = String> {
     pub version: StateResVersion,
 }
 
-impl<Id> Clone for SortPriority<'_, Id> {
+impl<Id, C> Clone for SortPriority<'_, Id, C> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<Id> Copy for SortPriority<'_, Id> {}
+impl<Id, C> Copy for SortPriority<'_, Id, C> {}
 
-impl<Id: Eq> PartialEq for SortPriority<'_, Id> {
+impl<Id: Eq, C> PartialEq for SortPriority<'_, Id, C> {
     fn eq(&self, other: &Self) -> bool {
         self.power_level == other.power_level
             && self.event.origin_server_ts == other.event.origin_server_ts
@@ -638,9 +745,9 @@ impl<Id: Eq> PartialEq for SortPriority<'_, Id> {
     }
 }
 
-impl<Id: Eq> Eq for SortPriority<'_, Id> {}
+impl<Id: Eq, C> Eq for SortPriority<'_, Id, C> {}
 
-impl<Id: Ord> Ord for SortPriority<'_, Id> {
+impl<Id: Ord, C> Ord for SortPriority<'_, Id, C> {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.version {
             StateResVersion::V1 => {
@@ -705,7 +812,7 @@ impl<Id: Ord> Ord for SortPriority<'_, Id> {
     }
 }
 
-impl<Id: Ord> PartialOrd for SortPriority<'_, Id> {
+impl<Id: Ord, C> PartialOrd for SortPriority<'_, Id, C> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
@@ -747,11 +854,12 @@ pub fn find_deterministic_create_event<
     Id: Ord + Eq + core::hash::Hash,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
+    C: EventContent,
 >(
-    auth_context: &'a HashMap<Id, LeanEvent<Id>, S1>,
-    sort_set: &'a HashMap<Id, LeanEvent<Id>, S2>,
-) -> Option<&'a LeanEvent<Id>> {
-    let mut create_events: Vec<&LeanEvent<Id>> = auth_context
+    auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
+    sort_set: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
+) -> Option<&'a LeanEvent<Id, C>> {
+    let mut create_events: Vec<&LeanEvent<Id, C>> = auth_context
         .values()
         .chain(sort_set.values())
         .filter(|ev| ev.event_type == M_ROOM_CREATE)
