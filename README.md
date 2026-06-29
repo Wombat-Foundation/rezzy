@@ -1,6 +1,7 @@
 # Rezzy: Matrix State Resolution Engine
 
 [![CI](https://img.shields.io/github/actions/workflow/status/gamesguru/rezzy/rust.yml?branch=master&label=CI)](https://github.com/gamesguru/rezzy/actions/workflows/rust.yml)
+[![Tests](https://raw.githubusercontent.com/gamesguru/rezzy/badges/tests.svg)](https://github.com/gamesguru/rezzy/actions/workflows/rust.yml)
 [![Docs](https://img.shields.io/github/actions/workflow/status/gamesguru/rezzy/docs.yml?branch=master&label=docs)](https://gamesguru.github.io/rezzy/)
 [![crates.io](https://img.shields.io/crates/v/rezzy.svg)](https://crates.io/crates/rezzy)
 [![codecov](https://codecov.io/gh/gamesguru/rezzy/graph/badge.svg)](https://codecov.io/gh/gamesguru/rezzy)
