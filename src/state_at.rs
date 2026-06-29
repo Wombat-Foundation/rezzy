@@ -905,9 +905,69 @@ where
         }
     }
 
-    // No DFS auth walk is needed! `events_map` is passed directly as `auth_context` below.
-    // Putting auth events into `conflicted_events` was a massive bottleneck that forced
-    // state resolution to sort thousands of non-conflicting ancestral auth events.
+    // Compute the auth difference (auth(C) \ auth(U)) using a bounded dual-heap traversal.
+    // This perfectly restores algorithmic invariants for `expand_v2_power_events_auth_chains`
+    // without the massive O(N) bottleneck of unbounded DAG walks.
+    let mut u_visited = std::collections::HashSet::new();
+    let mut u_heap = alloc::collections::BinaryHeap::new();
+    for id in unconflicted_state.values() {
+        if u_visited.insert(id.clone()) {
+            if let Some(ev) = events_map.get(id) {
+                u_heap.push((ev.depth, id.clone()));
+            }
+        }
+    }
+
+    let mut c_visited = std::collections::HashSet::new();
+    let mut c_heap = alloc::collections::BinaryHeap::new();
+    for id in &conflicted_state_set {
+        if !u_visited.contains(id) && c_visited.insert(id.clone()) {
+            if let Some(ev) = events_map.get(id) {
+                c_heap.push((ev.depth, id.clone()));
+            }
+        }
+    }
+
+    let mut auth_diff = std::collections::HashSet::new();
+
+    while let Some(&(c_depth, _)) = c_heap.peek() {
+        // Catch up U's traversal to C's current depth
+        while let Some(&(u_depth, _)) = u_heap.peek() {
+            if u_depth < c_depth {
+                break;
+            }
+            let (_, u_id) = u_heap.pop().unwrap();
+            if let Some(ev) = events_map.get(&u_id) {
+                for auth_id in &ev.auth_events {
+                    if u_visited.insert(auth_id.clone()) {
+                        if let Some(a_ev) = events_map.get(auth_id) {
+                            u_heap.push((a_ev.depth, auth_id.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        let (_, c_id) = c_heap.pop().unwrap();
+        if !u_visited.contains(&c_id) {
+            auth_diff.insert(c_id.clone());
+            if let Some(ev) = events_map.get(&c_id) {
+                for auth_id in &ev.auth_events {
+                    if !u_visited.contains(auth_id) && c_visited.insert(auth_id.clone()) {
+                        if let Some(a_ev) = events_map.get(auth_id) {
+                            c_heap.push((a_ev.depth, auth_id.clone()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for id_val in auth_diff {
+        if let Some(event) = events_map.get(&id_val) {
+            conflicted_events.insert(id_val, event.clone());
+        }
+    }
 
     crate::resolve::resolve_lean_with_cache(
         unconflicted_state,

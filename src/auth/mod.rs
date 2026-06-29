@@ -265,7 +265,9 @@ pub fn check_auth<Id: Clone, C: crate::types::EventContent>(
     Ok(())
 }
 
-const MAX_POWER_LEVEL: i64 = 9_007_199_254_740_991; // 2^53 - 1
+const MAX_POWER_LEVEL: i64 = i64::MAX; // INTERNAL max for creators
+#[allow(dead_code)]
+const MAX_POWER_LEVEL_JSON: i64 = 9_007_199_254_740_991; // 2^53 - 1;
 
 /// Get the power level of a user from the current room state.
 fn get_sender_power_level<Id, C: crate::types::EventContent>(
@@ -665,4 +667,63 @@ pub fn auth_types_for_event(
     }
 
     auth_types
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_test_event(
+        id: &str,
+        ev_type: &str,
+        sender: &str,
+        content: serde_json::Value,
+    ) -> LeanEvent {
+        LeanEvent {
+            event_id: id.into(),
+            event_type: ev_type.into(),
+            sender: sender.into(),
+            content,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_creator_has_i64_max_power() {
+        let mut state = RoomState::new();
+        state.insert(
+            (M_ROOM_CREATE.into(), Some(String::new())),
+            make_test_event(
+                "$create",
+                M_ROOM_CREATE,
+                "@creator:example.com",
+                json!({
+                    "room_version": "12",
+                    "creator": "@creator:example.com",
+                    "additional_creators": ["@additional:example.com"]
+                }),
+            ),
+        );
+
+        // Assert that the primary creator gets i64::MAX
+        let creator_pl = get_sender_power_level("@creator:example.com", &state);
+        assert_eq!(
+            creator_pl,
+            i64::MAX,
+            "Primary creator should have i64::MAX power"
+        );
+
+        // Assert that the additional creator gets i64::MAX
+        let additional_pl = get_sender_power_level("@additional:example.com", &state);
+        assert_eq!(
+            additional_pl,
+            i64::MAX,
+            "Additional creator should have i64::MAX power"
+        );
+
+        // Normal user should have default (0)
+        let normal_pl = get_sender_power_level("@normal:example.com", &state);
+        assert_eq!(normal_pl, 0, "Normal user should have default 0 power");
+    }
 }

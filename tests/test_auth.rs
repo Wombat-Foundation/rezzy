@@ -595,3 +595,133 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
         "Kick should fail with InsufficientPowerLevel(required=60, actual=50). Got {result:?}"
     );
 }
+
+macro_rules! test_creator_implicit_power_level {
+    ($name:ident) => {
+        #[test]
+        #[allow(clippy::too_many_lines)]
+        fn $name() {
+            let mut state = RoomState::new();
+
+            // Create event with V2.1.1 extensions (additional creators)
+            state.insert(
+                ("m.room.create".into(), Some(String::new())),
+                make_event(
+                    "$create",
+                    "m.room.create",
+                    Some(""),
+                    "@creator:example.com",
+                    json!({
+                        "room_version": "12",
+                        "creator": "@creator:example.com",
+                        "additional_creators": ["@additional:example.com"]
+                    }),
+                ),
+            );
+
+            state.insert(
+                ("m.room.power_levels".into(), Some(String::new())),
+                make_event(
+                    "$pl",
+                    "m.room.power_levels",
+                    Some(""),
+                    "@creator:example.com", // Sent by creator, authorized by implicit MAX_POWER_LEVEL
+                    json!({
+                        "kick": 9_007_199_254_740_991_i64, // MAX_POWER_LEVEL
+                        "users_default": 0
+                    }),
+                ),
+            );
+
+            // Target user
+            state.insert(
+                ("m.room.member".into(), Some("@target:example.com".into())),
+                make_event(
+                    "$join_target",
+                    "m.room.member",
+                    Some("@target:example.com"),
+                    "@target:example.com",
+                    json!({"membership": "join"}),
+                ),
+            );
+
+            // Additional creator must be joined (only primary creator has implicit join in v11)
+            state.insert(
+                ("m.room.member".into(), Some("@additional:example.com".into())),
+                make_event(
+                    "$join_additional",
+                    "m.room.member",
+                    Some("@additional:example.com"),
+                    "@additional:example.com",
+                    json!({"membership": "join"}),
+                ),
+            );
+
+            // Normal user must be joined
+            state.insert(
+                ("m.room.member".into(), Some("@normal:example.com".into())),
+                make_event(
+                    "$join_normal",
+                    "m.room.member",
+                    Some("@normal:example.com"),
+                    "@normal:example.com",
+                    json!({"membership": "join"}),
+                ),
+            );
+
+            // Primary creator attempts to kick
+            let creator_kick = make_event(
+                "$kick1",
+                "m.room.member",
+                Some("@target:example.com"),
+                "@creator:example.com",
+                json!({"membership": "leave"}),
+            );
+
+            // Additional creator attempts to kick
+            let additional_kick = make_event(
+                "$kick2",
+                "m.room.member",
+                Some("@target:example.com"),
+                "@additional:example.com",
+                json!({"membership": "leave"}),
+            );
+
+            // Normal user attempts to kick
+            let normal_kick = make_event(
+                "$kick3",
+                "m.room.member",
+                Some("@target:example.com"),
+                "@normal:example.com",
+                json!({"membership": "leave"}),
+            );
+
+            // Asserts
+            assert!(
+                check_auth(&creator_kick, &state).is_ok(),
+                "Primary creator should have implicit MAX_POWER_LEVEL and succeed."
+            );
+
+            assert!(
+                check_auth(&additional_kick, &state).is_ok(),
+                "Additional creator should have implicit MAX_POWER_LEVEL and succeed."
+            );
+
+            assert!(
+                matches!(
+                    check_auth(&normal_kick, &state),
+                    Err(AuthError::InsufficientPowerLevel {
+                        required: 9_007_199_254_740_991,
+                        actual: 0,
+                        ..
+                    })
+                ),
+                "Normal user should fail with InsufficientPowerLevel."
+            );
+        }
+    };
+}
+
+test_creator_implicit_power_level!(test_v2_1_creator_implicit_power_level);
+test_creator_implicit_power_level!(test_v2_1_1_creator_implicit_power_level);
+test_creator_implicit_power_level!(test_v2_2_creator_implicit_power_level);
