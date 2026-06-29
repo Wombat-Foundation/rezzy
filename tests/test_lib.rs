@@ -3233,3 +3233,150 @@ fn test_resolve_lean_with_deltas_no_duplicate_power_events() {
         power_deltas.len()
     );
 }
+
+#[test]
+fn test_types_empty_event_type() {
+    use rezzy::LeanEvent;
+
+    let json_missing_type = serde_json::json!({
+        "event_id": "$missing_type",
+        "sender": "@alice:example.com",
+        "content": {}
+    });
+
+    let result: Result<LeanEvent, _> = serde_json::from_value(json_missing_type);
+    assert!(result.is_err(), "Expected error for missing event_type");
+
+    let json_empty_type = serde_json::json!({
+        "event_id": "$empty_type",
+        "type": "",
+        "sender": "@alice:example.com",
+        "content": {}
+    });
+
+    let result: Result<LeanEvent, _> = serde_json::from_value(json_empty_type);
+    assert!(result.is_err(), "Expected error for empty event_type");
+}
+
+#[test]
+fn test_types_clamp_power_levels() {
+    use rezzy::LeanEvent;
+
+    let json_pl = serde_json::json!({
+        "event_id": "$pl",
+        "type": "m.room.power_levels",
+        "sender": "@alice:example.com",
+        "content": {
+            "users": {
+                "@bob:example.com": 9999999999999999999_u64
+            },
+            "ban": 10000000000000000000_u64
+        }
+    });
+
+    let ev: LeanEvent = serde_json::from_value(json_pl).unwrap();
+    let max_pl = 9_007_199_254_740_991; // MAX_POWER_LEVEL
+
+    assert_eq!(ev.get_user_power_level("@bob:example.com"), Some(max_pl));
+    assert_eq!(ev.get_ban(), Some(max_pl));
+}
+
+#[test]
+fn test_v2_vs_v2_1_member_power_event_classification() {
+    use rezzy::{LeanEvent, StateResVersion};
+    use std::collections::HashMap;
+
+    let mut sort_set: HashMap<String, LeanEvent<String>> = HashMap::new();
+
+    let self_join: LeanEvent<String> = LeanEvent {
+        event_id: "$self_join".into(),
+        event_type: "m.room.member".into(),
+        state_key: Some("@alice:example.com".into()),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "membership": "join" }),
+        ..Default::default()
+    };
+
+    let kick = LeanEvent {
+        event_id: "$kick".into(),
+        event_type: "m.room.member".into(),
+        state_key: Some("@bob:example.com".into()),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "membership": "leave" }), // Kick is leave where sender != state_key
+        ..Default::default()
+    };
+
+    let self_leave = LeanEvent {
+        event_id: "$self_leave".into(),
+        event_type: "m.room.member".into(),
+        state_key: Some("@charlie:example.com".into()),
+        sender: "@charlie:example.com".into(),
+        content: serde_json::json!({ "membership": "leave" }), // Self-leave
+        ..Default::default()
+    };
+
+    sort_set.insert("$self_join".into(), self_join);
+    sort_set.insert("$kick".into(), kick);
+    sort_set.insert("$self_leave".into(), self_leave);
+
+    // Test V2 (Rooms 2-11)
+    let mut v2_power = HashMap::new();
+    let mut v2_non_power = HashMap::new();
+    rezzy::lattice::route_power_events(
+        &sort_set,
+        &mut v2_power,
+        &mut v2_non_power,
+        StateResVersion::V2,
+    );
+
+    // In V2, ALL member events are power events.
+    assert!(
+        v2_power.contains_key("$self_join"),
+        "V2 should treat self-join as power event"
+    );
+    assert!(
+        v2_power.contains_key("$kick"),
+        "V2 should treat kick as power event"
+    );
+    assert!(
+        v2_power.contains_key("$self_leave"),
+        "V2 should treat self-leave as power event"
+    );
+    assert!(
+        v2_non_power.is_empty(),
+        "V2 should have no non-power member events"
+    );
+
+    // Test V2.1 (Room 12+)
+    let mut v21_power = HashMap::new();
+    let mut v21_non_power = HashMap::new();
+    rezzy::lattice::route_power_events(
+        &sort_set,
+        &mut v21_power,
+        &mut v21_non_power,
+        StateResVersion::V2_1,
+    );
+
+    // In V2.1, only bans/kicks are power events!
+    assert!(
+        !v21_power.contains_key("$self_join"),
+        "V2.1 should NOT treat self-join as power event"
+    );
+    assert!(
+        v21_power.contains_key("$kick"),
+        "V2.1 should treat kick as power event"
+    );
+    assert!(
+        !v21_power.contains_key("$self_leave"),
+        "V2.1 should NOT treat self-leave as power event"
+    );
+
+    assert!(
+        v21_non_power.contains_key("$self_join"),
+        "V2.1 should route self-join to non-power phase"
+    );
+    assert!(
+        v21_non_power.contains_key("$self_leave"),
+        "V2.1 should route self-leave to non-power phase"
+    );
+}

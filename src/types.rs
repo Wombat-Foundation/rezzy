@@ -283,7 +283,7 @@ impl<Id> LeanEvent<Id> {
             .content
             .get(crate::event_types::FIELD_USERS)?
             .as_object()?;
-        coerce_json_to_i64(users.get(user)?)
+        coerce_json_to_i64(users.get(user)?).map(|i| i.min(crate::types::MAX_POWER_LEVEL))
     }
 
     pub fn get_event_power_level(&self, event_type: &str) -> Option<i64> {
@@ -291,31 +291,37 @@ impl<Id> LeanEvent<Id> {
             .content
             .get(crate::event_types::FIELD_EVENTS)?
             .as_object()?;
-        coerce_json_to_i64(events.get(event_type)?)
+        coerce_json_to_i64(events.get(event_type)?).map(|i| i.min(crate::types::MAX_POWER_LEVEL))
     }
 
     pub fn get_users_default(&self) -> Option<i64> {
         coerce_json_to_i64(self.content.get(crate::event_types::FIELD_USERS_DEFAULT)?)
+            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
     }
 
     pub fn get_events_default(&self) -> Option<i64> {
         coerce_json_to_i64(self.content.get(crate::event_types::FIELD_EVENTS_DEFAULT)?)
+            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
     }
 
     pub fn get_state_default(&self) -> Option<i64> {
         coerce_json_to_i64(self.content.get(crate::event_types::FIELD_STATE_DEFAULT)?)
+            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
     }
 
     pub fn get_ban(&self) -> Option<i64> {
         coerce_json_to_i64(self.content.get(crate::event_types::FIELD_BAN)?)
+            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
     }
 
     pub fn get_kick(&self) -> Option<i64> {
         coerce_json_to_i64(self.content.get(crate::event_types::FIELD_KICK)?)
+            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
     }
 
     pub fn get_invite(&self) -> Option<i64> {
         coerce_json_to_i64(self.content.get(crate::event_types::FIELD_INVITE)?)
+            .map(|i| i.min(crate::types::MAX_POWER_LEVEL))
     }
 
     pub fn get_redact(&self) -> Option<i64> {
@@ -409,6 +415,12 @@ impl<'de> Deserialize<'de> for LeanEvent<String> {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .into();
+
+        if event_type.is_empty() {
+            return Err(serde::de::Error::custom(
+                "event_type cannot be missing or empty",
+            ));
+        }
         let state_key = value
             .get("state_key")
             .and_then(|v| v.as_str())

@@ -237,26 +237,28 @@ pub fn compute_delta_chain(events: &[crate::types::LeanEvent]) -> Vec<StateCheck
         // A DAG merge event can have multiple parents. To compute an accurate delta chain,
         // we must accumulate the state from all parents deterministically before applying
         // the current event's state.
-        let mut state_before = BTreeMap::new();
+        let mut merged_state = BTreeMap::new();
         let mut parent_hash = None;
+        let mut base_state = BTreeMap::new(); // The state corresponding to parent_hash
 
         for prev_id in &ev.prev_events {
             if let Some(prev_state) = state_after_map.get(prev_id) {
                 if parent_hash.is_none() {
                     parent_hash = state_hash_map.get(prev_id).cloned();
+                    base_state = prev_state.clone();
                 }
                 for (k, v) in prev_state {
-                    match state_before.get(k) {
+                    match merged_state.get(k) {
                         Some(existing) if existing >= v => {}
                         _ => {
-                            state_before.insert(k.clone(), v.clone());
+                            merged_state.insert(k.clone(), v.clone());
                         }
                     }
                 }
             }
         }
 
-        let mut state_after = state_before.clone();
+        let mut state_after = merged_state;
         if ev.state_key.is_some() {
             state_after.insert(
                 (ev.event_type.clone(), ev.state_key.clone()),
@@ -265,7 +267,7 @@ pub fn compute_delta_chain(events: &[crate::types::LeanEvent]) -> Vec<StateCheck
         }
 
         let state_hash = compute_state_hash(&state_after);
-        let deltas = compute_state_delta(&state_before, &state_after);
+        let deltas = compute_state_delta(&base_state, &state_after);
 
         state_after_map.insert(ev.event_id.clone(), state_after);
         state_hash_map.insert(ev.event_id.clone(), state_hash.clone());
