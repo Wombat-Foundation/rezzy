@@ -584,7 +584,14 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
     // Should fail: kick requires kick_pl (60), mod only has 50
     let result = check_auth(&kick, &state);
     assert!(
-        result.is_err(),
-        "Kick should fail when sender PL (50) < kick_pl (60). Got {result:?}"
+        matches!(
+            result,
+            Err(AuthError::InsufficientPowerLevel {
+                required: 60,
+                actual: 50,
+                ..
+            })
+        ),
+        "Kick should fail with InsufficientPowerLevel(required=60, actual=50). Got {result:?}"
     );
 }

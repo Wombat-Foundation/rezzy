@@ -50,9 +50,9 @@ pub const MAX_POWER_LEVEL: i64 = 9_007_199_254_740_991; // 2^53 - 1
 ///
 /// | Variant | Room Versions | Key Change |
 /// |---------|:---:|---|
-/// | [`V1`](Self::V1) | 1–2 | Depth-based topological sort, all `m.room.member` events are power events. |
-/// | [`V2`](Self::V2) | 3–10 | Reverse topological power ordering via Kahn's algorithm, mainline sort. |
-/// | [`V2_1`](Self::V2_1) | 11+ ([MSC4297]) | Empty initial state, conflicted subgraph extraction, CDO filtering. |
+/// | [`V1`](Self::V1) | 1 | Depth-based topological sort, all `m.room.member` events are power events. |
+/// | [`V2`](Self::V2) | 2–11 | Reverse topological power ordering via Kahn's algorithm, mainline sort. |
+/// | [`V2_1`](Self::V2_1) | 12+ ([MSC4297]) | Empty initial state, conflicted subgraph extraction, CDO filtering. |
 /// | [`V2_1_1`](Self::V2_1_1) | — | Ban evasion fix: restricts power-phase state supplementation. |
 /// | [`V2_2`](Self::V2_2) | — | Reserved for State DAGs ([MSC4242]). |
 ///

@@ -186,10 +186,15 @@ pub fn compute_state_hash(state: &BTreeMap<(String, Option<String>), String>) ->
         hash ^= 0x00;
         hash = hash.wrapping_mul(FNV128_PRIME);
         if let Some(key) = state_key {
+            hash ^= 0x02; // discriminant: Some
+            hash = hash.wrapping_mul(FNV128_PRIME);
             for &byte in key.as_bytes() {
                 hash ^= u128::from(byte);
                 hash = hash.wrapping_mul(FNV128_PRIME);
             }
+        } else {
+            hash ^= 0x01; // discriminant: None
+            hash = hash.wrapping_mul(FNV128_PRIME);
         }
         hash ^= 0x00;
         hash = hash.wrapping_mul(FNV128_PRIME);

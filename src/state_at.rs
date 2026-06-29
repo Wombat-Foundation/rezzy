@@ -473,6 +473,107 @@ where
     state_after_map
 }
 
+/// Computes the most recent common ancestor (merge base) of multiple DAG tips.
+///
+/// Uses a max-heap ordered by event `depth` with roaring bitmap reachability
+/// masks. Each extremity gets a unique bit index; as the heap walks backward
+/// through `prev_events`, bitmasks propagate via bitwise OR. The first event
+/// whose bitmask contains all extremity bits is the merge base.
+///
+/// Returns `None` if the extremities have no common ancestor (disjoint DAGs)
+/// or if `extremities` is empty.
+///
+/// # Complexity
+///
+/// - **Time**: O(V + E) bounded to the subgraph between the extremities and
+///   their merge base. Events below the merge base are never visited.
+/// - **Space**: O(V) for the bitmask map, where each bitmask is a compressed
+///   roaring bitmap.
+///
+/// # Panics
+///
+/// Panics if there are more than 2^32 extremities (practically unreachable).
+///
+/// # Example
+///
+/// ```
+/// use rezzy::compute_merge_base;
+/// use rezzy::{LeanEvent, HashMap};
+///
+/// let mut events: HashMap<String, LeanEvent> = HashMap::new();
+/// // ... populate events ...
+/// let tips = vec!["$tip_a", "$tip_b"];
+/// let merge_base = compute_merge_base(&tips, &events);
+/// ```
+#[must_use]
+pub fn compute_merge_base<'a, Id, Q, S>(
+    extremities: &[&Q],
+    events_map: &'a HashMap<Id, LeanEvent<Id>, S>,
+) -> Option<&'a Id>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::borrow::Borrow<Q>,
+    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    S: core::hash::BuildHasher,
+{
+    use alloc::collections::BinaryHeap;
+
+    use roaring::RoaringBitmap;
+
+    if extremities.is_empty() {
+        return None;
+    }
+
+    // Single extremity: it is its own merge base.
+    if extremities.len() == 1 {
+        return events_map.get_key_value(extremities[0]).map(|(k, _)| k);
+    }
+
+    let target_count = extremities.len() as u64;
+
+    // Max-heap: (depth, &Id) — highest depth pops first, ensuring a parent
+    // is never processed until all of its descendants have propagated bits.
+    let mut queue: BinaryHeap<(u64, &Id)> = BinaryHeap::new();
+    let mut masks: HashMap<&Id, RoaringBitmap> = HashMap::new();
+
+    for (i, &head) in extremities.iter().enumerate() {
+        if let Some((k, ev)) = events_map.get_key_value(head) {
+            let idx = u32::try_from(i).expect("more than 2^32 extremities");
+            let entry = masks.entry(k).or_default();
+            entry.insert(idx);
+            queue.push((ev.depth, k));
+        }
+    }
+
+    while let Some((_, current_id)) = queue.pop() {
+        let current_mask = match masks.get(current_id) {
+            Some(m) => m.clone(),
+            None => continue,
+        };
+
+        // If reachable by ALL extremities, this is the merge base.
+        if current_mask.len() == target_count {
+            return Some(current_id);
+        }
+
+        if let Some(ev) = events_map.get(current_id.borrow()) {
+            for parent_id in &ev.prev_events {
+                let parent_q: &Q = parent_id.borrow();
+                if let Some((pk, parent_ev)) = events_map.get_key_value(parent_q) {
+                    let is_new = !masks.contains_key(pk);
+                    let parent_mask = masks.entry(pk).or_default();
+                    *parent_mask |= &current_mask;
+
+                    if is_new {
+                        queue.push((parent_ev.depth, pk));
+                    }
+                }
+            }
+        }
+    }
+
+    None // Disjoint DAGs (no common ancestor)
+}
+
 fn collect_ancestor_short_ids_batch<'a, Id, S>(
     target_event_ids: &[&'a Id],
     events_map: &'a HashMap<Id, LeanEvent<Id>, S>,
