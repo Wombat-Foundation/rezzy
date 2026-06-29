@@ -54,6 +54,7 @@ Because we care about raw performance and mechanical efficiency, `rezzy` is buil
 - Filtered _commutative join-semilattice_ folding
 - Integer "interning" (`ShortID`) graph-based traversal
 - Flat-array "stride matrices"
+- Fully-featured, spec-compliant authorization engine
 - Reverse topological power ordering (Kahn's algorithm)
 - `Arc`-based copy-on-write (CoW) structural sharing
 - `O(1)` fast-path _merge resolution_ via "pointer-equality bypass"
@@ -63,17 +64,13 @@ Because we care about raw performance and mechanical efficiency, `rezzy` is buil
 - Optimal conflicted state sub-graph computation (MSC4297)
 - **Roaring bitmaps** (SIMD-optimized set operations)
 - `FNV-1a` 128-bit lexicographical state hashing
+- Compacted delta chains with auto-snapshot (bounded reconstruction cost)
+- Per-event resolution tracing (`ResolutionDelta` + phase tracking)
+- Checkpoint/partial-join resolution (trusted snapshot as unconflicted base)
+- Batch state computation with shared topological traversal
+- `no_std` compatible (`alloc`-only, no system dependencies)
 
 ## TODO
-
-### Per-Event State Deltas (`resolve_lean_with_deltas`)
-
-Currently `resolve_lean` only outputs the final resolved state snapshot. For observability and debugging (e.g. visualizing state evolution through a fork), we need a variant that emits per-step deltas:
-
-- Hook into the iterative auth-check loop and capture insertions/replacements at each step
-- Emit a `Vec<ResolutionDelta>` alongside the final `BTreeMap` result
-- Each delta captures: event_id applied, (type, state_key) modified, old value evicted, new value inserted, phase (power/non-power)
-- Useful for: timeline replay, state-res visualization, debugging ban/PL conflicts
 
 ### Typed Content Fields (`LeanEventTyped`)
 
@@ -81,6 +78,10 @@ Replace `content: serde_json::Value` with pre-extracted typed fields to eliminat
 See [`res/docs/TYPED_CONTENT_FIELDS.md`](res/docs/TYPED_CONTENT_FIELDS.md) for the full design proposal.
 
 ## Completed
+
+### Per-Event State Deltas (`resolve_lean_with_deltas`) ✓
+
+`resolve_lean_with_deltas` emits per-step `ResolutionDelta`s alongside the final resolved state, capturing event_id, acceptance status, replaced event, and phase (power/non-power) for every conflicted event processed. See [`resolve_lean_with_deltas`](src/resolve.rs).
 
 ### Batch State Computation (`compute_state_at_batch`) ✓
 
