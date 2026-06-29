@@ -3381,6 +3381,63 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
     );
 }
 
+#[test]
+fn test_lean_event_serialize_roundtrip() {
+    let ev = LeanEvent::<String> {
+        event_id: "$test".into(),
+        event_type: "m.room.message".into(),
+        state_key: Some(String::new()),
+        sender: "@alice:x.com".into(),
+        origin_server_ts: 1_234_567_890,
+        content: serde_json::json!({"body": "hello"}),
+        prev_events: vec!["$prev".into()],
+        auth_events: vec!["$auth".into()],
+        depth: 5,
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&ev).unwrap();
+    let back: LeanEvent<String> = serde_json::from_str(&json).unwrap();
+    assert_eq!(ev.event_id, back.event_id);
+    assert_eq!(ev.event_type, back.event_type);
+    assert_eq!(ev.state_key, back.state_key);
+    assert_eq!(ev.sender, back.sender);
+    assert_eq!(ev.origin_server_ts, back.origin_server_ts);
+    assert_eq!(ev.depth, back.depth);
+}
+
+#[test]
+fn test_event_content_blanket_impl_all_methods() {
+    use rezzy::types::EventContent;
+
+    let content = serde_json::json!({
+        "membership": "join",
+        "join_rule": "public",
+        "ban": 60,
+        "kick": 55,
+        "invite": 40,
+        "redact": 70,
+        "users_default": 10,
+        "events_default": 15,
+        "state_default": 20,
+        "creator": "@creator:x.com",
+        "additional_creators": ["@ac:x.com"],
+        "users": {"@alice:x.com": 100}
+    });
+    assert_eq!(content.get_membership(), Some("join"));
+    assert_eq!(content.get_join_rule(), Some("public"));
+    assert_eq!(content.get_ban(), Some(60));
+    assert_eq!(content.get_kick(), Some(55));
+    assert_eq!(content.get_invite(), Some(40));
+    assert_eq!(content.get_redact(), Some(70));
+    assert_eq!(content.get_users_default(), Some(10));
+    assert_eq!(content.get_events_default(), Some(15));
+    assert_eq!(content.get_state_default(), Some(20));
+    assert_eq!(content.get_creator(), Some("@creator:x.com"));
+    assert_eq!(content.get_user_power_level("@alice:x.com"), Some(100));
+    assert!(content.has_additional_creator("@ac:x.com"));
+    assert!(!content.has_additional_creator("@nobody:x.com"));
+}
+
 /// Hypothetical comparison: proves `resolve_lean` produces different resolved
 /// state for V2 vs V2.1 given identical inputs.
 ///
@@ -3562,4 +3619,54 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
         state_v2.get(&jr_key),
         state_v2_1.get(&jr_key),
     );
+}
+
+#[test]
+fn test_state_res_version_serde_roundtrip() {
+    let versions = vec![
+        StateResVersion::V1,
+        StateResVersion::V2,
+        StateResVersion::V2_1,
+        StateResVersion::V2_1_1,
+        StateResVersion::V2_2,
+    ];
+    for v in &versions {
+        let json = serde_json::to_string(v).unwrap();
+        let back: StateResVersion = serde_json::from_str(&json).unwrap();
+        assert_eq!(*v, back, "Roundtrip failed for {v:?}");
+    }
+    // Unknown variant must fail
+    let invalid: Result<StateResVersion, _> = serde_json::from_str("\"V99\"");
+    assert!(invalid.is_err());
+}
+
+#[test]
+fn test_dag_node_trait_on_lean_event() {
+    use rezzy::types::DagNode;
+    let ev = LeanEvent::<String> {
+        event_id: "ev".into(),
+        depth: 42,
+        prev_events: vec!["p1".into(), "p2".into()],
+        auth_events: vec!["a1".into()],
+        ..Default::default()
+    };
+    assert_eq!(ev.depth(), 42);
+    assert_eq!(ev.prev_events().len(), 2);
+    assert_eq!(ev.auth_events().len(), 1);
+}
+
+#[test]
+fn test_lean_event_get_redact_and_creator() {
+    let ev = LeanEvent::<String> {
+        event_id: "ev".into(),
+        event_type: "m.room.power_levels".into(),
+        content: serde_json::json!({"redact": 50, "creator": "@bob:x.com"}),
+        ..Default::default()
+    };
+    assert_eq!(ev.get_redact(), Some(50));
+    assert_eq!(ev.get_creator(), Some("@bob:x.com"));
+
+    let empty = LeanEvent::<String>::default();
+    assert_eq!(empty.get_redact(), None);
+    assert_eq!(empty.get_creator(), None);
 }

@@ -1,4 +1,5 @@
 use rezzy::auth::*;
+use rezzy::event_types::M_ROOM_CREATE;
 use rezzy::*;
 use serde_json::json;
 
@@ -17,6 +18,306 @@ fn make_event(
         content,
         ..Default::default()
     }
+}
+
+#[test]
+fn test_self_ban_rejected() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event(
+            "$create",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:example.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@alice:example.com".into())),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@alice:example.com"),
+            "@alice:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    let self_ban = make_event(
+        "$selfban",
+        "m.room.member",
+        Some("@alice:example.com"),
+        "@alice:example.com",
+        json!({"membership": "ban"}),
+    );
+    assert!(
+        check_auth(&self_ban, &state).is_err(),
+        "Self-bans must be rejected"
+    );
+}
+
+#[test]
+fn test_invite_banned_user_rejected() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:example.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@alice:example.com".into())),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@alice:example.com"),
+            "@alice:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@bob:example.com".into())),
+        make_event(
+            "$ban",
+            "m.room.member",
+            Some("@bob:example.com"),
+            "@alice:example.com",
+            json!({"membership": "ban"}),
+        ),
+    );
+    let invite_banned = make_event(
+        "$invite_banned",
+        "m.room.member",
+        Some("@bob:example.com"),
+        "@alice:example.com",
+        json!({"membership": "invite"}),
+    );
+    assert!(
+        check_auth(&invite_banned, &state).is_err(),
+        "Inviting a banned user must fail"
+    );
+}
+
+#[test]
+fn test_invite_insufficient_power_level() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.power_levels".into(), Some(String::new())),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@admin:x.com",
+            json!({"invite": 75, "users": {"@low:x.com": 10}}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@low:x.com".into())),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@low:x.com"),
+            "@low:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    let invite = make_event(
+        "$invite",
+        "m.room.member",
+        Some("@target:x.com"),
+        "@low:x.com",
+        json!({"membership": "invite"}),
+    );
+    assert!(
+        matches!(
+            check_auth(&invite, &state),
+            Err(AuthError::InsufficientPowerLevel { .. })
+        ),
+        "Invite with PL 10 < invite PL 75 must fail"
+    );
+}
+
+#[test]
+fn test_self_invite_rejected() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@alice:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@alice:x.com".into())),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@alice:x.com"),
+            "@alice:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    let self_invite = make_event(
+        "$self_invite",
+        "m.room.member",
+        Some("@alice:x.com"),
+        "@alice:x.com",
+        json!({"membership": "invite"}),
+    );
+    assert!(
+        check_auth(&self_invite, &state).is_err(),
+        "Self-invites must be rejected"
+    );
+}
+
+#[test]
+fn test_join_banned_user_rejected() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.join_rules".into(), Some(String::new())),
+        make_event(
+            "$jr",
+            "m.room.join_rules",
+            Some(""),
+            "@admin:x.com",
+            json!({"join_rule": "public"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@banned:x.com".into())),
+        make_event(
+            "$ban",
+            "m.room.member",
+            Some("@banned:x.com"),
+            "@admin:x.com",
+            json!({"membership": "ban"}),
+        ),
+    );
+    let join_attempt = make_event(
+        "$join",
+        "m.room.member",
+        Some("@banned:x.com"),
+        "@banned:x.com",
+        json!({"membership": "join"}),
+    );
+    assert!(
+        matches!(
+            check_auth(&join_attempt, &state),
+            Err(AuthError::BannedUser { .. })
+        ),
+        "Banned user joining must fail"
+    );
+}
+
+#[test]
+fn test_public_room_join_allowed() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.join_rules".into(), Some(String::new())),
+        make_event(
+            "$jr",
+            "m.room.join_rules",
+            Some(""),
+            "@admin:x.com",
+            json!({"join_rule": "public"}),
+        ),
+    );
+    let join = make_event(
+        "$join",
+        "m.room.member",
+        Some("@newcomer:x.com"),
+        "@newcomer:x.com",
+        json!({"membership": "join"}),
+    );
+    assert!(
+        check_auth(&join, &state).is_ok(),
+        "Public room join must succeed"
+    );
+}
+
+#[test]
+fn test_member_pl_hierarchy_enforcement() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.power_levels".into(), Some(String::new())),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@admin:x.com",
+            json!({"kick": 50, "users": {"@mod:x.com": 50, "@target:x.com": 50}}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@mod:x.com".into())),
+        make_event(
+            "$j1",
+            "m.room.member",
+            Some("@mod:x.com"),
+            "@mod:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@target:x.com".into())),
+        make_event(
+            "$j2",
+            "m.room.member",
+            Some("@target:x.com"),
+            "@target:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // PL 50 trying to kick PL 50 target → must fail (needs PL > target)
+    let kick = make_event(
+        "$kick",
+        "m.room.member",
+        Some("@target:x.com"),
+        "@mod:x.com",
+        json!({"membership": "leave"}),
+    );
+    assert!(
+        check_auth(&kick, &state).is_err(),
+        "Equal PL kick must fail"
+    );
+}
+
+#[test]
+fn test_auth_error_display_variants() {
+    let err: AuthError<String> = AuthError::InsufficientPowerLevel {
+        required: 50,
+        actual: 10,
+        event_type: "m.room.topic".into(),
+    };
+    let msg = format!("{err}");
+    assert!(msg.contains("10"));
+    assert!(msg.contains("50"));
+    assert!(msg.contains("m.room.topic"));
+
+    let err2: AuthError<String> = AuthError::InvalidStateKey {
+        expected: "@alice:x.com".into(),
+        actual: "@bob:x.com".into(),
+    };
+    let msg2 = format!("{err2}");
+    assert!(msg2.contains("@alice"));
 }
 
 #[test]

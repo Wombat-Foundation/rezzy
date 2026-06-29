@@ -34,7 +34,6 @@ pub const FIELD_REDACT: &str = "redact";
 pub const FIELD_JOIN_RULE: &str = "join_rule";
 pub const FIELD_CREATOR: &str = "creator";
 pub const FIELD_ROOM_VERSION: &str = "room_version";
-pub const FIELD_ROOM_CREATORS: &str = "room_creators";
 pub const FIELD_ADDITIONAL_CREATORS: &str = "additional_creators";
 pub const FIELD_THIRD_PARTY_INVITE: &str = "third_party_invite";
 pub const FIELD_SIGNED: &str = "signed";

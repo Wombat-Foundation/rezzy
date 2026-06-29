@@ -47,22 +47,9 @@ where
         }
     }
 
-    let mut is_creator = false;
-    if let Some(create_ev) = create_ev {
-        let is_primary_creator = create_ev.sender == event.sender;
-        let mut is_additional_creator = false;
-
-        if create_ev.content.has_room_creator(&event.sender) {
-            is_additional_creator = true;
-        }
-        if create_ev.content.has_additional_creator(&event.sender) {
-            is_additional_creator = true;
-        }
-
-        if is_primary_creator || is_additional_creator {
-            is_creator = true;
-        }
-    }
+    let is_creator = create_ev.is_some_and(|ev| {
+        ev.sender == event.sender || ev.content.has_additional_creator(&event.sender)
+    });
 
     if is_creator {
         match version {

@@ -248,7 +248,6 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     fn get_invite(&self) -> Option<i64>;
     fn get_redact(&self) -> Option<i64>;
     fn get_creator(&self) -> Option<&str>;
-    fn has_room_creator(&self, sender: &str) -> bool;
     fn has_additional_creator(&self, sender: &str) -> bool;
 }
 
@@ -307,12 +306,6 @@ impl EventContent for Value {
 
     fn get_creator(&self) -> Option<&str> {
         self.get(crate::event_types::FIELD_CREATOR)?.as_str()
-    }
-
-    fn has_room_creator(&self, sender: &str) -> bool {
-        self.get(crate::event_types::FIELD_ROOM_CREATORS)
-            .and_then(|v| v.as_array())
-            .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(sender)))
     }
 
     fn has_additional_creator(&self, sender: &str) -> bool {
@@ -429,13 +422,6 @@ impl<Id, C> LeanEvent<Id, C> {
         C: EventContent,
     {
         self.content.get_creator()
-    }
-
-    pub fn has_room_creator(&self, sender: &str) -> bool
-    where
-        C: EventContent,
-    {
-        self.content.has_room_creator(sender)
     }
 
     pub fn has_additional_creator(&self, sender: &str) -> bool

@@ -278,10 +278,7 @@ fn get_sender_power_level<Id, C: crate::types::EventContent>(
         let is_primary_creator = create_event.sender == sender;
         let mut is_additional_creator = false;
 
-        // V2.1+ room creators extension
-        if create_event.has_room_creator(sender) {
-            is_additional_creator = true;
-        }
+        // V2.1+ additional creators extension
         if create_event.has_additional_creator(sender) {
             is_additional_creator = true;
         }
