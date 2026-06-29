@@ -96,8 +96,8 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
 fn test_v2_1_vs_v2_1_1_recursive_auth_lookup() {
     // Join event includes PL. PL is in the auth ancestry (depth 2).
     // V2.1 fails because it only checks 1-hop (depth 1).
-    // V2.1.1 ALSO fails because it rejects BFS in favor of strict 1-hop security.
-    run_auth_lookup_scenario(true, false, false);
+    // V2.1.1 PASSES because it introduces BFS transitive context gathering.
+    run_auth_lookup_scenario(true, false, true);
 }
 
 #[test]

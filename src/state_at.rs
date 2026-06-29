@@ -287,7 +287,9 @@ where
                 update_local_auth(&mut local_auth, aev, current_depth);
             }
 
-            if version == StateResVersion::V2_2 {
+            // NOTE: V2.1.1 (Proposed) replaces unbounded DFS with a pure memoized BFS traversal.
+            // Therefore, both V2.1.1 and V2.2 natively gather transitive auth context!
+            if matches!(version, StateResVersion::V2_1_1 | StateResVersion::V2_2) {
                 for (key, entry) in cached_ancestor {
                     let total_depth = current_depth.saturating_add(entry.auth_depth);
                     match local_auth.entry(key.clone()) {
@@ -317,9 +319,10 @@ where
         {
             update_local_auth(&mut local_auth, aev, current_depth);
 
-            // Recursive traversal is NEW in V2.2.
+            // NOTE: V2.1.1 (Proposed) replaces unbounded DFS with a pure memoized BFS traversal.
+            // Therefore, both V2.1.1 and V2.2 natively gather transitive auth context!
             // For V2.1 and below, we only check the immediate auth_events.
-            if version == StateResVersion::V2_2 {
+            if matches!(version, StateResVersion::V2_1_1 | StateResVersion::V2_2) {
                 for parent_id in &aev.auth_events {
                     queue.push_back((parent_id.clone(), current_depth.saturating_add(1)));
                 }
