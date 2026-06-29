@@ -3350,6 +3350,13 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
     sort_set.insert("$kick".into(), kick);
     sort_set.insert("$self_leave".into(), self_leave);
 
+    let msg_ev: LeanEvent<String> = LeanEvent {
+        event_id: "$msg".into(),
+        event_type: "m.room.message".into(),
+        ..Default::default()
+    };
+    sort_set.insert("$msg".into(), msg_ev);
+
     // Test V2 (Rooms 2-11)
     let mut set1_v2_power = HashMap::new();
     let mut set1_v2_non_power = HashMap::new();
@@ -3374,8 +3381,8 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
         "V2 should treat self-leave as power event"
     );
     assert!(
-        set1_v2_non_power.is_empty(),
-        "V2 should have no non-power member events"
+        set1_v2_non_power.contains_key("$msg"),
+        "V2 should route message to non-power events"
     );
 
     // Test V2.1 (Room 12+)
@@ -3403,12 +3410,10 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
     );
 
     assert!(
-        set2_v21_non_power.contains_key("$self_join"),
-        "V2.1 should route self-join to non-power phase"
-    );
-    assert!(
-        set2_v21_non_power.contains_key("$self_leave"),
-        "V2.1 should route self-leave to non-power phase"
+        set2_v21_non_power.contains_key("$self_join")
+            && set2_v21_non_power.contains_key("$self_leave")
+            && set2_v21_non_power.contains_key("$msg"),
+        "V2.1 routes regular memberships and messages to non-power events"
     );
 }
 
@@ -3744,4 +3749,226 @@ fn test_lean_event_get_redact_and_creator() {
     let empty = LeanEvent::<String>::default();
     assert_eq!(empty.get_redact(), None);
     assert_eq!(empty.get_creator(), None);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_coverage_sweeper_for_unreachable_edges() {
+    use rezzy::cdo::is_ancestor;
+    use rezzy::lattice::resolve_lattice_coordinatized;
+    use rezzy::state_at::StateComputationError;
+    use rezzy::state_delta::{reconstruct_state_batch, CompactedCheckpoint};
+    use rezzy::types::{EventProvider, SortPriority};
+    use rezzy::{resolve_lean_with_deltas, LeanEvent, StateResVersion};
+    use std::collections::{BTreeMap, HashMap};
+
+    // Cover StateComputationError Display
+    let err_cycle: StateComputationError<String> = StateComputationError::CycleDetected;
+    let err_cb: StateComputationError<String> = StateComputationError::Callback("test".into());
+    assert!(format!("{err_cycle}").contains("Cycle detected"));
+    assert!(format!("{err_cb}").contains("Callback error"));
+
+    // Cover cdo::is_ancestor (Public API unused internally)
+    let mut context = HashMap::new();
+    let ev1: LeanEvent<String> = LeanEvent {
+        event_id: "A".to_string(),
+        ..Default::default()
+    };
+    let ev2: LeanEvent<String> = LeanEvent {
+        event_id: "B".to_string(),
+        auth_events: vec!["A".to_string()],
+        ..Default::default()
+    };
+    context.insert("A".to_string(), ev1.clone());
+    context.insert("B".to_string(), ev2.clone());
+    assert!(is_ancestor(&"B".to_string(), &"A".to_string(), &context));
+    assert!(!is_ancestor(&"A".to_string(), &"B".to_string(), &context));
+
+    // Cover resolve_lattice_coordinatized
+    let lattice_res = resolve_lattice_coordinatized(
+        imbl::OrdMap::new(),
+        context.clone(),
+        &HashMap::new(),
+        StateResVersion::V2,
+    );
+    assert!(lattice_res.is_empty());
+
+    // Cover get_initial_resolved_state for V1
+    let mut unconf = imbl::OrdMap::new();
+    unconf.insert(("m.room.create".into(), Some(String::new())), "123".into());
+    let v1_resolved = rezzy::resolve::resolve_lean(
+        unconf.clone(),
+        HashMap::<String, LeanEvent<String>>::new(),
+        &HashMap::<String, LeanEvent<String>>::new(),
+        StateResVersion::V1,
+    );
+    assert_eq!(v1_resolved.len(), 1);
+
+    // Cover SortPriority tie-breakers (sorting.rs)
+    let ev1_v1 = LeanEvent::<String> {
+        event_id: "A".into(),
+        depth: 5,
+        ..Default::default()
+    };
+    let ev2_v1 = LeanEvent::<String> {
+        event_id: "B".into(),
+        depth: 5,
+        ..Default::default()
+    };
+    let p1_v1 = SortPriority {
+        event: &ev1_v1,
+        power_level: 0,
+        auth_chain_distance: 0,
+        version: StateResVersion::V1,
+    };
+    let p2_v1 = SortPriority {
+        event: &ev2_v1,
+        power_level: 0,
+        auth_chain_distance: 0,
+        version: StateResVersion::V1,
+    };
+    assert_eq!(p1_v1.cmp(&p2_v1), core::cmp::Ordering::Less); // A < B
+
+    let ev1_v2 = LeanEvent::<String> {
+        event_id: "A".into(),
+        origin_server_ts: 100,
+        ..Default::default()
+    };
+    let ev2_v2 = LeanEvent::<String> {
+        event_id: "B".into(),
+        origin_server_ts: 100,
+        ..Default::default()
+    };
+    let p1_v2 = SortPriority {
+        event: &ev1_v2,
+        power_level: 0,
+        auth_chain_distance: 0,
+        version: StateResVersion::V2,
+    };
+    let p2_v2 = SortPriority {
+        event: &ev2_v2,
+        power_level: 0,
+        auth_chain_distance: 0,
+        version: StateResVersion::V2,
+    };
+    assert_eq!(p1_v2.cmp(&p2_v2), core::cmp::Ordering::Greater); // A > B (inverted)
+
+    // Cover rejected events in resolve_lean_with_deltas
+    let create: LeanEvent<String> = LeanEvent {
+        event_id: "$create".into(),
+        event_type: "m.room.create".into(),
+        state_key: Some(String::new()),
+        sender: "@alice:x.com".into(),
+        ..Default::default()
+    };
+
+    let pl: LeanEvent<String> = LeanEvent {
+        event_id: "$pl".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@alice:x.com".into(),
+        content: serde_json::json!({"users": {"@alice:x.com": 100}}),
+        auth_events: vec!["$create".into()],
+        ..Default::default()
+    };
+
+    let mut auth = HashMap::new();
+    auth.insert("$create".into(), create.clone());
+    auth.insert("$pl".into(), pl.clone());
+
+    let bogus_power: LeanEvent<String> = LeanEvent {
+        event_id: "$bogus_pl".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@bob:x.com".into(), // PL 0
+        content: serde_json::json!({"users": {"@bob:x.com": 100}}),
+        auth_events: vec!["$create".into(), "$pl".into()],
+        ..Default::default()
+    };
+
+    let bogus_topic: LeanEvent<String> = LeanEvent {
+        event_id: "$bogus_topic".into(),
+        event_type: "m.room.topic".into(),
+        state_key: Some(String::new()),
+        sender: "@bob:x.com".into(), // PL 0
+        auth_events: vec!["$create".into(), "$pl".into()],
+        ..Default::default()
+    };
+
+    let mut conflicted = HashMap::new();
+    conflicted.insert("$bogus_pl".into(), bogus_power.clone());
+    conflicted.insert("$bogus_topic".into(), bogus_topic.clone());
+
+    let (resolved, deltas) = resolve_lean_with_deltas(
+        imbl::OrdMap::new(),
+        conflicted.clone(),
+        &auth,
+        StateResVersion::V2,
+    );
+
+    assert!(!resolved.contains_key(&("m.room.power_levels".into(), Some(String::new()))));
+    assert!(!resolved.contains_key(&("m.room.topic".into(), Some(String::new()))));
+    assert!(deltas
+        .iter()
+        .any(|d| d.event_id == "$bogus_pl" && !d.accepted));
+    assert!(deltas
+        .iter()
+        .any(|d| d.event_id == "$bogus_topic" && !d.accepted));
+
+    // Cover BTreeMap EventProvider (types.rs)
+    let btree_provider: BTreeMap<String, LeanEvent<String, serde_json::Value>> = BTreeMap::new();
+    assert!(btree_provider.get_event(&"$none".to_string()).is_none());
+
+    // Cover reconstruct_state_batch broken chain branches
+    let orphan_cp = CompactedCheckpoint {
+        state_hash: "H1".into(),
+        parent_hash: None,
+        event_id: "E1".into(),
+        deltas: vec![],
+        snapshot: None, // Missing snapshot!
+    };
+    let missing_parent_cp = CompactedCheckpoint {
+        state_hash: "H2".into(),
+        parent_hash: Some("MISSING".into()),
+        event_id: "E2".into(),
+        deltas: vec![],
+        snapshot: None,
+    };
+    let missing_grandparent_cp = CompactedCheckpoint {
+        state_hash: "H3".into(),
+        parent_hash: Some("H2".into()), // H2 exists, but it failed to reconstruct
+        event_id: "E3".into(),
+        deltas: vec![],
+        snapshot: None,
+    };
+
+    // Attempting to reconstruct all three will hit all 3 `continue` bailouts
+    let broken_batch = reconstruct_state_batch(
+        &[orphan_cp, missing_parent_cp, missing_grandparent_cp],
+        &[0, 1, 2],
+    );
+    assert!(broken_batch.is_empty());
+
+    // Cover lean_kahn_sort CycleDetected branch
+    let mut cyclic_kahn_events: HashMap<String, LeanEvent<String>> = HashMap::new();
+    let ev_a: LeanEvent<String> = LeanEvent {
+        event_id: "A".into(),
+        auth_events: vec!["B".into()],
+        ..Default::default()
+    };
+    let ev_b: LeanEvent<String> = LeanEvent {
+        event_id: "B".into(),
+        auth_events: vec!["A".into()],
+        ..Default::default()
+    };
+    cyclic_kahn_events.insert("A".into(), ev_a.clone());
+    cyclic_kahn_events.insert("B".into(), ev_b.clone());
+
+    let sorted_cyclic = rezzy::sorting::lean_kahn_sort(
+        &cyclic_kahn_events,
+        &HashMap::new(),
+        None,
+        StateResVersion::V2,
+    );
+    assert_eq!(sorted_cyclic.len(), 2);
 }

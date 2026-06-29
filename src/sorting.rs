@@ -449,14 +449,19 @@ pub fn mainline_sort<Id, C>(
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     C: Clone + crate::types::EventContent,
 {
-    let mainline_len = mainline.len();
-
+    #[cfg(debug_assertions)]
+    std::eprintln!(
+        "[DEBUG] mainline_sort: sorting {} non-power events against mainline of length {}",
+        events.len(),
+        mainline.len()
+    );
     // O(V+E) iterative DFS to find the closest mainline index for all non-power events
     let dist = compute_closest_mainline_positions(events, mainline, auth_context);
 
     events.sort_by(|a, b| {
-        let pos_a = dist.get(&a.event_id).copied().unwrap_or(mainline_len);
-        let pos_b = dist.get(&b.event_id).copied().unwrap_or(mainline_len);
+        // Hopefully safe to unwrap. DFS guarantees all events are in `dist`.
+        let pos_a = dist[&a.event_id];
+        let pos_b = dist[&b.event_id];
 
         // Larger mainline position = farther from current PL = worse = comes first
         // (so it gets overwritten by closer events via last-write-wins)

@@ -458,9 +458,9 @@ fn parse_jsonl_line(line: &str) -> LeanEvent {
 #[allow(clippy::too_many_lines)]
 fn test_unredacted_spam_storm_v2_1_1() {
     use std::io::BufRead;
-    let path = "res/remote-dag-sM2LwqNHGQOgLf35gqxPMy9D7oYde2q9ADg8HPBM3kE-v12-merged.jsonl";
-
     const CACHE_FORMAT_VERSION: &str = "1";
+
+    let path = "res/remote-dag-sM2LwqNHGQOgLf35gqxPMy9D7oYde2q9ADg8HPBM3kE-v12-merged.jsonl";
 
     let load_from_jsonl = || -> Option<Vec<LeanEvent>> {
         let file = match std::fs::File::open(path) {
