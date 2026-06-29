@@ -785,8 +785,14 @@ where
 {
     let mut occurrences: HashMap<(String, Option<String>), HashMap<Id, usize>> = HashMap::new();
     let num_sets = prev_states.len();
+
     for map in prev_states {
-        for (key, val) in map {
+        #[cfg(feature = "std")]
+        let iter = map.into_iter();
+        #[cfg(not(feature = "std"))]
+        let iter = map.iter();
+
+        for (key, val) in iter {
             let val_entry = occurrences
                 .entry(key.clone())
                 .or_default()
