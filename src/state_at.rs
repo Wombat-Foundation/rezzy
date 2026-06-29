@@ -316,7 +316,7 @@ type SharedState<Id = String> = alloc::sync::Arc<BTreeMap<(String, Option<String
 /// This walks the `prev_events` graph backwards from `target_event_id`,
 /// topologically sorts all reachable ancestors, and incrementally builds
 /// the state by applying each state event in order. Fork points are resolved
-/// via [`crate::resolve::resolve_lean`] with V2 semantics.
+/// via [`crate::resolve::resolve_lean`] with the given `version` semantics.
 ///
 /// Returns `None` if `target_event_id` is not found in `events_map`.
 ///
@@ -328,6 +328,7 @@ type SharedState<Id = String> = alloc::sync::Arc<BTreeMap<(String, Option<String
 pub fn compute_state_at<Id, Q, S>(
     target_event_id: &Q,
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
+    version: StateResVersion,
 ) -> Option<BTreeMap<(String, Option<String>), Id>>
 where
     Id: Clone + Eq + Ord + core::fmt::Debug + core::hash::Hash + core::borrow::Borrow<Q>,
@@ -338,8 +339,13 @@ where
 
     let (id_to_index, index_to_id) = collect_ancestor_short_ids(actual_target_id, events_map);
     let target_array = [actual_target_id];
-    let mut state_after_map =
-        run_state_pipeline(&index_to_id, &id_to_index, &target_array, events_map);
+    let mut state_after_map = run_state_pipeline(
+        &index_to_id,
+        &id_to_index,
+        &target_array,
+        events_map,
+        version,
+    );
 
     let target_idx = id_to_index[actual_target_id];
     state_after_map[target_idx].take().map(|arc| {
@@ -364,6 +370,7 @@ where
 pub fn compute_state_at_batch<Id, Q, S>(
     target_event_ids: &[&Q],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
+    version: StateResVersion,
 ) -> HashMap<Id, BTreeMap<(String, Option<String>), Id>>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
@@ -386,8 +393,13 @@ where
 
     let (id_to_index, index_to_id) =
         collect_ancestor_short_ids_batch(&actual_target_ids, events_map);
-    let mut state_after_map =
-        run_state_pipeline(&index_to_id, &id_to_index, &actual_target_ids, events_map);
+    let mut state_after_map = run_state_pipeline(
+        &index_to_id,
+        &id_to_index,
+        &actual_target_ids,
+        events_map,
+        version,
+    );
 
     let mut results = HashMap::with_capacity(actual_target_ids.len());
     for &actual_tid in &actual_target_ids {
@@ -409,6 +421,7 @@ fn run_state_pipeline<'a, Id, S>(
     id_to_index: &HashMap<&'a Id, usize>,
     target_event_ids: &[&'a Id],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
+    version: StateResVersion,
 ) -> Vec<Option<SharedState<Id>>>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
@@ -454,7 +467,7 @@ where
         } else if prev_states.len() == 1 {
             prev_states.into_iter().next().unwrap()
         } else {
-            resolve_merge_fast_path(&prev_states, events_map)
+            resolve_merge_fast_path(&prev_states, events_map, version)
         };
 
         if ev.state_key.is_some() {
@@ -677,6 +690,7 @@ where
 fn resolve_merge_fast_path<Id, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
+    version: StateResVersion,
 ) -> SharedState<Id>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
@@ -694,13 +708,18 @@ where
     if all_match {
         alloc::sync::Arc::clone(first)
     } else {
-        alloc::sync::Arc::new(resolve_multiple_prev_states(prev_states, events_map))
+        alloc::sync::Arc::new(resolve_multiple_prev_states(
+            prev_states,
+            events_map,
+            version,
+        ))
     }
 }
 
 fn resolve_multiple_prev_states<Id, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
+    version: StateResVersion,
 ) -> BTreeMap<(String, Option<String>), Id>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
@@ -758,12 +777,7 @@ where
         }
     }
 
-    crate::resolve::resolve_lean(
-        unconflicted_state,
-        conflicted_events,
-        events_map,
-        StateResVersion::V2,
-    )
+    crate::resolve::resolve_lean(unconflicted_state, conflicted_events, events_map, version)
 }
 
 #[cfg(test)]

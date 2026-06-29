@@ -36,7 +36,7 @@ fn test_heap_order() {
 
 #[test]
 fn test_compute_state_at_correctness_and_performance() {
-    use rezzy::{compute_state_at, LeanEvent};
+    use rezzy::{compute_state_at, LeanEvent, StateResVersion};
     use std::collections::HashMap;
     use std::time::Instant;
 
@@ -83,9 +83,12 @@ fn test_compute_state_at_correctness_and_performance() {
     let tip_id = "$1000";
 
     // Correctness Checks
-    let early_state = compute_state_at(early_id, &events_map).expect("should compute");
-    let mid_state = compute_state_at(mid_id, &events_map).expect("should compute");
-    let tip_state = compute_state_at(tip_id, &events_map).expect("should compute");
+    let early_state =
+        compute_state_at(early_id, &events_map, StateResVersion::V2).expect("should compute");
+    let mid_state =
+        compute_state_at(mid_id, &events_map, StateResVersion::V2).expect("should compute");
+    let tip_state =
+        compute_state_at(tip_id, &events_map, StateResVersion::V2).expect("should compute");
 
     // Check sizes of the state maps
     // At $100, we should have exactly 10 state keys (100 / 10)
@@ -110,21 +113,21 @@ fn test_compute_state_at_correctness_and_performance() {
     // Early
     let start_early = Instant::now();
     for _ in 0..runs {
-        let _ = compute_state_at(early_id, &events_map);
+        let _ = compute_state_at(early_id, &events_map, StateResVersion::V2);
     }
     let dur_early = start_early.elapsed() / runs;
 
     // Mid
     let start_mid = Instant::now();
     for _ in 0..runs {
-        let _ = compute_state_at(mid_id, &events_map);
+        let _ = compute_state_at(mid_id, &events_map, StateResVersion::V2);
     }
     let dur_mid = start_mid.elapsed() / runs;
 
     // Tip
     let start_tip = Instant::now();
     for _ in 0..runs {
-        let _ = compute_state_at(tip_id, &events_map);
+        let _ = compute_state_at(tip_id, &events_map, StateResVersion::V2);
     }
     let dur_tip = start_tip.elapsed() / runs;
 
@@ -136,7 +139,7 @@ fn test_compute_state_at_correctness_and_performance() {
 
 #[test]
 fn test_compute_state_at_batch() {
-    use rezzy::{compute_state_at, compute_state_at_batch, LeanEvent};
+    use rezzy::{compute_state_at, compute_state_at_batch, LeanEvent, StateResVersion};
     use std::collections::HashMap;
 
     let mut events_map = HashMap::new();
@@ -179,13 +182,16 @@ fn test_compute_state_at_batch() {
     let tip_id = "$1000";
 
     // 1. Correctness Checks
-    let early_state = compute_state_at(early_id, &events_map).expect("should compute");
-    let mid_state = compute_state_at(mid_id, &events_map).expect("should compute");
-    let tip_state = compute_state_at(tip_id, &events_map).expect("should compute");
+    let early_state =
+        compute_state_at(early_id, &events_map, StateResVersion::V2).expect("should compute");
+    let mid_state =
+        compute_state_at(mid_id, &events_map, StateResVersion::V2).expect("should compute");
+    let tip_state =
+        compute_state_at(tip_id, &events_map, StateResVersion::V2).expect("should compute");
 
     // Run batch computation
     let batch_ids = vec![early_id, mid_id, tip_id];
-    let batch_results = compute_state_at_batch(&batch_ids, &events_map);
+    let batch_results = compute_state_at_batch(&batch_ids, &events_map, StateResVersion::V2);
 
     // Verify batch results exactly match individual results
     assert_eq!(batch_results.len(), 3);
@@ -199,12 +205,13 @@ fn test_compute_state_at_batch() {
     assert_eq!(batch_results[tip_id].len(), 100);
 
     // Verify empty batch handles gracefully
-    let empty_results = compute_state_at_batch::<String, str, _>(&[], &events_map);
+    let empty_results =
+        compute_state_at_batch::<String, str, _>(&[], &events_map, StateResVersion::V2);
     assert!(empty_results.is_empty());
 
     // Verify missing / invalid IDs are ignored or skipped gracefully without panics
     let invalid_ids = vec!["$missing_1", early_id, "$missing_2"];
-    let partial_results = compute_state_at_batch(&invalid_ids, &events_map);
+    let partial_results = compute_state_at_batch(&invalid_ids, &events_map, StateResVersion::V2);
     assert_eq!(partial_results.len(), 1);
     assert_eq!(&partial_results[early_id], &early_state);
 }

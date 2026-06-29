@@ -2463,7 +2463,7 @@ mod tests {
         events.insert("A".into(), a);
 
         // compute_state_at A must run cleanly and return A's state without panicking on missing event B!
-        let state = compute_state_at("A", &events);
+        let state = compute_state_at("A", &events, StateResVersion::V2);
         assert!(state.is_some());
         let state_map = state.unwrap();
 
@@ -2648,7 +2648,7 @@ mod tests {
         assert_eq!(clamped_neg, None);
     }
 }
-use rezzy::{compute_state_at, KahnSortResult, LeanEvent};
+use rezzy::{compute_state_at, KahnSortResult, LeanEvent, StateResVersion};
 
 #[test]
 fn test_types_kahn_sort_result_methods() {
@@ -2714,7 +2714,7 @@ fn test_types_deserialize_power_level_variants() {
 #[test]
 fn test_compute_state_at_missing_target() {
     let events_map: HashMap<String, LeanEvent> = HashMap::new();
-    assert!(compute_state_at("missing", &events_map).is_none());
+    assert!(compute_state_at("missing", &events_map, StateResVersion::V2).is_none());
 }
 
 #[test]
@@ -2763,7 +2763,7 @@ fn test_compute_state_at_merge_divergence() {
         },
     );
 
-    let state = compute_state_at("D", &events_map).unwrap();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
     assert!(state.is_empty());
 }
 
@@ -2811,7 +2811,7 @@ fn test_compute_state_at_merge_identical() {
         },
     );
 
-    let state = compute_state_at("D", &events_map).unwrap();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
     assert!(state.is_empty());
 }
 
