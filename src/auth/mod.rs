@@ -15,8 +15,7 @@
 //! Matrix Authorization Rules (Spec §10.4)
 //!
 //! Implements iterative auth-checking of events against the room state at
-//! their `prev_events` — never the current time. This is the core security
-//! invariant that prevents retroactive authorization tampering.
+//! their `prev_events` — never the current time.
 
 pub mod roaring;
 

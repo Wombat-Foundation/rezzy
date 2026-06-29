@@ -29,8 +29,6 @@
 //! Ancestor/descendant relationships are computed via SWAR (SIMD-within-a-register)
 //! bitmask sweeps over a topologically-sorted event array. The chunk size is
 //! auto-selected at compile time: 512 bits on AVX-512, 256 bits otherwise.
-//!
-//! Entry point: [`apply_cdo_filter`].
 
 use crate::types::LeanEvent;
 use crate::HashMap;
@@ -105,7 +103,7 @@ const WORDS_PER_CHUNK: usize = 8;
 /// Number of `u64` words per bitmask chunk (4 × 64 = 256 bits on AVX2/NEON).
 const WORDS_PER_CHUNK: usize = 4;
 
-fn compute_cdo_bit_masks_chunk<Id, C: Clone, S: core::hash::BuildHasher>(
+fn compute_cdo_bit_masks_chunk<Id, C, S: core::hash::BuildHasher>(
     admin_chunk: &[Id],
     id_to_idx: &HashMap<Id, usize, S>,
     sorted_events: &[(usize, &LeanEvent<Id, C>)],
@@ -152,10 +150,8 @@ fn compute_cdo_bit_masks_chunk<Id, C: Clone, S: core::hash::BuildHasher>(
     }
 }
 
-fn sort_cdo_events<Id: Ord + Clone, C: Clone>(
-    events: &[&LeanEvent<Id, C>],
-) -> Vec<LeanEvent<Id, C>> {
-    let mut sorted = events.iter().map(|&ev| (*ev).clone()).collect::<Vec<_>>();
+fn sort_cdo_events<'a, Id: Ord, C>(events: &[&'a LeanEvent<Id, C>]) -> Vec<&'a LeanEvent<Id, C>> {
+    let mut sorted: Vec<&'a LeanEvent<Id, C>> = events.to_vec();
     sorted.sort_by(|a, b| {
         let type_priority = |t: &str| match t {
             "m.room.power_levels" => 0,
@@ -183,46 +179,49 @@ fn sort_cdo_events<Id: Ord + Clone, C: Clone>(
     sorted
 }
 
-struct AdjacencyStructures<Id, C> {
-    dag_context: HashMap<Id, LeanEvent<Id, C>>,
+struct AdjacencyStructures<'a, Id, C> {
     id_to_idx: HashMap<Id, usize>,
-    sorted_events: Vec<(usize, LeanEvent<Id, C>)>,
+    sorted_events: Vec<(usize, &'a LeanEvent<Id, C>)>,
     parents: Vec<Vec<usize>>,
     children: Vec<Vec<usize>>,
 }
 
-fn build_adjacency_structures<
-    Id,
-    C: Clone,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
->(
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
-) -> AdjacencyStructures<Id, C>
+fn build_adjacency_structures<'a, Id, C, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
+    conflicted_events: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
+) -> AdjacencyStructures<'a, Id, C>
 where
     Id: Clone + Eq + core::hash::Hash + Ord,
 {
-    let dag_context = crate::resolve::build_sort_context(conflicted_events, auth_context);
-
-    let n = dag_context.len();
+    let n = auth_context.len().saturating_add(conflicted_events.len());
     let mut id_to_idx = HashMap::with_capacity(n);
-    let mut sorted_events = Vec::with_capacity(n);
+    let mut events_list: Vec<&'a LeanEvent<Id, C>> = Vec::with_capacity(n);
 
-    for (id, ev) in &dag_context {
-        let idx = id_to_idx.len();
-        id_to_idx.insert(id.clone(), idx);
-        sorted_events.push((idx, ev.clone()));
+    // Chain conflicted first so they shadow auth_context (matching SortContext semantics)
+    for ev in conflicted_events.values().chain(auth_context.values()) {
+        if !id_to_idx.contains_key(&ev.event_id) {
+            id_to_idx.insert(ev.event_id.clone(), 0); // Temp index
+            events_list.push(ev);
+        }
     }
-    sorted_events.sort_unstable_by(|(_, a), (_, b)| {
+
+    // Sort by depth then event_id for topological ordering
+    events_list.sort_unstable_by(|a, b| {
         a.depth
             .cmp(&b.depth)
             .then_with(|| a.event_id.cmp(&b.event_id))
     });
 
-    let mut parents = alloc::vec![Vec::new(); n];
-    let mut children = alloc::vec![Vec::new(); n];
-    for &(u, ref ev) in &sorted_events {
+    let mut sorted_events = Vec::with_capacity(events_list.len());
+    for (i, ev) in events_list.iter().enumerate() {
+        id_to_idx.insert(ev.event_id.clone(), i);
+        sorted_events.push((i, *ev));
+    }
+
+    let actual_n = sorted_events.len();
+    let mut parents = alloc::vec![Vec::new(); actual_n];
+    let mut children = alloc::vec![Vec::new(); actual_n];
+    for &(u, ev) in &sorted_events {
         for p_id in ev.prev_events.iter().chain(ev.auth_events.iter()) {
             if let Some(&v) = id_to_idx.get(p_id) {
                 parents[u].push(v);
@@ -232,7 +231,6 @@ where
     }
 
     AdjacencyStructures {
-        dag_context,
         id_to_idx,
         sorted_events,
         parents,
@@ -240,15 +238,14 @@ where
     }
 }
 
-struct PrioritizedEvents<Id, C> {
+struct PrioritizedEvents<Id> {
     admin_actions: Vec<Id>,
-    sorted_events_by_priority: Vec<LeanEvent<Id, C>>,
     priority_pos: HashMap<Id, usize>,
 }
 
 fn prioritize_events<Id, C: crate::types::EventContent + Clone, S1: core::hash::BuildHasher>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
-) -> PrioritizedEvents<Id, C>
+) -> PrioritizedEvents<Id>
 where
     Id: Clone + Eq + core::hash::Hash + Ord,
 {
@@ -262,17 +259,15 @@ where
         .map(|e| e.event_id.clone())
         .collect();
 
-    let sorted_events_by_priority =
-        sort_cdo_events(&conflicted_events.values().collect::<Vec<_>>());
+    let all_sorted = sort_cdo_events(&conflicted_events.values().collect::<Vec<_>>());
 
-    let mut priority_pos = HashMap::with_capacity(sorted_events_by_priority.len());
-    for (pos, ev) in sorted_events_by_priority.iter().enumerate() {
+    let mut priority_pos = HashMap::with_capacity(all_sorted.len());
+    for (pos, ev) in all_sorted.iter().enumerate() {
         priority_pos.insert(ev.event_id.clone(), pos);
     }
 
     PrioritizedEvents {
         admin_actions,
-        sorted_events_by_priority,
         priority_pos,
     }
 }
@@ -282,14 +277,14 @@ fn process_direct_domination_chunks<
     C: crate::types::EventContent + Clone,
     S1: core::hash::BuildHasher,
 >(
-    adj: &AdjacencyStructures<Id, C>,
-    prioritized: &PrioritizedEvents<Id, C>,
+    adj: &AdjacencyStructures<'_, Id, C>,
+    prioritized: &PrioritizedEvents<Id>,
     conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
 ) -> BTreeSet<Id>
 where
     Id: Clone + Eq + core::hash::Hash + Ord,
 {
-    let n = adj.dag_context.len();
+    let n = adj.sorted_events.len();
     let mut dropped_ids = BTreeSet::new();
 
     // Allocate a strict O(N * WORDS_PER_CHUNK) matrix once, reused forever across passes
@@ -298,18 +293,15 @@ where
 
     let chunk_size = WORDS_PER_CHUNK.saturating_mul(64);
 
-    // Helper references to map inputs to compute_cdo_bit_masks_chunk
-    let sorted_events_refs: Vec<(usize, &LeanEvent<Id, C>)> = adj
-        .sorted_events
-        .iter()
-        .map(|&(idx, ref ev)| (idx, ev))
-        .collect();
+    // Collect priority-sorted event IDs for iteration (positions only, no cloning events)
+    let mut priority_ordered_ids: Vec<&Id> = prioritized.priority_pos.keys().collect();
+    priority_ordered_ids.sort_by_key(|id| prioritized.priority_pos.get(*id));
 
     for chunk in prioritized.admin_actions.chunks(chunk_size) {
         compute_cdo_bit_masks_chunk(
             chunk,
             &adj.id_to_idx,
-            &sorted_events_refs,
+            &adj.sorted_events,
             &adj.parents,
             &adj.children,
             &mut and_masks,
@@ -325,20 +317,19 @@ where
         }
 
         // Check for direct domination against all non-dropped events
-        for event in &prioritized.sorted_events_by_priority {
-            let event_id = &event.event_id;
-            if dropped_ids.contains(event_id) {
+        for event_id in &priority_ordered_ids {
+            if dropped_ids.contains(*event_id) {
                 continue;
             }
 
-            if let Some(&ev_idx) = adj.id_to_idx.get(event_id) {
+            if let Some(&ev_idx) = adj.id_to_idx.get(*event_id) {
                 for (&admin_id, &orig_idx) in &chunk_admin_to_pos {
                     if dropped_ids.contains(admin_id) {
                         continue;
                     }
                     // Only higher-priority admin actions (occurring earlier in the sorted list) can dominate
                     if let Some(&admin_pos) = prioritized.priority_pos.get(admin_id) {
-                        if let Some(&event_pos) = prioritized.priority_pos.get(event_id) {
+                        if let Some(&event_pos) = prioritized.priority_pos.get(*event_id) {
                             if admin_pos >= event_pos {
                                 continue;
                             }
@@ -355,9 +346,11 @@ where
                     // Fast-path bitwise check first!
                     if !is_ancestor_admin && !is_descendant_admin {
                         if let Some(admin_ev) = conflicted_events.get(admin_id) {
-                            if admin_ev.restricts_event(event) {
-                                dropped_ids.insert(event.event_id.clone());
-                                break;
+                            if let Some(target_ev) = conflicted_events.get(*event_id) {
+                                if admin_ev.restricts_event(target_ev) {
+                                    dropped_ids.insert((*event_id).clone());
+                                    break;
+                                }
                             }
                         }
                     }

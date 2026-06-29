@@ -3,6 +3,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/gamesguru/rezzy/rust.yml?branch=master&label=CI)](https://github.com/gamesguru/rezzy/actions/workflows/rust.yml)
 [![Docs](https://img.shields.io/github/actions/workflow/status/gamesguru/rezzy/docs.yml?branch=master&label=docs)](https://gamesguru.github.io/rezzy/)
 [![crates.io](https://img.shields.io/crates/v/rezzy.svg)](https://crates.io/crates/rezzy)
+[![codecov](https://codecov.io/gh/gamesguru/rezzy/graph/badge.svg)](https://codecov.io/gh/gamesguru/rezzy)
 
 Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolution — both a research model and highly-efficient reference implementation for Matrix state resolution `v1`, `v2`, `v2.1`, and `v2.1.1` (with experimental `v2.2`), designed for correctness and compliance.
 
@@ -99,14 +100,11 @@ Because we care about raw performance and mechanical efficiency, `rezzy` is buil
 - Batch state computation with shared topological traversal
 - `no_std` compatible (`alloc`-only, no system dependencies)
 
-## TODO
-
-### Typed Content Fields (`LeanEventTyped`)
-
-Replace `content: serde_json::Value` with pre-extracted typed fields to eliminate JSON parsing in the hot path.
-See [`res/docs/TYPED_CONTENT_FIELDS.md`](res/docs/TYPED_CONTENT_FIELDS.md) for the full design proposal.
-
 ## Completed
+
+### Typed Content Fields (`EventContent` trait) ✓
+
+The generic `EventContent` trait replaces the need for a monolithic `LeanEventTyped`. Homeservers implement `EventContent` on their own content type to provide pre-extracted fields (`membership`, `join_rule`, `ban`, `kick` power levels, etc.) without JSON parsing in the hot path. `serde_json::Value` remains the default via a blanket impl.
 
 ### Per-Event State Deltas (`resolve_lean_with_deltas`) ✓
 
@@ -115,6 +113,10 @@ See [`res/docs/TYPED_CONTENT_FIELDS.md`](res/docs/TYPED_CONTENT_FIELDS.md) for t
 ### Batch State Computation (`compute_state_at_batch`) ✓
 
 Compute state at N events in topological order, sharing the ancestor traversal and topological sort across all targets. See [`compute_state_at_batch`](src/state_at.rs).
+
+### Streaming State Computation (`compute_state_at_streaming`) ✓
+
+Like `compute_state_at_batch` but yields each resolved state to a callback as soon as it's ready, bounding peak memory to the live DAG frontier width. See [`compute_state_at_streaming`](src/state_at.rs).
 
 ### `auth_types_for_event` ✓
 
@@ -138,6 +140,6 @@ let resolved = resolve_lean(unconflicted, events, &auth_ctx, StateResVersion::V2
 Full delta chain support with Synapse-compatible compaction:
 
 - `compute_state_delta` / `apply_state_delta` — single-event delta math
-- `compute_compacted_delta_chain` — bulk backfill with auto-snapshot every `MAX_DELTA_CHAIN_HOPS` (100) events
+- `compute_compacted_delta_chain_from_resolved` — bulk backfill with auto-snapshot every `MAX_DELTA_CHAIN_HOPS` (default: 100) events
 - `reconstruct_state_at` / `reconstruct_state_batch` — reconstruct state from stored delta chains
 - All checkpoint types derive `Serialize` / `Deserialize` for direct storage in RocksDB, bincode, etc.

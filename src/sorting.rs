@@ -13,20 +13,6 @@
 // limitations under the License.
 
 //! Topological and mainline sorting for Matrix state resolution.
-//!
-//! This module provides two complementary sorting strategies:
-//!
-//! - **Kahn's topological sort** ([`lean_kahn_sort`], [`lean_kahn_sort_detailed`]):
-//!   Orders events by auth-chain dependencies with tie-breaking by power level,
-//!   timestamp, and event ID. Used for the power-events phase.
-//!
-//! - **Mainline sort** ([`mainline_sort`]): Orders non-power events by their
-//!   proximity to the resolved power-levels chain (the "mainline"). Events
-//!   closer to the current PL event are applied last and therefore win.
-//!
-//! Both sorts are deterministic — given the same inputs, all implementations
-//! must produce the identical ordering.
-
 use alloc::collections::{BTreeMap, BinaryHeap, VecDeque};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -37,9 +23,9 @@ use crate::HashMap;
 
 /// Dynamically fetches the sender's power level by inspecting the event's immediate `auth_events`.
 /// Recursive traversal of the auth chain is avoided to prevent bypassing immediate restrictions.
-pub(crate) fn get_power_level_from_auth_chain<Id, C, S: core::hash::BuildHasher>(
+pub(crate) fn get_power_level_from_auth_chain<Id, C>(
     event: &LeanEvent<Id, C>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S>,
+    auth_context: &impl crate::types::EventProvider<Id, C>,
     create_ev: Option<&LeanEvent<Id, C>>,
     version: StateResVersion,
 ) -> i64
@@ -51,7 +37,7 @@ where
 
     // Spec compliance: only check immediate auth_events.
     for aid in &event.auth_events {
-        if let Some(aev) = auth_context.get(aid) {
+        if let Some(aev) = auth_context.get_event(aid) {
             if aev.event_type == "m.room.power_levels"
                 && aev.state_key.as_deref() == Some("")
                 && pl_event.is_none()
@@ -105,47 +91,71 @@ where
 }
 
 /// Computes the shortest distance from the event to the m.room.create event via `auth_events`.
-pub(crate) fn memoized_auth_distance<'a, Id, C, S: core::hash::BuildHasher>(
+/// Safely avoids stack overflow on deep DAGs using an iterative post-order traversal with memoization.
+pub(crate) fn compute_auth_distance_iterative<'a, Id, C>(
     curr_id: &'a Id,
-    auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S>,
+    auth_context: &'a impl crate::types::EventProvider<Id, C>,
     create_id: Option<&'a Id>,
     memo: &mut HashMap<&'a Id, u64>,
-    in_progress: &mut alloc::collections::BTreeSet<&'a Id>,
 ) -> u64
 where
-    Id: Clone + Eq + core::hash::Hash + Ord,
+    Id: Clone + Eq + core::hash::Hash + Ord + 'a,
+    C: 'a,
 {
     if Some(curr_id) == create_id {
         return 0;
     }
-
     if let Some(&dist) = memo.get(curr_id) {
-        return dist;
+        if dist != u64::MAX - 1 {
+            return dist;
+        }
     }
 
-    if !in_progress.insert(curr_id) {
-        return u64::MAX;
+    let mut stack = Vec::new();
+    stack.push(curr_id);
+
+    while let Some(&top) = stack.last() {
+        if Some(top) == create_id {
+            memo.insert(top, 0);
+            stack.pop();
+            continue;
+        }
+        if let Some(&dist) = memo.get(top) {
+            if dist != u64::MAX - 1 {
+                stack.pop();
+                continue;
+            }
+        } else {
+            memo.insert(top, u64::MAX - 1);
+        }
+
+        let mut all_children_done = true;
+        let mut min_dist = u64::MAX;
+
+        if let Some(ev) = auth_context.get_event(top) {
+            if !ev.auth_events.is_empty() {
+                for aid in &ev.auth_events {
+                    if Some(aid) == create_id {
+                        min_dist = min_dist.min(1);
+                    } else if let Some(&c_dist) = memo.get(aid) {
+                        if c_dist != u64::MAX - 1 {
+                            min_dist = min_dist.min(c_dist.saturating_add(1));
+                        }
+                    } else {
+                        all_children_done = false;
+                        stack.push(aid);
+                    }
+                }
+            }
+        }
+
+        if all_children_done {
+            memo.insert(top, min_dist);
+            stack.pop();
+        }
     }
 
-    let Some(ev) = auth_context.get(curr_id) else {
-        in_progress.remove(curr_id);
-        return u64::MAX;
-    };
-
-    if ev.auth_events.is_empty() {
-        in_progress.remove(curr_id);
-        return u64::MAX;
-    }
-
-    let mut min_dist = u64::MAX;
-    for parent in &ev.auth_events {
-        let p_dist = memoized_auth_distance(parent, auth_context, create_id, memo, in_progress);
-        min_dist = min_dist.min(p_dist.saturating_add(1));
-    }
-
-    in_progress.remove(curr_id);
-    memo.insert(curr_id, min_dist);
-    min_dist
+    memo.get(curr_id).copied().unwrap_or(u64::MAX)
 }
 
 /// Detailed Kahn's Topological Sort algorithm for event power resolution.
@@ -158,16 +168,15 @@ where
 ///
 /// Will panic if graph invariants are violated during topological sorting (specifically, if
 /// the in-degree map lacks an entry for a child event during the queue processing phase).
-pub fn lean_kahn_sort_with_cycle_diagnostics<Id, C, S1, S2>(
+pub fn lean_kahn_sort_with_cycle_diagnostics<Id, C, S1>(
     events: &HashMap<Id, LeanEvent<Id, C>, S1>,
-    sort_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    sort_context: &impl crate::types::EventProvider<Id, C>,
     create_ev: Option<&LeanEvent<Id, C>>,
     version: StateResVersion,
 ) -> KahnSortResult<Id>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
     C: Clone + crate::types::EventContent,
 {
     let mut in_degree: HashMap<Id, usize> = HashMap::new();
@@ -205,16 +214,9 @@ where
         events
             .keys()
             .map(|id| {
-                let mut in_progress = alloc::collections::BTreeSet::new();
                 (
                     id.clone(),
-                    memoized_auth_distance(
-                        id,
-                        sort_context,
-                        create_id,
-                        &mut memo,
-                        &mut in_progress,
-                    ),
+                    compute_auth_distance_iterative(id, sort_context, create_id, &mut memo),
                 )
             })
             .collect()
@@ -284,16 +286,15 @@ where
 /// in the cycle-breaking list of stuck nodes is missing from the input `events` map).
 // jscpd:ignore-start
 #[must_use]
-pub fn lean_kahn_sort<Id, C, S1, S2>(
+pub fn lean_kahn_sort<Id, C, S1>(
     events: &HashMap<Id, LeanEvent<Id, C>, S1>,
-    sort_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    sort_context: &impl crate::types::EventProvider<Id, C>,
     create_ev: Option<&LeanEvent<Id, C>>,
     version: StateResVersion,
 ) -> Vec<Id>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
     C: Clone + crate::types::EventContent,
 {
     // jscpd:ignore-end
@@ -319,13 +320,12 @@ where
     }
 }
 
-pub(crate) fn build_mainline<Id, C, S>(
+pub(crate) fn build_mainline<Id, C>(
     resolved: &BTreeMap<(String, Option<String>), Id>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S>,
+    auth_context: &impl crate::types::EventProvider<Id, C>,
 ) -> Vec<Id>
 where
     Id: Clone + Eq + core::hash::Hash,
-    S: core::hash::BuildHasher,
     C: Clone + crate::types::EventContent,
 {
     let mut mainline = Vec::new();
@@ -344,7 +344,7 @@ where
         }
         mainline.push(eid.clone());
         current = None;
-        if let Some(ev) = auth_context.get(&eid) {
+        if let Some(ev) = auth_context.get_event(&eid) {
             let mut queue = VecDeque::new();
             for auth_id in &ev.auth_events {
                 queue.push_back(auth_id.clone());
@@ -354,7 +354,7 @@ where
                 if !visited.insert(q_id.clone()) {
                     continue;
                 }
-                if let Some(auth_ev) = auth_context.get(&q_id) {
+                if let Some(auth_ev) = auth_context.get_event(&q_id) {
                     if auth_ev.event_type == "m.room.power_levels" {
                         current = Some(q_id);
                         break;
@@ -370,75 +370,73 @@ where
     mainline
 }
 
-/// Precompute the closest mainline position for every event reachable via
-/// `auth_events` using a single O(V+E) multi-source reverse-BFS.
+/// Precompute the closest mainline position for every target event reachable via
+/// `auth_events` using a stack-safe O(V+E) iterative DFS upward search.
 ///
-/// The naive approach walks the auth chain per-event: O(events × `chain_depth`).
-/// On a dense DAG with 52k events this dominates runtime.
-///
-/// This approach instead:
-/// 1. Seeds the BFS from ALL mainline events simultaneously at their positions.
-/// 2. Builds reverse auth-edges (`auth_ev` -> events that list it) once: O(V+E).
-/// 3. BFS outward through those reverse edges; since we process in ascending
-///    position order, the first time an event is reached gives the minimum
-///    (closest) mainline position.
-///
-/// Total: O(V+E) — each vertex and edge touched at most once.
-pub(crate) fn precompute_mainline_positions<Id, C, S: ::core::hash::BuildHasher>(
+/// This entirely avoids `O(N)` cloning of the DAG, and prevents stack overflow
+/// by using an explicit stack to simulate recursion while memoizing distances.
+pub(crate) fn compute_closest_mainline_positions<Id, C>(
+    events: &mut [&LeanEvent<Id, C>],
     mainline: &[Id],
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S>,
+    auth_context: &impl crate::types::EventProvider<Id, C>,
 ) -> HashMap<Id, usize>
 where
     Id: Clone + Eq + core::hash::Hash + Ord,
     C: Clone + crate::types::EventContent,
 {
-    let mainline_len = mainline.len();
+    let mut memo = HashMap::new();
 
-    // Build reverse adjacency over the full auth context once.
-    // reverse_adj[A] = [E1, E2, ...] means E1, E2, ... list A in their auth_events.
-    let mut reverse_adj: HashMap<&Id, Vec<&Id>> = HashMap::new();
-    for (id, ev) in auth_context {
-        for auth_id in &ev.auth_events {
-            reverse_adj.entry(auth_id).or_default().push(id);
-        }
-    }
-
-    let mut dist: HashMap<Id, usize> = HashMap::with_capacity(auth_context.len());
-
-    // Seed: process mainline events in position order (0 = closest = best).
-    // Using a VecDeque gives BFS ordering; since positions only increase along
-    // the mainline and edges carry zero additional cost, this is correct.
-    let mut queue: VecDeque<(&Id, usize)> = VecDeque::new();
-
+    // Pre-populate mainline events with their exact index position
     for (pos, id) in mainline.iter().enumerate() {
-        dist.insert(id.clone(), pos);
-        queue.push_back((id, pos));
+        memo.insert(id.clone(), pos);
     }
 
-    // Flood-fill outward through reverse auth-edges.
-    // Since positions can be updated if a smaller/closer mainline index is found,
-    // we allow re-queuing children when a better position propagates.
-    while let Some((id, pos)) = queue.pop_front() {
-        if let Some(&current_best) = dist.get(id) {
-            if pos > current_best {
-                continue;
+    let mut stack = Vec::new();
+
+    for ev in events.iter() {
+        stack.push(&ev.event_id);
+
+        while let Some(&top) = stack.last() {
+            if let Some(&val) = memo.get(top) {
+                if val != usize::MAX - 1 {
+                    stack.pop();
+                    continue;
+                }
+            } else {
+                memo.insert(top.clone(), usize::MAX - 1);
             }
-        }
-        if let Some(children) = reverse_adj.get(id) {
-            for &child_id in children {
-                let current_child_best = dist.get(child_id).copied();
-                if current_child_best.is_none() || pos < current_child_best.unwrap() {
-                    dist.insert(child_id.clone(), pos);
-                    queue.push_back((child_id, pos));
+
+            let mut all_children_done = true;
+            let mut min_pos = usize::MAX;
+
+            if let Some(node) = auth_context.get_event(top) {
+                for aid in &node.auth_events {
+                    if let Some(&child_pos) = memo.get(aid) {
+                        if child_pos != usize::MAX - 1 {
+                            min_pos = min_pos.min(child_pos);
+                        }
+                    } else {
+                        all_children_done = false;
+                        stack.push(aid);
+                    }
                 }
             }
+
+            if all_children_done {
+                // Clamp "no path found" to mainline.len() so callers
+                // don't see a raw usize::MAX leaking into comparisons.
+                let resolved_pos = if min_pos == usize::MAX {
+                    mainline.len()
+                } else {
+                    min_pos
+                };
+                memo.insert(top.clone(), resolved_pos);
+                stack.pop();
+            }
         }
     }
 
-    // Events with no path to mainline get sentinel = mainline_len (worst).
-    // Callers use `.get().copied().unwrap_or(mainline_len)` for those.
-    let _ = mainline_len; // consumed by callers
-    dist
+    memo
 }
 
 /// Sorts non-power events by mainline ordering per the Matrix spec.
@@ -453,19 +451,18 @@ where
 ///
 /// Events closer to the current power-levels event are applied **last**
 /// and therefore win for same-key conflicts (last-write-wins).
-pub fn mainline_sort<Id, C, S>(
+pub fn mainline_sort<Id, C>(
     events: &mut [&LeanEvent<Id, C>],
     mainline: &[Id],
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S>,
+    auth_context: &impl crate::types::EventProvider<Id, C>,
 ) where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
-    S: core::hash::BuildHasher,
     C: Clone + crate::types::EventContent,
 {
     let mainline_len = mainline.len();
 
-    // Single O(V+E) pass over the full auth context.
-    let dist = precompute_mainline_positions(mainline, auth_context);
+    // O(V+E) iterative DFS to find the closest mainline index for all non-power events
+    let dist = compute_closest_mainline_positions(events, mainline, auth_context);
 
     events.sort_by(|a, b| {
         let pos_a = dist.get(&a.event_id).copied().unwrap_or(mainline_len);
@@ -531,5 +528,131 @@ mod tests {
         );
         assert_eq!(mainline[0], "A");
         assert_eq!(mainline[1], "B");
+    }
+
+    /// Events with no auth chain to a mainline event get clamped to `mainline.len()`.
+    #[test]
+    fn test_closest_mainline_no_path_clamps_to_len() {
+        let ev = LeanEvent::<String> {
+            event_id: "orphan".into(),
+            event_type: "m.room.topic".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let auth_ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
+        let mainline: Vec<String> = alloc::vec!["pl0".into()];
+        let mut events = alloc::vec![&ev];
+        let dist = compute_closest_mainline_positions(&mut events, &mainline, &auth_ctx);
+        // No path found → clamped to mainline.len() = 1, not usize::MAX
+        assert_eq!(dist["orphan"], 1);
+    }
+
+    /// An event whose auth chain leads directly to a mainline event gets that position.
+    #[test]
+    fn test_closest_mainline_direct_hit() {
+        let pl = LeanEvent::<String> {
+            event_id: "pl0".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let ev = LeanEvent::<String> {
+            event_id: "msg".into(),
+            event_type: "m.room.message".into(),
+            auth_events: alloc::vec!["pl0".into()],
+            ..Default::default()
+        };
+        let mut auth_ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
+        auth_ctx.insert("pl0".into(), pl);
+        auth_ctx.insert("msg".into(), ev.clone());
+
+        let mainline = alloc::vec!["pl0".into()];
+        let mut events = alloc::vec![&ev];
+        let dist = compute_closest_mainline_positions(&mut events, &mainline, &auth_ctx);
+        assert_eq!(dist["msg"], 0);
+    }
+
+    /// Deep auth chain: event → intermediate → mainline event.
+    #[test]
+    fn test_closest_mainline_deep_chain() {
+        let pl = LeanEvent::<String> {
+            event_id: "pl0".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let mid = LeanEvent::<String> {
+            event_id: "mid".into(),
+            event_type: "m.room.member".into(),
+            auth_events: alloc::vec!["pl0".into()],
+            ..Default::default()
+        };
+        let leaf = LeanEvent::<String> {
+            event_id: "leaf".into(),
+            event_type: "m.room.topic".into(),
+            auth_events: alloc::vec!["mid".into()],
+            ..Default::default()
+        };
+        let mut ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
+        ctx.insert("pl0".into(), pl);
+        ctx.insert("mid".into(), mid);
+        ctx.insert("leaf".into(), leaf.clone());
+
+        let mainline = alloc::vec!["pl0".into()];
+        let mut events = alloc::vec![&leaf];
+        let dist = compute_closest_mainline_positions(&mut events, &mainline, &ctx);
+        assert_eq!(dist["leaf"], 0);
+    }
+
+    /// Empty mainline: all events should clamp to 0 (`mainline.len()`).
+    #[test]
+    fn test_closest_mainline_empty_mainline() {
+        let ev = LeanEvent::<String> {
+            event_id: "x".into(),
+            event_type: "m.room.topic".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
+        let mainline: Vec<String> = alloc::vec![];
+        let mut events = alloc::vec![&ev];
+        let dist = compute_closest_mainline_positions(&mut events, &mainline, &ctx);
+        assert_eq!(dist["x"], 0);
+    }
+
+    /// `SortContext` merged provider correctly finds events across both maps.
+    #[test]
+    fn test_sort_context_merged_lookup() {
+        use crate::types::SortContext;
+
+        let pl = LeanEvent::<String> {
+            event_id: "pl0".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let topic = LeanEvent::<String> {
+            event_id: "topic".into(),
+            event_type: "m.room.topic".into(),
+            auth_events: alloc::vec!["pl0".into()],
+            ..Default::default()
+        };
+
+        // pl0 in primary (auth_context), topic in secondary (conflicted)
+        let mut primary: HashMap<String, LeanEvent<String>> = HashMap::new();
+        primary.insert("pl0".into(), pl);
+        let mut secondary: HashMap<String, LeanEvent<String>> = HashMap::new();
+        secondary.insert("topic".into(), topic.clone());
+
+        let sort_ctx = SortContext {
+            primary: &primary,
+            secondary: &secondary,
+        };
+
+        let mainline = alloc::vec!["pl0".into()];
+        let mut events = alloc::vec![&topic];
+        let dist = compute_closest_mainline_positions(&mut events, &mainline, &sort_ctx);
+        // topic's auth chain → pl0 (position 0)
+        assert_eq!(dist["topic"], 0);
     }
 }

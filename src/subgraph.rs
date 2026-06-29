@@ -7,9 +7,6 @@
 //! This ensures that only events causally relevant to the conflict are
 //! considered, preventing unrelated auth chain history from influencing
 //! the outcome.
-//!
-//! Entry point: [`compute_v2_1_conflicted_subgraph`] (unbounded) or
-//! [`compute_v2_1_conflicted_subgraph_bounded`] (with `DoS` depth limit).
 
 use crate::types::LeanEvent;
 use crate::HashMap;
