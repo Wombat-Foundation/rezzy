@@ -560,9 +560,11 @@ where
                 if let Some((pk, parent_ev)) = events_map.get_key_value(parent_q) {
                     let is_new = !masks.contains_key(pk);
                     let parent_mask = masks.entry(pk).or_default();
+                    let old_len = parent_mask.len();
                     *parent_mask |= &current_mask;
+                    let new_len = parent_mask.len();
 
-                    if is_new {
+                    if is_new || new_len > old_len {
                         queue.push((parent_ev.depth(), pk));
                     }
                 }
