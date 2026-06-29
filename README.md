@@ -103,6 +103,40 @@ Because we care about raw performance and mechanical efficiency, `rezzy` is buil
 - Batch state computation with shared topological traversal
 - `no_std` compatible (`alloc`-only, no system dependencies)
 
+## Architecture: The I/O Sandwich
+
+Rezzy is **synchronous by design**. It accepts a fully materialized `HashMap` and returns resolved state without performing any I/O. This is not a limitation — it's the architecturally correct choice.
+
+### Why not async?
+
+State resolution does **not** operate on the entire room history. It operates on the **Auth Difference**: `auth(C) \ auth(U)` — the auth-chain events reachable from conflicted events `C` that aren't already in the agreed-upon unconflicted state `U`.
+
+Because `U` is already trusted, auth chains only need to be walked until they intersect `U`. Auth chains are shallow (Create → PL → Join → event = 3-4 hops), so homeservers can bulk-fetch the entire auth difference in **1–3 database queries**:
+
+| Approach                      | Queries | Used by      |
+| ----------------------------- | ------- | ------------ |
+| Bulk BFS against `U` boundary | 2–3     | Rust servers |
+| Pre-computed auth-chain index | 1       | Synapse      |
+
+If `resolve_lean` were async, every `auth_events` lookup would become a sequential `await` — triggering the **N+1 query problem** (50 serial DB calls instead of 1 batch). The synchronous API forces callers to batch-fetch upfront, which is always faster.
+
+### The three layers
+
+```text
+┌───────────────────────────────────────────────┐
+│  Homeserver (async I/O)                       │
+│  Bulk-fetch auth difference in 1-3 queries    │
+├───────────────────────────────────────────────┤
+│  Rezzy (sync CPU, #![no_std])                 │
+│  Topological sort + iterative auth in µs      │
+├───────────────────────────────────────────────┤
+│  Homeserver (async I/O)                       │
+│  Persist resolved state, notify clients       │
+└───────────────────────────────────────────────┘
+```
+
+Typical working set: **10–50 events** for a normal fork, fitting entirely in L1 cache. See [`docs/architecture.md`](docs/architecture.md) for details.
+
 ## Completed
 
 ### Typed Content Fields (`EventContent` trait) ✓
