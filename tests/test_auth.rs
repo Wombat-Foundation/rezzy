@@ -1037,3 +1037,114 @@ fn test_creator_implicit_power_level() {
         "Normal user should fail with InsufficientPowerLevel."
     );
 }
+
+/// Verify that in V2 (pre-MSC4289), creators get PL 100, not `MAX_POWER_LEVEL`.
+#[test]
+fn test_v2_creator_gets_pl_100_not_max() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event(
+            "$create",
+            M_ROOM_CREATE,
+            Some(""),
+            "@creator:example.com",
+            json!({"creator": "@creator:example.com", "room_version": "10"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@creator:example.com".into())),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@creator:example.com"),
+            "@creator:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    // Creator can kick (PL 100 > kick PL 50) — same as V2.1
+    state.insert(
+        ("m.room.member".into(), Some("@target:example.com".into())),
+        make_event(
+            "$target_join",
+            "m.room.member",
+            Some("@target:example.com"),
+            "@target:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let kick_event = make_event(
+        "$kick",
+        "m.room.member",
+        Some("@target:example.com"),
+        "@creator:example.com",
+        json!({"membership": "leave"}),
+    );
+    assert!(
+        check_auth(&kick_event, &state, rezzy::types::StateResVersion::V2).is_ok(),
+        "V2 creator (PL 100) should be able to kick (requires PL 50)"
+    );
+}
+
+/// Verify that `additional_creators` are ignored in V2 (pre-MSC4289).
+#[test]
+fn test_v2_additional_creators_ignored() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event(
+            "$create",
+            M_ROOM_CREATE,
+            Some(""),
+            "@creator:example.com",
+            json!({
+                "creator": "@creator:example.com",
+                "room_version": "10",
+                "additional_creators": ["@additional:example.com"]
+            }),
+        ),
+    );
+    state.insert(
+        (
+            "m.room.member".into(),
+            Some("@additional:example.com".into()),
+        ),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@additional:example.com"),
+            "@additional:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@target:example.com".into())),
+        make_event(
+            "$target_join",
+            "m.room.member",
+            Some("@target:example.com"),
+            "@target:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // additional_creator tries to kick — should FAIL in V2 (they have PL 0, not creator privilege)
+    let kick_event = make_event(
+        "$kick",
+        "m.room.member",
+        Some("@target:example.com"),
+        "@additional:example.com",
+        json!({"membership": "leave"}),
+    );
+    assert!(
+        check_auth(&kick_event, &state, rezzy::types::StateResVersion::V2).is_err(),
+        "V2 should ignore additional_creators — user should have PL 0 and fail kick"
+    );
+
+    // Same kick should SUCCEED in V2.1
+    assert!(
+        check_auth(&kick_event, &state, rezzy::types::StateResVersion::V2_1).is_ok(),
+        "V2.1 should honor additional_creators — user should have MAX_POWER_LEVEL"
+    );
+}

@@ -24,13 +24,8 @@ use std::time::Instant;
 pub type SharedStateMap = std::sync::Arc<ResolvedState>;
 
 pub fn parse_room_version(ver: &str) -> anyhow::Result<StateResVersion> {
-    match ver {
-        "1" => Ok(StateResVersion::V1),
-        "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" => Ok(StateResVersion::V2),
-        "12" => Ok(StateResVersion::V2_1),
-        "12.1" => Ok(StateResVersion::V2_1_1),
-        _ => anyhow::bail!("Unsupported room version: {ver}"),
-    }
+    StateResVersion::from_room_version(ver)
+        .ok_or_else(|| anyhow::anyhow!("Unsupported room version: {ver}"))
 }
 
 pub fn detect_version(

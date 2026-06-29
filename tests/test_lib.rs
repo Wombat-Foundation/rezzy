@@ -3693,6 +3693,32 @@ fn test_state_res_version_serde_roundtrip() {
 }
 
 #[test]
+fn test_state_res_version_from_room_version() {
+    assert_eq!(
+        StateResVersion::from_room_version("1"),
+        Some(StateResVersion::V1)
+    );
+    for v in ["2", "3", "4", "5", "6", "7", "8", "9", "10", "11"] {
+        assert_eq!(
+            StateResVersion::from_room_version(v),
+            Some(StateResVersion::V2),
+            "room version {v} should map to V2"
+        );
+    }
+    assert_eq!(
+        StateResVersion::from_room_version("12"),
+        Some(StateResVersion::V2_1)
+    );
+    assert_eq!(
+        StateResVersion::from_room_version("12.1"),
+        Some(StateResVersion::V2_1_1)
+    );
+    assert_eq!(StateResVersion::from_room_version("0"), None);
+    assert_eq!(StateResVersion::from_room_version("99"), None);
+    assert_eq!(StateResVersion::from_room_version(""), None);
+}
+
+#[test]
 fn test_dag_node_trait_on_lean_event() {
     use rezzy::types::DagNode;
     let ev = LeanEvent::<String> {

@@ -66,6 +66,23 @@ pub enum StateResVersion {
     V2_2,
 }
 
+impl StateResVersion {
+    /// Map a Matrix room version string (e.g. `"10"`, `"12"`) to the corresponding
+    /// state resolution algorithm version.
+    ///
+    /// Returns `None` for unrecognized room versions.
+    #[must_use]
+    pub fn from_room_version(ver: &str) -> Option<Self> {
+        match ver {
+            "1" => Some(Self::V1),
+            "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" => Some(Self::V2),
+            "12" => Some(Self::V2_1),
+            "12.1" => Some(Self::V2_1_1),
+            _ => None,
+        }
+    }
+}
+
 impl serde::Serialize for StateResVersion {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
