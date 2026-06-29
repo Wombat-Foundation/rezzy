@@ -775,17 +775,6 @@ where
     (id_to_index, index_to_id)
 }
 
-fn collect_ancestor_short_ids<'a, Id, S>(
-    target_event_id: &'a Id,
-    events_map: &'a HashMap<Id, LeanEvent<Id>, S>,
-) -> (HashMap<&'a Id, usize>, Vec<&'a Id>)
-where
-    Id: Clone + Eq + core::hash::Hash,
-    S: core::hash::BuildHasher,
-{
-    collect_ancestor_short_ids_batch(&[target_event_id], events_map)
-}
-
 fn topological_sort_short_ids<Id, S>(
     index_to_id: &[&Id],
     id_to_index: &HashMap<&Id, usize>,
