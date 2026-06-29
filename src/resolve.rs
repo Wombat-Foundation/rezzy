@@ -286,7 +286,9 @@ pub(crate) fn execute_power_phase<
 /// # Parameters
 ///
 /// - `unconflicted_state`: State entries that all forks agree on, keyed by
-///   `(event_type, state_key) -> event_id`.
+///   `(event_type, state_key) -> event_id`. For **partial joins**, pass the
+///   trusted state snapshot from the join response — this serves as the
+///   checkpoint base. See _Checkpoint / Partial-Join_ below.
 /// - `conflicted_events`: Events that differ across forks. These will be
 ///   sorted, auth-checked, and selectively applied.
 /// - `auth_context`: The full set of events reachable via `auth_events`
@@ -299,6 +301,45 @@ pub(crate) fn execute_power_phase<
 /// A `BTreeMap<(event_type, state_key), event_id>` representing the resolved
 /// room state — the union of unconflicted state and the winners from the
 /// conflicted set.
+///
+/// # Checkpoint / Partial-Join
+///
+/// For partial joins (federated rooms where a server doesn't have full
+/// history), pass the trusted state snapshot as `unconflicted_state`:
+///
+/// ```rust,no_run
+/// # use rezzy::{resolve_lean, LeanEvent, StateResVersion, HashMap};
+/// # use std::collections::BTreeMap;
+/// // State snapshot from /send_join response
+/// let checkpoint: BTreeMap<(String, Option<String>), String> = /* ... */
+/// # BTreeMap::new();
+/// let new_events: HashMap<String, LeanEvent> = /* events since join */
+/// # HashMap::new();
+/// let auth_ctx: HashMap<String, LeanEvent> = /* auth chain for new_events */
+/// # HashMap::new();
+///
+/// let resolved = resolve_lean(checkpoint, new_events, &auth_ctx, StateResVersion::V2);
+/// ```
+///
+/// # Auth Chain Safety
+///
+/// **The auth chain for conflicted events must be complete.** You can trust a
+/// snapshot for the unconflicted base, but truncating the auth chain for
+/// conflicted events causes:
+///
+/// - **Sorting failures**: cannot establish mainline order without the full
+///   power-level chain.
+/// - **Auth check failures**: missing historical power levels or membership
+///   events cause events to be incorrectly rejected.
+/// - **State reset attacks**: an adversary can craft events whose truncated
+///   auth chain makes an illegitimate power grab appear valid
+///   (ref: CVE-2025-49090).
+///
+/// # Panics
+///
+/// Will panic if an event referenced in `auth_events` or `prev_events` by
+/// a conflicted event is missing from both `conflicted_events` and
+/// `auth_context`.
 ///
 /// # Algorithm overview
 ///
@@ -369,4 +410,155 @@ where
     }
     drop(conflicted_events);
     final_resolved
+}
+
+/// Like [`resolve_lean`], but also returns per-event
+/// [`ResolutionDelta`](crate::state_delta::ResolutionDelta)s showing what
+/// changed (or was rejected) at each step.
+///
+/// The deltas are ordered: power-phase events first, then non-power events,
+/// each in their sorted processing order. Both accepted and rejected events
+/// produce a delta entry.
+///
+/// # Returns
+///
+/// A tuple of `(resolved_state, deltas)`.
+///
+/// # Panics
+///
+/// Same conditions as [`resolve_lean`].
+#[must_use]
+#[allow(clippy::type_complexity, clippy::too_many_lines)]
+pub fn resolve_lean_with_deltas<Id, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
+    unconflicted_state: BTreeMap<(String, Option<String>), Id>,
+    mut conflicted_events: HashMap<Id, LeanEvent<Id>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
+    version: StateResVersion,
+) -> (
+    BTreeMap<(String, Option<String>), Id>,
+    alloc::vec::Vec<crate::state_delta::ResolutionDelta<Id>>,
+)
+where
+    Id: crate::types::EventId,
+{
+    use crate::state_delta::{ResolutionDelta, ResolvePhase};
+
+    let original_conflicted_keys =
+        prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
+
+    let mut resolved = get_initial_resolved_state(&unconflicted_state, version);
+    let mut deltas = alloc::vec::Vec::new();
+
+    // --- Power phase (with delta tracking) ---
+
+    let sort_context = build_sort_context(&conflicted_events, auth_context);
+
+    let mut power_events = HashMap::new();
+    let mut non_power_events = HashMap::new();
+    crate::lattice::route_power_events(
+        &conflicted_events,
+        &mut power_events,
+        &mut non_power_events,
+        version,
+    );
+
+    if version != StateResVersion::V1 {
+        expand_v2_power_events_auth_chains(
+            &mut power_events,
+            &mut non_power_events,
+            &conflicted_events,
+        );
+    }
+
+    route_msc4297_ancestral_power_events(
+        &mut power_events,
+        auth_context,
+        &original_conflicted_keys,
+        version,
+    );
+
+    let create_ev = crate::types::find_deterministic_create_event(auth_context, &conflicted_events);
+    let mut local_auth_cache = HashMap::new();
+    let sort_set = &conflicted_events;
+
+    let sorted_power_ids = lean_kahn_sort(&power_events, &sort_context, create_ev, version);
+    for id in &sorted_power_ids {
+        if let Some(event) = sort_set.get(id).or_else(|| auth_context.get(id)) {
+            let key = (event.event_type.clone(), event.state_key.clone());
+            let local_auth = compute_local_auth(
+                event,
+                auth_context,
+                sort_set,
+                &mut local_auth_cache,
+                version,
+            );
+            let accepted = iterative_auth_ok(
+                event,
+                &resolved,
+                auth_context,
+                sort_set,
+                local_auth,
+                create_ev,
+                version,
+                true,
+            );
+            let replaced = if accepted {
+                let old = resolved.get(&key).cloned();
+                resolved.insert(key.clone(), event.event_id.clone());
+                old
+            } else {
+                resolved.get(&key).cloned()
+            };
+            deltas.push(ResolutionDelta {
+                event_id: event.event_id.clone(),
+                accepted,
+                key,
+                replaced,
+                phase: ResolvePhase::Power,
+            });
+        }
+    }
+
+    // --- Non-power phase (with delta tracking) ---
+
+    let mainline = build_mainline(&resolved, &sort_context);
+    let mut non_power_list: alloc::vec::Vec<&LeanEvent<Id>> = non_power_events.values().collect();
+    mainline_sort(&mut non_power_list, &mainline, &sort_context);
+
+    for ev in non_power_list {
+        let key = (ev.event_type.clone(), ev.state_key.clone());
+        let local_auth =
+            compute_local_auth(ev, auth_context, sort_set, &mut local_auth_cache, version);
+        let accepted = iterative_auth_ok(
+            ev,
+            &resolved,
+            auth_context,
+            sort_set,
+            local_auth,
+            create_ev,
+            version,
+            false,
+        );
+        let replaced = if accepted {
+            let old = resolved.get(&key).cloned();
+            resolved.insert(key.clone(), ev.event_id.clone());
+            old
+        } else {
+            resolved.get(&key).cloned()
+        };
+        deltas.push(ResolutionDelta {
+            event_id: ev.event_id.clone(),
+            accepted,
+            key,
+            replaced,
+            phase: ResolvePhase::NonPower,
+        });
+    }
+
+    let mut final_resolved = unconflicted_state;
+    for (k, v) in resolved {
+        final_resolved.insert(k, v);
+    }
+    drop(conflicted_events);
+    (final_resolved, deltas)
 }

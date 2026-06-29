@@ -2975,3 +2975,172 @@ fn test_sorting_coverage() {
         rezzy::StateResVersion::V2_2,
     );
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_resolve_lean_with_deltas_parity() {
+    use alloc::collections::BTreeMap;
+    use rezzy::state_delta::ResolvePhase;
+    use rezzy::{resolve_lean, resolve_lean_with_deltas, LeanEvent, StateResVersion};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    // Build auth context
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+    auth_context.insert(
+        "create".into(),
+        LeanEvent {
+            event_id: "create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            power_level: 100,
+            origin_server_ts: 1,
+            content: json!({}),
+            ..Default::default()
+        },
+    );
+    auth_context.insert(
+        "join_rules".into(),
+        LeanEvent {
+            event_id: "join_rules".into(),
+            event_type: "m.room.join_rules".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            power_level: 100,
+            origin_server_ts: 2,
+            content: json!({"join_rule": "public"}),
+            auth_events: vec!["create".into()],
+            ..Default::default()
+        },
+    );
+    auth_context.insert(
+        "alice_join".into(),
+        LeanEvent {
+            event_id: "alice_join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@alice:example.com".into()),
+            sender: "@alice:example.com".into(),
+            power_level: 50,
+            origin_server_ts: 500,
+            content: json!({"membership": "join"}),
+            auth_events: vec!["create".into()],
+            ..Default::default()
+        },
+    );
+    auth_context.insert(
+        "pl".into(),
+        LeanEvent {
+            event_id: "pl".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            power_level: 100,
+            origin_server_ts: 3,
+            content: json!({"users": {"@bob:example.com": 50}}),
+            ..Default::default()
+        },
+    );
+
+    let mut unconflicted = BTreeMap::new();
+    unconflicted.insert(
+        ("m.room.member".into(), Some("@alice:example.com".into())),
+        "alice_join".into(),
+    );
+
+    // Two competing Bob membership events
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    conflicted.insert(
+        "bob_old".into(),
+        LeanEvent {
+            event_id: "bob_old".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@bob:example.com".into(),
+            power_level: 50,
+            origin_server_ts: 500,
+            content: json!({"membership": "join"}),
+            auth_events: vec![
+                "create".into(),
+                "join_rules".into(),
+                "alice_join".into(),
+                "pl".into(),
+            ],
+            ..Default::default()
+        },
+    );
+    conflicted.insert(
+        "bob_new".into(),
+        LeanEvent {
+            event_id: "bob_new".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@bob:example.com".into(),
+            power_level: 50,
+            origin_server_ts: 1000,
+            content: json!({"membership": "join"}),
+            auth_events: vec![
+                "create".into(),
+                "join_rules".into(),
+                "alice_join".into(),
+                "pl".into(),
+            ],
+            ..Default::default()
+        },
+    );
+
+    // resolve_lean
+    let resolved_plain = resolve_lean(
+        unconflicted.clone(),
+        conflicted.clone(),
+        &auth_context,
+        StateResVersion::V2,
+    );
+
+    // resolve_lean_with_deltas
+    let (resolved_with, deltas) =
+        resolve_lean_with_deltas(unconflicted, conflicted, &auth_context, StateResVersion::V2);
+
+    // The resolved state must be identical
+    assert_eq!(
+        resolved_plain, resolved_with,
+        "resolve_lean_with_deltas must produce identical resolved state"
+    );
+
+    // Should have at least one delta
+    assert!(
+        !deltas.is_empty(),
+        "should have captured at least one resolution delta"
+    );
+    // All deltas should target the bob membership slot (only conflicted events)
+    let bob_key: (String, Option<String>) =
+        ("m.room.member".into(), Some("@bob:example.com".into()));
+    for delta in &deltas {
+        assert_eq!(
+            delta.key, bob_key,
+            "unexpected non-Bob delta: {:?}",
+            delta.event_id
+        );
+    }
+    // At least one delta should be accepted
+    let accepted_count = deltas.iter().filter(|d| d.accepted).count();
+    assert!(
+        accepted_count >= 1,
+        "at least one delta should be accepted, got {accepted_count}"
+    );
+
+    // Verify all deltas have a valid phase
+    let power_count = deltas
+        .iter()
+        .filter(|d| d.phase == ResolvePhase::Power)
+        .count();
+    let non_power_count = deltas
+        .iter()
+        .filter(|d| d.phase == ResolvePhase::NonPower)
+        .count();
+    assert_eq!(
+        power_count + non_power_count,
+        deltas.len(),
+        "all deltas should have Power or NonPower phase"
+    );
+}

@@ -42,6 +42,36 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// Which phase of state resolution produced a delta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ResolvePhase {
+    /// Power events: `m.room.create`, `m.room.power_levels`, `m.room.join_rules`,
+    /// bans, and kicks. Sorted by reverse topological order (Kahn's algorithm).
+    Power,
+    /// Non-power events: everything else. Sorted by mainline proximity.
+    NonPower,
+}
+
+/// A per-event record of what changed in the resolved state during resolution.
+///
+/// [`resolve_lean_with_deltas`](crate::resolve_lean_with_deltas) emits one of
+/// these for every conflicted event that is auth-checked, regardless of whether
+/// it was accepted or rejected.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ResolutionDelta<Id = String> {
+    /// The event that was auth-checked.
+    pub event_id: Id,
+    /// Whether the event passed the iterative auth check.
+    pub accepted: bool,
+    /// The `(event_type, state_key)` slot this event targets.
+    pub key: (String, Option<String>),
+    /// The event ID that was previously in this slot (if any).
+    /// `None` if the slot was empty before this event.
+    pub replaced: Option<Id>,
+    /// Whether this was processed in the power phase or non-power phase.
+    pub phase: ResolvePhase,
+}
+
 /// A single state delta entry — an addition, modification, or deletion.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StateDelta {
