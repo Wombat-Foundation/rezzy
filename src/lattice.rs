@@ -331,13 +331,16 @@ where
 
     let mut resolved = crate::resolve::get_initial_resolved_state(&unconflicted_state, version);
 
-    let (sort_context, power_events, non_power_events, mut local_auth_cache, create_ev) =
+    let (sort_context, power_events, non_power_events, create_ev) =
         crate::resolve::execute_power_phase(
             &conflicted_events,
             auth_context,
             &original_conflicted_keys,
             version,
         );
+
+    // Initialize global auth cache
+    let mut local_auth_cache = crate::HashMap::new();
 
     crate::resolve::run_power_phase_iterative_checks(
         &mut resolved,

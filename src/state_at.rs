@@ -519,6 +519,8 @@ where
         }
     }
 
+    let mut global_auth_cache = LocalAuthCache::new();
+
     let mut state_after_map: Vec<Option<SharedState<Id>>> = core::iter::repeat_with(|| None)
         .take(index_to_id.len())
         .collect();
@@ -548,7 +550,7 @@ where
         } else if prev_states.len() == 1 {
             prev_states.into_iter().next().unwrap()
         } else {
-            resolve_merge_fast_path(&prev_states, events_map, version)
+            resolve_merge_fast_path(&prev_states, events_map, &mut global_auth_cache, version)
         };
 
         if ev.state_key.is_some() {
@@ -771,6 +773,7 @@ where
 fn resolve_merge_fast_path<Id, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
+    global_auth_cache: &mut LocalAuthCache<Id>,
     version: StateResVersion,
 ) -> SharedState<Id>
 where
@@ -785,7 +788,8 @@ where
     if all_match {
         first.clone()
     } else {
-        let btree = resolve_multiple_prev_states(prev_states, events_map, version);
+        let btree =
+            resolve_multiple_prev_states(prev_states, events_map, global_auth_cache, version);
         btree_into_shared_state(btree)
     }
 }
@@ -793,6 +797,7 @@ where
 fn resolve_multiple_prev_states<Id, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
+    global_auth_cache: &mut LocalAuthCache<Id>,
     version: StateResVersion,
 ) -> BTreeMap<(String, Option<String>), Id>
 where
@@ -857,7 +862,13 @@ where
         }
     }
 
-    crate::resolve::resolve_lean(unconflicted_state, conflicted_events, events_map, version)
+    crate::resolve::resolve_lean_with_cache(
+        unconflicted_state,
+        conflicted_events,
+        events_map,
+        Some(global_auth_cache),
+        version,
+    )
 }
 
 #[cfg(test)]
