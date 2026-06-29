@@ -1,7 +1,8 @@
 #![allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
+mod utils;
 use rezzy::{resolve_lean, LeanEvent, StateResVersion};
 use serde_json::json;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211: bool) {
     let create_ev = LeanEvent {
@@ -68,7 +69,7 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
     // V2.1: Should FAIL to resolve the name change.
     // It doesn't see the PL event, so it uses default PL 0 for Alice.
     let resolved_v21 = resolve_lean(
-        BTreeMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events.clone(),
         &auth_context,
         StateResVersion::V2_1,
@@ -80,7 +81,7 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
     );
 
     let resolved_v211 = resolve_lean(
-        BTreeMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
@@ -175,7 +176,7 @@ fn test_v2_1_1_ancient_prev_event_allowed() {
     conflicted_events.insert(alice_name.event_id.clone(), alice_name);
 
     let resolved_v211 = resolve_lean(
-        BTreeMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
@@ -256,7 +257,7 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
     conflicted_events.insert(bob_join.event_id.clone(), bob_join);
 
     let resolved = resolve_lean(
-        BTreeMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
@@ -393,7 +394,7 @@ fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
     conflicted_events.insert(alice_ban.event_id.clone(), alice_ban);
     conflicted_events.insert(bob_ban.event_id.clone(), bob_ban);
 
-    let mut unconflicted = std::collections::BTreeMap::new();
+    let mut unconflicted = imbl::OrdMap::new();
     unconflicted.insert(
         ("m.room.create".to_string(), Some(String::new())),
         create_ev.event_id.clone(),
@@ -530,7 +531,7 @@ fn test_v2_1_1_fixes_invite_lock() {
     // is pulled into the auth overlay. The historical user's join is then evaluated against
     // the "invite" rules and rightfully REJECTED, permanently locking them out!
     let resolved_v2 = rezzy::resolve_lean(
-        std::collections::BTreeMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2,
@@ -548,7 +549,7 @@ fn test_v2_1_1_fixes_invite_lock() {
     // Resolution under V2.1 (The Scalpel)
     // Under V2.1, join_rules are supplemented during Step 4, so V2.1 still fails the Invite Lock.
     let resolved_v21 = rezzy::resolve_lean(
-        std::collections::BTreeMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2_1,
@@ -563,7 +564,7 @@ fn test_v2_1_1_fixes_invite_lock() {
     // Therefore, `$hist_join` is evaluated against its local auth chain (`$public`),
     // and is rightfully ACCEPTED into the resolved state!
     let resolved_v211 = rezzy::resolve_lean(
-        std::collections::BTreeMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
@@ -659,7 +660,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
     // V2.1 resolves PLs first (picking the demotion). When validating Eve's attack,
     // V2.1 overlays the consensus PL (demotion). Eve is PL 0. Name change requires 50. REJECTED.
     let resolved_v21 = rezzy::resolve_lean(
-        std::collections::BTreeMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2_1,
@@ -674,7 +675,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
     // V2.1.1 strictly enforces 1-hop security and supplements the demotion.
     // Therefore, Eve is caught and her attack is rightfully rejected!
     let resolved_v211 = rezzy::resolve_lean(
-        std::collections::BTreeMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
@@ -771,7 +772,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
 
     // Run V2.1 Resolution (Stock)
     let resolved_v21 = rezzy::resolve_lean(
-        std::collections::BTreeMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2_1,
@@ -795,7 +796,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
 
     // Run V2.1.1 Resolution (The V3 Fix)
     let resolved_v211 = rezzy::resolve_lean(
-        std::collections::BTreeMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
@@ -853,7 +854,7 @@ fn test_v2_1_strictness_future_v3_should_pass() {
     conflicted_events.insert("$bob_join".to_string(), bob_join);
 
     let resolved_v21 = rezzy::resolve_lean(
-        std::collections::BTreeMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2_1,
@@ -876,7 +877,7 @@ fn test_v2_1_strictness_future_v3_should_pass() {
 fn make_ghost_moderator_events() -> (
     HashMap<String, LeanEvent>,
     HashMap<String, LeanEvent>,
-    BTreeMap<(String, Option<String>), String>,
+    imbl::OrdMap<(String, Option<String>), String>,
 ) {
     let create_ev = LeanEvent {
         event_id: "$create".to_string(),
@@ -1001,7 +1002,7 @@ fn make_ghost_moderator_events() -> (
     conflicted_events.insert("$nexy_promo".to_string(), nexy_promo);
     conflicted_events.insert("$nexy_bans_spammer".to_string(), nexy_bans_spammer);
 
-    let mut unconflicted_state = std::collections::BTreeMap::new();
+    let mut unconflicted_state = imbl::OrdMap::new();
     unconflicted_state.insert(
         ("m.room.create".to_string(), Some(String::new())),
         "$create".to_string(),
@@ -1146,7 +1147,7 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
     conflicted_events.insert("$admin_lock".to_string(), admin_lock);
     conflicted_events.insert("$spammer_join".to_string(), spammer_join);
 
-    let mut unconflicted_state = std::collections::BTreeMap::new();
+    let mut unconflicted_state = imbl::OrdMap::new();
     unconflicted_state.insert(
         ("m.room.create".to_string(), Some(String::new())),
         "$create".to_string(),
@@ -1264,7 +1265,7 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
 
     // Run V2.1 Resolution (Fixed & Spec-Compliant)
     let resolved_v21 = rezzy::resolve_lean(
-        std::collections::BTreeMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1,
@@ -1391,7 +1392,7 @@ fn test_missing_auth_diff_mainline_distortion() {
     events_map.insert("PL_B", pl_b);
 
     // Call resolve_lean directly
-    let mut unconflicted_state = std::collections::BTreeMap::new();
+    let mut unconflicted_state = imbl::OrdMap::new();
     unconflicted_state.insert(
         ("m.room.power_levels".to_string(), Some(String::new())),
         "PL0",

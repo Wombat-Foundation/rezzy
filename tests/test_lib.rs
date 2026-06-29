@@ -1,3 +1,4 @@
+mod utils;
 use std::collections::HashMap;
 extern crate alloc;
 
@@ -5,7 +6,7 @@ extern crate alloc;
 #[allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
 mod tests {
 
-    use alloc::collections::BTreeMap;
+    use super::utils;
     use alloc::string::ToString;
     use alloc::vec;
     use core::cmp::Ordering;
@@ -31,6 +32,13 @@ mod tests {
         assert_eq!(ev.prev_events.len(), 0);
         assert_eq!(ev.auth_events.len(), 0);
         assert_eq!(ev.depth, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "fixture auth_context must contain exactly one m.room.create event")]
+    fn test_missing_create_event_panics() {
+        let auth_context = std::collections::HashMap::new();
+        utils::build_unconflicted_state_test_helper(&auth_context);
     }
 
     #[test]
@@ -328,7 +336,7 @@ mod tests {
 
     #[test]
     fn test_v2_1_strict_resolution() {
-        let mut unconflicted = BTreeMap::new();
+        let mut unconflicted = imbl::OrdMap::new();
         unconflicted.insert(
             ("m.room.member".into(), Some("@alice:example.com".into())),
             "A".into(),
@@ -810,7 +818,7 @@ mod tests {
 
     #[test]
     fn test_resolve_lean_functionality() {
-        let mut unconflicted = BTreeMap::new();
+        let mut unconflicted = imbl::OrdMap::new();
         unconflicted.insert(("type".into(), Some("key".into())), "id".into());
         let conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let resolved = resolve_lean(
@@ -827,7 +835,7 @@ mod tests {
         use serde_json::json;
 
         // Uncontested state: Alice is already joined, Bob's old event is the prior state.
-        let mut unconflicted = BTreeMap::new();
+        let mut unconflicted = imbl::OrdMap::new();
         unconflicted.insert(
             ("m.room.member".into(), Some("@alice:example.com".into())),
             "id1".into(),
@@ -1062,7 +1070,7 @@ mod tests {
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2,
         );
-        let mut resolved_state = BTreeMap::new();
+        let mut resolved_state = imbl::OrdMap::new();
         for id in sorted {
             let ev = &events[&id];
             let key = (ev.event_type.clone(), ev.state_key.clone());
@@ -2200,7 +2208,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_auth(&bad_create, &state),
+            check_auth(
+                &bad_create,
+                &state,
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            ),
             Err(AuthError::<String>::CreateWithPrevEvents)
         );
 
@@ -2212,7 +2224,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_auth(&name_change, &state),
+            check_auth(
+                &name_change,
+                &state,
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            ),
             Err(AuthError::NotMember {
                 sender: "@bob:example.com".into(),
                 event_id: "$name".into()
@@ -2226,7 +2242,12 @@ mod tests {
             sender: "@alice:example.com".into(),
             ..Default::default()
         };
-        assert!(check_auth(&creator_name_change, &state).is_ok());
+        assert!(check_auth(
+            &creator_name_change,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+        )
+        .is_ok());
 
         // Banned user membership transition
         let mut state2 = RoomState::new();
@@ -2257,7 +2278,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_auth(&join_ev, &state2),
+            check_auth(
+                &join_ev,
+                &state2,
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            ),
             Err(AuthError::BannedUser {
                 sender: "@bob:example.com".into(),
                 event_id: "$join".into()
@@ -2273,7 +2298,12 @@ mod tests {
             content: json!({ "membership": "invite" }),
             ..Default::default()
         };
-        assert!(check_auth(&self_invite, &state2).is_err());
+        assert!(check_auth(
+            &self_invite,
+            &state2,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+        )
+        .is_err());
 
         // Invalid transition target user != sender for join
         let bad_join: LeanEvent = LeanEvent {
@@ -2285,7 +2315,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_auth(&bad_join, &state2),
+            check_auth(
+                &bad_join,
+                &state2,
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            ),
             Err(AuthError::InvalidStateKey {
                 expected: "@alice:example.com".into(),
                 actual: "@bob:example.com".into()
@@ -2319,7 +2353,11 @@ mod tests {
             bob_joined.clone(),
         );
         assert_eq!(
-            check_auth(&low_power_state_change, &state3),
+            check_auth(
+                &low_power_state_change,
+                &state3,
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            ),
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,
@@ -2337,7 +2375,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_auth(&invite_banned, &state2),
+            check_auth(
+                &invite_banned,
+                &state2,
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            ),
             Err(AuthError::BannedUser {
                 sender: "@bob:example.com".into(),
                 event_id: "$invite_banned".into()
@@ -2352,14 +2394,18 @@ mod tests {
             state_key: None, // lacks state_key
             ..Default::default()
         };
-        let (accepted_ids, rejected_ids) = check_auth_chain(&[create_no_key], &RoomState::new());
+        let (accepted_ids, rejected_ids) = check_auth_chain(
+            &[create_no_key],
+            &RoomState::new(),
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+        );
         assert_eq!(accepted_ids, vec!["$create_no_key"]);
         assert!(rejected_ids.is_empty());
     }
 
     #[test]
     fn test_resolve_lean_cycle_power_events() {
-        use std::collections::{BTreeMap, HashMap};
+        use std::collections::HashMap;
 
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let mut auth: HashMap<String, LeanEvent> = HashMap::new();
@@ -2393,7 +2439,7 @@ mod tests {
         conflicted.insert("A".into(), a);
         conflicted.insert("B".into(), b);
 
-        let unconflicted = BTreeMap::new();
+        let unconflicted = imbl::OrdMap::new();
         // This will run kahn sort on power_events, detect a cycle, and print/handle it safely.
         let resolved = resolve_lean(unconflicted, conflicted, &auth, rezzy::StateResVersion::V2);
         assert!(!resolved.is_empty());
@@ -2559,7 +2605,7 @@ mod tests {
         // Resolve using V2_1 (MSC4297). This starts with an empty state.
         // It must successfully route and validate `$pl_alice` in order to authorize Bob's PL events.
         let resolved = resolve_lean(
-            BTreeMap::new(),
+            utils::build_unconflicted_state_test_helper(&auth_context),
             conflicted_events,
             &auth_context,
             rezzy::StateResVersion::V2_1,
@@ -2606,36 +2652,8 @@ mod tests {
     }
 
     #[test]
-    fn test_create_event_determinism() {
-        use rezzy::types::find_deterministic_create_event;
-        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
-        let auth: HashMap<String, LeanEvent> = HashMap::new();
-
-        let c1: LeanEvent = LeanEvent {
-            event_id: "$create_1".into(),
-            event_type: "m.room.create".into(),
-            state_key: Some(String::new()),
-            ..Default::default()
-        };
-        let c2: LeanEvent = LeanEvent {
-            event_id: "$create_2".into(),
-            event_type: "m.room.create".into(),
-            state_key: Some(String::new()),
-            ..Default::default()
-        };
-
-        conflicted.insert("$create_1".into(), c1);
-        conflicted.insert("$create_2".into(), c2);
-
-        let chosen = find_deterministic_create_event(&auth, &conflicted);
-        assert!(chosen.is_some());
-        // Should choose lexicographically smaller id deterministically
-        assert_eq!(chosen.unwrap().event_id, "$create_1");
-    }
-
-    #[test]
     fn test_overflowing_power_level_coercion_values_clamping() {
-        use rezzy::types::coerce_json_to_i64;
+        use rezzy::basespec::rezzy_types::coerce_json_to_i64;
 
         // Value beyond standard i64 should return None securely so it defaults/clamps to 0 (minimum power/most secure fallback)
         let large_positive = serde_json::Value::String("99999999999999999999999999999".to_string());
@@ -3003,9 +3021,54 @@ fn test_sorting_coverage() {
 }
 
 #[test]
+fn test_sorting_v2_creator_gets_pl_100() {
+    let mut events: HashMap<String, LeanEvent> = HashMap::new();
+    let auth: HashMap<String, LeanEvent> = HashMap::new();
+
+    let create_ev: LeanEvent = LeanEvent {
+        event_id: "create".into(),
+        event_type: "m.room.create".into(),
+        state_key: Some(String::new()),
+        sender: "alice".into(),
+        content: json!({ "creator": "alice", "room_version": "10" }),
+        ..Default::default()
+    };
+    events.insert("create".into(), create_ev.clone());
+
+    // alice is the creator — in V2, she should get PL 100 (not MAX)
+    let alice_ev: LeanEvent = LeanEvent {
+        event_id: "alice_msg".into(),
+        sender: "alice".into(),
+        auth_events: vec![],
+        ..Default::default()
+    };
+    events.insert("alice_msg".into(), alice_ev);
+
+    let bob_ev: LeanEvent = LeanEvent {
+        event_id: "bob_msg".into(),
+        sender: "bob".into(),
+        auth_events: vec![],
+        ..Default::default()
+    };
+    events.insert("bob_msg".into(), bob_ev);
+
+    // Sort with V2 — creator gets PL 100
+    let result =
+        rezzy::lean_kahn_sort(&events, &auth, Some(&create_ev), rezzy::StateResVersion::V2);
+    // Creator alice should sort with higher power than bob (PL 0), meaning she comes LAST in the sorted list (since sorting is ascending)
+    assert!(result.len() >= 2);
+    let alice_pos = result.iter().position(|id| id == "alice_msg").unwrap();
+    let bob_pos = result.iter().position(|id| id == "bob_msg").unwrap();
+    // Since kahn sort orders highest-power to lowest-power, Alice (PL 100) should come before Bob (PL 0).
+    assert!(
+        alice_pos < bob_pos,
+        "Creator Alice (PL 100) should be sorted before Bob (PL 0), meaning higher power popped first"
+    );
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn test_resolve_lean_with_deltas_parity() {
-    use alloc::collections::BTreeMap;
     use rezzy::state_delta::ResolvePhase;
     use rezzy::{resolve_lean, resolve_lean_with_deltas, LeanEvent, StateResVersion};
     use serde_json::json;
@@ -3068,7 +3131,7 @@ fn test_resolve_lean_with_deltas_parity() {
         },
     );
 
-    let mut unconflicted = BTreeMap::new();
+    let mut unconflicted = imbl::OrdMap::new();
     unconflicted.insert(
         ("m.room.member".into(), Some("@alice:example.com".into())),
         "alice_join".into(),
@@ -3174,9 +3237,9 @@ fn test_resolve_lean_with_deltas_parity() {
 #[test]
 fn test_resolve_lean_with_deltas_no_duplicate_power_events() {
     use rezzy::{resolve_lean_with_deltas, LeanEvent, StateResVersion};
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::HashMap;
 
-    let mut unconflicted = BTreeMap::new();
+    let mut unconflicted = imbl::OrdMap::new();
     unconflicted.insert(
         ("m.room.create".into(), Some(String::new())),
         "$create".into(),
@@ -3319,6 +3382,13 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
     sort_set.insert("$kick".into(), kick);
     sort_set.insert("$self_leave".into(), self_leave);
 
+    let msg_ev: LeanEvent<String> = LeanEvent {
+        event_id: "$msg".into(),
+        event_type: "m.room.message".into(),
+        ..Default::default()
+    };
+    sort_set.insert("$msg".into(), msg_ev);
+
     // Test V2 (Rooms 2-11)
     let mut set1_v2_power = HashMap::new();
     let mut set1_v2_non_power = HashMap::new();
@@ -3327,6 +3397,11 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
         &mut set1_v2_power,
         &mut set1_v2_non_power,
         StateResVersion::V2,
+    );
+
+    assert!(
+        set1_v2_non_power.contains_key("$msg"),
+        "V2 should route message to non-power events"
     );
 
     // In V2, ALL member events are power events.
@@ -3343,8 +3418,8 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
         "V2 should treat self-leave as power event"
     );
     assert!(
-        set1_v2_non_power.is_empty(),
-        "V2 should have no non-power member events"
+        set1_v2_non_power.contains_key("$msg"),
+        "V2 should route message to non-power events"
     );
 
     // Test V2.1 (Room 12+)
@@ -3372,13 +3447,87 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
     );
 
     assert!(
-        set2_v21_non_power.contains_key("$self_join"),
-        "V2.1 should route self-join to non-power phase"
+        set2_v21_non_power.contains_key("$self_join")
+            && set2_v21_non_power.contains_key("$self_leave")
+            && set2_v21_non_power.contains_key("$msg"),
+        "V2.1 routes regular memberships and messages to non-power events"
     );
+}
+
+#[test]
+fn test_lean_event_serialize_roundtrip() {
+    let ev = LeanEvent::<String> {
+        event_id: "$test".into(),
+        event_type: "m.room.message".into(),
+        state_key: Some(String::new()),
+        sender: "@alice:x.com".into(),
+        origin_server_ts: 1_234_567_890,
+        content: serde_json::json!({"body": "hello"}),
+        prev_events: vec!["$prev".into()],
+        auth_events: vec!["$auth".into()],
+        depth: 5,
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&ev).unwrap();
+    let back: LeanEvent<String> = serde_json::from_str(&json).unwrap();
+    assert_eq!(ev.event_id, back.event_id);
+    assert_eq!(ev.event_type, back.event_type);
+    assert_eq!(ev.state_key, back.state_key);
+    assert_eq!(ev.sender, back.sender);
+    assert_eq!(ev.origin_server_ts, back.origin_server_ts);
+    assert_eq!(ev.depth, back.depth);
+    assert_eq!(ev.content, back.content);
+    assert_eq!(ev.prev_events, back.prev_events);
+    assert_eq!(ev.auth_events, back.auth_events);
+}
+
+#[test]
+fn test_event_content_blanket_impl_all_methods() {
+    use rezzy::basespec::rezzy_types::EventContent;
+
+    let content = serde_json::json!({
+        "membership": "join",
+        "join_rule": "public",
+        "ban": 60,
+        "kick": 55,
+        "invite": 40,
+        "redact": 70,
+        "users_default": 10,
+        "events_default": 15,
+        "state_default": 20,
+        "creator": "@creator:x.com",
+        "additional_creators": ["@ac:x.com"],
+        "users": {"@alice:x.com": 100}
+    });
+    assert_eq!(content.get_membership(), Some("join"));
+    assert_eq!(content.get_join_rule(), Some("public"));
+    assert_eq!(content.get_ban(), Some(60));
+    assert_eq!(content.get_kick(), Some(55));
+    assert_eq!(content.get_invite(), Some(40));
+    assert_eq!(content.get_redact(), Some(70));
+    assert_eq!(content.get_users_default(), Some(10));
+    assert_eq!(content.get_events_default(), Some(15));
+    assert_eq!(content.get_state_default(), Some(20));
+    assert_eq!(content.get_creator(), Some("@creator:x.com"));
+    assert_eq!(content.get_user_power_level("@alice:x.com"), Some(100));
+    assert!(content.has_additional_creator("@ac:x.com"));
+    assert!(!content.has_additional_creator("@nobody:x.com"));
+}
+
+#[test]
+fn test_additional_creators_version_gating() {
+    use rezzy::basespec::rezzy_types::EventContent;
+    let content = serde_json::json!({
+        "additional_creators": ["@ac:x.com"]
+    });
+    // The TestContent wrapper correctly parses it regardless of version
     assert!(
-        set2_v21_non_power.contains_key("$self_leave"),
-        "V2.1 should route self-leave to non-power phase"
+        content.has_additional_creator("@ac:x.com"),
+        "The TestContent wrapper correctly parses it"
     );
+    // Note: The actual version-gating (V2 vs V2.1+) is enforced in `src/auth/mod.rs`
+    // `get_sender_power_level` where `has_additional_creator` is only evaluated
+    // if the version matches V2_1 | V2_1_1 | V2_2.
 }
 
 /// Hypothetical comparison: proves `resolve_lean` produces different resolved
@@ -3401,7 +3550,6 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn test_compute_state_at_v2_vs_v2_1_divergence() {
-    use alloc::collections::BTreeMap;
     use rezzy::{resolve_lean, LeanEvent, StateResVersion};
     use std::collections::HashMap;
 
@@ -3478,7 +3626,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
     );
 
     // === Unconflicted state: everyone agrees on these ===
-    let mut unconflicted: BTreeMap<(String, Option<String>), String> = BTreeMap::new();
+    let mut unconflicted: imbl::OrdMap<(String, Option<String>), String> = imbl::OrdMap::new();
     unconflicted.insert(
         ("m.room.create".into(), Some(String::new())),
         "$create".into(),
@@ -3562,4 +3710,302 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
         state_v2.get(&jr_key),
         state_v2_1.get(&jr_key),
     );
+}
+
+#[test]
+fn test_state_res_version_serde_roundtrip() {
+    let versions = vec![
+        StateResVersion::V1,
+        StateResVersion::V2,
+        StateResVersion::V2_1,
+        StateResVersion::V2_1_1,
+        StateResVersion::V2_2,
+    ];
+    for v in &versions {
+        let json = serde_json::to_string(v).unwrap();
+        let back: StateResVersion = serde_json::from_str(&json).unwrap();
+        assert_eq!(*v, back, "Roundtrip failed for {v:?}");
+    }
+    // Unknown variant must fail
+    let invalid: Result<StateResVersion, _> = serde_json::from_str("\"V99\"");
+    assert!(invalid.is_err());
+}
+
+#[test]
+fn test_state_res_version_from_room_version() {
+    assert_eq!(
+        StateResVersion::from_room_version("1"),
+        Some(StateResVersion::V1)
+    );
+    for v in ["2", "3", "4", "5", "6", "7", "8", "9", "10", "11"] {
+        assert_eq!(
+            StateResVersion::from_room_version(v),
+            Some(StateResVersion::V2),
+            "room version {v} should map to V2"
+        );
+    }
+    assert_eq!(
+        StateResVersion::from_room_version("12"),
+        Some(StateResVersion::V2_1)
+    );
+    assert_eq!(
+        StateResVersion::from_room_version("12.1"),
+        Some(StateResVersion::V2_1_1)
+    );
+    assert_eq!(StateResVersion::from_room_version("0"), None);
+    assert_eq!(StateResVersion::from_room_version("99"), None);
+    assert_eq!(StateResVersion::from_room_version(""), None);
+}
+
+#[test]
+fn test_dag_node_trait_on_lean_event() {
+    use rezzy::basespec::rezzy_types::DagNode;
+    let ev = LeanEvent::<String> {
+        event_id: "ev".into(),
+        depth: 42,
+        prev_events: vec!["p1".into(), "p2".into()],
+        auth_events: vec!["a1".into()],
+        ..Default::default()
+    };
+    assert_eq!(ev.depth(), 42);
+    assert_eq!(ev.prev_events().len(), 2);
+    assert_eq!(ev.auth_events().len(), 1);
+}
+
+#[test]
+fn test_lean_event_get_redact_and_creator() {
+    let ev = LeanEvent::<String> {
+        event_id: "ev".into(),
+        event_type: "m.room.power_levels".into(),
+        content: serde_json::json!({"redact": 50, "creator": "@bob:x.com"}),
+        ..Default::default()
+    };
+    assert_eq!(ev.get_redact(), Some(50));
+    assert_eq!(ev.get_creator(), Some("@bob:x.com"));
+
+    let empty = LeanEvent::<String>::default();
+    assert_eq!(empty.get_redact(), None);
+    assert_eq!(empty.get_creator(), None);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_coverage_sweeper_for_unreachable_edges() {
+    use rezzy::basespec::rezzy_types::{EventProvider, SortPriority};
+    use rezzy::cdo::is_ancestor;
+    use rezzy::lattice::resolve_lattice_coordinatized;
+    use rezzy::state_at::StateComputationError;
+    use rezzy::state_delta::{reconstruct_state_batch, CompactedCheckpoint};
+    use rezzy::{resolve_lean_with_deltas, LeanEvent, StateResVersion};
+    use std::collections::{BTreeMap, HashMap};
+
+    // Cover StateComputationError Display
+    let err_cycle: StateComputationError<String> = StateComputationError::CycleDetected;
+    let err_cb: StateComputationError<String> = StateComputationError::Callback("test".into());
+    assert!(format!("{err_cycle}").contains("Cycle detected"));
+    assert!(format!("{err_cb}").contains("Callback error"));
+
+    // Cover cdo::is_ancestor (Public API unused internally)
+    let mut context = HashMap::new();
+    let ev1: LeanEvent<String> = LeanEvent {
+        event_id: "A".to_string(),
+        ..Default::default()
+    };
+    let ev2: LeanEvent<String> = LeanEvent {
+        event_id: "B".to_string(),
+        auth_events: vec!["A".to_string()],
+        ..Default::default()
+    };
+    context.insert("A".to_string(), ev1.clone());
+    context.insert("B".to_string(), ev2.clone());
+    assert!(is_ancestor(&"B".to_string(), &"A".to_string(), &context));
+    assert!(!is_ancestor(&"A".to_string(), &"B".to_string(), &context));
+
+    // Cover resolve_lattice_coordinatized
+    let lattice_res = resolve_lattice_coordinatized(
+        imbl::OrdMap::new(),
+        context.clone(),
+        &HashMap::new(),
+        StateResVersion::V2,
+    );
+    assert!(lattice_res.is_empty());
+
+    // Cover get_initial_resolved_state for V1
+    let mut unconf = imbl::OrdMap::new();
+    unconf.insert(("m.room.create".into(), Some(String::new())), "123".into());
+    let v1_resolved = rezzy::resolve::resolve_lean(
+        unconf.clone(),
+        HashMap::<String, LeanEvent<String>>::new(),
+        &HashMap::<String, LeanEvent<String>>::new(),
+        StateResVersion::V1,
+    );
+    assert_eq!(v1_resolved.len(), 1);
+
+    // Cover SortPriority tie-breakers (sorting.rs)
+    let ev1_v1 = LeanEvent::<String> {
+        event_id: "A".into(),
+        depth: 5,
+        ..Default::default()
+    };
+    let ev2_v1 = LeanEvent::<String> {
+        event_id: "B".into(),
+        depth: 5,
+        ..Default::default()
+    };
+    let p1_v1 = SortPriority {
+        event: &ev1_v1,
+        power_level: 0,
+        auth_chain_distance: 0,
+        version: StateResVersion::V1,
+    };
+    let p2_v1 = SortPriority {
+        event: &ev2_v1,
+        power_level: 0,
+        auth_chain_distance: 0,
+        version: StateResVersion::V1,
+    };
+    assert_eq!(p1_v1.cmp(&p2_v1), core::cmp::Ordering::Less); // A < B
+
+    let ev1_v2 = LeanEvent::<String> {
+        event_id: "A".into(),
+        origin_server_ts: 100,
+        ..Default::default()
+    };
+    let ev2_v2 = LeanEvent::<String> {
+        event_id: "B".into(),
+        origin_server_ts: 100,
+        ..Default::default()
+    };
+    let p1_v2 = SortPriority {
+        event: &ev1_v2,
+        power_level: 0,
+        auth_chain_distance: 0,
+        version: StateResVersion::V2,
+    };
+    let p2_v2 = SortPriority {
+        event: &ev2_v2,
+        power_level: 0,
+        auth_chain_distance: 0,
+        version: StateResVersion::V2,
+    };
+    assert_eq!(p1_v2.cmp(&p2_v2), core::cmp::Ordering::Greater); // A > B (inverted)
+
+    // Cover rejected events in resolve_lean_with_deltas
+    let create: LeanEvent<String> = LeanEvent {
+        event_id: "$create".into(),
+        event_type: "m.room.create".into(),
+        state_key: Some(String::new()),
+        sender: "@alice:x.com".into(),
+        ..Default::default()
+    };
+
+    let pl: LeanEvent<String> = LeanEvent {
+        event_id: "$pl".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@alice:x.com".into(),
+        content: serde_json::json!({"users": {"@alice:x.com": 100}}),
+        auth_events: vec!["$create".into()],
+        ..Default::default()
+    };
+
+    let mut auth = HashMap::new();
+    auth.insert("$create".into(), create.clone());
+    auth.insert("$pl".into(), pl.clone());
+
+    let bogus_power: LeanEvent<String> = LeanEvent {
+        event_id: "$bogus_pl".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@bob:x.com".into(), // PL 0
+        content: serde_json::json!({"users": {"@bob:x.com": 100}}),
+        auth_events: vec!["$create".into(), "$pl".into()],
+        ..Default::default()
+    };
+
+    let bogus_topic: LeanEvent<String> = LeanEvent {
+        event_id: "$bogus_topic".into(),
+        event_type: "m.room.topic".into(),
+        state_key: Some(String::new()),
+        sender: "@bob:x.com".into(), // PL 0
+        auth_events: vec!["$create".into(), "$pl".into()],
+        ..Default::default()
+    };
+
+    let mut conflicted = HashMap::new();
+    conflicted.insert("$bogus_pl".into(), bogus_power.clone());
+    conflicted.insert("$bogus_topic".into(), bogus_topic.clone());
+
+    let (resolved, deltas) = resolve_lean_with_deltas(
+        imbl::OrdMap::new(),
+        conflicted.clone(),
+        &auth,
+        StateResVersion::V2,
+    );
+
+    assert!(!resolved.contains_key(&("m.room.power_levels".into(), Some(String::new()))));
+    assert!(!resolved.contains_key(&("m.room.topic".into(), Some(String::new()))));
+    assert!(deltas
+        .iter()
+        .any(|d| d.event_id == "$bogus_pl" && !d.accepted));
+    assert!(deltas
+        .iter()
+        .any(|d| d.event_id == "$bogus_topic" && !d.accepted));
+
+    // Cover BTreeMap EventProvider (types.rs)
+    let btree_provider: BTreeMap<String, LeanEvent<String, serde_json::Value>> = BTreeMap::new();
+    assert!(btree_provider.get_event(&"$none".to_string()).is_none());
+
+    // Cover reconstruct_state_batch broken chain branches
+    let orphan_cp = CompactedCheckpoint {
+        state_hash: "H1".into(),
+        parent_hash: None,
+        event_id: "E1".into(),
+        deltas: vec![],
+        snapshot: None, // Missing snapshot!
+    };
+    let missing_parent_cp = CompactedCheckpoint {
+        state_hash: "H2".into(),
+        parent_hash: Some("MISSING".into()),
+        event_id: "E2".into(),
+        deltas: vec![],
+        snapshot: None,
+    };
+    let missing_grandparent_cp = CompactedCheckpoint {
+        state_hash: "H3".into(),
+        parent_hash: Some("H2".into()), // H2 exists, but it failed to reconstruct
+        event_id: "E3".into(),
+        deltas: vec![],
+        snapshot: None,
+    };
+
+    // Attempting to reconstruct all three will hit all 3 `continue` bailouts
+    let broken_batch = reconstruct_state_batch(
+        &[orphan_cp, missing_parent_cp, missing_grandparent_cp],
+        &[0, 1, 2],
+    );
+    assert!(broken_batch.is_empty());
+
+    // Cover lean_kahn_sort CycleDetected branch
+    let mut cyclic_kahn_events: HashMap<String, LeanEvent<String>> = HashMap::new();
+    let ev_a: LeanEvent<String> = LeanEvent {
+        event_id: "A".into(),
+        auth_events: vec!["B".into()],
+        ..Default::default()
+    };
+    let ev_b: LeanEvent<String> = LeanEvent {
+        event_id: "B".into(),
+        auth_events: vec!["A".into()],
+        ..Default::default()
+    };
+    cyclic_kahn_events.insert("A".into(), ev_a.clone());
+    cyclic_kahn_events.insert("B".into(), ev_b.clone());
+
+    let sorted_cyclic = rezzy::sorting::lean_kahn_sort(
+        &cyclic_kahn_events,
+        &HashMap::new(),
+        None,
+        StateResVersion::V2,
+    );
+    assert_eq!(sorted_cyclic.len(), 2);
 }

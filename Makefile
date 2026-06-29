@@ -74,6 +74,18 @@ rust/doc: ##H Generate rustdoc API documentation
 rust/test: fixtures ##H Run Rust tests
 	$(CARGO) test --all-targets --all-features
 
+.PHONY: rust/coverage
+rust/coverage: fixtures ##H Run code coverage and generate HTML report
+	# TODO: include `src/bin/` in coverage
+	$(CARGO) tarpaulin --all-features --all-targets \
+		--out Html Xml \
+		--output-dir ../.tmp/coverage-lean \
+		--packages rezzy \
+		--exclude-files 'src/bin/*' \
+		--ignore-panics \
+		--ignore-tests \
+		--skip-clean
+
 .PHONY: rust/clean
 rust/clean: ##H Remove Rust build artifacts
 	-$(CARGO) clean
@@ -85,17 +97,6 @@ rust/install: ##H Install rezzy binary to cargo bin
 .PHONY: rust/uninstall
 rust/uninstall: ##H Uninstall rezzy binary from cargo bin
 	$(CARGO) uninstall rezzy
-
-.PHONY: rust/coverage
-rust/coverage: ##H Run code coverage and generate HTML report
-	@echo "Running focused code coverage for rezzy..."
-	$(CARGO) tarpaulin --out Html Xml \
-		--output-dir ../.tmp/coverage-lean \
-		--packages rezzy \
-		--ignore-panics \
-		--ignore-tests \
-		--skip-clean
-	@echo "Coverage report updated in ../.tmp/coverage-lean/tarpaulin-report.html"
 
 .PHONY: rust/e2e
 rust/e2e: ##H Run e2e integration test on real JSON
@@ -120,6 +121,7 @@ rust/publish: ##H Preview package and simulate dry-run publish
 .PHONY: build test install clean uninstall
 build:   rust/build   ##H Alias for rust/build
 test:    rust/test    ##H Alias for rust/test
+cov:     rust/coverage ##H Alias for rust/coverage
 install: rust/install ##H Alias for rust/install
 uninstall: rust/uninstall ##H Alias for rust/uninstall
 

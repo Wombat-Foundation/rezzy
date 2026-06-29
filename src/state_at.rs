@@ -26,7 +26,7 @@
 //! - **Batch mode:** computes state at multiple targets in a single topological
 //!   pass, amortizing the graph traversal cost.
 
-use crate::types::{LeanEvent, StateResVersion};
+use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::HashMap;
 use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
@@ -74,7 +74,7 @@ impl<Id, C> LocalAuthCache<Id, C> {
 }
 
 pub(crate) struct OverlayState<'a, Id, C, S1, S2> {
-    pub(crate) resolved: &'a BTreeMap<(String, Option<String>), Id>,
+    pub(crate) resolved: &'a crate::state_at::SharedState<Id>,
     pub(crate) auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
     pub(crate) sort_set: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
     pub(crate) local_auth: BTreeMap<(String, Option<String>), LeanEvent<Id, C>>,
@@ -85,7 +85,7 @@ pub(crate) struct OverlayState<'a, Id, C, S1, S2> {
 
 impl<
         Id: Clone + Eq + core::hash::Hash + Ord,
-        C: crate::types::EventContent,
+        C: crate::basespec::rezzy_types::EventContent,
         S1: core::hash::BuildHasher,
         S2: core::hash::BuildHasher,
     > crate::auth::StateProvider<Id, C> for OverlayState<'_, Id, C, S1, S2>
@@ -193,10 +193,10 @@ pub(crate) fn iterative_auth_ok<
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 >(
     ev: &LeanEvent<Id, C>,
-    resolved: &BTreeMap<(String, Option<String>), Id>,
+    resolved: &crate::state_at::SharedState<Id>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S1>,
     sort_set: &HashMap<Id, LeanEvent<Id, C>, S2>,
     local_auth: BTreeMap<(String, Option<String>), LeanEvent<Id, C>>,
@@ -214,7 +214,7 @@ pub(crate) fn iterative_auth_ok<
         is_power_phase,
     };
 
-    crate::auth::check_auth(ev, &overlay).is_ok()
+    crate::auth::check_auth(ev, &overlay, version).is_ok()
 }
 
 /// Merges an event into a local auth map if it is an auth event (e.g. power levels, join rules).
@@ -362,7 +362,7 @@ where
     Id: Clone + Eq + Ord + core::fmt::Debug + core::hash::Hash + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + Ord + core::hash::Hash,
     S: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 {
     if !events_map.contains_key(target_event_id) {
         return None;
@@ -409,7 +409,7 @@ where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 {
     let mut results = HashMap::with_capacity(target_event_ids.len());
 
@@ -468,7 +468,7 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F>(
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
     F: FnMut(Id, SharedState<Id>),
 {
     let result = try_compute_state_at_streaming(
@@ -511,7 +511,7 @@ where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
     F: FnMut(Id, SharedState<Id>) -> Result<(), E>,
 {
     let mut actual_target_ids = Vec::new();
@@ -566,7 +566,7 @@ fn run_state_pipeline_streaming<'a, Id, C, S, F, E>(
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
     F: FnMut(usize, SharedState<Id>) -> Result<(), E>,
 {
     let (sorted_ancestors, mut out_degree) =
@@ -677,7 +677,7 @@ where
     Id: Clone + Eq + core::hash::Hash + Ord + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
-    Node: crate::types::DagNode<Id>,
+    Node: crate::basespec::rezzy_types::DagNode<Id>,
 {
     use alloc::collections::BinaryHeap;
 
@@ -846,7 +846,7 @@ fn resolve_merge_fast_path<Id, C, S>(
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 {
     let first = &prev_states[0];
     let all_match = prev_states[1..].iter().all(|state| first == state);
@@ -868,39 +868,38 @@ fn resolve_multiple_prev_states<Id, C, S>(
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C>,
     version: StateResVersion,
-) -> BTreeMap<(String, Option<String>), Id>
+) -> SharedState<Id>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 {
-    let mut occurrences: HashMap<&(String, Option<String>), HashMap<&Id, usize>> = HashMap::new();
-    let num_sets = prev_states.len();
+    let mut conflicted_keys = hashbrown::HashSet::new();
+    let mut conflicted_state_set = hashbrown::HashSet::new();
+    let base = &prev_states[0];
 
-    for map in prev_states {
-        #[cfg(feature = "std")]
-        let iter = map.into_iter();
-        #[cfg(not(feature = "std"))]
-        let iter = map.iter();
-
-        for (key, val) in iter {
-            let val_entry = occurrences.entry(key).or_default().entry(val).or_insert(0);
-            *val_entry = val_entry.saturating_add(1);
+    for other in &prev_states[1..] {
+        for diff_item in base.diff(other) {
+            match diff_item {
+                imbl::ordmap::DiffItem::Add(k, v) | imbl::ordmap::DiffItem::Remove(k, v) => {
+                    conflicted_keys.insert(k.clone());
+                    conflicted_state_set.insert(v.clone());
+                }
+                imbl::ordmap::DiffItem::Update {
+                    old: (k, old_v),
+                    new: (_, new_v),
+                } => {
+                    conflicted_keys.insert(k.clone());
+                    conflicted_state_set.insert(old_v.clone());
+                    conflicted_state_set.insert(new_v.clone());
+                }
+            }
         }
     }
 
-    let mut unconflicted_state = BTreeMap::new();
-    let mut conflicted_state_set = hashbrown::HashSet::new();
-
-    for (key, ids) in occurrences {
-        if ids.len() == 1 && ids.values().next().unwrap() == &num_sets {
-            let id_val = ids.keys().next().unwrap();
-            unconflicted_state.insert((*key).clone(), (*id_val).clone());
-        } else {
-            for id_val in ids.keys() {
-                conflicted_state_set.insert((*id_val).clone());
-            }
-        }
+    let mut unconflicted_state = base.clone();
+    for k in &conflicted_keys {
+        unconflicted_state.remove(k);
     }
 
     let mut conflicted_events = HashMap::new();
@@ -914,19 +913,23 @@ where
     // This perfectly restores algorithmic invariants for `expand_v2_power_events_auth_chains`
     // without the massive O(N) bottleneck of unbounded DAG walks.
     let mut u_visited = hashbrown::HashSet::new();
-    let mut u_heap = alloc::collections::BinaryHeap::new();
+    let mut u_heap_elements = Vec::with_capacity(unconflicted_state.len());
     for id in unconflicted_state.values() {
         if u_visited.insert(id.clone()) {
             if let Some(ev) = events_map.get(id) {
-                u_heap.push((ev.depth, id.clone()));
+                u_heap_elements.push((ev.depth, id.clone()));
             }
         }
     }
+    let mut u_heap = alloc::collections::BinaryHeap::from(u_heap_elements);
 
     let mut c_visited = hashbrown::HashSet::new();
     let mut c_heap = alloc::collections::BinaryHeap::new();
     for id in &conflicted_state_set {
-        if !u_visited.contains(id) && c_visited.insert(id.clone()) {
+        if u_visited.contains(id) {
+            continue; // PRUNE EARLY
+        }
+        if c_visited.insert(id.clone()) {
             if let Some(ev) = events_map.get(id) {
                 c_heap.push((ev.depth, id.clone()));
             }
@@ -958,7 +961,10 @@ where
             auth_diff.insert(c_id.clone());
             if let Some(ev) = events_map.get(&c_id) {
                 for auth_id in &ev.auth_events {
-                    if !u_visited.contains(auth_id) && c_visited.insert(auth_id.clone()) {
+                    if u_visited.contains(auth_id) {
+                        continue; // PRUNE EARLY
+                    }
+                    if c_visited.insert(auth_id.clone()) {
                         if let Some(a_ev) = events_map.get(auth_id) {
                             c_heap.push((a_ev.depth, auth_id.clone()));
                         }
@@ -1051,7 +1057,7 @@ mod tests {
         conflicted.insert("$pl_bot".to_string(), pl_bot.clone());
 
         // Create a resolved map where $pl_bot is NOT resolved yet (empty resolved map)
-        let resolved = BTreeMap::new();
+        let resolved = imbl::OrdMap::new();
 
         let local_auth = vec![
             (

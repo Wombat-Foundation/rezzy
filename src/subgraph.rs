@@ -8,7 +8,7 @@
 //! considered, preventing unrelated auth chain history from influencing
 //! the outcome.
 
-use crate::types::LeanEvent;
+use crate::basespec::rezzy_types::LeanEvent;
 use crate::HashMap;
 use alloc::collections::BTreeSet;
 use alloc::string::String;

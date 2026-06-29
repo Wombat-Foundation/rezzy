@@ -18,7 +18,6 @@
 //! store a base snapshot and a chain of deltas.
 //! This module provides the primitives for computing and applying those deltas.
 
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -73,8 +72,8 @@ pub struct StateDelta {
 /// If the two states are identical, returns an empty `Vec`.
 #[must_use]
 pub fn compute_state_delta(
-    parent: &BTreeMap<(String, Option<String>), String>,
-    current: &BTreeMap<(String, Option<String>), String>,
+    parent: &crate::state_at::SharedState<String>,
+    current: &crate::state_at::SharedState<String>,
 ) -> Vec<StateDelta> {
     let mut deltas = Vec::new();
 
@@ -112,9 +111,9 @@ pub fn compute_state_delta(
 /// - Entries with `event_id = None` are removed from the base.
 #[must_use]
 pub fn apply_state_delta(
-    base: &BTreeMap<(String, Option<String>), String>,
+    base: &crate::state_at::SharedState<String>,
     deltas: &[StateDelta],
-) -> BTreeMap<(String, Option<String>), String> {
+) -> crate::state_at::SharedState<String> {
     let mut result = base.clone();
     for delta in deltas {
         let key = (delta.event_type.clone(), delta.state_key.clone());
@@ -139,7 +138,7 @@ pub fn apply_state_delta(
 /// **Not cryptographic** — use SHA-256 (via the `hashing` feature) for
 /// content-addressable storage.
 #[must_use]
-pub fn compute_state_hash(state: &BTreeMap<(String, Option<String>), String>) -> String {
+pub fn compute_state_hash(state: &crate::state_at::SharedState<String>) -> String {
     // FNV-1a 128-bit offset basis and prime
     // See: <https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function>
     const FNV128_PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
@@ -202,7 +201,7 @@ pub struct CompactedCheckpoint {
     pub deltas: Vec<StateDelta>,
     /// Full state snapshot, present every [`MAX_DELTA_CHAIN_HOPS`] checkpoints.
     /// When this is `Some`, `deltas` is empty and reconstruction starts here.
-    pub snapshot: Option<BTreeMap<(String, Option<String>), String>>,
+    pub snapshot: Option<crate::state_at::SharedState<String>>,
 }
 
 /// Builds a compacted delta chain from pre-resolved `(event_id, state_map)` pairs,
@@ -217,12 +216,12 @@ pub struct CompactedCheckpoint {
 /// [`MAX_DELTA_CHAIN_HOPS`] (100).
 #[must_use]
 pub fn compute_compacted_delta_chain_from_resolved(
-    resolved_states: impl IntoIterator<Item = (String, BTreeMap<(String, Option<String>), String>)>,
+    resolved_states: impl IntoIterator<Item = (String, crate::state_at::SharedState<String>)>,
     max_hops: Option<usize>,
 ) -> Vec<CompactedCheckpoint> {
     let max_hops = max_hops.unwrap_or(MAX_DELTA_CHAIN_HOPS);
     let mut checkpoints = Vec::new();
-    let mut prev_state: Option<BTreeMap<(String, Option<String>), String>> = None;
+    let mut prev_state: Option<crate::state_at::SharedState<String>> = None;
     let mut prev_hash: Option<String> = None;
     let mut hops_since_snapshot: usize = 0;
 
@@ -268,7 +267,7 @@ pub fn compute_compacted_delta_chain_from_resolved(
 pub fn reconstruct_state_at_by_event_id(
     checkpoints: &[CompactedCheckpoint],
     event_id: &str,
-) -> Option<BTreeMap<(String, Option<String>), String>> {
+) -> Option<crate::state_at::SharedState<String>> {
     let idx = checkpoints.iter().position(|cp| cp.event_id == event_id)?;
     reconstruct_state_at(checkpoints, idx)
 }
@@ -291,7 +290,7 @@ pub fn reconstruct_state_at_by_event_id(
 pub fn reconstruct_state_at(
     checkpoints: &[CompactedCheckpoint],
     target_index: usize,
-) -> Option<BTreeMap<(String, Option<String>), String>> {
+) -> Option<crate::state_at::SharedState<String>> {
     if target_index >= checkpoints.len() {
         return None;
     }
@@ -354,7 +353,7 @@ pub fn reconstruct_state_at(
 ///
 /// # Returns
 ///
-/// A `BTreeMap<usize, state_map>` keyed by the requested indices. Missing
+/// A `imbl::OrdMap<usize, state_map>` keyed by the requested indices. Missing
 /// entries indicate broken chains or out-of-bounds indices.
 ///
 /// # Panics
@@ -365,7 +364,7 @@ pub fn reconstruct_state_at(
 pub fn reconstruct_state_batch(
     checkpoints: &[CompactedCheckpoint],
     target_indices: &[usize],
-) -> BTreeMap<usize, BTreeMap<(String, Option<String>), String>> {
+) -> imbl::OrdMap<usize, crate::state_at::SharedState<String>> {
     use crate::HashMap;
 
     let mut sorted_targets: Vec<usize> = target_indices
@@ -377,7 +376,7 @@ pub fn reconstruct_state_batch(
     sorted_targets.dedup();
 
     if sorted_targets.is_empty() {
-        return BTreeMap::new();
+        return imbl::OrdMap::new();
     }
 
     // Backward-only parent lookup: prefer immediate predecessor, fall back to
@@ -407,7 +406,7 @@ pub fn reconstruct_state_batch(
     }
 
     let mut known_states = HashMap::new();
-    let mut results = BTreeMap::new();
+    let mut results = imbl::OrdMap::new();
 
     // Iterate forward only through the required indices
     for idx in required_indices {
@@ -452,12 +451,12 @@ pub fn reconstruct_state_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    type StateMap = BTreeMap<(String, Option<String>), String>;
+    type StateMap = crate::state_at::SharedState<String>;
     type ResolvedStates = Vec<(String, StateMap)>;
 
     #[test]
     fn test_roundtrip_identity() {
-        let mut state = BTreeMap::new();
+        let mut state = imbl::OrdMap::new();
         state.insert(("m.room.create".into(), Some(String::new())), "$1".into());
         state.insert(
             ("m.room.member".into(), Some("@alice:example.com".into())),
@@ -473,14 +472,14 @@ mod tests {
 
     #[test]
     fn test_roundtrip_add_modify_delete() {
-        let mut parent = BTreeMap::new();
+        let mut parent = imbl::OrdMap::new();
         parent.insert(("m.room.create".into(), Some(String::new())), "$1".into());
         parent.insert(
             ("m.room.member".into(), Some("@alice:example.com".into())),
             "$2".into(),
         );
 
-        let mut current = BTreeMap::new();
+        let mut current = imbl::OrdMap::new();
         current.insert(
             ("m.room.create".into(), Some(String::new())),
             "$1".into(), // unchanged
@@ -503,7 +502,7 @@ mod tests {
 
     #[test]
     fn test_deletion_roundtrip() {
-        let mut parent = BTreeMap::new();
+        let mut parent = imbl::OrdMap::new();
         parent.insert(("m.room.create".into(), Some(String::new())), "$1".into());
         parent.insert(
             ("m.room.member".into(), Some("@alice:example.com".into())),
@@ -511,7 +510,7 @@ mod tests {
         );
 
         // Current state has alice removed
-        let mut current = BTreeMap::new();
+        let mut current = imbl::OrdMap::new();
         current.insert(("m.room.create".into(), Some(String::new())), "$1".into());
 
         let delta = compute_state_delta(&parent, &current);
@@ -524,7 +523,7 @@ mod tests {
 
     #[test]
     fn test_state_hash_determinism() {
-        let mut state = BTreeMap::new();
+        let mut state = imbl::OrdMap::new();
         state.insert(("m.room.create".into(), Some(String::new())), "$1".into());
         state.insert(
             ("m.room.member".into(), Some("@alice:example.com".into())),
@@ -539,10 +538,10 @@ mod tests {
 
     #[test]
     fn test_state_hash_sensitivity() {
-        let mut state_a = BTreeMap::new();
+        let mut state_a = imbl::OrdMap::new();
         state_a.insert(("m.room.create".into(), Some(String::new())), "$1".into());
 
-        let mut state_b = BTreeMap::new();
+        let mut state_b = imbl::OrdMap::new();
         state_b.insert(("m.room.create".into(), Some(String::new())), "$2".into());
 
         assert_ne!(
@@ -557,7 +556,7 @@ mod tests {
         // Build 250 pre-resolved states — should trigger snapshots at 0, 100, 200
         let states: ResolvedStates = (1..=250)
             .map(|i| {
-                let mut state = BTreeMap::new();
+                let mut state = imbl::OrdMap::new();
                 for j in 1..=i {
                     state.insert(
                         (
@@ -619,7 +618,7 @@ mod tests {
         // Build 150 pre-resolved states — will have snapshots at 0 and ~100
         let states: ResolvedStates = (1..=150)
             .map(|i| {
-                let mut state = BTreeMap::new();
+                let mut state = imbl::OrdMap::new();
                 for j in 1..=i {
                     state.insert(
                         (
@@ -671,7 +670,7 @@ mod tests {
         // Create 250 sequential resolved states
         let states: ResolvedStates = (1..=250)
             .map(|i| {
-                let mut state = BTreeMap::new();
+                let mut state = imbl::OrdMap::new();
                 state.insert(
                     (
                         "m.room.member".into(),
@@ -734,7 +733,7 @@ mod tests {
     fn test_reconstruct_state_at_by_event_id_lookup() {
         let states: ResolvedStates = (1..=10)
             .map(|i| {
-                let mut state = BTreeMap::new();
+                let mut state = imbl::OrdMap::new();
                 for j in 1..=i {
                     state.insert(
                         (
@@ -767,7 +766,7 @@ mod tests {
         // Consecutive states with identical content produce identical hashes.
         // This must not break backward reconstruction.
         let state = {
-            let mut s = BTreeMap::new();
+            let mut s = imbl::OrdMap::new();
             s.insert(
                 ("m.room.create".into(), Some(String::new())),
                 "$create".into(),
@@ -812,7 +811,7 @@ mod tests {
         let different_hash: String = "HASH_B".into();
 
         let state_a = {
-            let mut s = BTreeMap::new();
+            let mut s = imbl::OrdMap::new();
             s.insert(("m.room.create".into(), Some(String::new())), "$c".into());
             s
         };
@@ -901,7 +900,7 @@ mod tests {
         let hash_d: String = "HASH_D".into();
 
         let state_a = {
-            let mut s = BTreeMap::new();
+            let mut s = imbl::OrdMap::new();
             s.insert(("m.room.create".into(), Some(String::new())), "$c".into());
             s
         };

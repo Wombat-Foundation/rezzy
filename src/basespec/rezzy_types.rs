@@ -293,7 +293,8 @@ impl EventContent for Value {
         let users = self
             .get(crate::basespec::event_types::FIELD_USERS)?
             .as_object()?;
-        coerce_json_to_i64(users.get(user)?).map(|i| i.min(crate::basespec::rezzy_types::MAX_POWER_LEVEL))
+        coerce_json_to_i64(users.get(user)?)
+            .map(|i| i.min(crate::basespec::rezzy_types::MAX_POWER_LEVEL))
     }
 
     fn get_event_power_level(&self, event_type: &str) -> Option<i64> {

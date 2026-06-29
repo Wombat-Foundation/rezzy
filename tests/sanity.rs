@@ -223,7 +223,7 @@ fn test_compute_state_at_batch() {
 fn test_streaming_correctness_with_branched_dag() {
     use rezzy::state_at::compute_state_at_streaming;
     use rezzy::{LeanEvent, StateResVersion};
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::HashMap;
 
     let mut events_map = HashMap::new();
 
@@ -333,7 +333,7 @@ fn test_streaming_correctness_with_branched_dag() {
     );
 
     // Oracle generation
-    let mut expected_at_40 = BTreeMap::new();
+    let mut expected_at_40 = imbl::OrdMap::new();
     for i in [10, 20, 30, 40] {
         expected_at_40.insert(
             ("m.room.member".to_string(), Some(format!("user_{i}"))),
@@ -354,7 +354,10 @@ fn test_streaming_correctness_with_branched_dag() {
     let batch_ids = vec!["$40", "$50"];
     let mut streaming_results = HashMap::new();
     compute_state_at_streaming(&batch_ids, &events_map, StateResVersion::V2, |id, state| {
-        streaming_results.insert(id.clone(), state.into_iter().collect::<BTreeMap<_, _>>());
+        streaming_results.insert(
+            id.clone(),
+            state.into_iter().collect::<imbl::OrdMap<_, _>>(),
+        );
     });
 
     assert_eq!(&streaming_results["$40"], &expected_at_40);
@@ -393,18 +396,18 @@ fn make_chronological_test_events() -> Vec<rezzy::LeanEvent> {
 #[test]
 fn test_delta_chain_generation_correctness() {
     use rezzy::state_delta::{compute_state_delta, compute_state_hash};
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::HashMap;
 
     let events = make_chronological_test_events();
 
     // Perform delta-chain sequential processing using library functions
-    let mut state_after_map: HashMap<String, BTreeMap<(String, Option<String>), String>> =
+    let mut state_after_map: HashMap<String, imbl::OrdMap<(String, Option<String>), String>> =
         HashMap::new();
     let mut state_hash_map: HashMap<String, String> = HashMap::new();
     let mut checkpoints = Vec::new();
 
     for ev in &events {
-        let mut state_before = BTreeMap::new();
+        let mut state_before = imbl::OrdMap::new();
         let mut parent_hash = None;
 
         if !ev.prev_events.is_empty() {
@@ -461,7 +464,7 @@ fn test_delta_chain_generation_correctness() {
 fn test_state_delta_compression_robustness() {
     use rezzy::state_delta::{compute_state_delta, compute_state_hash};
     use rezzy::LeanEvent;
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::HashMap;
 
     // Construct a micro-history with a merge where some state key gets deleted/overwritten
     // E1: Create room (state: m.room.create => $1)
@@ -503,7 +506,7 @@ fn test_state_delta_compression_robustness() {
         ..Default::default()
     };
 
-    let mut state_after_map: HashMap<String, BTreeMap<(String, Option<String>), String>> =
+    let mut state_after_map: HashMap<String, imbl::OrdMap<(String, Option<String>), String>> =
         HashMap::new();
     let mut state_hash_map: HashMap<String, String> = HashMap::new();
     let mut checkpoints = Vec::new();
@@ -511,7 +514,7 @@ fn test_state_delta_compression_robustness() {
     let events = vec![ev1, ev2, ev3, ev4];
 
     for ev in &events {
-        let mut state_before = BTreeMap::new();
+        let mut state_before = imbl::OrdMap::new();
         let mut parent_hash = None;
 
         if !ev.prev_events.is_empty() {

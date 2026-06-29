@@ -15,7 +15,7 @@
 use crate::network::fetch_room_state;
 use crate::Args;
 use rezzy::{LeanEvent, StateResVersion};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::PathBuf;
@@ -24,13 +24,8 @@ use std::time::Instant;
 pub type SharedStateMap = std::sync::Arc<ResolvedState>;
 
 pub fn parse_room_version(ver: &str) -> anyhow::Result<StateResVersion> {
-    match ver {
-        "1" => Ok(StateResVersion::V1),
-        "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" => Ok(StateResVersion::V2),
-        "12" => Ok(StateResVersion::V2_1),
-        "12.1" => Ok(StateResVersion::V2_1_1),
-        _ => anyhow::bail!("Unsupported room version: {ver}"),
-    }
+    StateResVersion::from_room_version(ver)
+        .ok_or_else(|| anyhow::anyhow!("Unsupported room version: {ver}"))
 }
 
 pub fn detect_version(
@@ -58,7 +53,7 @@ pub fn detect_version(
     )
 }
 
-pub fn compute_state_hash(state: &BTreeMap<(String, Option<String>), String>) -> String {
+pub fn compute_state_hash(state: &imbl::OrdMap<(String, Option<String>), String>) -> String {
     let mut hash: u64 = 14_695_981_039_346_656_037; // FNV offset basis
     for ((event_type, state_key), event_id) in state {
         for &byte in event_type.as_bytes() {
@@ -292,7 +287,7 @@ pub fn compute_state_maps(
     }
 }
 
-pub type ResolvedState = BTreeMap<(String, Option<String>), String>;
+pub type ResolvedState = imbl::OrdMap<(String, Option<String>), String>;
 
 fn partition_state_occurrences<'a, I, Iter>(
     state_maps: I,
@@ -314,7 +309,7 @@ where
         }
     }
 
-    let mut unconflicted_state = std::collections::BTreeMap::new();
+    let mut unconflicted_state = imbl::OrdMap::new();
     let mut conflicted_state_set = Vec::new();
 
     for (key, ids) in occurrences {
@@ -470,7 +465,7 @@ pub fn apply_global_power_levels(
         .values()
         .find(|ev| ev.event_type == "m.room.create");
     let sorted_power_ids = rezzy::lean_kahn_sort(&power_events, events_map, create_ev, version);
-    let mut resolved_power_state = std::collections::BTreeMap::new();
+    let mut resolved_power_state = imbl::OrdMap::new();
     for id in sorted_power_ids {
         if let Some(ev) = power_events.get(&id) {
             resolved_power_state.insert((ev.event_type.clone(), ev.state_key.clone()), id);

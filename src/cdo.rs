@@ -30,7 +30,7 @@
 //! bitmask sweeps over a topologically-sorted event array. The chunk size is
 //! auto-selected at compile time: 512 bits on AVX-512, 256 bits otherwise.
 
-use crate::types::LeanEvent;
+use crate::basespec::rezzy_types::LeanEvent;
 use crate::HashMap;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
@@ -150,8 +150,10 @@ fn compute_cdo_bit_masks_chunk<Id, C, S: core::hash::BuildHasher>(
     }
 }
 
-fn sort_cdo_events<'a, Id: Ord, C>(events: &[&'a LeanEvent<Id, C>]) -> Vec<&'a LeanEvent<Id, C>> {
-    let mut sorted: Vec<&'a LeanEvent<Id, C>> = events.to_vec();
+fn sort_cdo_events<'a, Id: Ord + Clone, C: Clone>(
+    events: &[&'a LeanEvent<Id, C>],
+) -> Vec<&'a LeanEvent<Id, C>> {
+    let mut sorted = events.to_vec();
     sorted.sort_by(|a, b| {
         let type_priority = |t: &str| match t {
             "m.room.power_levels" => 0,
@@ -186,23 +188,47 @@ struct AdjacencyStructures<'a, Id, C> {
     children: Vec<Vec<usize>>,
 }
 
-fn build_adjacency_structures<'a, Id, C, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
+fn build_adjacency_structures<'a, Id, C: Clone, S1, S2>(
     conflicted_events: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
 ) -> AdjacencyStructures<'a, Id, C>
 where
     Id: Clone + Eq + core::hash::Hash + Ord,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
 {
-    let n = auth_context.len().saturating_add(conflicted_events.len());
-    let mut id_to_idx = HashMap::with_capacity(n);
-    let mut events_list: Vec<&'a LeanEvent<Id, C>> = Vec::with_capacity(n);
+    let mut relevant_events = HashMap::new();
+    let mut visited = BTreeSet::new();
+    let mut queue = alloc::collections::VecDeque::new();
 
-    // Chain conflicted first so they shadow auth_context (matching SortContext semantics)
-    for ev in conflicted_events.values().chain(auth_context.values()) {
-        if !id_to_idx.contains_key(&ev.event_id) {
-            id_to_idx.insert(ev.event_id.clone(), 0); // Temp index
-            events_list.push(ev);
+    for (id, ev) in conflicted_events {
+        relevant_events.insert(id.clone(), ev);
+        visited.insert(id.clone());
+        for aid in ev.prev_events.iter().chain(ev.auth_events.iter()) {
+            if visited.insert(aid.clone()) {
+                queue.push_back(aid.clone());
+            }
         }
+    }
+
+    while let Some(aid) = queue.pop_front() {
+        if let Some(aev) = auth_context.get(&aid) {
+            relevant_events.insert(aid.clone(), aev);
+            for parent_id in aev.prev_events.iter().chain(aev.auth_events.iter()) {
+                if visited.insert(parent_id.clone()) {
+                    queue.push_back(parent_id.clone());
+                }
+            }
+        }
+    }
+
+    let n = relevant_events.len();
+    let mut id_to_idx = HashMap::with_capacity(n);
+    let mut events_list = Vec::with_capacity(n);
+
+    for (id, &ev) in &relevant_events {
+        id_to_idx.insert(id.clone(), 0);
+        events_list.push(ev);
     }
 
     // Sort by depth then event_id for topological ordering
@@ -213,19 +239,19 @@ where
     });
 
     let mut sorted_events = Vec::with_capacity(events_list.len());
-    for (i, ev) in events_list.iter().enumerate() {
+    for (i, &ev) in events_list.iter().enumerate() {
         id_to_idx.insert(ev.event_id.clone(), i);
-        sorted_events.push((i, *ev));
+        sorted_events.push((i, ev));
     }
 
-    let actual_n = sorted_events.len();
-    let mut parents = alloc::vec![Vec::new(); actual_n];
-    let mut children = alloc::vec![Vec::new(); actual_n];
-    for &(u, ev) in &sorted_events {
-        for p_id in ev.prev_events.iter().chain(ev.auth_events.iter()) {
-            if let Some(&v) = id_to_idx.get(p_id) {
-                parents[u].push(v);
-                children[v].push(u);
+    let mut parents = alloc::vec![Vec::new(); sorted_events.len()];
+    let mut children = alloc::vec![Vec::new(); sorted_events.len()];
+
+    for (child_idx, ev) in &sorted_events {
+        for parent_id in ev.prev_events.iter().chain(ev.auth_events.iter()) {
+            if let Some(&parent_idx) = id_to_idx.get(parent_id) {
+                parents[*child_idx].push(parent_idx);
+                children[parent_idx].push(*child_idx);
             }
         }
     }
@@ -243,26 +269,27 @@ struct PrioritizedEvents<Id> {
     priority_pos: HashMap<Id, usize>,
 }
 
-fn prioritize_events<Id, C: crate::types::EventContent + Clone, S1: core::hash::BuildHasher>(
+fn prioritize_events<Id, C: crate::basespec::rezzy_types::EventContent + Clone, S1>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
 ) -> PrioritizedEvents<Id>
 where
     Id: Clone + Eq + core::hash::Hash + Ord,
+    S1: core::hash::BuildHasher,
 {
     let admin_events_to_sort: Vec<&LeanEvent<Id, C>> = conflicted_events
         .values()
         .filter(|e| e.is_ban_or_kick() || e.is_demotion() || e.is_lockdown())
         .collect();
+
     let sorted_admin_events = sort_cdo_events(&admin_events_to_sort);
-    let admin_actions: Vec<Id> = sorted_admin_events
-        .iter()
-        .map(|e| e.event_id.clone())
-        .collect();
+    let mut admin_actions = Vec::with_capacity(sorted_admin_events.len());
+    for ev in sorted_admin_events {
+        admin_actions.push(ev.event_id.clone());
+    }
 
     let all_sorted = sort_cdo_events(&conflicted_events.values().collect::<Vec<_>>());
-
     let mut priority_pos = HashMap::with_capacity(all_sorted.len());
-    for (pos, ev) in all_sorted.iter().enumerate() {
+    for (pos, ev) in all_sorted.into_iter().enumerate() {
         priority_pos.insert(ev.event_id.clone(), pos);
     }
 
@@ -274,7 +301,7 @@ where
 
 fn process_direct_domination_chunks<
     Id,
-    C: crate::types::EventContent + Clone,
+    C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
 >(
     adj: &AdjacencyStructures<'_, Id, C>,
@@ -410,7 +437,7 @@ where
 #[must_use]
 pub fn apply_cdo_filter<
     Id,
-    C: crate::types::EventContent + Clone,
+    C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(

@@ -1,4 +1,5 @@
 use rezzy::auth::*;
+use rezzy::basespec::event_types::M_ROOM_CREATE;
 use rezzy::*;
 use serde_json::json;
 
@@ -20,6 +21,354 @@ fn make_event(
 }
 
 #[test]
+fn test_self_ban_rejected() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event(
+            "$create",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:example.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@alice:example.com".into())),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@alice:example.com"),
+            "@alice:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    let self_ban = make_event(
+        "$selfban",
+        "m.room.member",
+        Some("@alice:example.com"),
+        "@alice:example.com",
+        json!({"membership": "ban"}),
+    );
+    assert!(
+        check_auth(
+            &self_ban,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+        )
+        .is_err(),
+        "Self-bans must be rejected"
+    );
+}
+
+#[test]
+fn test_invite_banned_user_rejected() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:example.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@alice:example.com".into())),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@alice:example.com"),
+            "@alice:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@bob:example.com".into())),
+        make_event(
+            "$ban",
+            "m.room.member",
+            Some("@bob:example.com"),
+            "@alice:example.com",
+            json!({"membership": "ban"}),
+        ),
+    );
+    let invite_banned = make_event(
+        "$invite_banned",
+        "m.room.member",
+        Some("@bob:example.com"),
+        "@alice:example.com",
+        json!({"membership": "invite"}),
+    );
+    assert!(
+        matches!(
+            check_auth(&invite_banned, &state, rezzy::StateResVersion::V2_1),
+            Err(AuthError::BannedUser { .. })
+        ),
+        "Inviting a banned user must fail with BannedUser error"
+    );
+}
+
+#[test]
+fn test_invite_insufficient_power_level() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.power_levels".into(), Some(String::new())),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@admin:x.com",
+            json!({"invite": 75, "users": {"@low:x.com": 10}}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@low:x.com".into())),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@low:x.com"),
+            "@low:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    let invite = make_event(
+        "$invite",
+        "m.room.member",
+        Some("@target:x.com"),
+        "@low:x.com",
+        json!({"membership": "invite"}),
+    );
+    assert!(
+        matches!(
+            check_auth(&invite, &state, rezzy::StateResVersion::V2_1),
+            Err(AuthError::InsufficientPowerLevel { .. })
+        ),
+        "Invite with PL 10 < invite PL 75 must fail"
+    );
+}
+
+#[test]
+fn test_self_invite_rejected() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@alice:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@alice:x.com".into())),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@alice:x.com"),
+            "@alice:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    let self_invite = make_event(
+        "$self_invite",
+        "m.room.member",
+        Some("@alice:x.com"),
+        "@alice:x.com",
+        json!({"membership": "invite"}),
+    );
+    assert!(
+        matches!(
+            check_auth(&self_invite, &state, rezzy::StateResVersion::V2_1),
+            Err(AuthError::InvalidStateKey { .. })
+        ),
+        "Self-invites must be rejected with InvalidStateKey error"
+    );
+}
+
+#[test]
+fn test_join_banned_user_rejected() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.join_rules".into(), Some(String::new())),
+        make_event(
+            "$jr",
+            "m.room.join_rules",
+            Some(""),
+            "@admin:x.com",
+            json!({"join_rule": "public"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@banned:x.com".into())),
+        make_event(
+            "$ban",
+            "m.room.member",
+            Some("@banned:x.com"),
+            "@admin:x.com",
+            json!({"membership": "ban"}),
+        ),
+    );
+    let join_attempt = make_event(
+        "$join",
+        "m.room.member",
+        Some("@banned:x.com"),
+        "@banned:x.com",
+        json!({"membership": "join"}),
+    );
+    assert!(
+        matches!(
+            check_auth(&join_attempt, &state, rezzy::StateResVersion::V2_1),
+            Err(AuthError::BannedUser { .. })
+        ),
+        "Banned user joining must fail"
+    );
+}
+
+#[test]
+fn test_public_room_join_allowed() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.join_rules".into(), Some(String::new())),
+        make_event(
+            "$jr",
+            "m.room.join_rules",
+            Some(""),
+            "@admin:x.com",
+            json!({"join_rule": "public"}),
+        ),
+    );
+    let join = make_event(
+        "$join",
+        "m.room.member",
+        Some("@newcomer:x.com"),
+        "@newcomer:x.com",
+        json!({"membership": "join"}),
+    );
+    assert!(
+        check_auth(
+            &join,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+        )
+        .is_ok(),
+        "Public room join must succeed"
+    );
+}
+
+#[test]
+fn test_member_pl_hierarchy_enforcement() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.power_levels".into(), Some(String::new())),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@admin:x.com",
+            json!({"kick": 50, "users": {"@mod:x.com": 50, "@target:x.com": 50}}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@mod:x.com".into())),
+        make_event(
+            "$j1",
+            "m.room.member",
+            Some("@mod:x.com"),
+            "@mod:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@target:x.com".into())),
+        make_event(
+            "$j2",
+            "m.room.member",
+            Some("@target:x.com"),
+            "@target:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // PL 50 trying to kick PL 50 target → must fail (needs PL > target)
+    let kick = make_event(
+        "$kick",
+        "m.room.member",
+        Some("@target:x.com"),
+        "@mod:x.com",
+        json!({"membership": "leave"}),
+    );
+    assert!(
+        check_auth(
+            &kick,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+        )
+        .is_err(),
+        "Equal PL kick must fail"
+    );
+}
+
+#[test]
+fn test_auth_error_display_variants() {
+    let err: AuthError<String> = AuthError::InsufficientPowerLevel {
+        required: 50,
+        actual: 10,
+        event_type: "m.room.topic".into(),
+    };
+    let msg = format!("{err}");
+    assert!(msg.contains("10"));
+    assert!(msg.contains("50"));
+    assert!(msg.contains("m.room.topic"));
+
+    let err2: AuthError<String> = AuthError::InvalidStateKey {
+        expected: "@alice:x.com".into(),
+        actual: "@bob:x.com".into(),
+    };
+    let msg2 = format!("{err2}");
+    assert!(msg2.contains("@alice"));
+    assert!(msg2.contains("@bob"));
+
+    let err3: AuthError<String> = AuthError::NotMember {
+        sender: "@charlie:x.com".into(),
+        event_id: "$event123".into(),
+    };
+    let msg3 = format!("{err3}");
+    assert!(msg3.contains("@charlie"));
+
+    let err4: AuthError<String> = AuthError::BannedUser {
+        sender: "@dave:x.com".into(),
+        event_id: "$event456".into(),
+    };
+    let msg4 = format!("{err4}");
+    assert!(msg4.contains("@dave"));
+
+    let err5: AuthError<String> = AuthError::MissingAuthEvent("$event123".into());
+    let msg5 = format!("{err5}");
+    assert!(msg5.contains("$event123"));
+
+    let err6: AuthError<String> = AuthError::CreateWithPrevEvents;
+    let msg6 = format!("{err6}");
+    assert!(msg6.contains("m.room.create"));
+
+    let err7: AuthError<String> = AuthError::InvalidSyntax("bad json".into());
+    let msg7 = format!("{err7}");
+    assert!(msg7.contains("bad json"));
+}
+
+#[test]
 fn test_create_event_no_prev_events() {
     let create = make_event(
         "$create",
@@ -29,7 +378,12 @@ fn test_create_event_no_prev_events() {
         json!({}),
     );
     let state = RoomState::new();
-    assert!(check_auth(&create, &state).is_ok());
+    assert!(check_auth(
+        &create,
+        &state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1
+    )
+    .is_ok());
 }
 
 #[test]
@@ -44,7 +398,11 @@ fn test_create_event_with_prev_events() {
     create.prev_events = vec!["$other".into()];
     let state = RoomState::new();
     assert_eq!(
-        check_auth(&create, &state),
+        check_auth(
+            &create,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+        ),
         Err(AuthError::CreateWithPrevEvents)
     );
 }
@@ -60,7 +418,7 @@ fn test_non_member_rejection() {
     );
     let state = RoomState::new();
     assert!(matches!(
-        check_auth(&msg, &state),
+        check_auth(&msg, &state, rezzy::StateResVersion::V2_1),
         Err(AuthError::NotMember { .. })
     ));
 }
@@ -85,7 +443,12 @@ fn test_joined_member_can_send() {
             json!({"membership": "join"}),
         ),
     );
-    assert!(check_auth(&msg, &state).is_ok());
+    assert!(check_auth(
+        &msg,
+        &state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1
+    )
+    .is_ok());
 }
 
 #[test]
@@ -109,7 +472,7 @@ fn test_banned_user_rejected() {
         ),
     );
     assert!(matches!(
-        check_auth(&msg, &state),
+        check_auth(&msg, &state, rezzy::StateResVersion::V2_1),
         Err(AuthError::BannedUser { .. })
     ));
 }
@@ -145,7 +508,7 @@ fn test_insufficient_power_level() {
         ),
     );
     assert!(matches!(
-        check_auth(&msg, &state),
+        check_auth(&msg, &state, rezzy::StateResVersion::V2_1),
         Err(AuthError::InsufficientPowerLevel { .. })
     ));
 }
@@ -161,7 +524,7 @@ fn test_join_self_only() {
     );
     let state = RoomState::new();
     assert!(matches!(
-        check_auth(&join, &state),
+        check_auth(&join, &state, rezzy::StateResVersion::V2_1),
         Err(AuthError::NotMember { .. })
     ));
 }
@@ -189,7 +552,11 @@ fn test_iterative_auth_chain() {
         "@alice:example.com",
         json!({"body": "hello"}),
     );
-    let (accepted, rejected) = check_auth_chain(&[create, join, msg], &RoomState::new());
+    let (accepted, rejected) = check_auth_chain(
+        &[create, join, msg],
+        &RoomState::new(),
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
     assert_eq!(accepted, vec!["$create", "$join", "$msg"]);
     assert!(rejected.is_empty());
 }
@@ -284,7 +651,11 @@ fn test_moderator_can_override_admin_ban() {
 
     // NOTE: the spec does not mandate a "previous sender" check.
     // Per spec §5.5: sender PL (50) >= ban level (50) and target PL (0) < sender PL (50) -> allow.
-    let result = check_auth(&mod_kick, &state);
+    let result = check_auth(
+        &mod_kick,
+        &state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
     assert!(
         result.is_ok(),
         "Per spec, mod (PL 50) can unban target (PL 0) even if banned by admin (PL 100). Got {result:?}"
@@ -358,11 +729,16 @@ fn test_moderator_can_unban_self_ban() {
     );
 
     // Should succeed because current sender matches previous sender (the mod themselves)
-    let result = check_auth(&mod_unban, &state);
+    let result = check_auth(
+        &mod_unban,
+        &state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
     assert!(result.is_ok(), "Expected Ok(()), got {result:?}");
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn test_equal_power_invite_override_allowed() {
     let mut state = RoomState::new();
 
@@ -442,7 +818,11 @@ fn test_equal_power_invite_override_allowed() {
     );
 
     // Should succeed because previous membership is invite (not ban or join), and Mod2 has invite power
-    let result = check_auth(&mod2_invite, &state);
+    let result = check_auth(
+        &mod2_invite,
+        &state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
     assert!(result.is_ok(), "Expected Ok(()), got {result:?}");
 
     // Target is now banned by @mod1 (PL 50)
@@ -467,7 +847,11 @@ fn test_equal_power_invite_override_allowed() {
     );
 
     // Should fail because you can't invite a banned user (rule 4.4.3)
-    let result = check_auth(&mod2_invite_banned, &state);
+    let result = check_auth(
+        &mod2_invite_banned,
+        &state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
     assert!(
         matches!(
             result,
@@ -553,7 +937,11 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
     );
 
     // Should succeed: unban only requires ban_pl (30), not kick_pl (60)
-    let result = check_auth(&unban, &state);
+    let result = check_auth(
+        &unban,
+        &state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
     assert!(
         result.is_ok(),
         "Unban should succeed when sender PL (50) >= ban_pl (30), \
@@ -582,7 +970,11 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
     );
 
     // Should fail: kick requires kick_pl (60), mod only has 50
-    let result = check_auth(&kick, &state);
+    let result = check_auth(
+        &kick,
+        &state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
     assert!(
         matches!(
             result,
@@ -702,18 +1094,28 @@ fn test_creator_implicit_power_level() {
 
     // Asserts
     assert!(
-        check_auth(&creator_kick, &state).is_ok(),
+        check_auth(
+            &creator_kick,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+        )
+        .is_ok(),
         "Primary creator should have implicit MAX_POWER_LEVEL and succeed."
     );
 
     assert!(
-        check_auth(&additional_kick, &state).is_ok(),
+        check_auth(
+            &additional_kick,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+        )
+        .is_ok(),
         "Additional creator should have implicit MAX_POWER_LEVEL and succeed."
     );
 
     assert!(
         matches!(
-            check_auth(&normal_kick, &state),
+            check_auth(&normal_kick, &state, rezzy::StateResVersion::V2_1),
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,
@@ -721,5 +1123,150 @@ fn test_creator_implicit_power_level() {
             })
         ),
         "Normal user should fail with InsufficientPowerLevel."
+    );
+}
+
+/// Verify that in V2 (pre-MSC4289), creators get PL 100, not `MAX_POWER_LEVEL`.
+#[test]
+fn test_v2_creator_gets_pl_100_not_max() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event(
+            "$create",
+            M_ROOM_CREATE,
+            Some(""),
+            "@creator:example.com",
+            json!({"creator": "@creator:example.com", "room_version": "10"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@creator:example.com".into())),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@creator:example.com"),
+            "@creator:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    // Add a power level event that sets ban to 150
+    state.insert(
+        ("m.room.power_levels".into(), Some(String::new())),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@creator:example.com",
+            json!({"ban": 150}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@target:example.com".into())),
+        make_event(
+            "$target_join",
+            "m.room.member",
+            Some("@target:example.com"),
+            "@target:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let ban_event = make_event(
+        "$ban",
+        "m.room.member",
+        Some("@target:example.com"),
+        "@creator:example.com",
+        json!({"membership": "ban"}),
+    );
+    assert!(
+        check_auth(
+            &ban_event,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2
+        )
+        .is_err(),
+        "V2 creator (PL 100) should NOT be able to ban (requires PL 150)"
+    );
+    assert!(
+        check_auth(
+            &ban_event,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+        )
+        .is_ok(),
+        "V2.1 creator (MAX_POWER_LEVEL) should be able to ban (requires PL 150)"
+    );
+}
+
+/// Verify that `additional_creators` are ignored in V2 (pre-MSC4289).
+#[test]
+fn test_v2_additional_creators_ignored() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), Some(String::new())),
+        make_event(
+            "$create",
+            M_ROOM_CREATE,
+            Some(""),
+            "@creator:example.com",
+            json!({
+                "creator": "@creator:example.com",
+                "room_version": "10",
+                "additional_creators": ["@additional:example.com"]
+            }),
+        ),
+    );
+    state.insert(
+        (
+            "m.room.member".into(),
+            Some("@additional:example.com".into()),
+        ),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@additional:example.com"),
+            "@additional:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), Some("@target:example.com".into())),
+        make_event(
+            "$target_join",
+            "m.room.member",
+            Some("@target:example.com"),
+            "@target:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // additional_creator tries to kick — should FAIL in V2 (they have PL 0, not creator privilege)
+    let kick_event = make_event(
+        "$kick",
+        "m.room.member",
+        Some("@target:example.com"),
+        "@additional:example.com",
+        json!({"membership": "leave"}),
+    );
+    assert!(
+        check_auth(
+            &kick_event,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2
+        )
+        .is_err(),
+        "V2 should ignore additional_creators — user should have PL 0 and fail kick"
+    );
+
+    // Same kick should SUCCEED in V2.1
+    assert!(
+        check_auth(
+            &kick_event,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+        )
+        .is_ok(),
+        "V2.1 should honor additional_creators — user should have MAX_POWER_LEVEL"
     );
 }

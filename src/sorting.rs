@@ -13,25 +13,26 @@
 // limitations under the License.
 
 //! Topological and mainline sorting for Matrix state resolution.
-use alloc::collections::{BTreeMap, BinaryHeap, VecDeque};
-use alloc::string::String;
+use alloc::collections::{BinaryHeap, VecDeque};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use crate::types::{KahnSortResult, LeanEvent, SortPriority, StateResVersion, MAX_POWER_LEVEL};
+use crate::basespec::rezzy_types::{
+    KahnSortResult, LeanEvent, SortPriority, StateResVersion, MAX_POWER_LEVEL,
+};
 use crate::HashMap;
 
 /// Dynamically fetches the sender's power level by inspecting the event's immediate `auth_events`.
 /// Recursive traversal of the auth chain is avoided to prevent bypassing immediate restrictions.
 pub(crate) fn get_power_level_from_auth_chain<Id, C>(
     event: &LeanEvent<Id, C>,
-    auth_context: &impl crate::types::EventProvider<Id, C>,
+    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
     create_ev: Option<&LeanEvent<Id, C>>,
     version: StateResVersion,
 ) -> i64
 where
     Id: Clone + Eq + core::hash::Hash,
-    C: crate::types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent,
 {
     let mut pl_event = None;
 
@@ -47,22 +48,13 @@ where
         }
     }
 
-    let mut is_creator = false;
-    if let Some(create_ev) = create_ev {
-        let is_primary_creator = create_ev.sender == event.sender;
-        let mut is_additional_creator = false;
-
-        if create_ev.content.has_room_creator(&event.sender) {
-            is_additional_creator = true;
-        }
-        if create_ev.content.has_additional_creator(&event.sender) {
-            is_additional_creator = true;
-        }
-
-        if is_primary_creator || is_additional_creator {
-            is_creator = true;
-        }
-    }
+    let is_creator = create_ev.is_some_and(|ev| {
+        ev.sender == event.sender
+            || matches!(
+                version,
+                StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
+            ) && ev.content.has_additional_creator(&event.sender)
+    });
 
     if is_creator {
         match version {
@@ -94,7 +86,7 @@ where
 /// Safely avoids stack overflow on deep DAGs using an iterative post-order traversal with memoization.
 pub(crate) fn compute_auth_distance_iterative<'a, Id, C>(
     curr_id: &'a Id,
-    auth_context: &'a impl crate::types::EventProvider<Id, C>,
+    auth_context: &'a impl crate::basespec::rezzy_types::EventProvider<Id, C>,
     create_id: Option<&'a Id>,
     memo: &mut HashMap<&'a Id, u64>,
 ) -> u64
@@ -170,14 +162,14 @@ where
 /// the in-degree map lacks an entry for a child event during the queue processing phase).
 pub fn lean_kahn_sort_with_cycle_diagnostics<Id, C, S1>(
     events: &HashMap<Id, LeanEvent<Id, C>, S1>,
-    sort_context: &impl crate::types::EventProvider<Id, C>,
+    sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
     create_ev: Option<&LeanEvent<Id, C>>,
     version: StateResVersion,
 ) -> KahnSortResult<Id>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S1: core::hash::BuildHasher,
-    C: Clone + crate::types::EventContent,
+    C: Clone + crate::basespec::rezzy_types::EventContent,
 {
     let mut in_degree: HashMap<Id, usize> = HashMap::new();
     let mut adjacency: HashMap<Id, Vec<Id>> = HashMap::new();
@@ -288,14 +280,14 @@ where
 #[must_use]
 pub fn lean_kahn_sort<Id, C, S1>(
     events: &HashMap<Id, LeanEvent<Id, C>, S1>,
-    sort_context: &impl crate::types::EventProvider<Id, C>,
+    sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
     create_ev: Option<&LeanEvent<Id, C>>,
     version: StateResVersion,
 ) -> Vec<Id>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S1: core::hash::BuildHasher,
-    C: Clone + crate::types::EventContent,
+    C: Clone + crate::basespec::rezzy_types::EventContent,
 {
     // jscpd:ignore-end
     match lean_kahn_sort_with_cycle_diagnostics(events, sort_context, create_ev, version) {
@@ -321,12 +313,12 @@ where
 }
 
 pub(crate) fn build_mainline<Id, C>(
-    resolved: &BTreeMap<(String, Option<String>), Id>,
-    auth_context: &impl crate::types::EventProvider<Id, C>,
+    resolved: &crate::state_at::SharedState<Id>,
+    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
 ) -> Vec<Id>
 where
     Id: Clone + Eq + core::hash::Hash,
-    C: Clone + crate::types::EventContent,
+    C: Clone + crate::basespec::rezzy_types::EventContent,
 {
     let mut mainline = Vec::new();
     let mut seen_in_mainline = hashbrown::HashSet::new();
@@ -378,11 +370,11 @@ where
 pub(crate) fn compute_closest_mainline_positions<Id, C>(
     events: &mut [&LeanEvent<Id, C>],
     mainline: &[Id],
-    auth_context: &impl crate::types::EventProvider<Id, C>,
+    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
 ) -> HashMap<Id, usize>
 where
     Id: Clone + Eq + core::hash::Hash + Ord,
-    C: Clone + crate::types::EventContent,
+    C: Clone + crate::basespec::rezzy_types::EventContent,
 {
     let mut memo = HashMap::new();
 
@@ -454,19 +446,24 @@ where
 pub fn mainline_sort<Id, C>(
     events: &mut [&LeanEvent<Id, C>],
     mainline: &[Id],
-    auth_context: &impl crate::types::EventProvider<Id, C>,
+    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
 ) where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
-    C: Clone + crate::types::EventContent,
+    C: Clone + crate::basespec::rezzy_types::EventContent,
 {
-    let mainline_len = mainline.len();
-
+    #[cfg(all(debug_assertions, not(test)))]
+    std::eprintln!(
+        "[DEBUG] mainline_sort: sorting {} non-power events against mainline of length {}",
+        events.len(),
+        mainline.len()
+    );
     // O(V+E) iterative DFS to find the closest mainline index for all non-power events
     let dist = compute_closest_mainline_positions(events, mainline, auth_context);
 
     events.sort_by(|a, b| {
-        let pos_a = dist.get(&a.event_id).copied().unwrap_or(mainline_len);
-        let pos_b = dist.get(&b.event_id).copied().unwrap_or(mainline_len);
+        // Hopefully safe to unwrap. DFS guarantees all events are in `dist`.
+        let pos_a = dist[&a.event_id];
+        let pos_b = dist[&b.event_id];
 
         // Larger mainline position = farther from current PL = worse = comes first
         // (so it gets overwritten by closer events via last-write-wins)
@@ -486,6 +483,7 @@ pub fn mainline_sort<Id, C>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::{string::String, vec::Vec};
 
     #[test]
     fn test_build_mainline_cycle_detection() {
@@ -508,7 +506,7 @@ mod tests {
         auth_context.insert(alloc::string::String::from("B"), b);
 
         // Initial state sets A as the power levels event.
-        let mut resolved = BTreeMap::new();
+        let mut resolved = imbl::OrdMap::new();
         resolved.insert(
             (
                 alloc::string::String::from("m.room.power_levels"),
@@ -623,7 +621,7 @@ mod tests {
     /// `SortContext` merged provider correctly finds events across both maps.
     #[test]
     fn test_sort_context_merged_lookup() {
-        use crate::types::SortContext;
+        use crate::basespec::rezzy_types::SortContext;
 
         let pl = LeanEvent::<String> {
             event_id: "pl0".into(),

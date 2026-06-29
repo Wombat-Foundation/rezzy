@@ -13,10 +13,10 @@
 //!
 //! ```rust,no_run
 //! use rezzy::{resolve_lean, LeanEvent, StateResVersion, HashMap};
-//! use std::collections::BTreeMap;
+//! use imbl::OrdMap;
 //!
 //! // Build the unconflicted state (agreed upon by all forks).
-//! let unconflicted_state: BTreeMap<(String, Option<String>), String> = BTreeMap::new();
+//! let unconflicted_state: imbl::OrdMap<(String, Option<String>), String> = imbl::OrdMap::new();
 //!
 //! // Populate conflicted events and full auth context.
 //! let conflicted_subgraph: HashMap<String, LeanEvent> = HashMap::new();
@@ -73,8 +73,8 @@ extern crate std;
 extern crate alloc;
 
 pub mod auth;
+pub mod basespec;
 pub mod cdo;
-pub mod event_types;
 pub mod lattice;
 #[cfg(feature = "cli")]
 pub mod merge;
@@ -83,8 +83,8 @@ pub mod sorting;
 pub mod state_at;
 pub mod state_delta;
 pub mod subgraph;
-pub mod types;
 
+pub use basespec::rezzy_types::*;
 pub use cdo::*;
 pub use lattice::*;
 #[cfg(feature = "cli")]
@@ -93,7 +93,6 @@ pub use resolve::*;
 pub use sorting::*;
 pub use state_at::*;
 pub use subgraph::*;
-pub use types::*;
 
 /// Re-exported hashmap — uses `std::collections::HashMap` when `std` is
 /// enabled, falls back to `hashbrown::HashMap` for `no_std` targets.
