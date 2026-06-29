@@ -479,3 +479,112 @@ fn test_equal_power_invite_override_allowed() {
         "Expected BannedUser error, got {result:?}"
     );
 }
+
+/// Regression test: when `kick_pl` > `ban_pl`, unbanning a user should succeed
+/// if the sender meets `ban_pl`. Previously the kick check ran unconditionally
+/// after the unban check, incorrectly requiring `kick_pl` for unbans.
+#[test]
+fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
+    let mut state = RoomState::new();
+
+    state.insert(
+        ("m.room.create".into(), Some(String::new())),
+        make_event(
+            "$create",
+            "m.room.create",
+            Some(""),
+            "@admin:example.com",
+            json!({}),
+        ),
+    );
+
+    // Power levels: ban=30, kick=60, mod has PL 50
+    // mod can ban (50 >= 30) but cannot kick (50 < 60)
+    // mod should still be able to unban (50 >= ban_pl=30)
+    state.insert(
+        ("m.room.power_levels".into(), Some(String::new())),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@admin:example.com",
+            json!({
+                "ban": 30,
+                "kick": 60,
+                "users": {
+                    "@admin:example.com": 100,
+                    "@mod:example.com": 50
+                }
+            }),
+        ),
+    );
+
+    // Mod join
+    state.insert(
+        ("m.room.member".into(), Some("@mod:example.com".into())),
+        make_event(
+            "$join_mod",
+            "m.room.member",
+            Some("@mod:example.com"),
+            "@mod:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Target is currently banned
+    state.insert(
+        ("m.room.member".into(), Some("@target:example.com".into())),
+        make_event(
+            "$ban_target",
+            "m.room.member",
+            Some("@target:example.com"),
+            "@admin:example.com",
+            json!({"membership": "ban"}),
+        ),
+    );
+
+    // Mod (PL 50) attempts to unban target (ban_pl=30, kick_pl=60)
+    let unban = make_event(
+        "$unban",
+        "m.room.member",
+        Some("@target:example.com"),
+        "@mod:example.com",
+        json!({"membership": "leave"}),
+    );
+
+    // Should succeed: unban only requires ban_pl (30), not kick_pl (60)
+    let result = check_auth(&unban, &state);
+    assert!(
+        result.is_ok(),
+        "Unban should succeed when sender PL (50) >= ban_pl (30), \
+         even though sender PL < kick_pl (60). Got {result:?}"
+    );
+
+    // Verify that kick still requires kick_pl: change target to "join" (not banned)
+    state.insert(
+        ("m.room.member".into(), Some("@target:example.com".into())),
+        make_event(
+            "$join_target",
+            "m.room.member",
+            Some("@target:example.com"),
+            "@target:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Mod (PL 50) attempts to kick target (kick_pl=60)
+    let kick = make_event(
+        "$kick",
+        "m.room.member",
+        Some("@target:example.com"),
+        "@mod:example.com",
+        json!({"membership": "leave"}),
+    );
+
+    // Should fail: kick requires kick_pl (60), mod only has 50
+    let result = check_auth(&kick, &state);
+    assert!(
+        result.is_err(),
+        "Kick should fail when sender PL (50) < kick_pl (60). Got {result:?}"
+    );
+}

@@ -351,32 +351,30 @@ fn check_leave_rules<Id: Clone>(
     target_user: &str,
     current_membership: &str,
 ) -> Result<(), AuthError<Id>> {
-    // If target_user != sender, this is a kick or unban — requires power level
-    if target_user != event.sender {
-        let sender_pl = get_sender_power_level(&event.sender, state);
-
-        // OFFICIAL UNBAN RULE: If the user was banned, the sender needs ban_pl to unban them.
-        if current_membership == "ban" {
-            let ban_pl = get_ban_power_level(state);
-            if sender_pl < ban_pl {
-                return Err(AuthError::InsufficientPowerLevel {
-                    required: ban_pl,
-                    actual: sender_pl,
-                    event_type: "unban".into(),
-                });
-            }
-        }
-
-        // KICK RULE
-        let kick_pl = get_kick_power_level(state);
-        if sender_pl < kick_pl {
-            return Err(AuthError::InsufficientPowerLevel {
-                required: kick_pl,
-                actual: sender_pl,
-                event_type: "kick".into(),
-            });
-        }
+    // Self-leave is always allowed (no power level check needed).
+    if target_user == event.sender {
+        return Ok(());
     }
+
+    // If target_user != sender, this is a kick or unban — requires power level
+    let sender_pl = get_sender_power_level(&event.sender, state);
+
+    // Unban: requires ban_pl. Kick: requires kick_pl.
+    // Mutually exclusive per spec §10.2.1.
+    let (required, label) = if current_membership == "ban" {
+        (get_ban_power_level(state), "unban")
+    } else {
+        (get_kick_power_level(state), "kick")
+    };
+
+    if sender_pl < required {
+        return Err(AuthError::InsufficientPowerLevel {
+            required,
+            actual: sender_pl,
+            event_type: label.into(),
+        });
+    }
+
     Ok(())
 }
 

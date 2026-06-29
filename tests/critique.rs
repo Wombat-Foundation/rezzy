@@ -12,7 +12,10 @@ fn load_fixture(path: &std::path::Path) -> Vec<LeanEvent> {
         content
             .lines()
             .filter(|line| !line.trim().is_empty())
-            .filter_map(|line| serde_json::from_str(line).ok())
+            .map(|line| {
+                serde_json::from_str(line)
+                    .unwrap_or_else(|e| panic!("Failed to parse line in {}: {e}", path.display()))
+            })
             .collect()
     } else {
         let val: Value = serde_json::from_str(&content).unwrap();
