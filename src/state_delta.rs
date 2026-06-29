@@ -215,6 +215,16 @@ pub fn compute_state_hash(state: &BTreeMap<(String, Option<String>), String>) ->
 /// Non-state events (where `state_key` is `None`) still produce a checkpoint
 /// but with an empty delta and the same state hash as their parent.
 ///
+/// # Multi-parent merge strategy
+///
+/// When an event has multiple `prev_events`, this function merges their
+/// states by keeping the lexicographically greatest event ID per key.
+/// This is **not** state resolution — it is a deterministic tie-break
+/// for delta chain storage only. The resulting `state_hash` is internally
+/// consistent and reproducible via [`reconstruct_state_at`], but may
+/// differ from what [`resolve_lean`](crate::resolve::resolve_lean) would
+/// produce. Actual state resolution is performed separately.
+///
 /// This is the high-level API that replaces manual delta-chain loops.
 ///
 /// # Arguments
@@ -247,6 +257,9 @@ pub fn compute_delta_chain(events: &[crate::types::LeanEvent]) -> Vec<StateCheck
                     parent_hash = state_hash_map.get(prev_id).cloned();
                     base_state = prev_state.clone();
                 }
+                // NOTE: Deterministic merge: when parents disagree on a key, pick the
+                // lexicographically greater event ID. This is NOT state resolution —
+                // just a reproducible tie-break for delta chain storage.
                 for (k, v) in prev_state {
                     match merged_state.get(k) {
                         Some(existing) if existing >= v => {}
@@ -316,6 +329,8 @@ pub struct CompactedCheckpoint {
 /// [`MAX_DELTA_CHAIN_HOPS`] events to bound reconstruction cost.
 ///
 /// Events **must** be in topological order (parents before children).
+/// Multi-parent merging uses the same deterministic lexicographic
+/// tie-break as [`compute_delta_chain`] (not state resolution).
 ///
 /// A custom `max_hops` can be provided; pass `None` to use the default
 /// [`MAX_DELTA_CHAIN_HOPS`] (100).
@@ -347,6 +362,7 @@ pub fn compute_compacted_delta_chain(
                     parent_hops = hops_since_snapshot.get(prev_id).copied().unwrap_or(0);
                     base_state = prev_state.clone();
                 }
+                // NOTE: Deterministic merge (not state resolution). See compute_delta_chain.
                 for (k, v) in prev_state {
                     match state_before.get(k) {
                         Some(existing) if existing >= v => {}
