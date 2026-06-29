@@ -199,40 +199,39 @@ pub fn check_auth<Id: Clone>(
         return Ok(());
     }
 
-    // Rule 2: Check sender is not banned
-    if let Some(member_event) = state.get_event(M_ROOM_MEMBER, Some(&event.sender)) {
-        if let Some(membership) = member_event.get_membership() {
-            if membership == MEM_BAN {
-                return Err(AuthError::BannedUser {
-                    sender: event.sender.clone(),
-                    event_id: event.event_id.clone(),
-                });
-            }
+    // Rule 2: Check sender is not banned, and Rule 3: Sender must be joined
+    let sender_member_event = state.get_event(M_ROOM_MEMBER, Some(&event.sender));
 
-            // Rule 3: Sender must be joined (with exceptions for self-membership events)
-            if membership != MEM_JOIN {
-                let is_self_membership = event.event_type == M_ROOM_MEMBER
-                    && event.state_key.as_deref() == Some(&event.sender);
+    // Determine the effective membership string
+    let mut membership = sender_member_event
+        .and_then(|ev| ev.get_membership())
+        .unwrap_or(MEM_LEAVE);
 
-                if !is_self_membership {
-                    return Err(AuthError::NotMember {
-                        sender: event.sender.clone(),
-                        event_id: event.event_id.clone(),
-                    });
-                }
-            }
-        }
-    } else {
-        // Rule 3: Sender must be joined.
-        // Exceptions: Self-membership events, or Room v11 implied creator join.
-        let is_self_membership =
-            event.event_type == M_ROOM_MEMBER && event.state_key.as_deref() == Some(&event.sender);
-
+    // Exceptions: Room v11 implied creator join only applies when there is no membership event
+    if sender_member_event.is_none() {
         let is_creator = state
             .get_event(M_ROOM_CREATE, Some(""))
             .is_some_and(|create_ev| create_ev.sender == event.sender);
+        if is_creator {
+            membership = MEM_JOIN;
+        }
+    }
 
-        if !is_creator && !is_self_membership {
+    if membership == MEM_BAN {
+        return Err(AuthError::BannedUser {
+            sender: event.sender.clone(),
+            event_id: event.event_id.clone(),
+        });
+    }
+
+    // Rule 3: Sender must be joined (with exceptions for self-membership events)
+    if membership != MEM_JOIN {
+        // Exceptions: Self-membership transitions (except ban).
+        let is_self_membership = event.event_type == M_ROOM_MEMBER
+            && event.state_key.as_deref() == Some(&event.sender)
+            && event.get_membership() != Some(MEM_BAN);
+
+        if !is_self_membership {
             return Err(AuthError::NotMember {
                 sender: event.sender.clone(),
                 event_id: event.event_id.clone(),

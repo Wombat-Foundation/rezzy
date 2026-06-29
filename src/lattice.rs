@@ -331,14 +331,24 @@ where
 
     let mut resolved = crate::resolve::get_initial_resolved_state(&unconflicted_state, version);
 
-    let (sort_context, _power_events, non_power_events, mut _local_auth_cache, create_ev) =
+    let (sort_context, power_events, non_power_events, mut local_auth_cache, create_ev) =
         crate::resolve::execute_power_phase(
             &conflicted_events,
             auth_context,
             &original_conflicted_keys,
-            &mut resolved,
             version,
         );
+
+    crate::resolve::run_power_phase_iterative_checks(
+        &mut resolved,
+        &power_events,
+        &sort_context,
+        auth_context,
+        &conflicted_events,
+        create_ev,
+        &mut local_auth_cache,
+        version,
+    );
 
     let sort_set = &conflicted_events;
 

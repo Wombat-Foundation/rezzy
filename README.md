@@ -21,6 +21,33 @@ Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolu
 cargo build --release
 ```
 
+### Maximum Performance
+
+`rezzy` is designed for extreme performance, but to squeeze every last drop out of the engine, homeserver authors and binary consumers should opt-in to advanced compiler optimizations in their own `Cargo.toml`:
+
+```toml
+[profile.release]
+lto = "fat"
+codegen-units = 1
+```
+
+For even higher performance use this:
+
+```toml
+[profile.release-max-perf]
+inherits = "release"
+strip = "symbols"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+```
+
+Additionally, if you are building the binary for the specific machine it will run on, you can unlock native CPU instructions (like AVX-512) by building with:
+
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
 ### Test
 
 ```bash

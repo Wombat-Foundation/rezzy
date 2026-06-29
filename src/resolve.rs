@@ -218,7 +218,6 @@ pub(crate) fn execute_power_phase<
     conflicted_events: &'a HashMap<Id, LeanEvent<Id>, S1>,
     auth_context: &'a HashMap<Id, LeanEvent<Id>, S2>,
     original_conflicted_keys: &alloc::collections::BTreeSet<Id>,
-    resolved: &mut BTreeMap<(String, Option<String>), Id>,
     version: StateResVersion,
 ) -> (
     HashMap<Id, LeanEvent<Id>>,
@@ -254,19 +253,9 @@ pub(crate) fn execute_power_phase<
     );
 
     let create_ev = crate::types::find_deterministic_create_event(auth_context, conflicted_events);
-    let mut local_auth_cache = HashMap::new();
+    let local_auth_cache = HashMap::new();
 
-    run_power_phase_iterative_checks(
-        resolved,
-        &power_events,
-        &sort_context,
-        auth_context,
-        conflicted_events,
-        create_ev,
-        &mut local_auth_cache,
-        version,
-    );
-
+    // Return updated refs
     (
         sort_context,
         power_events,
@@ -366,14 +355,24 @@ where
     // MSC4297 (v2.1+): The algorithm starts from an empty set of state.
     let mut resolved = get_initial_resolved_state(&unconflicted_state, version);
 
-    let (sort_context, _power_events, non_power_events, mut local_auth_cache, create_ev) =
+    let (sort_context, power_events, non_power_events, mut local_auth_cache, create_ev) =
         execute_power_phase(
             &conflicted_events,
             auth_context,
             &original_conflicted_keys,
-            &mut resolved,
             version,
         );
+
+    run_power_phase_iterative_checks(
+        &mut resolved,
+        &power_events,
+        &sort_context,
+        auth_context,
+        &conflicted_events,
+        create_ev,
+        &mut local_auth_cache,
+        version,
+    );
 
     let sort_set = &conflicted_events;
 
@@ -456,7 +455,6 @@ where
             &conflicted_events,
             auth_context,
             &original_conflicted_keys,
-            &mut resolved,
             version,
         );
 

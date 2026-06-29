@@ -178,11 +178,21 @@ mod tests {
             state_key: Some("@alice:example.com".into()),
             sender: "@alice:example.com".into(),
             content: serde_json::json!({ "membership": "join" }),
+            auth_events: vec!["$deep_auth_in_set".to_string()],
+            ..Default::default()
+        };
+        let deep_auth_in_set = LeanEvent {
+            event_id: "$deep_auth_in_set".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@charlie:example.com".into()),
+            sender: "@charlie:example.com".into(),
+            content: serde_json::json!({ "membership": "join" }),
             ..Default::default()
         };
 
         sort_set.insert("$kick".to_string(), kick_ev);
         sort_set.insert("$auth_in_set".to_string(), auth_in_set);
+        sort_set.insert("$deep_auth_in_set".to_string(), deep_auth_in_set);
 
         let mut power_events = HashMap::new();
         let mut non_power_events = HashMap::new();
@@ -193,9 +203,10 @@ mod tests {
             rezzy::StateResVersion::V2_1_1,
         );
 
-        // Before expansion, only $kick is a power event. $auth_in_set is non-power.
+        // Before expansion, only $kick is a power event. $auth_in_set and $deep_auth_in_set are non-power.
         assert!(power_events.contains_key("$kick"));
         assert!(non_power_events.contains_key("$auth_in_set"));
+        assert!(non_power_events.contains_key("$deep_auth_in_set"));
 
         // Run recursive V2 expansion
         rezzy::expand_v2_power_events_auth_chains(
@@ -204,10 +215,12 @@ mod tests {
             &sort_set,
         );
 
-        // After expansion, $auth_in_set is promoted to a power event!
+        // After expansion, $auth_in_set and $deep_auth_in_set are promoted to power events!
         assert!(power_events.contains_key("$kick"));
         assert!(power_events.contains_key("$auth_in_set"));
+        assert!(power_events.contains_key("$deep_auth_in_set"));
         assert!(!non_power_events.contains_key("$auth_in_set"));
+        assert!(!non_power_events.contains_key("$deep_auth_in_set"));
     }
 
     #[test]
@@ -2483,6 +2496,7 @@ mod tests {
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
             sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "membership": "join" }),
             auth_events: vec!["$create".into()],
             ..Default::default()
         };
@@ -2508,6 +2522,7 @@ mod tests {
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
             sender: "@bob:example.com".into(),
+            content: serde_json::json!({ "membership": "join" }),
             auth_events: vec!["$create".into(), "$pl_alice".into()],
             ..Default::default()
         };
@@ -3153,5 +3168,68 @@ fn test_resolve_lean_with_deltas_parity() {
         power_count + non_power_count,
         deltas.len(),
         "all deltas should have Power or NonPower phase"
+    );
+}
+
+#[test]
+fn test_resolve_lean_with_deltas_no_duplicate_power_events() {
+    use rezzy::{resolve_lean_with_deltas, LeanEvent, StateResVersion};
+    use std::collections::{BTreeMap, HashMap};
+
+    let mut unconflicted = BTreeMap::new();
+    unconflicted.insert(
+        ("m.room.create".into(), Some(String::new())),
+        "$create".into(),
+    );
+
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+    let create_ev = LeanEvent {
+        event_id: "$create".into(),
+        event_type: "m.room.create".into(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".into(),
+        ..Default::default()
+    };
+    auth_context.insert("$create".into(), create_ev.clone());
+
+    let join_alice = LeanEvent {
+        event_id: "$join_alice".into(),
+        event_type: "m.room.member".into(),
+        state_key: Some("@alice:example.com".into()),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "membership": "join" }),
+        auth_events: vec!["$create".into()],
+        ..Default::default()
+    };
+    auth_context.insert("$join_alice".into(), join_alice.clone());
+
+    let pl_alice = LeanEvent {
+        event_id: "$pl_alice".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({
+            "users": { "@alice:example.com": 100 }
+        }),
+        auth_events: vec!["$create".into(), "$join_alice".into()],
+        ..Default::default()
+    };
+
+    let mut conflicted = HashMap::new();
+    conflicted.insert("$pl_alice".into(), pl_alice.clone());
+
+    let (_, deltas) =
+        resolve_lean_with_deltas(unconflicted, conflicted, &auth_context, StateResVersion::V2);
+
+    let power_deltas: Vec<_> = deltas
+        .iter()
+        .filter(|d| d.event_id == "$pl_alice")
+        .collect();
+
+    assert_eq!(
+        power_deltas.len(),
+        1,
+        "The double replay bug is present! Power event $pl_alice was recorded {} times in the deltas",
+        power_deltas.len()
     );
 }

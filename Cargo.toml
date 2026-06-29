@@ -139,3 +139,14 @@ arithmetic_side_effects = "warn"
 undocumented_unsafe_blocks = "warn"
 dbg_macro = "warn"
 get_unwrap = "warn"
+
+[profile.release-max-perf]
+inherits = "release"
+strip = "symbols"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.release]
+strip = "symbols"
+lto = "thin"
