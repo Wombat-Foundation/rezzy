@@ -209,22 +209,30 @@ pub fn check_auth<Id: Clone>(
                 });
             }
 
-            // Rule 3: Sender must be joined (with exceptions for membership events)
-            if event.event_type != M_ROOM_MEMBER && membership != MEM_JOIN {
-                return Err(AuthError::NotMember {
-                    sender: event.sender.clone(),
-                    event_id: event.event_id.clone(),
-                });
+            // Rule 3: Sender must be joined (with exceptions for self-membership events)
+            if membership != MEM_JOIN {
+                let is_self_membership = event.event_type == M_ROOM_MEMBER
+                    && event.state_key.as_deref() == Some(&event.sender);
+                
+                if !is_self_membership {
+                    return Err(AuthError::NotMember {
+                        sender: event.sender.clone(),
+                        event_id: event.event_id.clone(),
+                    });
+                }
             }
         }
-    } else if event.event_type != M_ROOM_MEMBER {
-        // Room version 11: The creator of the room has an implied membership of "join"
-        // if no explicit membership event exists for them.
+    } else {
+        // Rule 3: Sender must be joined. 
+        // Exceptions: Self-membership events, or Room v11 implied creator join.
+        let is_self_membership = event.event_type == M_ROOM_MEMBER
+            && event.state_key.as_deref() == Some(&event.sender);
+
         let is_creator = state
             .get_event(M_ROOM_CREATE, Some(""))
             .is_some_and(|create_ev| create_ev.sender == event.sender);
 
-        if !is_creator {
+        if !is_creator && !is_self_membership {
             return Err(AuthError::NotMember {
                 sender: event.sender.clone(),
                 event_id: event.event_id.clone(),

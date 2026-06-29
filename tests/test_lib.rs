@@ -2349,21 +2349,32 @@ mod tests {
         use std::collections::{BTreeMap, HashMap};
 
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
-        let auth: HashMap<String, LeanEvent> = HashMap::new();
+        let mut auth: HashMap<String, LeanEvent> = HashMap::new();
+
+        let create = LeanEvent {
+            event_id: "CREATE".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some("".into()),
+            sender: "@alice:example.com".into(), // Match the default sender of A and B
+            ..Default::default()
+        };
+        auth.insert("CREATE".into(), create);
 
         // Create cyclic power events: A auths B, B authed by A, etc.
         let a: LeanEvent = LeanEvent {
             event_id: "A".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@alice:example.com".into()),
-            auth_events: vec!["B".into()],
+            event_type: "m.room.power_levels".into(),
+            state_key: Some("".into()),
+            sender: "@alice:example.com".into(),
+            auth_events: vec!["B".into(), "CREATE".into()],
             ..Default::default()
         };
         let b: LeanEvent = LeanEvent {
             event_id: "B".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@alice:example.com".into()),
-            auth_events: vec!["A".into()],
+            event_type: "m.room.power_levels".into(),
+            state_key: Some("".into()),
+            sender: "@alice:example.com".into(),
+            auth_events: vec!["A".into(), "CREATE".into()],
             ..Default::default()
         };
         conflicted.insert("A".into(), a);
@@ -2374,7 +2385,7 @@ mod tests {
         let resolved = resolve_lean(unconflicted, conflicted, &auth, rezzy::StateResVersion::V2);
         assert!(!resolved.is_empty());
         assert_eq!(
-            &resolved[&("m.room.member".into(), Some("@alice:example.com".into()))],
+            &resolved[&("m.room.power_levels".into(), Some("".into()))],
             "B"
         );
     }

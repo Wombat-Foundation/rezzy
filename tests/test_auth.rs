@@ -162,7 +162,7 @@ fn test_join_self_only() {
     let state = RoomState::new();
     assert!(matches!(
         check_auth(&join, &state),
-        Err(AuthError::InvalidStateKey { .. })
+        Err(AuthError::NotMember { .. })
     ));
 }
 
