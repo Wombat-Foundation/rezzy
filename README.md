@@ -104,7 +104,7 @@ Because we care about raw performance and mechanical efficiency, `rezzy` is buil
 
 ### Typed Content Fields (`EventContent` trait) ✓
 
-The generic `EventContent` trait replaces the need for a monolithic `LeanEventTyped`. Homeservers implement `EventContent` on their own content type to provide pre-extracted fields (`membership`, `join_rule`, `ban`, `kick` power levels, etc.) without JSON parsing in the hot path. `serde_json::Value` remains the default via a blanket impl. See [`res/docs/proposal_EventContent_architecture.md`](res/docs/proposal_EventContent_architecture.md).
+The generic `EventContent` trait replaces the need for a monolithic `LeanEventTyped`. Homeservers implement `EventContent` on their own content type to provide pre-extracted fields (`membership`, `join_rule`, `ban`, `kick` power levels, etc.) without JSON parsing in the hot path. `serde_json::Value` remains the default via a blanket impl.
 
 ### Per-Event State Deltas (`resolve_lean_with_deltas`) ✓
 
