@@ -48,7 +48,11 @@ where
     }
 
     let is_creator = create_ev.is_some_and(|ev| {
-        ev.sender == event.sender || ev.content.has_additional_creator(&event.sender)
+        ev.sender == event.sender
+            || matches!(
+                version,
+                StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
+            ) && ev.content.has_additional_creator(&event.sender)
     });
 
     if is_creator {

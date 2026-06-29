@@ -273,7 +273,6 @@ fn get_sender_power_level<Id, C: crate::types::EventContent>(
     sender: &str,
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
-    // TODO(security): has_room_creator checks non-spec `room_creators` field — remove it.
     // TODO(correctness): creator privileges must be version-gated:
     //   - v1-v10: creator = content.creator, implicit PL 100
     //   - v11: creator = sender, implicit PL 100, no additional_creators
@@ -292,7 +291,7 @@ fn get_sender_power_level<Id, C: crate::types::EventContent>(
         }
     }
 
-    // 2. State-based Power Levels
+    // State-based Power Levels
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
         if let Some(pl) = pl_event.get_user_power_level(sender) {
             return pl;
