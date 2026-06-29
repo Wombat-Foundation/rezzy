@@ -490,17 +490,18 @@ where
 ///
 /// # Panics
 ///
-/// Panics if there are more than 2^32 extremities (practically unreachable).
+/// Panics if there are more than `2^32` extremities (practically unreachable).
 ///
 /// # Example
 ///
-/// use `rezzy::{compute_merge_base`, `DagNode`};
-/// use `rezzy::{LeanEvent`, `HashMap`};
+/// ```rust
+/// use rezzy::{compute_merge_base, DagNode};
+/// use rezzy::{LeanEvent, HashMap};
 ///
-/// let mut events: `HashMap`<String, `LeanEvent`> = `HashMap::new()`;
+/// let mut events: HashMap<String, LeanEvent<String>> = HashMap::new();
 /// // ... populate events ...
-/// let tips = vec!["$`tip_a`", "$`tip_b`"];
-/// let `merge_base` = `compute_merge_base(&tips`, &events);
+/// let tips = vec!["$tip_a", "$tip_b"];
+/// let merge_base = compute_merge_base(&tips, &events);
 /// ```
 #[must_use]
 pub fn compute_merge_base<'a, Id, Q, S, Node>(
