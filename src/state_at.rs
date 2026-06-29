@@ -890,7 +890,7 @@ where
     }
 
     let mut unconflicted_state = BTreeMap::new();
-    let mut conflicted_state_set = std::collections::HashSet::new();
+    let mut conflicted_state_set = hashbrown::HashSet::new();
 
     for (key, ids) in occurrences {
         if ids.len() == 1 && ids.values().next().unwrap() == &num_sets {
@@ -913,7 +913,7 @@ where
     // Compute the auth difference (auth(C) \ auth(U)) using a bounded dual-heap traversal.
     // This perfectly restores algorithmic invariants for `expand_v2_power_events_auth_chains`
     // without the massive O(N) bottleneck of unbounded DAG walks.
-    let mut u_visited = std::collections::HashSet::new();
+    let mut u_visited = hashbrown::HashSet::new();
     let mut u_heap = alloc::collections::BinaryHeap::new();
     for id in unconflicted_state.values() {
         if u_visited.insert(id.clone()) {
@@ -923,7 +923,7 @@ where
         }
     }
 
-    let mut c_visited = std::collections::HashSet::new();
+    let mut c_visited = hashbrown::HashSet::new();
     let mut c_heap = alloc::collections::BinaryHeap::new();
     for id in &conflicted_state_set {
         if !u_visited.contains(id) && c_visited.insert(id.clone()) {
@@ -933,7 +933,7 @@ where
         }
     }
 
-    let mut auth_diff = std::collections::HashSet::new();
+    let mut auth_diff = hashbrown::HashSet::new();
 
     while let Some(&(c_depth, _)) = c_heap.peek() {
         // Catch up U's traversal to C's current depth

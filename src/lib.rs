@@ -40,6 +40,7 @@
 //! | `cli`       | ✗       | Builds the `rezzy` CLI binary and the `merge` module. |
 //! | `hashing`   | ✗       | SHA-256 content-hashing for events missing an `event_id`. |
 //! | `mock-ruma` | ✗       | Enables Ruma SDK interop for upstream parity testing. |
+//! | `regen`     | ✗       | Builds the `regen_oracles` snapshot regeneration binary. |
 //!
 //! ## Spec References
 //!
@@ -53,6 +54,7 @@
 //! [MSC4297]: https://github.com/matrix-org/matrix-spec-proposals/pull/4297
 //! [MSC4242]: https://github.com/matrix-org/matrix-spec-proposals/pull/4242
 
+#[cfg(feature = "std")]
 extern crate std;
 // Copyright 2026 Shane Jaroch
 //

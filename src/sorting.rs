@@ -423,7 +423,14 @@ where
             }
 
             if all_children_done {
-                memo.insert(top.clone(), min_pos);
+                // Clamp "no path found" to mainline.len() so callers
+                // don't see a raw usize::MAX leaking into comparisons.
+                let resolved_pos = if min_pos == usize::MAX {
+                    mainline.len()
+                } else {
+                    min_pos
+                };
+                memo.insert(top.clone(), resolved_pos);
                 stack.pop();
             }
         }

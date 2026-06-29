@@ -369,7 +369,7 @@ where
     let mainline = build_mainline(&resolved, &sort_context);
     let mut target_events: alloc::vec::Vec<&LeanEvent<Id, C>> = non_power_events.values().collect();
     let mainline_distances =
-        compute_closest_mainline_positions(&mut target_events, &mainline, auth_context);
+        compute_closest_mainline_positions(&mut target_events, &mainline, &sort_context);
     let mainline_len = mainline.len();
 
     // Semilattice Fold Phase
