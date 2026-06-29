@@ -38,3 +38,10 @@ jobs:
 
       - name: Test (w/ coverage)
         run: make rust/coverage
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ../.tmp/coverage-lean/cobertura.xml
+          fail_ci_if_error: true
