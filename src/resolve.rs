@@ -210,7 +210,7 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S1, S2, S3, S4>(
 }
 
 /// Returns the starting point for state resolution based on the algorithm version.
-/// V1 inherits the unconflicted state as its base, whereas V2+ starts from an empty set.
+/// V1 inherits the unconflicted state as its base, whereas V2.1+ starts from an empty set.
 pub(crate) fn get_initial_resolved_state<Id>(
     unconflicted_state: &BTreeMap<(String, Option<String>), Id>,
     version: StateResVersion,

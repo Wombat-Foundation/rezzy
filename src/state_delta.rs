@@ -237,7 +237,7 @@ pub struct CompactedCheckpoint {
     pub snapshot: Option<BTreeMap<(String, Option<String>), String>>,
 }
 
-/// Like [`compute_delta_chain`], but inserts full snapshots every
+/// Computes a delta chain and inserts full snapshots every
 /// [`MAX_DELTA_CHAIN_HOPS`] events to bound reconstruction cost.
 ///
 /// Events **must** be in topological order (parents before children).

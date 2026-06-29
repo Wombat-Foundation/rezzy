@@ -786,8 +786,8 @@ where
     (sorted_ancestors, out_degree)
 }
 
-/// Fast-path resolution for DAG nodes with exactly one parent.
-/// Bypasses full state resolution by simply cloning the parent's resolved state.
+/// Fast-path resolution for merging multiple states when they are all structurally identical.
+/// Bypasses full state resolution by simply returning one of the identical parent states.
 fn resolve_merge_fast_path<Id, C, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
