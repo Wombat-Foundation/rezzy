@@ -331,6 +331,7 @@ where
     Id: Clone + Eq + core::hash::Hash,
 {
     let mut mainline = Vec::new();
+    let mut seen_in_mainline = hashbrown::HashSet::new();
     let pl_key = (
         alloc::string::String::from("m.room.power_levels"),
         Some(alloc::string::String::new()),
@@ -338,6 +339,11 @@ where
     let mut current = resolved.get(&pl_key).cloned();
 
     while let Some(eid) = current {
+        if !seen_in_mainline.insert(eid.clone()) {
+            #[cfg(feature = "std")]
+            std::eprintln!("REZZY_WARN: MAINLINE CYCLE DETECTED!");
+            break; // Cycle detected in the power-levels mainline!
+        }
         mainline.push(eid.clone());
         current = None;
         if let Some(ev) = auth_context.get(&eid) {
@@ -477,4 +483,52 @@ pub fn mainline_sort<Id, S: ::core::hash::BuildHasher>(
             ord => ord,
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_mainline_cycle_detection() {
+        // A and B both claim to be m.room.power_levels, and auth against each other, forming a cycle.
+        let a = LeanEvent::<String> {
+            event_id: alloc::string::String::from("A"),
+            event_type: alloc::string::String::from("m.room.power_levels"),
+            auth_events: alloc::vec![alloc::string::String::from("B")],
+            ..Default::default()
+        };
+        let b = LeanEvent::<String> {
+            event_id: alloc::string::String::from("B"),
+            event_type: alloc::string::String::from("m.room.power_levels"),
+            auth_events: alloc::vec![alloc::string::String::from("A")],
+            ..Default::default()
+        };
+
+        let mut auth_context = HashMap::new();
+        auth_context.insert(alloc::string::String::from("A"), a);
+        auth_context.insert(alloc::string::String::from("B"), b);
+
+        // Initial state sets A as the power levels event.
+        let mut resolved = BTreeMap::new();
+        resolved.insert(
+            (
+                alloc::string::String::from("m.room.power_levels"),
+                Some(alloc::string::String::new()),
+            ),
+            alloc::string::String::from("A"),
+        );
+
+        // Before the fix, this would infinite loop!
+        let mainline = build_mainline(&resolved, &auth_context);
+
+        // A and B should both be in the mainline exactly once.
+        assert_eq!(
+            mainline.len(),
+            2,
+            "Mainline should break the cycle safely after picking up both events"
+        );
+        assert_eq!(mainline[0], "A");
+        assert_eq!(mainline[1], "B");
+    }
 }

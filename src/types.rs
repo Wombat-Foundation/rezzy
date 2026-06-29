@@ -632,7 +632,11 @@ impl<Id: Ord> Ord for SortPriority<'_, Id> {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.version {
             StateResVersion::V1 => {
-                // V1 tie-breaking: depth (asc) -> event_id (asc)
+                // Matrix Spec - State Resolution v1:
+                // "First we resolve conflicts between m.room.power_levels events...
+                //  If there is a tie, we resolve it by comparing the events' depths
+                //  and then their event IDs."
+                //
                 // In Rust's Max-Heap BinaryHeap, "greater" elements are popped first.
                 // We want deeper events to pop FIRST, so they must be "greater".
                 match self.event.depth.cmp(&other.event.depth) {
@@ -661,11 +665,11 @@ impl<Id: Ord> Ord for SortPriority<'_, Id> {
                 // makes Alice's ban appear before Bob's concurrent PL change).
                 match self.power_level.cmp(&other.power_level) {
                     Ordering::Equal => {
-                        // V2.2 Invite-Lock Fix: prioritize topological depth over origin_server_ts.
+                        // V2.1.1 Invite-lock fix: prioritize topological depth over `origin_server_ts`.
                         // Smaller Depth -> Greater TieBreaker -> Pops First -> Loses.
                         // Larger Depth -> Smaller TieBreaker -> Pops Last -> Wins.
-                        if self.version == StateResVersion::V2_2
-                            || self.version == StateResVersion::V2_1_1
+                        if self.version == StateResVersion::V2_1_1
+                            || self.version == StateResVersion::V2_2
                         {
                             match other.auth_chain_distance.cmp(&self.auth_chain_distance) {
                                 Ordering::Equal => {}

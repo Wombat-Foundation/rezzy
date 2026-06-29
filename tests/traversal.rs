@@ -286,6 +286,17 @@ fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
         ..Default::default()
     };
 
+    let join_rules = LeanEvent {
+        event_id: "$jr".to_string(),
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".to_string(),
+        origin_server_ts: 150,
+        content: serde_json::json!({ "join_rule": "public" }),
+        auth_events: vec!["$create".to_string()],
+        ..Default::default()
+    };
+
     let pl_alice = LeanEvent {
         event_id: "$pl_alice".to_string(),
         event_type: "m.room.power_levels".to_string(),
@@ -316,6 +327,28 @@ fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
         ..Default::default()
     };
 
+    let alice_join = LeanEvent {
+        event_id: "$alice_join".to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some("@alice:example.com".to_string()),
+        sender: "@alice:example.com".to_string(),
+        origin_server_ts: 250,
+        content: serde_json::json!({ "membership": "join" }),
+        auth_events: vec!["$create".to_string(), "$jr".to_string()],
+        ..Default::default()
+    };
+
+    let bob_join = LeanEvent {
+        event_id: "$bob_join".to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some("@bob:example.com".to_string()),
+        sender: "@bob:example.com".to_string(),
+        origin_server_ts: 250,
+        content: serde_json::json!({ "membership": "join" }),
+        auth_events: vec!["$create".to_string(), "$jr".to_string()],
+        ..Default::default()
+    };
+
     let alice_ban = LeanEvent {
         event_id: "$A_alice_ban".to_string(),
         event_type: "m.room.member".to_string(),
@@ -323,7 +356,12 @@ fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
         sender: "@alice:example.com".to_string(),
         origin_server_ts: 300,
         content: serde_json::json!({ "membership": "ban" }),
-        auth_events: vec!["$create".to_string(), "$pl_alice".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl_alice".to_string(),
+            "$alice_join".to_string(),
+            "$bob_join".to_string(),
+        ],
         ..Default::default()
     };
 
@@ -334,21 +372,53 @@ fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
         sender: "@bob:example.com".to_string(),
         origin_server_ts: 300,
         content: serde_json::json!({ "membership": "ban" }),
-        auth_events: vec!["$create".to_string(), "$pl_bob".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl_bob".to_string(),
+            "$alice_join".to_string(),
+            "$bob_join".to_string(),
+        ],
         ..Default::default()
     };
 
     let mut auth_context = std::collections::HashMap::new();
-    auth_context.insert(create_ev.event_id.clone(), create_ev);
+    auth_context.insert(create_ev.event_id.clone(), create_ev.clone());
+    auth_context.insert(join_rules.event_id.clone(), join_rules.clone());
     auth_context.insert(pl_alice.event_id.clone(), pl_alice);
     auth_context.insert(pl_bob.event_id.clone(), pl_bob);
+    auth_context.insert(alice_join.event_id.clone(), alice_join.clone());
+    auth_context.insert(bob_join.event_id.clone(), bob_join.clone());
 
     let mut conflicted_events = std::collections::HashMap::new();
     conflicted_events.insert(alice_ban.event_id.clone(), alice_ban);
     conflicted_events.insert(bob_ban.event_id.clone(), bob_ban);
 
+    let mut unconflicted = std::collections::BTreeMap::new();
+    unconflicted.insert(
+        ("m.room.create".to_string(), Some(String::new())),
+        create_ev.event_id.clone(),
+    );
+    unconflicted.insert(
+        ("m.room.join_rules".to_string(), Some(String::new())),
+        join_rules.event_id.clone(),
+    );
+    unconflicted.insert(
+        (
+            "m.room.member".to_string(),
+            Some("@alice:example.com".to_string()),
+        ),
+        alice_join.event_id.clone(),
+    );
+    unconflicted.insert(
+        (
+            "m.room.member".to_string(),
+            Some("@bob:example.com".to_string()),
+        ),
+        bob_join.event_id.clone(),
+    );
+
     let resolved = rezzy::resolve_lean(
-        std::collections::BTreeMap::new(),
+        unconflicted,
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
@@ -368,8 +438,8 @@ fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
     // So Bob's ban of Alice is evaluated while Bob is ALREADY banned, and is thus REJECTED.
     // "Who shoots first wins" mathematically holds.
     assert_eq!(&resolved[&bob_member_key], "$A_alice_ban");
-    assert!(
-        !resolved.contains_key(&alice_member_key),
+    assert_eq!(
+        &resolved[&alice_member_key], "$alice_join",
         "Bob's ban of Alice should be rightfully rejected because Alice shot first!"
     );
 }
