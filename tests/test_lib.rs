@@ -3472,12 +3472,11 @@ fn test_additional_creators_version_gating() {
         "additional_creators": ["@ac:x.com"]
     });
     // The TestContent wrapper correctly parses it regardless of version
-    assert_eq!(
+    assert!(
         content.has_additional_creator("@ac:x.com"),
-        true,
         "The TestContent wrapper correctly parses it"
     );
-    // Note: The actual version-gating (V2 vs V2.1+) is enforced in `src/auth/mod.rs` 
+    // Note: The actual version-gating (V2 vs V2.1+) is enforced in `src/auth/mod.rs`
     // `get_sender_power_level` where `has_additional_creator` is only evaluated
     // if the version matches V2_1 | V2_1_1 | V2_2.
 }

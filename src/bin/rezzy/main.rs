@@ -16,6 +16,10 @@ mod format;
 mod network;
 mod utils;
 
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use clap::{Parser, ValueEnum};
 use format::{format_cli_output, FormattingContext};
 use rezzy::{LeanEvent, StateResVersion};

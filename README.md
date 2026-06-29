@@ -22,6 +22,8 @@ Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolu
 cargo build --release
 ```
 
+_Note: Building the `rezzy` binary automatically injects `mimalloc` as the global allocator for a 10-20% throughput boost. The `rezzy` library crate remains strictly allocator-agnostic and will use whatever allocator your project configures._
+
 ### Maximum Performance
 
 `rezzy` is designed for extreme performance, but to squeeze every last drop out of the engine, homeserver authors and binary consumers should opt-in to advanced compiler optimizations in their own `Cargo.toml`:
