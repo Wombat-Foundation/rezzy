@@ -59,6 +59,7 @@ Because we care about raw performance and mechanical efficiency, `rezzy` is buil
 - Reverse topological power ordering (Kahn's algorithm)
 - `Arc`-based copy-on-write (CoW) structural sharing
 - `O(1)` fast-path _merge resolution_ via "pointer-equality bypass"
+- Native **n-way state resolution** (resolve/merge arbitrary DAG forks in a single pass)
 - Zero-allocation stack-safe DAG crawling
 - Generic `BuildHasher` decoupling
 - Supremum deletion attack (Byzantine fault mitigation)

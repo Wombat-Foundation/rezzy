@@ -2354,7 +2354,7 @@ mod tests {
         let create = LeanEvent {
             event_id: "CREATE".into(),
             event_type: "m.room.create".into(),
-            state_key: Some("".into()),
+            state_key: Some(String::new()),
             sender: "@alice:example.com".into(), // Match the default sender of A and B
             ..Default::default()
         };
@@ -2364,7 +2364,7 @@ mod tests {
         let a: LeanEvent = LeanEvent {
             event_id: "A".into(),
             event_type: "m.room.power_levels".into(),
-            state_key: Some("".into()),
+            state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
             auth_events: vec!["B".into(), "CREATE".into()],
             ..Default::default()
@@ -2372,7 +2372,7 @@ mod tests {
         let b: LeanEvent = LeanEvent {
             event_id: "B".into(),
             event_type: "m.room.power_levels".into(),
-            state_key: Some("".into()),
+            state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
             auth_events: vec!["A".into(), "CREATE".into()],
             ..Default::default()
@@ -2385,7 +2385,7 @@ mod tests {
         let resolved = resolve_lean(unconflicted, conflicted, &auth, rezzy::StateResVersion::V2);
         assert!(!resolved.is_empty());
         assert_eq!(
-            &resolved[&("m.room.power_levels".into(), Some("".into()))],
+            &resolved[&("m.room.power_levels".into(), Some(String::new()))],
             "B"
         );
     }

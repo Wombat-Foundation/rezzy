@@ -213,7 +213,7 @@ pub fn check_auth<Id: Clone>(
             if membership != MEM_JOIN {
                 let is_self_membership = event.event_type == M_ROOM_MEMBER
                     && event.state_key.as_deref() == Some(&event.sender);
-                
+
                 if !is_self_membership {
                     return Err(AuthError::NotMember {
                         sender: event.sender.clone(),
@@ -223,10 +223,10 @@ pub fn check_auth<Id: Clone>(
             }
         }
     } else {
-        // Rule 3: Sender must be joined. 
+        // Rule 3: Sender must be joined.
         // Exceptions: Self-membership events, or Room v11 implied creator join.
-        let is_self_membership = event.event_type == M_ROOM_MEMBER
-            && event.state_key.as_deref() == Some(&event.sender);
+        let is_self_membership =
+            event.event_type == M_ROOM_MEMBER && event.state_key.as_deref() == Some(&event.sender);
 
         let is_creator = state
             .get_event(M_ROOM_CREATE, Some(""))

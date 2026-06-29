@@ -451,34 +451,15 @@ where
 
     // --- Power phase (with delta tracking) ---
 
-    let sort_context = build_sort_context(&conflicted_events, auth_context);
-
-    let mut power_events = HashMap::new();
-    let mut non_power_events = HashMap::new();
-    crate::lattice::route_power_events(
-        &conflicted_events,
-        &mut power_events,
-        &mut non_power_events,
-        version,
-    );
-
-    if version != StateResVersion::V1 {
-        expand_v2_power_events_auth_chains(
-            &mut power_events,
-            &mut non_power_events,
+    let (sort_context, power_events, non_power_events, mut local_auth_cache, create_ev) =
+        execute_power_phase(
             &conflicted_events,
+            auth_context,
+            &original_conflicted_keys,
+            &mut resolved,
+            version,
         );
-    }
 
-    route_msc4297_ancestral_power_events(
-        &mut power_events,
-        auth_context,
-        &original_conflicted_keys,
-        version,
-    );
-
-    let create_ev = crate::types::find_deterministic_create_event(auth_context, &conflicted_events);
-    let mut local_auth_cache = HashMap::new();
     let sort_set = &conflicted_events;
 
     let sorted_power_ids = lean_kahn_sort(&power_events, &sort_context, create_ev, version);
@@ -509,13 +490,15 @@ where
             } else {
                 resolved.get(&key).cloned()
             };
-            deltas.push(ResolutionDelta {
-                event_id: event.event_id.clone(),
-                accepted,
-                key,
-                replaced,
-                phase: ResolvePhase::Power,
-            });
+            if original_conflicted_keys.contains(&event.event_id) {
+                deltas.push(ResolutionDelta {
+                    event_id: event.event_id.clone(),
+                    accepted,
+                    key,
+                    replaced,
+                    phase: ResolvePhase::Power,
+                });
+            }
         }
     }
 
