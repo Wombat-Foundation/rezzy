@@ -45,7 +45,7 @@ required-features = ["regen"]
 
 [features]
 default = ["std"]
-std = ["alloc", "serde_json/std", "serde/std", "dep:imbl"]
+std = ["alloc", "serde_json/std", "serde/std"]
 alloc = []
 cli = ["std", "dep:clap", "dep:anyhow", "dep:ureq"]
 regen = ["std"]
@@ -59,7 +59,7 @@ base64 = { version = "0.22.1", optional = true }
 clap = { version = "4.4", optional = true, features = ["derive", "env"] }
 
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
-imbl = { version = "4", optional = true }
+imbl = { version = "4", default-features = false }
 roaring = "0.11.4"
 
 serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }

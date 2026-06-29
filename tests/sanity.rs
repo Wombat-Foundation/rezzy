@@ -261,7 +261,7 @@ fn test_streaming_parity() {
 
     let mut streaming_results = HashMap::new();
     compute_state_at_streaming(&batch_ids, &events_map, StateResVersion::V2, |id, state| {
-        streaming_results.insert(id, state);
+        streaming_results.insert(id, state.into_iter().collect());
     });
 
     assert_eq!(batch_results.len(), streaming_results.len());

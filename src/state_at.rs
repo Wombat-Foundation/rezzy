@@ -309,74 +309,8 @@ pub(crate) fn compute_local_auth<
         .collect()
 }
 
-/// Internal state representation — uses `imbl::OrdMap` when `std` is enabled
-/// for O(1) cloning via structural sharing, falling back to `Arc<BTreeMap>` for
-/// `no_std` targets at O(n) cost.
-#[cfg(feature = "std")]
-type SharedState<Id = String> = imbl::OrdMap<(String, Option<String>), Id>;
-
-#[cfg(not(feature = "std"))]
-type SharedState<Id = String> = alloc::sync::Arc<BTreeMap<(String, Option<String>), Id>>;
-
-// --- SharedState backend-agnostic helpers ---
-
-/// Convert `SharedState` → `BTreeMap` at the public API boundary.
-#[cfg(feature = "std")]
-fn shared_state_into_btree<Id: Clone>(
-    state: SharedState<Id>,
-) -> BTreeMap<(String, Option<String>), Id> {
-    state.into_iter().collect()
-}
-
-#[cfg(not(feature = "std"))]
-fn shared_state_into_btree<Id: Clone>(
-    state: SharedState<Id>,
-) -> BTreeMap<(String, Option<String>), Id> {
-    alloc::sync::Arc::try_unwrap(state).unwrap_or_else(|arc| (*arc).clone())
-}
-
-/// Insert into `SharedState` (O(log N) for imbl, O(N) worst-case for Arc `CoW`).
-#[cfg(feature = "std")]
-fn shared_state_insert<Id: Clone + Ord>(
-    state: &mut SharedState<Id>,
-    key: (String, Option<String>),
-    value: Id,
-) {
-    state.insert(key, value);
-}
-
-#[cfg(not(feature = "std"))]
-fn shared_state_insert<Id: Clone + Ord>(
-    state: &mut SharedState<Id>,
-    key: (String, Option<String>),
-    value: Id,
-) {
-    alloc::sync::Arc::make_mut(state).insert(key, value);
-}
-
-/// Check equality between two `SharedState`s (pointer-fast for Arc, value for imbl).
-#[cfg(feature = "std")]
-fn shared_states_equal<Id: PartialEq>(a: &SharedState<Id>, b: &SharedState<Id>) -> bool {
-    a == b
-}
-
-#[cfg(not(feature = "std"))]
-fn shared_states_equal<Id: PartialEq>(a: &SharedState<Id>, b: &SharedState<Id>) -> bool {
-    alloc::sync::Arc::ptr_eq(a, b) || **a == **b
-}
-
-/// Convert `BTreeMap` → `SharedState` (e.g. after resolution).
-#[cfg(feature = "std")]
-fn btree_into_shared_state<Id: Clone>(
-    btree: BTreeMap<(String, Option<String>), Id>,
-) -> SharedState<Id> {
-    btree.into_iter().collect()
-}
-
-#[cfg(not(feature = "std"))]
-fn btree_into_shared_state<Id>(btree: BTreeMap<(String, Option<String>), Id>) -> SharedState<Id> {
-    alloc::sync::Arc::new(btree)
-}
+/// An O(1) cloneable, persistent state map.
+pub type SharedState<Id = String> = imbl::OrdMap<(String, Option<String>), Id>;
 
 /// Computes the resolved room state *after* a given event.
 ///
@@ -410,7 +344,7 @@ where
         events_map,
         version,
         |_, state| {
-            result = Some(state);
+            result = Some(state.into_iter().collect());
         },
     );
     result
@@ -467,7 +401,7 @@ where
     let mut results = HashMap::with_capacity(actual_target_ids.len());
 
     compute_state_at_streaming_internal(&actual_target_ids, events_map, version, |id, state| {
-        results.insert(id, state);
+        results.insert(id, state.into_iter().collect());
     });
 
     results
@@ -497,7 +431,7 @@ pub fn compute_state_at_streaming<Id, Q, S, F>(
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
-    F: FnMut(Id, BTreeMap<(String, Option<String>), Id>),
+    F: FnMut(Id, SharedState<Id>),
 {
     let mut actual_target_ids = Vec::new();
     let mut seen = alloc::collections::BTreeSet::new();
@@ -529,7 +463,7 @@ fn compute_state_at_streaming_internal<Id, S, F>(
 ) where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
-    F: FnMut(Id, BTreeMap<(String, Option<String>), Id>),
+    F: FnMut(Id, SharedState<Id>),
 {
     let target_refs: Vec<&Id> = actual_target_ids.iter().collect();
     let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&target_refs, events_map);
@@ -549,7 +483,7 @@ fn compute_state_at_streaming_internal<Id, S, F>(
         version,
         |idx, shared_state| {
             let id = index_to_id[idx].clone();
-            on_target_resolved(id, shared_state_into_btree(shared_state));
+            on_target_resolved(id, shared_state);
         },
     );
 }
@@ -605,7 +539,7 @@ fn run_state_pipeline_streaming<'a, Id, S, F>(
         }
 
         let mut state_before: SharedState<Id> = if prev_states.is_empty() {
-            btree_into_shared_state(BTreeMap::new())
+            SharedState::new()
         } else if prev_states.len() == 1 {
             prev_states.into_iter().next().unwrap()
         } else {
@@ -613,8 +547,7 @@ fn run_state_pipeline_streaming<'a, Id, S, F>(
         };
 
         if ev.state_key.is_some() {
-            shared_state_insert(
-                &mut state_before,
+            state_before.insert(
                 (ev.event_type.clone(), ev.state_key.clone()),
                 ev.event_id.clone(),
             );
@@ -833,16 +766,14 @@ where
     S: core::hash::BuildHasher,
 {
     let first = &prev_states[0];
-    let all_match = prev_states[1..]
-        .iter()
-        .all(|state| shared_states_equal(first, state));
+    let all_match = prev_states[1..].iter().all(|state| first == state);
 
     if all_match {
         first.clone()
     } else {
-        let btree =
-            resolve_multiple_prev_states(prev_states, events_map, global_auth_cache, version);
-        btree_into_shared_state(btree)
+        resolve_multiple_prev_states(prev_states, events_map, global_auth_cache, version)
+            .into_iter()
+            .collect()
     }
 }
 
