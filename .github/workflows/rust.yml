@@ -84,6 +84,7 @@ jobs:
           name: test-results
 
       - name: Generate and Publish Badge
+        if: always() && github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
         run: |
           PASSED=$(grep -oE '[0-9]+ passed' test-results.txt | awk '{s+=$1} END {print s}')
           FAILED=$(grep -oE '[0-9]+ failed' test-results.txt | awk '{s+=$1} END {print s}')
