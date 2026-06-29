@@ -234,13 +234,25 @@ pub fn compute_delta_chain(events: &[crate::types::LeanEvent]) -> Vec<StateCheck
     let mut checkpoints = Vec::with_capacity(events.len());
 
     for ev in events {
+        // A DAG merge event can have multiple parents. To compute an accurate delta chain,
+        // we must accumulate the state from all parents deterministically before applying
+        // the current event's state.
         let mut state_before = BTreeMap::new();
         let mut parent_hash = None;
 
-        if let Some(prev_id) = ev.prev_events.first() {
+        for prev_id in &ev.prev_events {
             if let Some(prev_state) = state_after_map.get(prev_id) {
-                state_before = prev_state.clone();
-                parent_hash = state_hash_map.get(prev_id).cloned();
+                if parent_hash.is_none() {
+                    parent_hash = state_hash_map.get(prev_id).cloned();
+                }
+                for (k, v) in prev_state {
+                    match state_before.get(k) {
+                        Some(existing) if existing >= v => {}
+                        _ => {
+                            state_before.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
             }
         }
 
@@ -325,11 +337,20 @@ pub fn compute_compacted_delta_chain(
         let mut parent_hash = None;
         let mut parent_hops: usize = 0;
 
-        if let Some(prev_id) = ev.prev_events.first() {
+        for prev_id in &ev.prev_events {
             if let Some(prev_state) = state_after_map.get(prev_id) {
-                state_before = prev_state.clone();
-                parent_hash = state_hash_map.get(prev_id).cloned();
-                parent_hops = hops_since_snapshot.get(prev_id).copied().unwrap_or(0);
+                if parent_hash.is_none() {
+                    parent_hash = state_hash_map.get(prev_id).cloned();
+                    parent_hops = hops_since_snapshot.get(prev_id).copied().unwrap_or(0);
+                }
+                for (k, v) in prev_state {
+                    match state_before.get(k) {
+                        Some(existing) if existing >= v => {}
+                        _ => {
+                            state_before.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
             }
         }
 
@@ -475,9 +496,6 @@ pub fn reconstruct_state_batch(
         return BTreeMap::new();
     }
 
-    let earliest = sorted_targets[0];
-    let latest = *sorted_targets.last().unwrap();
-
     // Build hash -> index map for parent lookups
     let hash_to_idx: HashMap<&str, usize> = checkpoints
         .iter()
@@ -485,60 +503,45 @@ pub fn reconstruct_state_batch(
         .map(|(i, cp)| (cp.state_hash.as_str(), i))
         .collect();
 
-    // Walk backwards from the earliest target to find the nearest snapshot
-    let mut snapshot_idx = earliest;
-    loop {
-        if checkpoints[snapshot_idx].snapshot.is_some() {
-            break;
-        }
-        let Some(parent_hash) = checkpoints[snapshot_idx].parent_hash.as_ref() else {
-            return BTreeMap::new(); // broken chain
-        };
-        match hash_to_idx.get(parent_hash.as_str()) {
-            Some(&idx) => snapshot_idx = idx,
-            None => return BTreeMap::new(), // broken chain
-        }
-    }
-
-    // Start from the snapshot base
-    let mut state = checkpoints[snapshot_idx].snapshot.as_ref().unwrap().clone();
-    let mut results = BTreeMap::new();
-    let mut target_ptr = 0;
-
-    // Check if the snapshot itself is a target
-    while target_ptr < sorted_targets.len() && sorted_targets[target_ptr] == snapshot_idx {
-        results.insert(snapshot_idx, state.clone());
-        target_ptr = target_ptr.checked_add(1).expect("target_ptr overflow");
-    }
-
-    // Walk forward, applying deltas and capturing at each target
-    for i in (snapshot_idx.checked_add(1).expect("snapshot_idx overflow"))..=latest {
-        if i >= checkpoints.len() {
-            break;
-        }
-
-        let cp = &checkpoints[i];
-
-        // If this checkpoint has a snapshot, use it (resets accumulated state)
-        if let Some(ref snapshot) = cp.snapshot {
-            state = snapshot.clone();
-        } else {
-            // Apply deltas
-            for delta in &cp.deltas {
-                let key = (delta.event_type.clone(), delta.state_key.clone());
-                if let Some(ref event_id) = delta.event_id {
-                    state.insert(key, event_id.clone());
-                } else {
-                    state.remove(&key);
+    // Walk backwards from all targets to find all required ancestors
+    let mut required_indices = alloc::collections::BTreeSet::new();
+    let mut queue: Vec<usize> = sorted_targets.clone();
+    while let Some(idx) = queue.pop() {
+        if required_indices.insert(idx) && checkpoints[idx].snapshot.is_none() {
+            if let Some(parent_hash) = &checkpoints[idx].parent_hash {
+                if let Some(&p_idx) = hash_to_idx.get(parent_hash.as_str()) {
+                    queue.push(p_idx);
                 }
             }
         }
+    }
 
-        // Capture if this is a target
-        while target_ptr < sorted_targets.len() && sorted_targets[target_ptr] == i {
-            results.insert(i, state.clone());
-            target_ptr = target_ptr.checked_add(1).expect("target_ptr overflow");
+    let mut known_states = HashMap::new();
+    let mut results = BTreeMap::new();
+
+    // Iterate forward only through the required indices
+    for idx in required_indices {
+        let cp = &checkpoints[idx];
+        let state = if let Some(ref snapshot) = cp.snapshot {
+            snapshot.clone()
+        } else if let Some(parent_hash) = &cp.parent_hash {
+            if let Some(&p_idx) = hash_to_idx.get(parent_hash.as_str()) {
+                if let Some(parent_state) = known_states.get(&p_idx) {
+                    apply_state_delta(parent_state, &cp.deltas)
+                } else {
+                    continue; // Broken chain
+                }
+            } else {
+                continue; // Broken chain
+            }
+        } else {
+            continue; // Broken chain
+        };
+
+        if sorted_targets.binary_search(&idx).is_ok() {
+            results.insert(idx, state.clone());
         }
+        known_states.insert(idx, state);
     }
 
     results

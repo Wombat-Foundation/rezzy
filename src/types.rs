@@ -701,20 +701,24 @@ impl<Id: Ord> PartialOrd for SortPriority<'_, Id> {
 /// Returns `None` if the value cannot be interpreted as an integer.
 /// This three-way coercion handles the real-world inconsistency where some
 /// homeservers encode power levels as strings in their JSON.
+///
+/// FUN FACT: Room versions 1-9 actually allowed power levels to be floats
+/// and strings in the JSON, which is why `rezzy` has this `coerce_json_to_i64`
+/// function in the first place!
 #[must_use]
 pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
-    if let Some(i) = pl.as_i64() {
-        return Some(i);
-    }
-    if let Some(u) = pl.as_u64() {
-        return Some(i64::try_from(u).unwrap_or(i64::MAX));
-    }
-    if let Some(s) = pl.as_str() {
-        if let Ok(i) = s.parse::<i64>() {
-            return Some(i);
-        }
-    }
-    None
+    let val = if let Some(i) = pl.as_i64() {
+        Some(i)
+    } else if let Some(u) = pl.as_u64() {
+        Some(i64::try_from(u).unwrap_or(i64::MAX))
+    } else if let Some(s) = pl.as_str() {
+        s.parse::<i64>().ok()
+    } else {
+        None
+    };
+    // Matrix Spec (Client-Server API) — m.room.power_levels:
+    // "The power level ... must be an integer between -2^53 + 1 and 2^53 - 1."
+    val.map(|v| v.clamp(-MAX_POWER_LEVEL, MAX_POWER_LEVEL))
 }
 
 /// Finds the `m.room.create` event deterministically across the auth context and sort set.

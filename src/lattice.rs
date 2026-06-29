@@ -277,8 +277,10 @@ pub fn route_power_events<
             || ev.event_type == crate::event_types::M_ROOM_JOIN_RULES
             || if matches!(
                 version,
-                crate::StateResVersion::V2
-                    | crate::StateResVersion::V2_1
+                // MSC4297 (State Resolution v2.1 onwards): Only member events that are bans or kicks
+                // are treated as power events.
+                // (Standard v2 treats *all* member events as power events, which is handled by the `else` branch).
+                crate::StateResVersion::V2_1
                     | crate::StateResVersion::V2_1_1
                     | crate::StateResVersion::V2_2
             ) {
