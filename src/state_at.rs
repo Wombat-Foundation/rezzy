@@ -394,6 +394,7 @@ where
 /// For processing multiple events in production (e.g., full room rebuilds),
 /// use [`compute_state_at_streaming`] instead to stream states via a callback
 /// and keep memory bounded to the DAG's width.
+/// Computes the state of a room at multiple target events concurrently.
 ///
 /// # Panics
 ///
@@ -419,6 +420,29 @@ where
 
     results
 }
+
+/// Errors that can occur during streaming state computation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateComputationError<E> {
+    /// The timeline DAG contains a cycle, making topological sorting impossible.
+    CycleDetected,
+    /// The caller-provided callback returned an error.
+    Callback(E),
+}
+
+impl<E: core::fmt::Display> core::fmt::Display for StateComputationError<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::CycleDetected => {
+                write!(f, "Cycle detected in DAG. Reachable subgraph is malformed.")
+            }
+            Self::Callback(e) => write!(f, "Callback error: {e}"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl<E: core::fmt::Debug + core::fmt::Display> std::error::Error for StateComputationError<E> {}
 
 /// Computes the resolved room state at multiple target events in a single pass,
 /// yielding each resolved state to a callback as soon as it is ready.
@@ -448,7 +472,7 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F>(
     C: crate::types::EventContent,
     F: FnMut(Id, SharedState<Id>),
 {
-    try_compute_state_at_streaming(
+    let result = try_compute_state_at_streaming(
         target_event_ids,
         events_map,
         version,
@@ -456,8 +480,18 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F>(
             on_target_resolved(id, state);
             Ok(())
         },
-    )
-    .unwrap();
+    );
+
+    match result {
+        Ok(()) => {}
+        Err(StateComputationError::CycleDetected) => {
+            #[cfg(feature = "std")]
+            std::eprintln!(
+                "rezzy::compute_state_at: Cycle detected! Reachable subgraph is malformed."
+            );
+        }
+        Err(StateComputationError::Callback(infallible)) => match infallible {},
+    }
 }
 
 /// A fallible variant of [`compute_state_at_streaming`].
@@ -466,13 +500,14 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F>(
 /// the callback so that callers can abort early (e.g. on I/O errors during storage).
 ///
 /// # Errors
-/// Returns the first error emitted by the `on_target_resolved` callback.
+/// Returns `StateComputationError::CycleDetected` if a cycle is found in the reachable graph.
+/// Returns `StateComputationError::Callback(e)` if the callback yields an error.
 pub fn try_compute_state_at_streaming<Id, C, Q, S, F, E>(
     target_event_ids: &[&Q],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
-) -> Result<(), E>
+) -> Result<(), StateComputationError<E>>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
@@ -528,7 +563,7 @@ fn run_state_pipeline_streaming<'a, Id, C, S, F, E>(
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     version: StateResVersion,
     mut on_target: F,
-) -> Result<(), E>
+) -> Result<(), StateComputationError<E>>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
@@ -539,13 +574,7 @@ where
         topological_sort_short_ids(index_to_id, id_to_index, events_map);
 
     if sorted_ancestors.len() != index_to_id.len() {
-        // Cycle detected or partial sort! The reachable subgraph is malformed.
-        std::eprintln!(
-            "rezzy::compute_state_at: Cycle detected! Sorted {}/{} events.",
-            sorted_ancestors.len(),
-            index_to_id.len()
-        );
-        return Ok(());
+        return Err(StateComputationError::CycleDetected);
     }
 
     let mut global_auth_cache = LocalAuthCache::new(version);
@@ -590,7 +619,7 @@ where
         }
 
         if is_target[idx] {
-            on_target(idx, state_before.clone())?;
+            on_target(idx, state_before.clone()).map_err(StateComputationError::Callback)?;
         }
 
         if out_degree[idx] > 0 {
@@ -840,7 +869,7 @@ where
     S: core::hash::BuildHasher,
     C: crate::types::EventContent,
 {
-    let mut occurrences: HashMap<(String, Option<String>), HashMap<Id, usize>> = HashMap::new();
+    let mut occurrences: HashMap<&(String, Option<String>), HashMap<&Id, usize>> = HashMap::new();
     let num_sets = prev_states.len();
 
     for map in prev_states {
@@ -850,11 +879,7 @@ where
         let iter = map.iter();
 
         for (key, val) in iter {
-            let val_entry = occurrences
-                .entry(key.clone())
-                .or_default()
-                .entry(val.clone())
-                .or_insert(0);
+            let val_entry = occurrences.entry(key).or_default().entry(val).or_insert(0);
             *val_entry = val_entry.saturating_add(1);
         }
     }
@@ -865,10 +890,10 @@ where
     for (key, ids) in occurrences {
         if ids.len() == 1 && ids.values().next().unwrap() == &num_sets {
             let id_val = ids.keys().next().unwrap();
-            unconflicted_state.insert(key, id_val.clone());
+            unconflicted_state.insert((*key).clone(), (*id_val).clone());
         } else {
             for id_val in ids.keys() {
-                conflicted_state_set.insert(id_val.clone());
+                conflicted_state_set.insert((*id_val).clone());
             }
         }
     }
@@ -880,23 +905,9 @@ where
         }
     }
 
-    let mut auth_chain_ids = std::collections::HashSet::new();
-    let mut b_stack: Vec<Id> = conflicted_state_set.into_iter().collect();
-    while let Some(node) = b_stack.pop() {
-        if auth_chain_ids.insert(node.clone()) {
-            if let Some(event) = events_map.get(&node) {
-                for auth_id in &event.auth_events {
-                    b_stack.push(auth_id.clone());
-                }
-            }
-        }
-    }
-
-    for id_val in auth_chain_ids {
-        if let Some(event) = events_map.get(&id_val) {
-            conflicted_events.insert(id_val, event.clone());
-        }
-    }
+    // No DFS auth walk is needed! `events_map` is passed directly as `auth_context` below.
+    // Putting auth events into `conflicted_events` was a massive bottleneck that forced
+    // state resolution to sort thousands of non-conflicting ancestral auth events.
 
     crate::resolve::resolve_lean_with_cache(
         unconflicted_state,

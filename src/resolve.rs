@@ -147,14 +147,16 @@ pub(crate) fn route_msc4297_ancestral_power_events<
             }
         }
 
-        for (id, ev) in auth_context {
-            if !original_conflicted_keys.contains(id)
-                && conflicted_power_ancestry.contains(id)
-                && (ev.event_type == "m.room.power_levels"
-                    || ev.event_type == "m.room.create"
-                    || ev.event_type == "m.room.join_rules")
-            {
-                power_events.insert(id.clone(), ev.clone());
+        for id in &conflicted_power_ancestry {
+            if !original_conflicted_keys.contains(id) {
+                if let Some(ev) = auth_context.get(id) {
+                    if ev.event_type == "m.room.power_levels"
+                        || ev.event_type == "m.room.create"
+                        || ev.event_type == "m.room.join_rules"
+                    {
+                        power_events.insert(id.clone(), ev.clone());
+                    }
+                }
             }
         }
     }
