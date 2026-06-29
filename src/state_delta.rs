@@ -334,6 +334,11 @@ pub struct CompactedCheckpoint {
 ///
 /// A custom `max_hops` can be provided; pass `None` to use the default
 /// [`MAX_DELTA_CHAIN_HOPS`] (100).
+///
+/// # Panics
+///
+/// Panics if an event's `prev_events` reference IDs not present in the
+/// topologically-preceding output (i.e. events are not in valid topo order).
 #[must_use]
 pub fn compute_compacted_delta_chain(
     events: &[crate::types::LeanEvent],
@@ -351,7 +356,7 @@ pub fn compute_compacted_delta_chain(
 
     for ev in events {
         let mut state_before = BTreeMap::new();
-        let mut base_state = BTreeMap::new(); // The state corresponding to parent_hash
+        let mut first_parent_id: Option<&str> = None;
         let mut parent_hash = None;
         let mut parent_hops: usize = 0;
 
@@ -360,7 +365,7 @@ pub fn compute_compacted_delta_chain(
                 if parent_hash.is_none() {
                     parent_hash = state_hash_map.get(prev_id).cloned();
                     parent_hops = hops_since_snapshot.get(prev_id).copied().unwrap_or(0);
-                    base_state = prev_state.clone();
+                    first_parent_id = Some(prev_id);
                 }
                 // NOTE: Deterministic merge (not state resolution). See compute_delta_chain.
                 for (k, v) in prev_state {
@@ -374,7 +379,7 @@ pub fn compute_compacted_delta_chain(
             }
         }
 
-        let mut state_after = state_before.clone();
+        let mut state_after = state_before;
         if ev.state_key.is_some() {
             state_after.insert(
                 (ev.event_type.clone(), ev.state_key.clone()),
@@ -390,7 +395,10 @@ pub fn compute_compacted_delta_chain(
             // Insert a full snapshot — resets the chain
             (Vec::new(), Some(state_after.clone()), 0)
         } else {
-            let deltas = compute_state_delta(&base_state, &state_after);
+            // Deferred clone: only look up the first parent's state when we
+            // actually need it for delta computation, not on snapshot boundaries.
+            let base_state = &state_after_map[first_parent_id.unwrap()];
+            let deltas = compute_state_delta(base_state, &state_after);
             (deltas, None, current_hops)
         };
 
