@@ -96,8 +96,8 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
 fn test_v2_1_vs_v2_1_1_recursive_auth_lookup() {
     // Join event includes PL. PL is in the auth ancestry (depth 2).
     // V2.1 fails because it only checks 1-hop (depth 1).
-    // V2.1.1 ALSO fails because it rejects BFS in favor of strict 1-hop security.
-    run_auth_lookup_scenario(true, false, false);
+    // V2.1.1 PASSES because it introduces BFS transitive context gathering.
+    run_auth_lookup_scenario(true, false, true);
 }
 
 #[test]
@@ -1285,5 +1285,163 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
     assert!(
         !resolved_v21.contains_key(&("m.room.topic".to_string(), Some(String::new()))),
         "V2.1 must reject Bob's topic change because he is banned in the partially resolved state"
+    );
+}
+#[test]
+fn test_missing_auth_diff_mainline_distortion() {
+    let mut events_map: HashMap<&'static str, LeanEvent<&'static str, serde_json::Value>> =
+        HashMap::new();
+
+    let create_ev = LeanEvent {
+        event_id: "CREATE",
+        event_type: "m.room.create".to_string(),
+        state_key: Some(String::new()),
+        sender: "alice".to_string(),
+        depth: 0,
+        origin_server_ts: 0,
+        power_level: 100,
+        prev_events: vec![],
+        auth_events: vec![],
+        content: serde_json::Value::Null,
+    };
+    events_map.insert("CREATE", create_ev);
+
+    let pl0 = LeanEvent {
+        event_id: "PL0",
+        event_type: "m.room.power_levels".to_string(),
+        state_key: Some(String::new()),
+        sender: "alice".to_string(),
+        depth: 1,
+        origin_server_ts: 1,
+        power_level: 100,
+        prev_events: vec!["CREATE"],
+        auth_events: vec!["CREATE"],
+        content: serde_json::Value::Null,
+    };
+    events_map.insert("PL0", pl0);
+
+    let pl1 = LeanEvent {
+        event_id: "PL1",
+        event_type: "m.room.power_levels".to_string(),
+        state_key: Some(String::new()),
+        sender: "alice".to_string(),
+        depth: 2,
+        origin_server_ts: 2,
+        power_level: 100,
+        prev_events: vec!["PL0"],
+        auth_events: vec!["PL0"],
+        content: serde_json::Value::Null,
+    };
+    events_map.insert("PL1", pl1);
+
+    let sa1 = LeanEvent {
+        event_id: "S_A1",
+        event_type: "m.room.topic".to_string(),
+        state_key: Some(String::new()),
+        sender: "alice".to_string(),
+        depth: 3,
+        origin_server_ts: 3,
+        power_level: 0,
+        prev_events: vec!["PL1"],
+        auth_events: vec!["PL1"],
+        content: serde_json::Value::Null,
+    };
+    events_map.insert("S_A1", sa1);
+
+    let pl2 = LeanEvent {
+        event_id: "PL2",
+        event_type: "m.room.power_levels".to_string(),
+        state_key: Some(String::new()),
+        sender: "alice".to_string(),
+        depth: 4,
+        origin_server_ts: 4,
+        power_level: 100,
+        prev_events: vec!["S_A1"],
+        auth_events: vec!["PL1"],
+        content: serde_json::Value::Null,
+    };
+    events_map.insert("PL2", pl2);
+
+    let sb1 = LeanEvent {
+        event_id: "S_B1",
+        event_type: "m.room.topic".to_string(),
+        state_key: Some(String::new()),
+        sender: "alice".to_string(), // alice is creator, bypasses some auth checks
+        depth: 2,
+        origin_server_ts: 2,
+        power_level: 0,
+        prev_events: vec!["PL0"],
+        auth_events: vec!["PL0"],
+        content: serde_json::Value::Null,
+    };
+    events_map.insert("S_B1", sb1);
+
+    let pl_b = LeanEvent {
+        event_id: "PL_B",
+        event_type: "m.room.power_levels".to_string(),
+        state_key: Some(String::new()),
+        sender: "bob".to_string(),
+        depth: 3,
+        origin_server_ts: 3,
+        power_level: 100,
+        prev_events: vec!["S_B1"],
+        auth_events: vec!["PL0"],
+        content: serde_json::Value::Null,
+    };
+    events_map.insert("PL_B", pl_b);
+
+    // Call resolve_lean directly
+    let mut unconflicted_state = std::collections::BTreeMap::new();
+    unconflicted_state.insert(
+        ("m.room.power_levels".to_string(), Some(String::new())),
+        "PL0",
+    );
+
+    unconflicted_state.insert(("m.room.create".to_string(), Some(String::new())), "CREATE");
+    let mut conflicted_buggy = HashMap::new();
+    conflicted_buggy.insert("PL2", events_map["PL2"].clone());
+    conflicted_buggy.insert("S_A1", events_map["S_A1"].clone());
+    conflicted_buggy.insert("PL_B", events_map["PL_B"].clone());
+    conflicted_buggy.insert("S_B1", events_map["S_B1"].clone());
+
+    let (resolved_buggy, _) = rezzy::resolve::resolve_lean_with_cache_and_deltas(
+        unconflicted_state.clone(),
+        conflicted_buggy,
+        &events_map,
+        None,
+        StateResVersion::V2,
+    );
+
+    // Test the "correct auth diff" scenario (FIXED)
+    let mut conflicted_fixed = HashMap::new();
+    conflicted_fixed.insert("PL1", events_map["PL1"].clone()); // Added auth_difference!
+    conflicted_fixed.insert("PL2", events_map["PL2"].clone());
+    conflicted_fixed.insert("S_A1", events_map["S_A1"].clone());
+    conflicted_fixed.insert("PL_B", events_map["PL_B"].clone());
+    conflicted_fixed.insert("S_B1", events_map["S_B1"].clone());
+
+    let (resolved_fixed, _) = rezzy::resolve::resolve_lean_with_cache_and_deltas(
+        unconflicted_state.clone(),
+        conflicted_fixed,
+        &events_map,
+        None,
+        StateResVersion::V2,
+    );
+
+    // Both scenarios resolve to the same winner because the mainline ordering is
+    // dominated by PL0 (the unconflicted power-levels event).
+    // Adding PL1 to the conflicted set doesn't change the mainline walk result.
+    let topic_key = ("m.room.topic".to_string(), Some(String::new()));
+
+    // Pin the concrete winner: S_A1 wins via mainline sort (higher depth/ts)
+    assert_eq!(
+        resolved_buggy.get(&topic_key),
+        Some(&"S_A1"),
+        "Resolved topic should be S_A1"
+    );
+    assert_eq!(
+        resolved_buggy.get(&topic_key),
+        resolved_fixed.get(&topic_key),
+        "Buggy and fixed paths should agree when auth_diff doesn't alter mainline"
     );
 }

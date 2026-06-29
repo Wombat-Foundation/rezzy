@@ -26,7 +26,6 @@
 //! [`crate::lattice::resolve_lattice_coordinatized`].
 
 use crate::{
-    cdo::apply_cdo_filter,
     sorting::{build_mainline, lean_kahn_sort, mainline_sort},
     state_at::{compute_local_auth, iterative_auth_ok, LocalAuthCache},
     types::{LeanEvent, StateResVersion},
@@ -37,16 +36,17 @@ use alloc::{collections::BTreeMap, string::String, vec::Vec};
 /// Prepares the conflicted events map and tracks original conflicted keys before CDO pre-filtering.
 pub(crate) fn prepare_conflicted_and_keys<
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    C: crate::types::EventContent,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
-    conflicted_events: &mut HashMap<Id, LeanEvent<Id>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
+    conflicted_events: &mut HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     version: StateResVersion,
 ) -> alloc::collections::BTreeSet<Id> {
     let original_conflicted_keys = conflicted_events.keys().cloned().collect();
     if version == StateResVersion::V2_1_1 {
-        let filtered = apply_cdo_filter(conflicted_events, auth_context);
+        let filtered = crate::cdo::apply_cdo_filter(conflicted_events, auth_context);
         conflicted_events.clear();
         for (k, v) in filtered {
             conflicted_events.insert(k, v);
@@ -59,13 +59,14 @@ pub(crate) fn prepare_conflicted_and_keys<
 /// Builds a merged lookup map (`sort_context`) for sorting and mainline operations.
 pub(crate) fn build_sort_context<
     Id: Clone + Eq + core::hash::Hash,
+    C: Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
-    conflicted_events: &HashMap<Id, LeanEvent<Id>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     // jscpd:ignore-end
-) -> HashMap<Id, LeanEvent<Id>> {
+) -> HashMap<Id, LeanEvent<Id, C>> {
     auth_context
         .iter()
         .chain(conflicted_events.iter())
@@ -85,15 +86,17 @@ pub(crate) fn build_sort_context<
 /// and applies to all versions that use V2-derived resolution: V2, V2.1, V2.1.1, and V2.2.
 ///
 /// [v2-spec]: https://spec.matrix.org/v1.13/rooms/v2/#state-resolution
+/// Expands the auth chains for a set of V2 power events, building an auth context.
 pub fn expand_v2_power_events_auth_chains<
     Id: Clone + Eq + core::hash::Hash,
+    C: Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
     S3: core::hash::BuildHasher,
 >(
-    power_events: &mut HashMap<Id, LeanEvent<Id>, S1>,
-    non_power_events: &mut HashMap<Id, LeanEvent<Id>, S2>,
-    sort_set: &HashMap<Id, LeanEvent<Id>, S3>,
+    power_events: &mut HashMap<Id, LeanEvent<Id, C>, S1>,
+    non_power_events: &mut HashMap<Id, LeanEvent<Id, C>, S2>,
+    sort_set: &HashMap<Id, LeanEvent<Id, C>, S3>,
 ) {
     let mut queue: alloc::collections::VecDeque<Id> = power_events.keys().cloned().collect();
     while let Some(id) = queue.pop_front() {
@@ -114,11 +117,12 @@ pub fn expand_v2_power_events_auth_chains<
 /// MSC4297 (v2.1+): Routes administrative ancestral power events from `auth_context` into `power_events`.
 pub(crate) fn route_msc4297_ancestral_power_events<
     Id: Clone + Eq + core::hash::Hash + Ord,
+    C: crate::types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 >(
-    power_events: &mut HashMap<Id, LeanEvent<Id>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
+    power_events: &mut HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     original_conflicted_keys: &alloc::collections::BTreeSet<Id>,
     version: StateResVersion,
 ) {
@@ -143,14 +147,23 @@ pub(crate) fn route_msc4297_ancestral_power_events<
             }
         }
 
-        for (id, ev) in auth_context {
-            if !original_conflicted_keys.contains(id)
-                && conflicted_power_ancestry.contains(id)
-                && (ev.event_type == "m.room.power_levels"
+        for id in &conflicted_power_ancestry {
+            if original_conflicted_keys.contains(id) {
+                continue;
+            }
+            if let Some(ev) = auth_context.get(id) {
+                // NOTE: V2.1.1+ strictly isolates the supplemental merge to PLs and creates.
+                // V2.1 (MSC4297) supplemented `m.room.join_rules`, which inadvertently caused the
+                // Invite Lock bug (evaluating historical joins against newer invite-only rules).
+                let is_join_rules_allowed =
+                    ev.event_type == "m.room.join_rules" && version == StateResVersion::V2_1;
+
+                if ev.event_type == "m.room.power_levels"
                     || ev.event_type == "m.room.create"
-                    || ev.event_type == "m.room.join_rules")
-            {
-                power_events.insert(id.clone(), ev.clone());
+                    || is_join_rules_allowed
+                {
+                    power_events.insert(id.clone(), ev.clone());
+                }
             }
         }
     }
@@ -158,32 +171,39 @@ pub(crate) fn route_msc4297_ancestral_power_events<
 
 /// Runs the sequential power phase iterative auth checks to establish the authoritative administrative framework.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_power_phase_iterative_checks<
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+pub(crate) fn run_power_phase_iterative_checks<Id, C, S1, S2, S3, S4>(
+    resolved: &mut BTreeMap<(String, Option<String>), Id>,
+    power_events: &HashMap<Id, LeanEvent<Id, C>, S4>,
+    sort_context: &HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S3>,
+    _original_conflicted_keys: &alloc::collections::BTreeSet<Id>,
+    version: StateResVersion,
+    local_auth_cache: &mut crate::state_at::LocalAuthCache<Id, C>,
+    create_ev: Option<&LeanEvent<Id, C>>,
+) where
+    Id: crate::types::EventId,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
     S3: core::hash::BuildHasher,
     S4: core::hash::BuildHasher,
->(
-    resolved: &mut BTreeMap<(String, Option<String>), Id>,
-    power_events: &HashMap<Id, LeanEvent<Id>, S4>,
-    sort_context: &HashMap<Id, LeanEvent<Id>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
-    sort_set: &HashMap<Id, LeanEvent<Id>, S3>,
-    create_ev: Option<&LeanEvent<Id>>,
-    local_auth_cache: &mut LocalAuthCache<Id>,
-    version: StateResVersion,
-) {
+    C: crate::types::EventContent,
+{
     let sorted_power_ids = lean_kahn_sort(power_events, sort_context, create_ev, version);
     for id in &sorted_power_ids {
-        if let Some(event) = sort_set.get(id).or_else(|| auth_context.get(id)) {
-            let local_auth =
-                compute_local_auth(event, auth_context, sort_set, local_auth_cache, version);
+        if let Some(event) = conflicted_events.get(id).or_else(|| auth_context.get(id)) {
+            let local_auth = compute_local_auth(
+                event,
+                auth_context,
+                conflicted_events,
+                local_auth_cache,
+                version,
+            );
             if iterative_auth_ok(
                 event,
                 resolved,
                 auth_context,
-                sort_set,
+                conflicted_events,
                 local_auth,
                 create_ev,
                 version,
@@ -198,34 +218,44 @@ pub(crate) fn run_power_phase_iterative_checks<
     }
 }
 
-pub(crate) fn get_initial_resolved_state<Id: Clone>(
+/// Returns the starting point for state resolution based on the algorithm version.
+/// V1 and V2 inherit the unconflicted state as their base, whereas V2.1+ starts from an empty set.
+pub(crate) fn get_initial_resolved_state<Id>(
     unconflicted_state: &BTreeMap<(String, Option<String>), Id>,
     version: StateResVersion,
-) -> BTreeMap<(String, Option<String>), Id> {
+) -> BTreeMap<(String, Option<String>), Id>
+where
+    Id: Clone,
+{
     match version {
         StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2 => BTreeMap::new(),
         _ => unconflicted_state.clone(),
     }
 }
 
+/// Executes the first half of the Matrix State Resolution algorithm (the power phase).
+///
+/// This involves setting up the sorting context, dividing events into power and non-power events,
+/// tracking the deterministically chosen `m.room.create` event, and yielding the separated subsets
+/// for subsequent Kahn sorting and iterative auth checks.
 #[allow(clippy::type_complexity)]
-pub(crate) fn execute_power_phase<
-    'a,
-    Id: crate::types::EventId,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
->(
-    conflicted_events: &'a HashMap<Id, LeanEvent<Id>, S1>,
-    auth_context: &'a HashMap<Id, LeanEvent<Id>, S2>,
+pub(crate) fn execute_power_phase<Id, C, S1, S2>(
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     original_conflicted_keys: &alloc::collections::BTreeSet<Id>,
     version: StateResVersion,
 ) -> (
-    HashMap<Id, LeanEvent<Id>>,
-    HashMap<Id, LeanEvent<Id>>,
-    HashMap<Id, LeanEvent<Id>>,
-    LocalAuthCache<Id>,
-    Option<&'a LeanEvent<Id>>,
-) {
+    HashMap<Id, LeanEvent<Id, C>>, // sort_context
+    HashMap<Id, LeanEvent<Id, C>>, // power_events
+    HashMap<Id, LeanEvent<Id, C>>, // non_power_events
+    Option<LeanEvent<Id, C>>,      // m.room.create event
+)
+where
+    Id: crate::types::EventId,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+    C: crate::types::EventContent,
+{
     let sort_context = build_sort_context(conflicted_events, auth_context);
 
     let mut power_events = HashMap::new();
@@ -253,15 +283,13 @@ pub(crate) fn execute_power_phase<
     );
 
     let create_ev = crate::types::find_deterministic_create_event(auth_context, conflicted_events);
-    let local_auth_cache = HashMap::new();
 
     // Return updated refs
     (
         sort_context,
         power_events,
         non_power_events,
-        local_auth_cache,
-        create_ev,
+        create_ev.cloned(),
     )
 }
 
@@ -340,28 +368,63 @@ pub(crate) fn execute_power_phase<
 ///    power-levels chain) and iteratively auth-check them.
 /// 4. Merge winners into the unconflicted base.
 #[must_use]
-pub fn resolve_lean<Id, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
-    unconflicted_state: BTreeMap<(String, Option<String>), Id>,
-    mut conflicted_events: HashMap<Id, LeanEvent<Id>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
-    version: StateResVersion,
-) -> BTreeMap<(String, Option<String>), Id>
-where
+pub fn resolve_lean<
     Id: crate::types::EventId,
-{
+    C: crate::types::EventContent + Clone,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+>(
+    unconflicted_state: BTreeMap<(String, Option<String>), Id>,
+    conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    version: StateResVersion,
+) -> BTreeMap<(String, Option<String>), Id> {
+    resolve_lean_with_cache::<Id, C, S1, S2>(
+        unconflicted_state,
+        conflicted_events,
+        auth_context,
+        None,
+        version,
+    )
+}
+
+/// Like [`resolve_lean`], but allows passing an external local auth cache to amortize
+/// allocation costs across multiple invocations.
+#[must_use]
+pub fn resolve_lean_with_cache<
+    Id: crate::types::EventId,
+    C: crate::types::EventContent + Clone,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+>(
+    unconflicted_state: BTreeMap<(String, Option<String>), Id>,
+    mut conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    external_auth_cache: Option<&mut LocalAuthCache<Id, C>>,
+    version: StateResVersion,
+) -> BTreeMap<(String, Option<String>), Id> {
     let original_conflicted_keys =
         prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
 
     // MSC4297 (v2.1+): The algorithm starts from an empty set of state.
     let mut resolved = get_initial_resolved_state(&unconflicted_state, version);
 
-    let (sort_context, power_events, non_power_events, mut local_auth_cache, create_ev) =
-        execute_power_phase(
-            &conflicted_events,
-            auth_context,
-            &original_conflicted_keys,
-            version,
-        );
+    let (sort_context, power_events, non_power_events, create_ev) = execute_power_phase(
+        &conflicted_events,
+        auth_context,
+        &original_conflicted_keys,
+        version,
+    );
+
+    let mut fallback_cache = crate::state_at::LocalAuthCache::<Id, C>::new(version);
+    let local_auth_cache = match external_auth_cache {
+        Some(cache) => cache,
+        None => &mut fallback_cache,
+    };
+    if local_auth_cache.version != version {
+        local_auth_cache.map.clear();
+        local_auth_cache.version = version;
+    }
 
     run_power_phase_iterative_checks(
         &mut resolved,
@@ -369,9 +432,10 @@ where
         &sort_context,
         auth_context,
         &conflicted_events,
-        create_ev,
-        &mut local_auth_cache,
+        &original_conflicted_keys,
         version,
+        local_auth_cache,
+        create_ev.as_ref(),
     );
 
     let sort_set = &conflicted_events;
@@ -380,19 +444,18 @@ where
     let mainline = build_mainline(&resolved, &sort_context);
 
     // Step 4: Sort non-power events by mainline ordering + iterative auth check
-    let mut non_power_list: Vec<&LeanEvent<Id>> = non_power_events.values().collect();
+    let mut non_power_list: Vec<&LeanEvent<Id, C>> = non_power_events.values().collect();
     mainline_sort(&mut non_power_list, &mainline, &sort_context);
 
     for ev in non_power_list {
-        let local_auth =
-            compute_local_auth(ev, auth_context, sort_set, &mut local_auth_cache, version);
+        let local_auth = compute_local_auth(ev, auth_context, sort_set, local_auth_cache, version);
         if iterative_auth_ok(
             ev,
             &resolved,
             auth_context,
             sort_set,
             local_auth,
-            create_ev,
+            create_ev.as_ref(),
             version,
             false,
         ) {
@@ -428,18 +491,48 @@ where
 /// Same conditions as [`resolve_lean`].
 #[must_use]
 #[allow(clippy::type_complexity, clippy::too_many_lines)]
-pub fn resolve_lean_with_deltas<Id, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
+pub fn resolve_lean_with_deltas<
+    Id: crate::types::EventId,
+    C: crate::types::EventContent + Clone,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+>(
     unconflicted_state: BTreeMap<(String, Option<String>), Id>,
-    mut conflicted_events: HashMap<Id, LeanEvent<Id>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
+    conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     version: StateResVersion,
 ) -> (
     BTreeMap<(String, Option<String>), Id>,
     alloc::vec::Vec<crate::state_delta::ResolutionDelta<Id>>,
-)
-where
+) {
+    resolve_lean_with_cache_and_deltas::<Id, C, S1, S2>(
+        unconflicted_state,
+        conflicted_events,
+        auth_context,
+        None,
+        version,
+    )
+}
+
+/// Internal helper combining the functionality of [`resolve_lean_with_deltas`] and
+/// [`resolve_lean_with_cache`].
+#[must_use]
+#[allow(clippy::type_complexity, clippy::too_many_lines)]
+pub fn resolve_lean_with_cache_and_deltas<
     Id: crate::types::EventId,
-{
+    C: crate::types::EventContent + Clone,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+>(
+    unconflicted_state: BTreeMap<(String, Option<String>), Id>,
+    mut conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    external_auth_cache: Option<&mut LocalAuthCache<Id, C>>,
+    version: StateResVersion,
+) -> (
+    BTreeMap<(String, Option<String>), Id>,
+    alloc::vec::Vec<crate::state_delta::ResolutionDelta<Id>>,
+) {
     use crate::state_delta::{ResolutionDelta, ResolvePhase};
 
     let original_conflicted_keys =
@@ -450,34 +543,39 @@ where
 
     // --- Power phase (with delta tracking) ---
 
-    let (sort_context, power_events, non_power_events, mut local_auth_cache, create_ev) =
-        execute_power_phase(
-            &conflicted_events,
-            auth_context,
-            &original_conflicted_keys,
-            version,
-        );
+    let (sort_context, power_events, non_power_events, create_ev) = execute_power_phase(
+        &conflicted_events,
+        auth_context,
+        &original_conflicted_keys,
+        version,
+    );
+
+    let mut fallback_cache = LocalAuthCache::new(version);
+    let local_auth_cache = match external_auth_cache {
+        Some(cache) => cache,
+        None => &mut fallback_cache,
+    };
+    if local_auth_cache.version != version {
+        local_auth_cache.map.clear();
+        local_auth_cache.version = version;
+    }
 
     let sort_set = &conflicted_events;
 
-    let sorted_power_ids = lean_kahn_sort(&power_events, &sort_context, create_ev, version);
+    let sorted_power_ids =
+        lean_kahn_sort(&power_events, &sort_context, create_ev.as_ref(), version);
     for id in &sorted_power_ids {
         if let Some(event) = sort_set.get(id).or_else(|| auth_context.get(id)) {
             let key = (event.event_type.clone(), event.state_key.clone());
-            let local_auth = compute_local_auth(
-                event,
-                auth_context,
-                sort_set,
-                &mut local_auth_cache,
-                version,
-            );
+            let local_auth =
+                compute_local_auth(event, auth_context, sort_set, local_auth_cache, version);
             let accepted = iterative_auth_ok(
                 event,
                 &resolved,
                 auth_context,
                 sort_set,
                 local_auth,
-                create_ev,
+                create_ev.as_ref(),
                 version,
                 true,
             );
@@ -503,20 +601,20 @@ where
     // --- Non-power phase (with delta tracking) ---
 
     let mainline = build_mainline(&resolved, &sort_context);
-    let mut non_power_list: alloc::vec::Vec<&LeanEvent<Id>> = non_power_events.values().collect();
+    let mut non_power_list: alloc::vec::Vec<&LeanEvent<Id, C>> =
+        non_power_events.values().collect();
     mainline_sort(&mut non_power_list, &mainline, &sort_context);
 
     for ev in non_power_list {
         let key = (ev.event_type.clone(), ev.state_key.clone());
-        let local_auth =
-            compute_local_auth(ev, auth_context, sort_set, &mut local_auth_cache, version);
+        let local_auth = compute_local_auth(ev, auth_context, sort_set, local_auth_cache, version);
         let accepted = iterative_auth_ok(
             ev,
             &resolved,
             auth_context,
             sort_set,
             local_auth,
-            create_ev,
+            create_ev.as_ref(),
             version,
             false,
         );

@@ -1477,7 +1477,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let result = rezzy::lean_kahn_sort_detailed(
+        let result = rezzy::lean_kahn_sort_with_cycle_diagnostics(
             &events,
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
@@ -1529,7 +1529,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let result = rezzy::lean_kahn_sort_detailed(
+        let result = rezzy::lean_kahn_sort_with_cycle_diagnostics(
             &events,
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),

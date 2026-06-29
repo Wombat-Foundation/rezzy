@@ -205,8 +205,11 @@ fn test_compute_state_at_batch() {
     assert_eq!(batch_results[tip_id].len(), 100);
 
     // Verify empty batch handles gracefully
-    let empty_results =
-        compute_state_at_batch::<String, str, _>(&[], &events_map, StateResVersion::V2);
+    let empty_results = compute_state_at_batch::<String, serde_json::Value, str, _>(
+        &[],
+        &events_map,
+        StateResVersion::V2,
+    );
     assert!(empty_results.is_empty());
 
     // Verify missing / invalid IDs are ignored or skipped gracefully without panics
@@ -214,6 +217,148 @@ fn test_compute_state_at_batch() {
     let partial_results = compute_state_at_batch(&invalid_ids, &events_map, StateResVersion::V2);
     assert_eq!(partial_results.len(), 1);
     assert_eq!(&partial_results[early_id], &early_state);
+}
+
+#[test]
+fn test_streaming_correctness_with_branched_dag() {
+    use rezzy::state_at::compute_state_at_streaming;
+    use rezzy::{LeanEvent, StateResVersion};
+    use std::collections::{BTreeMap, HashMap};
+
+    let mut events_map = HashMap::new();
+
+    // Create a DAG with a fork and a merge
+    // Linear 1..=40
+    for i in 1_u64..=40_u64 {
+        let prev_events = if i > 1 {
+            vec![format!("${}", i - 1)]
+        } else {
+            Vec::new()
+        };
+
+        let (state_key, event_type) = if i % 10 == 0 {
+            (Some(format!("user_{i}")), "m.room.member".to_string())
+        } else {
+            (None, "m.room.message".to_string())
+        };
+
+        events_map.insert(
+            format!("${i}"),
+            LeanEvent {
+                event_id: format!("${i}"),
+                event_type,
+                state_key,
+                power_level: 0,
+                origin_server_ts: i * 1000,
+                sender: "alice".to_string(),
+                content: serde_json::Value::Null,
+                prev_events,
+                auth_events: Vec::new(),
+                depth: i,
+            },
+        );
+    }
+
+    // Fork A (41a..=49a)
+    for i in 41_u64..=49_u64 {
+        let prev = if i == 41 {
+            "$40".to_string()
+        } else {
+            format!("${}a", i - 1)
+        };
+        events_map.insert(
+            format!("${i}a"),
+            LeanEvent {
+                event_id: format!("${i}a"),
+                event_type: "m.room.message".to_string(),
+                state_key: None,
+                power_level: 0,
+                origin_server_ts: i * 1000,
+                sender: "alice".to_string(),
+                content: serde_json::Value::Null,
+                prev_events: vec![prev],
+                auth_events: Vec::new(),
+                depth: i,
+            },
+        );
+    }
+
+    // Fork B (41b..=49b) - this branch has a state event at 45!
+    for i in 41_u64..=49_u64 {
+        let prev = if i == 41 {
+            "$40".to_string()
+        } else {
+            format!("${}b", i - 1)
+        };
+        events_map.insert(
+            format!("${i}b"),
+            LeanEvent {
+                event_id: format!("${i}b"),
+                event_type: if i == 45 {
+                    "m.room.member".to_string()
+                } else {
+                    "m.room.message".to_string()
+                },
+                state_key: if i == 45 {
+                    Some("user_45b".to_string())
+                } else {
+                    None
+                },
+                power_level: 0,
+                origin_server_ts: (i * 1000) + 500, // Slightly later TS
+                sender: "bob".to_string(),
+                content: serde_json::Value::Null,
+                prev_events: vec![prev],
+                auth_events: Vec::new(),
+                depth: i,
+            },
+        );
+    }
+
+    // Merge at 50
+    events_map.insert(
+        "$50".to_string(),
+        LeanEvent {
+            event_id: "$50".to_string(),
+            event_type: "m.room.member".to_string(),
+            state_key: Some("user_50".to_string()),
+            power_level: 0,
+            origin_server_ts: 50000,
+            sender: "charlie".to_string(),
+            content: serde_json::Value::Null,
+            prev_events: vec!["$49a".to_string(), "$49b".to_string()],
+            auth_events: Vec::new(),
+            depth: 50,
+        },
+    );
+
+    // Oracle generation
+    let mut expected_at_40 = BTreeMap::new();
+    for i in [10, 20, 30, 40] {
+        expected_at_40.insert(
+            ("m.room.member".to_string(), Some(format!("user_{i}"))),
+            format!("${i}"),
+        );
+    }
+
+    // At 50, we should have everything from 40, plus the state event at 50 itself.
+    // Note: The state event at 45b is conflicted during the merge at 50. Since it has
+    // no auth_events in this synthetic DAG, it fails iterative auth checks and is
+    // correctly rejected by state resolution!
+    let mut expected_at_50 = expected_at_40.clone();
+    expected_at_50.insert(
+        ("m.room.member".to_string(), Some("user_50".to_string())),
+        "$50".to_string(),
+    );
+
+    let batch_ids = vec!["$40", "$50"];
+    let mut streaming_results = HashMap::new();
+    compute_state_at_streaming(&batch_ids, &events_map, StateResVersion::V2, |id, state| {
+        streaming_results.insert(id.clone(), state.into_iter().collect::<BTreeMap<_, _>>());
+    });
+
+    assert_eq!(&streaming_results["$40"], &expected_at_40);
+    assert_eq!(&streaming_results["$50"], &expected_at_50);
 }
 
 fn make_chronological_test_events() -> Vec<rezzy::LeanEvent> {

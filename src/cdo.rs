@@ -45,10 +45,10 @@ use core::cmp::Ordering;
 /// Will panic if `child_id` or `possible_ancestor_id` are found in the context's key-value entries
 /// but their corresponding values are missing from the context map (violating graph integrity).
 #[must_use]
-pub fn is_ancestor<Id, Q, S: core::hash::BuildHasher>(
+pub fn is_ancestor<Id, C: Clone, Q, S: core::hash::BuildHasher>(
     child_id: &Q,
     possible_ancestor_id: &Q,
-    context: &HashMap<Id, LeanEvent<Id>, S>,
+    context: &HashMap<Id, LeanEvent<Id, C>, S>,
 ) -> bool
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::borrow::Borrow<Q>,
@@ -105,10 +105,10 @@ const WORDS_PER_CHUNK: usize = 8;
 /// Number of `u64` words per bitmask chunk (4 × 64 = 256 bits on AVX2/NEON).
 const WORDS_PER_CHUNK: usize = 4;
 
-fn compute_cdo_bit_masks_chunk<Id, S: core::hash::BuildHasher>(
+fn compute_cdo_bit_masks_chunk<Id, C: Clone, S: core::hash::BuildHasher>(
     admin_chunk: &[Id],
     id_to_idx: &HashMap<Id, usize, S>,
-    sorted_events: &[(usize, &LeanEvent<Id>)],
+    sorted_events: &[(usize, &LeanEvent<Id, C>)],
     parents: &[Vec<usize>],
     children: &[Vec<usize>],
     and_masks: &mut [u64],
@@ -152,7 +152,9 @@ fn compute_cdo_bit_masks_chunk<Id, S: core::hash::BuildHasher>(
     }
 }
 
-fn sort_cdo_events<Id: Ord + Clone>(events: &[&LeanEvent<Id>]) -> Vec<LeanEvent<Id>> {
+fn sort_cdo_events<Id: Ord + Clone, C: Clone>(
+    events: &[&LeanEvent<Id, C>],
+) -> Vec<LeanEvent<Id, C>> {
     let mut sorted = events.iter().map(|&ev| (*ev).clone()).collect::<Vec<_>>();
     sorted.sort_by(|a, b| {
         let type_priority = |t: &str| match t {
@@ -181,18 +183,23 @@ fn sort_cdo_events<Id: Ord + Clone>(events: &[&LeanEvent<Id>]) -> Vec<LeanEvent<
     sorted
 }
 
-struct AdjacencyStructures<Id> {
-    dag_context: HashMap<Id, LeanEvent<Id>>,
+struct AdjacencyStructures<Id, C> {
+    dag_context: HashMap<Id, LeanEvent<Id, C>>,
     id_to_idx: HashMap<Id, usize>,
-    sorted_events: Vec<(usize, LeanEvent<Id>)>,
+    sorted_events: Vec<(usize, LeanEvent<Id, C>)>,
     parents: Vec<Vec<usize>>,
     children: Vec<Vec<usize>>,
 }
 
-fn build_adjacency_structures<Id, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
-    conflicted_events: &HashMap<Id, LeanEvent<Id>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
-) -> AdjacencyStructures<Id>
+fn build_adjacency_structures<
+    Id,
+    C: Clone,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+>(
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+) -> AdjacencyStructures<Id, C>
 where
     Id: Clone + Eq + core::hash::Hash + Ord,
 {
@@ -233,19 +240,19 @@ where
     }
 }
 
-struct PrioritizedEvents<Id> {
+struct PrioritizedEvents<Id, C> {
     admin_actions: Vec<Id>,
-    sorted_events_by_priority: Vec<LeanEvent<Id>>,
+    sorted_events_by_priority: Vec<LeanEvent<Id, C>>,
     priority_pos: HashMap<Id, usize>,
 }
 
-fn prioritize_events<Id, S1: core::hash::BuildHasher>(
-    conflicted_events: &HashMap<Id, LeanEvent<Id>, S1>,
-) -> PrioritizedEvents<Id>
+fn prioritize_events<Id, C: crate::types::EventContent + Clone, S1: core::hash::BuildHasher>(
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
+) -> PrioritizedEvents<Id, C>
 where
     Id: Clone + Eq + core::hash::Hash + Ord,
 {
-    let admin_events_to_sort: Vec<&LeanEvent<Id>> = conflicted_events
+    let admin_events_to_sort: Vec<&LeanEvent<Id, C>> = conflicted_events
         .values()
         .filter(|e| e.is_ban_or_kick() || e.is_demotion() || e.is_lockdown())
         .collect();
@@ -270,10 +277,14 @@ where
     }
 }
 
-fn process_direct_domination_chunks<Id, S1: core::hash::BuildHasher>(
-    adj: &AdjacencyStructures<Id>,
-    prioritized: &PrioritizedEvents<Id>,
-    conflicted_events: &HashMap<Id, LeanEvent<Id>, S1>,
+fn process_direct_domination_chunks<
+    Id,
+    C: crate::types::EventContent + Clone,
+    S1: core::hash::BuildHasher,
+>(
+    adj: &AdjacencyStructures<Id, C>,
+    prioritized: &PrioritizedEvents<Id, C>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
 ) -> BTreeSet<Id>
 where
     Id: Clone + Eq + core::hash::Hash + Ord,
@@ -288,7 +299,7 @@ where
     let chunk_size = WORDS_PER_CHUNK.saturating_mul(64);
 
     // Helper references to map inputs to compute_cdo_bit_masks_chunk
-    let sorted_events_refs: Vec<(usize, &LeanEvent<Id>)> = adj
+    let sorted_events_refs: Vec<(usize, &LeanEvent<Id, C>)> = adj
         .sorted_events
         .iter()
         .map(|&(idx, ref ev)| (idx, ev))
@@ -358,8 +369,8 @@ where
     dropped_ids
 }
 
-fn propagate_transitive_dependencies<Id, S1: core::hash::BuildHasher>(
-    conflicted_events: &HashMap<Id, LeanEvent<Id>, S1>,
+fn propagate_transitive_dependencies<Id, C: Clone, S1: core::hash::BuildHasher>(
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
     mut dropped_ids: BTreeSet<Id>,
 ) -> BTreeSet<Id>
 where
@@ -404,10 +415,15 @@ where
 /// 4. **Propagate** — transitively drop any event whose auth dependency was dropped.
 // jscpd:ignore-start
 #[must_use]
-pub fn apply_cdo_filter<Id, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
-    conflicted_events: &HashMap<Id, LeanEvent<Id>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id>, S2>,
-) -> HashMap<Id, LeanEvent<Id>>
+pub fn apply_cdo_filter<
+    Id,
+    C: crate::types::EventContent + Clone,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+>(
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+) -> HashMap<Id, LeanEvent<Id, C>>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
 {

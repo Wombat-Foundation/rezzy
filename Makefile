@@ -89,7 +89,7 @@ rust/uninstall: ##H Uninstall rezzy binary from cargo bin
 .PHONY: rust/coverage
 rust/coverage: ##H Run code coverage and generate HTML report
 	@echo "Running focused code coverage for rezzy..."
-	$(CARGO) tarpaulin --out Html \
+	$(CARGO) tarpaulin --out Html Xml \
 		--output-dir ../.tmp/coverage-lean \
 		--packages rezzy \
 		--ignore-panics \

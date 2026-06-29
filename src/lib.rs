@@ -31,20 +31,6 @@
 //! );
 //! ```
 //!
-//! ## Modules
-//!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`auth`] | Matrix authorization rules (Spec §10.4) — membership, power-level, and ban checks. |
-//! | [`cdo`] | Causal Domination Operator — vectorized pre-filter for conflicted events. |
-//! | [`lattice`] | Lattice-coordinatized resolution — `O(1)` projection with semilattice folding. |
-//! | [`resolve`] | Core state resolution entry point ([`resolve_lean`]). |
-//! | [`sorting`] | Topological and mainline sorting for the conflicted event set. |
-//! | [`state_at`] | Incremental state computation — room state at arbitrary DAG positions. |
-//! | [`state_delta`] | State delta compression — efficient incremental state storage. |
-//! | [`subgraph`] | Conflicted subgraph extraction for MSC4297 (V2.1+). |
-//! | [`types`] | Core data types: [`LeanEvent`], [`StateResVersion`], [`SortPriority`]. |
-//!
 //! ## Feature Flags
 //!
 //! | Feature     | Default | Description |
