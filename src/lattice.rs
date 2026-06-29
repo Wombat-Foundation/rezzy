@@ -277,7 +277,8 @@ pub fn route_power_events<
             || ev.event_type == "m.room.join_rules"
             || if matches!(
                 version,
-                crate::StateResVersion::V2_1
+                crate::StateResVersion::V2
+                    | crate::StateResVersion::V2_1
                     | crate::StateResVersion::V2_1_1
                     | crate::StateResVersion::V2_2
             ) {

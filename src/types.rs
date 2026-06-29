@@ -257,6 +257,9 @@ impl<Id> LeanEvent<Id> {
         if self.auth_events.len() > 10 {
             return Err("auth_events exceeds maximum allowed length of 10");
         }
+        if self.event_type.is_empty() {
+            return Err("event_type cannot be empty");
+        }
 
         Ok(())
     }
@@ -506,10 +509,7 @@ impl<Id> LeanEvent<Id> {
     pub fn is_ban_or_kick(&self) -> bool {
         if self.event_type == crate::event_types::M_ROOM_MEMBER {
             if let Some(membership) = self.get_membership() {
-                if membership == crate::event_types::MEM_BAN {
-                    return true;
-                }
-                if membership == crate::event_types::MEM_LEAVE {
+                if membership == crate::event_types::MEM_BAN || membership == crate::event_types::MEM_LEAVE {
                     if let Some(ref state_key) = self.state_key {
                         return state_key != &self.sender;
                     }
