@@ -76,10 +76,12 @@ rust/test: fixtures ##H Run Rust tests
 
 .PHONY: rust/coverage
 rust/coverage: ##H Run code coverage and generate HTML report
+	# TODO: include `src/bin/` in coverage
 	$(CARGO) tarpaulin --all-features --all-targets \
 		--out Html Xml \
 		--output-dir ../.tmp/coverage-lean \
 		--packages rezzy \
+		--exclude-files 'src/bin/*' \
 		--ignore-panics \
 		--ignore-tests \
 		--skip-clean

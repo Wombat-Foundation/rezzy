@@ -3374,6 +3374,11 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
         StateResVersion::V2,
     );
 
+    assert!(
+        set1_v2_non_power.contains_key("$msg"),
+        "V2 should route message to non-power events"
+    );
+
     // In V2, ALL member events are power events.
     assert!(
         set1_v2_power.contains_key("$self_join"),

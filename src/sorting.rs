@@ -449,7 +449,7 @@ pub fn mainline_sort<Id, C>(
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     C: Clone + crate::types::EventContent,
 {
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, not(test)))]
     std::eprintln!(
         "[DEBUG] mainline_sort: sorting {} non-power events against mainline of length {}",
         events.len(),

@@ -463,13 +463,6 @@ fn test_anomaly_16_causality_leakage() {
 }
 
 #[test]
-fn test_anomaly_18_unauthorized_admin_amplification() {
-    let (resolved, map) = resolve_pathology("18_unauthorized_admin_amplification.jsonl");
-    assert_eq!(get_membership(&resolved, &map, "@bob:example.com"), "ban");
-}
-
-#[test]
-#[ignore = "Sliced production DAG with missing heads/ancestors; cannot be traversed in isolation without a full database"]
 fn test_anomaly_17_sliced_dag_membership_desync() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/critique_data")
@@ -477,6 +470,29 @@ fn test_anomaly_17_sliced_dag_membership_desync() {
     let events = load_fixture(&path);
     println!("PARSED EVENTS COUNT: {}", events.len());
 
-    let (resolved, _map) = resolve_pathology("17_sliced_dag_membership_desync.jsonl");
-    println!("RESOLVED STATE MAP SIZE: {}", resolved.len());
+    let (resolved, map) = resolve_pathology("17_sliced_dag_membership_desync.jsonl");
+    println!("=== RESOLVED STATE ({} entries) ===", resolved.len());
+    for (k, v) in &resolved {
+        println!("  ({}, {:?}) -> {}", k.0, k.1, v);
+    }
+    assert_eq!(
+        get_membership(&resolved, &map, "@logn:unredacted.org"),
+        "leave"
+    );
+    assert_eq!(
+        get_membership(&resolved, &map, "@reminder:maunium.net"),
+        "join"
+    );
+    assert_eq!(get_membership(&resolved, &map, "@cat:maunium.net"), "join");
+    assert_eq!(
+        get_membership(&resolved, &map, "@reminder:codestorm.net"),
+        "leave"
+    );
+    assert_eq!(get_membership(&resolved, &map, "@logn:zirco.dev"), "join");
+}
+
+#[test]
+fn test_anomaly_18_unauthorized_admin_amplification() {
+    let (resolved, map) = resolve_pathology("18_unauthorized_admin_amplification.jsonl");
+    assert_eq!(get_membership(&resolved, &map, "@bob:example.com"), "ban");
 }
