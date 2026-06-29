@@ -36,7 +36,7 @@ fn test_heap_order() {
 
 #[test]
 fn test_compute_state_at_correctness_and_performance() {
-    use rezzy::{compute_state_at, LeanEvent};
+    use rezzy::{compute_state_at, LeanEvent, StateResVersion};
     use std::collections::HashMap;
     use std::time::Instant;
 
@@ -83,9 +83,12 @@ fn test_compute_state_at_correctness_and_performance() {
     let tip_id = "$1000";
 
     // Correctness Checks
-    let early_state = compute_state_at(early_id, &events_map).expect("should compute");
-    let mid_state = compute_state_at(mid_id, &events_map).expect("should compute");
-    let tip_state = compute_state_at(tip_id, &events_map).expect("should compute");
+    let early_state =
+        compute_state_at(early_id, &events_map, StateResVersion::V2).expect("should compute");
+    let mid_state =
+        compute_state_at(mid_id, &events_map, StateResVersion::V2).expect("should compute");
+    let tip_state =
+        compute_state_at(tip_id, &events_map, StateResVersion::V2).expect("should compute");
 
     // Check sizes of the state maps
     // At $100, we should have exactly 10 state keys (100 / 10)
@@ -110,21 +113,21 @@ fn test_compute_state_at_correctness_and_performance() {
     // Early
     let start_early = Instant::now();
     for _ in 0..runs {
-        let _ = compute_state_at(early_id, &events_map);
+        let _ = compute_state_at(early_id, &events_map, StateResVersion::V2);
     }
     let dur_early = start_early.elapsed() / runs;
 
     // Mid
     let start_mid = Instant::now();
     for _ in 0..runs {
-        let _ = compute_state_at(mid_id, &events_map);
+        let _ = compute_state_at(mid_id, &events_map, StateResVersion::V2);
     }
     let dur_mid = start_mid.elapsed() / runs;
 
     // Tip
     let start_tip = Instant::now();
     for _ in 0..runs {
-        let _ = compute_state_at(tip_id, &events_map);
+        let _ = compute_state_at(tip_id, &events_map, StateResVersion::V2);
     }
     let dur_tip = start_tip.elapsed() / runs;
 
@@ -136,7 +139,7 @@ fn test_compute_state_at_correctness_and_performance() {
 
 #[test]
 fn test_compute_state_at_batch() {
-    use rezzy::{compute_state_at, compute_state_at_batch, LeanEvent};
+    use rezzy::{compute_state_at, compute_state_at_batch, LeanEvent, StateResVersion};
     use std::collections::HashMap;
 
     let mut events_map = HashMap::new();
@@ -179,13 +182,16 @@ fn test_compute_state_at_batch() {
     let tip_id = "$1000";
 
     // 1. Correctness Checks
-    let early_state = compute_state_at(early_id, &events_map).expect("should compute");
-    let mid_state = compute_state_at(mid_id, &events_map).expect("should compute");
-    let tip_state = compute_state_at(tip_id, &events_map).expect("should compute");
+    let early_state =
+        compute_state_at(early_id, &events_map, StateResVersion::V2).expect("should compute");
+    let mid_state =
+        compute_state_at(mid_id, &events_map, StateResVersion::V2).expect("should compute");
+    let tip_state =
+        compute_state_at(tip_id, &events_map, StateResVersion::V2).expect("should compute");
 
     // Run batch computation
     let batch_ids = vec![early_id, mid_id, tip_id];
-    let batch_results = compute_state_at_batch(&batch_ids, &events_map);
+    let batch_results = compute_state_at_batch(&batch_ids, &events_map, StateResVersion::V2);
 
     // Verify batch results exactly match individual results
     assert_eq!(batch_results.len(), 3);
@@ -199,44 +205,15 @@ fn test_compute_state_at_batch() {
     assert_eq!(batch_results[tip_id].len(), 100);
 
     // Verify empty batch handles gracefully
-    let empty_results = compute_state_at_batch::<String, str, _>(&[], &events_map);
+    let empty_results =
+        compute_state_at_batch::<String, str, _>(&[], &events_map, StateResVersion::V2);
     assert!(empty_results.is_empty());
 
     // Verify missing / invalid IDs are ignored or skipped gracefully without panics
     let invalid_ids = vec!["$missing_1", early_id, "$missing_2"];
-    let partial_results = compute_state_at_batch(&invalid_ids, &events_map);
+    let partial_results = compute_state_at_batch(&invalid_ids, &events_map, StateResVersion::V2);
     assert_eq!(partial_results.len(), 1);
     assert_eq!(&partial_results[early_id], &early_state);
-}
-
-// Helper FNV-1a state hash calculation to match main.rs
-fn compute_state_hash(
-    state: &std::collections::BTreeMap<(String, Option<String>), String>,
-) -> String {
-    let mut hash: u64 = 14_695_981_039_346_656_037;
-    for ((event_type, state_key), event_id) in state {
-        for &byte in event_type.as_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(1_099_511_628_211);
-        }
-        hash ^= 0x00;
-        hash = hash.wrapping_mul(1_099_511_628_211);
-        if let Some(key) = state_key {
-            for &byte in key.as_bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(1_099_511_628_211);
-            }
-        }
-        hash ^= 0x00;
-        hash = hash.wrapping_mul(1_099_511_628_211);
-        for &byte in event_id.as_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(1_099_511_628_211);
-        }
-        hash ^= 0xff;
-        hash = hash.wrapping_mul(1_099_511_628_211);
-    }
-    format!("{hash:016x}")
 }
 
 fn make_chronological_test_events() -> Vec<rezzy::LeanEvent> {
@@ -270,11 +247,12 @@ fn make_chronological_test_events() -> Vec<rezzy::LeanEvent> {
 
 #[test]
 fn test_delta_chain_generation_correctness() {
+    use rezzy::state_delta::{compute_state_delta, compute_state_hash};
     use std::collections::{BTreeMap, HashMap};
 
     let events = make_chronological_test_events();
 
-    // 2. Perform delta-chain sequential processing
+    // Perform delta-chain sequential processing using library functions
     let mut state_after_map: HashMap<String, BTreeMap<(String, Option<String>), String>> =
         HashMap::new();
     let mut state_hash_map: HashMap<String, String> = HashMap::new();
@@ -304,27 +282,7 @@ fn test_delta_chain_generation_correctness() {
         state_after_map.insert(ev.event_id.clone(), state_after.clone());
         state_hash_map.insert(ev.event_id.clone(), hash_str.clone());
 
-        let mut deltas = Vec::new();
-        let primary_parent_state = ev
-            .prev_events
-            .first()
-            .and_then(|p_id| state_after_map.get(p_id));
-
-        if let Some(parent_state) = primary_parent_state {
-            for (key, event_id) in &state_after {
-                match parent_state.get(key) {
-                    Some(parent_event_id) if parent_event_id == event_id => {}
-                    _ => {
-                        deltas.push((key.0.clone(), key.1.clone(), event_id.clone()));
-                    }
-                }
-            }
-        } else {
-            for (key, event_id) in &state_after {
-                deltas.push((key.0.clone(), key.1.clone(), event_id.clone()));
-            }
-        }
-
+        let deltas = compute_state_delta(&state_before, &state_after);
         checkpoints.push((hash_str, parent_hash, ev.event_id.clone(), deltas));
     }
 
@@ -335,27 +293,17 @@ fn test_delta_chain_generation_correctness() {
     assert_eq!(id1, "$1");
     assert_eq!(p1, &None);
     assert_eq!(d1.len(), 1);
-    assert_eq!(
-        d1[0],
-        (
-            "m.room.create".to_string(),
-            Some(String::new()),
-            "$1".to_string()
-        )
-    );
+    assert_eq!(d1[0].event_type, "m.room.create");
+    assert_eq!(d1[0].state_key, Some(String::new()));
+    assert_eq!(d1[0].event_id, Some("$1".to_string()));
 
     let (h2, p2, id2, d2) = &checkpoints[1];
     assert_eq!(id2, "$2");
     assert_eq!(p2, &Some(h1.clone()));
     assert_eq!(d2.len(), 1);
-    assert_eq!(
-        d2[0],
-        (
-            "m.room.member".to_string(),
-            Some("@alice:example.com".to_string()),
-            "$2".to_string()
-        )
-    );
+    assert_eq!(d2[0].event_type, "m.room.member");
+    assert_eq!(d2[0].state_key, Some("@alice:example.com".to_string()));
+    assert_eq!(d2[0].event_id, Some("$2".to_string()));
 
     let (h3, p3, id3, d3) = &checkpoints[2];
     assert_eq!(id3, "$3");
@@ -366,12 +314,13 @@ fn test_delta_chain_generation_correctness() {
 
 #[test]
 fn test_state_delta_compression_robustness() {
+    use rezzy::state_delta::{compute_state_delta, compute_state_hash};
     use rezzy::LeanEvent;
     use std::collections::{BTreeMap, HashMap};
 
     // Construct a micro-history with a merge where some state key gets deleted/overwritten
     // E1: Create room (state: m.room.create => $1)
-    let ev1 = LeanEvent {
+    let ev1: LeanEvent = LeanEvent {
         event_id: "$1".to_string(),
         event_type: "m.room.create".to_string(),
         state_key: Some(String::new()),
@@ -440,33 +389,7 @@ fn test_state_delta_compression_robustness() {
         state_after_map.insert(ev.event_id.clone(), state_after.clone());
         state_hash_map.insert(ev.event_id.clone(), hash_str.clone());
 
-        let mut deltas = Vec::new();
-        let primary_parent_state = ev
-            .prev_events
-            .first()
-            .and_then(|p_id| state_after_map.get(p_id));
-
-        if let Some(parent_state) = primary_parent_state {
-            for (key, event_id) in &state_after {
-                match parent_state.get(key) {
-                    Some(parent_event_id) if parent_event_id == event_id => {}
-                    _ => {
-                        deltas.push((key.0.clone(), key.1.clone(), Some(event_id.clone())));
-                    }
-                }
-            }
-            // Detect key deletion/removal
-            for key in parent_state.keys() {
-                if !state_after.contains_key(key) {
-                    deltas.push((key.0.clone(), key.1.clone(), None));
-                }
-            }
-        } else {
-            for (key, event_id) in &state_after {
-                deltas.push((key.0.clone(), key.1.clone(), Some(event_id.clone())));
-            }
-        }
-
+        let deltas = compute_state_delta(&state_before, &state_after);
         checkpoints.push((hash_str, parent_hash, ev.event_id.clone(), deltas));
     }
 
@@ -484,25 +407,25 @@ fn test_state_delta_compression_robustness() {
     assert_eq!(id2, "$2");
     assert_eq!(p2, &Some(checkpoints[0].0.clone()));
     assert_eq!(d2.len(), 1);
-    assert_eq!(d2[0].0, "m.room.member");
-    assert_eq!(d2[0].1, Some("@alice:example.com".to_string()));
-    assert_eq!(d2[0].2, Some("$2".to_string()));
+    assert_eq!(d2[0].event_type, "m.room.member");
+    assert_eq!(d2[0].state_key, Some("@alice:example.com".to_string()));
+    assert_eq!(d2[0].event_id, Some("$2".to_string()));
 
     // E3 (Fork A - Bob joins)
     let (_, p3, id3, d3) = &checkpoints[2];
     assert_eq!(id3, "$3");
     assert_eq!(p3, &Some(checkpoints[1].0.clone()));
     assert_eq!(d3.len(), 1);
-    assert_eq!(d3[0].0, "m.room.member");
-    assert_eq!(d3[0].1, Some("@bob:example.com".to_string()));
-    assert_eq!(d3[0].2, Some("$3".to_string()));
+    assert_eq!(d3[0].event_type, "m.room.member");
+    assert_eq!(d3[0].state_key, Some("@bob:example.com".to_string()));
+    assert_eq!(d3[0].event_id, Some("$3".to_string()));
 
     // E4 (Fork B - Alice leaves)
     let (_, p4, id4, d4) = &checkpoints[3];
     assert_eq!(id4, "$4");
     assert_eq!(p4, &Some(checkpoints[1].0.clone()));
     assert_eq!(d4.len(), 1);
-    assert_eq!(d4[0].0, "m.room.member");
-    assert_eq!(d4[0].1, Some("@alice:example.com".to_string()));
-    assert_eq!(d4[0].2, Some("$4".to_string()));
+    assert_eq!(d4[0].event_type, "m.room.member");
+    assert_eq!(d4[0].state_key, Some("@alice:example.com".to_string()));
+    assert_eq!(d4[0].event_id, Some("$4".to_string()));
 }

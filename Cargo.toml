@@ -47,11 +47,10 @@ required-features = ["regen"]
 default = ["std"]
 std = ["alloc", "serde_json/std", "serde/std"]
 alloc = []
-zkvm = []
 cli = ["std", "dep:clap", "dep:anyhow", "dep:ureq"]
 regen = ["std"]
 hashing = ["dep:sha2", "dep:base64"]
-mock-ruma = ["dep:ruma-state-res", "dep:ruma-events", "dep:ruma-common"]
+mock-ruma = []
 
 [dependencies]
 anyhow = { version = "1.0", optional = true }
@@ -61,10 +60,8 @@ clap = { version = "4.4", optional = true, features = ["derive", "env"] }
 
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
 roaring = "0.11.4"
-ruma-common = { version = "0.19.0", optional = true }
-ruma-events = { version = "0.34.0", optional = true }
-ruma-state-res = { version = "0.17.0", features = ["__criterion"], optional = true }
-serde = { version = "1.0", default-features = false, features = ["alloc"] }
+
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.11.0", optional = true }
 ureq = { version = "2.9", optional = true, features = ["json"] }
@@ -72,6 +69,8 @@ ureq = { version = "2.9", optional = true, features = ["json"] }
 [dev-dependencies]
 insta = "1.47.2"
 ruma-common = "0.19.0"
+ruma-events = "0.34.0"
+ruma-state-res = { version = "0.17.0", features = ["__criterion"] }
 similar = "3.1.0"
 test-log = "0.2.20"
 tracing-subscriber = "0.3.23"
@@ -120,6 +119,10 @@ name = "test_main"
 path = "tests/test_main.rs"
 required-features = ["cli"]
 
+[[test]]
+name = "unredacted_lounge"
+path = "tests/unredacted_lounge.rs"
+
 [lints.rust]
 unsafe_code = "forbid"
 
@@ -136,3 +139,14 @@ arithmetic_side_effects = "warn"
 undocumented_unsafe_blocks = "warn"
 dbg_macro = "warn"
 get_unwrap = "warn"
+
+[profile.release-max-perf]
+inherits = "release"
+strip = "symbols"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.release]
+strip = "symbols"
+lto = "thin"

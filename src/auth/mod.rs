@@ -24,8 +24,13 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
+use crate::event_types::{
+    FIELD_MEMBERSHIP, FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE,
+    MEM_JOIN, MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
+    M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_PUBLIC,
+};
+use crate::types::LeanEvent;
 use crate::types::StateResVersion;
-use crate::LeanEvent;
 
 /// An error indicating why an event failed authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,8 +89,15 @@ impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
 use core::borrow::Borrow;
 use core::cmp::Ordering;
 
+/// Trait for zero-copy lookups into `BTreeMap<(String, Option<String>), _>`.
+///
+/// This enables querying a `BTreeMap` keyed by owned `(String, Option<String>)`
+/// using borrowed `(&str, Option<&str>)` tuples — avoiding allocation for
+/// every state lookup during auth checking.
 pub trait StateKeyDyn {
+    /// The event type (e.g. `"m.room.member"`).
     fn ev_type(&self) -> &str;
+    /// The state key (e.g. `Some("@alice:example.com")` or `Some("")`).
     fn state_key(&self) -> Option<&str>;
 }
 
@@ -135,7 +147,14 @@ impl Ord for dyn StateKeyDyn + '_ {
     }
 }
 
+/// Trait for providing room state to the authorization engine.
+///
+/// Implementors supply state events by `(event_type, state_key)` lookups.
+/// The built-in implementation is [`RoomState`] (a `BTreeMap`), but the
+/// resolution engine uses a more complex `OverlayState` internally
+/// that layers resolved state, local auth context, and the create event.
 pub trait StateProvider<Id = String> {
+    /// Look up a state event by its type and state key.
     fn get_event(&self, event_type: &str, state_key: Option<&str>) -> Option<&LeanEvent<Id>>;
 }
 
@@ -180,36 +199,39 @@ pub fn check_auth<Id: Clone>(
         return Ok(());
     }
 
-    // Rule 2: Check sender is not banned
-    if let Some(member_event) = state.get_event("m.room.member", Some(&event.sender)) {
-        if let Some(membership) = member_event
-            .content
-            .get("membership")
-            .and_then(|m| m.as_str())
-        {
-            if membership == "ban" {
-                return Err(AuthError::BannedUser {
-                    sender: event.sender.clone(),
-                    event_id: event.event_id.clone(),
-                });
-            }
+    // Rule 2: Check sender is not banned, and Rule 3: Sender must be joined
+    let sender_member_event = state.get_event(M_ROOM_MEMBER, Some(&event.sender));
 
-            // Rule 3: Sender must be joined (with exceptions for membership events)
-            if event.event_type != "m.room.member" && membership != "join" {
-                return Err(AuthError::NotMember {
-                    sender: event.sender.clone(),
-                    event_id: event.event_id.clone(),
-                });
-            }
-        }
-    } else if event.event_type != "m.room.member" {
-        // Room version 11: The creator of the room has an implied membership of "join"
-        // if no explicit membership event exists for them.
+    // Determine the effective membership string
+    let mut membership = sender_member_event
+        .and_then(|ev| ev.get_membership())
+        .unwrap_or(MEM_LEAVE);
+
+    // Exceptions: Room v11 implied creator join only applies when there is no membership event
+    if sender_member_event.is_none() {
         let is_creator = state
-            .get_event("m.room.create", Some(""))
+            .get_event(M_ROOM_CREATE, Some(""))
             .is_some_and(|create_ev| create_ev.sender == event.sender);
+        if is_creator {
+            membership = MEM_JOIN;
+        }
+    }
 
-        if !is_creator {
+    if membership == MEM_BAN {
+        return Err(AuthError::BannedUser {
+            sender: event.sender.clone(),
+            event_id: event.event_id.clone(),
+        });
+    }
+
+    // Rule 3: Sender must be joined (with exceptions for self-membership events)
+    if membership != MEM_JOIN {
+        // Exceptions: Self-membership transitions (except ban).
+        let is_self_membership = event.event_type == M_ROOM_MEMBER
+            && event.state_key.as_deref() == Some(&event.sender)
+            && event.get_membership() != Some(MEM_BAN);
+
+        if !is_self_membership {
             return Err(AuthError::NotMember {
                 sender: event.sender.clone(),
                 event_id: event.event_id.clone(),
@@ -218,12 +240,12 @@ pub fn check_auth<Id: Clone>(
     }
 
     // Rule 4: Check power level requirements
-    if event.event_type != "m.room.member" {
+    if event.event_type != M_ROOM_MEMBER {
         let sender_pl = get_sender_power_level(&event.sender, state);
         let required_pl = get_required_power_level(event, state);
 
         let _pl_ev_id = state
-            .get_event("m.room.power_levels", Some(""))
+            .get_event(M_ROOM_POWER_LEVELS, Some(""))
             .map(|ev| ev.event_id.clone());
 
         if sender_pl < required_pl {
@@ -236,7 +258,7 @@ pub fn check_auth<Id: Clone>(
     }
 
     // Rule 5: m.room.member state_key validation
-    if event.event_type == "m.room.member" {
+    if event.event_type == M_ROOM_MEMBER {
         check_membership_rules(event, state)?;
     }
 
@@ -248,27 +270,16 @@ const MAX_POWER_LEVEL: i64 = 9_007_199_254_740_991; // 2^53 - 1
 /// Get the power level of a user from the current room state.
 fn get_sender_power_level<Id>(sender: &str, state: &impl StateProvider<Id>) -> i64 {
     // 1. Absolute Priority: Room Creator and additional creators (INFINITE power)
-    if let Some(create_event) = state.get_event("m.room.create", Some("")) {
+    if let Some(create_event) = state.get_event(M_ROOM_CREATE, Some("")) {
         let is_primary_creator = create_event.sender == sender;
         let mut is_additional_creator = false;
 
-        if let Some(creators) = create_event
-            .content
-            .get("room_creators")
-            .and_then(|c| c.as_array())
-        {
-            if creators.iter().any(|c| c.as_str() == Some(sender)) {
-                is_additional_creator = true;
-            }
+        // V2.1+ room creators extension
+        if create_event.has_room_creator(sender) {
+            is_additional_creator = true;
         }
-        if let Some(creators) = create_event
-            .content
-            .get("additional_creators")
-            .and_then(|c| c.as_array())
-        {
-            if creators.iter().any(|c| c.as_str() == Some(sender)) {
-                is_additional_creator = true;
-            }
+        if create_event.has_additional_creator(sender) {
+            is_additional_creator = true;
         }
 
         if is_primary_creator || is_additional_creator {
@@ -277,19 +288,13 @@ fn get_sender_power_level<Id>(sender: &str, state: &impl StateProvider<Id>) -> i
     }
 
     // 2. State-based Power Levels
-    if let Some(pl_event) = state.get_event("m.room.power_levels", Some("")) {
-        if let Some(users) = pl_event.content.get("users").and_then(|u| u.as_object()) {
-            if let Some(pl) = users.get(sender).and_then(serde_json::Value::as_i64) {
-                return pl;
-            }
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
+        if let Some(pl) = pl_event.get_user_power_level(sender) {
+            return pl;
         }
         // Fall back to users_default
-        if let Some(default) = pl_event
-            .content
-            .get("users_default")
-            .and_then(serde_json::Value::as_i64)
-        {
-            return default;
+        if let Some(default_pl) = pl_event.get_users_default() {
+            return default_pl;
         }
     }
     0 // Default power level if no power_levels event exists
@@ -297,29 +302,16 @@ fn get_sender_power_level<Id>(sender: &str, state: &impl StateProvider<Id>) -> i
 
 /// Get the required power level to send an event based on room state.
 fn get_required_power_level<Id>(event: &LeanEvent<Id>, state: &impl StateProvider<Id>) -> i64 {
-    if let Some(pl_event) = state.get_event("m.room.power_levels", Some("")) {
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
         // Check specific event type overrides
-        if let Some(events) = pl_event.content.get("events").and_then(|e| e.as_object()) {
-            if let Some(pl) = events
-                .get(&event.event_type)
-                .and_then(serde_json::Value::as_i64)
-            {
-                return pl;
-            }
+        if let Some(pl) = pl_event.get_event_power_level(&event.event_type) {
+            return pl;
         }
         // Fall back to state_default for state events, events_default for others
         if event.state_key.is_some() {
-            return pl_event
-                .content
-                .get("state_default")
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(50);
+            return pl_event.get_state_default().unwrap_or(50);
         }
-        return pl_event
-            .content
-            .get("events_default")
-            .and_then(serde_json::Value::as_i64)
-            .unwrap_or(0);
+        return pl_event.get_events_default().unwrap_or(0);
     }
     // No restrictions if no power_levels event exists
     // However, Matrix spec says if NO PL event exists, state events require 50.
@@ -330,89 +322,105 @@ fn get_required_power_level<Id>(event: &LeanEvent<Id>, state: &impl StateProvide
     }
 }
 
-/// Validate membership transition rules for `m.room.member` events.
-fn check_membership_rules<Id: Clone>(
+/// Validate leave/kick transition rules.
+fn check_leave_rules<Id: Clone>(
+    event: &LeanEvent<Id>,
+    state: &impl StateProvider<Id>,
+    target_user: &str,
+    current_membership: &str,
+) -> Result<(), AuthError<Id>> {
+    // Self-leave is always allowed (no power level check needed).
+    if target_user == event.sender {
+        return Ok(());
+    }
+
+    // If target_user != sender, this is a kick or unban — requires power level
+    let sender_pl = get_sender_power_level(&event.sender, state);
+
+    // Unban: requires ban_pl. Kick: requires kick_pl.
+    // Mutually exclusive per spec §10.2.1.
+    let (required, label) = if current_membership == "ban" {
+        (get_ban_power_level(state), "unban")
+    } else {
+        (get_kick_power_level(state), "kick")
+    };
+
+    if sender_pl < required {
+        return Err(AuthError::InsufficientPowerLevel {
+            required,
+            actual: sender_pl,
+            event_type: label.into(),
+        });
+    }
+
+    Ok(())
+}
+
+/// Validate ban transition rules.
+fn check_ban_rules<Id: Clone>(
     event: &LeanEvent<Id>,
     state: &impl StateProvider<Id>,
 ) -> Result<(), AuthError<Id>> {
-    let target_user = event.state_key.as_deref().unwrap_or("");
-    let new_membership = event
-        .content
-        .get("membership")
-        .and_then(|m| m.as_str())
-        .unwrap_or("");
+    // Banning requires the ban power level
+    let sender_pl = get_sender_power_level(&event.sender, state);
+    let ban_pl = get_ban_power_level(state);
+    if sender_pl < ban_pl {
+        return Err(AuthError::InsufficientPowerLevel {
+            required: ban_pl,
+            actual: sender_pl,
+            event_type: "ban".into(),
+        });
+    }
+    Ok(())
+}
 
-    match new_membership {
-        "join" => check_join_rules(event, state, target_user)?,
-        "leave"
-            // If target_user != sender, this is a kick — requires power level
-            if target_user != event.sender => {
-                let sender_pl = get_sender_power_level(&event.sender, state);
-                let kick_pl = get_kick_power_level(state);
-                if sender_pl < kick_pl {
-                    return Err(AuthError::InsufficientPowerLevel {
-                        required: kick_pl,
-                        actual: sender_pl,
-                        event_type: "kick".into(),
-                    });
-                }
-            }
-        "ban" => {
-            // Banning requires the ban power level
-            let sender_pl = get_sender_power_level(&event.sender, state);
-            let ban_pl = get_ban_power_level(state);
-            if sender_pl < ban_pl {
-                return Err(AuthError::InsufficientPowerLevel {
-                    required: ban_pl,
-                    actual: sender_pl,
-                    event_type: "ban".into(),
-                });
-            }
-        }
-        "invite" => {
-            // Inviting requires invite power level, and sender != target
-            if target_user == event.sender {
-                return Err(AuthError::InvalidStateKey {
-                    expected: alloc::format!("!= {}", event.sender),
-                    actual: target_user.into(),
-                });
-            }
-
-            let sender_pl = get_sender_power_level(&event.sender, state);
-            let invite_pl = get_invite_power_level(state);
-            if sender_pl < invite_pl {
-                return Err(AuthError::InsufficientPowerLevel {
-                    required: invite_pl,
-                    actual: sender_pl,
-                    event_type: "invite".into(),
-                });
-            }
-
-            // Check target isn't already banned
-            if let Some(target_member) = state.get_event("m.room.member", Some(target_user)) {
-                if target_member
-                    .content
-                    .get("membership")
-                    .and_then(|m| m.as_str())
-                    == Some("ban")
-                {
-                    return Err(AuthError::BannedUser {
-                        sender: target_user.into(),
-                        event_id: event.event_id.clone(),
-                    });
-                }
-            }
-        }
-        _ => {}
+/// Validate invite transition rules.
+fn check_invite_rules<Id: Clone>(
+    event: &LeanEvent<Id>,
+    state: &impl StateProvider<Id>,
+    target_user: &str,
+    current_membership: &str,
+) -> Result<(), AuthError<Id>> {
+    // Inviting requires invite power level, and sender != target
+    if target_user == event.sender {
+        return Err(AuthError::InvalidStateKey {
+            expected: alloc::format!("!= {}", event.sender),
+            actual: target_user.into(),
+        });
     }
 
-    // If target_user != event.sender and the transition is a kick, ban, or unban (membership is leave or ban),
-    // check sender power level against target user and existing membership sender.
+    let sender_pl = get_sender_power_level(&event.sender, state);
+    let invite_pl = get_invite_power_level(state);
+    if sender_pl < invite_pl {
+        return Err(AuthError::InsufficientPowerLevel {
+            required: invite_pl,
+            actual: sender_pl,
+            event_type: "invite".into(),
+        });
+    }
+
+    // Check target isn't already banned
+    if current_membership == "ban" {
+        return Err(AuthError::BannedUser {
+            sender: target_user.into(),
+            event_id: event.event_id.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// Validate sender power level hierarchies (sender PL vs target PL, and previous sender rules).
+fn check_membership_pl_hierarchies<Id: Clone>(
+    event: &LeanEvent<Id>,
+    state: &impl StateProvider<Id>,
+    target_user: &str,
+    new_membership: &str,
+) -> Result<(), AuthError<Id>> {
+    // 1. Kick/Ban power vs Target power: ONLY for "leave" (kick) or "ban" transitions.
     if target_user != event.sender && (new_membership == "leave" || new_membership == "ban") {
         let sender_pl = get_sender_power_level(&event.sender, state);
-
-        // 1. Sender power level must be strictly greater than target power level.
         let target_pl = get_sender_power_level(target_user, state);
+
         if sender_pl <= target_pl {
             return Err(AuthError::InsufficientPowerLevel {
                 required: target_pl.saturating_add(1),
@@ -420,32 +428,46 @@ fn check_membership_rules<Id: Clone>(
                 event_type: "m.rezzy.member_pl_greater_than_target".into(),
             });
         }
-
-        // 2. If the target has a current active membership (joined, invited, or banned),
-        // sender power level must be strictly greater than the power level of the user who set the current membership.
-        if let Some(current_member_event) = state.get_event("m.room.member", Some(target_user)) {
-            if let Some(current_membership) = current_member_event
-                .content
-                .get("membership")
-                .and_then(|m| m.as_str())
-            {
-                if current_membership == "join"
-                    || current_membership == "invite"
-                    || current_membership == "ban"
-                {
-                    let current_sender_pl =
-                        get_sender_power_level(&current_member_event.sender, state);
-                    if sender_pl <= current_sender_pl {
-                        return Err(AuthError::InsufficientPowerLevel {
-                            required: current_sender_pl.saturating_add(1),
-                            actual: sender_pl,
-                            event_type: "m.rezzy.member_pl_greater_than_current_sender".into(),
-                        });
-                    }
-                }
-            }
-        }
     }
+
+    // NOTE: The spec does not mandate a "previous sender" check.
+    // A moderator (PL 50) can unban or re-ban a user previously banned by an admin (PL 100),
+    // as long as the moderator meets the standard ban/kick PL requirements and has PL > target PL.
+    // See Matrix spec room v12 §5.5 (leave) and §5.6 (ban).
+
+    Ok(())
+}
+
+/// Validate membership transition rules for `m.room.member` events.
+fn check_membership_rules<Id: Clone>(
+    event: &LeanEvent<Id>,
+    state: &impl StateProvider<Id>,
+) -> Result<(), AuthError<Id>> {
+    let target_user = event.state_key.as_deref().unwrap_or("");
+    let new_membership = event.get_membership().unwrap_or("");
+
+    let current_membership = state
+        .get_event(M_ROOM_MEMBER, Some(target_user))
+        .and_then(|ev| ev.get_membership())
+        .unwrap_or("");
+
+    // Self-bans are nonsensical and forbidden by the spec.
+    if new_membership == MEM_BAN && target_user == event.sender {
+        return Err(AuthError::InvalidStateKey {
+            expected: alloc::format!("!= {}", event.sender),
+            actual: target_user.into(),
+        });
+    }
+
+    match new_membership {
+        MEM_JOIN => check_join_rules(event, state, target_user)?,
+        MEM_LEAVE => check_leave_rules(event, state, target_user, current_membership)?,
+        MEM_BAN => check_ban_rules(event, state)?,
+        MEM_INVITE => check_invite_rules(event, state, target_user, current_membership)?,
+        _ => {}
+    }
+
+    check_membership_pl_hierarchies(event, state, target_user, new_membership)?;
 
     Ok(())
 }
@@ -465,11 +487,10 @@ fn check_join_rules<Id: Clone>(
 
     let current_membership = state
         .get_event("m.room.member", Some(target_user))
-        .and_then(|ev| ev.content.get("membership"))
-        .and_then(|m| m.as_str())
+        .and_then(|ev| ev.get_membership())
         .unwrap_or("");
 
-    if current_membership == "ban" {
+    if current_membership == MEM_BAN {
         return Err(AuthError::BannedUser {
             sender: event.sender.clone(),
             event_id: event.event_id.clone(),
@@ -477,19 +498,18 @@ fn check_join_rules<Id: Clone>(
     }
 
     let join_rule = state
-        .get_event("m.room.join_rules", Some(""))
-        .and_then(|ev| ev.content.get("join_rule"))
-        .and_then(|r| r.as_str())
-        .unwrap_or("invite"); // Default to invite
+        .get_event(M_ROOM_JOIN_RULES, Some(""))
+        .and_then(|ev| ev.get_join_rule())
+        .unwrap_or(RULE_INVITE); // Default to invite
 
     let is_creator = state
-        .get_event("m.room.create", Some(""))
+        .get_event(M_ROOM_CREATE, Some(""))
         .is_some_and(|ev| ev.sender == event.sender);
 
     if is_creator {
         // Room creator can always join
-    } else if join_rule == "invite" || join_rule == "knock" {
-        if current_membership == "invite" || current_membership == "join" {
+    } else if join_rule == RULE_INVITE || join_rule == RULE_KNOCK {
+        if current_membership == MEM_INVITE || current_membership == MEM_JOIN {
             // Allowed
         } else {
             return Err(AuthError::NotMember {
@@ -497,7 +517,7 @@ fn check_join_rules<Id: Clone>(
                 event_id: event.event_id.clone(),
             });
         }
-    } else if join_rule != "public" {
+    } else if join_rule != RULE_PUBLIC {
         return Err(AuthError::NotMember {
             sender: event.sender.clone(),
             event_id: event.event_id.clone(),
@@ -508,12 +528,8 @@ fn check_join_rules<Id: Clone>(
 
 /// Get the kick power level from room state.
 fn get_kick_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
-    if let Some(pl_event) = state.get_event("m.room.power_levels", Some("")) {
-        if let Some(kick) = pl_event
-            .content
-            .get("kick")
-            .and_then(serde_json::Value::as_i64)
-        {
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
+        if let Some(kick) = pl_event.get_kick() {
             return kick;
         }
     }
@@ -522,12 +538,8 @@ fn get_kick_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
 
 /// Get the ban power level from room state.
 fn get_invite_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
-    if let Some(pl_event) = state.get_event("m.room.power_levels", Some("")) {
-        if let Some(invite) = pl_event
-            .content
-            .get("invite")
-            .and_then(serde_json::Value::as_i64)
-        {
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
+        if let Some(invite) = pl_event.get_invite() {
             return invite;
         }
     }
@@ -535,12 +547,8 @@ fn get_invite_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
 }
 
 fn get_ban_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
-    if let Some(pl_event) = state.get_event("m.room.power_levels", Some("")) {
-        if let Some(ban) = pl_event
-            .content
-            .get("ban")
-            .and_then(serde_json::Value::as_i64)
-        {
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
+        if let Some(ban) = pl_event.get_ban() {
             return ban;
         }
     }
@@ -568,7 +576,7 @@ pub fn check_auth_chain<Id: Clone + Ord>(
                         (event.event_type.clone(), Some(state_key.clone())),
                         event.clone(),
                     );
-                } else if event.event_type == "m.room.create" {
+                } else if event.event_type == M_ROOM_CREATE {
                     // Fallback for m.room.create if it somehow lacks a state_key
                     state.insert(
                         (event.event_type.clone(), Some(String::new())),
@@ -602,7 +610,7 @@ pub fn auth_types_for_event(
 ) -> Vec<(String, String)> {
     let mut auth_types = Vec::new();
 
-    if event_type == "m.room.create" {
+    if event_type == M_ROOM_CREATE {
         return auth_types;
     }
 
@@ -611,37 +619,35 @@ pub fn auth_types_for_event(
         version,
         StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
     ) {
-        auth_types.push((String::from("m.room.create"), String::new()));
+        auth_types.push((M_ROOM_CREATE.into(), String::new()));
     }
-    auth_types.push((String::from("m.room.member"), String::from(sender)));
-    auth_types.push((String::from("m.room.power_levels"), String::new()));
+    auth_types.push((M_ROOM_MEMBER.into(), sender.into()));
+    auth_types.push((M_ROOM_POWER_LEVELS.into(), String::new()));
 
-    if event_type == "m.room.member" {
+    if event_type == M_ROOM_MEMBER {
         if let Some(sk) = state_key {
-            if sender != sk {
-                auth_types.push((String::from("m.room.member"), String::from(sk)));
+            if sk != sender {
+                auth_types.push((M_ROOM_MEMBER.into(), sk.into()));
             }
         }
 
-        let membership = content.get("membership").and_then(|v| v.as_str());
-        if membership == Some("join") || membership == Some("invite") {
-            auth_types.push((String::from("m.room.join_rules"), String::new()));
+        let membership = content.get(FIELD_MEMBERSHIP).and_then(|v| v.as_str());
+
+        if membership == Some(MEM_JOIN) || membership == Some(MEM_INVITE) {
+            auth_types.push((M_ROOM_JOIN_RULES.into(), String::new()));
         }
 
-        let third_party_invite = content
-            .get("third_party_invite")
-            .and_then(|v| v.as_object());
-        if let Some(tpi) = third_party_invite {
+        if let Some(tpi) = content
+            .get(FIELD_THIRD_PARTY_INVITE)
+            .and_then(|t| t.as_object())
+        {
             if let Some(token) = tpi
-                .get("signed")
+                .get(FIELD_SIGNED)
                 .and_then(|s| s.as_object())
-                .and_then(|s| s.get("token"))
+                .and_then(|s| s.get(FIELD_TOKEN))
                 .and_then(|t| t.as_str())
             {
-                auth_types.push((
-                    String::from("m.room.third_party_invite"),
-                    String::from(token),
-                ));
+                auth_types.push((M_ROOM_THIRD_PARTY_INVITE.into(), token.into()));
             }
         }
     }

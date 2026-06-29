@@ -21,6 +21,33 @@ Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolu
 cargo build --release
 ```
 
+### Maximum Performance
+
+`rezzy` is designed for extreme performance, but to squeeze every last drop out of the engine, homeserver authors and binary consumers should opt-in to advanced compiler optimizations in their own `Cargo.toml`:
+
+```toml
+[profile.release]
+lto = "fat"
+codegen-units = 1
+```
+
+For even higher performance use this:
+
+```toml
+[profile.release-max-perf]
+inherits = "release"
+strip = "symbols"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+```
+
+Additionally, if you are building the binary for the specific machine it will run on, you can unlock native CPU instructions (like AVX-512) by building with:
+
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
 ### Test
 
 ```bash
@@ -48,88 +75,69 @@ make lint
 
 Because we care about raw performance and mechanical efficiency, `rezzy` is built on a foundation of blazingly fast ideas. Under the hood of our production code, you will find:
 
-- _Causal domination_ operator (CDO) filtering
+- _Causal domination_ operator (CDO) pre-filtering
+- Experimental V2.1.1 State Resolution with supplemental narrowing
 - Batched/strip-mined **SWAR** (SIMD within a register) matrix sweeps
 - `O(1)` _causal coordinatization_ projection
 - Filtered _commutative join-semilattice_ folding
 - Integer "interning" (`ShortID`) graph-based traversal
 - Flat-array "stride matrices"
+- Fully-featured, spec-compliant authorization engine
 - Reverse topological power ordering (Kahn's algorithm)
 - `Arc`-based copy-on-write (CoW) structural sharing
 - `O(1)` fast-path _merge resolution_ via "pointer-equality bypass"
+- Native **n-way state resolution** (resolve/merge arbitrary DAG forks in a single pass)
 - Zero-allocation stack-safe DAG crawling
 - Generic `BuildHasher` decoupling
 - Supremum deletion attack (Byzantine fault mitigation)
 - Optimal conflicted state sub-graph computation (MSC4297)
 - **Roaring bitmaps** (SIMD-optimized set operations)
-- `FNV-1a` lexicographical state hashing
+- `FNV-1a` 128-bit lexicographical state hashing
+- Compacted delta chains with auto-snapshot (bounded reconstruction cost)
+- Per-event resolution tracing (`ResolutionDelta` + phase tracking)
+- Checkpoint/partial-join resolution (trusted snapshot as unconflicted base)
+- Batch state computation with shared topological traversal
+- `no_std` compatible (`alloc`-only, no system dependencies)
 
 ## TODO
 
-### Per-Event State Deltas (`resolve_with_deltas`)
-
-Currently `resolve_lean` only outputs the final resolved state snapshot. For observability and debugging (e.g. visualizing state evolution through a fork), we need a variant that emits per-step deltas:
-
-- Hook into the iterative auth-check loop and capture insertions/replacements at each step
-- Emit a `Vec<StateDelta>` alongside the final `BTreeMap` result
-- Each delta captures: event_id applied, (type, state_key) modified, old value evicted, new value inserted
-- Useful for: timeline replay, state-res visualization, debugging ban/PL conflicts
-
-### Checkpoint / Partial-Join Support
-
-For simulating partial joins (e.g. federated rooms where a server doesn't have the full history):
-
-- Allow starting resolution from a trusted state snapshot (checkpoint) as the unconflicted base
-- Still require the full auth chain for any _conflicting_ events that diverge from the checkpoint
-- Truncating the auth chain for conflicted events breaks topological ordering and can cause state resets (ref: CVE-2025-49090)
-- API: accept an optional `checkpoint: BTreeMap<(String, Option<String>), String>` as the pre-resolved base state
-
-### Auth Chain Subset Safety
-
-Document and enforce the invariant: you can trust a snapshot for the unconflicted base, but the auth chain for conflicted events must be complete and uninterrupted. Partial auth chains lead to:
-
-- Sorting failures (cannot establish mainline order)
-- Auth check failures (missing historical power levels)
-- Potential state reset attacks
-
-### `auth_types_for_event`
-
-Expose a pure function that returns the list of `(event_type, state_key)` pairs required in auth state for a given event type. Currently only available in ruma's `state_res` — adding it to rezzy would eliminate the last ruma `state_res` dependency for downstream consumers.
-
-### Integer-Keyed Resolution (`resolve_lean_indexed`)
-
-Accept `HashMap<u32, LeanEvent>` instead of `HashMap<String, LeanEvent>`. All internal lookups use `u32` keys instead of hashing 44-byte base64 event ID strings.
-
-- The caller builds a `String → u32` intern table once and remaps all event IDs
-- `LeanEvent::auth_events` and `LeanEvent::prev_events` become `Vec<u32>` instead of `Vec<String>`
-- **Impact**: 10-40x faster HashMap lookups in debug mode, measurable improvement in release
-
-This is especially valuable for homeservers like continuwuity that already maintain `shorteventid: u64` mappings — they can go straight from DB shorts to rezzy without any string conversion.
-
 ### Typed Content Fields (`LeanEventTyped`)
 
-Replace `content: serde_json::Value` with pre-extracted typed fields to eliminate JSON parsing in the hot path:
+Replace `content: serde_json::Value` with pre-extracted typed fields to eliminate JSON parsing in the hot path.
+See [`res/docs/TYPED_CONTENT_FIELDS.md`](res/docs/TYPED_CONTENT_FIELDS.md) for the full design proposal.
+
+## Completed
+
+### Per-Event State Deltas (`resolve_lean_with_deltas`) ✓
+
+`resolve_lean_with_deltas` emits per-step `ResolutionDelta`s alongside the final resolved state, capturing event_id, acceptance status, replaced event, and phase (power/non-power) for every conflicted event processed. See [`resolve_lean_with_deltas`](src/resolve.rs).
+
+### Batch State Computation (`compute_state_at_batch`) ✓
+
+Compute state at N events in topological order, sharing the ancestor traversal and topological sort across all targets. See [`compute_state_at_batch`](src/state_at.rs).
+
+### `auth_types_for_event` ✓
+
+Pure function that returns the list of `(event_type, state_key)` pairs required in auth state for a given event type. See [`auth_types_for_event`](src/auth/mod.rs).
+
+### Integer-Keyed Resolution ✓
+
+`resolve_lean` is generic over `Id: EventId`, and `EventId` has a blanket impl for any `T: Clone + Eq + Hash + Ord + Debug`. This means `u32`, `u64`, and any interned short ID type work out of the box:
 
 ```rust
-pub struct LeanEventTyped {
-    pub membership: Option<String>,
-    pub users_pl: Option<BTreeMap<String, i64>>,
-    pub join_rule: Option<String>,
-    pub ban_level: Option<i64>,
-    pub kick_level: Option<i64>,
-    pub events_default: Option<i64>,
-    pub creator: Option<String>,
-}
+let events: HashMap<u64, LeanEvent<u64>> = /* ... */;
+let resolved = resolve_lean(unconflicted, events, &auth_ctx, StateResVersion::V2);
 ```
 
-The caller's PDU type already has typed access to these fields (via ruma deserialization). Currently the adapter serializes them back to JSON, and rezzy re-parses them — a completely redundant round-trip.
+### Checkpoint / Partial-Join Support ✓
 
-### Batch State Computation (`compute_state_at_batch`)
+`resolve_lean` already supports this by design — pass a trusted state snapshot as `unconflicted_state`. The conflicted events and auth context only need to cover the divergent portion of the DAG.
 
-Compute state at N events in topological order, reusing the resolved state from previous events. This is the incremental state walk pattern that homeservers implement manually in their `rebuild-state` commands.
+### State Delta Compression ✓
 
-Internalizing this in rezzy would:
+Full delta chain support with Synapse-compatible compaction:
 
-- Eliminate per-event adapter overhead (PDU→LeanEvent conversion, auth chain fetch)
-- Allow rezzy to skip resolution entirely when an event has a single parent (fast-path)
-- Enable internal caching of power level context across consecutive events
+- `compute_state_delta` / `apply_state_delta` — single-event delta math
+- `compute_compacted_delta_chain` — bulk backfill with auto-snapshot every `MAX_DELTA_CHAIN_HOPS` (100) events
+- `reconstruct_state_at` / `reconstruct_state_batch` — reconstruct state from stored delta chains
+- All checkpoint types derive `Serialize` / `Deserialize` for direct storage in RocksDB, bincode, etc.

@@ -1,3 +1,11 @@
+//! Fast auth chain operations using [`roaring`] bitmaps.
+//!
+//! [`AuthGraph`] pre-computes a compressed, topologically-ordered representation
+//! of the auth DAG. Each event's full transitive auth chain is stored as a
+//! `RoaringBitmap`, enabling `O(1)` ancestor queries via bitwise intersection.
+//!
+//! This is used for fast auth-chain difference computations in state resolution.
+
 use crate::HashMap;
 use crate::LeanEvent;
 use alloc::collections::VecDeque;
@@ -6,9 +14,18 @@ use alloc::vec;
 use alloc::vec::Vec;
 use roaring::RoaringBitmap;
 
+/// A topologically-ordered auth DAG with pre-computed transitive reachability bitmaps.
+///
+/// Each event is assigned a dense integer index (topological order), and its
+/// full auth chain is represented as a [`RoaringBitmap`]. Checking whether
+/// event A is in event B's auth chain is a single `bitmap.contains(idx)` call.
 pub struct AuthGraph {
+    /// Maps event ID strings to their dense topological index.
     pub id_to_index: HashMap<String, u32>,
+    /// Maps dense indices back to event ID strings.
     pub index_to_id: Vec<String>,
+    /// Per-event bitmaps: `auth_bitmaps[i]` contains the indices of all
+    /// transitive auth ancestors of event `i`.
     pub auth_bitmaps: Vec<RoaringBitmap>,
 }
 

@@ -12,14 +12,56 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::sorting::{build_mainline, precompute_mainline_positions};
-use crate::state_at::{compute_local_auth, iterative_auth_ok, LocalAuthCache};
-use crate::types::{LeanEvent, StateResVersion};
-use crate::HashMap;
-use alloc::collections::BTreeMap;
-use alloc::string::String;
-use alloc::vec::Vec;
+//! Lattice-coordinatized state resolution.
+//!
+//! This module provides [`resolve_lattice_coordinatized`], an alternative to
+//! [`crate::resolve::resolve_lean`] that replaces the sequential mainline sort
+//! with a parallel, `O(1)` causal coordinatization projection and commutative
+//! join-semilattice fold.
+//!
+//! ## How it works
+//!
+//! 1. The **power phase** is identical to [`resolve_lean`](crate::resolve::resolve_lean).
+//! 2. Instead of sorting non-power events, each event is assigned a **mainline
+//!    coordinate** (its closest position on the power-levels chain).
+//! 3. Events are folded per `(type, state_key)` using a commutative **Least
+//!    Upper Bound** (LUB) operator — the event with the best coordinate wins.
+//! 4. The fold is embarrassingly parallel and runs on `std::thread::scope`
+//!    when the `std` feature is enabled.
+//!
+//! Also contains [`route_power_events`], which classifies events into
+//! power vs. non-power buckets.
+//!
+//! ### Internal Pipeline
+//!
+//! The non-power phase is implemented by three internal functions:
+//!
+//! 1. **`fold_lattice_chunk`** — processes a slice of events in a single thread,
+//!    auth-checking each and folding per-`(type, state_key)` winners via the LUB operator.
+//! 2. **`merge_lattice_winners`** — merges thread-local winner maps back into
+//!    the global result using the same LUB comparator.
+//! 3. **`compute_lattice_coordinatized_winners`** — orchestrates the parallel
+//!    fan-out via `std::thread::scope`, splits events into chunks, and coordinates
+//!    the fold-then-merge pipeline.
 
+use crate::{
+    sorting::{build_mainline, precompute_mainline_positions},
+    state_at::{compute_local_auth, iterative_auth_ok},
+    types::{LeanEvent, StateResVersion},
+    HashMap,
+};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
+
+/// Determines whether `ev` beats `current_winner` under the Least Upper Bound (LUB)
+/// tie-breaking rules.
+///
+/// The comparison cascade is:
+/// 1. **Mainline position**: closer to the current PL event (smaller index) wins.
+/// 2. **`origin_server_ts`**: later timestamp wins.
+/// 3. **`event_id`**: lexicographically largest ID wins.
+///
+/// This operator is **commutative** and **associative**, which is what allows
+/// the fold to be parallelized without affecting the result.
 #[must_use]
 pub fn is_lattice_winner_better<Id, S: core::hash::BuildHasher>(
     ev: &LeanEvent<Id>,
@@ -208,6 +250,16 @@ fn compute_lattice_coordinatized_winners<
     }
 }
 
+/// Classifies conflicted events into power events and non-power events.
+///
+/// Power events are those that affect the room's administrative state:
+/// - `m.room.create`
+/// - `m.room.power_levels`
+/// - `m.room.join_rules`
+/// - `m.room.member` events that are bans or kicks (V2.1+ only; V2 treats
+///   **all** member events as power events)
+///
+/// Non-power events are everything else (messages, topics, `m.room.third_party_invite`, etc.).
 pub fn route_power_events<
     Id: Clone + Eq + core::hash::Hash,
     S1: core::hash::BuildHasher,
@@ -217,13 +269,27 @@ pub fn route_power_events<
     sort_set: &HashMap<Id, LeanEvent<Id>, S1>,
     power_events: &mut HashMap<Id, LeanEvent<Id>, S2>,
     non_power_events: &mut HashMap<Id, LeanEvent<Id>, S3>,
+    version: crate::StateResVersion,
 ) {
     for (id, ev) in sort_set {
-        if ev.event_type == "m.room.member"
-            || ev.event_type == "m.room.create"
-            || ev.event_type == "m.room.power_levels"
-            || ev.event_type == "m.room.join_rules"
-        {
+        let is_power = ev.event_type == crate::event_types::M_ROOM_CREATE
+            || ev.event_type == crate::event_types::M_ROOM_POWER_LEVELS
+            || ev.event_type == crate::event_types::M_ROOM_JOIN_RULES
+            || if matches!(
+                version,
+                // MSC4297 (State Resolution v2.1 onwards): Only member events that are bans or kicks
+                // are treated as power events.
+                // (Standard v2 treats *all* member events as power events, which is handled by the `else` branch).
+                crate::StateResVersion::V2_1
+                    | crate::StateResVersion::V2_1_1
+                    | crate::StateResVersion::V2_2
+            ) {
+                ev.is_ban_or_kick()
+            } else {
+                ev.event_type == crate::event_types::M_ROOM_MEMBER
+            };
+
+        if is_power {
             power_events.insert(id.clone(), ev.clone());
         } else {
             non_power_events.insert(id.clone(), ev.clone());
@@ -231,8 +297,19 @@ pub fn route_power_events<
     }
 }
 
-/// Employs O(1) Causal Coordinatization Projection and Commutative Join-Semilattice folding
-/// to completely eliminate sequential sorting and backward graph traversals.
+/// Resolves conflicted state using `O(1)` causal coordinatization projection
+/// and commutative join-semilattice folding.
+///
+/// This is functionally equivalent to [`crate::resolve::resolve_lean`] but
+/// replaces the sequential mainline sort + iterative auth-check loop with a
+/// parallel per-key fold. Each non-power event competes for its `(type, state_key)`
+/// slot via the [`is_lattice_winner_better`] LUB operator.
+///
+/// Use this variant when:
+/// - The conflicted set is large (thousands of events).
+/// - The `std` feature is enabled (to benefit from thread parallelism).
+///
+/// The power phase (Steps 1–2) is shared with `resolve_lean`.
 // jscpd:ignore-start
 #[must_use]
 pub fn resolve_lattice_coordinatized<
@@ -246,43 +323,34 @@ pub fn resolve_lattice_coordinatized<
     version: StateResVersion,
 ) -> BTreeMap<(String, Option<String>), Id>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + Sync + Send,
+    Id: crate::types::EventId + Sync + Send,
 {
     // jscpd:ignore-end
     let original_conflicted_keys =
         crate::resolve::prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
-    let sort_context = crate::resolve::build_sort_context(&conflicted_events, auth_context);
 
     let mut resolved = crate::resolve::get_initial_resolved_state(&unconflicted_state, version);
 
-    let sort_set = &conflicted_events;
-
-    // Route power and non-power events
-    let mut power_events = HashMap::new();
-    let mut non_power_events = HashMap::new();
-    route_power_events(sort_set, &mut power_events, &mut non_power_events);
-
-    crate::resolve::route_msc4297_ancestral_power_events(
-        &mut power_events,
-        auth_context,
-        &original_conflicted_keys,
-        version,
-    );
-
-    let create_ev = crate::types::find_deterministic_create_event(auth_context, sort_set);
-
-    let mut local_auth_cache: LocalAuthCache<Id> = HashMap::new();
+    let (sort_context, power_events, non_power_events, mut local_auth_cache, create_ev) =
+        crate::resolve::execute_power_phase(
+            &conflicted_events,
+            auth_context,
+            &original_conflicted_keys,
+            version,
+        );
 
     crate::resolve::run_power_phase_iterative_checks(
         &mut resolved,
         &power_events,
         &sort_context,
         auth_context,
-        sort_set,
+        &conflicted_events,
         create_ev,
         &mut local_auth_cache,
         version,
     );
+
+    let sort_set = &conflicted_events;
 
     // Coordinate Projection Phase (Mainline distance mapping)
     let mainline = build_mainline(&resolved, &sort_context);

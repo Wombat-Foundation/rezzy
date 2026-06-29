@@ -12,6 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Topological and mainline sorting for Matrix state resolution.
+//!
+//! This module provides two complementary sorting strategies:
+//!
+//! - **Kahn's topological sort** ([`lean_kahn_sort`], [`lean_kahn_sort_detailed`]):
+//!   Orders events by auth-chain dependencies with tie-breaking by power level,
+//!   timestamp, and event ID. Used for the power-events phase.
+//!
+//! - **Mainline sort** ([`mainline_sort`]): Orders non-power events by their
+//!   proximity to the resolved power-levels chain (the "mainline"). Events
+//!   closer to the current PL event are applied last and therefore win.
+//!
+//! Both sorts are deterministic — given the same inputs, all implementations
+//! must produce the identical ordering.
+
 use alloc::collections::{BTreeMap, BinaryHeap, VecDeque};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -83,18 +98,12 @@ where
     }
 
     if let Some(pl_ev) = pl_event {
-        if let Some(users) = pl_ev.content.get("users").and_then(|u| u.as_object()) {
-            if let Some(pl_val) = users.get(&event.sender) {
-                if let Some(pl) = crate::types::coerce_json_to_i64(pl_val) {
-                    return pl;
-                }
-            }
+        if let Some(pl) = pl_ev.get_user_power_level(&event.sender) {
+            return pl;
         }
 
-        if let Some(default_pl_val) = pl_ev.content.get("users_default") {
-            if let Some(default_pl) = crate::types::coerce_json_to_i64(default_pl_val) {
-                return default_pl;
-            }
+        if let Some(default_pl) = pl_ev.get_users_default() {
+            return default_pl;
         }
         return 0; // Default if PL event exists but no users_default
     }
@@ -322,6 +331,7 @@ where
     Id: Clone + Eq + core::hash::Hash,
 {
     let mut mainline = Vec::new();
+    let mut seen_in_mainline = hashbrown::HashSet::new();
     let pl_key = (
         alloc::string::String::from("m.room.power_levels"),
         Some(alloc::string::String::new()),
@@ -329,6 +339,11 @@ where
     let mut current = resolved.get(&pl_key).cloned();
 
     while let Some(eid) = current {
+        if !seen_in_mainline.insert(eid.clone()) {
+            #[cfg(feature = "std")]
+            std::eprintln!("REZZY_WARN: MAINLINE CYCLE DETECTED!");
+            break; // Cycle detected in the power-levels mainline!
+        }
         mainline.push(eid.clone());
         current = None;
         if let Some(ev) = auth_context.get(&eid) {
@@ -365,7 +380,7 @@ where
 ///
 /// This approach instead:
 /// 1. Seeds the BFS from ALL mainline events simultaneously at their positions.
-/// 2. Builds reverse auth-edges (`auth_ev` → events that list it) once: O(V+E).
+/// 2. Builds reverse auth-edges (`auth_ev` -> events that list it) once: O(V+E).
 /// 3. BFS outward through those reverse edges; since we process in ascending
 ///    position order, the first time an event is reached gives the minimum
 ///    (closest) mainline position.
@@ -427,10 +442,18 @@ where
     dist
 }
 
-/// Sort events by mainline ordering per the Matrix spec:
-/// 1. Closest mainline position (smaller index = closer to current PL = comes last)
-/// 2. `origin_server_ts` ascending (earlier first, later wins via last-write)
-/// 3. `event_id` ascending (smaller first)
+/// Sorts non-power events by mainline ordering per the Matrix spec.
+///
+/// The mainline is the chain of `m.room.power_levels` events reachable from
+/// the currently resolved PL state. Each event's "mainline position" is the
+/// closest PL event in its auth chain. The sort order is:
+///
+/// 1. **Mainline position** descending (farther = worse = applied first).
+/// 2. **`origin_server_ts`** ascending (earlier = applied first, later wins).
+/// 3. **`event_id`** ascending (lexicographic tie-break).
+///
+/// Events closer to the current power-levels event are applied **last**
+/// and therefore win for same-key conflicts (last-write-wins).
 pub fn mainline_sort<Id, S: ::core::hash::BuildHasher>(
     events: &mut Vec<&LeanEvent<Id>>,
     mainline: &[Id],
@@ -460,4 +483,52 @@ pub fn mainline_sort<Id, S: ::core::hash::BuildHasher>(
             ord => ord,
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_mainline_cycle_detection() {
+        // A and B both claim to be m.room.power_levels, and auth against each other, forming a cycle.
+        let a = LeanEvent::<String> {
+            event_id: alloc::string::String::from("A"),
+            event_type: alloc::string::String::from("m.room.power_levels"),
+            auth_events: alloc::vec![alloc::string::String::from("B")],
+            ..Default::default()
+        };
+        let b = LeanEvent::<String> {
+            event_id: alloc::string::String::from("B"),
+            event_type: alloc::string::String::from("m.room.power_levels"),
+            auth_events: alloc::vec![alloc::string::String::from("A")],
+            ..Default::default()
+        };
+
+        let mut auth_context = HashMap::new();
+        auth_context.insert(alloc::string::String::from("A"), a);
+        auth_context.insert(alloc::string::String::from("B"), b);
+
+        // Initial state sets A as the power levels event.
+        let mut resolved = BTreeMap::new();
+        resolved.insert(
+            (
+                alloc::string::String::from("m.room.power_levels"),
+                Some(alloc::string::String::new()),
+            ),
+            alloc::string::String::from("A"),
+        );
+
+        // Before the fix, this would infinite loop!
+        let mainline = build_mainline(&resolved, &auth_context);
+
+        // A and B should both be in the mainline exactly once.
+        assert_eq!(
+            mainline.len(),
+            2,
+            "Mainline should break the cycle safely after picking up both events"
+        );
+        assert_eq!(mainline[0], "A");
+        assert_eq!(mainline[1], "B");
+    }
 }

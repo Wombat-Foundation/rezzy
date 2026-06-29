@@ -1,3 +1,33 @@
+// Copyright 2026 Shane Jaroch
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Incremental state computation — room state at arbitrary DAG positions.
+//!
+//! This module computes the resolved room state *after* any given event in the
+//! DAG, without requiring external state snapshots. It walks the `prev_events`
+//! graph backwards, builds the state at each ancestor, and merges fork points
+//! via [`crate::resolve::resolve_lean`].
+//!
+//! Key optimizations:
+//!
+//! - **`Arc`-based structural sharing**: parent states are shared via
+//!   `Arc<BTreeMap>` and cloned only when modified (copy-on-write).
+//! - **Pointer-equality fast path**: when all parents share the same `Arc`,
+//!   no merge is needed.
+//! - **Batch mode** ([`compute_state_at_batch`]): computes state at multiple
+//!   targets in a single topological pass, amortizing the cost of shared ancestors.
+
 use crate::types::{LeanEvent, StateResVersion};
 use crate::HashMap;
 use alloc::collections::BTreeMap;
@@ -5,12 +35,24 @@ use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// An entry in the local auth cache, pairing an event with its discovery depth.
+///
+/// The `depth` field tracks how many hops through `auth_events` it took to
+/// reach this event. When the same `(type, state_key)` is found at multiple
+/// depths, the shallowest (closest) entry wins.
 #[derive(Debug, Clone)]
 pub struct LocalAuthEntry<Id> {
+    /// The auth event itself.
     pub event: LeanEvent<Id>,
-    pub depth: usize,
+    /// Number of auth-chain hops from the original event to this one.
+    pub auth_depth: usize,
 }
 
+/// Memoization cache for local auth context computation.
+///
+/// Maps `event_id -> BTreeMap<(type, state_key) -> LocalAuthEntry>`, allowing
+/// the local auth context to be computed once and reused for all events that
+/// share auth chain prefixes.
 pub type LocalAuthCache<Id = String> =
     HashMap<Id, BTreeMap<(String, Option<String>), LocalAuthEntry<Id>>>;
 
@@ -58,14 +100,16 @@ impl<
                     .get(eid)
                     .or_else(|| self.conflicted.get(eid))
                 {
-                    if self.version == StateResVersion::V2_1_1 && event_type == "m.room.member" {
-                        // V2.1.1 Fix: Only supplement bans and kicks
-                        if let Some(membership) =
-                            ev.content.get("membership").and_then(|m| m.as_str())
-                        {
+                    if self.version == StateResVersion::V2_1_1
+                        && self.is_power_phase
+                        && event_type == "m.room.member"
+                    {
+                        // V2.1.1 Fix: Only supplement bans and kicks in power phase
+                        if let Some(membership) = ev.get_membership() {
                             let is_ban = membership == "ban";
-                            let is_kick =
-                                membership == "leave" && Some(ev.sender.as_str()) != state_key;
+                            let is_kick = membership == "leave"
+                                && state_key.is_some()
+                                && Some(ev.sender.as_str()) != state_key;
                             if is_ban || is_kick {
                                 return Some(ev);
                             }
@@ -78,20 +122,52 @@ impl<
             }
         }
 
-        // Check local auth chain (BFS result)
+        // Check local auth chain (BFS result) second!
         if let Some(ev) = self.local_auth.get(query) {
-            return Some(ev);
+            // Under Matrix State Resolution, during the power phase, a required auth event in the conflicted set
+            // can ONLY be used if it has been successfully authorized and resolved
+            // (i.e. is present in the resolved state).
+            let is_required_type =
+                event_type == "m.room.power_levels" || event_type == "m.room.join_rules";
+
+            let is_v2_1_or_above = self.version == StateResVersion::V2_1
+                || self.version == StateResVersion::V2_1_1
+                || self.version == StateResVersion::V2_2;
+
+            if self.is_power_phase
+                && is_v2_1_or_above
+                && is_required_type
+                && self.conflicted.contains_key(&ev.event_id)
+            {
+                if let Some(resolved_id) = self.resolved.get(query) {
+                    if let Some(resolved_ev) = self
+                        .auth_context
+                        .get(resolved_id)
+                        .or_else(|| self.conflicted.get(resolved_id))
+                    {
+                        return Some(resolved_ev);
+                    }
+                }
+                None
+            } else {
+                Some(ev)
+            }
+        } else {
+            // Fallback for create
+            if event_type == "m.room.create" && state_key == Some("") {
+                return self.create_ev;
+            }
+            None
         }
-        // Fallback for create
-        if event_type == "m.room.create" && state_key == Some("") {
-            return self.create_ev;
-        }
-        None
     }
 }
 
 /// Evaluates whether an event passes authentication checks given a resolved state map,
 /// delegating to the core `crate::auth::check_auth` logic via a temporary `OverlayState` view.
+///
+/// NOTE: In V2.1/MSC4297, progressive state starts empty. The first event's sender membership
+/// check must use its own `auth_events` (via `local_auth` / `OverlayState` fallback), not the
+/// empty state. This is critical for competing bans where both senders need membership validation.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn iterative_auth_ok<
     Id: Clone + Eq + core::hash::Hash,
@@ -130,14 +206,14 @@ pub(crate) fn update_local_auth<Id: Clone>(
         alloc::collections::btree_map::Entry::Vacant(e) => {
             e.insert(LocalAuthEntry {
                 event: aev.clone(),
-                depth: current_depth,
+                auth_depth: current_depth,
             });
         }
         alloc::collections::btree_map::Entry::Occupied(mut e) => {
-            if current_depth < e.get().depth {
+            if current_depth < e.get().auth_depth {
                 e.insert(LocalAuthEntry {
                     event: aev.clone(),
-                    depth: current_depth,
+                    auth_depth: current_depth,
                 });
             }
         }
@@ -189,19 +265,19 @@ pub(crate) fn compute_local_auth<
             }
 
             for (key, entry) in cached_ancestor {
-                let total_depth = current_depth.saturating_add(entry.depth);
+                let total_depth = current_depth.saturating_add(entry.auth_depth);
                 match local_auth.entry(key.clone()) {
                     alloc::collections::btree_map::Entry::Vacant(e) => {
                         e.insert(LocalAuthEntry {
                             event: entry.event.clone(),
-                            depth: total_depth,
+                            auth_depth: total_depth,
                         });
                     }
                     alloc::collections::btree_map::Entry::Occupied(mut e) => {
-                        if total_depth < e.get().depth {
+                        if total_depth < e.get().auth_depth {
                             e.insert(LocalAuthEntry {
                                 event: entry.event.clone(),
-                                depth: total_depth,
+                                auth_depth: total_depth,
                             });
                         }
                     }
@@ -235,8 +311,14 @@ pub(crate) fn compute_local_auth<
 
 type SharedState<Id = String> = alloc::sync::Arc<BTreeMap<(String, Option<String>), Id>>;
 
-/// Computes the state map at (after) a given target event ID,
-/// assuming all ancestral events are present in `events_map`.
+/// Computes the resolved room state *after* a given event.
+///
+/// This walks the `prev_events` graph backwards from `target_event_id`,
+/// topologically sorts all reachable ancestors, and incrementally builds
+/// the state by applying each state event in order. Fork points are resolved
+/// via [`crate::resolve::resolve_lean`] with the given `version` semantics.
+///
+/// Returns `None` if `target_event_id` is not found in `events_map`.
 ///
 /// # Panics
 ///
@@ -246,26 +328,39 @@ type SharedState<Id = String> = alloc::sync::Arc<BTreeMap<(String, Option<String
 pub fn compute_state_at<Id, Q, S>(
     target_event_id: &Q,
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
+    version: StateResVersion,
 ) -> Option<BTreeMap<(String, Option<String>), Id>>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
-    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    Id: Clone + Eq + Ord + core::fmt::Debug + core::hash::Hash + core::borrow::Borrow<Q>,
+    Q: ?Sized + Eq + Ord + core::hash::Hash,
     S: core::hash::BuildHasher,
 {
     let actual_target_id = events_map.get_key_value(target_event_id).map(|(k, _)| k)?;
 
     let (id_to_index, index_to_id) = collect_ancestor_short_ids(actual_target_id, events_map);
-    let mut state_after_map = run_state_pipeline(&index_to_id, &id_to_index, events_map);
+    let target_array = [actual_target_id];
+    let mut state_after_map = run_state_pipeline(
+        &index_to_id,
+        &id_to_index,
+        &target_array,
+        events_map,
+        version,
+    );
 
     let target_idx = id_to_index[actual_target_id];
     state_after_map[target_idx].take().map(|arc| {
-        let cloned_arc = arc.clone();
-        alloc::sync::Arc::into_inner(arc).unwrap_or_else(|| (*cloned_arc).clone())
+        alloc::sync::Arc::try_unwrap(arc).unwrap_or_else(|failed_arc| (*failed_arc).clone())
     })
 }
 
-/// Computes the state map at (after) a batch of target event IDs,
-/// assuming all ancestral events are present in `events_map`.
+/// Computes the resolved room state at multiple target events in a single pass.
+///
+/// This is the batch variant of [`compute_state_at`]. It shares the topological
+/// sort and ancestor traversal across all targets, which is significantly faster
+/// than calling `compute_state_at` in a loop when the targets share ancestors.
+///
+/// Returns a map from each found target event ID to its resolved state.
+/// Target IDs not found in `events_map` are silently skipped.
 ///
 /// # Panics
 ///
@@ -275,16 +370,20 @@ where
 pub fn compute_state_at_batch<Id, Q, S>(
     target_event_ids: &[&Q],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
+    version: StateResVersion,
 ) -> HashMap<Id, BTreeMap<(String, Option<String>), Id>>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
 {
-    let mut actual_target_ids = Vec::with_capacity(target_event_ids.len());
+    let mut actual_target_ids = Vec::new();
+    let mut seen = alloc::collections::BTreeSet::new();
     for &tid in target_event_ids {
         if let Some((k, _)) = events_map.get_key_value(tid) {
-            actual_target_ids.push(k);
+            if seen.insert(k) {
+                actual_target_ids.push(k);
+            }
         }
     }
 
@@ -294,13 +393,20 @@ where
 
     let (id_to_index, index_to_id) =
         collect_ancestor_short_ids_batch(&actual_target_ids, events_map);
-    let state_after_map = run_state_pipeline(&index_to_id, &id_to_index, events_map);
+    let mut state_after_map = run_state_pipeline(
+        &index_to_id,
+        &id_to_index,
+        &actual_target_ids,
+        events_map,
+        version,
+    );
 
     let mut results = HashMap::with_capacity(actual_target_ids.len());
     for &actual_tid in &actual_target_ids {
         if let Some(&target_idx) = id_to_index.get(actual_tid) {
-            if let Some(ref shared_state) = state_after_map[target_idx] {
-                let btree = (**shared_state).clone();
+            if let Some(shared_state) = state_after_map[target_idx].take() {
+                let btree =
+                    alloc::sync::Arc::try_unwrap(shared_state).unwrap_or_else(|arc| (*arc).clone());
                 results.insert(actual_tid.clone(), btree);
             }
         }
@@ -313,24 +419,45 @@ where
 fn run_state_pipeline<'a, Id, S>(
     index_to_id: &[&'a Id],
     id_to_index: &HashMap<&'a Id, usize>,
+    target_event_ids: &[&'a Id],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
+    version: StateResVersion,
 ) -> Vec<Option<SharedState<Id>>>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
 {
-    let sorted_ancestors = topological_sort_short_ids(index_to_id, id_to_index, events_map);
-    let mut state_after_map: Vec<Option<SharedState<Id>>> = alloc::vec![None; index_to_id.len()];
+    let (sorted_ancestors, mut out_degree) =
+        topological_sort_short_ids(index_to_id, id_to_index, events_map);
+
+    // Artificially increment the out_degree of final target events by 1
+    // to ensure they are never consumed and remain in state_after_map.
+    for &tid in target_event_ids {
+        if let Some(&target_idx) = id_to_index.get(tid) {
+            out_degree[target_idx] = out_degree[target_idx].saturating_add(1);
+        }
+    }
+
+    let mut state_after_map: Vec<Option<SharedState<Id>>> = core::iter::repeat_with(|| None)
+        .take(index_to_id.len())
+        .collect();
 
     for idx in sorted_ancestors {
         let id_val = index_to_id[idx];
         let ev = events_map.get(id_val).unwrap();
 
-        let mut prev_states: Vec<&SharedState<Id>> = Vec::with_capacity(ev.prev_events.len());
+        let mut prev_states = Vec::with_capacity(ev.prev_events.len());
         for pe in &ev.prev_events {
             if let Some(&pe_idx) = id_to_index.get(pe) {
-                if let Some(ref pe_state) = state_after_map[pe_idx] {
-                    prev_states.push(pe_state);
+                if out_degree[pe_idx] > 0 {
+                    out_degree[pe_idx] = out_degree[pe_idx].saturating_sub(1);
+                    if out_degree[pe_idx] == 0 {
+                        if let Some(pe_state) = state_after_map[pe_idx].take() {
+                            prev_states.push(pe_state);
+                        }
+                    } else if let Some(ref pe_state) = state_after_map[pe_idx] {
+                        prev_states.push(alloc::sync::Arc::clone(pe_state));
+                    }
                 }
             }
         }
@@ -338,9 +465,9 @@ where
         let mut state_before: SharedState<Id> = if prev_states.is_empty() {
             alloc::sync::Arc::new(BTreeMap::new())
         } else if prev_states.len() == 1 {
-            alloc::sync::Arc::clone(prev_states[0])
+            prev_states.into_iter().next().unwrap()
         } else {
-            resolve_merge_fast_path(&prev_states, events_map)
+            resolve_merge_fast_path(&prev_states, events_map, version)
         };
 
         if ev.state_key.is_some() {
@@ -355,6 +482,110 @@ where
     }
 
     state_after_map
+}
+
+/// Computes the most recent common ancestor (merge base) of multiple DAG tips.
+///
+/// Uses a max-heap ordered by event `depth` with roaring bitmap reachability
+/// masks. Each extremity gets a unique bit index; as the heap walks backward
+/// through `prev_events`, bitmasks propagate via bitwise OR. The first event
+/// whose bitmask contains all extremity bits is the merge base.
+///
+/// Returns `None` if the extremities have no common ancestor (disjoint DAGs)
+/// or if `extremities` is empty.
+///
+/// # Complexity
+///
+/// - **Time**: O(V + E) bounded to the subgraph between the extremities and
+///   their merge base. Events below the merge base are never visited.
+/// - **Space**: O(V) for the bitmask map, where each bitmask is a compressed
+///   roaring bitmap.
+///
+/// # Panics
+///
+/// Panics if there are more than `2^32` extremities (practically unreachable).
+///
+/// # Example
+///
+/// ```rust
+/// use rezzy::{compute_merge_base, DagNode};
+/// use rezzy::{LeanEvent, HashMap};
+///
+/// let mut events: HashMap<String, LeanEvent<String>> = HashMap::new();
+/// // ... populate events ...
+/// let tips = vec!["$tip_a", "$tip_b"];
+/// let merge_base = compute_merge_base(&tips, &events);
+/// ```
+#[must_use]
+pub fn compute_merge_base<'a, Id, Q, S, Node>(
+    extremities: &[&Q],
+    events_map: &'a HashMap<Id, Node, S>,
+) -> Option<&'a Id>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::borrow::Borrow<Q>,
+    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    S: core::hash::BuildHasher,
+    Node: crate::types::DagNode<Id>,
+{
+    use alloc::collections::BinaryHeap;
+
+    use roaring::RoaringBitmap;
+
+    if extremities.is_empty() {
+        return None;
+    }
+
+    // Single extremity: it is its own merge base.
+    if extremities.len() == 1 {
+        return events_map.get_key_value(extremities[0]).map(|(k, _)| k);
+    }
+
+    let target_count = extremities.len() as u64;
+
+    // Max-heap: (depth, &Id) — highest depth pops first, ensuring a parent
+    // is never processed until all of its descendants have propagated bits.
+    let mut queue: BinaryHeap<(u64, &Id)> = BinaryHeap::new();
+    let mut masks: HashMap<&Id, RoaringBitmap> = HashMap::new();
+
+    for (i, &head) in extremities.iter().enumerate() {
+        if let Some((k, ev)) = events_map.get_key_value(head) {
+            let idx = u32::try_from(i).expect("more than 2^32 extremities");
+            let entry = masks.entry(k).or_default();
+            entry.insert(idx);
+            queue.push((ev.depth(), k));
+        }
+    }
+
+    while let Some((_, current_id)) = queue.pop() {
+        let current_mask = match masks.get(current_id) {
+            Some(m) => m.clone(),
+            None => continue,
+        };
+
+        // If reachable by ALL extremities, this is the merge base.
+        if current_mask.len() == target_count {
+            return Some(current_id);
+        }
+
+        if let Some(ev) = events_map.get(current_id.borrow()) {
+            for parent_id in ev.prev_events() {
+                let parent_q: &Q = parent_id.borrow();
+                if let Some((pk, parent_ev)) = events_map.get_key_value(parent_q) {
+                    let is_new = !masks.contains_key(pk);
+                    let parent_mask = masks.entry(pk).or_default();
+                    let old_len = parent_mask.len();
+                    *parent_mask |= &current_mask;
+                    let new_len = parent_mask.len();
+
+                    if is_new || new_len > old_len {
+                        queue.push((parent_ev.depth(), pk));
+                    }
+                }
+            }
+        }
+    }
+
+    None // Disjoint DAGs (no common ancestor)
 }
 
 fn collect_ancestor_short_ids_batch<'a, Id, S>(
@@ -413,7 +644,7 @@ fn topological_sort_short_ids<Id, S>(
     index_to_id: &[&Id],
     id_to_index: &HashMap<&Id, usize>,
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
-) -> Vec<usize>
+) -> (Vec<usize>, Vec<usize>)
 where
     Id: Clone + Eq + core::hash::Hash,
     S: core::hash::BuildHasher,
@@ -421,6 +652,7 @@ where
     let num_reachable = index_to_id.len();
     let mut in_degree = alloc::vec![0usize; num_reachable];
     let mut adjacency = alloc::vec![Vec::new(); num_reachable];
+    let mut out_degree = alloc::vec![0usize; num_reachable];
 
     for (i, id) in index_to_id.iter().enumerate() {
         if let Some(ev) = events_map.get(*id) {
@@ -428,6 +660,7 @@ where
                 if let Some(&parent_idx) = id_to_index.get(parent) {
                     in_degree[i] = in_degree[i].saturating_add(1);
                     adjacency[parent_idx].push(i);
+                    out_degree[parent_idx] = out_degree[parent_idx].saturating_add(1);
                 }
             }
         }
@@ -451,21 +684,22 @@ where
         }
     }
 
-    sorted_ancestors
+    (sorted_ancestors, out_degree)
 }
 
 fn resolve_merge_fast_path<Id, S>(
-    prev_states: &[&SharedState<Id>],
+    prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
+    version: StateResVersion,
 ) -> SharedState<Id>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
 {
     let mut all_match = true;
-    let first = prev_states[0];
+    let first = &prev_states[0];
     for state in &prev_states[1..] {
-        if !alloc::sync::Arc::ptr_eq(first, state) && **first != ***state {
+        if !alloc::sync::Arc::ptr_eq(first, state) && **first != **state {
             all_match = false;
             break;
         }
@@ -474,18 +708,18 @@ where
     if all_match {
         alloc::sync::Arc::clone(first)
     } else {
-        let unwrapped_prev_states: Vec<BTreeMap<_, _>> =
-            prev_states.iter().map(|&arc| (**arc).clone()).collect();
         alloc::sync::Arc::new(resolve_multiple_prev_states(
-            &unwrapped_prev_states,
+            prev_states,
             events_map,
+            version,
         ))
     }
 }
 
 fn resolve_multiple_prev_states<Id, S>(
-    prev_states: &[BTreeMap<(String, Option<String>), Id>],
+    prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
+    version: StateResVersion,
 ) -> BTreeMap<(String, Option<String>), Id>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
@@ -494,7 +728,7 @@ where
     let mut occurrences: HashMap<(String, Option<String>), HashMap<Id, usize>> = HashMap::new();
     let num_sets = prev_states.len();
     for map in prev_states {
-        for (key, val) in map {
+        for (key, val) in map.iter() {
             let val_entry = occurrences
                 .entry(key.clone())
                 .or_default()
@@ -543,10 +777,115 @@ where
         }
     }
 
-    crate::resolve::resolve_lean(
-        unconflicted_state,
-        conflicted_events,
-        events_map,
-        StateResVersion::V2,
-    )
+    crate::resolve::resolve_lean(unconflicted_state, conflicted_events, events_map, version)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+    use alloc::vec;
+    use serde_json::json;
+
+    #[test]
+    fn test_conflicted_auth_event_validation_in_power_phase() {
+        // Create a minimal room context
+        let create_ev = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            sender: "@admin:example.com".into(),
+            content: json!({ "room_version": "11" }),
+            ..Default::default()
+        };
+
+        // A conflicted power level event where @bot has PL 100
+        let pl_bot = LeanEvent {
+            event_id: "$pl_bot".into(),
+            event_type: "m.room.power_levels".into(),
+            sender: "@admin:example.com".into(),
+            content: json!({ "users": { "@bot:example.com": 100 } }),
+            prev_events: vec!["$create".to_string()],
+            auth_events: vec!["$create".to_string()],
+            ..Default::default()
+        };
+
+        // A conflicted join event of the sender (@bot)
+        let bot_join = LeanEvent {
+            event_id: "$bot_join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bot:example.com".into()),
+            sender: "@bot:example.com".into(),
+            content: json!({ "membership": "join" }),
+            prev_events: vec!["$pl_bot".to_string()],
+            auth_events: vec!["$create".to_string(), "$pl_bot".to_string()],
+            ..Default::default()
+        };
+
+        // A state event (m.room.topic) sent by @bot (which requires PL 50 if no power levels event is resolved)
+        let bot_msg = LeanEvent {
+            event_id: "$bot_msg".into(),
+            event_type: "m.room.topic".into(),
+            state_key: Some(String::new()),
+            sender: "@bot:example.com".into(),
+            content: json!({ "topic": "hello" }),
+            prev_events: vec!["$bot_join".to_string()],
+            auth_events: vec![
+                "$create".to_string(),
+                "$pl_bot".to_string(),
+                "$bot_join".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let mut auth_context = HashMap::new();
+        auth_context.insert("$create".to_string(), create_ev.clone());
+        auth_context.insert("$pl_bot".to_string(), pl_bot.clone());
+        auth_context.insert("$bot_join".to_string(), bot_join.clone());
+        auth_context.insert("$bot_msg".to_string(), bot_msg.clone());
+
+        let mut conflicted = HashMap::new();
+        // Mark the power levels event as conflicted
+        conflicted.insert("$pl_bot".to_string(), pl_bot.clone());
+
+        // Create a resolved map where $pl_bot is NOT resolved yet (empty resolved map)
+        let resolved = BTreeMap::new();
+
+        let local_auth = vec![
+            (
+                ("m.room.create".to_string(), Some(String::new())),
+                create_ev.clone(),
+            ),
+            (
+                ("m.room.power_levels".to_string(), Some(String::new())),
+                pl_bot.clone(),
+            ),
+            (
+                (
+                    "m.room.member".to_string(),
+                    Some("@bot:example.com".to_string()),
+                ),
+                bot_join.clone(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        // Under V2.1.1, during the power phase, a conflicted required auth event ($pl_bot)
+        // that is NOT in resolved MUST be rejected!
+        let is_ok = iterative_auth_ok(
+            &bot_msg,
+            &resolved,
+            &auth_context,
+            &conflicted,
+            local_auth,
+            Some(&create_ev),
+            StateResVersion::V2_1_1,
+            true, // is_power_phase
+        );
+
+        assert!(
+            !is_ok,
+            "The message must be rejected because the conflicted power levels event was not resolved!"
+        );
+    }
 }
