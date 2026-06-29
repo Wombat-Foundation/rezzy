@@ -71,8 +71,6 @@ jobs:
           git commit -m "Update test badge"
           git push origin HEAD:badges --force
 
-
-
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
