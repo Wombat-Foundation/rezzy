@@ -418,6 +418,122 @@ pub fn compute_compacted_delta_chain(
     checkpoints
 }
 
+/// Produces a [`StateCheckpoint`] chain from a sequence of **pre-resolved**
+/// `(event_id, state_map)` pairs.
+///
+/// Unlike [`compute_delta_chain`], this function performs **no graph traversal**
+/// and **no fork merging**. The caller is responsible for providing the correct
+/// resolved state at each position (e.g. via
+/// [`compute_state_at_batch`](crate::compute_state_at_batch) or
+/// [`resolve_lean`](crate::resolve_lean)).
+///
+/// This is the architecturally correct way to build delta chains: resolution
+/// is a separate concern from storage compression.
+///
+/// # Arguments
+///
+/// * `resolved_states` — an iterator of `(event_id, resolved_state_map)` pairs,
+///   in chronological / topological order.
+#[must_use]
+pub fn compute_delta_chain_from_resolved(
+    resolved_states: impl IntoIterator<Item = (String, BTreeMap<(String, Option<String>), String>)>,
+) -> Vec<StateCheckpoint> {
+    let mut checkpoints = Vec::new();
+    let mut prev_state: Option<BTreeMap<(String, Option<String>), String>> = None;
+    let mut prev_hash: Option<String> = None;
+
+    for (event_id, state) in resolved_states {
+        let state_hash = compute_state_hash(&state);
+
+        let deltas = if let Some(ref base) = prev_state {
+            compute_state_delta(base, &state)
+        } else {
+            // First entry: delta from empty
+            compute_state_delta(&BTreeMap::new(), &state)
+        };
+
+        checkpoints.push(StateCheckpoint {
+            state_hash: state_hash.clone(),
+            parent_hash: prev_hash,
+            event_id,
+            deltas,
+        });
+
+        prev_hash = Some(state_hash);
+        prev_state = Some(state);
+    }
+
+    checkpoints
+}
+
+/// Like [`compute_delta_chain_from_resolved`], but inserts full snapshots every
+/// `max_hops` events to bound reconstruction cost.
+///
+/// This is the recommended API for homeserver state storage. The caller supplies
+/// pre-resolved states (from [`compute_state_at_batch`](crate::compute_state_at_batch)
+/// / [`resolve_lean`](crate::resolve_lean)), and this function handles only the
+/// storage compression concern.
+///
+/// A custom `max_hops` can be provided; pass `None` to use the default
+/// [`MAX_DELTA_CHAIN_HOPS`] (100).
+#[must_use]
+pub fn compute_compacted_delta_chain_from_resolved(
+    resolved_states: impl IntoIterator<Item = (String, BTreeMap<(String, Option<String>), String>)>,
+    max_hops: Option<usize>,
+) -> Vec<CompactedCheckpoint> {
+    let max_hops = max_hops.unwrap_or(MAX_DELTA_CHAIN_HOPS);
+    let mut checkpoints = Vec::new();
+    let mut prev_state: Option<BTreeMap<(String, Option<String>), String>> = None;
+    let mut prev_hash: Option<String> = None;
+    let mut hops_since_snapshot: usize = 0;
+
+    for (event_id, state) in resolved_states {
+        let state_hash = compute_state_hash(&state);
+        let current_hops = hops_since_snapshot.saturating_add(1);
+
+        let (deltas, snapshot, recorded_hops) = if current_hops >= max_hops || prev_state.is_none()
+        {
+            // Insert a full snapshot — resets the chain
+            (Vec::new(), Some(state.clone()), 0)
+        } else if let Some(ref base) = prev_state {
+            let deltas = compute_state_delta(base, &state);
+            (deltas, None, current_hops)
+        } else {
+            unreachable!()
+        };
+
+        checkpoints.push(CompactedCheckpoint {
+            state_hash: state_hash.clone(),
+            parent_hash: prev_hash,
+            event_id,
+            deltas,
+            snapshot,
+        });
+
+        prev_hash = Some(state_hash);
+        prev_state = Some(state);
+        hops_since_snapshot = recorded_hops;
+    }
+
+    checkpoints
+}
+
+/// Reconstruct the full state map by looking up a checkpoint by event ID.
+///
+/// This is a convenience wrapper around [`reconstruct_state_at`] that finds
+/// the checkpoint index for the given `event_id` and reconstructs the state.
+///
+/// Returns `None` if the event ID is not found in the checkpoint chain or
+/// the chain is broken.
+#[must_use]
+pub fn reconstruct_state_at_by_event_id(
+    checkpoints: &[CompactedCheckpoint],
+    event_id: &str,
+) -> Option<BTreeMap<(String, Option<String>), String>> {
+    let idx = checkpoints.iter().position(|cp| cp.event_id == event_id)?;
+    reconstruct_state_at(checkpoints, idx)
+}
+
 /// Reconstructs the full state map from a stored delta chain.
 ///
 /// Walks `checkpoints` **backwards** from `target_index`, applying deltas
@@ -578,6 +694,7 @@ pub fn reconstruct_state_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    type ResolvedStates = Vec<(String, BTreeMap<(String, Option<String>), String>)>;
 
     #[test]
     fn test_roundtrip_identity() {
@@ -790,5 +907,135 @@ mod tests {
 
         let result = reconstruct_state_at(&[], 42);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_delta_chain_from_resolved_roundtrip() {
+        // Simulate 5 sequential state snapshots
+        let mut states: ResolvedStates = Vec::new();
+
+        for i in 1..=5 {
+            let mut state = BTreeMap::new();
+            for j in 1..=i {
+                state.insert(
+                    (
+                        "m.room.member".into(),
+                        Some(alloc::format!("@user_{j}:example.com")),
+                    ),
+                    alloc::format!("${j}"),
+                );
+            }
+            states.push((alloc::format!("${i}"), state));
+        }
+
+        let checkpoints = compute_delta_chain_from_resolved(states.clone());
+
+        assert_eq!(checkpoints.len(), 5);
+
+        // First checkpoint: delta from empty has all entries
+        assert_eq!(checkpoints[0].event_id, "$1");
+        assert!(checkpoints[0].parent_hash.is_none());
+        assert_eq!(checkpoints[0].deltas.len(), 1);
+
+        // Second checkpoint: adds one member
+        assert_eq!(checkpoints[1].event_id, "$2");
+        assert_eq!(
+            checkpoints[1].parent_hash,
+            Some(checkpoints[0].state_hash.clone())
+        );
+        assert_eq!(checkpoints[1].deltas.len(), 1);
+        assert_eq!(
+            checkpoints[1].deltas[0].state_key,
+            Some("@user_2:example.com".into())
+        );
+
+        // Verify hashes are chained
+        for i in 1..5 {
+            assert_eq!(
+                checkpoints[i].parent_hash,
+                Some(checkpoints[i - 1].state_hash.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn test_compacted_delta_chain_from_resolved_snapshots() {
+        // Create 250 sequential resolved states
+        let states: ResolvedStates = (1..=250)
+            .map(|i| {
+                let mut state = BTreeMap::new();
+                state.insert(
+                    (
+                        "m.room.member".into(),
+                        Some(alloc::format!("@user_{i}:example.com")),
+                    ),
+                    alloc::format!("${i}"),
+                );
+                // Keep previous entries too
+                for j in 1..i {
+                    state.insert(
+                        (
+                            "m.room.member".into(),
+                            Some(alloc::format!("@user_{j}:example.com")),
+                        ),
+                        alloc::format!("${j}"),
+                    );
+                }
+                (alloc::format!("${i}"), state)
+            })
+            .collect();
+
+        let checkpoints = compute_compacted_delta_chain_from_resolved(states.clone(), Some(100));
+
+        assert_eq!(checkpoints.len(), 250);
+
+        // First event always gets a snapshot
+        assert!(checkpoints[0].snapshot.is_some());
+
+        // Count snapshots
+        let snapshot_count = checkpoints
+            .iter()
+            .filter(|cp| cp.snapshot.is_some())
+            .count();
+        assert!(
+            snapshot_count >= 3,
+            "250 events with max_hops=100 should produce at least 3 snapshots, got {snapshot_count}"
+        );
+
+        // Verify all states are reconstructable
+        let last_state = reconstruct_state_at(&checkpoints, 249).expect("should reconstruct last");
+        assert_eq!(last_state.len(), 250);
+    }
+
+    #[test]
+    fn test_reconstruct_state_at_by_event_id_lookup() {
+        let states: ResolvedStates = (1..=10)
+            .map(|i| {
+                let mut state = BTreeMap::new();
+                for j in 1..=i {
+                    state.insert(
+                        (
+                            "m.room.member".into(),
+                            Some(alloc::format!("@user_{j}:example.com")),
+                        ),
+                        alloc::format!("${j}"),
+                    );
+                }
+                (alloc::format!("${i}"), state)
+            })
+            .collect();
+
+        let checkpoints = compute_compacted_delta_chain_from_resolved(states, Some(100));
+
+        // Lookup by event ID
+        let state_5 = reconstruct_state_at_by_event_id(&checkpoints, "$5").expect("should find $5");
+        assert_eq!(state_5.len(), 5);
+
+        let state_10 =
+            reconstruct_state_at_by_event_id(&checkpoints, "$10").expect("should find $10");
+        assert_eq!(state_10.len(), 10);
+
+        // Missing event ID
+        assert!(reconstruct_state_at_by_event_id(&checkpoints, "$999").is_none());
     }
 }
