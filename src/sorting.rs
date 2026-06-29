@@ -98,18 +98,12 @@ where
     }
 
     if let Some(pl_ev) = pl_event {
-        if let Some(users) = pl_ev.content.get("users").and_then(|u| u.as_object()) {
-            if let Some(pl_val) = users.get(&event.sender) {
-                if let Some(pl) = crate::types::coerce_json_to_i64(pl_val) {
-                    return pl;
-                }
-            }
+        if let Some(pl) = pl_ev.get_user_power_level(&event.sender) {
+            return pl;
         }
 
-        if let Some(default_pl_val) = pl_ev.content.get("users_default") {
-            if let Some(default_pl) = crate::types::coerce_json_to_i64(default_pl_val) {
-                return default_pl;
-            }
+        if let Some(default_pl) = pl_ev.get_users_default() {
+            return default_pl;
         }
         return 0; // Default if PL event exists but no users_default
     }

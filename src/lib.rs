@@ -86,6 +86,7 @@ extern crate alloc;
 
 pub mod auth;
 pub mod cdo;
+pub mod event_types;
 pub mod lattice;
 #[cfg(feature = "cli")]
 pub mod merge;

@@ -24,8 +24,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
+use crate::event_types::*;
+use crate::types::LeanEvent;
 use crate::types::StateResVersion;
-use crate::LeanEvent;
 
 /// An error indicating why an event failed authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,13 +196,9 @@ pub fn check_auth<Id: Clone>(
     }
 
     // Rule 2: Check sender is not banned
-    if let Some(member_event) = state.get_event("m.room.member", Some(&event.sender)) {
-        if let Some(membership) = member_event
-            .content
-            .get("membership")
-            .and_then(|m| m.as_str())
-        {
-            if membership == "ban" {
+    if let Some(member_event) = state.get_event(M_ROOM_MEMBER, Some(&event.sender)) {
+        if let Some(membership) = member_event.get_membership() {
+            if membership == MEM_BAN {
                 return Err(AuthError::BannedUser {
                     sender: event.sender.clone(),
                     event_id: event.event_id.clone(),
@@ -209,18 +206,18 @@ pub fn check_auth<Id: Clone>(
             }
 
             // Rule 3: Sender must be joined (with exceptions for membership events)
-            if event.event_type != "m.room.member" && membership != "join" {
+            if event.event_type != M_ROOM_MEMBER && membership != MEM_JOIN {
                 return Err(AuthError::NotMember {
                     sender: event.sender.clone(),
                     event_id: event.event_id.clone(),
                 });
             }
         }
-    } else if event.event_type != "m.room.member" {
+    } else if event.event_type != M_ROOM_MEMBER {
         // Room version 11: The creator of the room has an implied membership of "join"
         // if no explicit membership event exists for them.
         let is_creator = state
-            .get_event("m.room.create", Some(""))
+            .get_event(M_ROOM_CREATE, Some(""))
             .is_some_and(|create_ev| create_ev.sender == event.sender);
 
         if !is_creator {
@@ -232,12 +229,12 @@ pub fn check_auth<Id: Clone>(
     }
 
     // Rule 4: Check power level requirements
-    if event.event_type != "m.room.member" {
+    if event.event_type != M_ROOM_MEMBER {
         let sender_pl = get_sender_power_level(&event.sender, state);
         let required_pl = get_required_power_level(event, state);
 
         let _pl_ev_id = state
-            .get_event("m.room.power_levels", Some(""))
+            .get_event(M_ROOM_POWER_LEVELS, Some(""))
             .map(|ev| ev.event_id.clone());
 
         if sender_pl < required_pl {
@@ -250,7 +247,7 @@ pub fn check_auth<Id: Clone>(
     }
 
     // Rule 5: m.room.member state_key validation
-    if event.event_type == "m.room.member" {
+    if event.event_type == M_ROOM_MEMBER {
         check_membership_rules(event, state)?;
     }
 
@@ -262,27 +259,16 @@ const MAX_POWER_LEVEL: i64 = 9_007_199_254_740_991; // 2^53 - 1
 /// Get the power level of a user from the current room state.
 fn get_sender_power_level<Id>(sender: &str, state: &impl StateProvider<Id>) -> i64 {
     // 1. Absolute Priority: Room Creator and additional creators (INFINITE power)
-    if let Some(create_event) = state.get_event("m.room.create", Some("")) {
+    if let Some(create_event) = state.get_event(M_ROOM_CREATE, Some("")) {
         let is_primary_creator = create_event.sender == sender;
         let mut is_additional_creator = false;
 
-        if let Some(creators) = create_event
-            .content
-            .get("room_creators")
-            .and_then(|c| c.as_array())
-        {
-            if creators.iter().any(|c| c.as_str() == Some(sender)) {
-                is_additional_creator = true;
-            }
+        // V2.1+ room creators extension
+        if create_event.has_room_creator(sender) {
+            is_additional_creator = true;
         }
-        if let Some(creators) = create_event
-            .content
-            .get("additional_creators")
-            .and_then(|c| c.as_array())
-        {
-            if creators.iter().any(|c| c.as_str() == Some(sender)) {
-                is_additional_creator = true;
-            }
+        if create_event.has_additional_creator(sender) {
+            is_additional_creator = true;
         }
 
         if is_primary_creator || is_additional_creator {
@@ -291,19 +277,13 @@ fn get_sender_power_level<Id>(sender: &str, state: &impl StateProvider<Id>) -> i
     }
 
     // 2. State-based Power Levels
-    if let Some(pl_event) = state.get_event("m.room.power_levels", Some("")) {
-        if let Some(users) = pl_event.content.get("users").and_then(|u| u.as_object()) {
-            if let Some(pl) = users.get(sender).and_then(serde_json::Value::as_i64) {
-                return pl;
-            }
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
+        if let Some(pl) = pl_event.get_user_power_level(sender) {
+            return pl;
         }
         // Fall back to users_default
-        if let Some(default) = pl_event
-            .content
-            .get("users_default")
-            .and_then(serde_json::Value::as_i64)
-        {
-            return default;
+        if let Some(default_pl) = pl_event.get_users_default() {
+            return default_pl;
         }
     }
     0 // Default power level if no power_levels event exists
@@ -311,29 +291,16 @@ fn get_sender_power_level<Id>(sender: &str, state: &impl StateProvider<Id>) -> i
 
 /// Get the required power level to send an event based on room state.
 fn get_required_power_level<Id>(event: &LeanEvent<Id>, state: &impl StateProvider<Id>) -> i64 {
-    if let Some(pl_event) = state.get_event("m.room.power_levels", Some("")) {
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
         // Check specific event type overrides
-        if let Some(events) = pl_event.content.get("events").and_then(|e| e.as_object()) {
-            if let Some(pl) = events
-                .get(&event.event_type)
-                .and_then(serde_json::Value::as_i64)
-            {
-                return pl;
-            }
+        if let Some(pl) = pl_event.get_event_power_level(&event.event_type) {
+            return pl;
         }
         // Fall back to state_default for state events, events_default for others
         if event.state_key.is_some() {
-            return pl_event
-                .content
-                .get("state_default")
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(50);
+            return pl_event.get_state_default().unwrap_or(50);
         }
-        return pl_event
-            .content
-            .get("events_default")
-            .and_then(serde_json::Value::as_i64)
-            .unwrap_or(0);
+        return pl_event.get_events_default().unwrap_or(0);
     }
     // No restrictions if no power_levels event exists
     // However, Matrix spec says if NO PL event exists, state events require 50.
@@ -466,23 +433,18 @@ fn check_membership_rules<Id: Clone>(
     state: &impl StateProvider<Id>,
 ) -> Result<(), AuthError<Id>> {
     let target_user = event.state_key.as_deref().unwrap_or("");
-    let new_membership = event
-        .content
-        .get("membership")
-        .and_then(|m| m.as_str())
-        .unwrap_or("");
+    let new_membership = event.get_membership().unwrap_or("");
 
     let current_membership = state
-        .get_event("m.room.member", Some(target_user))
-        .and_then(|ev| ev.content.get("membership"))
-        .and_then(|m| m.as_str())
+        .get_event(M_ROOM_MEMBER, Some(target_user))
+        .and_then(|ev| ev.get_membership())
         .unwrap_or("");
 
     match new_membership {
-        "join" => check_join_rules(event, state, target_user)?,
-        "leave" => check_leave_rules(event, state, target_user, current_membership)?,
-        "ban" => check_ban_rules(event, state)?,
-        "invite" => check_invite_rules(event, state, target_user, current_membership)?,
+        MEM_JOIN => check_join_rules(event, state, target_user)?,
+        MEM_LEAVE => check_leave_rules(event, state, target_user, current_membership)?,
+        MEM_BAN => check_ban_rules(event, state)?,
+        MEM_INVITE => check_invite_rules(event, state, target_user, current_membership)?,
         _ => {}
     }
 
@@ -506,11 +468,10 @@ fn check_join_rules<Id: Clone>(
 
     let current_membership = state
         .get_event("m.room.member", Some(target_user))
-        .and_then(|ev| ev.content.get("membership"))
-        .and_then(|m| m.as_str())
+        .and_then(|ev| ev.get_membership())
         .unwrap_or("");
 
-    if current_membership == "ban" {
+    if current_membership == MEM_BAN {
         return Err(AuthError::BannedUser {
             sender: event.sender.clone(),
             event_id: event.event_id.clone(),
@@ -518,19 +479,18 @@ fn check_join_rules<Id: Clone>(
     }
 
     let join_rule = state
-        .get_event("m.room.join_rules", Some(""))
-        .and_then(|ev| ev.content.get("join_rule"))
-        .and_then(|r| r.as_str())
-        .unwrap_or("invite"); // Default to invite
+        .get_event(M_ROOM_JOIN_RULES, Some(""))
+        .and_then(|ev| ev.get_join_rule())
+        .unwrap_or(RULE_INVITE); // Default to invite
 
     let is_creator = state
-        .get_event("m.room.create", Some(""))
+        .get_event(M_ROOM_CREATE, Some(""))
         .is_some_and(|ev| ev.sender == event.sender);
 
     if is_creator {
         // Room creator can always join
-    } else if join_rule == "invite" || join_rule == "knock" {
-        if current_membership == "invite" || current_membership == "join" {
+    } else if join_rule == RULE_INVITE || join_rule == RULE_KNOCK {
+        if current_membership == MEM_INVITE || current_membership == MEM_JOIN {
             // Allowed
         } else {
             return Err(AuthError::NotMember {
@@ -538,7 +498,7 @@ fn check_join_rules<Id: Clone>(
                 event_id: event.event_id.clone(),
             });
         }
-    } else if join_rule != "public" {
+    } else if join_rule != RULE_PUBLIC {
         return Err(AuthError::NotMember {
             sender: event.sender.clone(),
             event_id: event.event_id.clone(),
@@ -549,12 +509,8 @@ fn check_join_rules<Id: Clone>(
 
 /// Get the kick power level from room state.
 fn get_kick_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
-    if let Some(pl_event) = state.get_event("m.room.power_levels", Some("")) {
-        if let Some(kick) = pl_event
-            .content
-            .get("kick")
-            .and_then(serde_json::Value::as_i64)
-        {
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
+        if let Some(kick) = pl_event.get_kick() {
             return kick;
         }
     }
@@ -563,12 +519,8 @@ fn get_kick_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
 
 /// Get the ban power level from room state.
 fn get_invite_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
-    if let Some(pl_event) = state.get_event("m.room.power_levels", Some("")) {
-        if let Some(invite) = pl_event
-            .content
-            .get("invite")
-            .and_then(serde_json::Value::as_i64)
-        {
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
+        if let Some(invite) = pl_event.get_invite() {
             return invite;
         }
     }
@@ -576,12 +528,8 @@ fn get_invite_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
 }
 
 fn get_ban_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
-    if let Some(pl_event) = state.get_event("m.room.power_levels", Some("")) {
-        if let Some(ban) = pl_event
-            .content
-            .get("ban")
-            .and_then(serde_json::Value::as_i64)
-        {
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
+        if let Some(ban) = pl_event.get_ban() {
             return ban;
         }
     }
@@ -609,7 +557,7 @@ pub fn check_auth_chain<Id: Clone + Ord>(
                         (event.event_type.clone(), Some(state_key.clone())),
                         event.clone(),
                     );
-                } else if event.event_type == "m.room.create" {
+                } else if event.event_type == M_ROOM_CREATE {
                     // Fallback for m.room.create if it somehow lacks a state_key
                     state.insert(
                         (event.event_type.clone(), Some(String::new())),
@@ -643,7 +591,7 @@ pub fn auth_types_for_event(
 ) -> Vec<(String, String)> {
     let mut auth_types = Vec::new();
 
-    if event_type == "m.room.create" {
+    if event_type == M_ROOM_CREATE {
         return auth_types;
     }
 
@@ -652,37 +600,35 @@ pub fn auth_types_for_event(
         version,
         StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
     ) {
-        auth_types.push((String::from("m.room.create"), String::new()));
+        auth_types.push((M_ROOM_CREATE.into(), "".into()));
     }
-    auth_types.push((String::from("m.room.member"), String::from(sender)));
-    auth_types.push((String::from("m.room.power_levels"), String::new()));
+    auth_types.push((M_ROOM_MEMBER.into(), sender.into()));
+    auth_types.push((M_ROOM_POWER_LEVELS.into(), "".into()));
 
-    if event_type == "m.room.member" {
+    if event_type == M_ROOM_MEMBER {
         if let Some(sk) = state_key {
-            if sender != sk {
-                auth_types.push((String::from("m.room.member"), String::from(sk)));
+            if sk != sender {
+                auth_types.push((M_ROOM_MEMBER.into(), sk.into()));
             }
         }
 
-        let membership = content.get("membership").and_then(|v| v.as_str());
-        if membership == Some("join") || membership == Some("invite") {
-            auth_types.push((String::from("m.room.join_rules"), String::new()));
+        let membership = content.get(FIELD_MEMBERSHIP).and_then(|v| v.as_str());
+
+        if membership == Some(MEM_JOIN) || membership == Some(MEM_INVITE) {
+            auth_types.push((M_ROOM_JOIN_RULES.into(), "".into()));
         }
 
-        let third_party_invite = content
-            .get("third_party_invite")
-            .and_then(|v| v.as_object());
-        if let Some(tpi) = third_party_invite {
+        if let Some(tpi) = content
+            .get(FIELD_THIRD_PARTY_INVITE)
+            .and_then(|t| t.as_object())
+        {
             if let Some(token) = tpi
-                .get("signed")
+                .get(FIELD_SIGNED)
                 .and_then(|s| s.as_object())
-                .and_then(|s| s.get("token"))
+                .and_then(|s| s.get(FIELD_TOKEN))
                 .and_then(|t| t.as_str())
             {
-                auth_types.push((
-                    String::from("m.room.third_party_invite"),
-                    String::from(token),
-                ));
+                auth_types.push((M_ROOM_THIRD_PARTY_INVITE.into(), token.into()));
             }
         }
     }

@@ -21,7 +21,9 @@
 //! - [`SortPriority`] — a `BinaryHeap` wrapper encoding the V1/V2 sort semantics.
 //! - [`KahnSortResult`] — the result of topological sorting, with cycle diagnostics.
 
+use crate::event_types::*;
 use crate::HashMap;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
@@ -149,6 +151,41 @@ impl<Id> KahnSortResult<Id> {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct TypedContent {
+    // m.room.member
+    pub membership: Option<String>,
+    pub third_party_invite: Option<ThirdPartyInvite>,
+    // m.room.power_levels
+    pub users: Option<BTreeMap<String, i64>>,
+    pub users_default: Option<i64>,
+    pub events: Option<BTreeMap<String, i64>>,
+    pub events_default: Option<i64>,
+    pub state_default: Option<i64>,
+    pub ban: Option<i64>,
+    pub kick: Option<i64>,
+    pub redact: Option<i64>,
+    pub invite: Option<i64>,
+    // m.room.join_rules
+    pub join_rule: Option<String>,
+    // m.room.create
+    pub creator: Option<String>,
+    pub room_creators: Option<Vec<String>>,
+    pub additional_creators: Option<Vec<String>>,
+    pub room_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ThirdPartyInvite {
+    pub display_name: String,
+    pub signed: Signed,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Signed {
+    pub token: String,
+}
+
 /// A lightweight Matrix event representation optimized for state resolution.
 ///
 /// `LeanEvent` strips away fields irrelevant to state resolution (e.g. `unsigned`,
@@ -165,6 +202,7 @@ impl<Id> KahnSortResult<Id> {
 ///   content hash is computed and used as the ID.
 /// - `power_level`: Accepts integers, unsigned integers, or string-encoded
 ///   integers, clamped to [`MAX_POWER_LEVEL`].
+/// - `typed_content`: Populated from `content` for auth-relevant events.
 /// - All other fields default to empty/zero if absent.
 #[derive(Debug, Clone, Default)]
 pub struct LeanEvent<Id = String> {
@@ -192,6 +230,8 @@ pub struct LeanEvent<Id = String> {
     pub auth_events: Vec<Id>,
     /// DAG depth (distance from the root). Required for V1 sort ordering.
     pub depth: u64,
+    /// Fast typed access to auth-relevant content fields.
+    pub typed_content: Option<TypedContent>,
 }
 
 impl<Id: serde::Serialize> serde::Serialize for LeanEvent<Id> {
@@ -235,6 +275,157 @@ impl<Id> LeanEvent<Id> {
         }
 
         Ok(())
+    }
+
+    // --- Typed Content Accessors ---
+
+    pub fn get_membership(&self) -> Option<&str> {
+        if let Some(ref tc) = self.typed_content {
+            return tc.membership.as_deref();
+        }
+        self.content
+            .get(crate::event_types::FIELD_MEMBERSHIP)?
+            .as_str()
+    }
+
+    pub fn get_join_rule(&self) -> Option<&str> {
+        if let Some(ref tc) = self.typed_content {
+            return tc.join_rule.as_deref();
+        }
+        self.content
+            .get(crate::event_types::FIELD_JOIN_RULE)?
+            .as_str()
+    }
+
+    pub fn get_user_power_level(&self, user: &str) -> Option<i64> {
+        if let Some(ref tc) = self.typed_content {
+            if let Some(ref users) = tc.users {
+                return users.get(user).copied();
+            }
+        }
+        // Fallback for JSON
+        if let Some(users) = self
+            .content
+            .get(crate::event_types::FIELD_USERS)
+            .and_then(|u| u.as_object())
+        {
+            if let Some(pl) = users.get(user) {
+                return coerce_json_to_i64(pl);
+            }
+        }
+        None
+    }
+
+    pub fn get_event_power_level(&self, event_type: &str) -> Option<i64> {
+        if let Some(ref tc) = self.typed_content {
+            if let Some(ref events) = tc.events {
+                return events.get(event_type).copied();
+            }
+        }
+        // Fallback for JSON
+        if let Some(events) = self
+            .content
+            .get(crate::event_types::FIELD_EVENTS)
+            .and_then(|e| e.as_object())
+        {
+            if let Some(pl) = events.get(event_type) {
+                return coerce_json_to_i64(pl);
+            }
+        }
+        None
+    }
+
+    pub fn get_users_default(&self) -> Option<i64> {
+        if let Some(ref tc) = self.typed_content {
+            if tc.users_default.is_some() {
+                return tc.users_default;
+            }
+        }
+        coerce_json_to_i64(self.content.get(crate::event_types::FIELD_USERS_DEFAULT)?)
+    }
+
+    pub fn get_events_default(&self) -> Option<i64> {
+        if let Some(ref tc) = self.typed_content {
+            if tc.events_default.is_some() {
+                return tc.events_default;
+            }
+        }
+        coerce_json_to_i64(self.content.get(crate::event_types::FIELD_EVENTS_DEFAULT)?)
+    }
+
+    pub fn get_state_default(&self) -> Option<i64> {
+        if let Some(ref tc) = self.typed_content {
+            if tc.state_default.is_some() {
+                return tc.state_default;
+            }
+        }
+        coerce_json_to_i64(self.content.get(crate::event_types::FIELD_STATE_DEFAULT)?)
+    }
+
+    pub fn get_ban(&self) -> Option<i64> {
+        if let Some(ref tc) = self.typed_content {
+            if tc.ban.is_some() {
+                return tc.ban;
+            }
+        }
+        coerce_json_to_i64(self.content.get(crate::event_types::FIELD_BAN)?)
+    }
+
+    pub fn get_kick(&self) -> Option<i64> {
+        if let Some(ref tc) = self.typed_content {
+            if tc.kick.is_some() {
+                return tc.kick;
+            }
+        }
+        coerce_json_to_i64(self.content.get(crate::event_types::FIELD_KICK)?)
+    }
+
+    pub fn get_invite(&self) -> Option<i64> {
+        if let Some(ref tc) = self.typed_content {
+            if tc.invite.is_some() {
+                return tc.invite;
+            }
+        }
+        coerce_json_to_i64(self.content.get(crate::event_types::FIELD_INVITE)?)
+    }
+
+    pub fn get_redact(&self) -> Option<i64> {
+        if let Some(ref tc) = self.typed_content {
+            if tc.redact.is_some() {
+                return tc.redact;
+            }
+        }
+        coerce_json_to_i64(self.content.get(crate::event_types::FIELD_REDACT)?)
+    }
+
+    pub fn get_creator(&self) -> Option<&str> {
+        if let Some(ref tc) = self.typed_content {
+            return tc.creator.as_deref();
+        }
+        self.content
+            .get(crate::event_types::FIELD_CREATOR)?
+            .as_str()
+    }
+
+    pub fn get_room_creators(&self) -> Option<&Vec<String>> {
+        if let Some(ref tc) = self.typed_content {
+            return tc.room_creators.as_ref();
+        }
+        None
+    }
+
+    pub fn get_additional_creators(&self) -> Option<&Vec<String>> {
+        if let Some(ref tc) = self.typed_content {
+            return tc.additional_creators.as_ref();
+        }
+        None
+    }
+
+    pub fn get_third_party_invite(&self) -> Option<&ThirdPartyInvite> {
+        if let Some(ref tc) = self.typed_content {
+            return tc.third_party_invite.as_ref();
+        }
+        None
     }
 }
 
@@ -299,7 +490,7 @@ impl<'de> Deserialize<'de> for LeanEvent<String> {
             }
         };
 
-        let event_type = value
+        let event_type: String = value
             .get("type")
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -371,6 +562,7 @@ impl<'de> Deserialize<'de> for LeanEvent<String> {
             prev_events,
             auth_events,
             depth,
+            typed_content: None,
         })
     }
 }
@@ -402,12 +594,12 @@ impl<Id> LeanEvent<Id> {
     /// Self-leaves (where the user removes themselves) return `false`.
     #[must_use]
     pub fn is_ban_or_kick(&self) -> bool {
-        if self.event_type == "m.room.member" {
-            if let Some(membership) = self.content.get("membership").and_then(|v| v.as_str()) {
-                if membership == "ban" {
+        if self.event_type == crate::event_types::M_ROOM_MEMBER {
+            if let Some(membership) = self.get_membership() {
+                if membership == crate::event_types::MEM_BAN {
                     return true;
                 }
-                if membership == "leave" {
+                if membership == crate::event_types::MEM_LEAVE {
                     if let Some(ref state_key) = self.state_key {
                         return state_key != &self.sender;
                     }
@@ -420,15 +612,15 @@ impl<Id> LeanEvent<Id> {
     /// Returns `true` if this is a `m.room.power_levels` event (a potential demotion).
     #[must_use]
     pub fn is_demotion(&self) -> bool {
-        self.event_type == "m.room.power_levels"
+        self.event_type == crate::event_types::M_ROOM_POWER_LEVELS
     }
 
     /// Returns `true` if this is a `m.room.join_rules` event setting the room to invite-only.
     #[must_use]
     pub fn is_lockdown(&self) -> bool {
-        if self.event_type == "m.room.join_rules" {
-            if let Some(rule) = self.content.get("join_rule").and_then(|v| v.as_str()) {
-                return rule == "invite";
+        if self.event_type == crate::event_types::M_ROOM_JOIN_RULES {
+            if let Some(rule) = self.get_join_rule() {
+                return rule == crate::event_types::RULE_INVITE;
             }
         }
         false
@@ -444,12 +636,8 @@ impl<Id> LeanEvent<Id> {
             }
         }
         if self.is_demotion() {
-            if let Some(users) = self.content.get("users").and_then(|u| u.as_object()) {
-                if let Some(pl) = users.get(sender) {
-                    if let Some(pl_int) = coerce_json_to_i64(pl) {
-                        return pl_int == 0;
-                    }
-                }
+            if let Some(pl_int) = self.get_user_power_level(sender) {
+                return pl_int == 0;
             }
         }
         false
@@ -464,9 +652,9 @@ impl<Id> LeanEvent<Id> {
         if self.is_ban_or_kick() || self.is_demotion() {
             return self.restricts_sender(&other.sender);
         }
-        if self.is_lockdown() && other.event_type == "m.room.member" {
-            if let Some(membership) = other.content.get("membership").and_then(|v| v.as_str()) {
-                return membership == "join";
+        if self.is_lockdown() && other.event_type == crate::event_types::M_ROOM_MEMBER {
+            if let Some(membership) = other.get_membership() {
+                return membership == crate::event_types::MEM_JOIN;
             }
         }
         false
@@ -634,7 +822,7 @@ pub fn find_deterministic_create_event<
     let mut create_events: Vec<&LeanEvent<Id>> = auth_context
         .values()
         .chain(sort_set.values())
-        .filter(|ev| ev.event_type == "m.room.create")
+        .filter(|ev| ev.event_type == M_ROOM_CREATE)
         .collect();
     create_events.sort_by(|a, b| a.event_id.cmp(&b.event_id));
     create_events.first().copied()
