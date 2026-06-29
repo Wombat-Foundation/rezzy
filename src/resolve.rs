@@ -85,6 +85,7 @@ pub(crate) fn build_sort_context<
 /// and applies to all versions that use V2-derived resolution: V2, V2.1, V2.1.1, and V2.2.
 ///
 /// [v2-spec]: https://spec.matrix.org/v1.13/rooms/v2/#state-resolution
+/// Expands the auth chains for a set of V2 power events, building an auth context.
 pub fn expand_v2_power_events_auth_chains<
     Id: Clone + Eq + core::hash::Hash,
     S1: core::hash::BuildHasher,
@@ -350,6 +351,8 @@ where
     )
 }
 
+/// Like [`resolve_lean`], but allows passing an external local auth cache to amortize
+/// allocation costs across multiple invocations.
 #[must_use]
 pub fn resolve_lean_with_cache<Id, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>(
     unconflicted_state: BTreeMap<(String, Option<String>), Id>,
@@ -376,6 +379,7 @@ where
 
     let mut fallback_cache = HashMap::new();
     let local_auth_cache = external_auth_cache.unwrap_or(&mut fallback_cache);
+    local_auth_cache.clear();
 
     run_power_phase_iterative_checks(
         &mut resolved,
@@ -462,6 +466,8 @@ where
     )
 }
 
+/// Internal helper combining the functionality of [`resolve_lean_with_deltas`] and
+/// [`resolve_lean_with_cache`].
 #[must_use]
 #[allow(clippy::type_complexity, clippy::too_many_lines)]
 pub fn resolve_lean_with_cache_and_deltas<
@@ -500,6 +506,7 @@ where
 
     let mut fallback_cache = HashMap::new();
     let local_auth_cache = external_auth_cache.unwrap_or(&mut fallback_cache);
+    local_auth_cache.clear();
 
     let sort_set = &conflicted_events;
 

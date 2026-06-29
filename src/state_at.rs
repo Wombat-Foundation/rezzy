@@ -21,12 +21,11 @@
 //!
 //! Key optimizations:
 //!
-//! - **`Arc`-based structural sharing**: parent states are shared via
-//!   `Arc<BTreeMap>` and cloned only when modified (copy-on-write).
-//! - **Pointer-equality fast path**: when all parents share the same `Arc`,
-//!   no merge is needed.
+//! - **$O(1)$ structural sharing**: persistent state is represented via
+//!   [`imbl::OrdMap`] (`SharedState`). Fork branches are created and merged
+//!   incrementally with zero allocations for identical shared subtrees.
 //! - **Batch mode** ([`compute_state_at_batch`]): computes state at multiple
-//!   targets in a single topological pass, amortizing the cost of shared ancestors.
+//!   targets in a single topological pass, amortizing the graph traversal cost.
 
 use crate::types::{LeanEvent, StateResVersion};
 use crate::HashMap;
@@ -336,15 +335,18 @@ where
     Q: ?Sized + Eq + Ord + core::hash::Hash,
     S: core::hash::BuildHasher,
 {
-    let actual_target_id = events_map.get_key_value(target_event_id).map(|(k, _)| k)?;
+    let actual_target_id = events_map
+        .get_key_value(target_event_id)
+        .map(|(k, _)| k.clone())?;
 
     let mut result = None;
-    compute_state_at_streaming_internal(
-        core::slice::from_ref(actual_target_id),
+    let _ = compute_state_at_streaming_internal(
+        core::slice::from_ref(&actual_target_id),
         events_map,
         version,
-        |_, state| {
+        |_, state| -> Result<(), core::convert::Infallible> {
             result = Some(state.into_iter().collect());
+            Ok(())
         },
     );
     result
@@ -400,9 +402,15 @@ where
 
     let mut results = HashMap::with_capacity(actual_target_ids.len());
 
-    compute_state_at_streaming_internal(&actual_target_ids, events_map, version, |id, state| {
-        results.insert(id, state.into_iter().collect());
-    });
+    let _ = compute_state_at_streaming_internal(
+        &actual_target_ids,
+        events_map,
+        version,
+        |id, state| -> Result<(), core::convert::Infallible> {
+            results.insert(id, state.into_iter().collect());
+            Ok(())
+        },
+    );
 
     results
 }
@@ -414,7 +422,8 @@ where
 /// large-scale state reconstruction (e.g. homeserver full state rebuilds).
 /// By passing ownership of the computed state to the callback, callers can
 /// immediately compress and store the state (e.g. into `RocksDB`), keeping the
-/// peak memory usage bounded strictly to the width of the DAG.
+/// peak memory for materialized state maps bounded to the live frontier/DAG
+/// width, while still retaining O(reachable ancestors) indexing metadata.
 ///
 /// Target IDs not found in `events_map` are silently skipped.
 ///
@@ -426,7 +435,7 @@ pub fn compute_state_at_streaming<Id, Q, S, F>(
     target_event_ids: &[&Q],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
     version: StateResVersion,
-    on_target_resolved: F,
+    mut on_target_resolved: F,
 ) where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
@@ -447,23 +456,65 @@ pub fn compute_state_at_streaming<Id, Q, S, F>(
         return;
     }
 
-    compute_state_at_streaming_internal(
+    let _ = compute_state_at_streaming_internal(
         &actual_target_ids,
         events_map,
         version,
-        on_target_resolved,
+        |id, state| -> Result<(), core::convert::Infallible> {
+            on_target_resolved(id, state);
+            Ok(())
+        },
     );
 }
 
-fn compute_state_at_streaming_internal<Id, S, F>(
+/// A fallible variant of [`compute_state_at_streaming`].
+///
+/// Functions identically to `compute_state_at_streaming`, but threads a `Result` through
+/// the callback so that callers can abort early (e.g. on I/O errors during storage).
+///
+/// # Errors
+/// Returns the first error emitted by the `on_target_resolved` callback.
+pub fn try_compute_state_at_streaming<Id, Q, S, F, E>(
+    target_event_ids: &[&Q],
+    events_map: &HashMap<Id, LeanEvent<Id>, S>,
+    version: StateResVersion,
+    on_target_resolved: F,
+) -> Result<(), E>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
+    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    S: core::hash::BuildHasher,
+    F: FnMut(Id, SharedState<Id>) -> Result<(), E>,
+{
+    let mut actual_target_ids = Vec::new();
+    let mut seen = alloc::collections::BTreeSet::new();
+    for &tid in target_event_ids {
+        if let Some((k, _)) = events_map.get_key_value(tid) {
+            if seen.insert(k) {
+                actual_target_ids.push(k.clone());
+            }
+        }
+    }
+
+    if actual_target_ids.is_empty() {
+        return Ok(());
+    }
+
+    compute_state_at_streaming_internal(&actual_target_ids, events_map, version, on_target_resolved)
+}
+
+/// Internal helper that orchestrates the streaming topological sort and graph traversal
+/// for `compute_state_at_streaming`.
+fn compute_state_at_streaming_internal<Id, S, F, E>(
     actual_target_ids: &[Id],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
-) where
+) -> Result<(), E>
+where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
-    F: FnMut(Id, SharedState<Id>),
+    F: FnMut(Id, SharedState<Id>) -> Result<(), E>,
 {
     let target_refs: Vec<&Id> = actual_target_ids.iter().collect();
     let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&target_refs, events_map);
@@ -483,9 +534,9 @@ fn compute_state_at_streaming_internal<Id, S, F>(
         version,
         |idx, shared_state| {
             let id = index_to_id[idx].clone();
-            on_target_resolved(id, shared_state);
+            on_target_resolved(id, shared_state)
         },
-    );
+    )
 }
 
 /// Shared method for `compute_state_at` and `compute_state_at_batch`.
@@ -497,17 +548,22 @@ fn compute_state_at_streaming_internal<Id, S, F>(
 /// this pipeline and threading `&mut global_auth_cache` through
 /// `resolve_merge_fast_path` → `resolve_multiple_prev_states` → `resolve_lean`
 /// would amortize auth chain traversal cost across all forks in the batch.
-fn run_state_pipeline_streaming<'a, Id, S, F>(
+/// Core topological graph traversal loop for batch state reconstruction.
+///
+/// Topologically sorts all reachable ancestors, incrementally merges state at forks,
+/// and yields the target states as they are completed.
+fn run_state_pipeline_streaming<'a, Id, S, F, E>(
     index_to_id: &[&'a Id],
     id_to_index: &HashMap<&'a Id, usize>,
     is_target: &[bool],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
     version: StateResVersion,
     mut on_target: F,
-) where
+) -> Result<(), E>
+where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
-    F: FnMut(usize, SharedState<Id>),
+    F: FnMut(usize, SharedState<Id>) -> Result<(), E>,
 {
     let (sorted_ancestors, mut out_degree) =
         topological_sort_short_ids(index_to_id, id_to_index, events_map);
@@ -554,13 +610,15 @@ fn run_state_pipeline_streaming<'a, Id, S, F>(
         }
 
         if is_target[idx] {
-            on_target(idx, state_before.clone());
+            on_target(idx, state_before.clone())?;
         }
 
         if out_degree[idx] > 0 {
             state_after_map[idx] = Some(state_before);
         }
     }
+
+    Ok(())
 }
 
 /// Computes the most recent common ancestor (merge base) of multiple DAG tips.
@@ -596,6 +654,7 @@ fn run_state_pipeline_streaming<'a, Id, S, F>(
 /// let merge_base = compute_merge_base(&tips, &events);
 /// ```
 #[must_use]
+/// Computes the merge base (common ancestors) of a set of target events in the DAG.
 pub fn compute_merge_base<'a, Id, Q, S, Node>(
     extremities: &[&Q],
     events_map: &'a HashMap<Id, Node, S>,
@@ -708,6 +767,7 @@ where
     (id_to_index, index_to_id)
 }
 
+/// Performs a topological sort of the graph represented by short `usize` indexes.
 fn topological_sort_short_ids<Id, S>(
     index_to_id: &[&Id],
     id_to_index: &HashMap<&Id, usize>,
@@ -755,6 +815,7 @@ where
     (sorted_ancestors, out_degree)
 }
 
+/// Fast path for merging multiple states when they all share the identical underlying pointer.
 fn resolve_merge_fast_path<Id, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
@@ -777,6 +838,7 @@ where
     }
 }
 
+/// Slow path for merging multiple parent states via the state resolution algorithm.
 fn resolve_multiple_prev_states<Id, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
