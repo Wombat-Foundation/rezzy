@@ -13,8 +13,6 @@ env:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,8 +36,18 @@ jobs:
       - name: Install cargo-tarpaulin
         uses: taiki-e/install-action@cargo-tarpaulin
 
-      - name: Test Suite & Coverage
-        run: set -o pipefail; make rust/coverage 2>&1 | tee test-results.txt
+      - name: Test Suite
+        run: set -o pipefail; make rust/test 2>&1 | tee test-results.txt
+
+      - name: Code Coverage
+        run: make rust/coverage
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results.txt
 
       - name: Test Summary
         if: always()
@@ -54,8 +62,28 @@ jobs:
           echo "| [x] Failed | ${FAILED:-0} |" >> $GITHUB_STEP_SUMMARY
           echo "| [~] Skipped | ${IGNORED:-0} |" >> $GITHUB_STEP_SUMMARY
 
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ../.tmp/coverage-lean/cobertura.xml
+          fail_ci_if_error: false
+
+  publish-badge:
+    needs: checks
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Test Results
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results
+
       - name: Generate and Publish Badge
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
         run: |
           PASSED=$(grep -oE '[0-9]+ passed' test-results.txt | awk '{s+=$1} END {print s}')
           FAILED=$(grep -oE '[0-9]+ failed' test-results.txt | awk '{s+=$1} END {print s}')
@@ -70,10 +98,3 @@ jobs:
           git add tests.svg
           git commit -m "Update test badge"
           git push origin HEAD:badges --force
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: ../.tmp/coverage-lean/cobertura.xml
-          fail_ci_if_error: false
