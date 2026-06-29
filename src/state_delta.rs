@@ -628,7 +628,8 @@ pub fn reconstruct_state_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    type ResolvedStates = Vec<(String, BTreeMap<(String, Option<String>), String>)>;
+    type StateMap = BTreeMap<(String, Option<String>), String>;
+    type ResolvedStates = Vec<(String, StateMap)>;
 
     #[test]
     fn test_roundtrip_identity() {
@@ -1039,15 +1040,10 @@ mod tests {
         }
     }
 
-    /// Regression: `hash_to_idx` used to map duplicate hashes to the *last*
-    /// occurrence, which could cause `reconstruct_state_at` to jump *forward*
-    /// instead of backward, corrupting or hanging reconstruction.
-    #[test]
-    fn test_no_forward_jump_on_duplicate_hashes() {
-        // Craft a chain where checkpoints 0 and 2 share the same state hash
-        // but checkpoint 1 has a different hash. Without the guard,
-        // reconstructing checkpoint 2 would jump to checkpoint 2 (self-loop)
-        // or a later index instead of walking backward.
+    /// Builds the shared forward-jump regression fixture: 3 checkpoints where
+    /// indices 0 and 2 share the same state hash, with index 1 having a
+    /// different hash. Returns `(checkpoints, state_a, state_b)`.
+    fn forward_jump_fixture() -> (alloc::vec::Vec<CompactedCheckpoint>, StateMap, StateMap) {
         let shared_hash: String = "HASH_A".into();
         let different_hash: String = "HASH_B".into();
 
@@ -1094,6 +1090,16 @@ mod tests {
             },
         ];
 
+        (checkpoints, state_a, state_b)
+    }
+
+    /// Regression: `hash_to_idx` used to map duplicate hashes to the *last*
+    /// occurrence, which could cause `reconstruct_state_at` to jump *forward*
+    /// instead of backward, corrupting or hanging reconstruction.
+    #[test]
+    fn test_no_forward_jump_on_duplicate_hashes() {
+        let (checkpoints, state_a, state_b) = forward_jump_fixture();
+
         // Without the forward-jump guard, hash_to_idx["HASH_A"] = 2 (last),
         // and checkpoint 1's parent lookup would jump to 2 (forward!) instead of 0.
         let result_0 = reconstruct_state_at(&checkpoints, 0).expect("cp 0");
@@ -1109,51 +1115,7 @@ mod tests {
     /// Same forward-jump regression but for the batch reconstruction path.
     #[test]
     fn test_no_forward_jump_batch_reconstruction() {
-        let shared_hash: String = "HASH_A".into();
-        let different_hash: String = "HASH_B".into();
-
-        let state_a = {
-            let mut s = BTreeMap::new();
-            s.insert(("m.room.create".into(), Some(String::new())), "$c".into());
-            s
-        };
-        let state_b = {
-            let mut s = state_a.clone();
-            s.insert(("m.room.topic".into(), Some(String::new())), "$t".into());
-            s
-        };
-
-        let checkpoints = alloc::vec![
-            CompactedCheckpoint {
-                state_hash: shared_hash.clone(),
-                parent_hash: None,
-                event_id: "$0".into(),
-                deltas: alloc::vec![],
-                snapshot: Some(state_a.clone()),
-            },
-            CompactedCheckpoint {
-                state_hash: different_hash.clone(),
-                parent_hash: Some(shared_hash.clone()),
-                event_id: "$1".into(),
-                deltas: alloc::vec![StateDelta {
-                    event_type: "m.room.topic".into(),
-                    state_key: Some(String::new()),
-                    event_id: Some("$t".into()),
-                }],
-                snapshot: None,
-            },
-            CompactedCheckpoint {
-                state_hash: shared_hash.clone(),
-                parent_hash: Some(different_hash),
-                event_id: "$2".into(),
-                deltas: alloc::vec![StateDelta {
-                    event_type: "m.room.topic".into(),
-                    state_key: Some(String::new()),
-                    event_id: None,
-                }],
-                snapshot: None,
-            },
-        ];
+        let (checkpoints, state_a, state_b) = forward_jump_fixture();
 
         let results = reconstruct_state_batch(&checkpoints, &[0, 1, 2]);
         assert_eq!(results.len(), 3);

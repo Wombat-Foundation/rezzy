@@ -434,47 +434,14 @@ fn test_unredacted_spam_storm_v2_1_1() {
 
     let cache_path = format!("{path}.rmp");
 
-    let events: Vec<LeanEvent> = if let Ok(bytes) = std::fs::read(&cache_path) {
-        match rmp_serde::from_slice(&bytes) {
-            Ok(cached) => {
-                println!("Loaded from MessagePack cache");
-                cached
-            }
-            Err(e) => {
-                println!("Cache decode failed ({e}), rebuilding from JSONL");
-                let file = match std::fs::File::open(path) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        println!("Skipping test: could not open {path}: {e}");
-                        return;
-                    }
-                };
-                let reader = std::io::BufReader::new(file);
-                let mut parsed_events = Vec::new();
-                for line in reader.lines() {
-                    let line = line.unwrap();
-                    if !line.trim().is_empty() {
-                        let ev = parse_jsonl_line(&line);
-                        if ev.state_key.is_some() {
-                            parsed_events.push(ev);
-                        }
-                    }
-                }
-                if let Ok(bytes) = rmp_serde::to_vec_named(&parsed_events) {
-                    let _ = std::fs::write(&cache_path, bytes);
-                }
-                parsed_events
-            }
-        }
-    } else {
+    let load_from_jsonl = || -> Option<Vec<LeanEvent>> {
         let file = match std::fs::File::open(path) {
             Ok(f) => f,
             Err(e) => {
                 println!("Skipping test: could not open {path}: {e}");
-                return;
+                return None;
             }
         };
-
         let reader = std::io::BufReader::new(file);
         let mut parsed_events = Vec::new();
         for line in reader.lines() {
@@ -486,12 +453,31 @@ fn test_unredacted_spam_storm_v2_1_1() {
                 }
             }
         }
-
         if let Ok(bytes) = rmp_serde::to_vec_named(&parsed_events) {
             let _ = std::fs::write(&cache_path, bytes);
         }
+        Some(parsed_events)
+    };
 
-        parsed_events
+    let events: Vec<LeanEvent> = if let Ok(bytes) = std::fs::read(&cache_path) {
+        match rmp_serde::from_slice(&bytes) {
+            Ok(cached) => {
+                println!("Loaded from MessagePack cache");
+                cached
+            }
+            Err(e) => {
+                println!("Cache decode failed ({e}), rebuilding from JSONL");
+                match load_from_jsonl() {
+                    Some(ev) => ev,
+                    None => return,
+                }
+            }
+        }
+    } else {
+        match load_from_jsonl() {
+            Some(ev) => ev,
+            None => return,
+        }
     };
 
     assert!(
