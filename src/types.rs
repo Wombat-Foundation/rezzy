@@ -197,6 +197,16 @@ impl<Id, C> DagNode<Id> for LeanEvent<Id, C> {
 ///   integers, clamped to [`MAX_POWER_LEVEL`].
 /// - `typed_content`: Populated from `content` for auth-relevant events.
 /// - All other fields default to empty/zero if absent.
+///
+/// # Note on Room ID
+///
+/// `LeanEvent` omits `room_id`. `ruma-lean` is a specialized algorithmic engine
+/// that expects the host homeserver (e.g., Synapse, Conduit) to perform initial
+/// database-level filtering. The host is responsible for verifying cryptographic
+/// signatures and filtering events by `room_id` *before* passing them to `resolve_lean`.
+///
+/// TODO: Consider adding optional `room_id` validation or a dedicated `ForeignEvent`
+/// error check, in case rogue "foreign room" events leak into the `auth_context`.
 #[derive(Debug, Clone, Default)]
 pub struct LeanEvent<Id = String, C = Value> {
     /// Unique event identifier (e.g. `$abc123:example.com`).
