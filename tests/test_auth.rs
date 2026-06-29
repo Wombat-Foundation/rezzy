@@ -325,6 +325,32 @@ fn test_auth_error_display_variants() {
     let msg2 = format!("{err2}");
     assert!(msg2.contains("@alice"));
     assert!(msg2.contains("@bob"));
+
+    let err3: AuthError<String> = AuthError::NotMember {
+        sender: "@charlie:x.com".into(),
+        event_id: "$event123".into(),
+    };
+    let msg3 = format!("{err3}");
+    assert!(msg3.contains("@charlie"));
+
+    let err4: AuthError<String> = AuthError::BannedUser {
+        sender: "@dave:x.com".into(),
+        event_id: "$event456".into(),
+    };
+    let msg4 = format!("{err4}");
+    assert!(msg4.contains("@dave"));
+
+    let err5: AuthError<String> = AuthError::MissingAuthEvent("$event123".into());
+    let msg5 = format!("{err5}");
+    assert!(msg5.contains("$event123"));
+
+    let err6: AuthError<String> = AuthError::CreateWithPrevEvents;
+    let msg6 = format!("{err6}");
+    assert!(msg6.contains("m.room.create"));
+
+    let err7: AuthError<String> = AuthError::InvalidSyntax("bad json".into());
+    let msg7 = format!("{err7}");
+    assert!(msg7.contains("bad json"));
 }
 
 #[test]
