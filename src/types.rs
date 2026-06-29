@@ -21,7 +21,7 @@
 //! - [`SortPriority`] — a `BinaryHeap` wrapper encoding the V1/V2 sort semantics.
 //! - [`KahnSortResult`] — the result of topological sorting, with cycle diagnostics.
 
-use crate::event_types::*;
+use crate::event_types::M_ROOM_CREATE;
 use crate::HashMap;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -230,8 +230,6 @@ pub struct LeanEvent<Id = String> {
     pub auth_events: Vec<Id>,
     /// DAG depth (distance from the root). Required for V1 sort ordering.
     pub depth: u64,
-    /// Fast typed access to auth-relevant content fields.
-    pub typed_content: Option<TypedContent>,
 }
 
 impl<Id: serde::Serialize> serde::Serialize for LeanEvent<Id> {
@@ -280,152 +278,79 @@ impl<Id> LeanEvent<Id> {
     // --- Typed Content Accessors ---
 
     pub fn get_membership(&self) -> Option<&str> {
-        if let Some(ref tc) = self.typed_content {
-            return tc.membership.as_deref();
-        }
         self.content
             .get(crate::event_types::FIELD_MEMBERSHIP)?
             .as_str()
     }
 
     pub fn get_join_rule(&self) -> Option<&str> {
-        if let Some(ref tc) = self.typed_content {
-            return tc.join_rule.as_deref();
-        }
         self.content
             .get(crate::event_types::FIELD_JOIN_RULE)?
             .as_str()
     }
 
     pub fn get_user_power_level(&self, user: &str) -> Option<i64> {
-        if let Some(ref tc) = self.typed_content {
-            if let Some(ref users) = tc.users {
-                return users.get(user).copied();
-            }
-        }
-        // Fallback for JSON
-        if let Some(users) = self
+        let users = self
             .content
-            .get(crate::event_types::FIELD_USERS)
-            .and_then(|u| u.as_object())
-        {
-            if let Some(pl) = users.get(user) {
-                return coerce_json_to_i64(pl);
-            }
-        }
-        None
+            .get(crate::event_types::FIELD_USERS)?
+            .as_object()?;
+        coerce_json_to_i64(users.get(user)?)
     }
 
     pub fn get_event_power_level(&self, event_type: &str) -> Option<i64> {
-        if let Some(ref tc) = self.typed_content {
-            if let Some(ref events) = tc.events {
-                return events.get(event_type).copied();
-            }
-        }
-        // Fallback for JSON
-        if let Some(events) = self
+        let events = self
             .content
-            .get(crate::event_types::FIELD_EVENTS)
-            .and_then(|e| e.as_object())
-        {
-            if let Some(pl) = events.get(event_type) {
-                return coerce_json_to_i64(pl);
-            }
-        }
-        None
+            .get(crate::event_types::FIELD_EVENTS)?
+            .as_object()?;
+        coerce_json_to_i64(events.get(event_type)?)
     }
 
     pub fn get_users_default(&self) -> Option<i64> {
-        if let Some(ref tc) = self.typed_content {
-            if tc.users_default.is_some() {
-                return tc.users_default;
-            }
-        }
         coerce_json_to_i64(self.content.get(crate::event_types::FIELD_USERS_DEFAULT)?)
     }
 
     pub fn get_events_default(&self) -> Option<i64> {
-        if let Some(ref tc) = self.typed_content {
-            if tc.events_default.is_some() {
-                return tc.events_default;
-            }
-        }
         coerce_json_to_i64(self.content.get(crate::event_types::FIELD_EVENTS_DEFAULT)?)
     }
 
     pub fn get_state_default(&self) -> Option<i64> {
-        if let Some(ref tc) = self.typed_content {
-            if tc.state_default.is_some() {
-                return tc.state_default;
-            }
-        }
         coerce_json_to_i64(self.content.get(crate::event_types::FIELD_STATE_DEFAULT)?)
     }
 
     pub fn get_ban(&self) -> Option<i64> {
-        if let Some(ref tc) = self.typed_content {
-            if tc.ban.is_some() {
-                return tc.ban;
-            }
-        }
         coerce_json_to_i64(self.content.get(crate::event_types::FIELD_BAN)?)
     }
 
     pub fn get_kick(&self) -> Option<i64> {
-        if let Some(ref tc) = self.typed_content {
-            if tc.kick.is_some() {
-                return tc.kick;
-            }
-        }
         coerce_json_to_i64(self.content.get(crate::event_types::FIELD_KICK)?)
     }
 
     pub fn get_invite(&self) -> Option<i64> {
-        if let Some(ref tc) = self.typed_content {
-            if tc.invite.is_some() {
-                return tc.invite;
-            }
-        }
         coerce_json_to_i64(self.content.get(crate::event_types::FIELD_INVITE)?)
     }
 
     pub fn get_redact(&self) -> Option<i64> {
-        if let Some(ref tc) = self.typed_content {
-            if tc.redact.is_some() {
-                return tc.redact;
-            }
-        }
         coerce_json_to_i64(self.content.get(crate::event_types::FIELD_REDACT)?)
     }
 
     pub fn get_creator(&self) -> Option<&str> {
-        if let Some(ref tc) = self.typed_content {
-            return tc.creator.as_deref();
-        }
         self.content
             .get(crate::event_types::FIELD_CREATOR)?
             .as_str()
     }
 
-    pub fn get_room_creators(&self) -> Option<&Vec<String>> {
-        if let Some(ref tc) = self.typed_content {
-            return tc.room_creators.as_ref();
-        }
-        None
+    pub fn has_room_creator(&self, sender: &str) -> bool {
+        self.content
+            .get(crate::event_types::FIELD_ROOM_CREATORS)
+            .and_then(|v| v.as_array())
+            .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(sender)))
     }
 
-    pub fn get_additional_creators(&self) -> Option<&Vec<String>> {
-        if let Some(ref tc) = self.typed_content {
-            return tc.additional_creators.as_ref();
-        }
-        None
-    }
-
-    pub fn get_third_party_invite(&self) -> Option<&ThirdPartyInvite> {
-        if let Some(ref tc) = self.typed_content {
-            return tc.third_party_invite.as_ref();
-        }
-        None
+    pub fn has_additional_creator(&self, sender: &str) -> bool {
+        self.content
+            .get(crate::event_types::FIELD_ADDITIONAL_CREATORS)
+            .and_then(|v| v.as_array())
+            .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(sender)))
     }
 }
 
@@ -562,7 +487,6 @@ impl<'de> Deserialize<'de> for LeanEvent<String> {
             prev_events,
             auth_events,
             depth,
-            typed_content: None,
         })
     }
 }

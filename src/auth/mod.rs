@@ -24,7 +24,11 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::event_types::*;
+use crate::event_types::{
+    FIELD_MEMBERSHIP, FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE,
+    MEM_JOIN, MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
+    M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_PUBLIC,
+};
 use crate::types::LeanEvent;
 use crate::types::StateResVersion;
 
@@ -600,10 +604,10 @@ pub fn auth_types_for_event(
         version,
         StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
     ) {
-        auth_types.push((M_ROOM_CREATE.into(), "".into()));
+        auth_types.push((M_ROOM_CREATE.into(), String::new()));
     }
     auth_types.push((M_ROOM_MEMBER.into(), sender.into()));
-    auth_types.push((M_ROOM_POWER_LEVELS.into(), "".into()));
+    auth_types.push((M_ROOM_POWER_LEVELS.into(), String::new()));
 
     if event_type == M_ROOM_MEMBER {
         if let Some(sk) = state_key {
@@ -615,7 +619,7 @@ pub fn auth_types_for_event(
         let membership = content.get(FIELD_MEMBERSHIP).and_then(|v| v.as_str());
 
         if membership == Some(MEM_JOIN) || membership == Some(MEM_INVITE) {
-            auth_types.push((M_ROOM_JOIN_RULES.into(), "".into()));
+            auth_types.push((M_ROOM_JOIN_RULES.into(), String::new()));
         }
 
         if let Some(tpi) = content
