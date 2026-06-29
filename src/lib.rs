@@ -57,11 +57,11 @@
 //!
 //! ## Spec References
 //!
-//! - [Matrix Spec — Server-Server API §3: State Resolution](https://spec.matrix.org/v1.13/server-server-api/#room-state-resolution)
+//! - [Matrix Spec — Server-Server API §3: State Resolution (V1)](https://spec.matrix.org/v1.13/server-server-api/#room-state-resolution)
 //! - [Matrix Spec — Room Versions](https://spec.matrix.org/v1.13/rooms/)
 //! - [MSC1693 — State Resolution V2][MSC1693]
 //! - [MSC4297 — State Resolution V2.1][MSC4297]
-//! - [MSC4242 — State DAGs][MSC4242]
+//! - [MSC4242 — State DAGs (V2.2)][MSC4242]
 //!
 //! [MSC1693]: https://github.com/matrix-org/matrix-spec-proposals/pull/1693
 //! [MSC4297]: https://github.com/matrix-org/matrix-spec-proposals/pull/4297

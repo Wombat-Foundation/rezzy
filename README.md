@@ -4,7 +4,7 @@
 [![Docs](https://img.shields.io/github/actions/workflow/status/gamesguru/rezzy/docs.yml?branch=master&label=docs)](https://gamesguru.github.io/rezzy/)
 [![crates.io](https://img.shields.io/crates/v/rezzy.svg)](https://crates.io/crates/rezzy)
 
-Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolution — both a research model and highly-efficient reference implementation for Matrix state resolution `v2`, `v2.1`, and `v2.1.1`, designed for correctness and compliance (soon to support `v2.2` or State DAGs, too).
+Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolution — both a research model and highly-efficient reference implementation for Matrix state resolution `v1`, `v2`, `v2.1`, and `v2.1.1` (with experimental `v2.2`), designed for correctness and compliance.
 
 ## Features
 
