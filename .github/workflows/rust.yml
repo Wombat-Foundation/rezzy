@@ -13,6 +13,8 @@ env:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,8 +38,8 @@ jobs:
       - name: Install cargo-tarpaulin
         uses: taiki-e/install-action@cargo-tarpaulin
 
-      - name: Test Suite
-        run: set -o pipefail; make rust/test 2>&1 | tee test-results.txt
+      - name: Test Suite & Coverage
+        run: set -o pipefail; make rust/coverage 2>&1 | tee test-results.txt
 
       - name: Test Summary
         if: always()
@@ -69,8 +71,7 @@ jobs:
           git commit -m "Update test badge"
           git push origin HEAD:badges --force
 
-      - name: Coverage
-        run: make rust/coverage
+
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
