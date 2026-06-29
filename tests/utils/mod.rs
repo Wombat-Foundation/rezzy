@@ -10,15 +10,21 @@ pub fn build_unconflicted_state_test_helper(
     let mut unconflicted = imbl::OrdMap::new();
 
     // Find the create event in the auth_context
-    if let Some(create_ev) = auth_context
+    let mut create_events = auth_context
         .values()
-        .find(|ev| ev.event_type == rezzy::event_types::M_ROOM_CREATE)
-    {
-        unconflicted.insert(
-            (create_ev.event_type.clone(), create_ev.state_key.clone()),
-            create_ev.event_id.clone(),
-        );
-    }
+        .filter(|ev| ev.event_type == rezzy::event_types::M_ROOM_CREATE);
+    let create_ev = create_events
+        .next()
+        .expect("fixture auth_context must contain exactly one m.room.create event");
+    assert!(
+        create_events.next().is_none(),
+        "fixture auth_context must contain exactly one m.room.create event",
+    );
+
+    unconflicted.insert(
+        (create_ev.event_type.clone(), create_ev.state_key.clone()),
+        create_ev.event_id.clone(),
+    );
 
     unconflicted
 }
