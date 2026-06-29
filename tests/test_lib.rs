@@ -35,6 +35,13 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "fixture auth_context must contain exactly one m.room.create event")]
+    fn test_missing_create_event_panics() {
+        let auth_context = std::collections::HashMap::new();
+        utils::build_unconflicted_state_test_helper(&auth_context);
+    }
+
+    #[test]
     fn test_is_ban_or_kick_self_leave_and_kick() {
         use serde_json::json;
 

@@ -28,3 +28,52 @@ pub fn build_unconflicted_state_test_helper(
 
     unconflicted
 }
+
+/// A debug utility for asset testing: computes and prints the Matrix V2+ canonical
+/// hash (event ID) for a raw JSON event string so you can decipher erroneous fixtures.
+#[cfg(feature = "hashing")]
+#[allow(dead_code)]
+pub fn print_canonical_hash(json_str: &str) {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use sha2::{Digest, Sha256};
+
+    fn sort_keys(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut sorted = std::collections::BTreeMap::new();
+                for (k, mut v) in core::mem::take(map) {
+                    sort_keys(&mut v);
+                    sorted.insert(k, v);
+                }
+                for (k, v) in sorted {
+                    map.insert(k, v);
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for v in arr {
+                    sort_keys(v);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut value: serde_json::Value = serde_json::from_str(json_str).expect("Invalid JSON");
+    if let Some(obj) = value.as_object_mut() {
+        obj.remove("unsigned");
+        obj.remove("signatures");
+    }
+
+    sort_keys(&mut value);
+    let canonical = serde_json::to_string(&value).unwrap();
+
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.as_bytes());
+    let hash = hasher.finalize();
+
+    std::println!("=== CANONICAL HASH DEBUG ===");
+    std::println!("Canonical JSON: {canonical}");
+    let encoded_hash = URL_SAFE_NO_PAD.encode(hash);
+    std::println!("Computed Event ID: ${encoded_hash}");
+    std::println!("============================");
+}
