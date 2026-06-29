@@ -51,6 +51,7 @@ cli = ["std", "dep:clap", "dep:anyhow", "dep:ureq"]
 regen = ["std"]
 hashing = ["dep:sha2", "dep:base64"]
 mock-ruma = []
+mimalloc = ["dep:mimalloc"]
 
 [dependencies]
 anyhow = { version = "1.0", optional = true }
@@ -60,6 +61,7 @@ clap = { version = "4.4", optional = true, features = ["derive", "env"] }
 
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
 imbl = { version = "4", default-features = false }
+mimalloc = { version = "0.1.52", optional = true }
 roaring = "0.11.4"
 
 serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }

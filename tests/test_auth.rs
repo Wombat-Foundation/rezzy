@@ -97,8 +97,11 @@ fn test_invite_banned_user_rejected() {
         json!({"membership": "invite"}),
     );
     assert!(
-        check_auth(&invite_banned, &state, rezzy::types::StateResVersion::V2_1).is_err(),
-        "Inviting a banned user must fail"
+        matches!(
+            check_auth(&invite_banned, &state, rezzy::types::StateResVersion::V2_1),
+            Err(AuthError::BannedUser { .. })
+        ),
+        "Inviting a banned user must fail with BannedUser error"
     );
 }
 
@@ -170,8 +173,11 @@ fn test_self_invite_rejected() {
         json!({"membership": "invite"}),
     );
     assert!(
-        check_auth(&self_invite, &state, rezzy::types::StateResVersion::V2_1).is_err(),
-        "Self-invites must be rejected"
+        matches!(
+            check_auth(&self_invite, &state, rezzy::types::StateResVersion::V2_1),
+            Err(AuthError::InvalidStateKey { .. })
+        ),
+        "Self-invites must be rejected with InvalidStateKey error"
     );
 }
 
@@ -318,6 +324,7 @@ fn test_auth_error_display_variants() {
     };
     let msg2 = format!("{err2}");
     assert!(msg2.contains("@alice"));
+    assert!(msg2.contains("@bob"));
 }
 
 #[test]

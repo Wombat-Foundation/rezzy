@@ -3427,6 +3427,9 @@ fn test_lean_event_serialize_roundtrip() {
     assert_eq!(ev.sender, back.sender);
     assert_eq!(ev.origin_server_ts, back.origin_server_ts);
     assert_eq!(ev.depth, back.depth);
+    assert_eq!(ev.content, back.content);
+    assert_eq!(ev.prev_events, back.prev_events);
+    assert_eq!(ev.auth_events, back.auth_events);
 }
 
 #[test]
@@ -3460,6 +3463,23 @@ fn test_event_content_blanket_impl_all_methods() {
     assert_eq!(content.get_user_power_level("@alice:x.com"), Some(100));
     assert!(content.has_additional_creator("@ac:x.com"));
     assert!(!content.has_additional_creator("@nobody:x.com"));
+}
+
+#[test]
+fn test_additional_creators_version_gating() {
+    use rezzy::types::EventContent;
+    let content = serde_json::json!({
+        "additional_creators": ["@ac:x.com"]
+    });
+    // The TestContent wrapper correctly parses it regardless of version
+    assert_eq!(
+        content.has_additional_creator("@ac:x.com"),
+        true,
+        "The TestContent wrapper correctly parses it"
+    );
+    // Note: The actual version-gating (V2 vs V2.1+) is enforced in `src/auth/mod.rs` 
+    // `get_sender_power_level` where `has_additional_creator` is only evaluated
+    // if the version matches V2_1 | V2_1_1 | V2_2.
 }
 
 /// Hypothetical comparison: proves `resolve_lean` produces different resolved
