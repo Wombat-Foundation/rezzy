@@ -254,7 +254,12 @@ fn test_public_room_join_allowed() {
         json!({"membership": "join"}),
     );
     assert!(
-        check_auth(&join, &state, rezzy::basespec::rezzy_types::StateResVersion::V2_1).is_ok(),
+        check_auth(
+            &join,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+        )
+        .is_ok(),
         "Public room join must succeed"
     );
 }
@@ -306,7 +311,12 @@ fn test_member_pl_hierarchy_enforcement() {
         json!({"membership": "leave"}),
     );
     assert!(
-        check_auth(&kick, &state, rezzy::basespec::rezzy_types::StateResVersion::V2_1).is_err(),
+        check_auth(
+            &kick,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+        )
+        .is_err(),
         "Equal PL kick must fail"
     );
 }
@@ -433,7 +443,12 @@ fn test_joined_member_can_send() {
             json!({"membership": "join"}),
         ),
     );
-    assert!(check_auth(&msg, &state, rezzy::basespec::rezzy_types::StateResVersion::V2_1).is_ok());
+    assert!(check_auth(
+        &msg,
+        &state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1
+    )
+    .is_ok());
 }
 
 #[test]
@@ -955,7 +970,11 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
     );
 
     // Should fail: kick requires kick_pl (60), mod only has 50
-    let result = check_auth(&kick, &state, rezzy::basespec::rezzy_types::StateResVersion::V2_1);
+    let result = check_auth(
+        &kick,
+        &state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
     assert!(
         matches!(
             result,

@@ -29,8 +29,12 @@ pub fn build_unconflicted_state_test_helper(
     unconflicted
 }
 
-/// A debug utility for asset testing: computes and prints the Matrix V2+ canonical
-/// hash (event ID) for a raw JSON event string so you can decipher erroneous fixtures.
+/// A debug utility: computes a SHA-256 content hash of a raw JSON event string
+/// after stripping `event_id`, `unsigned`, and `signatures`. This is an
+/// approximation of the Matrix V3+ reference hash — it does NOT perform the
+/// full spec-mandated redaction step, so the output may differ from a real
+/// event ID for events with non-allowed content keys.
+/// TODO: Full redaction compliance across room versions.
 #[cfg(feature = "hashing")]
 #[allow(dead_code)]
 pub fn print_canonical_hash(json_str: &str) {
