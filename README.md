@@ -48,7 +48,8 @@ make lint
 
 Because we care about raw performance and mechanical efficiency, `rezzy` is built on a foundation of blazingly fast ideas. Under the hood of our production code, you will find:
 
-- _Causal domination_ operator (CDO) filtering
+- _Causal domination_ operator (CDO) pre-filtering
+- Experimental V2.1.1 State Resolution with supplemental narrowing
 - Batched/strip-mined **SWAR** (SIMD within a register) matrix sweeps
 - `O(1)` _causal coordinatization_ projection
 - Filtered _commutative join-semilattice_ folding
