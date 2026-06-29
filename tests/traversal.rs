@@ -1431,10 +1431,17 @@ fn test_missing_auth_diff_mainline_distortion() {
     // Both scenarios resolve to the same winner because the mainline ordering is
     // dominated by PL0 (the unconflicted power-levels event).
     // Adding PL1 to the conflicted set doesn't change the mainline walk result.
-    // The test validates that both paths produce consistent, correct output.
+    let topic_key = ("m.room.topic".to_string(), Some(String::new()));
+
+    // Pin the concrete winner: S_A1 wins via mainline sort (higher depth/ts)
     assert_eq!(
-        resolved_buggy.get(&("m.room.topic".to_string(), Some(String::new()))),
-        resolved_fixed.get(&("m.room.topic".to_string(), Some(String::new()))),
+        resolved_buggy.get(&topic_key),
+        Some(&"S_A1"),
+        "Resolved topic should be S_A1"
+    );
+    assert_eq!(
+        resolved_buggy.get(&topic_key),
+        resolved_fixed.get(&topic_key),
         "Buggy and fixed paths should agree when auth_diff doesn't alter mainline"
     );
 }
