@@ -197,22 +197,25 @@ where
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 {
-    // Restrict CDO to the actual causal auth graph, not the entire DAG!
     let mut relevant_events = HashMap::new();
+    let mut visited = BTreeSet::new();
     let mut queue = alloc::collections::VecDeque::new();
 
     for (id, ev) in conflicted_events {
         relevant_events.insert(id.clone(), ev);
+        visited.insert(id.clone());
         for aid in ev.prev_events.iter().chain(ev.auth_events.iter()) {
-            queue.push_back(aid.clone());
+            if visited.insert(aid.clone()) {
+                queue.push_back(aid.clone());
+            }
         }
     }
 
     while let Some(aid) = queue.pop_front() {
-        if !relevant_events.contains_key(&aid) {
-            if let Some(aev) = auth_context.get(&aid) {
-                relevant_events.insert(aid.clone(), aev);
-                for parent_id in aev.prev_events.iter().chain(aev.auth_events.iter()) {
+        if let Some(aev) = auth_context.get(&aid) {
+            relevant_events.insert(aid.clone(), aev);
+            for parent_id in aev.prev_events.iter().chain(aev.auth_events.iter()) {
+                if visited.insert(parent_id.clone()) {
                     queue.push_back(parent_id.clone());
                 }
             }
