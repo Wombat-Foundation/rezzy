@@ -6,6 +6,7 @@ target/
 *.zip
 *.tar.*
 /*.txt
+matrix-spec-txt/
 
 # misc / top-level stuff
 /*.log
