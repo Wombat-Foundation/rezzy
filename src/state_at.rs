@@ -105,9 +105,7 @@ impl<
                         && event_type == "m.room.member"
                     {
                         // V2.1.1 Fix: Only supplement bans and kicks in power phase
-                        if let Some(membership) =
-                            ev.content.get("membership").and_then(|m| m.as_str())
-                        {
+                        if let Some(membership) = ev.get_membership() {
                             let is_ban = membership == "ban";
                             let is_kick = membership == "leave"
                                 && state_key.is_some()

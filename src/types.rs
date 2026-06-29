@@ -23,7 +23,6 @@
 
 use crate::event_types::M_ROOM_CREATE;
 use crate::HashMap;
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
@@ -149,41 +148,6 @@ impl<Id> KahnSortResult<Id> {
     pub fn is_ok(&self) -> bool {
         matches!(self, KahnSortResult::Ok(_))
     }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct TypedContent {
-    // m.room.member
-    pub membership: Option<String>,
-    pub third_party_invite: Option<ThirdPartyInvite>,
-    // m.room.power_levels
-    pub users: Option<BTreeMap<String, i64>>,
-    pub users_default: Option<i64>,
-    pub events: Option<BTreeMap<String, i64>>,
-    pub events_default: Option<i64>,
-    pub state_default: Option<i64>,
-    pub ban: Option<i64>,
-    pub kick: Option<i64>,
-    pub redact: Option<i64>,
-    pub invite: Option<i64>,
-    // m.room.join_rules
-    pub join_rule: Option<String>,
-    // m.room.create
-    pub creator: Option<String>,
-    pub room_creators: Option<Vec<String>>,
-    pub additional_creators: Option<Vec<String>>,
-    pub room_version: Option<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ThirdPartyInvite {
-    pub display_name: String,
-    pub signed: Signed,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Signed {
-    pub token: String,
 }
 
 /// A lightweight Matrix event representation optimized for state resolution.
