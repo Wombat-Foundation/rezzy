@@ -1,3 +1,4 @@
+mod utils;
 use std::collections::HashMap;
 extern crate alloc;
 
@@ -5,6 +6,7 @@ extern crate alloc;
 #[allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
 mod tests {
 
+    use super::utils;
     use alloc::string::ToString;
     use alloc::vec;
     use core::cmp::Ordering;
@@ -2571,7 +2573,7 @@ mod tests {
         // Resolve using V2_1 (MSC4297). This starts with an empty state.
         // It must successfully route and validate `$pl_alice` in order to authorize Bob's PL events.
         let resolved = resolve_lean(
-            imbl::OrdMap::new(),
+            utils::build_unconflicted_state_test_helper(&auth_context),
             conflicted_events,
             &auth_context,
             rezzy::StateResVersion::V2_1,
@@ -3021,8 +3023,15 @@ fn test_sorting_v2_creator_gets_pl_100() {
     // Sort with V2 — creator gets PL 100
     let result =
         rezzy::lean_kahn_sort(&events, &auth, Some(&create_ev), rezzy::StateResVersion::V2);
-    // Creator alice should sort with higher power than bob (PL 0)
-    assert!(!result.is_empty());
+    // Creator alice should sort with higher power than bob (PL 0), meaning she comes LAST in the sorted list (since sorting is ascending)
+    assert!(result.len() >= 2);
+    let alice_pos = result.iter().position(|id| id == "alice_msg").unwrap();
+    let bob_pos = result.iter().position(|id| id == "bob_msg").unwrap();
+    // Since kahn sort orders highest-power to lowest-power, Alice (PL 100) should come before Bob (PL 0).
+    assert!(
+        alice_pos < bob_pos,
+        "Creator Alice (PL 100) should be sorted before Bob (PL 0), meaning higher power popped first"
+    );
 }
 
 #[test]

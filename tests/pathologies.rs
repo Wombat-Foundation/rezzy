@@ -1,3 +1,4 @@
+mod utils;
 use rezzy::{resolve_lean, LeanEvent, StateResVersion};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -41,13 +42,13 @@ fn test_pathology_duplicate_auth_poisoning() {
     // Warm up the code and caches
     for _ in 0..10 {
         let _ = resolve_lean(
-            imbl::OrdMap::new(),
+            utils::build_unconflicted_state_test_helper(&auth_context),
             conflicted_events.clone(),
             &auth_context,
             StateResVersion::V2_1,
         );
         let _ = resolve_lean(
-            imbl::OrdMap::new(),
+            utils::build_unconflicted_state_test_helper(&auth_context),
             conflicted_events.clone(),
             &auth_context,
             StateResVersion::V2_1_1,
@@ -59,7 +60,7 @@ fn test_pathology_duplicate_auth_poisoning() {
     for _ in 0..50 {
         let start = std::time::Instant::now();
         let _ = resolve_lean(
-            imbl::OrdMap::new(),
+            utils::build_unconflicted_state_test_helper(&auth_context),
             conflicted_events.clone(),
             &auth_context,
             StateResVersion::V2_1,
@@ -75,7 +76,7 @@ fn test_pathology_duplicate_auth_poisoning() {
     for _ in 0..50 {
         let start = std::time::Instant::now();
         let _ = resolve_lean(
-            imbl::OrdMap::new(),
+            utils::build_unconflicted_state_test_helper(&auth_context),
             conflicted_events.clone(),
             &auth_context,
             StateResVersion::V2_1_1,
@@ -112,7 +113,7 @@ fn test_pathology_invite_lock() {
 
     // V2.1 drops the user because the join rule is missing
     let resolved_v21 = resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events.clone(),
         &auth_context,
         StateResVersion::V2_1,
@@ -125,7 +126,7 @@ fn test_pathology_invite_lock() {
 
     // V2.1.1 degrades gracefully or rejects correctly to prevent CVE
     let resolved_v211 = resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,

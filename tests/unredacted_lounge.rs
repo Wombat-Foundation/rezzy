@@ -7,6 +7,7 @@
 //! The test exercises the same code path as continuwuity's `rebuild_state`:
 //! for room version 12, it uses `compute_v2_1_conflicted_subgraph` to compute
 //! the conflicted set, then calls `resolve_lean` with `StateResVersion::V2_1`.
+mod utils;
 
 use rezzy::{resolve_lean, LeanEvent, StateResVersion};
 use serde_json::Value;
@@ -58,7 +59,7 @@ fn resolve_v2_1_from_subgraph(
     }
 
     // Unconflicted state = empty for V2.1+ (MSC4297: start from empty)
-    let unconflicted = imbl::OrdMap::new();
+    let unconflicted = utils::build_unconflicted_state_test_helper(&auth_context);
 
     resolve_lean(
         unconflicted,

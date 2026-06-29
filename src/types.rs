@@ -761,6 +761,7 @@ impl<Id: Ord, C> Ord for SortPriority<'_, Id, C> {
                 //
                 // In Rust's Max-Heap BinaryHeap, "greater" elements are popped first.
                 // We want deeper events to pop FIRST, so they must be "greater".
+                // NOTE: This is a defense-in-depth vulnerability, which V2 fixes.
                 match self.event.depth.cmp(&other.event.depth) {
                     Ordering::Equal => self.event.event_id.cmp(&other.event.event_id),
                     ord => ord,

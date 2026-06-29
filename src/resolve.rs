@@ -281,13 +281,8 @@ where
         .or_else(|| {
             conflicted_events
                 .values()
-                .find(|ev| ev.event_type == crate::event_types::M_ROOM_CREATE)
-        })
-        .or_else(|| {
-            // Fallback only for weird test fixtures where create is completely missing from state
-            auth_context
-                .values()
-                .find(|ev| ev.event_type == crate::event_types::M_ROOM_CREATE)
+                .filter(|ev| ev.event_type == crate::event_types::M_ROOM_CREATE)
+                .min_by_key(|ev| &ev.event_id)
         });
 
     // Return updated refs

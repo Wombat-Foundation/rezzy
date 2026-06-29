@@ -1,4 +1,5 @@
 #![allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
+mod utils;
 use rezzy::{resolve_lean, LeanEvent, StateResVersion};
 use serde_json::json;
 use std::collections::HashMap;
@@ -68,7 +69,7 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
     // V2.1: Should FAIL to resolve the name change.
     // It doesn't see the PL event, so it uses default PL 0 for Alice.
     let resolved_v21 = resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events.clone(),
         &auth_context,
         StateResVersion::V2_1,
@@ -80,7 +81,7 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
     );
 
     let resolved_v211 = resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
@@ -175,7 +176,7 @@ fn test_v2_1_1_ancient_prev_event_allowed() {
     conflicted_events.insert(alice_name.event_id.clone(), alice_name);
 
     let resolved_v211 = resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
@@ -256,7 +257,7 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
     conflicted_events.insert(bob_join.event_id.clone(), bob_join);
 
     let resolved = resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
@@ -530,7 +531,7 @@ fn test_v2_1_1_fixes_invite_lock() {
     // is pulled into the auth overlay. The historical user's join is then evaluated against
     // the "invite" rules and rightfully REJECTED, permanently locking them out!
     let resolved_v2 = rezzy::resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2,
@@ -548,7 +549,7 @@ fn test_v2_1_1_fixes_invite_lock() {
     // Resolution under V2.1 (The Scalpel)
     // Under V2.1, join_rules are supplemented during Step 4, so V2.1 still fails the Invite Lock.
     let resolved_v21 = rezzy::resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2_1,
@@ -563,7 +564,7 @@ fn test_v2_1_1_fixes_invite_lock() {
     // Therefore, `$hist_join` is evaluated against its local auth chain (`$public`),
     // and is rightfully ACCEPTED into the resolved state!
     let resolved_v211 = rezzy::resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
@@ -659,7 +660,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
     // V2.1 resolves PLs first (picking the demotion). When validating Eve's attack,
     // V2.1 overlays the consensus PL (demotion). Eve is PL 0. Name change requires 50. REJECTED.
     let resolved_v21 = rezzy::resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2_1,
@@ -674,7 +675,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
     // V2.1.1 strictly enforces 1-hop security and supplements the demotion.
     // Therefore, Eve is caught and her attack is rightfully rejected!
     let resolved_v211 = rezzy::resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
@@ -771,7 +772,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
 
     // Run V2.1 Resolution (Stock)
     let resolved_v21 = rezzy::resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2_1,
@@ -795,7 +796,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
 
     // Run V2.1.1 Resolution (The V3 Fix)
     let resolved_v211 = rezzy::resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
@@ -853,7 +854,7 @@ fn test_v2_1_strictness_future_v3_should_pass() {
     conflicted_events.insert("$bob_join".to_string(), bob_join);
 
     let resolved_v21 = rezzy::resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2_1,
@@ -1264,7 +1265,7 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
 
     // Run V2.1 Resolution (Fixed & Spec-Compliant)
     let resolved_v21 = rezzy::resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1,

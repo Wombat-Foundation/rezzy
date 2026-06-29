@@ -6,6 +6,7 @@
 //
 // They validate that our lean_kahn_sort + resolve_lean pipeline produces
 // results consistent with the upstream Ruma state resolution implementation.
+mod utils;
 
 extern crate alloc;
 extern crate std;
@@ -79,13 +80,13 @@ fn test_benchmark_1k_resolution_determinism() {
 
     // Run resolution twice and verify determinism
     let resolved1 = resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
         to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
     );
     let resolved2 = resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
         to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
@@ -158,13 +159,13 @@ fn test_large_room_10k_v2_1_sort() {
 fn test_large_room_10k_resolution_determinism() {
     let events = load_large_room();
     let r1 = resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
         to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
     );
     let r2 = resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
         to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
@@ -176,9 +177,14 @@ fn test_large_room_10k_resolution_determinism() {
 fn test_large_room_10k_v2_vs_v2_1_divergence() {
     let events = load_large_room();
     let map = to_event_map(&events);
-    let v2 = resolve_lean(imbl::OrdMap::new(), map.clone(), &map, StateResVersion::V2);
+    let v2 = resolve_lean(
+        utils::build_unconflicted_state_test_helper(&map),
+        map.clone(),
+        &map,
+        StateResVersion::V2,
+    );
     let v2_1 = resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&map),
         map.clone(),
         &map,
         StateResVersion::V2_1,
@@ -365,13 +371,18 @@ fn test_real_dag_52k_room_v2_1_sort() {
 fn test_real_dag_52k_room_resolution() {
     let events = load_real_dag("res/real_dag_52k_room.json");
     let map = to_event_map(&events);
-    let resolved = resolve_lean(imbl::OrdMap::new(), map.clone(), &map, StateResVersion::V2);
+    let resolved = resolve_lean(
+        utils::build_unconflicted_state_test_helper(&map),
+        map.clone(),
+        &map,
+        StateResVersion::V2,
+    );
     assert!(!resolved.is_empty(), "Resolution should produce state");
     // Determinism check
     let events2 = load_real_dag("res/real_dag_52k_room.json");
     let map2 = to_event_map(&events2);
     let resolved2 = resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&map2),
         map2.clone(),
         &map2,
         StateResVersion::V2,
@@ -416,7 +427,7 @@ fn test_real_dag_nheko_room_106_heads() {
 
     // Resolution must still complete on this messy DAG
     let resolved = resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&event_map),
         event_map.clone(),
         &event_map,
         StateResVersion::V2,
@@ -517,7 +528,12 @@ fn test_unredacted_spam_storm_v2_1_1() {
     let map = to_event_map(&events);
 
     let start_v2 = std::time::Instant::now();
-    let resolved_v2 = resolve_lean(imbl::OrdMap::new(), map.clone(), &map, StateResVersion::V2);
+    let resolved_v2 = resolve_lean(
+        utils::build_unconflicted_state_test_helper(&map),
+        map.clone(),
+        &map,
+        StateResVersion::V2,
+    );
     let dur_v2 = start_v2.elapsed();
     println!(
         "V2.0 State Resolution of {} events took: {:?}",
@@ -527,7 +543,7 @@ fn test_unredacted_spam_storm_v2_1_1() {
 
     let start_v21 = std::time::Instant::now();
     let resolved_v21 = resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&map),
         map.clone(),
         &map,
         StateResVersion::V2_1,
@@ -541,7 +557,7 @@ fn test_unredacted_spam_storm_v2_1_1() {
 
     let start_v211 = std::time::Instant::now();
     let resolved_v211 = resolve_lean(
-        imbl::OrdMap::new(),
+        utils::build_unconflicted_state_test_helper(&map),
         map.clone(),
         &map,
         StateResVersion::V2_1_1,

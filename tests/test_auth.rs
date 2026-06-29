@@ -1095,7 +1095,17 @@ fn test_v2_creator_gets_pl_100_not_max() {
             json!({"membership": "join"}),
         ),
     );
-    // Creator can kick (PL 100 > kick PL 50) — same as V2.1
+    // Add a power level event that sets ban to 150
+    state.insert(
+        ("m.room.power_levels".into(), Some(String::new())),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@creator:example.com",
+            json!({"ban": 150}),
+        ),
+    );
     state.insert(
         ("m.room.member".into(), Some("@target:example.com".into())),
         make_event(
@@ -1107,16 +1117,20 @@ fn test_v2_creator_gets_pl_100_not_max() {
         ),
     );
 
-    let kick_event = make_event(
-        "$kick",
+    let ban_event = make_event(
+        "$ban",
         "m.room.member",
         Some("@target:example.com"),
         "@creator:example.com",
-        json!({"membership": "leave"}),
+        json!({"membership": "ban"}),
     );
     assert!(
-        check_auth(&kick_event, &state, rezzy::types::StateResVersion::V2).is_ok(),
-        "V2 creator (PL 100) should be able to kick (requires PL 50)"
+        check_auth(&ban_event, &state, rezzy::types::StateResVersion::V2).is_err(),
+        "V2 creator (PL 100) should NOT be able to ban (requires PL 150)"
+    );
+    assert!(
+        check_auth(&ban_event, &state, rezzy::types::StateResVersion::V2_1).is_ok(),
+        "V2.1 creator (MAX_POWER_LEVEL) should be able to ban (requires PL 150)"
     );
 }
 

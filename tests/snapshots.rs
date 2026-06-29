@@ -8,6 +8,7 @@
 //! runs of the normal test suite must match it exactly (ceiling = 0).
 //!
 //! Run: `cargo test --features std --test snapshots`
+mod utils;
 
 use rezzy::{resolve_lean, LeanEvent, StateResVersion};
 use serde_json::Value;
@@ -47,7 +48,12 @@ fn load_oracle(path: &str) -> HashMap<String, String> {
 fn resolve_and_get_state(fixture_path: &str, version: StateResVersion) -> HashMap<String, String> {
     let events = load_fixture(fixture_path);
     let map = to_event_map(&events);
-    let resolved = resolve_lean(imbl::OrdMap::new(), map.clone(), &map, version);
+    let resolved = resolve_lean(
+        utils::build_unconflicted_state_test_helper(&map),
+        map.clone(),
+        &map,
+        version,
+    );
     resolved
         .into_iter()
         .map(|((t, sk), eid)| (format!("{}|{}", t, sk.unwrap_or_default()), eid))
