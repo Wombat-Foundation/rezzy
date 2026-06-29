@@ -451,6 +451,14 @@ fn check_membership_rules<Id: Clone>(
         .and_then(|ev| ev.get_membership())
         .unwrap_or("");
 
+    // Self-bans are nonsensical and forbidden by the spec.
+    if new_membership == MEM_BAN && target_user == event.sender {
+        return Err(AuthError::InvalidStateKey {
+            expected: alloc::format!("!= {}", event.sender),
+            actual: target_user.into(),
+        });
+    }
+
     match new_membership {
         MEM_JOIN => check_join_rules(event, state, target_user)?,
         MEM_LEAVE => check_leave_rules(event, state, target_user, current_membership)?,

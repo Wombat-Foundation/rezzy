@@ -834,6 +834,10 @@ pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
         Some(i)
     } else if let Some(u) = pl.as_u64() {
         Some(i64::try_from(u).unwrap_or(i64::MAX))
+    } else if let Some(f) = pl.as_f64() {
+        // Legacy float power levels (e.g. 50.0) — truncate toward zero,
+        // then convert via serde_json::Number to avoid lossy `as` casts.
+        serde_json::Number::from_f64(f.trunc()).and_then(|n| n.as_i64())
     } else if let Some(s) = pl.as_str() {
         s.parse::<i64>().ok()
     } else {

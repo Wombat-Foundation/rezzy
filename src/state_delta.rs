@@ -336,6 +336,7 @@ pub fn compute_compacted_delta_chain(
 
     for ev in events {
         let mut state_before = BTreeMap::new();
+        let mut base_state = BTreeMap::new(); // The state corresponding to parent_hash
         let mut parent_hash = None;
         let mut parent_hops: usize = 0;
 
@@ -344,6 +345,7 @@ pub fn compute_compacted_delta_chain(
                 if parent_hash.is_none() {
                     parent_hash = state_hash_map.get(prev_id).cloned();
                     parent_hops = hops_since_snapshot.get(prev_id).copied().unwrap_or(0);
+                    base_state = prev_state.clone();
                 }
                 for (k, v) in prev_state {
                     match state_before.get(k) {
@@ -372,7 +374,7 @@ pub fn compute_compacted_delta_chain(
             // Insert a full snapshot — resets the chain
             (Vec::new(), Some(state_after.clone()), 0)
         } else {
-            let deltas = compute_state_delta(&state_before, &state_after);
+            let deltas = compute_state_delta(&base_state, &state_after);
             (deltas, None, current_hops)
         };
 
