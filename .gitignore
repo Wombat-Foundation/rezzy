@@ -22,3 +22,4 @@ paper.pdf
 # res/
 # python
 __pycache__
+*.rmp
