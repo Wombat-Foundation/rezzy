@@ -429,13 +429,15 @@ where
 /// Returns a map from each found target event ID to its resolved state.
 /// Target IDs not found in `events_map` are silently skipped.
 ///
-/// # Future work
+/// # Memory and Performance
 ///
-/// **Streaming API**: This function materializes a full `BTreeMap` for every
-/// target, which negates the `O(1)` cloning benefit of `imbl::OrdMap` at the
-/// API boundary. A callback-based `compute_state_at_streaming` variant should
-/// yield each resolved `SharedState` directly, letting callers delta-compress
-/// and drop immediately without peak-memory blowup.
+/// This function materializes and returns a complete `BTreeMap` for every
+/// target event. For large rooms with many target events, this will cause
+/// massive memory spikes and allocation overhead.
+///
+/// For processing multiple events in production (e.g., full room rebuilds),
+/// use [`compute_state_at_streaming`] instead to stream states via a callback
+/// and keep memory bounded to the DAG's width.
 ///
 /// # Panics
 ///
@@ -466,26 +468,101 @@ where
         return HashMap::new();
     }
 
-    let (id_to_index, index_to_id) =
-        collect_ancestor_short_ids_batch(&actual_target_ids, events_map);
-    let mut state_after_map = run_state_pipeline(
-        &index_to_id,
-        &id_to_index,
+    let mut results = HashMap::with_capacity(actual_target_ids.len());
+
+    compute_state_at_streaming_internal(
         &actual_target_ids,
         events_map,
         version,
+        |id, state| {
+            results.insert(id, state);
+        },
     );
 
-    let mut results = HashMap::with_capacity(actual_target_ids.len());
-    for &actual_tid in &actual_target_ids {
-        if let Some(&target_idx) = id_to_index.get(actual_tid) {
-            if let Some(shared_state) = state_after_map[target_idx].take() {
-                results.insert(actual_tid.clone(), shared_state_into_btree(shared_state));
+    results
+}
+
+/// Computes the resolved room state at multiple target events in a single pass,
+/// yielding each resolved state to a callback as soon as it is ready.
+///
+/// This function is **strictly superior** to [`compute_state_at_batch`] for
+/// large-scale state reconstruction (e.g. homeserver full state rebuilds).
+/// By passing ownership of the computed state to the callback, callers can
+/// immediately compress and store the state (e.g. into RocksDB), keeping the
+/// peak memory usage bounded strictly to the width of the DAG.
+///
+/// Target IDs not found in `events_map` are silently skipped.
+///
+/// # Panics
+///
+/// Will panic if graph invariants are violated (specifically, if an ancestor event
+/// present in the reachable subgraph is missing from `events_map` during topological processing).
+#[must_use]
+pub fn compute_state_at_streaming<Id, Q, S, F>(
+    target_event_ids: &[&Q],
+    events_map: &HashMap<Id, LeanEvent<Id>, S>,
+    version: StateResVersion,
+    mut on_target_resolved: F,
+) where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
+    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    S: core::hash::BuildHasher,
+    F: FnMut(Id, BTreeMap<(String, Option<String>), Id>),
+{
+    let mut actual_target_ids = Vec::new();
+    let mut seen = alloc::collections::BTreeSet::new();
+    for &tid in target_event_ids {
+        if let Some((k, _)) = events_map.get_key_value(tid) {
+            if seen.insert(k) {
+                actual_target_ids.push(k.clone());
             }
         }
     }
 
-    results
+    if actual_target_ids.is_empty() {
+        return;
+    }
+
+    compute_state_at_streaming_internal(
+        &actual_target_ids,
+        events_map,
+        version,
+        on_target_resolved,
+    );
+}
+
+fn compute_state_at_streaming_internal<Id, S, F>(
+    actual_target_ids: &[Id],
+    events_map: &HashMap<Id, LeanEvent<Id>, S>,
+    version: StateResVersion,
+    mut on_target_resolved: F,
+) where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    S: core::hash::BuildHasher,
+    F: FnMut(Id, BTreeMap<(String, Option<String>), Id>),
+{
+    let mut target_refs: Vec<&Id> = actual_target_ids.iter().collect();
+    let (id_to_index, index_to_id) =
+        collect_ancestor_short_ids_batch(&target_refs, events_map);
+
+    let mut is_target = alloc::vec![false; index_to_id.len()];
+    for tid in actual_target_ids {
+        if let Some(&idx) = id_to_index.get(tid) {
+            is_target[idx] = true;
+        }
+    }
+
+    run_state_pipeline_streaming(
+        &index_to_id,
+        &id_to_index,
+        &is_target,
+        events_map,
+        version,
+        |idx, shared_state| {
+            let id = index_to_id[idx].clone();
+            on_target_resolved(id, shared_state_into_btree(shared_state));
+        },
+    );
 }
 
 /// Shared method for `compute_state_at` and `compute_state_at_batch`.
@@ -497,27 +574,20 @@ where
 /// this pipeline and threading `&mut global_auth_cache` through
 /// `resolve_merge_fast_path` → `resolve_multiple_prev_states` → `resolve_lean`
 /// would amortize auth chain traversal cost across all forks in the batch.
-fn run_state_pipeline<'a, Id, S>(
+fn run_state_pipeline_streaming<'a, Id, S, F>(
     index_to_id: &[&'a Id],
     id_to_index: &HashMap<&'a Id, usize>,
-    target_event_ids: &[&'a Id],
+    is_target: &[bool],
     events_map: &HashMap<Id, LeanEvent<Id>, S>,
     version: StateResVersion,
-) -> Vec<Option<SharedState<Id>>>
-where
+    mut on_target: F,
+) where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
+    F: FnMut(usize, SharedState<Id>),
 {
     let (sorted_ancestors, mut out_degree) =
         topological_sort_short_ids(index_to_id, id_to_index, events_map);
-
-    // Artificially increment the out_degree of final target events by 1
-    // to ensure they are never consumed and remain in state_after_map.
-    for &tid in target_event_ids {
-        if let Some(&target_idx) = id_to_index.get(tid) {
-            out_degree[target_idx] = out_degree[target_idx].saturating_add(1);
-        }
-    }
 
     let mut global_auth_cache = LocalAuthCache::new();
 
@@ -561,10 +631,14 @@ where
             );
         }
 
-        state_after_map[idx] = Some(state_before);
-    }
+        if is_target[idx] {
+            on_target(idx, state_before.clone());
+        }
 
-    state_after_map
+        if out_degree[idx] > 0 {
+            state_after_map[idx] = Some(state_before);
+        }
+    }
 }
 
 /// Computes the most recent common ancestor (merge base) of multiple DAG tips.
