@@ -203,7 +203,11 @@ fn build_adjacency_structures<
 where
     Id: Clone + Eq + core::hash::Hash + Ord,
 {
-    let dag_context = crate::resolve::build_sort_context(conflicted_events, auth_context);
+    let mut dag_context =
+        HashMap::with_capacity(auth_context.len().saturating_add(conflicted_events.len()));
+    for (k, v) in auth_context.iter().chain(conflicted_events.iter()) {
+        dag_context.insert(k.clone(), v.clone());
+    }
 
     let n = dag_context.len();
     let mut id_to_idx = HashMap::with_capacity(n);

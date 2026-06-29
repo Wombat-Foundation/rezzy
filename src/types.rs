@@ -22,8 +22,6 @@
 //! - [`KahnSortResult`] — the result of topological sorting, with cycle diagnostics.
 //! - [`DagNode`] — a trait for generic topological traversal without requiring `LeanEvent`.
 
-use crate::event_types::M_ROOM_CREATE;
-use crate::HashMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
@@ -860,14 +858,52 @@ pub fn find_deterministic_create_event<
     S2: core::hash::BuildHasher,
     C: EventContent,
 >(
-    auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
-    sort_set: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
+    auth_context: &'a crate::HashMap<Id, LeanEvent<Id, C>, S1>,
+    sort_set: &'a crate::HashMap<Id, LeanEvent<Id, C>, S2>,
 ) -> Option<&'a LeanEvent<Id, C>> {
-    let mut create_events: Vec<&LeanEvent<Id, C>> = auth_context
+    let mut create_events: alloc::vec::Vec<&LeanEvent<Id, C>> = auth_context
         .values()
         .chain(sort_set.values())
-        .filter(|ev| ev.event_type == M_ROOM_CREATE)
+        .filter(|ev| ev.event_type == crate::event_types::M_ROOM_CREATE)
         .collect();
+
+    if create_events.is_empty() {
+        return None;
+    }
+
     create_events.sort_by(|a, b| a.event_id.cmp(&b.event_id));
     create_events.first().copied()
+}
+
+pub trait EventProvider<Id, C> {
+    fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>>;
+}
+
+impl<Id: core::hash::Hash + Eq, C, S: core::hash::BuildHasher> EventProvider<Id, C>
+    for crate::HashMap<Id, LeanEvent<Id, C>, S>
+{
+    fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>> {
+        self.get(id)
+    }
+}
+
+impl<Id: core::hash::Hash + Eq + Ord, C> EventProvider<Id, C>
+    for alloc::collections::BTreeMap<Id, LeanEvent<Id, C>>
+{
+    fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>> {
+        self.get(id)
+    }
+}
+
+pub struct SortContext<'a, Id, C, S1, S2> {
+    pub primary: &'a crate::HashMap<Id, LeanEvent<Id, C>, S1>,
+    pub secondary: &'a crate::HashMap<Id, LeanEvent<Id, C>, S2>,
+}
+
+impl<Id: core::hash::Hash + Eq, C, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>
+    EventProvider<Id, C> for SortContext<'_, Id, C, S1, S2>
+{
+    fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>> {
+        self.primary.get(id).or_else(|| self.secondary.get(id))
+    }
 }

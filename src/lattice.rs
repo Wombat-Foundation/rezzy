@@ -45,7 +45,7 @@
 //!    the fold-then-merge pipeline.
 
 use crate::{
-    sorting::{build_mainline, precompute_mainline_positions},
+    sorting::{build_mainline, compute_closest_mainline_positions},
     state_at::{compute_local_auth, iterative_auth_ok},
     types::{LeanEvent, StateResVersion},
     HashMap,
@@ -360,14 +360,16 @@ where
         &original_conflicted_keys,
         version,
         &mut local_auth_cache,
-        create_ev.as_ref(),
+        create_ev,
     );
 
     let sort_set = &conflicted_events;
 
     // Coordinate Projection Phase (Mainline distance mapping)
     let mainline = build_mainline(&resolved, &sort_context);
-    let mainline_distances = precompute_mainline_positions(&mainline, &sort_context);
+    let mut target_events: alloc::vec::Vec<&LeanEvent<Id, C>> = non_power_events.values().collect();
+    let mainline_distances =
+        compute_closest_mainline_positions(&mut target_events, &mainline, auth_context);
     let mainline_len = mainline.len();
 
     // Semilattice Fold Phase
@@ -380,7 +382,7 @@ where
         auth_context,
         sort_set,
         version,
-        create_ev.as_ref(),
+        create_ev,
         &mut key_winners,
     );
 
