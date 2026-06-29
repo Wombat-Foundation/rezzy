@@ -309,7 +309,74 @@ pub(crate) fn compute_local_auth<
         .collect()
 }
 
+/// Internal state representation — uses `imbl::OrdMap` when `std` is enabled
+/// for O(1) cloning via structural sharing, falling back to `Arc<BTreeMap>` for
+/// `no_std` targets at O(n) cost.
+#[cfg(feature = "std")]
+type SharedState<Id = String> = imbl::OrdMap<(String, Option<String>), Id>;
+
+#[cfg(not(feature = "std"))]
 type SharedState<Id = String> = alloc::sync::Arc<BTreeMap<(String, Option<String>), Id>>;
+
+// --- SharedState backend-agnostic helpers ---
+
+/// Convert `SharedState` → `BTreeMap` at the public API boundary.
+#[cfg(feature = "std")]
+fn shared_state_into_btree<Id: Clone>(
+    state: SharedState<Id>,
+) -> BTreeMap<(String, Option<String>), Id> {
+    state.into_iter().collect()
+}
+
+#[cfg(not(feature = "std"))]
+fn shared_state_into_btree<Id: Clone>(
+    state: SharedState<Id>,
+) -> BTreeMap<(String, Option<String>), Id> {
+    alloc::sync::Arc::try_unwrap(state).unwrap_or_else(|arc| (*arc).clone())
+}
+
+/// Insert into `SharedState` (O(log N) for imbl, O(N) worst-case for Arc `CoW`).
+#[cfg(feature = "std")]
+fn shared_state_insert<Id: Clone + Ord>(
+    state: &mut SharedState<Id>,
+    key: (String, Option<String>),
+    value: Id,
+) {
+    state.insert(key, value);
+}
+
+#[cfg(not(feature = "std"))]
+fn shared_state_insert<Id: Clone + Ord>(
+    state: &mut SharedState<Id>,
+    key: (String, Option<String>),
+    value: Id,
+) {
+    alloc::sync::Arc::make_mut(state).insert(key, value);
+}
+
+/// Check equality between two `SharedState`s (pointer-fast for Arc, value for imbl).
+#[cfg(feature = "std")]
+fn shared_states_equal<Id: PartialEq>(a: &SharedState<Id>, b: &SharedState<Id>) -> bool {
+    a == b
+}
+
+#[cfg(not(feature = "std"))]
+fn shared_states_equal<Id: PartialEq>(a: &SharedState<Id>, b: &SharedState<Id>) -> bool {
+    alloc::sync::Arc::ptr_eq(a, b) || **a == **b
+}
+
+/// Convert `BTreeMap` → `SharedState` (e.g. after resolution).
+#[cfg(feature = "std")]
+fn btree_into_shared_state<Id: Clone>(
+    btree: BTreeMap<(String, Option<String>), Id>,
+) -> SharedState<Id> {
+    btree.into_iter().collect()
+}
+
+#[cfg(not(feature = "std"))]
+fn btree_into_shared_state<Id>(btree: BTreeMap<(String, Option<String>), Id>) -> SharedState<Id> {
+    alloc::sync::Arc::new(btree)
+}
 
 /// Computes the resolved room state *after* a given event.
 ///
@@ -348,9 +415,9 @@ where
     );
 
     let target_idx = id_to_index[actual_target_id];
-    state_after_map[target_idx].take().map(|arc| {
-        alloc::sync::Arc::try_unwrap(arc).unwrap_or_else(|failed_arc| (*failed_arc).clone())
-    })
+    state_after_map[target_idx]
+        .take()
+        .map(shared_state_into_btree)
 }
 
 /// Computes the resolved room state at multiple target events in a single pass.
@@ -361,6 +428,14 @@ where
 ///
 /// Returns a map from each found target event ID to its resolved state.
 /// Target IDs not found in `events_map` are silently skipped.
+///
+/// # Future work
+///
+/// **Streaming API**: This function materializes a full `BTreeMap` for every
+/// target, which negates the `O(1)` cloning benefit of `imbl::OrdMap` at the
+/// API boundary. A callback-based `compute_state_at_streaming` variant should
+/// yield each resolved `SharedState` directly, letting callers delta-compress
+/// and drop immediately without peak-memory blowup.
 ///
 /// # Panics
 ///
@@ -405,9 +480,7 @@ where
     for &actual_tid in &actual_target_ids {
         if let Some(&target_idx) = id_to_index.get(actual_tid) {
             if let Some(shared_state) = state_after_map[target_idx].take() {
-                let btree =
-                    alloc::sync::Arc::try_unwrap(shared_state).unwrap_or_else(|arc| (*arc).clone());
-                results.insert(actual_tid.clone(), btree);
+                results.insert(actual_tid.clone(), shared_state_into_btree(shared_state));
             }
         }
     }
@@ -416,6 +489,14 @@ where
 }
 
 /// Shared method for `compute_state_at` and `compute_state_at_batch`.
+///
+/// # Future work
+///
+/// **Auth cache hoisting**: `resolve_lean` currently allocates a fresh
+/// `LocalAuthCache` per fork resolution. Instantiating one at the top of
+/// this pipeline and threading `&mut global_auth_cache` through
+/// `resolve_merge_fast_path` → `resolve_multiple_prev_states` → `resolve_lean`
+/// would amortize auth chain traversal cost across all forks in the batch.
 fn run_state_pipeline<'a, Id, S>(
     index_to_id: &[&'a Id],
     id_to_index: &HashMap<&'a Id, usize>,
@@ -456,14 +537,14 @@ where
                             prev_states.push(pe_state);
                         }
                     } else if let Some(ref pe_state) = state_after_map[pe_idx] {
-                        prev_states.push(alloc::sync::Arc::clone(pe_state));
+                        prev_states.push(pe_state.clone());
                     }
                 }
             }
         }
 
         let mut state_before: SharedState<Id> = if prev_states.is_empty() {
-            alloc::sync::Arc::new(BTreeMap::new())
+            btree_into_shared_state(BTreeMap::new())
         } else if prev_states.len() == 1 {
             prev_states.into_iter().next().unwrap()
         } else {
@@ -471,8 +552,8 @@ where
         };
 
         if ev.state_key.is_some() {
-            let mut_state = alloc::sync::Arc::make_mut(&mut state_before);
-            mut_state.insert(
+            shared_state_insert(
+                &mut state_before,
                 (ev.event_type.clone(), ev.state_key.clone()),
                 ev.event_id.clone(),
             );
@@ -696,23 +777,16 @@ where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     S: core::hash::BuildHasher,
 {
-    let mut all_match = true;
     let first = &prev_states[0];
-    for state in &prev_states[1..] {
-        if !alloc::sync::Arc::ptr_eq(first, state) && **first != **state {
-            all_match = false;
-            break;
-        }
-    }
+    let all_match = prev_states[1..]
+        .iter()
+        .all(|state| shared_states_equal(first, state));
 
     if all_match {
-        alloc::sync::Arc::clone(first)
+        first.clone()
     } else {
-        alloc::sync::Arc::new(resolve_multiple_prev_states(
-            prev_states,
-            events_map,
-            version,
-        ))
+        let btree = resolve_multiple_prev_states(prev_states, events_map, version);
+        btree_into_shared_state(btree)
     }
 }
 
@@ -727,8 +801,14 @@ where
 {
     let mut occurrences: HashMap<(String, Option<String>), HashMap<Id, usize>> = HashMap::new();
     let num_sets = prev_states.len();
+
     for map in prev_states {
-        for (key, val) in map.iter() {
+        #[cfg(feature = "std")]
+        let iter = map.into_iter();
+        #[cfg(not(feature = "std"))]
+        let iter = map.iter();
+
+        for (key, val) in iter {
             let val_entry = occurrences
                 .entry(key.clone())
                 .or_default()
