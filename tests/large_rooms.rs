@@ -440,8 +440,6 @@ fn test_unredacted_spam_storm_v2_1_1() {
     use std::io::BufRead;
     let path = "res/remote-dag-sM2LwqNHGQOgLf35gqxPMy9D7oYde2q9ADg8HPBM3kE-v12-merged.jsonl";
 
-    let cache_path = format!("{path}.rmp");
-
     let load_from_jsonl = || -> Option<Vec<LeanEvent>> {
         let file = match std::fs::File::open(path) {
             Ok(f) => f,
@@ -461,24 +459,37 @@ fn test_unredacted_spam_storm_v2_1_1() {
                 }
             }
         }
-        if let Ok(bytes) = rmp_serde::to_vec_named(&parsed_events) {
-            let _ = std::fs::write(&cache_path, bytes);
-        }
+        let version_prefix = format!("LEAN_{}", env!("CARGO_PKG_VERSION"));
+        let mut encoded = version_prefix.as_bytes().to_vec();
+        encoded.extend(bincode::serialize(&parsed_events).unwrap());
+        let _ = std::fs::write(format!("{path}.bincode"), encoded);
         Some(parsed_events)
     };
 
+    let cache_path = format!("{path}.bincode");
     let events: Vec<LeanEvent> = if let Ok(bytes) = std::fs::read(&cache_path) {
-        match rmp_serde::from_slice(&bytes) {
-            Ok(cached) => {
-                println!("Loaded from MessagePack cache");
-                cached
-            }
-            Err(e) => {
-                println!("Cache decode failed ({e}), rebuilding from JSONL");
-                match load_from_jsonl() {
-                    Some(ev) => ev,
-                    None => return,
+        let version_prefix = format!("LEAN_{}", env!("CARGO_PKG_VERSION"));
+        let prefix_bytes = version_prefix.as_bytes();
+
+        if bytes.starts_with(prefix_bytes) {
+            let encoded = &bytes[prefix_bytes.len()..];
+            match bincode::deserialize::<Vec<LeanEvent>>(encoded) {
+                Ok(cached_events) => {
+                    println!("Loaded from Bincode cache");
+                    cached_events
                 }
+                Err(e) => {
+                    println!("Cache decode failed ({e}), rebuilding from JSONL");
+                    match load_from_jsonl() {
+                        Some(ev) => ev,
+                        None => return,
+                    }
+                }
+            }
+        } else {
+            match load_from_jsonl() {
+                Some(ev) => ev,
+                None => return,
             }
         }
     } else {
