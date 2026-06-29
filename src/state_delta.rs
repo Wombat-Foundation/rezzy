@@ -235,6 +235,9 @@ pub fn compute_state_hash(state: &BTreeMap<(String, Option<String>), String>) ->
 ///
 /// A `Vec<StateCheckpoint>` with one entry per input event.
 #[must_use]
+#[deprecated(
+    note = "Use compute_compacted_delta_chain_from_resolved for spec-compliant fork merges"
+)]
 pub fn compute_delta_chain(events: &[crate::types::LeanEvent]) -> Vec<StateCheckpoint> {
     use crate::HashMap;
 
@@ -340,6 +343,9 @@ pub struct CompactedCheckpoint {
 /// Panics if an event's `prev_events` reference IDs not present in the
 /// topologically-preceding output (i.e. events are not in valid topo order).
 #[must_use]
+#[deprecated(
+    note = "Use compute_compacted_delta_chain_from_resolved for spec-compliant fork merges"
+)]
 pub fn compute_compacted_delta_chain(
     events: &[crate::types::LeanEvent],
     max_hops: Option<usize>,
@@ -813,6 +819,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_compaction_inserts_snapshots() {
         use crate::types::LeanEvent;
 
@@ -876,6 +883,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_reconstruct_state_at() {
         use crate::types::LeanEvent;
 
