@@ -86,7 +86,7 @@ pub struct StateDelta {
 /// A state checkpoint — a snapshot's hash, its parent, and the delta from parent.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StateCheckpoint {
-    /// FNV-1a hash of the state map at this point.
+    /// 128-bit FNV-1a hash of the state map at this point.
     pub state_hash: String,
     /// Hash of the parent checkpoint (if any).
     pub parent_hash: Option<String>,
@@ -160,40 +160,47 @@ pub fn apply_state_delta(
     result
 }
 
-/// Computes a deterministic FNV-1a fingerprint of a state map.
+/// Computes a deterministic 128-bit FNV-1a fingerprint of a state map.
 ///
 /// The hash is computed over `(event_type, state_key, event_id)` tuples in
 /// `BTreeMap` iteration order (lexicographic). This produces a stable,
-/// reproducible 64-bit hex string suitable for delta chain bookkeeping.
+/// reproducible 128-bit hex string suitable for delta chain bookkeeping.
+///
+/// 128-bit FNV-1a gives a collision probability of ~2^-128 per pair,
+/// effectively zero for any realistic state map count.
 ///
 /// **Not cryptographic** — use SHA-256 (via the `hashing` feature) for
 /// content-addressable storage.
 #[must_use]
 pub fn compute_state_hash(state: &BTreeMap<(String, Option<String>), String>) -> String {
-    let mut hash: u64 = 14_695_981_039_346_656_037; // FNV offset basis
+    // FNV-1a 128-bit offset basis and prime
+    // See: <https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function>
+    const FNV128_PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+    let mut hash: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+
     for ((event_type, state_key), event_id) in state {
         for &byte in event_type.as_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(1_099_511_628_211); // FNV prime
+            hash ^= u128::from(byte);
+            hash = hash.wrapping_mul(FNV128_PRIME);
         }
         hash ^= 0x00;
-        hash = hash.wrapping_mul(1_099_511_628_211);
+        hash = hash.wrapping_mul(FNV128_PRIME);
         if let Some(key) = state_key {
             for &byte in key.as_bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(1_099_511_628_211);
+                hash ^= u128::from(byte);
+                hash = hash.wrapping_mul(FNV128_PRIME);
             }
         }
         hash ^= 0x00;
-        hash = hash.wrapping_mul(1_099_511_628_211);
+        hash = hash.wrapping_mul(FNV128_PRIME);
         for &byte in event_id.as_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(1_099_511_628_211);
+            hash ^= u128::from(byte);
+            hash = hash.wrapping_mul(FNV128_PRIME);
         }
         hash ^= 0xff;
-        hash = hash.wrapping_mul(1_099_511_628_211);
+        hash = hash.wrapping_mul(FNV128_PRIME);
     }
-    alloc::format!("{hash:016x}")
+    alloc::format!("{hash:032x}")
 }
 
 /// Walks a topologically-ordered slice of events and produces a
@@ -273,7 +280,7 @@ pub const MAX_DELTA_CHAIN_HOPS: usize = 100;
 /// hit a snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CompactedCheckpoint {
-    /// FNV-1a hash of the state map at this point.
+    /// 128-bit FNV-1a hash of the state map at this point.
     pub state_hash: String,
     /// Hash of the parent checkpoint (if any).
     pub parent_hash: Option<String>,
@@ -615,7 +622,7 @@ mod tests {
         let h1 = compute_state_hash(&state);
         let h2 = compute_state_hash(&state);
         assert_eq!(h1, h2, "same state must produce same hash");
-        assert_eq!(h1.len(), 16, "FNV-1a hash should be 16 hex chars");
+        assert_eq!(h1.len(), 32, "FNV-1a 128-bit hash should be 32 hex chars");
     }
 
     #[test]

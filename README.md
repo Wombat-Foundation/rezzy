@@ -58,7 +58,7 @@ Because we care about raw performance and mechanical efficiency, `rezzy` is buil
 - Supremum deletion attack (Byzantine fault mitigation)
 - Optimal conflicted state sub-graph computation (MSC4297)
 - **Roaring bitmaps** (SIMD-optimized set operations)
-- `FNV-1a` lexicographical state hashing
+- `FNV-1a` 128-bit lexicographical state hashing
 
 ## TODO
 
