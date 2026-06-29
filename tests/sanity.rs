@@ -205,8 +205,11 @@ fn test_compute_state_at_batch() {
     assert_eq!(batch_results[tip_id].len(), 100);
 
     // Verify empty batch handles gracefully
-    let empty_results =
-        compute_state_at_batch::<String, str, _>(&[], &events_map, StateResVersion::V2);
+    let empty_results = compute_state_at_batch::<String, serde_json::Value, str, _>(
+        &[],
+        &events_map,
+        StateResVersion::V2,
+    );
     assert!(empty_results.is_empty());
 
     // Verify missing / invalid IDs are ignored or skipped gracefully without panics

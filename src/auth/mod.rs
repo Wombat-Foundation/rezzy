@@ -153,17 +153,17 @@ impl Ord for dyn StateKeyDyn + '_ {
 /// The built-in implementation is [`RoomState`] (a `BTreeMap`), but the
 /// resolution engine uses a more complex `OverlayState` internally
 /// that layers resolved state, local auth context, and the create event.
-pub trait StateProvider<Id = String> {
+pub trait StateProvider<Id = String, C = serde_json::Value> {
     /// Look up a state event by its type and state key.
-    fn get_event(&self, event_type: &str, state_key: Option<&str>) -> Option<&LeanEvent<Id>>;
+    fn get_event(&self, event_type: &str, state_key: Option<&str>) -> Option<&LeanEvent<Id, C>>;
 }
 
 /// The room state at a specific point in the DAG (keyed by (type, `state_key`) -> event).
-pub type RoomState<Id = String> =
-    alloc::collections::BTreeMap<(String, Option<String>), LeanEvent<Id>>;
+pub type RoomState<Id = String, C = serde_json::Value> =
+    alloc::collections::BTreeMap<(String, Option<String>), LeanEvent<Id, C>>;
 
-impl<Id> StateProvider<Id> for RoomState<Id> {
-    fn get_event(&self, event_type: &str, state_key: Option<&str>) -> Option<&LeanEvent<Id>> {
+impl<Id, C> StateProvider<Id, C> for RoomState<Id, C> {
+    fn get_event(&self, event_type: &str, state_key: Option<&str>) -> Option<&LeanEvent<Id, C>> {
         let query: &dyn StateKeyDyn = &(event_type, state_key);
         self.get(query)
     }
@@ -181,9 +181,9 @@ impl<Id> StateProvider<Id> for RoomState<Id> {
 /// # Errors
 ///
 /// Returns an `AuthError` if the event fails authorization validation.
-pub fn check_auth<Id: Clone>(
-    event: &LeanEvent<Id>,
-    state: &impl StateProvider<Id>,
+pub fn check_auth<Id: Clone, C: crate::types::EventContent>(
+    event: &LeanEvent<Id, C>,
+    state: &impl StateProvider<Id, C>,
 ) -> Result<(), AuthError<Id>> {
     // Rule 0: Custom syntactic validation
     event
@@ -268,7 +268,10 @@ pub fn check_auth<Id: Clone>(
 const MAX_POWER_LEVEL: i64 = 9_007_199_254_740_991; // 2^53 - 1
 
 /// Get the power level of a user from the current room state.
-fn get_sender_power_level<Id>(sender: &str, state: &impl StateProvider<Id>) -> i64 {
+fn get_sender_power_level<Id, C: crate::types::EventContent>(
+    sender: &str,
+    state: &impl StateProvider<Id, C>,
+) -> i64 {
     // 1. Absolute Priority: Room Creator and additional creators (INFINITE power)
     if let Some(create_event) = state.get_event(M_ROOM_CREATE, Some("")) {
         let is_primary_creator = create_event.sender == sender;
@@ -301,7 +304,10 @@ fn get_sender_power_level<Id>(sender: &str, state: &impl StateProvider<Id>) -> i
 }
 
 /// Get the required power level to send an event based on room state.
-fn get_required_power_level<Id>(event: &LeanEvent<Id>, state: &impl StateProvider<Id>) -> i64 {
+fn get_required_power_level<Id, C: crate::types::EventContent>(
+    event: &LeanEvent<Id, C>,
+    state: &impl StateProvider<Id, C>,
+) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
         // Check specific event type overrides
         if let Some(pl) = pl_event.get_event_power_level(&event.event_type) {
@@ -323,9 +329,9 @@ fn get_required_power_level<Id>(event: &LeanEvent<Id>, state: &impl StateProvide
 }
 
 /// Validate leave/kick transition rules.
-fn check_leave_rules<Id: Clone>(
-    event: &LeanEvent<Id>,
-    state: &impl StateProvider<Id>,
+fn check_leave_rules<Id: Clone, C: crate::types::EventContent>(
+    event: &LeanEvent<Id, C>,
+    state: &impl StateProvider<Id, C>,
     target_user: &str,
     current_membership: &str,
 ) -> Result<(), AuthError<Id>> {
@@ -357,9 +363,9 @@ fn check_leave_rules<Id: Clone>(
 }
 
 /// Validate ban transition rules.
-fn check_ban_rules<Id: Clone>(
-    event: &LeanEvent<Id>,
-    state: &impl StateProvider<Id>,
+fn check_ban_rules<Id: Clone, C: crate::types::EventContent>(
+    event: &LeanEvent<Id, C>,
+    state: &impl StateProvider<Id, C>,
 ) -> Result<(), AuthError<Id>> {
     // Banning requires the ban power level
     let sender_pl = get_sender_power_level(&event.sender, state);
@@ -375,9 +381,9 @@ fn check_ban_rules<Id: Clone>(
 }
 
 /// Validate invite transition rules.
-fn check_invite_rules<Id: Clone>(
-    event: &LeanEvent<Id>,
-    state: &impl StateProvider<Id>,
+fn check_invite_rules<Id: Clone, C: crate::types::EventContent>(
+    event: &LeanEvent<Id, C>,
+    state: &impl StateProvider<Id, C>,
     target_user: &str,
     current_membership: &str,
 ) -> Result<(), AuthError<Id>> {
@@ -410,9 +416,9 @@ fn check_invite_rules<Id: Clone>(
 }
 
 /// Validate sender power level hierarchies (sender PL vs target PL, and previous sender rules).
-fn check_membership_pl_hierarchies<Id: Clone>(
-    event: &LeanEvent<Id>,
-    state: &impl StateProvider<Id>,
+fn check_membership_pl_hierarchies<Id: Clone, C: crate::types::EventContent>(
+    event: &LeanEvent<Id, C>,
+    state: &impl StateProvider<Id, C>,
     target_user: &str,
     new_membership: &str,
 ) -> Result<(), AuthError<Id>> {
@@ -439,9 +445,9 @@ fn check_membership_pl_hierarchies<Id: Clone>(
 }
 
 /// Validate membership transition rules for `m.room.member` events.
-fn check_membership_rules<Id: Clone>(
-    event: &LeanEvent<Id>,
-    state: &impl StateProvider<Id>,
+fn check_membership_rules<Id: Clone, C: crate::types::EventContent>(
+    event: &LeanEvent<Id, C>,
+    state: &impl StateProvider<Id, C>,
 ) -> Result<(), AuthError<Id>> {
     let target_user = event.state_key.as_deref().unwrap_or("");
     let new_membership = event.get_membership().unwrap_or("");
@@ -472,9 +478,9 @@ fn check_membership_rules<Id: Clone>(
     Ok(())
 }
 
-fn check_join_rules<Id: Clone>(
-    event: &LeanEvent<Id>,
-    state: &impl StateProvider<Id>,
+fn check_join_rules<Id: Clone, C: crate::types::EventContent>(
+    event: &LeanEvent<Id, C>,
+    state: &impl StateProvider<Id, C>,
     target_user: &str,
 ) -> Result<(), AuthError<Id>> {
     // A user can only join as themselves
@@ -527,7 +533,9 @@ fn check_join_rules<Id: Clone>(
 }
 
 /// Get the kick power level from room state.
-fn get_kick_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
+fn get_kick_power_level<Id, C: crate::types::EventContent>(
+    state: &impl StateProvider<Id, C>,
+) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
         if let Some(kick) = pl_event.get_kick() {
             return kick;
@@ -537,7 +545,9 @@ fn get_kick_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
 }
 
 /// Get the ban power level from room state.
-fn get_invite_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
+fn get_invite_power_level<Id, C: crate::types::EventContent>(
+    state: &impl StateProvider<Id, C>,
+) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
         if let Some(invite) = pl_event.get_invite() {
             return invite;
@@ -546,7 +556,9 @@ fn get_invite_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
     0 // Default invite power level per Matrix spec (v12)
 }
 
-fn get_ban_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
+fn get_ban_power_level<Id, C: crate::types::EventContent>(
+    state: &impl StateProvider<Id, C>,
+) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
         if let Some(ban) = pl_event.get_ban() {
             return ban;
@@ -559,9 +571,9 @@ fn get_ban_power_level<Id>(state: &impl StateProvider<Id>) -> i64 {
 /// Returns the list of events that passed auth checks, and the list that failed
 /// with their respective errors.
 #[must_use]
-pub fn check_auth_chain<Id: Clone + Ord>(
-    sorted_events: &[LeanEvent<Id>],
-    initial_state: &RoomState<Id>,
+pub fn check_auth_chain<Id: Clone + Ord, C: crate::types::EventContent>(
+    sorted_events: &[LeanEvent<Id, C>],
+    initial_state: &RoomState<Id, C>,
 ) -> (Vec<Id>, Vec<(Id, AuthError<Id>)>) {
     let mut state = initial_state.clone();
     let mut accepted = Vec::new();

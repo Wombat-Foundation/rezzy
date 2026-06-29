@@ -45,7 +45,7 @@ const FIXTURE_DIR: &str = "res/ruma_upstream";
 fn sort_and_verify(events: &[LeanEvent], version: StateResVersion) -> Vec<String> {
     let map = to_event_map(events);
     let create_ev = events.iter().find(|ev| ev.event_type == "m.room.create");
-    let result = rezzy::lean_kahn_sort_detailed(&map, &map, create_ev, version);
+    let result = rezzy::lean_kahn_sort_with_cycle_diagnostics(&map, &map, create_ev, version);
     assert!(result.is_ok(), "Cycle detected during sort");
     result.into_sorted()
 }
