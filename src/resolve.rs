@@ -150,9 +150,12 @@ pub(crate) fn route_msc4297_ancestral_power_events<
         for id in &conflicted_power_ancestry {
             if !original_conflicted_keys.contains(id) {
                 if let Some(ev) = auth_context.get(id) {
+                    let is_join_rules_allowed =
+                        ev.event_type == "m.room.join_rules" && version == StateResVersion::V2_1;
+
                     if ev.event_type == "m.room.power_levels"
                         || ev.event_type == "m.room.create"
-                        || ev.event_type == "m.room.join_rules"
+                        || is_join_rules_allowed
                     {
                         power_events.insert(id.clone(), ev.clone());
                     }
