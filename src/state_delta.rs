@@ -641,12 +641,18 @@ pub fn reconstruct_state_batch(
         return BTreeMap::new();
     }
 
-    // Build hash -> index map for parent lookups
-    let hash_to_idx: HashMap<&str, usize> = checkpoints
-        .iter()
-        .enumerate()
-        .map(|(i, cp)| (cp.state_hash.as_str(), i))
-        .collect();
+    // Backward-only parent lookup: prefer immediate predecessor, fall back to
+    // scanning earlier checkpoints. This avoids the HashMap shadowing bug where
+    // duplicate hashes overwrite earlier entries.
+    let find_parent_idx = |idx: usize, parent_hash: &str| -> Option<usize> {
+        idx.checked_sub(1)
+            .filter(|&pi| checkpoints[pi].state_hash == parent_hash)
+            .or_else(|| {
+                checkpoints[..idx]
+                    .iter()
+                    .rposition(|cp| cp.state_hash == parent_hash)
+            })
+    };
 
     // Walk backwards from all targets to find all required ancestors
     let mut required_indices = alloc::collections::BTreeSet::new();
@@ -654,16 +660,7 @@ pub fn reconstruct_state_batch(
     while let Some(idx) = queue.pop() {
         if required_indices.insert(idx) && checkpoints[idx].snapshot.is_none() {
             if let Some(parent_hash) = &checkpoints[idx].parent_hash {
-                // Prefer sequential index to avoid hash collisions
-                if let Some(prev) = idx
-                    .checked_sub(1)
-                    .filter(|&pi| checkpoints[pi].state_hash == *parent_hash)
-                {
-                    queue.push(prev);
-                } else if let Some(&p_idx) = hash_to_idx
-                    .get(parent_hash.as_str())
-                    .filter(|&&pi| pi < idx)
-                {
+                if let Some(p_idx) = find_parent_idx(idx, parent_hash) {
                     queue.push(p_idx);
                 }
             }
@@ -679,27 +676,29 @@ pub fn reconstruct_state_batch(
         let state = if let Some(ref snapshot) = cp.snapshot {
             snapshot.clone()
         } else if let Some(parent_hash) = &cp.parent_hash {
-            // Prefer sequential index to avoid hash collisions
-            let p_idx = if let Some(prev) = idx
-                .checked_sub(1)
-                .filter(|&pi| checkpoints[pi].state_hash == *parent_hash)
-            {
-                prev
-            } else if let Some(&pi) = hash_to_idx
-                .get(parent_hash.as_str())
-                .filter(|&&pi| pi < idx)
-            {
-                pi
+            if let Some(p_idx) = find_parent_idx(idx, parent_hash) {
+                if let Some(parent_state) = known_states.get(&p_idx) {
+                    apply_state_delta(parent_state, &cp.deltas)
+                } else {
+                    #[cfg(feature = "std")]
+                    std::eprintln!(
+                        "state_delta: checkpoint {idx} parent {p_idx} not reconstructed"
+                    );
+                    continue; // BROKEN CHAIN: Parent was required but not reconstructed (gap in chain)
+                }
             } else {
-                continue; // Broken chain
-            };
-            if let Some(parent_state) = known_states.get(&p_idx) {
-                apply_state_delta(parent_state, &cp.deltas)
-            } else {
-                continue; // Broken chain
+                #[cfg(feature = "std")]
+                std::eprintln!(
+                    "state_delta: checkpoint {idx} has no earlier match for parent_hash {parent_hash:?}"
+                );
+                continue; // BROKEN CHAIN: No earlier checkpoint matches parent_hash
             }
         } else {
-            continue; // Broken chain
+            #[cfg(feature = "std")]
+            std::eprintln!(
+                "state_delta: checkpoint {idx} is an orphan (no snapshot, no parent_hash)"
+            );
+            continue; // BROKEN CHAIN: No snapshot and no parent_hash — orphan checkpoint
         };
 
         if sorted_targets.binary_search(&idx).is_ok() {
@@ -1244,5 +1243,104 @@ mod tests {
         assert_eq!(results[&0], state_a);
         assert_eq!(results[&1], state_b);
         assert_eq!(results[&2], state_a);
+    }
+
+    /// Regression: `hash_to_idx` `HashMap` shadowing — when duplicate hashes exist,
+    /// `.collect()` only stores the LAST index, erasing the valid earlier parent.
+    /// This test constructs a chain where `HASH_A` appears at indices 0 and 4, and
+    /// verifies that index 3 (whose parent is `HASH_A`) correctly resolves to
+    /// index 0, not silently fails because index 4 shadowed the lookup.
+    #[test]
+    fn test_batch_hash_shadowing_regression() {
+        let hash_a: String = "HASH_A".into();
+        let hash_b: String = "HASH_B".into();
+        let hash_c: String = "HASH_C".into();
+        let hash_d: String = "HASH_D".into();
+
+        let state_a = {
+            let mut s = BTreeMap::new();
+            s.insert(("m.room.create".into(), Some(String::new())), "$c".into());
+            s
+        };
+
+        // Chain: [0:A] -> [1:B] -> [2:C] -> [3:D] -> [4:A]
+        // Index 3's parent_hash is HASH_C (index 2) — normal.
+        // Index 1's parent_hash is HASH_A — should resolve to index 0.
+        // Index 4's parent_hash is HASH_D (index 3) — normal.
+        // The trap: hash_to_idx["HASH_A"] would be 4 (last), not 0.
+        // Reconstructing index 1 needs HASH_A → index 0, but HashMap returns 4.
+        let checkpoints = alloc::vec![
+            CompactedCheckpoint {
+                state_hash: hash_a.clone(),
+                parent_hash: None,
+                event_id: "$0".into(),
+                deltas: alloc::vec![],
+                snapshot: Some(state_a.clone()),
+            },
+            CompactedCheckpoint {
+                state_hash: hash_b.clone(),
+                parent_hash: Some(hash_a.clone()),
+                event_id: "$1".into(),
+                deltas: alloc::vec![StateDelta {
+                    event_type: "m.room.topic".into(),
+                    state_key: Some(String::new()),
+                    event_id: Some("$t1".into()),
+                }],
+                snapshot: None,
+            },
+            CompactedCheckpoint {
+                state_hash: hash_c.clone(),
+                parent_hash: Some(hash_b.clone()),
+                event_id: "$2".into(),
+                deltas: alloc::vec![StateDelta {
+                    event_type: "m.room.topic".into(),
+                    state_key: Some(String::new()),
+                    event_id: Some("$t2".into()),
+                }],
+                snapshot: None,
+            },
+            CompactedCheckpoint {
+                state_hash: hash_d.clone(),
+                parent_hash: Some(hash_c),
+                event_id: "$3".into(),
+                deltas: alloc::vec![StateDelta {
+                    event_type: "m.room.topic".into(),
+                    state_key: Some(String::new()),
+                    event_id: Some("$t3".into()),
+                }],
+                snapshot: None,
+            },
+            CompactedCheckpoint {
+                state_hash: hash_a.clone(), // Duplicate of index 0!
+                parent_hash: Some(hash_d),
+                event_id: "$4".into(),
+                deltas: alloc::vec![StateDelta {
+                    event_type: "m.room.topic".into(),
+                    state_key: Some(String::new()),
+                    event_id: None, // deletion — reverts to state_a
+                }],
+                snapshot: None,
+            },
+        ];
+
+        // Batch reconstruct all — with HashMap shadowing, indices 1-3 would
+        // silently fail because HASH_A maps to index 4 (future), not index 0.
+        let results = reconstruct_state_batch(&checkpoints, &[0, 1, 2, 3, 4]);
+        assert_eq!(
+            results.len(),
+            5,
+            "all 5 checkpoints should reconstruct, got {}: {:?}",
+            results.len(),
+            results.keys().collect::<alloc::vec::Vec<_>>()
+        );
+        assert_eq!(results[&0], state_a, "index 0 (snapshot)");
+        assert_eq!(results[&4], state_a, "index 4 (reverted to state_a)");
+
+        // Also verify single-target reconstruction matches batch
+        for i in 0..5 {
+            let single = reconstruct_state_at(&checkpoints, i)
+                .unwrap_or_else(|| panic!("single reconstruct failed at {i}"));
+            assert_eq!(single, results[&i], "single vs batch mismatch at index {i}");
+        }
     }
 }
