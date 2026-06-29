@@ -494,24 +494,24 @@ where
 ///
 /// # Example
 ///
-/// ```
-/// use rezzy::compute_merge_base;
-/// use rezzy::{LeanEvent, HashMap};
+/// use `rezzy::{compute_merge_base`, `DagNode`};
+/// use `rezzy::{LeanEvent`, `HashMap`};
 ///
-/// let mut events: HashMap<String, LeanEvent> = HashMap::new();
+/// let mut events: `HashMap`<String, `LeanEvent`> = `HashMap::new()`;
 /// // ... populate events ...
-/// let tips = vec!["$tip_a", "$tip_b"];
-/// let merge_base = compute_merge_base(&tips, &events);
+/// let tips = vec!["$`tip_a`", "$`tip_b`"];
+/// let `merge_base` = `compute_merge_base(&tips`, &events);
 /// ```
 #[must_use]
-pub fn compute_merge_base<'a, Id, Q, S>(
+pub fn compute_merge_base<'a, Id, Q, S, Node>(
     extremities: &[&Q],
-    events_map: &'a HashMap<Id, LeanEvent<Id>, S>,
+    events_map: &'a HashMap<Id, Node, S>,
 ) -> Option<&'a Id>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
+    Node: crate::types::DagNode<Id>,
 {
     use alloc::collections::BinaryHeap;
 
@@ -538,7 +538,7 @@ where
             let idx = u32::try_from(i).expect("more than 2^32 extremities");
             let entry = masks.entry(k).or_default();
             entry.insert(idx);
-            queue.push((ev.depth, k));
+            queue.push((ev.depth(), k));
         }
     }
 
@@ -554,7 +554,7 @@ where
         }
 
         if let Some(ev) = events_map.get(current_id.borrow()) {
-            for parent_id in &ev.prev_events {
+            for parent_id in ev.prev_events() {
                 let parent_q: &Q = parent_id.borrow();
                 if let Some((pk, parent_ev)) = events_map.get_key_value(parent_q) {
                     let is_new = !masks.contains_key(pk);
@@ -562,7 +562,7 @@ where
                     *parent_mask |= &current_mask;
 
                     if is_new {
-                        queue.push((parent_ev.depth, pk));
+                        queue.push((parent_ev.depth(), pk));
                     }
                 }
             }

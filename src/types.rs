@@ -20,6 +20,7 @@
 //! - [`StateResVersion`] — selects the resolution algorithm variant.
 //! - [`SortPriority`] — a `BinaryHeap` wrapper encoding the V1/V2 sort semantics.
 //! - [`KahnSortResult`] — the result of topological sorting, with cycle diagnostics.
+//! - [`DagNode`] — a trait for generic topological traversal without requiring `LeanEvent`.
 
 use crate::event_types::M_ROOM_CREATE;
 use crate::HashMap;
@@ -147,6 +148,27 @@ impl<Id> KahnSortResult<Id> {
     #[must_use]
     pub fn is_ok(&self) -> bool {
         matches!(self, KahnSortResult::Ok(_))
+    }
+}
+
+/// A generic interface for graph nodes required by topological algorithms
+/// (e.g., `compute_merge_base`). This allows consumers like `conduwuit` to
+/// pass their own lightweight `EventMeta` tuples without allocating dummy JSON structs.
+pub trait DagNode<Id> {
+    fn depth(&self) -> u64;
+    fn prev_events(&self) -> &[Id];
+    fn auth_events(&self) -> &[Id];
+}
+
+impl<Id> DagNode<Id> for LeanEvent<Id> {
+    fn depth(&self) -> u64 {
+        self.depth
+    }
+    fn prev_events(&self) -> &[Id] {
+        &self.prev_events
+    }
+    fn auth_events(&self) -> &[Id] {
+        &self.auth_events
     }
 }
 
