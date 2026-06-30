@@ -807,7 +807,10 @@ pub fn auth_types_for_event(
 
         let membership = content.get(FIELD_MEMBERSHIP).and_then(|v| v.as_str());
 
-        if membership == Some(MEM_JOIN) || membership == Some(MEM_INVITE) {
+        if membership == Some(MEM_JOIN)
+            || membership == Some(MEM_INVITE)
+            || membership == Some(MEM_KNOCK)
+        {
             auth_types.push((M_ROOM_JOIN_RULES.into(), String::new()));
         }
 

@@ -1433,6 +1433,19 @@ fn test_auth_types_for_event() {
         "m.room.third_party_invite".to_string(),
         "token123".to_string()
     )));
+
+    // Knock events must include join_rules in auth state
+    let types = auth_types_for_event(
+        "m.room.member",
+        "@alice:x.com",
+        Some("@alice:x.com"),
+        &json!({"membership": "knock"}),
+        StateResVersion::V2,
+    );
+    assert!(
+        types.contains(&("m.room.join_rules".to_string(), String::new())),
+        "knock membership must require m.room.join_rules in auth types"
+    );
 }
 
 #[test]
