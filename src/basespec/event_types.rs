@@ -46,6 +46,17 @@ pub const FIELD_MXID: &str = "mxid";
 pub const FIELD_SIGNATURES: &str = "signatures";
 // Note: Part of canonical JSON in pre-v3 rooms
 pub const FIELD_EVENT_ID: &str = "event_id";
+// LeanEvent PDU fields
+pub const FIELD_TYPE: &str = "type";
+pub const FIELD_STATE_KEY: &str = "state_key";
+pub const FIELD_POWER_LEVEL: &str = "power_level";
+pub const FIELD_ORIGIN_SERVER_TS: &str = "origin_server_ts";
+pub const FIELD_SENDER: &str = "sender";
+pub const FIELD_CONTENT: &str = "content";
+pub const FIELD_PREV_EVENTS: &str = "prev_events";
+pub const FIELD_AUTH_EVENTS: &str = "auth_events";
+pub const FIELD_DEPTH: &str = "depth";
+pub const FIELD_UNSIGNED: &str = "unsigned";
 
 // Membership and Join Rule string values
 pub const MEM_JOIN: &str = "join";

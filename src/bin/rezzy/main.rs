@@ -13,7 +13,7 @@
 // limitations under the License.
 
 mod format;
-mod merge;
+mod jsonl_merge;
 mod network;
 mod utils;
 

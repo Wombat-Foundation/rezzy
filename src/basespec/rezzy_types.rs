@@ -195,7 +195,7 @@ impl<Id, C> DagNode<Id> for LeanEvent<Id, C> {
 ///
 /// # Note on Room ID
 ///
-/// `LeanEvent` omits `room_id`. `ruma-lean` is a specialized algorithmic engine
+/// `LeanEvent` omits `room_id`. `rezzy` is a specialized algorithmic engine
 /// that expects the host homeserver (e.g., Synapse, Conduit) to perform initial
 /// database-level filtering. The host is responsible for verifying cryptographic
 /// signatures and filtering events by `room_id` *before* passing them to `resolve_iterative_sort`.
@@ -235,20 +235,21 @@ impl<Id: serde::Serialize, C: serde::Serialize> serde::Serialize for LeanEvent<I
     where
         S: serde::Serializer,
     {
+        use crate::basespec::event_types::*;
         use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("LeanEvent", 10)?;
-        state.serialize_field("event_id", &self.event_id)?;
-        state.serialize_field("type", &self.event_type)?;
+        state.serialize_field(FIELD_EVENT_ID, &self.event_id)?;
+        state.serialize_field(FIELD_TYPE, &self.event_type)?;
         if let Some(ref sk) = self.state_key {
-            state.serialize_field("state_key", sk)?;
+            state.serialize_field(FIELD_STATE_KEY, sk)?;
         }
-        state.serialize_field("power_level", &self.power_level)?;
-        state.serialize_field("origin_server_ts", &self.origin_server_ts)?;
-        state.serialize_field("sender", &self.sender)?;
-        state.serialize_field("content", &self.content)?;
-        state.serialize_field("prev_events", &self.prev_events)?;
-        state.serialize_field("auth_events", &self.auth_events)?;
-        state.serialize_field("depth", &self.depth)?;
+        state.serialize_field(FIELD_POWER_LEVEL, &self.power_level)?;
+        state.serialize_field(FIELD_ORIGIN_SERVER_TS, &self.origin_server_ts)?;
+        state.serialize_field(FIELD_SENDER, &self.sender)?;
+        state.serialize_field(FIELD_CONTENT, &self.content)?;
+        state.serialize_field(FIELD_PREV_EVENTS, &self.prev_events)?;
+        state.serialize_field(FIELD_AUTH_EVENTS, &self.auth_events)?;
+        state.serialize_field(FIELD_DEPTH, &self.depth)?;
         state.end()
     }
 }
@@ -569,7 +570,9 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
     {
         let value = Value::deserialize(deserializer)?;
 
-        let event_id = if let Some(id) = value.get("event_id").and_then(|v| v.as_str()) {
+        use crate::basespec::event_types::*;
+
+        let event_id = if let Some(id) = value.get(FIELD_EVENT_ID).and_then(|v| v.as_str()) {
             String::from(id)
         } else {
             #[cfg(feature = "hashing")]
@@ -579,8 +582,8 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
 
                 let mut hash_value = value.clone();
                 if let Some(obj) = hash_value.as_object_mut() {
-                    obj.remove("unsigned");
-                    obj.remove("signatures");
+                    obj.remove(FIELD_UNSIGNED);
+                    obj.remove(FIELD_SIGNATURES);
                 }
                 sort_json_value_keys(&mut hash_value);
 
@@ -601,7 +604,7 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
         };
 
         let event_type: String = value
-            .get("type")
+            .get(FIELD_TYPE)
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .into();
@@ -612,11 +615,11 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
             ));
         }
         let state_key = value
-            .get("state_key")
+            .get(FIELD_STATE_KEY)
             .and_then(|v| v.as_str())
             .map(String::from);
 
-        let power_level = match value.get("power_level") {
+        let power_level = match value.get(FIELD_POWER_LEVEL) {
             Some(pl) => {
                 if let Some(i) = pl.as_i64() {
                     i.min(MAX_POWER_LEVEL_JSON)
@@ -636,17 +639,17 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
             None => 0,
         };
 
-        let origin_server_ts = match value.get("origin_server_ts") {
+        let origin_server_ts = match value.get(FIELD_ORIGIN_SERVER_TS) {
             Some(ts) => ts.as_u64().unwrap_or(0),
             None => 0,
         };
 
         let sender = value
-            .get("sender")
+            .get(FIELD_SENDER)
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .into();
-        let content = value.get("content").cloned().unwrap_or(Value::Null);
+        let content = value.get(FIELD_CONTENT).cloned().unwrap_or(Value::Null);
 
         let parse_string_array = |key: &str| -> Vec<String> {
             value
@@ -660,10 +663,10 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
                 .unwrap_or_default()
         };
 
-        let prev_events = parse_string_array("prev_events");
-        let auth_events = parse_string_array("auth_events");
+        let prev_events = parse_string_array(FIELD_PREV_EVENTS);
+        let auth_events = parse_string_array(FIELD_AUTH_EVENTS);
         let depth = value
-            .get("depth")
+            .get(FIELD_DEPTH)
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
 
