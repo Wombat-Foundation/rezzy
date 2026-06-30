@@ -625,7 +625,7 @@ pub fn check_auth_chain<Id: Clone + Ord, C: crate::basespec::rezzy_types::EventC
 
 /// Warns to stderr if an event's `auth_events` reference types outside the
 /// spec-expected subset. For v12+, `m.room.create` in `auth_events` is a hard reject (spec rule 3.2).
-#[cfg(all(feature = "std", not(test)))]
+#[cfg(all(feature = "std", not(test), not(tarpaulin)))]
 pub fn warn_unexpected_auth_events<
     Id: core::fmt::Debug + Clone + Eq + core::hash::Hash,
     C: crate::basespec::rezzy_types::EventContent,

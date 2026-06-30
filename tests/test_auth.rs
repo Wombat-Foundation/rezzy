@@ -1264,3 +1264,314 @@ fn test_v2_additional_creators_ignored() {
         "V2.1 should honor additional_creators — user should have MAX_POWER_LEVEL"
     );
 }
+
+#[test]
+fn test_ban_insufficient_power_level() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.member".into(), "@low:x.com".into()),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@low:x.com"),
+            "@low:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    let ban = make_event(
+        "$ban",
+        "m.room.member",
+        Some("@target:x.com"),
+        "@low:x.com",
+        json!({"membership": "ban"}),
+    );
+    let result = check_auth(&ban, &state, rezzy::StateResVersion::V2_1);
+    assert!(
+        matches!(
+            result,
+            Err(AuthError::InsufficientPowerLevel {
+                required: 50,
+                actual: 0,
+                ref event_type
+            }) if event_type == "ban"
+        ),
+        "Expected InsufficientPowerLevel for ban, got {result:?}"
+    );
+}
+
+#[test]
+fn test_kick_insufficient_power_level() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.member".into(), "@low:x.com".into()),
+        make_event(
+            "$j1",
+            "m.room.member",
+            Some("@low:x.com"),
+            "@low:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@target:x.com".into()),
+        make_event(
+            "$j2",
+            "m.room.member",
+            Some("@target:x.com"),
+            "@target:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    let kick = make_event(
+        "$kick",
+        "m.room.member",
+        Some("@target:x.com"),
+        "@low:x.com",
+        json!({"membership": "leave"}),
+    );
+    let result = check_auth(&kick, &state, rezzy::StateResVersion::V2_1);
+    assert!(
+        matches!(
+            result,
+            Err(AuthError::InsufficientPowerLevel {
+                required: 50,
+                actual: 0,
+                ref event_type
+            }) if event_type == "kick"
+        ),
+        "Expected InsufficientPowerLevel for kick, got {result:?}"
+    );
+}
+
+#[test]
+fn test_state_key_dyn_trait_coverage() {
+    use std::borrow::Borrow;
+
+    let key1 = ("m.room.message".to_string(), "state_key1".to_string());
+    let key2 = ("m.room.message".to_string(), "state_key1".to_string());
+    let key3 = ("m.room.member".to_string(), "state_key2".to_string());
+
+    let b1: &dyn StateKeyDyn = key1.borrow();
+    let b2: &dyn StateKeyDyn = key2.borrow();
+    let b3: &dyn StateKeyDyn = key3.borrow();
+
+    assert!(b1 == b2);
+    assert!(b1 != b3);
+
+    assert_eq!(b1.partial_cmp(b2), Some(std::cmp::Ordering::Equal));
+    assert_eq!(b3.partial_cmp(b1), Some(std::cmp::Ordering::Less));
+    assert_eq!(b1.partial_cmp(b3), Some(std::cmp::Ordering::Greater));
+
+    let s1 = ("m.room.message", "state_key1");
+    let s2 = ("m.room.member", "state_key2");
+    let dyn_s1: &dyn StateKeyDyn = &s1;
+    let dyn_s2: &dyn StateKeyDyn = &s2;
+
+    assert_eq!(dyn_s1.ev_type(), "m.room.message");
+    assert_eq!(dyn_s1.state_key(), "state_key1");
+    assert_eq!(dyn_s2.ev_type(), "m.room.member");
+    assert_eq!(dyn_s2.state_key(), "state_key2");
+}
+
+#[test]
+fn test_auth_types_for_event() {
+    let types = auth_types_for_event(
+        "m.room.create",
+        "@alice:x.com",
+        Some(""),
+        &json!({}),
+        StateResVersion::V2_1,
+    );
+    assert!(types.is_empty());
+
+    let types = auth_types_for_event(
+        "m.room.message",
+        "@alice:x.com",
+        None,
+        &json!({}),
+        StateResVersion::V2,
+    );
+    assert!(types.contains(&("m.room.create".to_string(), String::new())));
+    assert!(types.contains(&("m.room.member".to_string(), "@alice:x.com".to_string())));
+    assert!(types.contains(&("m.room.power_levels".to_string(), String::new())));
+
+    let types = auth_types_for_event(
+        "m.room.message",
+        "@alice:x.com",
+        None,
+        &json!({}),
+        StateResVersion::V2_1,
+    );
+    assert!(!types.contains(&("m.room.create".to_string(), String::new())));
+
+    let content = json!({
+        "membership": "join",
+        "third_party_invite": {
+            "signed": {
+                "token": "token123"
+            }
+        }
+    });
+    let types = auth_types_for_event(
+        "m.room.member",
+        "@alice:x.com",
+        Some("@bob:x.com"),
+        &content,
+        StateResVersion::V2_1,
+    );
+    assert!(types.contains(&("m.room.member".to_string(), "@bob:x.com".to_string())));
+    assert!(types.contains(&("m.room.join_rules".to_string(), String::new())));
+    assert!(types.contains(&(
+        "m.room.third_party_invite".to_string(),
+        "token123".to_string()
+    )));
+}
+
+#[test]
+fn test_join_rules_not_member_invite_only() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.join_rules".into(), String::new()),
+        make_event(
+            "$jr",
+            "m.room.join_rules",
+            Some(""),
+            "@admin:x.com",
+            json!({"join_rule": "invite"}),
+        ),
+    );
+    let join_attempt = make_event(
+        "$join",
+        "m.room.member",
+        Some("@newcomer:x.com"),
+        "@newcomer:x.com",
+        json!({"membership": "join"}),
+    );
+    let result = check_auth(&join_attempt, &state, rezzy::StateResVersion::V2_1);
+    assert!(
+        matches!(
+            result,
+            Err(AuthError::NotMember {
+                ref sender,
+                ..
+            }) if sender == "@newcomer:x.com"
+        ),
+        "Expected NotMember error when joining invite-only room without invite, got {result:?}"
+    );
+}
+
+#[test]
+fn test_join_rules_not_member_knock() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.join_rules".into(), String::new()),
+        make_event(
+            "$jr",
+            "m.room.join_rules",
+            Some(""),
+            "@admin:x.com",
+            json!({"join_rule": "knock"}),
+        ),
+    );
+    let join_attempt = make_event(
+        "$join",
+        "m.room.member",
+        Some("@newcomer:x.com"),
+        "@newcomer:x.com",
+        json!({"membership": "join"}),
+    );
+    let result = check_auth(&join_attempt, &state, rezzy::StateResVersion::V2_1);
+    assert!(
+        matches!(
+            result,
+            Err(AuthError::NotMember {
+                ref sender,
+                ..
+            }) if sender == "@newcomer:x.com"
+        ),
+        "Expected NotMember error when joining knock room without knock/invite, got {result:?}"
+    );
+}
+
+#[test]
+fn test_join_rules_not_member_custom_rule() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.join_rules".into(), String::new()),
+        make_event(
+            "$jr",
+            "m.room.join_rules",
+            Some(""),
+            "@admin:x.com",
+            json!({"join_rule": "private"}),
+        ),
+    );
+    let join_attempt = make_event(
+        "$join",
+        "m.room.member",
+        Some("@newcomer:x.com"),
+        "@newcomer:x.com",
+        json!({"membership": "join"}),
+    );
+    let result = check_auth(&join_attempt, &state, rezzy::StateResVersion::V2_1);
+    assert!(
+        matches!(
+            result,
+            Err(AuthError::NotMember {
+                ref sender,
+                ..
+            }) if sender == "@newcomer:x.com"
+        ),
+        "Expected NotMember error when joining custom-rule room, got {result:?}"
+    );
+}
+
+#[test]
+fn test_membership_rules_fallback() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.member".into(), "@alice:x.com".into()),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@alice:x.com"),
+            "@alice:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    // Custom/unknown membership transition: e.g. "knock"
+    let knock = make_event(
+        "$knock",
+        "m.room.member",
+        Some("@alice:x.com"),
+        "@alice:x.com",
+        json!({"membership": "knock"}),
+    );
+    let result = check_auth(&knock, &state, rezzy::StateResVersion::V2_1);
+    // Should fall through match in check_membership_rules, and check_membership_pl_hierarchies, and succeed.
+    assert!(result.is_ok(), "Expected Ok(()), got {result:?}");
+}
