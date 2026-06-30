@@ -1576,7 +1576,7 @@ fn test_membership_rules_fallback() {
             json!({"membership": "join"}),
         ),
     );
-    // Truly unknown membership transition: falls through the _ => {} catch-all
+    // Truly unknown membership transition: spec rule 5.8 says reject.
     // Note: "knock" is no longer unknown — it has proper validation (MSC2403).
     let unknown = make_event(
         "$unknown",
@@ -1586,8 +1586,11 @@ fn test_membership_rules_fallback() {
         json!({"membership": "custom_xyz"}),
     );
     let result = check_auth(&unknown, &state, rezzy::StateResVersion::V2_1);
-    // Should fall through match in check_membership_rules, and check_membership_pl_hierarchies, and succeed.
-    assert!(result.is_ok(), "Expected Ok(()), got {result:?}");
+    // Spec rule 5.8: unknown membership must be rejected.
+    assert!(
+        result.is_err(),
+        "Unknown membership must be rejected, got {result:?}"
+    );
 }
 
 #[test]
@@ -1643,5 +1646,94 @@ fn test_invite_already_joined_user_rejected() {
     assert!(
         result.is_err(),
         "inviting an already-joined user must be rejected, got {result:?}"
+    );
+}
+
+#[test]
+fn test_owned_state_key_rejected_when_sender_mismatch() {
+    // Spec auth rule 9 (all versions): For non-member state events with @-prefixed state_key,
+    // the sender must match the state_key.
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@admin:x.com",
+            json!({"users": {"@admin:x.com": 100}}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@admin:x.com".into()),
+        make_event(
+            "$admin_join",
+            "m.room.member",
+            Some("@admin:x.com"),
+            "@admin:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Admin tries to set a state event with state_key=@bob (not themselves)
+    let owned_event = make_event(
+        "$owned",
+        "org.example.custom",
+        Some("@bob:x.com"),
+        "@admin:x.com",
+        json!({"data": "hijack"}),
+    );
+    let result = check_auth(&owned_event, &state, rezzy::StateResVersion::V2_1);
+    assert!(
+        result.is_err(),
+        "non-member state event with @-prefixed state_key must reject sender mismatch, got {result:?}"
+    );
+}
+
+#[test]
+fn test_owned_state_key_allowed_when_sender_matches() {
+    // Spec auth rule 9: sender == state_key should be allowed.
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@alice:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@alice:x.com",
+            json!({"users": {"@alice:x.com": 100}}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@alice:x.com".into()),
+        make_event(
+            "$alice_join",
+            "m.room.member",
+            Some("@alice:x.com"),
+            "@alice:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Alice sets her own state_key — should succeed
+    let owned_event = make_event(
+        "$owned",
+        "org.example.custom",
+        Some("@alice:x.com"),
+        "@alice:x.com",
+        json!({"data": "mine"}),
+    );
+    let result = check_auth(&owned_event, &state, rezzy::StateResVersion::V2_1);
+    assert!(
+        result.is_ok(),
+        "sender matching @-prefixed state_key should be allowed, got {result:?}"
     );
 }

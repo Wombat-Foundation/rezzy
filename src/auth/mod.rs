@@ -258,6 +258,19 @@ pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         }
     }
 
+    // Rule 4b (spec §rule 9, all versions): If the event has a state_key
+    // that starts with '@' and does not match the sender, reject.
+    if event.event_type != M_ROOM_MEMBER {
+        if let Some(ref sk) = event.state_key {
+            if sk.starts_with('@') && sk != &event.sender {
+                return Err(AuthError::InvalidStateKey {
+                    expected: event.sender.clone(),
+                    actual: sk.clone(),
+                });
+            }
+        }
+    }
+
     // Rule 5: m.room.member state_key validation
     if event.event_type == M_ROOM_MEMBER {
         check_membership_rules(event, state, version)?;
@@ -500,7 +513,12 @@ fn check_membership_rules<Id: Clone, C: crate::basespec::rezzy_types::EventConte
         MEM_BAN => check_ban_rules(event, state, version)?,
         MEM_INVITE => check_invite_rules(event, state, target_user, current_membership, version)?,
         MEM_KNOCK => check_knock_rules(event, state, target_user)?,
-        _ => {}
+        // Rule 5.8: Unknown membership — reject
+        _ => {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "unknown membership: {new_membership}"
+            )));
+        }
     }
 
     check_membership_pl_hierarchies(event, state, target_user, new_membership, version)?;
