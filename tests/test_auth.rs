@@ -2055,8 +2055,8 @@ fn test_third_party_invite_rejected_when_sender_mismatch() {
 
     let result = check_auth(&bob_invite, &state, StateResVersion::V2);
     assert!(
-        result.is_err(),
-        "3PI invite must fail if the sender of m.room.member does not match the sender of m.room.third_party_invite"
+        matches!(result, Err(AuthError::InvalidStateKey { .. })),
+        "3PI invite must fail as InvalidStateKey if sender mismatches, got: {result:?}"
     );
 }
 
@@ -2180,8 +2180,8 @@ fn test_third_party_invite_rejected_when_signatures_missing() {
 
     let result = check_auth(&alice_invite, &state, StateResVersion::V2);
     assert!(
-        result.is_err(),
-        "3PI invite must fail if signatures block is missing"
+        matches!(result, Err(AuthError::InvalidSyntax(_))),
+        "3PI invite must fail as InvalidSyntax if signatures block is missing, got: {result:?}"
     );
 }
 
@@ -2232,8 +2232,132 @@ fn test_third_party_invite_rejected_when_token_missing() {
 
     let result = check_auth(&alice_invite, &state, StateResVersion::V2);
     assert!(
-        result.is_err(),
-        "3PI invite must fail if token does not exist in state, EVEN IF sender has PL to invite normally"
+        matches!(result, Err(AuthError::InvalidStateKey { .. })),
+        "3PI invite must fail as InvalidStateKey if token does not exist in state, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_third_party_invite_rejected_when_issuer_lacks_power() {
+    use rezzy::basespec::event_types::{
+        M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,
+    };
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:matrix.org",
+            json!({"creator": "@alice:matrix.org"}),
+        ),
+    );
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({
+                "users": { "@alice:matrix.org": 100, "@bob:matrix.org": 10 },
+                "invite": 50
+            }),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@bob:matrix.org".into()),
+        make_event(
+            "$b",
+            M_ROOM_MEMBER,
+            Some("@bob:matrix.org"),
+            "@bob:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+    // Bob created the 3PI token but only has PL 10, invite requires 50
+    state.insert(
+        (M_ROOM_THIRD_PARTY_INVITE.into(), "abc_token".into()),
+        make_event(
+            "$tpi",
+            M_ROOM_THIRD_PARTY_INVITE,
+            Some("abc_token"),
+            "@bob:matrix.org",
+            json!({"display_name": "charlie"}),
+        ),
+    );
+
+    let invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@bob:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "signed": {
+                    "token": "abc_token",
+                    "mxid": "@charlie:matrix.org",
+                    "signatures": { "example.com": { "ed25519:1": "dummy" } }
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&invite, &state, StateResVersion::V2);
+    assert!(
+        matches!(result, Err(AuthError::InsufficientPowerLevel { .. })),
+        "3PI invite must fail as InsufficientPowerLevel when issuer PL < invite PL, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_third_party_invite_rejected_when_mxid_missing() {
+    use rezzy::basespec::event_types::{M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({ "users": { "@alice:matrix.org": 100 }, "invite": 50 }),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@alice:matrix.org".into()),
+        make_event(
+            "$a",
+            M_ROOM_MEMBER,
+            Some("@alice:matrix.org"),
+            "@alice:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // third_party_invite.signed has token and signatures but NO mxid
+    let invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@alice:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "signed": {
+                    "token": "abc_token",
+                    "signatures": { "example.com": { "ed25519:1": "dummy" } }
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&invite, &state, StateResVersion::V2);
+    assert!(
+        matches!(result, Err(AuthError::InvalidSyntax(_))),
+        "3PI invite must fail as InvalidSyntax when mxid is missing from signed block, got: {result:?}"
     );
 }
 
@@ -2254,7 +2378,8 @@ fn test_third_party_invite_override_is_ignored() {
         ),
     );
 
-    // invite requires 50, but third_party_invite override is 0
+    // TODO: store this value as `pub const FIELD_PL_DEFAULT_REQ_INVITE: &int = 50`
+    // invite requires 50 by default, but third_party_invite override is 0
     let pl_content = json!({
         "invite": 50,
         "events": {
