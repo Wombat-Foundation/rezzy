@@ -40,7 +40,7 @@ authorization rules. Three distinct rule sets exist:
 | #     | Sub-rule                                                         | Versions | rezzy | Notes                                                 |
 | ----- | ---------------------------------------------------------------- | -------- | ----- | ----------------------------------------------------- |
 | 5.1   | Reject if no `state_key` or no `membership` in content           | all      | [ ]   | Not explicitly checked                                |
-| 5.2   | `join_authorised_via_users_server` signature check               | V8+      | [ ]   | Signature validation is HS-side, not rezzy            |
+| 5.2   | `join_authorised_via_users_server` signature check               | V8+      | [o]   | Signature validation is HS-side, not rezzy            |
 | 5.3.1 | **join**: creator can always join (first event is create)        | all      | [x]   | `is_creator` check                                    |
 | 5.3.2 | **join**: sender must match state_key                            | all      | [x]   | `InvalidStateKey`                                     |
 | 5.3.3 | **join**: reject if sender banned                                | all      | [x]   | `BannedUser`                                          |

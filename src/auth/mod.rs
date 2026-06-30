@@ -367,9 +367,15 @@ fn check_leave_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     current_membership: &str,
     version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
-    // Self-leave is always allowed (no power level check needed).
+    // Rule 5.5.1: self-leave is allowed only from invite, join, or knock.
     if target_user == event.sender {
-        return Ok(());
+        return match current_membership {
+            MEM_INVITE | MEM_JOIN | MEM_KNOCK => Ok(()),
+            _ => Err(AuthError::NotMember {
+                sender: event.sender.clone(),
+                event_id: event.event_id.clone(),
+            }),
+        };
     }
 
     // If target_user != sender, this is a kick or unban — requires power level

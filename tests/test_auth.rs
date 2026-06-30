@@ -1737,3 +1737,73 @@ fn test_owned_state_key_allowed_when_sender_matches() {
         "sender matching @-prefixed state_key should be allowed, got {result:?}"
     );
 }
+
+#[test]
+fn test_self_leave_rejected_when_already_left() {
+    // Spec rule 5.5.1: self-leave is only allowed if current membership is
+    // invite, join, or knock. A user who has already left cannot leave again.
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    // Alice has already left (or was never in the room — default is "leave")
+    state.insert(
+        ("m.room.member".into(), "@alice:x.com".into()),
+        make_event(
+            "$alice_leave",
+            "m.room.member",
+            Some("@alice:x.com"),
+            "@alice:x.com",
+            json!({"membership": "leave"}),
+        ),
+    );
+
+    // Alice tries to self-leave again
+    let leave = make_event(
+        "$leave_again",
+        "m.room.member",
+        Some("@alice:x.com"),
+        "@alice:x.com",
+        json!({"membership": "leave"}),
+    );
+    let result = check_auth(&leave, &state, rezzy::StateResVersion::V2_1);
+    assert!(
+        result.is_err(),
+        "self-leave when already left must be rejected, got {result:?}"
+    );
+}
+
+#[test]
+fn test_self_leave_allowed_from_knock() {
+    // Spec rule 5.5.1 (V8+): self-leave is allowed from knock membership.
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.member".into(), "@alice:x.com".into()),
+        make_event(
+            "$alice_knock",
+            "m.room.member",
+            Some("@alice:x.com"),
+            "@alice:x.com",
+            json!({"membership": "knock"}),
+        ),
+    );
+
+    // Alice retracts her knock by leaving
+    let leave = make_event(
+        "$retract_knock",
+        "m.room.member",
+        Some("@alice:x.com"),
+        "@alice:x.com",
+        json!({"membership": "leave"}),
+    );
+    let result = check_auth(&leave, &state, rezzy::StateResVersion::V2_1);
+    assert!(
+        result.is_ok(),
+        "self-leave from knock should be allowed, got {result:?}"
+    );
+}

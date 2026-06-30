@@ -83,8 +83,11 @@ fn strict_oracle_check(
     let mut matched: u64 = 0;
     let mut mismatch_expected: u64 = 0; // oracle EID not in fixture — can't match
     let mut mismatch_real: u64 = 0; // oracle EID IS in fixture — algorithm divergence
+    let mut mismatch_missing_in_oracle: u64 = 0;
+    let mut mismatch_missing_in_ours: u64 = 0;
     let mut real_details = Vec::new();
 
+    // -- Check everything in our state --
     for (key, our_eid) in &ours {
         if let Some(oracle_eid) = oracle.get(key) {
             if our_eid == oracle_eid {
@@ -99,13 +102,44 @@ fn strict_oracle_check(
                     real_details.push(format!("  DIFF {key}: ours={our_eid}, oracle={oracle_eid}"));
                 }
             }
+        } else {
+            // We have a state key the oracle doesn't
+            mismatch_missing_in_oracle = mismatch_missing_in_oracle.wrapping_add(1);
+            if real_details.len() < 10 {
+                real_details.push(format!("  DIFF {key}: ours={our_eid}, oracle=MISSING"));
+            }
         }
     }
+
+    // -- Check for things the oracle has that we completely dropped --
+    for (key, oracle_eid) in &oracle {
+        if !ours.contains_key(key) {
+            if our_eids.contains(oracle_eid) {
+                // Oracle picked an event we DO have, but we dropped the state key entirely
+                mismatch_missing_in_ours = mismatch_missing_in_ours.wrapping_add(1);
+                if real_details.len() < 10 {
+                    real_details.push(format!("  DIFF {key}: ours=MISSING, oracle={oracle_eid}"));
+                }
+            } else {
+                // Oracle picked an event we don't have — expected
+                mismatch_expected = mismatch_expected.wrapping_add(1);
+            }
+        }
+    }
+
+    let total_real_mismatches = mismatch_real
+        .saturating_add(mismatch_missing_in_oracle)
+        .saturating_add(mismatch_missing_in_ours);
 
     eprintln!("Oracle cross-validation ({room_label}):");
     eprintln!("  Matched:              {matched}");
     eprintln!("  Mismatch (expected):  {mismatch_expected} (oracle EID not in fixture)");
-    eprintln!("  Mismatch (oracle ≈):  {mismatch_real} (ceiling: {max_oracle_approx_mismatches})");
+    eprintln!("  Mismatch (oracle ≈):  {mismatch_real} (values differed)");
+    eprintln!("  Mismatch (ours new):  {mismatch_missing_in_oracle} (key in ours, not in oracle)");
+    eprintln!("  Mismatch (ours drop): {mismatch_missing_in_ours} (key in oracle, not in ours)");
+    eprintln!(
+        "  Total real diffs:     {total_real_mismatches} (ceiling: {max_oracle_approx_mismatches})"
+    );
     eprintln!("  Our total:            {}", ours.len());
     eprintln!("  Oracle total:         {}", oracle.len());
 
@@ -115,8 +149,8 @@ fn strict_oracle_check(
 
     assert!(matched > 0, "No state entries matched");
     assert!(
-        mismatch_real <= max_oracle_approx_mismatches as u64,
-        "Oracle ({room_label}): {mismatch_real} mismatches exceed ceiling \
+        total_real_mismatches <= max_oracle_approx_mismatches as u64,
+        "Oracle ({room_label}): {total_real_mismatches} real mismatches exceed ceiling \
          {max_oracle_approx_mismatches} — likely a regression"
     );
     if mismatch_real < max_oracle_approx_mismatches as u64 {
