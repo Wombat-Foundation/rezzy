@@ -28,7 +28,7 @@ authorization rules. Three distinct rule sets exist:
 | 4 (V1–V3)  | **m.room.aliases**: reject if no `state_key` or domain mismatch                      | V1–V7    | [ ]   | Removed in V8+; not implemented                              |
 | —          | **m.room.member** rules (see below)                                                  | all      | [x]   | Detailed breakdown below                                     |
 | 6          | Sender must be joined (non-member events)                                            | all      | [x]   | `NotMember` error                                            |
-| 7          | **m.room.third_party_invite**: sender PL ≥ invite level                              | all      | [ ]   | Not checked                                                  |
+| 7          | **m.room.third_party_invite**: sender PL ≥ invite level                              | all      | [x]   | `get_required_power_level` returns invite level              |
 | 8          | Event type required PL check                                                         | all      | [x]   | `get_required_power_level`                                   |
 | 9          | **State key starts with `@`**: must match sender                                     | all      | [x]   | Added this session                                           |
 | 10         | **m.room.power_levels** validation (see below)                                       | all      | [~]   | Partial — see breakdown                                      |

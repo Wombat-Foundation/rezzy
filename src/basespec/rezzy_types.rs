@@ -183,7 +183,7 @@ impl<Id, C> DagNode<Id> for LeanEvent<Id, C> {
 /// The generic `Id` parameter defaults to `String` but can be substituted with
 /// `u32` or `u64` for integer-interned resolution (see [`EventId`]).
 ///
-/// #[derive(Debug, Clone, Default, `PartialEq`)]Deserialization
+/// # Deserialization
 ///
 /// `LeanEvent<String>` implements `Deserialize` with the following behaviors:
 /// - `event_id`: If absent and the `hashing` feature is enabled, a SHA-256
@@ -193,7 +193,7 @@ impl<Id, C> DagNode<Id> for LeanEvent<Id, C> {
 /// - `typed_content`: Populated from `content` for auth-relevant events.
 /// - All other fields default to empty/zero if absent.
 ///
-/// #[derive(Debug, Clone, Default, `PartialEq`)]Note on Room ID
+/// # Note on Room ID
 ///
 /// `LeanEvent` omits `room_id`. `ruma-lean` is a specialized algorithmic engine
 /// that expects the host homeserver (e.g., Synapse, Conduit) to perform initial
@@ -282,13 +282,19 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     }
 
     /// Returns the signed token from the `third_party_invite` field, if present.
-    fn get_third_party_invite_token(&self) -> Option<&str>;
+    fn get_third_party_invite_token(&self) -> Option<&str> {
+        None
+    }
 
     /// Returns the mxid from the `third_party_invite` field, if present.
-    fn get_third_party_invite_mxid(&self) -> Option<&str>;
+    fn get_third_party_invite_mxid(&self) -> Option<&str> {
+        None
+    }
 
     /// Check if signatures block exists in `third_party_invite.signed`.
-    fn has_third_party_invite_signatures(&self) -> bool;
+    fn has_third_party_invite_signatures(&self) -> bool {
+        false
+    }
 }
 
 impl EventContent for Value {
@@ -367,28 +373,30 @@ impl EventContent for Value {
     }
 
     fn has_third_party_invite(&self) -> bool {
-        self.get("third_party_invite").is_some()
+        self.get(crate::basespec::event_types::FIELD_THIRD_PARTY_INVITE)
+            .is_some()
     }
 
     fn get_third_party_invite_token(&self) -> Option<&str> {
-        self.get("third_party_invite")?
-            .get("signed")?
-            .get("token")?
+        self.get(crate::basespec::event_types::FIELD_THIRD_PARTY_INVITE)?
+            .get(crate::basespec::event_types::FIELD_SIGNED)?
+            .get(crate::basespec::event_types::FIELD_TOKEN)?
             .as_str()
     }
 
     fn get_third_party_invite_mxid(&self) -> Option<&str> {
-        self.get("third_party_invite")?
-            .get("signed")?
+        self.get(crate::basespec::event_types::FIELD_THIRD_PARTY_INVITE)?
+            .get(crate::basespec::event_types::FIELD_SIGNED)?
             .get("mxid")?
             .as_str()
     }
 
     fn has_third_party_invite_signatures(&self) -> bool {
-        self.get("third_party_invite")
-            .and_then(|tpi| tpi.get("signed"))
+        self.get(crate::basespec::event_types::FIELD_THIRD_PARTY_INVITE)
+            .and_then(|tpi| tpi.get(crate::basespec::event_types::FIELD_SIGNED))
             .and_then(|signed| signed.get("signatures"))
-            .is_some()
+            .and_then(|s| s.as_object())
+            .is_some_and(|m| !m.is_empty())
     }
 }
 
@@ -398,11 +406,12 @@ impl<Id, C> LeanEvent<Id, C> {
     /// NOTE: Event types are NOT whitelisted — the spec does not restrict types at the auth level.
     /// Any event type is valid as long as the sender has sufficient PL.
     ///
-    /// #[derive(Debug, Clone, Default, `PartialEq`)]Errors
+    /// # Errors
     ///
     /// Returns static string error if structural limits are exceeded.
     ///
-    /// #[derive(Debug, Clone, Default, `PartialEq`)]TODO(compliance): PDU structural invariants not yet enforced
+    /// # TODO(compliance): PDU structural invariants not yet enforced
+    ///
     /// - `content` is required (must be present, even if `{}`)
     /// - `hashes` is required (sha256 content hash)
     /// - `signatures` is required
