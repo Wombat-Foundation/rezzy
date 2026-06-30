@@ -1892,8 +1892,8 @@ fn test_third_party_invite_rejected_when_target_banned() {
 
     let result = check_auth(&invite, &state, StateResVersion::V2);
     assert!(
-        result.is_err(),
-        "3PI invite targeting a banned user must be rejected (Rule 5.4.1.1), got: {result:?}"
+        matches!(result, Err(AuthError::BannedUser { .. })),
+        "3PI invite targeting a banned user must be rejected as BannedUser (Rule 5.4.1.1), got: {result:?}"
     );
 }
 
@@ -2300,8 +2300,8 @@ fn test_third_party_invite_override_is_ignored() {
 
     let result = rezzy::auth::check_auth(&tpi_event, &state, rezzy::StateResVersion::V2_1);
     assert!(
-        result.is_err(),
-        "m.room.third_party_invite must require the invite level (50) and ignore the event-specific override (0)"
+        matches!(result, Err(rezzy::auth::AuthError::InsufficientPowerLevel { .. })),
+        "m.room.third_party_invite must require the invite level (50) and ignore the event-specific override (0), got: {result:?}"
     );
 }
 
@@ -2364,7 +2364,7 @@ fn test_malformed_third_party_invite_presence() {
 
     let result = rezzy::auth::check_auth(&invite_event, &state, rezzy::StateResVersion::V2_1);
     assert!(
-        result.is_err(),
-        "Invite with malformed third_party_invite property must be rejected, not fall through to a normal invite"
+        matches!(result, Err(rezzy::auth::AuthError::InvalidSyntax(_))),
+        "Invite with malformed third_party_invite property must be rejected as InvalidSyntax, got: {result:?}"
     );
 }

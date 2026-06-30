@@ -457,23 +457,18 @@ fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         let token = event
             .content
             .get_third_party_invite_token()
-            .ok_or_else(|| AuthError::InvalidStateKey {
-                expected: "valid third_party_invite block with token".into(),
-                actual: "missing token".into(),
+            .ok_or_else(|| {
+                AuthError::InvalidSyntax("invalid third_party_invite: missing signed.token".into())
             })?;
 
         let mxid = event.content.get_third_party_invite_mxid().ok_or_else(|| {
-            AuthError::InvalidStateKey {
-                expected: "valid third_party_invite block with mxid".into(),
-                actual: "missing mxid".into(),
-            }
+            AuthError::InvalidSyntax("invalid third_party_invite: missing signed.mxid".into())
         })?;
 
         if !event.content.has_third_party_invite_signatures() {
-            return Err(AuthError::InvalidStateKey {
-                expected: "signatures block in third_party_invite.signed".into(),
-                actual: "missing".into(),
-            });
+            return Err(AuthError::InvalidSyntax(
+                "invalid third_party_invite: missing or empty signed.signatures".into(),
+            ));
         }
 
         // NOTE: We do not cryptographically verify the signature here. That is deferred to the homeserver layer.

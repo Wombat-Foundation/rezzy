@@ -52,12 +52,12 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
         let event_id = value
             .get("event_id")
             .and_then(|v| v.as_str())
-            .unwrap_or("")
+            .expect("JSONL event must contain string 'event_id'")
             .to_string();
         let event_type = value
             .get("type")
             .and_then(|v| v.as_str())
-            .unwrap_or("")
+            .expect("JSONL event must contain string 'type'")
             .to_string();
         let state_key = value
             .get("state_key")
@@ -66,7 +66,7 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
         let sender = value
             .get("sender")
             .and_then(|v| v.as_str())
-            .unwrap_or("")
+            .expect("JSONL event must contain string 'sender'")
             .to_string();
         let content = value
             .get("content")

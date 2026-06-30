@@ -65,11 +65,11 @@ fn test_jsonl_asserters() {
 fn test_compute_local_naive_topological_depth() {
     let mut events = utils::parse_jsonl_events(
         r#"
-        {"event_id": "$1", "type": "m.room.create", "prev_events": []}
-        {"event_id": "$2", "type": "m.room.message", "prev_events": ["$1"]}
-        {"event_id": "$3", "type": "m.room.message", "prev_events": ["$2"]}
-        {"event_id": "$4", "type": "m.room.message", "prev_events": ["$1"]}
-        {"event_id": "$5", "type": "m.room.message", "prev_events": ["$3", "$4"]}
+        {"event_id": "$1", "type": "m.room.create", "sender": "@a:x", "prev_events": []}
+        {"event_id": "$2", "type": "m.room.message", "sender": "@a:x", "prev_events": ["$1"]}
+        {"event_id": "$3", "type": "m.room.message", "sender": "@a:x", "prev_events": ["$2"]}
+        {"event_id": "$4", "type": "m.room.message", "sender": "@a:x", "prev_events": ["$1"]}
+        {"event_id": "$5", "type": "m.room.message", "sender": "@a:x", "prev_events": ["$3", "$4"]}
         "#,
     );
 
