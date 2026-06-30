@@ -387,14 +387,14 @@ impl EventContent for Value {
     fn get_third_party_invite_mxid(&self) -> Option<&str> {
         self.get(crate::basespec::event_types::FIELD_THIRD_PARTY_INVITE)?
             .get(crate::basespec::event_types::FIELD_SIGNED)?
-            .get("mxid")?
+            .get(crate::basespec::event_types::FIELD_MXID)?
             .as_str()
     }
 
     fn has_third_party_invite_signatures(&self) -> bool {
         self.get(crate::basespec::event_types::FIELD_THIRD_PARTY_INVITE)
             .and_then(|tpi| tpi.get(crate::basespec::event_types::FIELD_SIGNED))
-            .and_then(|signed| signed.get("signatures"))
+            .and_then(|signed| signed.get(crate::basespec::event_types::FIELD_SIGNATURES))
             .and_then(|s| s.as_object())
             .is_some_and(|m| !m.is_empty())
     }

@@ -42,6 +42,10 @@ pub const FIELD_SIGNED: &str = "signed";
 pub const FIELD_TOKEN: &str = "token";
 pub const FIELD_DISPLAY_NAME: &str = "display_name";
 pub const FIELD_JOIN_AUTHORISED_VIA_USERS_SERVER: &str = "join_authorised_via_users_server";
+pub const FIELD_MXID: &str = "mxid";
+pub const FIELD_SIGNATURES: &str = "signatures";
+// Note: Part of canonical JSON in pre-v3 rooms
+pub const FIELD_EVENT_ID: &str = "event_id";
 
 // Membership and Join Rule string values
 pub const MEM_JOIN: &str = "join";
