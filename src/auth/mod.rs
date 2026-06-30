@@ -340,13 +340,13 @@ fn get_required_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
-        // Check specific event type overrides
-        if let Some(pl) = pl_event.get_event_power_level(&event.event_type) {
-            return pl;
-        }
         // Spec Rule 7: m.room.third_party_invite events require the invite level
         if event.event_type == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE {
             return pl_event.get_invite().unwrap_or(0); // 0 is the default invite level
+        }
+        // Check specific event type overrides
+        if let Some(pl) = pl_event.get_event_power_level(&event.event_type) {
+            return pl;
         }
         // Fall back to state_default for state events, events_default for others
         if event.state_key.is_some() {
