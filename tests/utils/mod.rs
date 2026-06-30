@@ -233,13 +233,6 @@ pub fn assert_jsonl_events_eq(actual: &[LeanEvent], expected_jsonl: &str) {
 /// of its `prev_events` otherwise.
 #[allow(dead_code)]
 pub fn compute_local_naive_topological_depth(events: &mut [LeanEvent]) {
-    let mut event_map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for (i, ev) in events.iter().enumerate() {
-        event_map.insert(ev.event_id.clone(), i);
-    }
-
-    let mut depths: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-
     fn get_depth(
         event_id: &str,
         event_map: &std::collections::HashMap<String, usize>,
@@ -250,9 +243,8 @@ pub fn compute_local_naive_topological_depth(events: &mut [LeanEvent]) {
             return d;
         }
 
-        let idx = match event_map.get(event_id) {
-            Some(&i) => i,
-            None => return 1, // Unknown prev_event, assume depth 1
+        let Some(&idx) = event_map.get(event_id) else {
+            return 1;
         };
 
         let ev = &events[idx];
@@ -266,10 +258,17 @@ pub fn compute_local_naive_topological_depth(events: &mut [LeanEvent]) {
             max_prev_depth = max_prev_depth.max(get_depth(prev_id, event_map, events, depths));
         }
 
-        let d = max_prev_depth + 1;
+        let d = max_prev_depth.saturating_add(1);
         depths.insert(event_id.to_string(), d);
         d
     }
+
+    let mut event_map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, ev) in events.iter().enumerate() {
+        event_map.insert(ev.event_id.clone(), i);
+    }
+
+    let mut depths: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
 
     for i in 0..events.len() {
         let ev_id = events[i].event_id.clone();
