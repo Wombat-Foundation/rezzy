@@ -6,7 +6,7 @@
 [![crates.io](https://img.shields.io/crates/v/rezzy.svg)](https://crates.io/crates/rezzy)
 [![TDD](https://img.shields.io/badge/development-TDD-green.svg)](https://en.wikipedia.org/wiki/Test-driven_development)
 
-Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolution — both a research model and highly-efficient reference implementation for Matrix state resolution `v1`, `v2`, `v2.1`, and `v2.1.1` (with experimental `v2.2`), designed for correctness and compliance.
+Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolution — both a research model and highly-efficient reference implementation for Matrix state resolution `v1`, `v2`, `v2.1`, and `v2.1.1` (experimental), and **V2.2** (experimental [MSC4242]).
 
 ## Features
 
