@@ -16,14 +16,14 @@ use alloc::vec::Vec;
 
 /// Result of conflicted subgraph computation.
 #[derive(Debug, Clone)]
-pub struct SubgraphResult {
+pub struct SubgraphResult<Id = String> {
     /// The computed conflicted subgraph — events at the intersection of
     /// backwards-reachable (ancestors) and forwards-reachable (descendants)
     /// sets from the conflicted event IDs.
-    pub subgraph: HashMap<String, LeanEvent>,
+    pub subgraph: HashMap<Id, LeanEvent<Id>>,
     /// Auth event IDs that were referenced but not found in the input graph.
     /// These represent events permanently lost to federation gaps.
-    pub missing_auth_events: Vec<String>,
+    pub missing_auth_events: Vec<Id>,
 }
 
 /// Computes the V2.1+ conflicted subgraph without a depth bound.
@@ -31,10 +31,14 @@ pub struct SubgraphResult {
 /// This is a convenience wrapper around [`compute_v2_1_conflicted_subgraph_bounded`]
 /// with `max_auth_depth = None`.
 #[must_use]
-pub fn compute_v2_1_conflicted_subgraph<S: core::hash::BuildHasher>(
-    auth_graph: &HashMap<String, LeanEvent, S>,
-    conflicted_set: &[String],
-) -> HashMap<String, LeanEvent> {
+pub fn compute_v2_1_conflicted_subgraph<Id, S>(
+    auth_graph: &HashMap<Id, LeanEvent<Id>, S>,
+    conflicted_set: &[Id],
+) -> HashMap<Id, LeanEvent<Id>>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord,
+    S: core::hash::BuildHasher,
+{
     compute_v2_1_conflicted_subgraph_bounded(auth_graph, conflicted_set, None).subgraph
 }
 
@@ -52,11 +56,15 @@ pub fn compute_v2_1_conflicted_subgraph<S: core::hash::BuildHasher>(
 /// This prevents history-flooding `DoS` attacks where a rogue admin generates
 /// millions of spoofed events on a dead-end fork.
 #[must_use]
-pub fn compute_v2_1_conflicted_subgraph_bounded<S: core::hash::BuildHasher>(
-    auth_graph: &HashMap<String, LeanEvent, S>,
-    conflicted_set: &[String],
+pub fn compute_v2_1_conflicted_subgraph_bounded<Id, S>(
+    auth_graph: &HashMap<Id, LeanEvent<Id>, S>,
+    conflicted_set: &[Id],
     max_auth_depth: Option<usize>,
-) -> SubgraphResult {
+) -> SubgraphResult<Id>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord,
+    S: core::hash::BuildHasher,
+{
     if conflicted_set.is_empty() {
         return SubgraphResult {
             subgraph: HashMap::new(),
@@ -70,7 +78,7 @@ pub fn compute_v2_1_conflicted_subgraph_bounded<S: core::hash::BuildHasher>(
 
     // Calculate Backwards Reachable (Ancestors up the auth chain)
     // Each entry is (event_id, depth_from_conflicted_set)
-    let mut b_stack: Vec<(String, usize)> = conflicted_set.iter().map(|s| (s.clone(), 0)).collect();
+    let mut b_stack: Vec<(Id, usize)> = conflicted_set.iter().map(|s| (s.clone(), 0)).collect();
     while let Some((node, depth)) = b_stack.pop() {
         if backwards_reachable.insert(node.clone()) {
             if let Some(max_depth) = max_auth_depth {
@@ -90,7 +98,7 @@ pub fn compute_v2_1_conflicted_subgraph_bounded<S: core::hash::BuildHasher>(
     }
 
     // Build Reverse Adjacency for Forwards Search
-    let mut children_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut children_map: HashMap<Id, Vec<Id>> = HashMap::new();
     for (id, event) in auth_graph {
         for prev in &event.auth_events {
             children_map
@@ -101,7 +109,7 @@ pub fn compute_v2_1_conflicted_subgraph_bounded<S: core::hash::BuildHasher>(
     }
 
     // Calculate Forwards Reachable (Descendants down the auth chain)
-    let mut f_stack: Vec<String> = conflicted_set.to_vec();
+    let mut f_stack: Vec<Id> = conflicted_set.to_vec();
     while let Some(node) = f_stack.pop() {
         if forwards_reachable.insert(node.clone()) {
             if let Some(children) = children_map.get(&node) {
@@ -114,8 +122,8 @@ pub fn compute_v2_1_conflicted_subgraph_bounded<S: core::hash::BuildHasher>(
 
     // Intersect and build the final Conflicted Subgraph
     let mut subgraph = HashMap::new();
-    let backwards_ids: BTreeSet<String> = backwards_reachable.iter().cloned().collect();
-    let forwards_ids: BTreeSet<String> = forwards_reachable.iter().cloned().collect();
+    let backwards_ids: BTreeSet<Id> = backwards_reachable.iter().cloned().collect();
+    let forwards_ids: BTreeSet<Id> = forwards_reachable.iter().cloned().collect();
 
     for id in backwards_ids.intersection(&forwards_ids) {
         if let Some(event) = auth_graph.get(id) {

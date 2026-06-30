@@ -130,6 +130,14 @@ required-features = ["cli"]
 name = "unredacted_lounge"
 path = "tests/unredacted_lounge.rs"
 
+[[test]]
+name = "test_integer_keys"
+path = "tests/test_integer_keys.rs"
+
+[[test]]
+name = "test_restricted_joins"
+path = "tests/test_restricted_joins.rs"
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tarpaulin)"] }

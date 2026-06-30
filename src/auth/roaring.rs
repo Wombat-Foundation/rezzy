@@ -9,7 +9,7 @@
 use crate::HashMap;
 use crate::LeanEvent;
 use alloc::collections::VecDeque;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use roaring::RoaringBitmap;
@@ -19,36 +19,38 @@ use roaring::RoaringBitmap;
 /// Each event is assigned a dense integer index (topological order), and its
 /// full auth chain is represented as a `RoaringBitmap`. Checking whether
 /// event A is in event B's auth chain is a single `bitmap.contains(idx)` call.
-pub struct AuthGraph {
-    /// Maps event ID strings to their dense topological index.
-    pub id_to_index: HashMap<String, u32>,
-    /// Maps dense indices back to event ID strings.
-    pub index_to_id: Vec<String>,
+pub struct AuthGraph<Id = String> {
+    /// Maps event IDs to their dense topological index.
+    pub id_to_index: HashMap<Id, u32>,
+    /// Maps dense indices back to event IDs.
+    pub index_to_id: Vec<Id>,
     /// Per-event bitmaps: `auth_bitmaps[i]` contains the indices of all
     /// transitive auth ancestors of event `i`.
     pub auth_bitmaps: Vec<RoaringBitmap>,
 }
 
-impl AuthGraph {
+impl<Id> AuthGraph<Id>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord,
+{
     /// Build the `AuthGraph` topological structure.
     ///
     /// # Panics
     ///
     /// Will panic if any internal graph invariants are violated during topological sorting.
     #[must_use]
-    pub fn build(sort_context: &HashMap<String, LeanEvent>) -> Self {
-        let mut in_degree: HashMap<&str, usize> = HashMap::new();
-        let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
+    pub fn build<C: Clone, S: core::hash::BuildHasher>(
+        sort_context: &HashMap<Id, LeanEvent<Id, C>, S>,
+    ) -> Self {
+        let mut in_degree: HashMap<&Id, usize> = HashMap::new();
+        let mut adjacency: HashMap<&Id, Vec<&Id>> = HashMap::new();
 
         for (id, ev) in sort_context {
-            in_degree.entry(id.as_str()).or_insert(0);
+            in_degree.entry(id).or_insert(0);
             for auth_id in &ev.auth_events {
-                if sort_context.contains_key(auth_id.as_str()) {
-                    adjacency
-                        .entry(auth_id.as_str())
-                        .or_default()
-                        .push(id.as_str());
-                    let val = in_degree.entry(id.as_str()).or_insert(0);
+                if sort_context.contains_key(auth_id) {
+                    adjacency.entry(auth_id).or_default().push(id);
+                    let val = in_degree.entry(id).or_insert(0);
                     *val = val.saturating_add(1);
                 }
             }
@@ -78,8 +80,8 @@ impl AuthGraph {
         let mut id_to_index = HashMap::with_capacity(sorted.len());
         let mut index_to_id = Vec::with_capacity(sorted.len());
         for (idx, &id) in sorted.iter().enumerate() {
-            id_to_index.insert(id.to_string(), u32::try_from(idx).unwrap());
-            index_to_id.push(id.to_string());
+            id_to_index.insert(id.clone(), u32::try_from(idx).unwrap());
+            index_to_id.push(id.clone());
         }
 
         let mut auth_bitmaps = vec![RoaringBitmap::new(); sorted.len()];

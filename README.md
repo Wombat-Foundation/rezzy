@@ -27,7 +27,7 @@ Everything re-exports from the crate root — `use rezzy::*` gets you `LeanEvent
 - **`auth::check_auth`** — spec-compliant auth engine. Implement `StateProvider` to plug in your own backend.
 - Generic `EventId` trait — `String`, `u32`, `u64`, `ruma::OwnedEventId` all just work.
 - `EventContent` trait — skip JSON parsing in the hot path. `serde_json::Value` works via default impl.
-- **TODO:** ancillary tools (subgraph, delta, auth graph) are `String`-only currently
+- **TODO:** delta compression (`StateDelta`, `CompactedCheckpoint`) is `String`-only currently
 
 ## Performance settings
 
