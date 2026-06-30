@@ -994,7 +994,7 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
 /// `room_version`), so a single test covers all versions.
 #[test]
 #[allow(clippy::too_many_lines)]
-fn test_creator_implicit_power_level() {
+fn test_msc4289_creator_implicit_power_level() {
     let mut state = RoomState::new();
 
     // Create event with V2.1 extensions (additional creators)
@@ -1126,7 +1126,7 @@ fn test_creator_implicit_power_level() {
 
 /// Verify that in V2 (pre-MSC4289), creators get PL 100, not `MAX_POWER_LEVEL`.
 #[test]
-fn test_v2_creator_gets_pl_100_not_max() {
+fn test_msc4289_v2_creator_gets_pl_100_not_max() {
     let mut state = RoomState::new();
     state.insert(
         (M_ROOM_CREATE.into(), String::new()),
@@ -1199,7 +1199,7 @@ fn test_v2_creator_gets_pl_100_not_max() {
 
 /// Verify that `additional_creators` are ignored in V2 (pre-MSC4289).
 #[test]
-fn test_v2_additional_creators_ignored() {
+fn test_msc4289_v2_additional_creators_ignored() {
     let mut state = RoomState::new();
     state.insert(
         (M_ROOM_CREATE.into(), String::new()),
@@ -1651,7 +1651,7 @@ fn test_invite_already_joined_user_rejected() {
 }
 
 #[test]
-fn test_owned_state_key_rejected_when_sender_mismatch() {
+fn test_unstable_msc3757_owned_state_key_rejected_when_sender_mismatch() {
     // Spec auth rule 9 (all versions): For non-member state events with @-prefixed state_key,
     // the sender must match the state_key.
     let mut state = RoomState::new();
@@ -1696,7 +1696,7 @@ fn test_owned_state_key_rejected_when_sender_mismatch() {
 }
 
 #[test]
-fn test_owned_state_key_allowed_when_sender_matches() {
+fn test_unstable_msc3757_owned_state_key_allowed_when_sender_matches() {
     // Spec auth rule 9: sender == state_key should be allowed.
     let mut state = RoomState::new();
     state.insert(

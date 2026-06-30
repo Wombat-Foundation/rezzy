@@ -459,7 +459,7 @@ fn test_restricted_join_rejected_when_authorising_user_lacks_invite_pl() {
 }
 
 #[test]
-fn test_restricted_join_v12_creator_authorising() {
+fn test_msc4289_restricted_join_v12_creator_authorising() {
     // V12: check_authorising_user manually queried the PL map instead of
     // using get_sender_power_level, so the creator (not in `users` map) got PL 0.
     // In V2_1 (room v12), the creator should get i64::MAX implicitly.

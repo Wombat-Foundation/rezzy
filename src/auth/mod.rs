@@ -946,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn test_creator_has_i64_max_power() {
+    fn test_msc4289_creator_has_i64_max_power() {
         let mut state = RoomState::new();
         state.insert(
             (M_ROOM_CREATE.into(), String::new()),

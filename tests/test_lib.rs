@@ -3103,7 +3103,7 @@ fn test_sorting_coverage() {
 }
 
 #[test]
-fn test_sorting_v2_creator_gets_pl_100() {
+fn test_msc4289_sorting_v2_creator_gets_pl_100() {
     let mut events: HashMap<String, LeanEvent> = HashMap::new();
     let auth: HashMap<String, LeanEvent> = HashMap::new();
 
@@ -3603,7 +3603,7 @@ fn test_event_content_blanket_impl_all_methods() {
 }
 
 #[test]
-fn test_additional_creators_version_gating() {
+fn test_msc4289_additional_creators_version_gating() {
     use rezzy::basespec::rezzy_types::EventContent;
     let content = serde_json::json!({
         "additional_creators": ["@ac:x.com"]
@@ -3855,7 +3855,7 @@ fn test_dag_node_trait_on_lean_event() {
 }
 
 #[test]
-fn test_lean_event_get_redact_and_creator() {
+fn test_msc4289_lean_event_get_redact_and_creator() {
     let ev = LeanEvent::<String> {
         event_id: "ev".into(),
         event_type: "m.room.power_levels".into(),
