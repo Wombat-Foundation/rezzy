@@ -227,3 +227,52 @@ pub fn assert_jsonl_events_eq(actual: &[LeanEvent], expected_jsonl: &str) {
         assert_eq!(actual_event, expected_event, "Event mismatch at index {i}");
     }
 }
+
+/// Computes and assigns the topological depth for a set of events based on their `prev_events`.
+/// The depth of an event is 1 if it has no `prev_events`, or 1 greater than the maximum depth
+/// of its `prev_events` otherwise.
+#[allow(dead_code)]
+pub fn compute_local_naive_topological_depth(events: &mut [LeanEvent]) {
+    let mut event_map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, ev) in events.iter().enumerate() {
+        event_map.insert(ev.event_id.clone(), i);
+    }
+
+    let mut depths: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+
+    fn get_depth(
+        event_id: &str,
+        event_map: &std::collections::HashMap<String, usize>,
+        events: &[LeanEvent],
+        depths: &mut std::collections::HashMap<String, u64>,
+    ) -> u64 {
+        if let Some(&d) = depths.get(event_id) {
+            return d;
+        }
+
+        let idx = match event_map.get(event_id) {
+            Some(&i) => i,
+            None => return 1, // Unknown prev_event, assume depth 1
+        };
+
+        let ev = &events[idx];
+        if ev.prev_events.is_empty() {
+            depths.insert(event_id.to_string(), 1);
+            return 1;
+        }
+
+        let mut max_prev_depth = 0;
+        for prev_id in &ev.prev_events {
+            max_prev_depth = max_prev_depth.max(get_depth(prev_id, event_map, events, depths));
+        }
+
+        let d = max_prev_depth + 1;
+        depths.insert(event_id.to_string(), d);
+        d
+    }
+
+    for i in 0..events.len() {
+        let ev_id = events[i].event_id.clone();
+        events[i].depth = get_depth(&ev_id, &event_map, events, &mut depths);
+    }
+}
