@@ -841,8 +841,7 @@ impl<Id: Ord, C> PartialOrd for SortPriority<'_, Id, C> {
     }
 }
 
-/// Coerces a JSON value to `i64`, accepting integers, unsigned integers, or
-/// string-encoded integers.
+/// Coerces JSON values to `i64` (accepts ints, unsigned ints, or string-encoded ints).
 ///
 /// Returns `None` if the value cannot be interpreted as an integer.
 /// This three-way coercion handles the real-world inconsistency where some
@@ -871,6 +870,7 @@ pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
     val.map(|v| v.clamp(-MAX_POWER_LEVEL, MAX_POWER_LEVEL))
 }
 
+/// Lookup trait for retrieving events by ID during sorting and auth checks.
 pub trait EventProvider<Id, C> {
     fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>>;
 }
@@ -891,6 +891,7 @@ impl<Id: core::hash::Hash + Eq + Ord, C> EventProvider<Id, C>
     }
 }
 
+/// Merged event lookup across the conflicted set and auth context.
 pub struct SortContext<'a, Id, C, S1, S2> {
     pub primary: &'a crate::HashMap<Id, LeanEvent<Id, C>, S1>,
     pub secondary: &'a crate::HashMap<Id, LeanEvent<Id, C>, S2>,

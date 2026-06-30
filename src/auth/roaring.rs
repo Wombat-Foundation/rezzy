@@ -1,4 +1,4 @@
-//! Fast auth chain operations using [`roaring`] bitmaps.
+//! Fast auth chain operations using `roaring` bitmaps.
 //!
 //! [`AuthGraph`] pre-computes a compressed, topologically-ordered representation
 //! of the auth DAG. Each event's full transitive auth chain is stored as a

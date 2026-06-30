@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! State delta compression — efficient incremental state storage.
+//! State delta compression — efficient incremental state storage/checkpoint chains.
 //!
 //! Instead of storing the full `state_map` at *every* event, homeservers can
 //! store a base snapshot and a chain of deltas.
