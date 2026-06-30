@@ -1,6 +1,6 @@
 [package]
 name = "rezzy"
-version = "0.1.5-rc.1"
+version = "0.2.0"
 edition = "2021"
 autobins = false
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
@@ -26,6 +26,7 @@ exclude = [
     ".prettierignore",
     ".prettierrc",
     ".rgignore",
+    ".ignore",
     ".gitmodules",
     ".typos.toml",
     "rustfmt.toml",

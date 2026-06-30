@@ -1,8 +1,6 @@
 # Rezzy: Matrix State Resolution Engine
 
 [![CI](https://img.shields.io/github/actions/workflow/status/gamesguru/rezzy/rust.yml?branch=master&label=CI)](https://github.com/gamesguru/rezzy/actions/workflows/rust.yml)
-[![Tests](https://raw.githubusercontent.com/gamesguru/rezzy/badges/tests.svg)](https://github.com/gamesguru/rezzy/actions/workflows/rust.yml)
-[![Docs](https://img.shields.io/github/actions/workflow/status/gamesguru/rezzy/docs.yml?branch=master&label=docs)](https://gamesguru.github.io/rezzy/)
 [![crates.io](https://img.shields.io/crates/v/rezzy.svg)](https://crates.io/crates/rezzy)
 [![codecov](https://codecov.io/gh/gamesguru/rezzy/graph/badge.svg)](https://codecov.io/gh/gamesguru/rezzy)
 
@@ -10,10 +8,17 @@ Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolu
 
 ## Features
 
-- **Causal domination operator (CDO)**: Safely and optimally resolves conflicting state in DAGs.
+- Auth check engine.
+- Full state resolution pipeline.
+- Topological & mainline Sorting.
+- `n-way` fork resolution
+- In-place bitshift heaps and roaring bitmaps for fast graph computations.
 - **Lazy projection**: Fast, memory-efficient state resolution by only loading required membership events.
-- **Topological & mainline Sorting**: Fast and robust DAG sorting to order events correctly.
-- **Pure lattice-coordinatized projection**: Employs `O(1)` causal coordinatization projection and commutative join-semilattice folding.
+
+## API
+
+- Generalized ID trait (supports `&String`, `&ruma:OwnedEventId`, `u32`, or `u64`)
+- **TODO:** Add ID trait in missing places/ ancillary tools (subgraph, delta, auth graph) are String-only currently.
 
 ## Usage
 
