@@ -24,6 +24,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::basespec::event_types::{
+    DEFAULT_PL_BAN, DEFAULT_PL_CREATOR_V11, DEFAULT_PL_INVITE, DEFAULT_PL_KICK, DEFAULT_PL_USER,
     FIELD_MEMBERSHIP, FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE,
     MEM_JOIN, MEM_KNOCK, MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER,
     M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_KNOCK_RESTRICTED,
@@ -279,18 +280,8 @@ pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     Ok(())
 }
 
-/// Maximum safe INTERNAL power level value: usually 2^64 (prevents buffer overflows)
-///
-/// We allow a larger value here in case a buffer overflow attack seeks escalation.
-/// An `i64` defaults to `.wrapping_add(1)` which would wrap to a negative infinity.
-pub const MAX_POWER_LEVEL_RUST: i64 = i64::MAX;
-
-/// Maximum safe power level value: 2^53 − 1 (the JavaScript `Number.MAX_SAFE_INTEGER`).
-///
-/// The Matrix spec constrains power levels to this bound because clients and
-/// servers in the ecosystem use JSON numbers, which are IEEE 754 doubles.
-/// Values above this lose integer precision.
-pub const MAX_POWER_LEVEL_JSON: i64 = 9_007_199_254_740_991; // 2^53 - 1;
+/// Re-export from [`crate::basespec::event_types`] for backwards compatibility.
+pub use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_POWER_LEVEL_RUST};
 
 /// Get the power level of a user from the current room state.
 fn get_sender_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
@@ -315,8 +306,8 @@ fn get_sender_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
                     // strictly unreachable by any wire value.
                     MAX_POWER_LEVEL_RUST
                 }
-                // Rooms v11 & earlier (state res v2 & earlier) default to CREATOR_PL: 100
-                _ => 100,
+                // Rooms v11 & earlier (state res v2 & earlier)
+                _ => DEFAULT_PL_CREATOR_V11,
             };
         }
     }
@@ -331,7 +322,7 @@ fn get_sender_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
             return default_pl;
         }
     }
-    0 // Default power level if no power_levels event exists
+    DEFAULT_PL_USER // Default power level if no power_levels event exists
 }
 
 /// Get the required power level to send an event based on room state.
@@ -767,7 +758,7 @@ fn get_kick_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
             return kick;
         }
     }
-    50 // Default kick power level per Matrix spec
+    DEFAULT_PL_KICK // Default kick power level per Matrix spec
 }
 
 /// Get the ban power level from room state.
@@ -779,7 +770,7 @@ fn get_invite_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
             return invite;
         }
     }
-    0 // Default invite power level per Matrix spec (v12)
+    DEFAULT_PL_INVITE // Default invite power level per Matrix spec
 }
 
 fn get_ban_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
@@ -790,7 +781,7 @@ fn get_ban_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
             return ban;
         }
     }
-    50 // Default ban power level per Matrix spec
+    DEFAULT_PL_BAN // Default ban power level per Matrix spec
 }
 
 /// Iteratively apply auth checks to a list of events in topological order.

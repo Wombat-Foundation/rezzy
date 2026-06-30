@@ -20,7 +20,7 @@ use core::cmp::Ordering;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::auth::MAX_POWER_LEVEL_JSON;
+use crate::basespec::event_types::MAX_POWER_LEVEL_JSON;
 
 /// Trait alias for types that can serve as event identifiers.
 ///
@@ -235,7 +235,10 @@ impl<Id: serde::Serialize, C: serde::Serialize> serde::Serialize for LeanEvent<I
     where
         S: serde::Serializer,
     {
-        use crate::basespec::event_types::*;
+        use crate::basespec::event_types::{
+            FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
+            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_STATE_KEY, FIELD_TYPE,
+        };
         use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("LeanEvent", 10)?;
         state.serialize_field(FIELD_EVENT_ID, &self.event_id)?;
@@ -564,13 +567,18 @@ fn sort_json_value_keys(value: &mut Value) {
 }
 
 impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
+    #[allow(clippy::too_many_lines)]
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let value = Value::deserialize(deserializer)?;
+        use crate::basespec::event_types::{
+            FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
+            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_SIGNATURES, FIELD_STATE_KEY,
+            FIELD_TYPE, FIELD_UNSIGNED,
+        };
 
-        use crate::basespec::event_types::*;
+        let value = Value::deserialize(deserializer)?;
 
         let event_id = if let Some(id) = value.get(FIELD_EVENT_ID).and_then(|v| v.as_str()) {
             String::from(id)

@@ -17,7 +17,7 @@ use alloc::collections::{BinaryHeap, VecDeque};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use crate::auth::MAX_POWER_LEVEL_RUST;
+use crate::basespec::event_types::{DEFAULT_PL_CREATOR_V11, MAX_POWER_LEVEL_RUST};
 use crate::basespec::rezzy_types::{KahnSortResult, LeanEvent, SortPriority, StateResVersion};
 use crate::HashMap;
 
@@ -58,10 +58,11 @@ where
     if is_creator {
         match version {
             StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2 => {
-                // Rust flow. `i64::MAX`: strictly above any wire-clamped PL (2^53-1)
+                // v12+ rooms (V2.1+ stat res) [infinity]
                 return MAX_POWER_LEVEL_RUST;
             }
-            _ => return 100,
+            // Pre-v12 rooms [100]
+            _ => return DEFAULT_PL_CREATOR_V11,
         }
     }
 

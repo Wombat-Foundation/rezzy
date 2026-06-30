@@ -69,3 +69,29 @@ pub const RULE_INVITE: &str = "invite";
 pub const RULE_KNOCK: &str = "knock";
 pub const RULE_RESTRICTED: &str = "restricted";
 pub const RULE_KNOCK_RESTRICTED: &str = "knock_restricted";
+
+// Spec-defined default power levels (server-server-api §Definitions)
+// "The invite level defaults to 0 if unspecified."
+pub const DEFAULT_PL_INVITE: i64 = 0;
+// "The kick level, ban level and redact level each default to 50 if unspecified."
+pub const DEFAULT_PL_KICK: i64 = 50;
+pub const DEFAULT_PL_BAN: i64 = 50;
+pub const DEFAULT_PL_REDACT: i64 = 50;
+// Implicit default when no power_levels event exists
+pub const DEFAULT_PL_USER: i64 = 0;
+// Creator implicit PL in rooms v11 & earlier (state res v2 & earlier)
+pub const DEFAULT_PL_CREATOR_V11: i64 = 100;
+
+/// Maximum safe power level value: 2^53 − 1 (the JavaScript `Number.MAX_SAFE_INTEGER`).
+///
+/// The Matrix spec constrains power levels to this bound because clients and
+/// servers in the ecosystem use JSON numbers, which are IEEE 754 doubles.
+/// Values above this lose integer precision.
+pub const MAX_POWER_LEVEL_JSON: i64 = 9_007_199_254_740_991; // 2^53 - 1
+
+/// Maximum safe INTERNAL power level value (`i64::MAX`).
+///
+/// Used for creator implicit PL in v12+ rooms, where the creator must always
+/// win PL comparisons. Incoming wire values are clamped to [`MAX_POWER_LEVEL_JSON`]
+/// on deserialization, so this is strictly unreachable by any wire value.
+pub const MAX_POWER_LEVEL_RUST: i64 = i64::MAX;
