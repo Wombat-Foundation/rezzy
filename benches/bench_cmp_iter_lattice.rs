@@ -3,6 +3,7 @@ use rezzy::{
     basespec::rezzy_types::LeanEvent, resolve_iterative_sort, resolve_lattice_fold, StateResVersion,
 };
 use std::collections::HashMap;
+use std::env;
 use std::time::Instant;
 
 type GeneratedDag = (
@@ -102,9 +103,27 @@ fn generate_dag(base_n: usize, forks: usize, fork_depth: usize) -> GeneratedDag 
     (unconflicted, conflicted_events, auth_context)
 }
 
+fn parse_env_list(key: &str, default: Vec<usize>) -> Vec<usize> {
+    if let Ok(val) = env::var(key) {
+        val.split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect()
+    } else {
+        default
+    }
+}
+
+fn parse_env_single<T: std::str::FromStr>(key: &str, default: T) -> T {
+    if let Ok(val) = env::var(key) {
+        val.parse().unwrap_or(default)
+    } else {
+        default
+    }
+}
+
 fn main() {
     println!(
-        "{:>8},{:>8},{:>9},{:>15},{:>12},{:>10},{:>10},{:>15}",
+        "{:>8},{:>8},{:>9},{:>15},{:>12},{:>10},{:>10},{:>10},{:>8}",
         "BaseSize",
         "NumForks",
         "ForkDepth",
@@ -112,14 +131,15 @@ fn main() {
         "Iterative_us",
         "Lattice_us",
         "Total_s",
-        "Δ(Iter-Latt)"
+        "Δ",
+        "%"
     );
 
-    let base_sizes = vec![10, 500, 5000, 20000, 50000];
-    let fork_counts = vec![2, 10, 50, 200];
-    let fork_depth = 50;
+    let base_sizes = parse_env_list("BASE_SIZES", vec![10, 500, 5000, 20000, 50000]);
+    let fork_counts = parse_env_list("FORK_COUNTS", vec![2, 10, 50, 200]);
+    let fork_depth = parse_env_single("FORK_DEPTH", 50);
 
-    let iterations: u128 = 5;
+    let iterations: u128 = parse_env_single("ITERATIONS", 5);
 
     for &n in &base_sizes {
         for &f in &fork_counts {
@@ -169,10 +189,17 @@ fn main() {
             let lattice_time = start.elapsed().as_micros().checked_div(iterations).unwrap();
 
             let total_s = row_start.elapsed().as_secs_f32();
-            let delta = iter_time.cast_signed().checked_sub(lattice_time.cast_signed()).unwrap();
+            let delta = iter_time
+                .cast_signed()
+                .checked_sub(lattice_time.cast_signed())
+                .unwrap();
+
+            let percent_faster = (f64::from(i32::try_from(delta).unwrap_or(i32::MAX))
+                / f64::from(u32::try_from(iter_time).unwrap_or(u32::MAX)))
+                * 100.0;
 
             println!(
-                "{:>8},{:>8},{:>9},{:>15},{:>12},{:>10},{:>10.2},{:>15}",
+                "{:>8},{:>8},{:>9},{:>15},{:>12},{:>10},{:>10.2},{:>10},{:>7.1}%",
                 n,
                 f,
                 fork_depth,
@@ -180,7 +207,8 @@ fn main() {
                 iter_time,
                 lattice_time,
                 total_s,
-                delta
+                delta,
+                percent_faster
             );
         }
     }

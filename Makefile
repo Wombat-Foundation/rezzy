@@ -79,7 +79,11 @@ else
 endif
 
 .PHONY: rust/bench
-rust/bench: ##H Run Rust benchmarks
+rust/bench: ##H Run Rust benchmarks (s=base_sizes, f=fork_counts, d=fork_depth, i=iters)
+	BASE_SIZES=$(if $(s),$(s),10,500,5000,20000,50000) \
+	FORK_COUNTS=$(if $(f),$(f),2,10,50,200) \
+	FORK_DEPTH=$(if $(d),$(d),50) \
+	ITERATIONS=$(if $(i),$(i),5) \
 	$(CARGO) bench --profile release-max-perf --benches
 
 .PHONY: rust/coverage

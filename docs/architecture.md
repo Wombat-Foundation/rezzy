@@ -206,3 +206,31 @@ integer sets). For a 60K-event room:
 | Catastrophic     | 500+       | 100–200   | 500–700 |
 
 Even the worst case fits comfortably in L1/L2 cache.
+
+### Asymptotic Complexity (Iterative vs Lattice Fold)
+
+Let:
+
+- **$N$** = The number of conflicted events (`NumForks` × `ForkDepth`).
+- **$A$** = The number of events in the auth chain required to authorize the conflicted events.
+- **$E$** = The number of graph edges (parent/child relationships).
+
+#### 1. Iterative Sort (Standard Matrix State Res v2)
+
+**Rough Complexity: $O(N \log N + A \log A + E)$**
+
+The standard approach uses Kahn's algorithm to perform a topological sort over the conflicted events, breaking ties via the Mainline Auth Chain.
+
+- **The bottleneck:** To break ties dynamically, it must pull the entire auth chain ($A$), compute the "mainline", and sort all auth events by depth and power level. This takes $O(A \log A)$.
+- It then uses a Priority Queue (or equivalent sort) to yield the conflicted events one by one, adding an $O(N \log N)$ factor.
+- Because the auth chain ($A$) scales linearly (or worse) with $N$ in highly branched DAGs, the repetitive tie-breaking and sorting causes performance to degrade rapidly as the graph gets dense.
+
+#### 2. Lattice Fold (`rezzy` specific approach)
+
+**Rough Complexity: $O(N + E)$**
+
+The Lattice Fold completely abandons the global Kahn's topological sort and the massive $O(A \log A)$ auth chain sorting step.
+
+- **The speedup:** It treats the event DAG as a strict mathematical semi-lattice. It traverses the graph structure locally and "folds" branches together at their exact merge points using deterministic pairwise joins.
+- Because it only cares about local graph boundaries and structural properties, it visits each conflicted event and edge a constant number of times.
+- Assuming hash map lookups are $O(1)$, this scales almost purely linearly $O(N + E)$ relative to the size of the conflict, completely bypassing the heavy global sorting overhead.
