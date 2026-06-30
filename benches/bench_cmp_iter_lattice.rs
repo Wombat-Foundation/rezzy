@@ -12,7 +12,18 @@ type GeneratedDag = (
     HashMap<String, LeanEvent>,
 );
 
+struct Lcg {
+    state: u64,
+}
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.state
+    }
+}
+
 fn generate_dag(base_n: usize, forks: usize, fork_depth: usize) -> GeneratedDag {
+    let mut rng = Lcg { state: 1337 };
     let mut auth_context = HashMap::new();
     let mut conflicted_events = HashMap::new();
     let mut unconflicted = OrdMap::new();
@@ -80,21 +91,24 @@ fn generate_dag(base_n: usize, forks: usize, fork_depth: usize) -> GeneratedDag 
 
     for f in 0..forks {
         let mut fork_last_id = last_base_id.clone();
+        let mut fork_last_auth = "$pl".to_string();
 
         for (fork_last_depth, d) in (last_depth..).zip(0..fork_depth) {
+            let chaotic_id = format!("$fork_{f}_{d}_{:016x}", rng.next());
             let ev = LeanEvent {
-                event_id: format!("$fork_{f}_{d}"),
-                event_type: "m.room.topic".to_string(),
+                event_id: chaotic_id,
+                event_type: "m.room.power_levels".to_string(),
                 state_key: Some(String::new()),
                 power_level: 100,
-                origin_server_ts: last_depth.saturating_add(d.try_into().unwrap()),
+                origin_server_ts: rng.next() % 1_000_000_000,
                 sender: "@creator:matrix.org".to_string(),
-                content: serde_json::json!({"topic": format!("Fork {f} Depth {d}")}),
+                content: serde_json::json!({"users": {"@creator:matrix.org": 100}, "fork": f, "depth": d}),
                 prev_events: vec![fork_last_id.clone()],
-                auth_events: vec!["$create".to_string(), "$pl".to_string()],
+                auth_events: vec!["$create".to_string(), fork_last_auth.clone()],
                 depth: fork_last_depth.saturating_add(1),
             };
             fork_last_id.clone_from(&ev.event_id);
+            fork_last_auth.clone_from(&ev.event_id);
             auth_context.insert(ev.event_id.clone(), ev.clone());
             conflicted_events.insert(ev.event_id.clone(), ev.clone());
         }
