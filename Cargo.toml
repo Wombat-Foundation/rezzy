@@ -13,6 +13,7 @@ exclude = [
     "res/",
     "scripts/",
     "docs/",
+    "benches/",
     "RumaLean/",
     "RumaLean.lean",
     "lake*",

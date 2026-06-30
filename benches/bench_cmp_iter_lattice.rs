@@ -103,16 +103,27 @@ fn generate_dag(base_n: usize, forks: usize, fork_depth: usize) -> GeneratedDag 
 }
 
 fn main() {
-    println!("BaseSize,NumForks,ForkDepth,TotalConflicted,Iterative_us,Lattice_us");
+    println!(
+        "{:>8},{:>8},{:>9},{:>15},{:>12},{:>10},{:>10},{:>15}",
+        "BaseSize",
+        "NumForks",
+        "ForkDepth",
+        "TotalConflicted",
+        "Iterative_us",
+        "Lattice_us",
+        "Total_s",
+        "Δ(Iter-Latt)"
+    );
 
-    let base_sizes = vec![10, 100, 1000, 5000];
-    let fork_counts = vec![2, 5, 10, 20, 50];
-    let fork_depth = 10;
+    let base_sizes = vec![10, 500, 5000, 20000, 50000];
+    let fork_counts = vec![2, 10, 50, 200];
+    let fork_depth = 50;
 
-    let iterations: u128 = 10;
+    let iterations: u128 = 5;
 
     for &n in &base_sizes {
         for &f in &fork_counts {
+            let row_start = Instant::now();
             let (unconflicted, conflicted, auth_context) = generate_dag(n, f, fork_depth);
 
             // Warmup Iterative
@@ -157,14 +168,19 @@ fn main() {
             }
             let lattice_time = start.elapsed().as_micros().checked_div(iterations).unwrap();
 
+            let total_s = row_start.elapsed().as_secs_f32();
+            let delta = iter_time.cast_signed().checked_sub(lattice_time.cast_signed()).unwrap();
+
             println!(
-                "{},{},{},{},{},{}",
+                "{:>8},{:>8},{:>9},{:>15},{:>12},{:>10},{:>10.2},{:>15}",
                 n,
                 f,
                 fork_depth,
                 conflicted.len(),
                 iter_time,
-                lattice_time
+                lattice_time,
+                total_s,
+                delta
             );
         }
     }
