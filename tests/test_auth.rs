@@ -2148,3 +2148,135 @@ fn test_third_party_invite_rejected_when_token_missing() {
         "3PI invite must fail if token does not exist in state, EVEN IF sender has PL to invite normally"
     );
 }
+
+#[test]
+fn test_third_party_invite_override_is_ignored() {
+    use rezzy::basespec::event_types::{
+        M_ROOM_CREATE, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,
+    };
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@creator:example.com",
+            json!({ "creator": "@creator:example.com" }),
+        ),
+    );
+
+    // invite requires 50, but third_party_invite override is 0
+    let pl_content = json!({
+        "invite": 50,
+        "events": {
+            "m.room.third_party_invite": 0
+        },
+        "users": {
+            "@creator:example.com": 100
+        }
+    });
+
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@creator:example.com",
+            pl_content,
+        ),
+    );
+
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@user:example.com".into()),
+        make_event(
+            "$join",
+            M_ROOM_MEMBER,
+            Some("@user:example.com"),
+            "@user:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let tpi_event = make_event(
+        "$tpi",
+        M_ROOM_THIRD_PARTY_INVITE,
+        Some("token"),
+        "@user:example.com", // user has default PL 0
+        json!({
+            "display_name": "bob",
+            "public_key": "abc"
+        }),
+    );
+
+    let result = rezzy::auth::check_auth(&tpi_event, &state, rezzy::StateResVersion::V2_1);
+    assert!(
+        result.is_err(),
+        "m.room.third_party_invite must require the invite level (50) and ignore the event-specific override (0)"
+    );
+}
+
+#[test]
+fn test_malformed_third_party_invite_presence() {
+    use rezzy::basespec::event_types::{M_ROOM_CREATE, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@creator:example.com",
+            json!({ "creator": "@creator:example.com" }),
+        ),
+    );
+
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@creator:example.com",
+            json!({
+                "invite": 50,
+                "users": {
+                    "@admin:example.com": 100
+                }
+            }),
+        ),
+    );
+
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@admin:example.com".into()),
+        make_event(
+            "$join",
+            M_ROOM_MEMBER,
+            Some("@admin:example.com"),
+            "@admin:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Admin sends an invite to @target:example.com
+    // BUT the payload has a malformed third_party_invite object (missing signed)
+    let invite_event = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@target:example.com"),
+        "@admin:example.com", // Admin has PL 100, which is enough to invite
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "display_name": "bob"
+            }
+        }),
+    );
+
+    let result = rezzy::auth::check_auth(&invite_event, &state, rezzy::StateResVersion::V2_1);
+    assert!(
+        result.is_err(),
+        "Invite with malformed third_party_invite property must be rejected, not fall through to a normal invite"
+    );
+}
