@@ -19,13 +19,13 @@ Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolu
 
 Everything re-exports from the crate root — `use rezzy::*` gets you `LeanEvent`, `SharedState`, `StateResVersion`, `HashMap`, the works.
 
-- **`resolve_lean`** is the main entry point. Give it unconflicted state, conflicted events, auth context, and a version — get back the winning `SharedState`.
-- **`resolve_lattice_coordinatized`** is the parallel alternative — same inputs, same output, different strategy (lattice fold instead of sequential mainline sort).
-- **`resolve_lean_with_deltas`** is the diagnostic variant — also returns per-event `ResolutionDelta` traces showing what won, what got rejected, and why.
-- **`compute_state_at`** / **`compute_state_at_streaming`** — walk the DAG backwards and reconstruct resolved state at any event. The streaming variant yields states via callback so memory stays bounded to the DAG frontier width.
-- **`auth::check_auth`** — full spec-compliant authorization engine. Implement the `StateProvider` trait to plug in your own state backend.
-- Generalized `EventId` trait — blanket impl for `Clone + Eq + Hash + Ord + Debug`, so `String`, `u32`, `u64`, `ruma::OwnedEventId` all just work.
-- `EventContent` trait — implement on your own content type to skip JSON parsing in the hot path. `serde_json::Value` works out of the box via default impl.
+- **`resolve_lean`** — the main entry point. Unconflicted state + conflicted events + auth context + version → winning `SharedState`.
+- **`resolve_lattice_coordinatized`** — parallel alternative (lattice fold instead of sequential mainline sort).
+- **`resolve_lean_with_deltas`** — diagnostic variant, also emits per-event `ResolutionDelta` traces.
+- **`compute_state_at`** / **`compute_state_at_streaming`** — reconstruct resolved state at any DAG position. Streaming variant bounds memory to frontier width.
+- **`auth::check_auth`** — spec-compliant auth engine. Implement `StateProvider` to plug in your own backend.
+- Generic `EventId` trait — `String`, `u32`, `u64`, `ruma::OwnedEventId` all just work.
+- `EventContent` trait — skip JSON parsing in the hot path. `serde_json::Value` works via default impl.
 - **TODO:** ancillary tools (subgraph, delta, auth graph) are `String`-only currently
 
 ## Usage

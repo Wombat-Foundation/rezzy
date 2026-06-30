@@ -834,7 +834,7 @@ impl<Id: Ord, C> PartialOrd for SortPriority<'_, Id, C> {
     }
 }
 
-/// Coerces JSON values to `i64` (accepts ints, unsigned ints, or string-encoded ints).
+/// Coerces JSON values to `i64` (accepts `ints`, `uints`, or string-encoded ints).
 ///
 /// Returns `None` if the value cannot be interpreted as an integer.
 /// This three-way coercion handles the real-world inconsistency where some

@@ -17,7 +17,7 @@ use roaring::RoaringBitmap;
 /// A topologically-ordered auth DAG with pre-computed transitive reachability bitmaps.
 ///
 /// Each event is assigned a dense integer index (topological order), and its
-/// full auth chain is represented as a [`RoaringBitmap`]. Checking whether
+/// full auth chain is represented as a `RoaringBitmap`. Checking whether
 /// event A is in event B's auth chain is a single `bitmap.contains(idx)` call.
 pub struct AuthGraph {
     /// Maps event ID strings to their dense topological index.
