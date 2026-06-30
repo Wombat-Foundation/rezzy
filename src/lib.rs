@@ -12,7 +12,7 @@
 //! ## Quick Start Example (Room V11 / State Res V2)
 //!
 //! ```rust,no_run
-//! use rezzy::{resolve_lean, LeanEvent, SharedState, StateResVersion, HashMap};
+//! use rezzy::{resolve_iterative_sort, LeanEvent, SharedState, StateResVersion, HashMap};
 //!
 //! // Build the unconflicted state (agreed upon by all forks).
 //! let unconflicted_state = SharedState::new();
@@ -22,7 +22,7 @@
 //! let auth_context: HashMap<String, LeanEvent> = HashMap::new();
 //!
 //! // Resolve the winning state.
-//! let resolved = resolve_lean(
+//! let resolved = resolve_iterative_sort(
 //!     unconflicted_state,
 //!     conflicted_subgraph,
 //!     &auth_context,

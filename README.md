@@ -20,9 +20,9 @@ Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolu
 
 Everything re-exports from the crate root — `use rezzy::*` gets you `LeanEvent`, `SharedState`, `StateResVersion`, `HashMap`, the works.
 
-- **`resolve_lean`** — the main entry point. Unconflicted state + conflicted events + auth context + version → winning `SharedState`.
-- **`resolve_lattice_coordinatized`** — parallel alternative (lattice fold instead of sequential mainline sort).
-- **`resolve_lean_with_deltas`** — diagnostic variant, also emits per-event `ResolutionDelta` traces.
+- **`resolve_iterative_sort`** — the main entry point. Unconflicted state + conflicted events + auth context + version → winning `SharedState`.
+- **`resolve_lattice_fold`** — parallel alternative (lattice fold instead of sequential mainline sort).
+- **`resolve_iterative_sort_with_deltas`** — diagnostic variant, also emits per-event `ResolutionDelta` traces.
 - **`compute_state_at`** / **`compute_state_at_streaming`** — reconstruct resolved state at any DAG position. Streaming variant bounds memory to frontier width.
 - **`auth::check_auth`** — spec-compliant auth engine. Implement `StateProvider` to plug in your own backend.
 - Generic `EventId` trait — `String`, `u32`, `u64`, `ruma::OwnedEventId` all just work.
@@ -140,9 +140,9 @@ Because we don't have the timeline DAG's closure, we have two different techniqu
 
 The generic `EventContent` trait: homeservers implement `EventContent` on their own content type to provide pre-extracted fields (`membership`, `join_rule`, `ban`, `kick` power levels, etc.) without JSON parsing in the hot path. `serde_json::Value` remains the default via a blanket impl.
 
-### Per-Event State Deltas (`resolve_lean_with_deltas`) ✓
+### Per-Event State Deltas (`resolve_iterative_sort_with_deltas`) ✓
 
-`resolve_lean_with_deltas` emits per-step `ResolutionDelta`s alongside the final resolved state, capturing `event_id`, acceptance status, replaced event, and phase (power/non-power) for every conflicted event processed.
+`resolve_iterative_sort_with_deltas` emits per-step `ResolutionDelta`s alongside the final resolved state, capturing `event_id`, acceptance status, replaced event, and phase (power/non-power) for every conflicted event processed.
 
 ### Batch state compute (`compute_state_at_batch`) ✓
 
@@ -158,7 +158,7 @@ Pure function that returns the list of `(event_type, state_key)` pairs required 
 
 ### Integer-keyed resolution ✓
 
-`resolve_lean` is generic over `Id: EventId`, and `EventId` has a blanket impl for any `T: Clone + Eq + Hash + Ord + Debug`. This means `u32`, `u64`, and any interned short ID type work out of the box:
+`resolve_iterative_sort` is generic over `Id: EventId`, and `EventId` has a blanket impl for any `T: Clone + Eq + Hash + Ord + Debug`. This means `u32`, `u64`, and any interned short ID type work out of the box:
 
 ```rust
 let unconflicted: imbl::OrdMap<(String, String), u64> = /* ... */;
@@ -166,12 +166,12 @@ let events: HashMap<u64, LeanEvent<u64>> = /* ... */;
 let auth_ctx: HashMap<u64, LeanEvent<u64>> = /* ... */;
 
 let resolved: imbl::OrdMap<(String, String), u64> =
-    resolve_lean(unconflicted, events, &auth_ctx, StateResVersion::V2);
+    resolve_iterative_sort(unconflicted, events, &auth_ctx, StateResVersion::V2);
 ```
 
 ### Snapshot/checkpoint (partial-join support) ✓
 
-`resolve_lean` supports this — pass a trusted state snapshot as `unconflicted_state`. The conflicted events and auth context only need to cover the divergent portion of the DAG.
+`resolve_iterative_sort` supports this — pass a trusted state snapshot as `unconflicted_state`. The conflicted events and auth context only need to cover the divergent portion of the DAG.
 
 ### State delta compression ✓
 

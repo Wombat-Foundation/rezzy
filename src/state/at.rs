@@ -57,7 +57,7 @@ pub type LocalAuthCacheMap<Id, C> = BTreeMap<(String, String), LocalAuthEntry<Id
 ///
 /// This cache tracks which `StateResVersion` its entries were computed for.
 /// Callers must clear the cache when reusing it with a different `StateResVersion`
-/// (higher-level helpers like `resolve_lean_with_cache*` do this automatically).
+/// (higher-level helpers like `resolve_iterative_sort_with_cache*` do this automatically).
 pub struct LocalAuthCache<Id = String, C = serde_json::Value> {
     pub version: StateResVersion,
     pub map: crate::HashMap<Id, LocalAuthCacheMap<Id, C>>,
@@ -348,7 +348,7 @@ pub type SharedState<Id = String> = imbl::OrdMap<(String, String), Id>;
 /// This walks the `prev_events` graph backwards from `target_event_id`,
 /// topologically sorts all reachable ancestors, and incrementally builds
 /// the state by applying each state event in order. Fork points are resolved
-/// via [`crate::resolve::iterative::resolve_lean`] with the given `version` semantics.
+/// via [`crate::resolve::iterative::resolve_iterative_sort`] with the given `version` semantics.
 ///
 /// Returns `None` if `target_event_id` is not found in `events_map`.
 ///
@@ -869,7 +869,7 @@ where
 
 /// Slow path for merging multiple parent states via the state resolution algorithm.
 /// Full state resolution path for DAG nodes with multiple parents (forks).
-/// Groups the unconflicted state and runs `resolve_lean` on the conflicted subset.
+/// Groups the unconflicted state and runs `resolve_iterative_sort` on the conflicted subset.
 fn resolve_multiple_prev_states<Id, C, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
@@ -987,7 +987,7 @@ where
         }
     }
 
-    crate::resolve::iterative::resolve_lean_with_cache(
+    crate::resolve::iterative::resolve_iterative_sort_with_cache(
         unconflicted_state,
         conflicted_events,
         events_map,

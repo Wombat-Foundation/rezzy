@@ -198,7 +198,7 @@ impl<Id, C> DagNode<Id> for LeanEvent<Id, C> {
 /// `LeanEvent` omits `room_id`. `ruma-lean` is a specialized algorithmic engine
 /// that expects the host homeserver (e.g., Synapse, Conduit) to perform initial
 /// database-level filtering. The host is responsible for verifying cryptographic
-/// signatures and filtering events by `room_id` *before* passing them to `resolve_lean`.
+/// signatures and filtering events by `room_id` *before* passing them to `resolve_iterative_sort`.
 ///
 /// TODO: Consider adding optional `room_id` validation or a dedicated `ForeignEvent`
 /// error check, in case rogue "foreign room" events leak into the `auth_context`.

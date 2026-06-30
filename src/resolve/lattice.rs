@@ -14,14 +14,14 @@
 
 //! Lattice-coordinatized state resolution.
 //!
-//! This module provides [`resolve_lattice_coordinatized`], an alternative to
-//! [`crate::resolve::iterative::resolve_lean`] that replaces the sequential mainline sort
+//! This module provides [`resolve_lattice_fold`], an alternative to
+//! [`crate::resolve::iterative::resolve_iterative_sort`] that replaces the sequential mainline sort
 //! with a parallel, `O(1)` causal coordinatization projection and commutative
 //! join-semilattice fold.
 //!
 //! ## How it works
 //!
-//! 1. The **power phase** is identical to [`resolve_lean`](crate::resolve::iterative::resolve_lean).
+//! 1. The **power phase** is identical to [`resolve_iterative_sort`](crate::resolve::iterative::resolve_iterative_sort).
 //! 2. Instead of sorting non-power events, each event is assigned a **mainline
 //!    coordinate** (its closest position on the power-levels chain).
 //! 3. Events are folded per `(type, state_key)` using a commutative **Least
@@ -313,7 +313,7 @@ pub fn route_power_events<
 /// Resolves conflicted state using `O(1)` causal coordinatization projection
 /// and commutative join-semilattice folding.
 ///
-/// This is functionally equivalent to [`crate::resolve::iterative::resolve_lean`] but
+/// This is functionally equivalent to [`crate::resolve::iterative::resolve_iterative_sort`] but
 /// replaces the sequential mainline sort + iterative auth-check loop with a
 /// parallel per-key fold. Each non-power event competes for its `(type, state_key)`
 /// slot via the [`is_lattice_winner_better`] LUB operator.
@@ -322,10 +322,10 @@ pub fn route_power_events<
 /// - The conflicted set is large (thousands of events).
 /// - The `std` feature is enabled (to benefit from thread parallelism).
 ///
-/// The power phase (Steps 1–2) is shared with `resolve_lean`.
+/// The power phase (Steps 1–2) is shared with `resolve_iterative_sort`.
 // jscpd:ignore-start
 #[must_use]
-pub fn resolve_lattice_coordinatized<
+pub fn resolve_lattice_fold<
     Id,
     C,
     S1: core::hash::BuildHasher + Sync + Send,

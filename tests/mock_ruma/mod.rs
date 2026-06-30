@@ -249,7 +249,7 @@ where
     }
 
     // Attempt to dynamically select V2 vs V2.1 if the inputs match the MSC4297 test scenario.
-    let resolved = rezzy::resolve_lean(
+    let resolved = rezzy::resolve_iterative_sort(
         unconflicted_state,
         conflicted_events,
         &auth_context,

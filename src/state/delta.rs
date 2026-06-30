@@ -33,7 +33,7 @@ pub enum ResolvePhase {
 
 /// A per-event record of what changed in the resolved state during resolution.
 ///
-/// [`resolve_lean_with_deltas`](crate::resolve_lean_with_deltas) emits one of
+/// [`resolve_iterative_sort_with_deltas`](crate::resolve_iterative_sort_with_deltas) emits one of
 /// these for every conflicted event that is auth-checked, regardless of whether
 /// it was accepted or rejected.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -202,7 +202,7 @@ pub struct CompactedCheckpoint {
 ///
 /// This is the recommended API for homeserver state storage. The caller supplies
 /// pre-resolved states (from [`compute_state_at_batch`](crate::compute_state_at_batch)
-/// / [`resolve_lean`](crate::resolve_lean)), and this function handles only the
+/// / [`resolve_iterative_sort`](crate::resolve_iterative_sort)), and this function handles only the
 /// storage compression concern.
 ///
 /// A custom `max_hops` can be provided; pass `None` to use the default

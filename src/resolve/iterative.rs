@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! State resolution entry point — the [`resolve_lean`] function.
+//! State resolution entry point — the [`resolve_iterative_sort`] function.
 //!
 //! This module implements the full Matrix state resolution pipeline:
 //!
@@ -23,7 +23,7 @@
 //!    iteratively auth-checks them against the progressively-built resolved state.
 //!
 //! For the lattice-coordinatized variant (parallel, `O(1)` projection), see
-//! [`crate::resolve::lattice::resolve_lattice_coordinatized`].
+//! [`crate::resolve::lattice::resolve_lattice_fold`].
 
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::{
@@ -323,7 +323,7 @@ where
 /// history), pass the trusted state snapshot as `unconflicted_state`:
 ///
 /// ```rust,no_run
-/// # use rezzy::{resolve_lean, LeanEvent, StateResVersion, HashMap};
+/// # use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion, HashMap};
 /// # use imbl::OrdMap;
 /// // State snapshot from /send_join response
 /// let checkpoint: imbl::OrdMap<(String, String), String> = /* ... */
@@ -333,7 +333,7 @@ where
 /// let auth_ctx: HashMap<String, LeanEvent> = /* auth chain for new_events */
 /// # HashMap::new();
 ///
-/// let resolved = resolve_lean(checkpoint, new_events, &auth_ctx, StateResVersion::V2);
+/// let resolved = resolve_iterative_sort(checkpoint, new_events, &auth_ctx, StateResVersion::V2);
 /// ```
 ///
 /// # Auth Chain Safety
@@ -366,7 +366,7 @@ where
 ///    power-levels chain) and iteratively auth-check them.
 /// 4. Merge winners into the unconflicted base.
 #[must_use]
-pub fn resolve_lean<
+pub fn resolve_iterative_sort<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
@@ -377,7 +377,7 @@ pub fn resolve_lean<
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     version: StateResVersion,
 ) -> crate::state::at::SharedState<Id> {
-    resolve_lean_with_cache::<Id, C, S1, S2>(
+    resolve_iterative_sort_with_cache::<Id, C, S1, S2>(
         unconflicted_state,
         conflicted_events,
         auth_context,
@@ -386,10 +386,10 @@ pub fn resolve_lean<
     )
 }
 
-/// Like [`resolve_lean`], but allows passing an external local auth cache to amortize
+/// Like [`resolve_iterative_sort`], but allows passing an external local auth cache to amortize
 /// allocation costs across multiple invocations.
 #[must_use]
-pub fn resolve_lean_with_cache<
+pub fn resolve_iterative_sort_with_cache<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
@@ -471,7 +471,7 @@ pub fn resolve_lean_with_cache<
     final_resolved
 }
 
-/// Like [`resolve_lean`], but also returns per-event
+/// Like [`resolve_iterative_sort`], but also returns per-event
 /// [`ResolutionDelta`](crate::state::delta::ResolutionDelta)s showing what
 /// changed (or was rejected) at each step.
 ///
@@ -485,10 +485,10 @@ pub fn resolve_lean_with_cache<
 ///
 /// # Panics
 ///
-/// Same conditions as [`resolve_lean`].
+/// Same conditions as [`resolve_iterative_sort`].
 #[must_use]
 #[allow(clippy::type_complexity, clippy::too_many_lines)]
-pub fn resolve_lean_with_deltas<
+pub fn resolve_iterative_sort_with_deltas<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
@@ -502,7 +502,7 @@ pub fn resolve_lean_with_deltas<
     crate::state::at::SharedState<Id>,
     alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id>>,
 ) {
-    resolve_lean_with_cache_and_deltas::<Id, C, S1, S2>(
+    resolve_iterative_sort_with_cache_and_deltas::<Id, C, S1, S2>(
         unconflicted_state,
         conflicted_events,
         auth_context,
@@ -511,11 +511,11 @@ pub fn resolve_lean_with_deltas<
     )
 }
 
-/// Internal helper combining the functionality of [`resolve_lean_with_deltas`] and
-/// [`resolve_lean_with_cache`].
+/// Internal helper combining the functionality of [`resolve_iterative_sort_with_deltas`] and
+/// [`resolve_iterative_sort_with_cache`].
 #[must_use]
 #[allow(clippy::type_complexity, clippy::too_many_lines)]
-pub fn resolve_lean_with_cache_and_deltas<
+pub fn resolve_iterative_sort_with_cache_and_deltas<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,

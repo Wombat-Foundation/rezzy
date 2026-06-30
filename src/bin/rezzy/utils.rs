@@ -357,7 +357,7 @@ pub fn resolve_parent_states(
         let auth_context =
             rezzy::compute_v2_1_conflicted_subgraph(events_map, &conflicted_state_set);
 
-        let resolved = rezzy::resolve_lean(
+        let resolved = rezzy::resolve_iterative_sort(
             unconflicted_state,
             conflicted_events,
             &auth_context,
@@ -428,7 +428,7 @@ pub fn partition_and_resolve_state(
     }
 
     let final_state_map =
-        rezzy::resolve_lean(unconflicted_state, conflicted_events, events_map, version);
+        rezzy::resolve_iterative_sort(unconflicted_state, conflicted_events, events_map, version);
 
     let duration = start.elapsed();
     (final_state_map, duration)

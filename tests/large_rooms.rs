@@ -4,7 +4,7 @@
 // These tests use the official ruma-state-res test fixtures from
 // https://github.com/ruma/ruma/tree/main/crates/ruma-state-res/tests/it/resolve/fixtures
 //
-// They validate that our lean_kahn_sort + resolve_lean pipeline produces
+// They validate that our lean_kahn_sort + resolve_iterative_sort pipeline produces
 // results consistent with the upstream Ruma state resolution implementation.
 mod utils;
 
@@ -13,7 +13,7 @@ extern crate std;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use rezzy::{resolve_lean, LeanEvent, StateResVersion};
+use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use std::collections::HashMap;
 
 /// Load a JSON fixture file into a Vec<LeanEvent>.
@@ -79,13 +79,13 @@ fn test_benchmark_1k_resolution_determinism() {
     let events: Vec<LeanEvent> = serde_json::from_value(data["events"].clone()).unwrap();
 
     // Run resolution twice and verify determinism
-    let resolved1 = resolve_lean(
+    let resolved1 = resolve_iterative_sort(
         utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
         to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
     );
-    let resolved2 = resolve_lean(
+    let resolved2 = resolve_iterative_sort(
         utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
         to_event_map(&events),
         &to_event_map(&events),
@@ -158,13 +158,13 @@ fn test_large_room_10k_v2_1_sort() {
 #[test]
 fn test_large_room_10k_resolution_determinism() {
     let events = load_large_room();
-    let r1 = resolve_lean(
+    let r1 = resolve_iterative_sort(
         utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
         to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
     );
-    let r2 = resolve_lean(
+    let r2 = resolve_iterative_sort(
         utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
         to_event_map(&events),
         &to_event_map(&events),
@@ -177,13 +177,13 @@ fn test_large_room_10k_resolution_determinism() {
 fn test_large_room_10k_v2_vs_v2_1_divergence() {
     let events = load_large_room();
     let map = to_event_map(&events);
-    let v2 = resolve_lean(
+    let v2 = resolve_iterative_sort(
         utils::build_unconflicted_state_test_helper(&map),
         map.clone(),
         &map,
         StateResVersion::V2,
     );
-    let v2_1 = resolve_lean(
+    let v2_1 = resolve_iterative_sort(
         utils::build_unconflicted_state_test_helper(&map),
         map.clone(),
         &map,
@@ -371,7 +371,7 @@ fn test_real_dag_52k_room_v2_1_sort() {
 fn test_real_dag_52k_room_resolution() {
     let events = load_real_dag("res/real_dag_52k_room.json");
     let map = to_event_map(&events);
-    let resolved = resolve_lean(
+    let resolved = resolve_iterative_sort(
         utils::build_unconflicted_state_test_helper(&map),
         map.clone(),
         &map,
@@ -381,7 +381,7 @@ fn test_real_dag_52k_room_resolution() {
     // Determinism check
     let events2 = load_real_dag("res/real_dag_52k_room.json");
     let map2 = to_event_map(&events2);
-    let resolved2 = resolve_lean(
+    let resolved2 = resolve_iterative_sort(
         utils::build_unconflicted_state_test_helper(&map2),
         map2.clone(),
         &map2,
@@ -426,7 +426,7 @@ fn test_real_dag_nheko_room_106_heads() {
     );
 
     // Resolution must still complete on this messy DAG
-    let resolved = resolve_lean(
+    let resolved = resolve_iterative_sort(
         utils::build_unconflicted_state_test_helper(&event_map),
         event_map.clone(),
         &event_map,
@@ -538,7 +538,7 @@ fn test_unredacted_spam_storm_v2_1_1() {
     let map = to_event_map(&events);
 
     let start_v2 = std::time::Instant::now();
-    let resolved_v2 = resolve_lean(
+    let resolved_v2 = resolve_iterative_sort(
         utils::build_unconflicted_state_test_helper(&map),
         map.clone(),
         &map,
@@ -552,7 +552,7 @@ fn test_unredacted_spam_storm_v2_1_1() {
     );
 
     let start_v21 = std::time::Instant::now();
-    let resolved_v21 = resolve_lean(
+    let resolved_v21 = resolve_iterative_sort(
         utils::build_unconflicted_state_test_helper(&map),
         map.clone(),
         &map,
@@ -566,7 +566,7 @@ fn test_unredacted_spam_storm_v2_1_1() {
     );
 
     let start_v211 = std::time::Instant::now();
-    let resolved_v211 = resolve_lean(
+    let resolved_v211 = resolve_iterative_sort(
         utils::build_unconflicted_state_test_helper(&map),
         map.clone(),
         &map,
@@ -580,7 +580,7 @@ fn test_unredacted_spam_storm_v2_1_1() {
     );
 
     let start_lattice = std::time::Instant::now();
-    let resolved_lattice = rezzy::resolve_lattice_coordinatized(
+    let resolved_lattice = rezzy::resolve_lattice_fold(
         imbl::OrdMap::new(),
         map.clone(),
         &map,

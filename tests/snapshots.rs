@@ -4,13 +4,13 @@
 //!
 //!   cargo test --features std --test snapshots -- regen --include-ignored
 //!
-//! This writes our own `resolve_lean` output as the oracle, so subsequent
+//! This writes our own `resolve_iterative_sort` output as the oracle, so subsequent
 //! runs of the normal test suite must match it exactly (ceiling = 0).
 //!
 //! Run: `cargo test --features std --test snapshots`
 mod utils;
 
-use rezzy::{resolve_lean, LeanEvent, StateResVersion};
+use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -48,7 +48,7 @@ fn load_oracle(path: &str) -> HashMap<String, String> {
 fn resolve_and_get_state(fixture_path: &str, version: StateResVersion) -> HashMap<String, String> {
     let events = load_fixture(fixture_path);
     let map = to_event_map(&events);
-    let resolved = resolve_lean(
+    let resolved = resolve_iterative_sort(
         utils::build_unconflicted_state_test_helper(&map),
         map.clone(),
         &map,

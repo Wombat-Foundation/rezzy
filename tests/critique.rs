@@ -1,4 +1,4 @@
-use rezzy::{resolve_lean, LeanEvent, StateResVersion};
+use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -174,7 +174,7 @@ fn resolve_full(events: &[LeanEvent], version: StateResVersion) -> ResolvedState
         }
     }
 
-    let resolved = resolve_lean(
+    let resolved = resolve_iterative_sort(
         unconflicted_state.clone(),
         conflicted_events,
         &events_map,

@@ -374,7 +374,7 @@ mod tests {
 
         // In V2.1, A should win because B (higher PL=100) is applied first and then
         // overwritten by A (lower PL=50) — lower PL pops last and wins for same-key conflicts.
-        let resolved = resolve_lean(
+        let resolved = resolve_iterative_sort(
             unconflicted,
             conflicted.clone(),
             &conflicted,
@@ -817,11 +817,11 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_lean_functionality() {
+    fn test_resolve_iterative_sort_functionality() {
         let mut unconflicted = imbl::OrdMap::new();
         unconflicted.insert(("type".into(), "key".into()), "id".into());
         let conflicted: HashMap<String, LeanEvent> = HashMap::new();
-        let resolved = resolve_lean(
+        let resolved = resolve_iterative_sort(
             unconflicted.clone(),
             conflicted.clone(),
             &conflicted,
@@ -831,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_lean_v2_1_overlay() {
+    fn test_resolve_iterative_sort_v2_1_overlay() {
         use serde_json::json;
 
         // Uncontested state: Alice is already joined, Bob's old event is the prior state.
@@ -965,7 +965,7 @@ mod tests {
             },
         );
 
-        let resolved = resolve_lean(
+        let resolved = resolve_iterative_sort(
             unconflicted.clone(),
             conflicted,
             &auth_context,
@@ -2392,7 +2392,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_lean_cycle_power_events() {
+    fn test_resolve_iterative_sort_cycle_power_events() {
         use std::collections::HashMap;
 
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
@@ -2429,7 +2429,8 @@ mod tests {
 
         let unconflicted = imbl::OrdMap::new();
         // This will run kahn sort on power_events, detect a cycle, and print/handle it safely.
-        let resolved = resolve_lean(unconflicted, conflicted, &auth, rezzy::StateResVersion::V2);
+        let resolved =
+            resolve_iterative_sort(unconflicted, conflicted, &auth, rezzy::StateResVersion::V2);
         assert!(!resolved.is_empty());
         assert_eq!(
             &resolved[&("m.room.power_levels".into(), String::new())],
@@ -2592,7 +2593,7 @@ mod tests {
 
         // Resolve using V2_1 (MSC4297). This starts with an empty state.
         // It must successfully route and validate `$pl_alice` in order to authorize Bob's PL events.
-        let resolved = resolve_lean(
+        let resolved = resolve_iterative_sort(
             utils::build_unconflicted_state_test_helper(&auth_context),
             conflicted_events,
             &auth_context,
@@ -3060,9 +3061,11 @@ fn test_sorting_v2_creator_gets_pl_100() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn test_resolve_lean_with_deltas_parity() {
+fn test_resolve_iterative_sort_with_deltas_parity() {
     use rezzy::state::delta::ResolvePhase;
-    use rezzy::{resolve_lean, resolve_lean_with_deltas, LeanEvent, StateResVersion};
+    use rezzy::{
+        resolve_iterative_sort, resolve_iterative_sort_with_deltas, LeanEvent, StateResVersion,
+    };
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -3170,22 +3173,26 @@ fn test_resolve_lean_with_deltas_parity() {
         },
     );
 
-    // resolve_lean
-    let resolved_plain = resolve_lean(
+    // resolve_iterative_sort
+    let resolved_plain = resolve_iterative_sort(
         unconflicted.clone(),
         conflicted.clone(),
         &auth_context,
         StateResVersion::V2,
     );
 
-    // resolve_lean_with_deltas
-    let (resolved_with, deltas) =
-        resolve_lean_with_deltas(unconflicted, conflicted, &auth_context, StateResVersion::V2);
+    // resolve_iterative_sort_with_deltas
+    let (resolved_with, deltas) = resolve_iterative_sort_with_deltas(
+        unconflicted,
+        conflicted,
+        &auth_context,
+        StateResVersion::V2,
+    );
 
     // The resolved state must be identical
     assert_eq!(
         resolved_plain, resolved_with,
-        "resolve_lean_with_deltas must produce identical resolved state"
+        "resolve_iterative_sort_with_deltas must produce identical resolved state"
     );
 
     // Should have at least one delta
@@ -3226,8 +3233,8 @@ fn test_resolve_lean_with_deltas_parity() {
 }
 
 #[test]
-fn test_resolve_lean_with_deltas_no_duplicate_power_events() {
-    use rezzy::{resolve_lean_with_deltas, LeanEvent, StateResVersion};
+fn test_resolve_iterative_sort_with_deltas_no_duplicate_power_events() {
+    use rezzy::{resolve_iterative_sort_with_deltas, LeanEvent, StateResVersion};
     use std::collections::HashMap;
 
     let mut unconflicted = imbl::OrdMap::new();
@@ -3269,8 +3276,12 @@ fn test_resolve_lean_with_deltas_no_duplicate_power_events() {
     let mut conflicted = HashMap::new();
     conflicted.insert("$pl_alice".into(), pl_alice.clone());
 
-    let (_, deltas) =
-        resolve_lean_with_deltas(unconflicted, conflicted, &auth_context, StateResVersion::V2);
+    let (_, deltas) = resolve_iterative_sort_with_deltas(
+        unconflicted,
+        conflicted,
+        &auth_context,
+        StateResVersion::V2,
+    );
 
     let power_deltas: Vec<_> = deltas
         .iter()
@@ -3518,7 +3529,7 @@ fn test_additional_creators_version_gating() {
     // if the version matches V2_1 | V2_1_1 | V2_2.
 }
 
-/// Hypothetical comparison: proves `resolve_lean` produces different resolved
+/// Hypothetical comparison: proves `resolve_iterative_sort` produces different resolved
 /// state for V2 vs V2.1 given identical inputs.
 ///
 /// NOTE: V2 and V2.1 are orthogonal due to the breaking changes between room
@@ -3538,7 +3549,7 @@ fn test_additional_creators_version_gating() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn test_compute_state_at_v2_vs_v2_1_divergence() {
-    use rezzy::{resolve_lean, LeanEvent, StateResVersion};
+    use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
     use std::collections::HashMap;
 
     // === Auth context: all events available for auth chain lookups ===
@@ -3662,7 +3673,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
     );
 
     // Resolve with V2
-    let state_v2 = resolve_lean(
+    let state_v2 = resolve_iterative_sort(
         unconflicted.clone(),
         conflicted.clone(),
         &auth_context,
@@ -3670,7 +3681,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
     );
 
     // Resolve with V2.1
-    let state_v2_1 = resolve_lean(
+    let state_v2_1 = resolve_iterative_sort(
         unconflicted,
         conflicted,
         &auth_context,
@@ -3775,10 +3786,10 @@ fn test_lean_event_get_redact_and_creator() {
 fn test_coverage_sweeper_for_unreachable_edges() {
     use rezzy::basespec::rezzy_types::{EventProvider, SortPriority};
     use rezzy::resolve::cdo::is_ancestor;
-    use rezzy::resolve::lattice::resolve_lattice_coordinatized;
+    use rezzy::resolve::lattice::resolve_lattice_fold;
     use rezzy::state::at::StateComputationError;
     use rezzy::state::delta::{reconstruct_state_batch, CompactedCheckpoint};
-    use rezzy::{resolve_lean_with_deltas, LeanEvent, StateResVersion};
+    use rezzy::{resolve_iterative_sort_with_deltas, LeanEvent, StateResVersion};
     use std::collections::{BTreeMap, HashMap};
 
     // Cover StateComputationError Display
@@ -3803,8 +3814,8 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     assert!(is_ancestor(&"B".to_string(), &"A".to_string(), &context));
     assert!(!is_ancestor(&"A".to_string(), &"B".to_string(), &context));
 
-    // Cover resolve_lattice_coordinatized
-    let lattice_res = resolve_lattice_coordinatized(
+    // Cover resolve_lattice_fold
+    let lattice_res = resolve_lattice_fold(
         imbl::OrdMap::new(),
         context.clone(),
         &HashMap::new(),
@@ -3815,7 +3826,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     // Cover get_initial_resolved_state for V1
     let mut unconf = imbl::OrdMap::new();
     unconf.insert(("m.room.create".into(), String::new()), "123".into());
-    let v1_resolved = rezzy::resolve::resolve_lean(
+    let v1_resolved = rezzy::resolve::resolve_iterative_sort(
         unconf.clone(),
         HashMap::<String, LeanEvent<String>>::new(),
         &HashMap::<String, LeanEvent<String>>::new(),
@@ -3872,7 +3883,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     };
     assert_eq!(p1_v2.cmp(&p2_v2), core::cmp::Ordering::Greater); // A > B (inverted)
 
-    // Cover rejected events in resolve_lean_with_deltas
+    // Cover rejected events in resolve_iterative_sort_with_deltas
     let create: LeanEvent<String> = LeanEvent {
         event_id: "$create".into(),
         event_type: "m.room.create".into(),
@@ -3918,7 +3929,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     conflicted.insert("$bogus_pl".into(), bogus_power.clone());
     conflicted.insert("$bogus_topic".into(), bogus_topic.clone());
 
-    let (resolved, deltas) = resolve_lean_with_deltas(
+    let (resolved, deltas) = resolve_iterative_sort_with_deltas(
         imbl::OrdMap::new(),
         conflicted.clone(),
         &auth,

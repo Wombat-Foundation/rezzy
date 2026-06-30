@@ -48,7 +48,7 @@ context. Total: **1 database query**.
 
 ## Why Async State Resolution is an Anti-Pattern
 
-If `resolve_lean` were `async` and lazy-loaded events during resolution:
+If `resolve_iterative_sort` were `async` and lazy-loaded events during resolution:
 
 1. Process an event, see an `auth_event` ID, `await` a database fetch.
 2. Process the next event, `await` another fetch.
@@ -60,7 +60,7 @@ algorithm dependent on the database driver's latency characteristics.
 
 ## The I/O Sandwich
 
-By keeping `resolve_lean` strictly synchronous, the architecture naturally
+By keeping `resolve_iterative_sort` strictly synchronous, the architecture naturally
 splits into three clean layers:
 
 ```text
@@ -97,7 +97,7 @@ on rooms with millions of events.
 ## The Transitive Closure Index
 
 The I/O sandwich above describes the **normal case**: a single fork arrives,
-the homeserver bulk-fetches the auth difference, and `resolve_lean` runs once.
+the homeserver bulk-fetches the auth difference, and `resolve_iterative_sort` runs once.
 But there's a second scenario that demands a fundamentally different strategy:
 **full room state rebuilds**.
 
@@ -176,12 +176,12 @@ rebuild bitmaps  = ephemeral index (throwaway, built from JSON, O(V+E))
 ### Why This Lives in the Homeserver, Not Rezzy
 
 The transitive closure index is a homeserver-level optimization for batch
-workloads. Rezzy's `resolve_lean` API is designed for single-invocation
+workloads. Rezzy's `resolve_iterative_sort` API is designed for single-invocation
 resolution with a pre-materialized `HashMap`. The homeserver is responsible for:
 
 1. **Building the index** during the streaming phase (one `O(V+E)` DFS pass).
 2. **Using the index** to extract the minimal `HashMap` for each fork.
-3. **Passing the extract** to `resolve_lean` (which completes in microseconds).
+3. **Passing the extract** to `resolve_iterative_sort` (which completes in microseconds).
 
 This keeps Rezzy's API clean and stateless while allowing homeservers to
 amortize auth chain computation across thousands of forks.
