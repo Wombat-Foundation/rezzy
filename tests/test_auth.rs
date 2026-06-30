@@ -1589,3 +1589,59 @@ fn test_membership_rules_fallback() {
     // Should fall through match in check_membership_rules, and check_membership_pl_hierarchies, and succeed.
     assert!(result.is_ok(), "Expected Ok(()), got {result:?}");
 }
+
+#[test]
+fn test_invite_already_joined_user_rejected() {
+    // Per spec: inviting a user who is already joined must be rejected.
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@admin:x.com",
+            json!({"users": {"@admin:x.com": 100}}),
+        ),
+    );
+    // Admin is joined
+    state.insert(
+        ("m.room.member".into(), "@admin:x.com".into()),
+        make_event(
+            "$admin_join",
+            "m.room.member",
+            Some("@admin:x.com"),
+            "@admin:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    // Bob is already joined
+    state.insert(
+        ("m.room.member".into(), "@bob:x.com".into()),
+        make_event(
+            "$bob_join",
+            "m.room.member",
+            Some("@bob:x.com"),
+            "@bob:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Admin tries to re-invite Bob who is already joined
+    let invite = make_event(
+        "$reinvite",
+        "m.room.member",
+        Some("@bob:x.com"),
+        "@admin:x.com",
+        json!({"membership": "invite"}),
+    );
+    let result = check_auth(&invite, &state, rezzy::StateResVersion::V2_1);
+    assert!(
+        result.is_err(),
+        "inviting an already-joined user must be rejected, got {result:?}"
+    );
+}

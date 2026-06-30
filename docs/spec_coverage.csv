@@ -21,3 +21,4 @@ spec/v1.13§3.3,Authorization Rules,spec,stable,all,full,"check_auth: membership
 spec/v1.13§3.3,Restricted Join Rules,spec,stable,V8+,full,restricted and knock_restricted join rules with join_authorised_via_users_server
 spec/v1.13§3.3,Knock Rules,spec,stable,V7+,full,"Knock membership validation (MSC2403 §f): reject if banned, invited, joined, or wrong join rule"
 spec/v1.13§3.3,Auth Chain,spec,stable,all,full,Roaring bitmap-based auth chain computation and diff
+spec/v1.13§3.3,Invite Rules,spec,stable,all,full,"Reject invite if target is already joined or banned; sender != target; sender has invite PL"

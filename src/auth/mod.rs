@@ -426,8 +426,14 @@ fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         });
     }
 
-    // Check target isn't already banned
-    if current_membership == "ban" {
+    // Check target isn't already joined or banned
+    if current_membership == MEM_JOIN {
+        return Err(AuthError::NotMember {
+            sender: target_user.into(),
+            event_id: event.event_id.clone(),
+        });
+    }
+    if current_membership == MEM_BAN {
         return Err(AuthError::BannedUser {
             sender: target_user.into(),
             event_id: event.event_id.clone(),
