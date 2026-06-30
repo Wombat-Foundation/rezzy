@@ -1,0 +1,23 @@
+spec_id,title,type,status,room_versions,rezzy_support,notes
+MSC1693,State Resolution Reloaded (v2),MSC,merged,V2-V11,full,"Core v2 algorithm: reverse topological power ordering, mainline sort, iterative auth"
+MSC2403,Add knock feature,MSC,merged,V7+,full,"check_knock_rules: sender==state_key, reject ban/invite/join, gate on knock/knock_restricted join rule"
+MSC4297,State Resolution v2.1,MSC,merged,V12+,full,"Empty initial state, conflicted subgraph extraction, CDO filtering, ancestral power event routing"
+MSC4242,State DAGs (v2.2),MSC,proposed,org.matrix.msc4242.12,experimental,State DAGs (with possible lattice fold parallel resolution). Reserved for future room versions
+MSC4289,Explicitly privilege room creators,MSC,merged,V12+,full,"Creator gets i64::MAX power; additional_creators array; creators excluded from PL users map"
+spec/v1.13§11.1,Room Version 1,spec,stable,V1,full,State Resolution v1
+spec/v1.13§11.2,Room Version 2,spec,stable,V2,full,State Resolution v2 (MSC1693)
+spec/v1.13§11.3,Room Version 3,spec,stable,V3,full,Event ID format changed to URL-safe base64 SHA-256
+spec/v1.13§11.4,Room Version 4,spec,stable,V4,full,Event ID format: $ prefix only (no domain)
+spec/v1.13§11.5,Room Version 5,spec,stable,V5,full,Enforce canonical JSON for content hashing
+spec/v1.13§11.6,Room Version 6,spec,stable,V6,full,Strict canonical JSON; updated auth rules
+spec/v1.13§11.7,Room Version 7,spec,stable,V7,full,Knock join rule support
+spec/v1.13§11.8,Room Version 8,spec,stable,V8,full,Restricted join rule (join_authorised_via_users_server)
+spec/v1.13§11.9,Room Version 9,spec,stable,V9,full,Updated restricted join rule handling
+spec/v1.13§11.10,Room Version 10,spec,stable,V10,full,knock_restricted join rule; whole-event auth for redactions
+spec/v1.13§11.11,Room Version 11,spec,stable,V11,full,Clarified redaction algorithm
+spec/v1.13§11.12,Room Version 12,spec,proposed,V12,full,State Res v2.1 (MSC4297); creator has i64::MAX power; additional_creators; m.room.create no longer in auth events
+spec/v1.13§3,Server-Server API: State Resolution,spec,stable,all,full,State resolution algorithms v1 and v2
+spec/v1.13§3.3,Authorization Rules,spec,stable,all,full,"check_auth: membership rules, power levels, join rules, ban/kick/invite validation"
+spec/v1.13§3.3,Restricted Join Rules,spec,stable,V8+,full,restricted and knock_restricted join rules with join_authorised_via_users_server
+spec/v1.13§3.3,Knock Rules,spec,stable,V7+,full,"Knock membership validation (MSC2403 §f): reject if banned, invited, joined, or wrong join rule"
+spec/v1.13§3.3,Auth Chain,spec,stable,all,full,Roaring bitmap-based auth chain computation and diff
