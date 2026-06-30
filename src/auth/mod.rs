@@ -555,8 +555,7 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         //   2. Has sufficient power level to invite.
         if current_membership == MEM_INVITE || current_membership == MEM_JOIN {
             // Already invited or joined — allowed without further checks.
-        } else if let Some(authorising_user) = event.content.get_join_authorised_via_users_server()
-        {
+        } else if let Some(authorising_user) = event.get_join_authorised_via_users_server() {
             check_authorising_user(event, state, authorising_user)?;
         } else {
             return Err(AuthError::NotMember {

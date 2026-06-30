@@ -402,6 +402,13 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_join_rule()
     }
 
+    pub fn get_join_authorised_via_users_server(&self) -> Option<&str>
+    where
+        C: EventContent,
+    {
+        self.content.get_join_authorised_via_users_server()
+    }
+
     pub fn get_user_power_level(&self, user: &str) -> Option<i64>
     where
         C: EventContent,
