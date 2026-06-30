@@ -270,7 +270,11 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     fn get_invite(&self) -> Option<i64>;
     fn get_redact(&self) -> Option<i64>;
     fn get_creator(&self) -> Option<&str>;
+    /// Specific to V12+ rooms.
     fn has_additional_creator(&self, sender: &str) -> bool;
+    /// Returns the `join_authorised_via_users_server` field, if present.
+    /// Used for `restricted`/`knock_restricted` join rules (room version 8+).
+    fn get_join_authorised_via_users_server(&self) -> Option<&str>;
 }
 
 impl EventContent for Value {
@@ -342,6 +346,11 @@ impl EventContent for Value {
             .and_then(|v| v.as_array())
             .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(sender)))
     }
+
+    fn get_join_authorised_via_users_server(&self) -> Option<&str> {
+        self.get(crate::basespec::event_types::FIELD_JOIN_AUTHORISED_VIA_USERS_SERVER)?
+            .as_str()
+    }
 }
 
 impl<Id, C> LeanEvent<Id, C> {
@@ -391,6 +400,13 @@ impl<Id, C> LeanEvent<Id, C> {
         C: EventContent,
     {
         self.content.get_join_rule()
+    }
+
+    pub fn get_join_authorised_via_users_server(&self) -> Option<&str>
+    where
+        C: EventContent,
+    {
+        self.content.get_join_authorised_via_users_server()
     }
 
     pub fn get_user_power_level(&self, user: &str) -> Option<i64>

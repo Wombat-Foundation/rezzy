@@ -1,3 +1,11 @@
+# macOS/backup files
+.~*
+._*
+~$*
+.DS_Store
+*.swp
+
+# project and build files
 /.lake
 target/
 .gemini/

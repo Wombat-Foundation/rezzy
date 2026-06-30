@@ -1,4 +1,4 @@
-//! Tests for restricted and knock_restricted join rule support.
+//! Tests for restricted and `knock_restricted` join rule support.
 //!
 //! Previously, rezzy's `check_auth` only handled `public`, `invite`, and `knock`
 //! join rules. `restricted` (V8+) and `knock_restricted` (V10+) join rules were
@@ -260,6 +260,94 @@ fn test_restricted_knock_rejected() {
 }
 
 #[test]
+fn test_invite_only_knock_rejected() {
+    // Knocking should NOT be allowed in an invite-only room.
+    let state = room_with_join_rule("invite");
+
+    let knock_event = make_event(
+        "$dave_knock",
+        "m.room.member",
+        Some("@dave:example.com"),
+        "@dave:example.com",
+        json!({"membership": "knock"}),
+    );
+
+    let result = check_auth(&knock_event, &state, StateResVersion::V2);
+    assert!(
+        result.is_err(),
+        "knocking must NOT be allowed in invite-only room"
+    );
+}
+
+#[test]
+fn test_public_knock_rejected() {
+    // Knocking should NOT be allowed in a public room (just join directly).
+    let state = room_with_join_rule("public");
+
+    let knock_event = make_event(
+        "$dave_knock",
+        "m.room.member",
+        Some("@dave:example.com"),
+        "@dave:example.com",
+        json!({"membership": "knock"}),
+    );
+
+    let result = check_auth(&knock_event, &state, StateResVersion::V2);
+    assert!(
+        result.is_err(),
+        "knocking must NOT be allowed in public room"
+    );
+}
+
+#[test]
+fn test_knock_room_knock_allowed() {
+    // Knocking SHOULD be allowed when join_rule is "knock".
+    let state = room_with_join_rule("knock");
+
+    let knock_event = make_event(
+        "$dave_knock",
+        "m.room.member",
+        Some("@dave:example.com"),
+        "@dave:example.com",
+        json!({"membership": "knock"}),
+    );
+
+    let result = check_auth(&knock_event, &state, StateResVersion::V2);
+    assert!(
+        result.is_ok(),
+        "knocking should be allowed in knock room, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_banned_user_cannot_knock() {
+    // A banned user must not be able to knock.
+    let mut state = room_with_join_rule("knock");
+
+    state.insert(
+        ("m.room.member".into(), "@evil:example.com".into()),
+        make_event(
+            "$ban_evil",
+            "m.room.member",
+            Some("@evil:example.com"),
+            "@admin:example.com",
+            json!({"membership": "ban"}),
+        ),
+    );
+
+    let knock_event = make_event(
+        "$evil_knock",
+        "m.room.member",
+        Some("@evil:example.com"),
+        "@evil:example.com",
+        json!({"membership": "knock"}),
+    );
+
+    let result = check_auth(&knock_event, &state, StateResVersion::V2);
+    assert!(result.is_err(), "banned user must NOT be able to knock");
+}
+
+#[test]
 fn test_restricted_banned_user_cannot_join_even_with_authorized_via() {
     // A banned user must not be able to join even with join_authorised_via_users_server.
     let mut state = room_with_join_rule("restricted");
@@ -290,5 +378,82 @@ fn test_restricted_banned_user_cannot_join_even_with_authorized_via() {
     assert!(
         result.is_err(),
         "banned user must NOT be able to join even with authorized_via"
+    );
+}
+
+// ─── Authorising user validation (MSC3083) ──────────────────────────────
+
+#[test]
+fn test_restricted_join_rejected_when_authorising_user_not_joined() {
+    // The authorising user must be joined to the room.
+    let state = room_with_join_rule("restricted");
+
+    // @bob tries to join with authorisation from @ghost who is NOT in the room.
+    let join_event = make_event(
+        "$bob_join",
+        "m.room.member",
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({
+            "membership": "join",
+            "join_authorised_via_users_server": "@ghost:example.com"
+        }),
+    );
+
+    let result = check_auth(&join_event, &state, StateResVersion::V2);
+    assert!(
+        result.is_err(),
+        "restricted join must be rejected when authorising user is not joined"
+    );
+}
+
+#[test]
+fn test_restricted_join_rejected_when_authorising_user_lacks_invite_pl() {
+    // The authorising user must have sufficient power level to invite.
+    let mut state = room_with_join_rule("restricted");
+
+    // @lowpl is joined but has PL 0 (invite requires PL 0 by default,
+    // so we set invite PL to 50 to make them insufficient).
+    state.insert(
+        ("m.room.member".into(), "@lowpl:example.com".into()),
+        make_event(
+            "$lowpl_join",
+            "m.room.member",
+            Some("@lowpl:example.com"),
+            "@lowpl:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    // Override power levels: set invite PL to 50 so @lowpl (PL 0) can't invite.
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl2",
+            "m.room.power_levels",
+            Some(""),
+            "@admin:example.com",
+            json!({
+                "users": {"@admin:example.com": 100},
+                "users_default": 0,
+                "invite": 50,
+            }),
+        ),
+    );
+
+    let join_event = make_event(
+        "$bob_join",
+        "m.room.member",
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({
+            "membership": "join",
+            "join_authorised_via_users_server": "@lowpl:example.com"
+        }),
+    );
+
+    let result = check_auth(&join_event, &state, StateResVersion::V2);
+    assert!(
+        result.is_err(),
+        "restricted join must be rejected when authorising user lacks invite PL"
     );
 }

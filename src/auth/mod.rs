@@ -25,8 +25,9 @@ use core::fmt;
 
 use crate::basespec::event_types::{
     FIELD_MEMBERSHIP, FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE,
-    MEM_JOIN, MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
-    M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_PUBLIC,
+    MEM_JOIN, MEM_KNOCK, MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER,
+    M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_KNOCK_RESTRICTED,
+    RULE_PUBLIC, RULE_RESTRICTED,
 };
 use crate::basespec::rezzy_types::LeanEvent;
 use crate::basespec::rezzy_types::StateResVersion;
@@ -257,6 +258,19 @@ pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         }
     }
 
+    // Rule 4b (spec §rule 9, all versions): If the event has a state_key
+    // that starts with '@' and does not match the sender, reject.
+    if event.event_type != M_ROOM_MEMBER {
+        if let Some(ref sk) = event.state_key {
+            if sk.starts_with('@') && sk != &event.sender {
+                return Err(AuthError::InvalidStateKey {
+                    expected: event.sender.clone(),
+                    actual: sk.clone(),
+                });
+            }
+        }
+    }
+
     // Rule 5: m.room.member state_key validation
     if event.event_type == M_ROOM_MEMBER {
         check_membership_rules(event, state, version)?;
@@ -425,8 +439,14 @@ fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         });
     }
 
-    // Check target isn't already banned
-    if current_membership == "ban" {
+    // Check target isn't already joined or banned
+    if current_membership == MEM_JOIN {
+        return Err(AuthError::NotMember {
+            sender: target_user.into(),
+            event_id: event.event_id.clone(),
+        });
+    }
+    if current_membership == MEM_BAN {
         return Err(AuthError::BannedUser {
             sender: target_user.into(),
             event_id: event.event_id.clone(),
@@ -492,7 +512,13 @@ fn check_membership_rules<Id: Clone, C: crate::basespec::rezzy_types::EventConte
         MEM_LEAVE => check_leave_rules(event, state, target_user, current_membership, version)?,
         MEM_BAN => check_ban_rules(event, state, version)?,
         MEM_INVITE => check_invite_rules(event, state, target_user, current_membership, version)?,
-        _ => {}
+        MEM_KNOCK => check_knock_rules(event, state, target_user)?,
+        // Rule 5.8: Unknown membership — reject
+        _ => {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "unknown membership: {new_membership}"
+            )));
+        }
     }
 
     check_membership_pl_hierarchies(event, state, target_user, new_membership, version)?;
@@ -545,12 +571,111 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
                 event_id: event.event_id.clone(),
             });
         }
+    } else if join_rule == RULE_RESTRICTED || join_rule == RULE_KNOCK_RESTRICTED {
+        // Restricted/knock_restricted (room version 8+/10+):
+        // Allow if user is already invited/joined. Otherwise, require a valid
+        // join_authorised_via_users_server field whose referenced user is:
+        //   1. Joined to the room, AND
+        //   2. Has sufficient power level to invite.
+        if current_membership == MEM_INVITE || current_membership == MEM_JOIN {
+            // Already invited or joined — allowed without further checks.
+        } else if let Some(authorising_user) = event.get_join_authorised_via_users_server() {
+            check_authorising_user(event, state, authorising_user)?;
+        } else {
+            return Err(AuthError::NotMember {
+                sender: event.sender.clone(),
+                event_id: event.event_id.clone(),
+            });
+        }
     } else if join_rule != RULE_PUBLIC {
         return Err(AuthError::NotMember {
             sender: event.sender.clone(),
             event_id: event.event_id.clone(),
         });
     }
+    Ok(())
+}
+
+/// Validate that the authorising user for a restricted join is joined to the
+/// room and has sufficient power level to invite (MSC3083).
+fn check_authorising_user<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
+    event: &LeanEvent<Id, C>,
+    state: &impl StateProvider<Id, C>,
+    authorising_user: &str,
+) -> Result<(), AuthError<Id>> {
+    let auth_membership = state
+        .get_event(M_ROOM_MEMBER, authorising_user)
+        .and_then(|ev| ev.get_membership())
+        .unwrap_or("");
+
+    if auth_membership != MEM_JOIN {
+        return Err(AuthError::NotMember {
+            sender: event.sender.clone(),
+            event_id: event.event_id.clone(),
+        });
+    }
+
+    let auth_user_pl = state
+        .get_event(M_ROOM_POWER_LEVELS, "")
+        .and_then(|pl| pl.get_user_power_level(authorising_user))
+        .unwrap_or(0);
+    if auth_user_pl < get_invite_power_level(state) {
+        return Err(AuthError::NotMember {
+            sender: event.sender.clone(),
+            event_id: event.event_id.clone(),
+        });
+    }
+
+    Ok(())
+}
+
+/// Validate knock rules: knocking is only allowed when `join_rule` is
+/// `knock` or `knock_restricted` (room versions 7+ / 10+).
+fn check_knock_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
+    event: &LeanEvent<Id, C>,
+    state: &impl StateProvider<Id, C>,
+    target_user: &str,
+) -> Result<(), AuthError<Id>> {
+    // A user can only knock as themselves
+    if target_user != event.sender {
+        return Err(AuthError::InvalidStateKey {
+            expected: event.sender.clone(),
+            actual: target_user.into(),
+        });
+    }
+
+    let current_membership = state
+        .get_event(M_ROOM_MEMBER, target_user)
+        .and_then(|ev| ev.get_membership())
+        .unwrap_or("");
+
+    // MSC2403 §f.iii: allow only if membership is NOT ban, invite, or join.
+    if current_membership == MEM_BAN {
+        return Err(AuthError::BannedUser {
+            sender: event.sender.clone(),
+            event_id: event.event_id.clone(),
+        });
+    }
+
+    if current_membership == MEM_INVITE || current_membership == MEM_JOIN {
+        return Err(AuthError::NotMember {
+            sender: event.sender.clone(),
+            event_id: event.event_id.clone(),
+        });
+    }
+
+    let join_rule = state
+        .get_event(M_ROOM_JOIN_RULES, "")
+        .and_then(|ev| ev.get_join_rule())
+        .unwrap_or(RULE_INVITE);
+
+    if join_rule != RULE_KNOCK && join_rule != RULE_KNOCK_RESTRICTED {
+        return Err(AuthError::NotMember {
+            sender: event.sender.clone(),
+            event_id: event.event_id.clone(),
+        });
+    }
+
     Ok(())
 }
 
@@ -705,7 +830,10 @@ pub fn auth_types_for_event(
 
         let membership = content.get(FIELD_MEMBERSHIP).and_then(|v| v.as_str());
 
-        if membership == Some(MEM_JOIN) || membership == Some(MEM_INVITE) {
+        if membership == Some(MEM_JOIN)
+            || membership == Some(MEM_INVITE)
+            || membership == Some(MEM_KNOCK)
+        {
             auth_types.push((M_ROOM_JOIN_RULES.into(), String::new()));
         }
 

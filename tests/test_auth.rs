@@ -1433,6 +1433,19 @@ fn test_auth_types_for_event() {
         "m.room.third_party_invite".to_string(),
         "token123".to_string()
     )));
+
+    // Knock events must include join_rules in auth state
+    let types = auth_types_for_event(
+        "m.room.member",
+        "@alice:x.com",
+        Some("@alice:x.com"),
+        &json!({"membership": "knock"}),
+        StateResVersion::V2,
+    );
+    assert!(
+        types.contains(&("m.room.join_rules".to_string(), String::new())),
+        "knock membership must require m.room.join_rules in auth types"
+    );
 }
 
 #[test]
@@ -1563,15 +1576,164 @@ fn test_membership_rules_fallback() {
             json!({"membership": "join"}),
         ),
     );
-    // Custom/unknown membership transition: e.g. "knock"
-    let knock = make_event(
-        "$knock",
+    // Truly unknown membership transition: spec rule 5.8 says reject.
+    // Note: "knock" is no longer unknown — it has proper validation (MSC2403).
+    let unknown = make_event(
+        "$unknown",
         "m.room.member",
         Some("@alice:x.com"),
         "@alice:x.com",
-        json!({"membership": "knock"}),
+        json!({"membership": "custom_xyz"}),
     );
-    let result = check_auth(&knock, &state, rezzy::StateResVersion::V2_1);
-    // Should fall through match in check_membership_rules, and check_membership_pl_hierarchies, and succeed.
-    assert!(result.is_ok(), "Expected Ok(()), got {result:?}");
+    let result = check_auth(&unknown, &state, rezzy::StateResVersion::V2_1);
+    // Spec rule 5.8: unknown membership must be rejected.
+    assert!(
+        result.is_err(),
+        "Unknown membership must be rejected, got {result:?}"
+    );
+}
+
+#[test]
+fn test_invite_already_joined_user_rejected() {
+    // Per spec: inviting a user who is already joined must be rejected.
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@admin:x.com",
+            json!({"users": {"@admin:x.com": 100}}),
+        ),
+    );
+    // Admin is joined
+    state.insert(
+        ("m.room.member".into(), "@admin:x.com".into()),
+        make_event(
+            "$admin_join",
+            "m.room.member",
+            Some("@admin:x.com"),
+            "@admin:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    // Bob is already joined
+    state.insert(
+        ("m.room.member".into(), "@bob:x.com".into()),
+        make_event(
+            "$bob_join",
+            "m.room.member",
+            Some("@bob:x.com"),
+            "@bob:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Admin tries to re-invite Bob who is already joined
+    let invite = make_event(
+        "$reinvite",
+        "m.room.member",
+        Some("@bob:x.com"),
+        "@admin:x.com",
+        json!({"membership": "invite"}),
+    );
+    let result = check_auth(&invite, &state, rezzy::StateResVersion::V2_1);
+    assert!(
+        result.is_err(),
+        "inviting an already-joined user must be rejected, got {result:?}"
+    );
+}
+
+#[test]
+fn test_owned_state_key_rejected_when_sender_mismatch() {
+    // Spec auth rule 9 (all versions): For non-member state events with @-prefixed state_key,
+    // the sender must match the state_key.
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@admin:x.com",
+            json!({"users": {"@admin:x.com": 100}}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@admin:x.com".into()),
+        make_event(
+            "$admin_join",
+            "m.room.member",
+            Some("@admin:x.com"),
+            "@admin:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Admin tries to set a state event with state_key=@bob (not themselves)
+    let owned_event = make_event(
+        "$owned",
+        "org.example.custom",
+        Some("@bob:x.com"),
+        "@admin:x.com",
+        json!({"data": "hijack"}),
+    );
+    let result = check_auth(&owned_event, &state, rezzy::StateResVersion::V2_1);
+    assert!(
+        result.is_err(),
+        "non-member state event with @-prefixed state_key must reject sender mismatch, got {result:?}"
+    );
+}
+
+#[test]
+fn test_owned_state_key_allowed_when_sender_matches() {
+    // Spec auth rule 9: sender == state_key should be allowed.
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@alice:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@alice:x.com",
+            json!({"users": {"@alice:x.com": 100}}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@alice:x.com".into()),
+        make_event(
+            "$alice_join",
+            "m.room.member",
+            Some("@alice:x.com"),
+            "@alice:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Alice sets her own state_key — should succeed
+    let owned_event = make_event(
+        "$owned",
+        "org.example.custom",
+        Some("@alice:x.com"),
+        "@alice:x.com",
+        json!({"data": "mine"}),
+    );
+    let result = check_auth(&owned_event, &state, rezzy::StateResVersion::V2_1);
+    assert!(
+        result.is_ok(),
+        "sender matching @-prefixed state_key should be allowed, got {result:?}"
+    );
 }

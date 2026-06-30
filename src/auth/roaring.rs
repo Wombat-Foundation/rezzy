@@ -109,10 +109,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
 
     #[test]
     fn test_auth_graph_build() {
-        let mut sort_context = HashMap::new();
+        let mut sort_context: HashMap<String, LeanEvent> = HashMap::new();
 
         // Create events:
         // A is the creator / pl event (no auth events)

@@ -71,8 +71,12 @@ rust/doc: ##H Generate rustdoc API documentation
 	echo '<meta http-equiv="refresh" content="0;url=rezzy/index.html">' > target/doc/index.html
 
 .PHONY: rust/test
-rust/test: fixtures ##H Run Rust tests
-	$(CARGO) test --all-targets --all-features
+rust/test: fixtures ##H Run Rust tests (p=NAME for specific test, a=ARGS for test binary args)
+ifdef p
+	$(CARGO) test --test $(p) --all-features $(if $(a),-- $(a))
+else
+	$(CARGO) test --all-targets --all-features $(if $(a),-- $(a))
+endif
 
 .PHONY: rust/coverage
 rust/coverage: fixtures ##H Run code coverage and generate HTML report
