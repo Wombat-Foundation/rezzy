@@ -2726,7 +2726,7 @@ fn test_types_deserialize_power_level_variants() {
         u64::MAX
     );
     let ev4: LeanEvent = serde_json::from_str(&json_large).unwrap();
-    assert_eq!(ev4.power_level, rezzy::MAX_POWER_LEVEL);
+    assert_eq!(ev4.power_level, rezzy::auth::MAX_POWER_LEVEL_JSON);
 }
 
 #[test]

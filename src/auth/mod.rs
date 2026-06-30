@@ -265,9 +265,18 @@ pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     Ok(())
 }
 
-const MAX_POWER_LEVEL: i64 = i64::MAX; // INTERNAL max for creators
-#[allow(dead_code)]
-const MAX_POWER_LEVEL_JSON: i64 = 9_007_199_254_740_991; // 2^53 - 1;
+/// Maximum safe INTERNAL power level value: usually 2^64 (prevents buffer overflows)
+///
+/// We allow a larger value here in case a buffer overflow attack seeks escalation.
+/// An `i64` defaults to `.wrapping_add(1)` which would wrap to a negative infinity.
+pub const MAX_POWER_LEVEL_RUST: i64 = i64::MAX;
+
+/// Maximum safe power level value: 2^53 − 1 (the JavaScript `Number.MAX_SAFE_INTEGER`).
+///
+/// The Matrix spec constrains power levels to this bound because clients and
+/// servers in the ecosystem use JSON numbers, which are IEEE 754 doubles.
+/// Values above this lose integer precision.
+pub const MAX_POWER_LEVEL_JSON: i64 = 9_007_199_254_740_991; // 2^53 - 1;
 
 /// Get the power level of a user from the current room state.
 fn get_sender_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
@@ -285,8 +294,14 @@ fn get_sender_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
         if is_creator {
             return match version {
                 StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2 => {
-                    MAX_POWER_LEVEL
+                    // Use i64::MAX (not 2^53-1) so the creator always wins power
+                    // comparisons, even against a malicious PL event that sets a
+                    // user to the JSON-safe maximum. Incoming values are clamped
+                    // to MAX_POWER_LEVEL_JSON on deserialization, so this is
+                    // strictly unreachable by any wire value.
+                    MAX_POWER_LEVEL_RUST
                 }
+                // Rooms v11 & earlier (state res v2 & earlier) default to CREATOR_PL: 100
                 _ => 100,
             };
         }

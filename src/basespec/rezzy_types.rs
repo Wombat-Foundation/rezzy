@@ -20,6 +20,8 @@ use core::cmp::Ordering;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::auth::MAX_POWER_LEVEL_JSON;
+
 /// Trait alias for types that can serve as event identifiers.
 ///
 /// Any type that is `Clone + Eq + Hash + Ord + Debug` automatically implements
@@ -28,13 +30,6 @@ use serde_json::Value;
 /// integer-interned short IDs used by homeservers).
 pub trait EventId: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug {}
 impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug> EventId for T {}
-
-/// Maximum safe power level value: 2^53 − 1 (the JavaScript `Number.MAX_SAFE_INTEGER`).
-///
-/// The Matrix spec constrains power levels to this bound because clients and
-/// servers in the ecosystem use JSON numbers, which are IEEE 754 doubles.
-/// Values above this lose integer precision.
-pub const MAX_POWER_LEVEL: i64 = 9_007_199_254_740_991; // 2^53 - 1
 
 /// Selects which state resolution algorithm to use.
 ///
@@ -194,7 +189,7 @@ impl<Id, C> DagNode<Id> for LeanEvent<Id, C> {
 /// - `event_id`: If absent and the `hashing` feature is enabled, a SHA-256
 ///   content hash is computed and used as the ID.
 /// - `power_level`: Accepts integers, unsigned integers, or string-encoded
-///   integers, clamped to [`MAX_POWER_LEVEL`].
+///   integers, clamped to [`MAX_POWER_LEVEL_JSON`].
 /// - `typed_content`: Populated from `content` for auth-relevant events.
 /// - All other fields default to empty/zero if absent.
 ///
@@ -293,46 +288,44 @@ impl EventContent for Value {
         let users = self
             .get(crate::basespec::event_types::FIELD_USERS)?
             .as_object()?;
-        coerce_json_to_i64(users.get(user)?)
-            .map(|i| i.min(crate::basespec::rezzy_types::MAX_POWER_LEVEL))
+        coerce_json_to_i64(users.get(user)?).map(|i| i.min(MAX_POWER_LEVEL_JSON))
     }
 
     fn get_event_power_level(&self, event_type: &str) -> Option<i64> {
         let events = self
             .get(crate::basespec::event_types::FIELD_EVENTS)?
             .as_object()?;
-        coerce_json_to_i64(events.get(event_type)?)
-            .map(|i| i.min(crate::basespec::rezzy_types::MAX_POWER_LEVEL))
+        coerce_json_to_i64(events.get(event_type)?).map(|i| i.min(MAX_POWER_LEVEL_JSON))
     }
 
     fn get_users_default(&self) -> Option<i64> {
         coerce_json_to_i64(self.get(crate::basespec::event_types::FIELD_USERS_DEFAULT)?)
-            .map(|i| i.min(crate::basespec::rezzy_types::MAX_POWER_LEVEL))
+            .map(|i| i.min(MAX_POWER_LEVEL_JSON))
     }
 
     fn get_events_default(&self) -> Option<i64> {
         coerce_json_to_i64(self.get(crate::basespec::event_types::FIELD_EVENTS_DEFAULT)?)
-            .map(|i| i.min(crate::basespec::rezzy_types::MAX_POWER_LEVEL))
+            .map(|i| i.min(MAX_POWER_LEVEL_JSON))
     }
 
     fn get_state_default(&self) -> Option<i64> {
         coerce_json_to_i64(self.get(crate::basespec::event_types::FIELD_STATE_DEFAULT)?)
-            .map(|i| i.min(crate::basespec::rezzy_types::MAX_POWER_LEVEL))
+            .map(|i| i.min(MAX_POWER_LEVEL_JSON))
     }
 
     fn get_ban(&self) -> Option<i64> {
         coerce_json_to_i64(self.get(crate::basespec::event_types::FIELD_BAN)?)
-            .map(|i| i.min(crate::basespec::rezzy_types::MAX_POWER_LEVEL))
+            .map(|i| i.min(MAX_POWER_LEVEL_JSON))
     }
 
     fn get_kick(&self) -> Option<i64> {
         coerce_json_to_i64(self.get(crate::basespec::event_types::FIELD_KICK)?)
-            .map(|i| i.min(crate::basespec::rezzy_types::MAX_POWER_LEVEL))
+            .map(|i| i.min(MAX_POWER_LEVEL_JSON))
     }
 
     fn get_invite(&self) -> Option<i64> {
         coerce_json_to_i64(self.get(crate::basespec::event_types::FIELD_INVITE)?)
-            .map(|i| i.min(crate::basespec::rezzy_types::MAX_POWER_LEVEL))
+            .map(|i| i.min(MAX_POWER_LEVEL_JSON))
     }
 
     fn get_redact(&self) -> Option<i64> {
@@ -558,13 +551,13 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
         let power_level = match value.get("power_level") {
             Some(pl) => {
                 if let Some(i) = pl.as_i64() {
-                    i.min(MAX_POWER_LEVEL)
+                    i.min(MAX_POWER_LEVEL_JSON)
                 } else if let Some(u) = pl.as_u64() {
-                    let i = i64::try_from(u).unwrap_or(MAX_POWER_LEVEL);
-                    i.min(MAX_POWER_LEVEL)
+                    let i = i64::try_from(u).unwrap_or(MAX_POWER_LEVEL_JSON);
+                    i.min(MAX_POWER_LEVEL_JSON)
                 } else if let Some(s) = pl.as_str() {
                     if let Ok(i) = s.parse::<i64>() {
-                        i.min(MAX_POWER_LEVEL)
+                        i.min(MAX_POWER_LEVEL_JSON)
                     } else {
                         0
                     }
@@ -867,7 +860,7 @@ pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
     };
     // Matrix Spec (Client-Server API) — m.room.power_levels:
     // "The power level ... must be an integer between -2^53 + 1 and 2^53 - 1."
-    val.map(|v| v.clamp(-MAX_POWER_LEVEL, MAX_POWER_LEVEL))
+    val.map(|v| v.clamp(-MAX_POWER_LEVEL_JSON, MAX_POWER_LEVEL_JSON))
 }
 
 /// Lookup trait for retrieving events by ID during sorting and auth checks.

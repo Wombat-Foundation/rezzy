@@ -13,14 +13,14 @@
 //!
 //! ```rust,no_run
 //! use rezzy::{resolve_lean, LeanEvent, SharedState, StateResVersion, HashMap};
-//! 
+//!
 //! // Build the unconflicted state (agreed upon by all forks).
 //! let unconflicted_state = SharedState::new();
-//! 
+//!
 //! // Populate conflicted events and full auth context.
 //! let conflicted_subgraph: HashMap<String, LeanEvent> = HashMap::new();
 //! let auth_context: HashMap<String, LeanEvent> = HashMap::new();
-//! 
+//!
 //! // Resolve the winning state.
 //! let resolved = resolve_lean(
 //!     unconflicted_state,

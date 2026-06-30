@@ -17,9 +17,8 @@ use alloc::collections::{BinaryHeap, VecDeque};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use crate::basespec::rezzy_types::{
-    KahnSortResult, LeanEvent, SortPriority, StateResVersion, MAX_POWER_LEVEL,
-};
+use crate::auth::MAX_POWER_LEVEL_RUST;
+use crate::basespec::rezzy_types::{KahnSortResult, LeanEvent, SortPriority, StateResVersion};
 use crate::HashMap;
 
 /// Dynamically fetches the sender's power level by inspecting the event's immediate `auth_events`.
@@ -59,7 +58,8 @@ where
     if is_creator {
         match version {
             StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2 => {
-                return MAX_POWER_LEVEL
+                // Rust flow. `i64::MAX`: strictly above any wire-clamped PL (2^53-1)
+                return MAX_POWER_LEVEL_RUST;
             }
             _ => return 100,
         }
