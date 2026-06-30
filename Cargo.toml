@@ -1,6 +1,6 @@
 [package]
 name = "rezzy"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 autobins = false
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
