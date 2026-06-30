@@ -338,7 +338,7 @@ mod tests {
     fn test_v2_1_strict_resolution() {
         let mut unconflicted = imbl::OrdMap::new();
         unconflicted.insert(
-            ("m.room.member".into(), Some("@alice:example.com".into())),
+            ("m.room.member".into(), "@alice:example.com".into()),
             "A".into(),
         );
 
@@ -381,7 +381,7 @@ mod tests {
             rezzy::StateResVersion::V2_1,
         );
         assert_eq!(
-            resolved.get(&("m.room.member".into(), Some("@alice:example.com".into()))),
+            resolved.get(&("m.room.member".into(), "@alice:example.com".into())),
             Some(&"A".into())
         );
     }
@@ -819,7 +819,7 @@ mod tests {
     #[test]
     fn test_resolve_lean_functionality() {
         let mut unconflicted = imbl::OrdMap::new();
-        unconflicted.insert(("type".into(), Some("key".into())), "id".into());
+        unconflicted.insert(("type".into(), "key".into()), "id".into());
         let conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let resolved = resolve_lean(
             unconflicted.clone(),
@@ -837,11 +837,11 @@ mod tests {
         // Uncontested state: Alice is already joined, Bob's old event is the prior state.
         let mut unconflicted = imbl::OrdMap::new();
         unconflicted.insert(
-            ("m.room.member".into(), Some("@alice:example.com".into())),
+            ("m.room.member".into(), "@alice:example.com".into()),
             "id1".into(),
         );
         unconflicted.insert(
-            ("m.room.member".into(), Some("@bob:example.com".into())),
+            ("m.room.member".into(), "@bob:example.com".into()),
             "id2".into(),
         );
 
@@ -973,11 +973,11 @@ mod tests {
         );
 
         assert_eq!(
-            resolved.get(&("m.room.member".into(), Some("@alice:example.com".into()))),
+            resolved.get(&("m.room.member".into(), "@alice:example.com".into())),
             Some(&"id1".into())
         );
         assert_eq!(
-            resolved.get(&("m.room.member".into(), Some("@bob:example.com".into()))),
+            resolved.get(&("m.room.member".into(), "@bob:example.com".into())),
             Some(&"id2_new".into()) // id2_new wins because voluntary joins are non-power events sorted chronologically.
         );
     }
@@ -1073,14 +1073,11 @@ mod tests {
         let mut resolved_state = imbl::OrdMap::new();
         for id in sorted {
             let ev = &events[&id];
-            let key = (ev.event_type.clone(), ev.state_key.clone());
+            let key = (ev.event_type.clone(), ev.state_key.clone().unwrap());
             resolved_state.insert(key, ev.event_id.clone());
         }
         assert_eq!(
-            resolved_state.get(&(
-                "m.room.member".to_string(),
-                Some("@user:example.com".to_string())
-            )),
+            resolved_state.get(&("m.room.member".to_string(), "@user:example.com".to_string())),
             Some(&"2".to_string())
         );
     }
@@ -2195,10 +2192,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        state.insert(
-            ("m.room.create".into(), Some(String::new())),
-            create_ev.clone(),
-        );
+        state.insert(("m.room.create".into(), String::new()), create_ev.clone());
 
         // Test check_auth for m.room.create with prev_events (should fail with CreateWithPrevEvents)
         let bad_create: LeanEvent = LeanEvent {
@@ -2251,10 +2245,7 @@ mod tests {
 
         // Banned user membership transition
         let mut state2 = RoomState::new();
-        state2.insert(
-            ("m.room.create".into(), Some(String::new())),
-            create_ev.clone(),
-        );
+        state2.insert(("m.room.create".into(), String::new()), create_ev.clone());
         let banned_member: LeanEvent = LeanEvent {
             event_id: "$ban_member".into(),
             event_type: "m.room.member".into(),
@@ -2264,7 +2255,7 @@ mod tests {
             ..Default::default()
         };
         state2.insert(
-            ("m.room.member".into(), Some("@bob:example.com".into())),
+            ("m.room.member".into(), "@bob:example.com".into()),
             banned_member.clone(),
         );
 
@@ -2336,10 +2327,7 @@ mod tests {
         };
         // Should require PL 50 by default for state events if no PL event is present
         let mut state3 = RoomState::new();
-        state3.insert(
-            ("m.room.create".into(), Some(String::new())),
-            create_ev.clone(),
-        );
+        state3.insert(("m.room.create".into(), String::new()), create_ev.clone());
         let bob_joined: LeanEvent = LeanEvent {
             event_id: "$bob_joined".into(),
             event_type: "m.room.member".into(),
@@ -2349,7 +2337,7 @@ mod tests {
             ..Default::default()
         };
         state3.insert(
-            ("m.room.member".into(), Some("@bob:example.com".into())),
+            ("m.room.member".into(), "@bob:example.com".into()),
             bob_joined.clone(),
         );
         assert_eq!(
@@ -2444,7 +2432,7 @@ mod tests {
         let resolved = resolve_lean(unconflicted, conflicted, &auth, rezzy::StateResVersion::V2);
         assert!(!resolved.is_empty());
         assert_eq!(
-            &resolved[&("m.room.power_levels".into(), Some(String::new()))],
+            &resolved[&("m.room.power_levels".into(), String::new())],
             "B"
         );
     }
@@ -2514,9 +2502,9 @@ mod tests {
         let state_map = state.unwrap();
 
         // State should contain C (create) and A itself
-        assert!(state_map.contains_key(&("m.room.create".into(), Some(String::new()))));
+        assert!(state_map.contains_key(&("m.room.create".into(), String::new())));
         assert_eq!(
-            &state_map[&("m.room.member".into(), Some("@alice:example.com".into()))],
+            &state_map[&("m.room.member".into(), "@alice:example.com".into())],
             "A"
         );
     }
@@ -2612,7 +2600,7 @@ mod tests {
         );
 
         // Assert that a power levels event is resolved, showing the ancestral PL event was correctly processed
-        assert!(resolved.contains_key(&("m.room.power_levels".into(), Some(String::new()))));
+        assert!(resolved.contains_key(&("m.room.power_levels".into(), String::new())));
     }
 
     #[test]
@@ -3137,7 +3125,7 @@ fn test_resolve_lean_with_deltas_parity() {
 
     let mut unconflicted = imbl::OrdMap::new();
     unconflicted.insert(
-        ("m.room.member".into(), Some("@alice:example.com".into())),
+        ("m.room.member".into(), "@alice:example.com".into()),
         "alice_join".into(),
     );
 
@@ -3206,8 +3194,7 @@ fn test_resolve_lean_with_deltas_parity() {
         "should have captured at least one resolution delta"
     );
     // All deltas should target the bob membership slot (only conflicted events)
-    let bob_key: (String, Option<String>) =
-        ("m.room.member".into(), Some("@bob:example.com".into()));
+    let bob_key: (String, String) = ("m.room.member".into(), "@bob:example.com".into());
     for delta in &deltas {
         assert_eq!(
             delta.key, bob_key,
@@ -3244,10 +3231,7 @@ fn test_resolve_lean_with_deltas_no_duplicate_power_events() {
     use std::collections::HashMap;
 
     let mut unconflicted = imbl::OrdMap::new();
-    unconflicted.insert(
-        ("m.room.create".into(), Some(String::new())),
-        "$create".into(),
-    );
+    unconflicted.insert(("m.room.create".into(), String::new()), "$create".into());
 
     let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
     let create_ev = LeanEvent {
@@ -3630,18 +3614,12 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
     );
 
     // === Unconflicted state: everyone agrees on these ===
-    let mut unconflicted: imbl::OrdMap<(String, Option<String>), String> = imbl::OrdMap::new();
-    unconflicted.insert(
-        ("m.room.create".into(), Some(String::new())),
-        "$create".into(),
-    );
-    unconflicted.insert(
-        ("m.room.power_levels".into(), Some(String::new())),
-        "$pl".into(),
-    );
+    let mut unconflicted: imbl::OrdMap<(String, String), String> = imbl::OrdMap::new();
+    unconflicted.insert(("m.room.create".into(), String::new()), "$create".into());
+    unconflicted.insert(("m.room.power_levels".into(), String::new()), "$pl".into());
     // KEY: alice is LEAVE in unconflicted — both sides agree she left
     unconflicted.insert(
-        ("m.room.member".into(), Some("@alice:example.com".into())),
+        ("m.room.member".into(), "@alice:example.com".into()),
         "$alice_leave".into(),
     );
 
@@ -3701,7 +3679,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
 
     // V2: unconflicted alice=leave → alice's $jr_invite fails auth → $jr_public wins
     // V2.1: empty initial state + local_auth alice=joined → $jr_invite passes → later event wins
-    let jr_key: (String, Option<String>) = ("m.room.join_rules".into(), Some(String::new()));
+    let jr_key: (String, String) = ("m.room.join_rules".into(), String::new());
 
     assert_ne!(
         state_v2.get(&jr_key),
@@ -3836,7 +3814,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
 
     // Cover get_initial_resolved_state for V1
     let mut unconf = imbl::OrdMap::new();
-    unconf.insert(("m.room.create".into(), Some(String::new())), "123".into());
+    unconf.insert(("m.room.create".into(), String::new()), "123".into());
     let v1_resolved = rezzy::resolve::resolve_lean(
         unconf.clone(),
         HashMap::<String, LeanEvent<String>>::new(),
@@ -3947,8 +3925,8 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         StateResVersion::V2,
     );
 
-    assert!(!resolved.contains_key(&("m.room.power_levels".into(), Some(String::new()))));
-    assert!(!resolved.contains_key(&("m.room.topic".into(), Some(String::new()))));
+    assert!(!resolved.contains_key(&("m.room.power_levels".into(), String::new())));
+    assert!(!resolved.contains_key(&("m.room.topic".into(), String::new())));
     assert!(deltas
         .iter()
         .any(|d| d.event_id == "$bogus_pl" && !d.accepted));

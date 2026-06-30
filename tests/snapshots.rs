@@ -56,7 +56,7 @@ fn resolve_and_get_state(fixture_path: &str, version: StateResVersion) -> HashMa
     );
     resolved
         .into_iter()
-        .map(|((t, sk), eid)| (format!("{}|{}", t, sk.unwrap_or_default()), eid))
+        .map(|((t, sk), eid)| (format!("{t}|{sk}"), eid))
         .collect()
 }
 

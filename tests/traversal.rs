@@ -74,7 +74,7 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
         &auth_context,
         StateResVersion::V2_1,
     );
-    let ok_v21 = resolved_v21.contains_key(&("m.room.name".to_string(), Some(String::new())));
+    let ok_v21 = resolved_v21.contains_key(&("m.room.name".to_string(), String::new()));
     assert_eq!(
         ok_v21, exp_v21,
         "V2.1 success expectation mismatched: got {ok_v21}, expected {exp_v21}"
@@ -86,7 +86,7 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
         &auth_context,
         StateResVersion::V2_1_1,
     );
-    let ok_v211 = resolved_v211.contains_key(&("m.room.name".to_string(), Some(String::new())));
+    let ok_v211 = resolved_v211.contains_key(&("m.room.name".to_string(), String::new()));
     assert_eq!(
         ok_v211, exp_v211,
         "V2.1.1 success expectation mismatched: got {ok_v211}, expected {exp_v211}"
@@ -184,7 +184,7 @@ fn test_v2_1_1_ancient_prev_event_allowed() {
 
     // State resolution still passes because the auth_events are valid.
     assert!(
-        resolved_v211.contains_key(&("m.room.name".to_string(), Some(String::new()))),
+        resolved_v211.contains_key(&("m.room.name".to_string(), String::new())),
         "V2.1.1 should allow the event even with an ancient prev_event"
     );
 }
@@ -264,10 +264,7 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
     );
 
     // The resolved state should contain the ban, not the join
-    let member_key = (
-        "m.room.member".to_string(),
-        Some("@bob:example.com".to_string()),
-    );
+    let member_key = ("m.room.member".to_string(), "@bob:example.com".to_string());
     assert_eq!(
         &resolved[&member_key],
         "$alice_ban",
@@ -396,25 +393,22 @@ fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
 
     let mut unconflicted = imbl::OrdMap::new();
     unconflicted.insert(
-        ("m.room.create".to_string(), Some(String::new())),
+        ("m.room.create".to_string(), String::new()),
         create_ev.event_id.clone(),
     );
     unconflicted.insert(
-        ("m.room.join_rules".to_string(), Some(String::new())),
+        ("m.room.join_rules".to_string(), String::new()),
         join_rules.event_id.clone(),
     );
     unconflicted.insert(
         (
             "m.room.member".to_string(),
-            Some("@alice:example.com".to_string()),
+            "@alice:example.com".to_string(),
         ),
         alice_join.event_id.clone(),
     );
     unconflicted.insert(
-        (
-            "m.room.member".to_string(),
-            Some("@bob:example.com".to_string()),
-        ),
+        ("m.room.member".to_string(), "@bob:example.com".to_string()),
         bob_join.event_id.clone(),
     );
 
@@ -425,13 +419,10 @@ fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
         rezzy::StateResVersion::V2_1_1,
     );
 
-    let bob_member_key = (
-        "m.room.member".to_string(),
-        Some("@bob:example.com".to_string()),
-    );
+    let bob_member_key = ("m.room.member".to_string(), "@bob:example.com".to_string());
     let alice_member_key = (
         "m.room.member".to_string(),
-        Some("@alice:example.com".to_string()),
+        "@alice:example.com".to_string(),
     );
 
     // Under STOCK V2.1, this resulted in Mutual Destruction.
@@ -536,10 +527,7 @@ fn test_v2_1_1_fixes_invite_lock() {
         &auth_context,
         rezzy::StateResVersion::V2,
     );
-    let member_key = (
-        "m.room.member".to_string(),
-        Some("@user:example.com".to_string()),
-    );
+    let member_key = ("m.room.member".to_string(), "@user:example.com".to_string());
 
     assert!(
         !resolved_v2.contains_key(&member_key),
@@ -665,7 +653,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
         &auth_context,
         rezzy::StateResVersion::V2_1,
     );
-    let name_key = ("m.room.name".to_string(), Some(String::new()));
+    let name_key = ("m.room.name".to_string(), String::new());
     assert!(
         !resolved_v21.contains_key(&name_key),
         "V2.1 Rightly Rejected the attack because Eve was demoted."
@@ -780,17 +768,14 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
 
     // Alice's ban has PL 100, so Kahn sort evaluates it FIRST. It is added to the resolved state.
     assert_eq!(
-        &resolved_v21[&(
-            "m.room.member".to_string(),
-            Some("@bob:example.com".to_string())
-        )],
+        &resolved_v21[&("m.room.member".to_string(), "@bob:example.com".to_string())],
         "$alice_bans_bob",
         "Bob should be banned in the final state"
     );
 
     // V2.1 now correctly REJECTS Bob's concurrent name change!
     assert!(
-        !resolved_v21.contains_key(&("m.room.name".to_string(), Some(String::new()))),
+        !resolved_v21.contains_key(&("m.room.name".to_string(), String::new())),
         "V2.1 now correctly rejects Bob's name change because it evaluates his concurrent ban!"
     );
 
@@ -804,7 +789,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
 
     // V2.1.1 REJECTS Bob's concurrent name change!
     assert!(
-        !resolved_v211.contains_key(&("m.room.name".to_string(), Some(String::new()))),
+        !resolved_v211.contains_key(&("m.room.name".to_string(), String::new())),
         "V2.1.1 Fixed: Rightfully rejected Bob's name change because it supplemented the concurrent ban!"
     );
 }
@@ -863,10 +848,7 @@ fn test_v2_1_strictness_future_v3_should_pass() {
     // V2.1 Rightfully Fails: It enforces the 1-hop strictness. Without "$jr" in the auth chain,
     // it defaults to Invite-Only and rejects the join.
     assert!(
-        !resolved_v21.contains_key(&(
-            "m.room.member".to_string(),
-            Some("@bob:example.com".to_string())
-        )),
+        !resolved_v21.contains_key(&("m.room.member".to_string(), "@bob:example.com".to_string())),
         "V2.1 rightfully rejected the event because the 1-hop auth list was incomplete."
     );
 
@@ -877,7 +859,7 @@ fn test_v2_1_strictness_future_v3_should_pass() {
 fn make_ghost_moderator_events() -> (
     HashMap<String, LeanEvent>,
     HashMap<String, LeanEvent>,
-    imbl::OrdMap<(String, Option<String>), String>,
+    imbl::OrdMap<(String, String), String>,
 ) {
     let create_ev = LeanEvent {
         event_id: "$create".to_string(),
@@ -1004,15 +986,15 @@ fn make_ghost_moderator_events() -> (
 
     let mut unconflicted_state = imbl::OrdMap::new();
     unconflicted_state.insert(
-        ("m.room.create".to_string(), Some(String::new())),
+        ("m.room.create".to_string(), String::new()),
         "$create".to_string(),
     );
     unconflicted_state.insert(
-        ("m.room.power_levels".to_string(), Some(String::new())),
+        ("m.room.power_levels".to_string(), String::new()),
         "$pl".to_string(),
     );
     unconflicted_state.insert(
-        ("m.room.join_rules".to_string(), Some(String::new())),
+        ("m.room.join_rules".to_string(), String::new()),
         "$jr_pub".to_string(),
     );
 
@@ -1040,15 +1022,12 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
         rezzy::StateResVersion::V2_1_1,
     );
 
-    let nexy_member_key = (
-        "m.room.member".to_string(),
-        Some("@nexy:example.com".to_string()),
-    );
+    let nexy_member_key = ("m.room.member".to_string(), "@nexy:example.com".to_string());
     let spammer_member_key = (
         "m.room.member".to_string(),
-        Some("@spammer:example.com".to_string()),
+        "@spammer:example.com".to_string(),
     );
-    let pl_key = ("m.room.power_levels".to_string(), Some(String::new()));
+    let pl_key = ("m.room.power_levels".to_string(), String::new());
 
     // CDO\'s transitive closure drops nexy_join (dominated by lock) AND nexy_promo/nexy_bans_spammer (transitively dependent)
     assert!(
@@ -1149,15 +1128,15 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
 
     let mut unconflicted_state = imbl::OrdMap::new();
     unconflicted_state.insert(
-        ("m.room.create".to_string(), Some(String::new())),
+        ("m.room.create".to_string(), String::new()),
         "$create".to_string(),
     );
     unconflicted_state.insert(
-        ("m.room.power_levels".to_string(), Some(String::new())),
+        ("m.room.power_levels".to_string(), String::new()),
         "$pl".to_string(),
     );
     unconflicted_state.insert(
-        ("m.room.join_rules".to_string(), Some(String::new())),
+        ("m.room.join_rules".to_string(), String::new()),
         "$jr_pub".to_string(),
     );
 
@@ -1171,7 +1150,7 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
 
     let spammer_key = (
         "m.room.member".to_string(),
-        Some("@spammer:example.com".to_string()),
+        "@spammer:example.com".to_string(),
     );
 
     // CDO must drop the concurrent spammer join due to the concurrent lockdown
@@ -1273,10 +1252,7 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
 
     // Bob's ban must be resolved first in Step 2.
     assert_eq!(
-        &resolved_v21[&(
-            "m.room.member".to_string(),
-            Some("@bob:example.com".to_string())
-        )],
+        &resolved_v21[&("m.room.member".to_string(), "@bob:example.com".to_string())],
         "$alice_bans_bob",
         "Bob should be banned in the final resolved state"
     );
@@ -1284,7 +1260,7 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
     // Bob's topic change must be REJECTED in Step 4 because Step 4 correctly
     // supplements Bob's membership status (which is 'ban' in the partially resolved state S).
     assert!(
-        !resolved_v21.contains_key(&("m.room.topic".to_string(), Some(String::new()))),
+        !resolved_v21.contains_key(&("m.room.topic".to_string(), String::new())),
         "V2.1 must reject Bob's topic change because he is banned in the partially resolved state"
     );
 }
@@ -1393,12 +1369,9 @@ fn test_missing_auth_diff_mainline_distortion() {
 
     // Call resolve_lean directly
     let mut unconflicted_state = imbl::OrdMap::new();
-    unconflicted_state.insert(
-        ("m.room.power_levels".to_string(), Some(String::new())),
-        "PL0",
-    );
+    unconflicted_state.insert(("m.room.power_levels".to_string(), String::new()), "PL0");
 
-    unconflicted_state.insert(("m.room.create".to_string(), Some(String::new())), "CREATE");
+    unconflicted_state.insert(("m.room.create".to_string(), String::new()), "CREATE");
     let mut conflicted_buggy = HashMap::new();
     conflicted_buggy.insert("PL2", events_map["PL2"].clone());
     conflicted_buggy.insert("S_A1", events_map["S_A1"].clone());
@@ -1432,7 +1405,7 @@ fn test_missing_auth_diff_mainline_distortion() {
     // Both scenarios resolve to the same winner because the mainline ordering is
     // dominated by PL0 (the unconflicted power-levels event).
     // Adding PL1 to the conflicted set doesn't change the mainline walk result.
-    let topic_key = ("m.room.topic".to_string(), Some(String::new()));
+    let topic_key = ("m.room.topic".to_string(), String::new());
 
     // Pin the concrete winner: S_A1 wins via mainline sort (higher depth/ts)
     assert_eq!(

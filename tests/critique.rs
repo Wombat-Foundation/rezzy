@@ -2,7 +2,7 @@ use rezzy::{resolve_lean, LeanEvent, StateResVersion};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-type ResolvedStateMap = HashMap<(String, Option<String>), String>;
+type ResolvedStateMap = HashMap<(String, String), String>;
 type EventMap = HashMap<String, LeanEvent>;
 
 fn load_fixture(path: &std::path::Path) -> Vec<LeanEvent> {
@@ -54,10 +54,7 @@ fn get_heads(events: &[LeanEvent]) -> Vec<String> {
     }
 }
 
-fn get_state_map_for_head(
-    head: &str,
-    events_map: &EventMap,
-) -> HashMap<(String, Option<String>), String> {
+fn get_state_map_for_head(head: &str, events_map: &EventMap) -> HashMap<(String, String), String> {
     let mut visited = HashSet::new();
     let mut stack = vec![head.to_string()];
     let mut ancestors = Vec::new();
@@ -82,7 +79,7 @@ fn get_state_map_for_head(
     for ev in ancestors {
         if ev.state_key.is_some() {
             state.insert(
-                (ev.event_type.clone(), ev.state_key.clone()),
+                (ev.event_type.clone(), ev.state_key.clone().unwrap()),
                 ev.event_id.clone(),
             );
         }
@@ -109,7 +106,7 @@ fn resolve_full(events: &[LeanEvent], version: StateResVersion) -> ResolvedState
     }
 
     let num_sets = state_maps.len();
-    let mut occurrences: HashMap<(String, Option<String>), HashMap<String, usize>> = HashMap::new();
+    let mut occurrences: HashMap<(String, String), HashMap<String, usize>> = HashMap::new();
     for map in &state_maps {
         for (key, id) in map {
             let val = occurrences
@@ -195,7 +192,7 @@ fn resolve_full(events: &[LeanEvent], version: StateResVersion) -> ResolvedState
 }
 
 fn get_user_power_level(resolved: &ResolvedStateMap, map: &EventMap, user_id: &str) -> i64 {
-    let key = ("m.room.power_levels".to_string(), Some(String::new()));
+    let key = ("m.room.power_levels".to_string(), String::new());
     if let Some(event_id) = resolved.get(&key) {
         if let Some(ev) = map.get(event_id) {
             if let Some(users) = ev.content.get("users").and_then(|u| u.as_object()) {
@@ -209,7 +206,7 @@ fn get_user_power_level(resolved: &ResolvedStateMap, map: &EventMap, user_id: &s
 }
 
 fn get_membership(resolved: &ResolvedStateMap, map: &EventMap, user_id: &str) -> String {
-    let key = ("m.room.member".to_string(), Some(user_id.to_string()));
+    let key = ("m.room.member".to_string(), user_id.to_string());
     if let Some(event_id) = resolved.get(&key) {
         if let Some(ev) = map.get(event_id) {
             if let Some(m) = ev.content.get("membership").and_then(|v| v.as_str()) {
@@ -240,8 +237,8 @@ fn assert_benign_convergence(jsonl_filename: &str) -> (ResolvedStateMap, EventMa
     let mut resolved_v2_1 = resolve_full(&events, StateResVersion::V2_1);
     let mut resolved_v2_1_1 = resolve_full(&events, StateResVersion::V2_1_1);
 
-    resolved_v2_1.retain(|k, _| k.1.is_some());
-    resolved_v2_1_1.retain(|k, _| k.1.is_some());
+    resolved_v2_1.retain(|k, _| !k.1.is_empty());
+    resolved_v2_1_1.retain(|k, _| !k.1.is_empty());
 
     assert_eq!(
         resolved_v2_1_1, resolved_v2_1,

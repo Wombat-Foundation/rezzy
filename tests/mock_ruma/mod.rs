@@ -39,7 +39,7 @@ fn ruma_to_lean_event<E: Event>(ev: &E) -> LeanEvent {
 }
 
 type PartitionedState = (
-    imbl::OrdMap<(String, Option<String>), String>,
+    imbl::OrdMap<(String, String), String>,
     std::collections::HashSet<(ruma_events::StateEventType, String)>,
 );
 
@@ -67,8 +67,7 @@ where
     for map in state_sets {
         for (key, id) in map {
             if counts.get(&(key, id)).copied().unwrap_or(0) == num_maps {
-                let state_key_opt = Some(key.1.clone());
-                unconflicted_state.insert((key.0.to_string(), state_key_opt), id.to_string());
+                unconflicted_state.insert((key.0.to_string(), key.1.clone()), id.to_string());
             } else {
                 conflicted_keys.insert(key.clone());
             }
@@ -263,10 +262,7 @@ where
 
     let mut result = StateMap::new();
     for ((ev_type, state_key), id_str) in resolved {
-        let key = (
-            ev_type.as_str().into(),
-            state_key.clone().unwrap_or_default(),
-        );
+        let key = (ev_type.as_str().into(), state_key.clone());
         if let Some(id) = id_map.get(&id_str) {
             result.insert(key, id.clone());
         }

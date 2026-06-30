@@ -43,7 +43,7 @@ pub struct ResolutionDelta<Id = String> {
     /// Whether the event passed the iterative auth check.
     pub accepted: bool,
     /// The `(event_type, state_key)` slot this event targets.
-    pub key: (String, Option<String>),
+    pub key: (String, String),
     /// The event ID that was previously in this slot (if any).
     /// `None` if the slot was empty before this event.
     pub replaced: Option<Id>,
@@ -56,8 +56,8 @@ pub struct ResolutionDelta<Id = String> {
 pub struct StateDelta {
     /// The event type (e.g. `"m.room.member"`).
     pub event_type: String,
-    /// The state key (e.g. `Some("@alice:example.com")`).
-    pub state_key: Option<String>,
+    /// The state key (e.g. `"@alice:example.com"` or `""`).
+    pub state_key: String,
     /// The new event ID, or `None` if this key was deleted.
     pub event_id: Option<String>,
 }
@@ -151,15 +151,8 @@ pub fn compute_state_hash(state: &crate::state::at::SharedState<String>) -> Stri
         }
         hash ^= 0x00;
         hash = hash.wrapping_mul(FNV128_PRIME);
-        if let Some(key) = state_key {
-            hash ^= 0x02; // discriminant: Some
-            hash = hash.wrapping_mul(FNV128_PRIME);
-            for &byte in key.as_bytes() {
-                hash ^= u128::from(byte);
-                hash = hash.wrapping_mul(FNV128_PRIME);
-            }
-        } else {
-            hash ^= 0x01; // discriminant: None
+        for &byte in state_key.as_bytes() {
+            hash ^= u128::from(byte);
             hash = hash.wrapping_mul(FNV128_PRIME);
         }
         hash ^= 0x00;
@@ -457,9 +450,9 @@ mod tests {
     #[test]
     fn test_roundtrip_identity() {
         let mut state = imbl::OrdMap::new();
-        state.insert(("m.room.create".into(), Some(String::new())), "$1".into());
+        state.insert(("m.room.create".into(), String::new()), "$1".into());
         state.insert(
-            ("m.room.member".into(), Some("@alice:example.com".into())),
+            ("m.room.member".into(), "@alice:example.com".into()),
             "$2".into(),
         );
 
@@ -473,23 +466,23 @@ mod tests {
     #[test]
     fn test_roundtrip_add_modify_delete() {
         let mut parent = imbl::OrdMap::new();
-        parent.insert(("m.room.create".into(), Some(String::new())), "$1".into());
+        parent.insert(("m.room.create".into(), String::new()), "$1".into());
         parent.insert(
-            ("m.room.member".into(), Some("@alice:example.com".into())),
+            ("m.room.member".into(), "@alice:example.com".into()),
             "$2".into(),
         );
 
         let mut current = imbl::OrdMap::new();
         current.insert(
-            ("m.room.create".into(), Some(String::new())),
+            ("m.room.create".into(), String::new()),
             "$1".into(), // unchanged
         );
         current.insert(
-            ("m.room.member".into(), Some("@alice:example.com".into())),
+            ("m.room.member".into(), "@alice:example.com".into()),
             "$4".into(), // modified
         );
         current.insert(
-            ("m.room.member".into(), Some("@bob:example.com".into())),
+            ("m.room.member".into(), "@bob:example.com".into()),
             "$3".into(), // added
         );
         // m.room.create is unchanged, alice is modified, bob is added
@@ -503,15 +496,15 @@ mod tests {
     #[test]
     fn test_deletion_roundtrip() {
         let mut parent = imbl::OrdMap::new();
-        parent.insert(("m.room.create".into(), Some(String::new())), "$1".into());
+        parent.insert(("m.room.create".into(), String::new()), "$1".into());
         parent.insert(
-            ("m.room.member".into(), Some("@alice:example.com".into())),
+            ("m.room.member".into(), "@alice:example.com".into()),
             "$2".into(),
         );
 
         // Current state has alice removed
         let mut current = imbl::OrdMap::new();
-        current.insert(("m.room.create".into(), Some(String::new())), "$1".into());
+        current.insert(("m.room.create".into(), String::new()), "$1".into());
 
         let delta = compute_state_delta(&parent, &current);
         assert_eq!(delta.len(), 1);
@@ -524,9 +517,9 @@ mod tests {
     #[test]
     fn test_state_hash_determinism() {
         let mut state = imbl::OrdMap::new();
-        state.insert(("m.room.create".into(), Some(String::new())), "$1".into());
+        state.insert(("m.room.create".into(), String::new()), "$1".into());
         state.insert(
-            ("m.room.member".into(), Some("@alice:example.com".into())),
+            ("m.room.member".into(), "@alice:example.com".into()),
             "$2".into(),
         );
 
@@ -539,10 +532,10 @@ mod tests {
     #[test]
     fn test_state_hash_sensitivity() {
         let mut state_a = imbl::OrdMap::new();
-        state_a.insert(("m.room.create".into(), Some(String::new())), "$1".into());
+        state_a.insert(("m.room.create".into(), String::new()), "$1".into());
 
         let mut state_b = imbl::OrdMap::new();
-        state_b.insert(("m.room.create".into(), Some(String::new())), "$2".into());
+        state_b.insert(("m.room.create".into(), String::new()), "$2".into());
 
         assert_ne!(
             compute_state_hash(&state_a),
@@ -561,7 +554,7 @@ mod tests {
                     state.insert(
                         (
                             "m.room.member".into(),
-                            Some(alloc::format!("@user_{j}:example.com")),
+                            alloc::format!("@user_{j}:example.com"),
                         ),
                         alloc::format!("${j}"),
                     );
@@ -623,7 +616,7 @@ mod tests {
                     state.insert(
                         (
                             "m.room.member".into(),
-                            Some(alloc::format!("@user_{j}:example.com")),
+                            alloc::format!("@user_{j}:example.com"),
                         ),
                         alloc::format!("${j}"),
                     );
@@ -642,7 +635,7 @@ mod tests {
         assert_eq!(state.len(), 150, "state at tip should have 150 entries");
 
         // Verify a specific entry
-        let key = ("m.room.member".into(), Some("@user_42:example.com".into()));
+        let key = ("m.room.member".into(), "@user_42:example.com".into());
         assert_eq!(state.get(&key), Some(&"$42".into()));
 
         // Reconstruct at the first event
@@ -674,7 +667,7 @@ mod tests {
                 state.insert(
                     (
                         "m.room.member".into(),
-                        Some(alloc::format!("@user_{i}:example.com")),
+                        alloc::format!("@user_{i}:example.com"),
                     ),
                     alloc::format!("${i}"),
                 );
@@ -683,7 +676,7 @@ mod tests {
                     state.insert(
                         (
                             "m.room.member".into(),
-                            Some(alloc::format!("@user_{j}:example.com")),
+                            alloc::format!("@user_{j}:example.com"),
                         ),
                         alloc::format!("${j}"),
                     );
@@ -738,7 +731,7 @@ mod tests {
                     state.insert(
                         (
                             "m.room.member".into(),
-                            Some(alloc::format!("@user_{j}:example.com")),
+                            alloc::format!("@user_{j}:example.com"),
                         ),
                         alloc::format!("${j}"),
                     );
@@ -767,10 +760,7 @@ mod tests {
         // This must not break backward reconstruction.
         let state = {
             let mut s = imbl::OrdMap::new();
-            s.insert(
-                ("m.room.create".into(), Some(String::new())),
-                "$create".into(),
-            );
+            s.insert(("m.room.create".into(), String::new()), "$create".into());
             s
         };
 
@@ -812,12 +802,12 @@ mod tests {
 
         let state_a = {
             let mut s = imbl::OrdMap::new();
-            s.insert(("m.room.create".into(), Some(String::new())), "$c".into());
+            s.insert(("m.room.create".into(), String::new()), "$c".into());
             s
         };
         let state_b = {
             let mut s = state_a.clone();
-            s.insert(("m.room.topic".into(), Some(String::new())), "$t".into());
+            s.insert(("m.room.topic".into(), String::new()), "$t".into());
             s
         };
 
@@ -835,7 +825,7 @@ mod tests {
                 event_id: "$1".into(),
                 deltas: alloc::vec![StateDelta {
                     event_type: "m.room.topic".into(),
-                    state_key: Some(String::new()),
+                    state_key: String::new(),
                     event_id: Some("$t".into()),
                 }],
                 snapshot: None,
@@ -846,7 +836,7 @@ mod tests {
                 event_id: "$2".into(),
                 deltas: alloc::vec![StateDelta {
                     event_type: "m.room.topic".into(),
-                    state_key: Some(String::new()),
+                    state_key: String::new(),
                     event_id: None, // deletion — reverts to state_a
                 }],
                 snapshot: None,
@@ -901,7 +891,7 @@ mod tests {
 
         let state_a = {
             let mut s = imbl::OrdMap::new();
-            s.insert(("m.room.create".into(), Some(String::new())), "$c".into());
+            s.insert(("m.room.create".into(), String::new()), "$c".into());
             s
         };
 
@@ -925,7 +915,7 @@ mod tests {
                 event_id: "$1".into(),
                 deltas: alloc::vec![StateDelta {
                     event_type: "m.room.topic".into(),
-                    state_key: Some(String::new()),
+                    state_key: String::new(),
                     event_id: Some("$t1".into()),
                 }],
                 snapshot: None,
@@ -936,7 +926,7 @@ mod tests {
                 event_id: "$2".into(),
                 deltas: alloc::vec![StateDelta {
                     event_type: "m.room.topic".into(),
-                    state_key: Some(String::new()),
+                    state_key: String::new(),
                     event_id: Some("$t2".into()),
                 }],
                 snapshot: None,
@@ -947,7 +937,7 @@ mod tests {
                 event_id: "$3".into(),
                 deltas: alloc::vec![StateDelta {
                     event_type: "m.room.topic".into(),
-                    state_key: Some(String::new()),
+                    state_key: String::new(),
                     event_id: Some("$t3".into()),
                 }],
                 snapshot: None,
@@ -958,7 +948,7 @@ mod tests {
                 event_id: "$4".into(),
                 deltas: alloc::vec![StateDelta {
                     event_type: "m.room.topic".into(),
-                    state_key: Some(String::new()),
+                    state_key: String::new(),
                     event_id: None, // deletion — reverts to state_a
                 }],
                 snapshot: None,

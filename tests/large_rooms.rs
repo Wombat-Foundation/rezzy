@@ -195,8 +195,8 @@ fn test_large_room_10k_v2_vs_v2_1_divergence() {
     assert!(!v2_1.is_empty(), "V2.1 must produce resolved state");
     // Both must agree on m.room.create
     assert_eq!(
-        v2.get(&("m.room.create".into(), Some(String::new()))),
-        v2_1.get(&("m.room.create".into(), Some(String::new()))),
+        v2.get(&("m.room.create".into(), String::new())),
+        v2_1.get(&("m.room.create".into(), String::new())),
         "V2 and V2.1 must agree on the create event"
     );
 }
@@ -614,10 +614,10 @@ fn test_unredacted_spam_storm_v2_1_1() {
 #[allow(clippy::too_many_lines)]
 fn verify_spam_storm_results(
     events: &[LeanEvent],
-    resolved_v2: &imbl::OrdMap<(String, Option<String>), String>,
-    resolved_v21: &imbl::OrdMap<(String, Option<String>), String>,
-    resolved_v211: &imbl::OrdMap<(String, Option<String>), String>,
-    resolved_lattice: &imbl::OrdMap<(String, Option<String>), String>,
+    resolved_v2: &imbl::OrdMap<(String, String), String>,
+    resolved_v21: &imbl::OrdMap<(String, String), String>,
+    resolved_v211: &imbl::OrdMap<(String, String), String>,
+    resolved_lattice: &imbl::OrdMap<(String, String), String>,
     durs: (
         std::time::Duration,
         std::time::Duration,
@@ -625,11 +625,10 @@ fn verify_spam_storm_results(
         std::time::Duration,
     ),
 ) {
-    let power_levels_v20 = resolved_v2.get(&("m.room.power_levels".into(), Some(String::new())));
-    let power_levels_v21 = resolved_v21.get(&("m.room.power_levels".into(), Some(String::new())));
-    let power_levels_v211 = resolved_v211.get(&("m.room.power_levels".into(), Some(String::new())));
-    let power_levels_lattice =
-        resolved_lattice.get(&("m.room.power_levels".into(), Some(String::new())));
+    let power_levels_v20 = resolved_v2.get(&("m.room.power_levels".into(), String::new()));
+    let power_levels_v21 = resolved_v21.get(&("m.room.power_levels".into(), String::new()));
+    let power_levels_v211 = resolved_v211.get(&("m.room.power_levels".into(), String::new()));
+    let power_levels_lattice = resolved_lattice.get(&("m.room.power_levels".into(), String::new()));
 
     if power_levels_v20 == power_levels_v211 {
         println!("V2 and V2.1.1 produced identical power levels.");

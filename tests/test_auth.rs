@@ -24,7 +24,7 @@ fn make_event(
 fn test_self_ban_rejected() {
     let mut state = RoomState::new();
     state.insert(
-        (M_ROOM_CREATE.into(), Some(String::new())),
+        (M_ROOM_CREATE.into(), String::new()),
         make_event(
             "$create",
             M_ROOM_CREATE,
@@ -34,7 +34,7 @@ fn test_self_ban_rejected() {
         ),
     );
     state.insert(
-        ("m.room.member".into(), Some("@alice:example.com".into())),
+        ("m.room.member".into(), "@alice:example.com".into()),
         make_event(
             "$join",
             "m.room.member",
@@ -65,7 +65,7 @@ fn test_self_ban_rejected() {
 fn test_invite_banned_user_rejected() {
     let mut state = RoomState::new();
     state.insert(
-        (M_ROOM_CREATE.into(), Some(String::new())),
+        (M_ROOM_CREATE.into(), String::new()),
         make_event(
             "$c",
             M_ROOM_CREATE,
@@ -75,7 +75,7 @@ fn test_invite_banned_user_rejected() {
         ),
     );
     state.insert(
-        ("m.room.member".into(), Some("@alice:example.com".into())),
+        ("m.room.member".into(), "@alice:example.com".into()),
         make_event(
             "$j",
             "m.room.member",
@@ -85,7 +85,7 @@ fn test_invite_banned_user_rejected() {
         ),
     );
     state.insert(
-        ("m.room.member".into(), Some("@bob:example.com".into())),
+        ("m.room.member".into(), "@bob:example.com".into()),
         make_event(
             "$ban",
             "m.room.member",
@@ -114,11 +114,11 @@ fn test_invite_banned_user_rejected() {
 fn test_invite_insufficient_power_level() {
     let mut state = RoomState::new();
     state.insert(
-        (M_ROOM_CREATE.into(), Some(String::new())),
+        (M_ROOM_CREATE.into(), String::new()),
         make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
     );
     state.insert(
-        ("m.room.power_levels".into(), Some(String::new())),
+        ("m.room.power_levels".into(), String::new()),
         make_event(
             "$pl",
             "m.room.power_levels",
@@ -128,7 +128,7 @@ fn test_invite_insufficient_power_level() {
         ),
     );
     state.insert(
-        ("m.room.member".into(), Some("@low:x.com".into())),
+        ("m.room.member".into(), "@low:x.com".into()),
         make_event(
             "$j",
             "m.room.member",
@@ -157,11 +157,11 @@ fn test_invite_insufficient_power_level() {
 fn test_self_invite_rejected() {
     let mut state = RoomState::new();
     state.insert(
-        (M_ROOM_CREATE.into(), Some(String::new())),
+        (M_ROOM_CREATE.into(), String::new()),
         make_event("$c", M_ROOM_CREATE, Some(""), "@alice:x.com", json!({})),
     );
     state.insert(
-        ("m.room.member".into(), Some("@alice:x.com".into())),
+        ("m.room.member".into(), "@alice:x.com".into()),
         make_event(
             "$j",
             "m.room.member",
@@ -190,11 +190,11 @@ fn test_self_invite_rejected() {
 fn test_join_banned_user_rejected() {
     let mut state = RoomState::new();
     state.insert(
-        (M_ROOM_CREATE.into(), Some(String::new())),
+        (M_ROOM_CREATE.into(), String::new()),
         make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
     );
     state.insert(
-        ("m.room.join_rules".into(), Some(String::new())),
+        ("m.room.join_rules".into(), String::new()),
         make_event(
             "$jr",
             "m.room.join_rules",
@@ -204,7 +204,7 @@ fn test_join_banned_user_rejected() {
         ),
     );
     state.insert(
-        ("m.room.member".into(), Some("@banned:x.com".into())),
+        ("m.room.member".into(), "@banned:x.com".into()),
         make_event(
             "$ban",
             "m.room.member",
@@ -233,11 +233,11 @@ fn test_join_banned_user_rejected() {
 fn test_public_room_join_allowed() {
     let mut state = RoomState::new();
     state.insert(
-        (M_ROOM_CREATE.into(), Some(String::new())),
+        (M_ROOM_CREATE.into(), String::new()),
         make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
     );
     state.insert(
-        ("m.room.join_rules".into(), Some(String::new())),
+        ("m.room.join_rules".into(), String::new()),
         make_event(
             "$jr",
             "m.room.join_rules",
@@ -268,11 +268,11 @@ fn test_public_room_join_allowed() {
 fn test_member_pl_hierarchy_enforcement() {
     let mut state = RoomState::new();
     state.insert(
-        (M_ROOM_CREATE.into(), Some(String::new())),
+        (M_ROOM_CREATE.into(), String::new()),
         make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
     );
     state.insert(
-        ("m.room.power_levels".into(), Some(String::new())),
+        ("m.room.power_levels".into(), String::new()),
         make_event(
             "$pl",
             "m.room.power_levels",
@@ -282,7 +282,7 @@ fn test_member_pl_hierarchy_enforcement() {
         ),
     );
     state.insert(
-        ("m.room.member".into(), Some("@mod:x.com".into())),
+        ("m.room.member".into(), "@mod:x.com".into()),
         make_event(
             "$j1",
             "m.room.member",
@@ -292,7 +292,7 @@ fn test_member_pl_hierarchy_enforcement() {
         ),
     );
     state.insert(
-        ("m.room.member".into(), Some("@target:x.com".into())),
+        ("m.room.member".into(), "@target:x.com".into()),
         make_event(
             "$j2",
             "m.room.member",
@@ -434,7 +434,7 @@ fn test_joined_member_can_send() {
     );
     let mut state = RoomState::new();
     state.insert(
-        ("m.room.member".into(), Some("@alice:example.com".into())),
+        ("m.room.member".into(), "@alice:example.com".into()),
         make_event(
             "$join",
             "m.room.member",
@@ -462,7 +462,7 @@ fn test_banned_user_rejected() {
     );
     let mut state = RoomState::new();
     state.insert(
-        ("m.room.member".into(), Some("@alice:example.com".into())),
+        ("m.room.member".into(), "@alice:example.com".into()),
         make_event(
             "$ban",
             "m.room.member",
@@ -488,7 +488,7 @@ fn test_insufficient_power_level() {
     );
     let mut state = RoomState::new();
     state.insert(
-        ("m.room.member".into(), Some("@alice:example.com".into())),
+        ("m.room.member".into(), "@alice:example.com".into()),
         make_event(
             "$join",
             "m.room.member",
@@ -498,7 +498,7 @@ fn test_insufficient_power_level() {
         ),
     );
     state.insert(
-        ("m.room.power_levels".into(), Some(String::new())),
+        ("m.room.power_levels".into(), String::new()),
         make_event(
             "$pl",
             "m.room.power_levels",
@@ -577,7 +577,7 @@ fn test_moderator_can_override_admin_ban() {
 
     // Create event
     state.insert(
-        ("m.room.create".into(), Some(String::new())),
+        ("m.room.create".into(), String::new()),
         make_event(
             "$create",
             "m.room.create",
@@ -589,7 +589,7 @@ fn test_moderator_can_override_admin_ban() {
 
     // Power levels event (admin = 100, mod = 50)
     state.insert(
-        ("m.room.power_levels".into(), Some(String::new())),
+        ("m.room.power_levels".into(), String::new()),
         make_event(
             "$pl",
             "m.room.power_levels",
@@ -606,7 +606,7 @@ fn test_moderator_can_override_admin_ban() {
 
     // Admin join
     state.insert(
-        ("m.room.member".into(), Some("@admin:example.com".into())),
+        ("m.room.member".into(), "@admin:example.com".into()),
         make_event(
             "$join_admin",
             "m.room.member",
@@ -618,7 +618,7 @@ fn test_moderator_can_override_admin_ban() {
 
     // Mod join
     state.insert(
-        ("m.room.member".into(), Some("@mod:example.com".into())),
+        ("m.room.member".into(), "@mod:example.com".into()),
         make_event(
             "$join_mod",
             "m.room.member",
@@ -630,7 +630,7 @@ fn test_moderator_can_override_admin_ban() {
 
     // Target is banned by @admin (PL 100)
     state.insert(
-        ("m.room.member".into(), Some("@target:example.com".into())),
+        ("m.room.member".into(), "@target:example.com".into()),
         make_event(
             "$ban_target",
             "m.room.member",
@@ -668,7 +668,7 @@ fn test_moderator_can_unban_self_ban() {
 
     // Create event
     state.insert(
-        ("m.room.create".into(), Some(String::new())),
+        ("m.room.create".into(), String::new()),
         make_event(
             "$create",
             "m.room.create",
@@ -680,7 +680,7 @@ fn test_moderator_can_unban_self_ban() {
 
     // Power levels event (admin = 100, mod = 50)
     state.insert(
-        ("m.room.power_levels".into(), Some(String::new())),
+        ("m.room.power_levels".into(), String::new()),
         make_event(
             "$pl",
             "m.room.power_levels",
@@ -697,7 +697,7 @@ fn test_moderator_can_unban_self_ban() {
 
     // Mod join
     state.insert(
-        ("m.room.member".into(), Some("@mod:example.com".into())),
+        ("m.room.member".into(), "@mod:example.com".into()),
         make_event(
             "$join_mod",
             "m.room.member",
@@ -709,7 +709,7 @@ fn test_moderator_can_unban_self_ban() {
 
     // Target is banned by @mod (PL 50)
     state.insert(
-        ("m.room.member".into(), Some("@target:example.com".into())),
+        ("m.room.member".into(), "@target:example.com".into()),
         make_event(
             "$ban_target",
             "m.room.member",
@@ -744,7 +744,7 @@ fn test_equal_power_invite_override_allowed() {
 
     // Create event
     state.insert(
-        ("m.room.create".into(), Some(String::new())),
+        ("m.room.create".into(), String::new()),
         make_event(
             "$create",
             "m.room.create",
@@ -756,7 +756,7 @@ fn test_equal_power_invite_override_allowed() {
 
     // Power levels event (admin = 100, mod1 = 50, mod2 = 50)
     state.insert(
-        ("m.room.power_levels".into(), Some(String::new())),
+        ("m.room.power_levels".into(), String::new()),
         make_event(
             "$pl",
             "m.room.power_levels",
@@ -774,7 +774,7 @@ fn test_equal_power_invite_override_allowed() {
 
     // Mod1 join
     state.insert(
-        ("m.room.member".into(), Some("@mod1:example.com".into())),
+        ("m.room.member".into(), "@mod1:example.com".into()),
         make_event(
             "$join_mod1",
             "m.room.member",
@@ -786,7 +786,7 @@ fn test_equal_power_invite_override_allowed() {
 
     // Mod2 join
     state.insert(
-        ("m.room.member".into(), Some("@mod2:example.com".into())),
+        ("m.room.member".into(), "@mod2:example.com".into()),
         make_event(
             "$join_mod2",
             "m.room.member",
@@ -798,7 +798,7 @@ fn test_equal_power_invite_override_allowed() {
 
     // Target is invited by @mod1 (PL 50)
     state.insert(
-        ("m.room.member".into(), Some("@target:example.com".into())),
+        ("m.room.member".into(), "@target:example.com".into()),
         make_event(
             "$invite_target",
             "m.room.member",
@@ -827,7 +827,7 @@ fn test_equal_power_invite_override_allowed() {
 
     // Target is now banned by @mod1 (PL 50)
     state.insert(
-        ("m.room.member".into(), Some("@target:example.com".into())),
+        ("m.room.member".into(), "@target:example.com".into()),
         make_event(
             "$ban_target",
             "m.room.member",
@@ -872,7 +872,7 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
     let mut state = RoomState::new();
 
     state.insert(
-        ("m.room.create".into(), Some(String::new())),
+        ("m.room.create".into(), String::new()),
         make_event(
             "$create",
             "m.room.create",
@@ -886,7 +886,7 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
     // mod can ban (50 >= 30) but cannot kick (50 < 60)
     // mod should still be able to unban (50 >= ban_pl=30)
     state.insert(
-        ("m.room.power_levels".into(), Some(String::new())),
+        ("m.room.power_levels".into(), String::new()),
         make_event(
             "$pl",
             "m.room.power_levels",
@@ -905,7 +905,7 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
 
     // Mod join
     state.insert(
-        ("m.room.member".into(), Some("@mod:example.com".into())),
+        ("m.room.member".into(), "@mod:example.com".into()),
         make_event(
             "$join_mod",
             "m.room.member",
@@ -917,7 +917,7 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
 
     // Target is currently banned
     state.insert(
-        ("m.room.member".into(), Some("@target:example.com".into())),
+        ("m.room.member".into(), "@target:example.com".into()),
         make_event(
             "$ban_target",
             "m.room.member",
@@ -950,7 +950,7 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
 
     // Verify that kick still requires kick_pl: change target to "join" (not banned)
     state.insert(
-        ("m.room.member".into(), Some("@target:example.com".into())),
+        ("m.room.member".into(), "@target:example.com".into()),
         make_event(
             "$join_target",
             "m.room.member",
@@ -998,7 +998,7 @@ fn test_creator_implicit_power_level() {
 
     // Create event with V2.1 extensions (additional creators)
     state.insert(
-        ("m.room.create".into(), Some(String::new())),
+        ("m.room.create".into(), String::new()),
         make_event(
             "$create",
             "m.room.create",
@@ -1013,7 +1013,7 @@ fn test_creator_implicit_power_level() {
     );
 
     state.insert(
-        ("m.room.power_levels".into(), Some(String::new())),
+        ("m.room.power_levels".into(), String::new()),
         make_event(
             "$pl",
             "m.room.power_levels",
@@ -1028,7 +1028,7 @@ fn test_creator_implicit_power_level() {
 
     // Target user
     state.insert(
-        ("m.room.member".into(), Some("@target:example.com".into())),
+        ("m.room.member".into(), "@target:example.com".into()),
         make_event(
             "$join_target",
             "m.room.member",
@@ -1040,10 +1040,7 @@ fn test_creator_implicit_power_level() {
 
     // Additional creator must be joined (only primary creator has implicit join in v11)
     state.insert(
-        (
-            "m.room.member".into(),
-            Some("@additional:example.com".into()),
-        ),
+        ("m.room.member".into(), "@additional:example.com".into()),
         make_event(
             "$join_additional",
             "m.room.member",
@@ -1055,7 +1052,7 @@ fn test_creator_implicit_power_level() {
 
     // Normal user must be joined
     state.insert(
-        ("m.room.member".into(), Some("@normal:example.com".into())),
+        ("m.room.member".into(), "@normal:example.com".into()),
         make_event(
             "$join_normal",
             "m.room.member",
@@ -1131,7 +1128,7 @@ fn test_creator_implicit_power_level() {
 fn test_v2_creator_gets_pl_100_not_max() {
     let mut state = RoomState::new();
     state.insert(
-        (M_ROOM_CREATE.into(), Some(String::new())),
+        (M_ROOM_CREATE.into(), String::new()),
         make_event(
             "$create",
             M_ROOM_CREATE,
@@ -1141,7 +1138,7 @@ fn test_v2_creator_gets_pl_100_not_max() {
         ),
     );
     state.insert(
-        ("m.room.member".into(), Some("@creator:example.com".into())),
+        ("m.room.member".into(), "@creator:example.com".into()),
         make_event(
             "$join",
             "m.room.member",
@@ -1152,7 +1149,7 @@ fn test_v2_creator_gets_pl_100_not_max() {
     );
     // Add a power level event that sets ban to 150
     state.insert(
-        ("m.room.power_levels".into(), Some(String::new())),
+        ("m.room.power_levels".into(), String::new()),
         make_event(
             "$pl",
             "m.room.power_levels",
@@ -1162,7 +1159,7 @@ fn test_v2_creator_gets_pl_100_not_max() {
         ),
     );
     state.insert(
-        ("m.room.member".into(), Some("@target:example.com".into())),
+        ("m.room.member".into(), "@target:example.com".into()),
         make_event(
             "$target_join",
             "m.room.member",
@@ -1204,7 +1201,7 @@ fn test_v2_creator_gets_pl_100_not_max() {
 fn test_v2_additional_creators_ignored() {
     let mut state = RoomState::new();
     state.insert(
-        (M_ROOM_CREATE.into(), Some(String::new())),
+        (M_ROOM_CREATE.into(), String::new()),
         make_event(
             "$create",
             M_ROOM_CREATE,
@@ -1218,10 +1215,7 @@ fn test_v2_additional_creators_ignored() {
         ),
     );
     state.insert(
-        (
-            "m.room.member".into(),
-            Some("@additional:example.com".into()),
-        ),
+        ("m.room.member".into(), "@additional:example.com".into()),
         make_event(
             "$join",
             "m.room.member",
@@ -1231,7 +1225,7 @@ fn test_v2_additional_creators_ignored() {
         ),
     );
     state.insert(
-        ("m.room.member".into(), Some("@target:example.com".into())),
+        ("m.room.member".into(), "@target:example.com".into()),
         make_event(
             "$target_join",
             "m.room.member",

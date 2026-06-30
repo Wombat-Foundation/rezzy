@@ -99,7 +99,7 @@ fn test_compute_state_at_correctness_and_performance() {
     assert_eq!(tip_state.len(), 100);
 
     // Verify a specific key exists at mid and tip, but not early
-    let test_key = ("m.room.member".to_string(), Some("user_400".to_string()));
+    let test_key = ("m.room.member".to_string(), "user_400".to_string());
     assert!(!early_state.contains_key(&test_key));
     assert_eq!(mid_state.get(&test_key), Some(&"$400".to_string()));
     assert_eq!(tip_state.get(&test_key), Some(&"$400".to_string()));
@@ -336,7 +336,7 @@ fn test_streaming_correctness_with_branched_dag() {
     let mut expected_at_40 = imbl::OrdMap::new();
     for i in [10, 20, 30, 40] {
         expected_at_40.insert(
-            ("m.room.member".to_string(), Some(format!("user_{i}"))),
+            ("m.room.member".to_string(), format!("user_{i}")),
             format!("${i}"),
         );
     }
@@ -347,7 +347,7 @@ fn test_streaming_correctness_with_branched_dag() {
     // correctly rejected by state resolution!
     let mut expected_at_50 = expected_at_40.clone();
     expected_at_50.insert(
-        ("m.room.member".to_string(), Some("user_50".to_string())),
+        ("m.room.member".to_string(), "user_50".to_string()),
         "$50".to_string(),
     );
 
@@ -401,7 +401,7 @@ fn test_delta_chain_generation_correctness() {
     let events = make_chronological_test_events();
 
     // Perform delta-chain sequential processing using library functions
-    let mut state_after_map: HashMap<String, imbl::OrdMap<(String, Option<String>), String>> =
+    let mut state_after_map: HashMap<String, imbl::OrdMap<(String, String), String>> =
         HashMap::new();
     let mut state_hash_map: HashMap<String, String> = HashMap::new();
     let mut checkpoints = Vec::new();
@@ -421,7 +421,7 @@ fn test_delta_chain_generation_correctness() {
         let mut state_after = state_before.clone();
         if ev.state_key.is_some() {
             state_after.insert(
-                (ev.event_type.clone(), ev.state_key.clone()),
+                (ev.event_type.clone(), ev.state_key.clone().unwrap()),
                 ev.event_id.clone(),
             );
         }
@@ -442,7 +442,7 @@ fn test_delta_chain_generation_correctness() {
     assert_eq!(p1, &None);
     assert_eq!(d1.len(), 1);
     assert_eq!(d1[0].event_type, "m.room.create");
-    assert_eq!(d1[0].state_key, Some(String::new()));
+    assert_eq!(d1[0].state_key, String::new());
     assert_eq!(d1[0].event_id, Some("$1".to_string()));
 
     let (h2, p2, id2, d2) = &checkpoints[1];
@@ -450,7 +450,7 @@ fn test_delta_chain_generation_correctness() {
     assert_eq!(p2, &Some(h1.clone()));
     assert_eq!(d2.len(), 1);
     assert_eq!(d2[0].event_type, "m.room.member");
-    assert_eq!(d2[0].state_key, Some("@alice:example.com".to_string()));
+    assert_eq!(d2[0].state_key, "@alice:example.com".to_string());
     assert_eq!(d2[0].event_id, Some("$2".to_string()));
 
     let (h3, p3, id3, d3) = &checkpoints[2];
@@ -506,7 +506,7 @@ fn test_state_delta_compression_robustness() {
         ..Default::default()
     };
 
-    let mut state_after_map: HashMap<String, imbl::OrdMap<(String, Option<String>), String>> =
+    let mut state_after_map: HashMap<String, imbl::OrdMap<(String, String), String>> =
         HashMap::new();
     let mut state_hash_map: HashMap<String, String> = HashMap::new();
     let mut checkpoints = Vec::new();
@@ -528,7 +528,7 @@ fn test_state_delta_compression_robustness() {
         let mut state_after = state_before.clone();
         if ev.state_key.is_some() {
             state_after.insert(
-                (ev.event_type.clone(), ev.state_key.clone()),
+                (ev.event_type.clone(), ev.state_key.clone().unwrap()),
                 ev.event_id.clone(),
             );
         }
@@ -556,7 +556,7 @@ fn test_state_delta_compression_robustness() {
     assert_eq!(p2, &Some(checkpoints[0].0.clone()));
     assert_eq!(d2.len(), 1);
     assert_eq!(d2[0].event_type, "m.room.member");
-    assert_eq!(d2[0].state_key, Some("@alice:example.com".to_string()));
+    assert_eq!(d2[0].state_key, "@alice:example.com".to_string());
     assert_eq!(d2[0].event_id, Some("$2".to_string()));
 
     // E3 (Fork A - Bob joins)
@@ -565,7 +565,7 @@ fn test_state_delta_compression_robustness() {
     assert_eq!(p3, &Some(checkpoints[1].0.clone()));
     assert_eq!(d3.len(), 1);
     assert_eq!(d3[0].event_type, "m.room.member");
-    assert_eq!(d3[0].state_key, Some("@bob:example.com".to_string()));
+    assert_eq!(d3[0].state_key, "@bob:example.com".to_string());
     assert_eq!(d3[0].event_id, Some("$3".to_string()));
 
     // E4 (Fork B - Alice leaves)
@@ -574,6 +574,6 @@ fn test_state_delta_compression_robustness() {
     assert_eq!(p4, &Some(checkpoints[1].0.clone()));
     assert_eq!(d4.len(), 1);
     assert_eq!(d4[0].event_type, "m.room.member");
-    assert_eq!(d4[0].state_key, Some("@alice:example.com".to_string()));
+    assert_eq!(d4[0].state_key, "@alice:example.com".to_string());
     assert_eq!(d4[0].event_id, Some("$4".to_string()));
 }

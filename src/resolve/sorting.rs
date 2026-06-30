@@ -324,7 +324,7 @@ where
     let mut seen_in_mainline = hashbrown::HashSet::new();
     let pl_key = (
         alloc::string::String::from("m.room.power_levels"),
-        Some(alloc::string::String::new()),
+        alloc::string::String::new(),
     );
     let mut current = resolved.get(&pl_key).cloned();
 
@@ -510,7 +510,7 @@ mod tests {
         resolved.insert(
             (
                 alloc::string::String::from("m.room.power_levels"),
-                Some(alloc::string::String::new()),
+                alloc::string::String::new(),
             ),
             alloc::string::String::from("A"),
         );

@@ -42,7 +42,7 @@ fn parse_jsonl_dag<P: AsRef<Path>>(path: P) -> Vec<LeanEvent> {
 fn resolve_v2_1_from_subgraph(
     all_events: &[LeanEvent],
     conflicted_eids: &[String],
-) -> imbl::OrdMap<(String, Option<String>), String> {
+) -> imbl::OrdMap<(String, String), String> {
     // Build full context map
     let mut full_context: HashMap<String, LeanEvent> = HashMap::new();
     for ev in all_events {
@@ -170,7 +170,12 @@ fn test_unredacted_lounge_mismatch_subgraph() {
             // Find what actually won in that slot
             let ev = events.iter().find(|e| e.event_id == *id);
             let (ty, sk) = ev
-                .map(|e| (e.event_type.clone(), e.state_key.clone()))
+                .map(|e| {
+                    (
+                        e.event_type.clone(),
+                        e.state_key.clone().unwrap_or_default(),
+                    )
+                })
                 .unwrap_or_default();
             let actual_winner = resolved.get(&(ty.clone(), sk.clone()));
             println!(
@@ -322,10 +327,10 @@ fn test_checkpoint_partial_join_resolution() {
 
     // Build trusted checkpoint state: for each (type, state_key) slot in the
     // bootstrap set, take the event with the highest depth (latest).
-    let mut checkpoint_state: imbl::OrdMap<(String, Option<String>), String> = imbl::OrdMap::new();
+    let mut checkpoint_state: imbl::OrdMap<(String, String), String> = imbl::OrdMap::new();
     for ev in &bootstrap_events {
         if ev.state_key.is_some() {
-            let key = (ev.event_type.clone(), ev.state_key.clone());
+            let key = (ev.event_type.clone(), ev.state_key.clone().unwrap());
             let should_insert = match checkpoint_state.get(&key) {
                 Some(existing_id) => {
                     let existing_ev = bootstrap_events.iter().find(|e| e.event_id == *existing_id);

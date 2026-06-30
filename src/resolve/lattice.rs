@@ -98,8 +98,8 @@ where
 }
 
 fn update_winner_if_better<'a, Id, C>(
-    winners: &mut HashMap<(String, Option<String>), &'a LeanEvent<Id, C>>,
-    key: (String, Option<String>),
+    winners: &mut HashMap<(String, String), &'a LeanEvent<Id, C>>,
+    key: (String, String),
     ev: &'a LeanEvent<Id, C>,
     mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
@@ -130,18 +130,19 @@ fn fold_lattice_chunk<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash::Bu
     version: StateResVersion,
     create_ev: Option<&LeanEvent<Id, C>>,
     // jscpd:ignore-end
-) -> HashMap<(String, Option<String>), &'a LeanEvent<Id, C>>
+) -> HashMap<(String, String), &'a LeanEvent<Id, C>>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     C: crate::basespec::rezzy_types::EventContent + Clone,
 {
-    let mut thread_res: HashMap<(String, Option<String>), &'a LeanEvent<Id, C>> = HashMap::new();
+    let mut thread_res: HashMap<(String, String), &'a LeanEvent<Id, C>> = HashMap::new();
     let mut local_auth_cache = crate::state::at::LocalAuthCache::<Id, C>::new(version);
 
     for &ev in chunk {
-        // 1. VALIDATE FIRST (Filters out Byzantine garbage/Supremum Deletion attacks)
+        // VALIDATE FIRST (filters out Byzantine garbage/supremum deletion attacks)
         let local_auth =
             compute_local_auth(ev, auth_context, sort_set, &mut local_auth_cache, version);
+
         if !iterative_auth_ok(
             ev,
             terminal_power_state,
@@ -155,16 +156,21 @@ where
             continue; // Drop unauthorized events before they can compete for the LUB!
         }
 
-        // 2. NOW COMPETE FOR LUB
-        let key = (ev.event_type.clone(), ev.state_key.clone());
+        // Skip events with no `state_key` (e.g. `m.room.redaction`)
+        if ev.state_key.is_none() {
+            continue;
+        }
+
+        // NOW COMPETE FOR LUB
+        let key = (ev.event_type.clone(), ev.state_key.clone().unwrap());
         update_winner_if_better(&mut thread_res, key, ev, mainline_distances, mainline_len);
     }
     thread_res
 }
 
 fn merge_lattice_winners<'a, Id, C>(
-    key_winners: &mut HashMap<(String, Option<String>), &'a LeanEvent<Id, C>>,
-    thread_res: HashMap<(String, Option<String>), &'a LeanEvent<Id, C>>,
+    key_winners: &mut HashMap<(String, String), &'a LeanEvent<Id, C>>,
+    thread_res: HashMap<(String, String), &'a LeanEvent<Id, C>>,
     mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
 ) where
@@ -195,7 +201,7 @@ fn compute_lattice_coordinatized_winners<
     version: StateResVersion,
     create_ev: Option<&LeanEvent<Id, C>>,
     // jscpd:ignore-end
-    key_winners: &mut HashMap<(String, Option<String>), &'a LeanEvent<Id, C>>,
+    key_winners: &mut HashMap<(String, String), &'a LeanEvent<Id, C>>,
 ) where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + Sync + Send,
     C: crate::basespec::rezzy_types::EventContent + Clone + Sync + Send,

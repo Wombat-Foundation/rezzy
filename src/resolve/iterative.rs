@@ -189,7 +189,10 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4>(
                 true,
             ) {
                 resolved.insert(
-                    (event.event_type.clone(), event.state_key.clone()),
+                    (
+                        event.event_type.clone(),
+                        event.state_key.clone().unwrap_or_default(),
+                    ),
                     event.event_id.clone(),
                 );
             }
@@ -269,7 +272,7 @@ where
 
     let create_key = (
         String::from(crate::basespec::event_types::M_ROOM_CREATE),
-        Some(String::new()),
+        String::new(),
     );
 
     let create_ev = unconflicted_state
@@ -324,7 +327,7 @@ where
 /// # use rezzy::{resolve_lean, LeanEvent, StateResVersion, HashMap};
 /// # use imbl::OrdMap;
 /// // State snapshot from /send_join response
-/// let checkpoint: imbl::OrdMap<(String, Option<String>), String> = /* ... */
+/// let checkpoint: imbl::OrdMap<(String, String), String> = /* ... */
 /// # imbl::OrdMap::new();
 /// let new_events: HashMap<String, LeanEvent> = /* events since join */
 /// # HashMap::new();
@@ -456,7 +459,10 @@ pub fn resolve_lean_with_cache<
             false,
         ) {
             resolved.insert(
-                (ev.event_type.clone(), ev.state_key.clone()),
+                (
+                    ev.event_type.clone(),
+                    ev.state_key.clone().unwrap_or_default(),
+                ),
                 ev.event_id.clone(),
             );
         }
@@ -562,7 +568,10 @@ pub fn resolve_lean_with_cache_and_deltas<
     let sorted_power_ids = lean_kahn_sort(&power_events, &sort_context, create_ev, version);
     for id in &sorted_power_ids {
         if let Some(event) = sort_set.get(id).or_else(|| auth_context.get(id)) {
-            let key = (event.event_type.clone(), event.state_key.clone());
+            let key = (
+                event.event_type.clone(),
+                event.state_key.clone().unwrap_or_default(),
+            );
             let local_auth =
                 compute_local_auth(event, auth_context, sort_set, local_auth_cache, version);
             let accepted = iterative_auth_ok(
@@ -602,7 +611,10 @@ pub fn resolve_lean_with_cache_and_deltas<
     mainline_sort(&mut non_power_list, &mainline, &sort_context);
 
     for ev in non_power_list {
-        let key = (ev.event_type.clone(), ev.state_key.clone());
+        let key = (
+            ev.event_type.clone(),
+            ev.state_key.clone().unwrap_or_default(),
+        );
         let local_auth = compute_local_auth(ev, auth_context, sort_set, local_auth_cache, version);
         let accepted = iterative_auth_ok(
             ev,

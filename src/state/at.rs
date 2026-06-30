@@ -47,7 +47,7 @@ pub struct LocalAuthEntry<Id, C = serde_json::Value> {
 }
 
 /// Inner type for the local auth cache to satisfy clippy's `type_complexity` lint.
-pub type LocalAuthCacheMap<Id, C> = BTreeMap<(String, Option<String>), LocalAuthEntry<Id, C>>;
+pub type LocalAuthCacheMap<Id, C> = BTreeMap<(String, String), LocalAuthEntry<Id, C>>;
 
 /// Memoization cache for local auth context computation.
 ///
@@ -77,7 +77,7 @@ pub(crate) struct OverlayState<'a, Id, C, S1, S2> {
     pub(crate) resolved: &'a crate::state::at::SharedState<Id>,
     pub(crate) auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
     pub(crate) sort_set: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
-    pub(crate) local_auth: BTreeMap<(String, Option<String>), LeanEvent<Id, C>>,
+    pub(crate) local_auth: BTreeMap<(String, String), LeanEvent<Id, C>>,
     pub(crate) create_ev: Option<&'a LeanEvent<Id, C>>,
     pub(crate) version: StateResVersion,
     pub(crate) is_power_phase: bool,
@@ -90,7 +90,7 @@ impl<
         S2: core::hash::BuildHasher,
     > crate::auth::StateProvider<Id, C> for OverlayState<'_, Id, C, S1, S2>
 {
-    fn get_event(&self, event_type: &str, state_key: Option<&str>) -> Option<&LeanEvent<Id, C>> {
+    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C>> {
         let query: &dyn crate::auth::StateKeyDyn = &(event_type, state_key);
 
         // In V2.1 (Stock MSC4297), we supplement with ONLY m.room.power_levels during Step 2 (power phase).
@@ -98,13 +98,13 @@ impl<
         let should_supplement = match self.version {
             StateResVersion::V2_1 => {
                 if self.is_power_phase {
-                    event_type == "m.room.power_levels" && state_key == Some("")
+                    event_type == "m.room.power_levels" && state_key.is_empty()
                 } else {
                     true
                 }
             }
             StateResVersion::V2_1_1 => {
-                (event_type == "m.room.power_levels" && state_key == Some(""))
+                (event_type == "m.room.power_levels" && state_key.is_empty())
                     || (event_type == "m.room.member")
             }
             _ => true,
@@ -125,9 +125,7 @@ impl<
                         // V2.1.1 Fix: Only supplement bans and kicks in power phase
                         if let Some(membership) = ev.get_membership() {
                             let is_ban = membership == "ban";
-                            let is_kick = membership == "leave"
-                                && state_key.is_some()
-                                && Some(ev.sender.as_str()) != state_key;
+                            let is_kick = membership == "leave" && ev.sender.as_str() != state_key;
                             if is_ban || is_kick {
                                 return Some(ev);
                             }
@@ -172,7 +170,9 @@ impl<
             }
         } else {
             // Fallback for create
-            if event_type == "m.room.create" && state_key == Some("") {
+            if event_type == crate::basespec::event_types::M_ROOM_CREATE
+                && state_key == crate::basespec::event_types::M_EMPTY_STATE_KEY
+            {
                 return self.create_ev;
             }
             None
@@ -199,7 +199,7 @@ pub(crate) fn iterative_auth_ok<
     resolved: &crate::state::at::SharedState<Id>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S1>,
     sort_set: &HashMap<Id, LeanEvent<Id, C>, S2>,
-    local_auth: BTreeMap<(String, Option<String>), LeanEvent<Id, C>>,
+    local_auth: BTreeMap<(String, String), LeanEvent<Id, C>>,
     cached_create: Option<&LeanEvent<Id, C>>,
     version: StateResVersion,
     is_power_phase: bool,
@@ -220,11 +220,16 @@ pub(crate) fn iterative_auth_ok<
 /// Merges an event into a local auth map if it is an auth event (e.g. power levels, join rules).
 /// Ensures that newer auth events replace older ones during chain traversal.
 pub(crate) fn update_local_auth<Id: Clone + Ord, C: Clone>(
-    local_auth: &mut BTreeMap<(String, Option<String>), LocalAuthEntry<Id, C>>,
+    local_auth: &mut BTreeMap<(String, String), LocalAuthEntry<Id, C>>,
     aev: &LeanEvent<Id, C>,
     depth: usize,
 ) {
-    let key = (aev.event_type.clone(), aev.state_key.clone());
+    let key = (
+        aev.event_type.clone(),
+        aev.state_key
+            .clone()
+            .expect("auth events must have a state_key"),
+    );
     match local_auth.entry(key) {
         alloc::collections::btree_map::Entry::Vacant(e) => {
             e.insert(LocalAuthEntry {
@@ -250,7 +255,7 @@ pub(crate) fn compute_local_auth<Id, C, S1, S2>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S2>,
     cache: &mut LocalAuthCache<Id, C>,
     version: StateResVersion,
-) -> BTreeMap<(String, Option<String>), LeanEvent<Id, C>>
+) -> BTreeMap<(String, String), LeanEvent<Id, C>>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
     C: Clone,
@@ -265,7 +270,7 @@ where
             .collect();
     }
 
-    let mut local_auth: BTreeMap<(String, Option<String>), LocalAuthEntry<Id, C>> = BTreeMap::new();
+    let mut local_auth: BTreeMap<(String, String), LocalAuthEntry<Id, C>> = BTreeMap::new();
     let mut queue = alloc::collections::VecDeque::new();
     for aid in &event.auth_events {
         queue.push_back((aid.clone(), 1));
@@ -336,8 +341,9 @@ where
         .collect()
 }
 
-/// An O(1) cloneable, persistent state map.
-pub type SharedState<Id = String> = imbl::OrdMap<(String, Option<String>), Id>;
+/// An O(1) cloneable, persistent state map. Note that `state_key: ""`
+/// is _never_ `null` or `None`.
+pub type SharedState<Id = String> = imbl::OrdMap<(String, String), Id>;
 
 /// Computes the resolved room state *after* a given event.
 ///
@@ -357,7 +363,7 @@ pub fn compute_state_at<Id, C, Q, S>(
     target_event_id: &Q,
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     version: StateResVersion,
-) -> Option<BTreeMap<(String, Option<String>), Id>>
+) -> Option<BTreeMap<(String, String), Id>>
 where
     Id: Clone + Eq + Ord + core::fmt::Debug + core::hash::Hash + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + Ord + core::hash::Hash,
@@ -404,7 +410,7 @@ pub fn compute_state_at_batch<Id, C, Q, S>(
     target_event_ids: &[&Q],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     version: StateResVersion,
-) -> HashMap<Id, BTreeMap<(String, Option<String>), Id>>
+) -> HashMap<Id, BTreeMap<(String, String), Id>>
 where
     Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
@@ -612,7 +618,10 @@ where
 
         if ev.state_key.is_some() {
             state_before.insert(
-                (ev.event_type.clone(), ev.state_key.clone()),
+                (
+                    ev.event_type.clone(),
+                    ev.state_key.clone().unwrap_or_default(),
+                ),
                 ev.event_id.clone(),
             );
         }
@@ -1061,18 +1070,15 @@ mod tests {
 
         let local_auth = vec![
             (
-                ("m.room.create".to_string(), Some(String::new())),
+                ("m.room.create".to_string(), String::new()),
                 create_ev.clone(),
             ),
             (
-                ("m.room.power_levels".to_string(), Some(String::new())),
+                ("m.room.power_levels".to_string(), String::new()),
                 pl_bot.clone(),
             ),
             (
-                (
-                    "m.room.member".to_string(),
-                    Some("@bot:example.com".to_string()),
-                ),
+                ("m.room.member".to_string(), "@bot:example.com".to_string()),
                 bot_join.clone(),
             ),
         ]

@@ -22,7 +22,7 @@ pub struct FormattingContext<'a> {
     pub events_map: &'a HashMap<String, LeanEvent>,
     pub raw_map: &'a HashMap<String, serde_json::Value>,
     pub heads: &'a [String],
-    pub final_state_map: &'a imbl::OrdMap<(String, Option<String>), String>,
+    pub final_state_map: &'a imbl::OrdMap<(String, String), String>,
     pub resolved_state_list: &'a [String],
     pub auth_chain_ids: &'a [String],
     pub version: StateResVersion,
@@ -78,7 +78,7 @@ pub fn format_deltas_output(ctx: &FormattingContext) -> serde_json::Value {
         if ev.state_key.is_some() {
             let mut modified = state_before.as_ref().clone();
             modified.insert(
-                (ev.event_type.clone(), ev.state_key.clone()),
+                (ev.event_type.clone(), ev.state_key.clone().unwrap()),
                 ev.event_id.clone(),
             );
             state_after = std::sync::Arc::new(modified);

@@ -88,37 +88,37 @@ impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
 use core::borrow::Borrow;
 use core::cmp::Ordering;
 
-/// Trait for zero-copy lookups into `BTreeMap<(String, Option<String>), _>`.
+/// Trait for zero-copy lookups into `BTreeMap<(String, String), _>`.
 ///
-/// This enables querying a `BTreeMap` keyed by owned `(String, Option<String>)`
-/// using borrowed `(&str, Option<&str>)` tuples — avoiding allocation for
+/// This enables querying a `BTreeMap` keyed by owned `(String, String)`
+/// using borrowed `(&str, &str)` tuples — avoiding allocation for
 /// every state lookup during auth checking.
 pub trait StateKeyDyn {
     /// The event type (e.g. `"m.room.member"`).
     fn ev_type(&self) -> &str;
-    /// The state key (e.g. `Some("@alice:example.com")` or `Some("")`).
-    fn state_key(&self) -> Option<&str>;
+    /// The state key (e.g. `"@alice:example.com"` or `""`).
+    fn state_key(&self) -> &str;
 }
 
-impl StateKeyDyn for (String, Option<String>) {
+impl StateKeyDyn for (String, String) {
     fn ev_type(&self) -> &str {
         &self.0
     }
-    fn state_key(&self) -> Option<&str> {
-        self.1.as_deref()
+    fn state_key(&self) -> &str {
+        &self.1
     }
 }
 
-impl<'a> StateKeyDyn for (&'a str, Option<&'a str>) {
+impl<'a> StateKeyDyn for (&'a str, &'a str) {
     fn ev_type(&self) -> &str {
         self.0
     }
-    fn state_key(&self) -> Option<&str> {
+    fn state_key(&self) -> &str {
         self.1
     }
 }
 
-impl<'a> Borrow<dyn StateKeyDyn + 'a> for (String, Option<String>) {
+impl<'a> Borrow<dyn StateKeyDyn + 'a> for (String, String) {
     fn borrow(&self) -> &(dyn StateKeyDyn + 'a) {
         self
     }
@@ -142,7 +142,7 @@ impl Ord for dyn StateKeyDyn + '_ {
     fn cmp(&self, other: &Self) -> Ordering {
         self.ev_type()
             .cmp(other.ev_type())
-            .then_with(|| self.state_key().cmp(&other.state_key()))
+            .then_with(|| self.state_key().cmp(other.state_key()))
     }
 }
 
@@ -154,15 +154,15 @@ impl Ord for dyn StateKeyDyn + '_ {
 /// that layers resolved state, local auth context, and the create event.
 pub trait StateProvider<Id = String, C = serde_json::Value> {
     /// Look up a state event by its type and state key.
-    fn get_event(&self, event_type: &str, state_key: Option<&str>) -> Option<&LeanEvent<Id, C>>;
+    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C>>;
 }
 
 /// The room state at a specific point in the DAG (keyed by (type, `state_key`) -> event).
 pub type RoomState<Id = String, C = serde_json::Value> =
-    alloc::collections::BTreeMap<(String, Option<String>), LeanEvent<Id, C>>;
+    alloc::collections::BTreeMap<(String, String), LeanEvent<Id, C>>;
 
 impl<Id, C> StateProvider<Id, C> for RoomState<Id, C> {
-    fn get_event(&self, event_type: &str, state_key: Option<&str>) -> Option<&LeanEvent<Id, C>> {
+    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C>> {
         let query: &dyn StateKeyDyn = &(event_type, state_key);
         self.get(query)
     }
@@ -200,7 +200,7 @@ pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     }
 
     // Rule 2: Check sender is not banned, and Rule 3: Sender must be joined
-    let sender_member_event = state.get_event(M_ROOM_MEMBER, Some(&event.sender));
+    let sender_member_event = state.get_event(M_ROOM_MEMBER, &event.sender);
 
     // Determine the effective membership string
     let mut membership = sender_member_event
@@ -210,7 +210,7 @@ pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     // Exceptions: Room v11 implied creator join only applies when there is no membership event
     if sender_member_event.is_none() {
         let is_creator = state
-            .get_event(M_ROOM_CREATE, Some(""))
+            .get_event(M_ROOM_CREATE, "")
             .is_some_and(|create_ev| create_ev.sender == event.sender);
         if is_creator {
             membership = MEM_JOIN;
@@ -245,7 +245,7 @@ pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         let required_pl = get_required_power_level(event, state);
 
         let _pl_ev_id = state
-            .get_event(M_ROOM_POWER_LEVELS, Some(""))
+            .get_event(M_ROOM_POWER_LEVELS, "")
             .map(|ev| ev.event_id.clone());
 
         if sender_pl < required_pl {
@@ -284,7 +284,7 @@ fn get_sender_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
     version: StateResVersion,
 ) -> i64 {
-    if let Some(create_event) = state.get_event(M_ROOM_CREATE, Some("")) {
+    if let Some(create_event) = state.get_event(M_ROOM_CREATE, "") {
         let is_creator = create_event.sender == sender
             || matches!(
                 version,
@@ -308,7 +308,7 @@ fn get_sender_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     }
 
     // State-based Power Levels
-    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         if let Some(pl) = pl_event.get_user_power_level(sender) {
             return pl;
         }
@@ -325,7 +325,7 @@ fn get_required_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
-    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         // Check specific event type overrides
         if let Some(pl) = pl_event.get_event_power_level(&event.event_type) {
             return pl;
@@ -475,7 +475,7 @@ fn check_membership_rules<Id: Clone, C: crate::basespec::rezzy_types::EventConte
     let new_membership = event.get_membership().unwrap_or("");
 
     let current_membership = state
-        .get_event(M_ROOM_MEMBER, Some(target_user))
+        .get_event(M_ROOM_MEMBER, target_user)
         .and_then(|ev| ev.get_membership())
         .unwrap_or("");
 
@@ -514,7 +514,7 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     }
 
     let current_membership = state
-        .get_event("m.room.member", Some(target_user))
+        .get_event("m.room.member", target_user)
         .and_then(|ev| ev.get_membership())
         .unwrap_or("");
 
@@ -526,12 +526,12 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     }
 
     let join_rule = state
-        .get_event(M_ROOM_JOIN_RULES, Some(""))
+        .get_event(M_ROOM_JOIN_RULES, "")
         .and_then(|ev| ev.get_join_rule())
         .unwrap_or(RULE_INVITE); // Default to invite
 
     let is_creator = state
-        .get_event(M_ROOM_CREATE, Some(""))
+        .get_event(M_ROOM_CREATE, "")
         .is_some_and(|ev| ev.sender == event.sender);
 
     if is_creator {
@@ -558,7 +558,7 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
 fn get_kick_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
-    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         if let Some(kick) = pl_event.get_kick() {
             return kick;
         }
@@ -570,7 +570,7 @@ fn get_kick_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
 fn get_invite_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
-    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         if let Some(invite) = pl_event.get_invite() {
             return invite;
         }
@@ -581,7 +581,7 @@ fn get_invite_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
 fn get_ban_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
-    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, Some("")) {
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         if let Some(ban) = pl_event.get_ban() {
             return ban;
         }
@@ -607,16 +607,10 @@ pub fn check_auth_chain<Id: Clone + Ord, C: crate::basespec::rezzy_types::EventC
             Ok(()) => {
                 // Apply event to state if it's a state event
                 if let Some(state_key) = &event.state_key {
-                    state.insert(
-                        (event.event_type.clone(), Some(state_key.clone())),
-                        event.clone(),
-                    );
+                    state.insert((event.event_type.clone(), state_key.clone()), event.clone());
                 } else if event.event_type == M_ROOM_CREATE {
                     // Fallback for m.room.create if it somehow lacks a state_key
-                    state.insert(
-                        (event.event_type.clone(), Some(String::new())),
-                        event.clone(),
-                    );
+                    state.insert((event.event_type.clone(), String::new()), event.clone());
                 }
                 accepted.push(event.event_id.clone());
             }
@@ -757,7 +751,7 @@ mod tests {
     fn test_creator_has_i64_max_power() {
         let mut state = RoomState::new();
         state.insert(
-            (M_ROOM_CREATE.into(), Some(String::new())),
+            (M_ROOM_CREATE.into(), String::new()),
             make_test_event(
                 "$create",
                 M_ROOM_CREATE,

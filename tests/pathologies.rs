@@ -118,7 +118,7 @@ fn test_pathology_invite_lock() {
         &auth_context,
         StateResVersion::V2_1,
     );
-    let user_key = ("m.room.member".to_string(), Some("@user:B".to_string()));
+    let user_key = ("m.room.member".to_string(), "@user:B".to_string());
     assert!(
         !resolved_v21.contains_key(&user_key),
         "V2.1 dropped the user due to regression"

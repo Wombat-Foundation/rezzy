@@ -6,7 +6,7 @@ use std::collections::HashMap;
 /// fallback in the production state resolution algorithm just for test fixtures.
 pub fn build_unconflicted_state_test_helper(
     auth_context: &HashMap<String, LeanEvent>,
-) -> imbl::OrdMap<(String, Option<String>), String> {
+) -> imbl::OrdMap<(String, String), String> {
     let mut unconflicted = imbl::OrdMap::new();
 
     // Find the create event in the auth_context
@@ -22,7 +22,13 @@ pub fn build_unconflicted_state_test_helper(
     );
 
     unconflicted.insert(
-        (create_ev.event_type.clone(), create_ev.state_key.clone()),
+        (
+            create_ev.event_type.clone(),
+            create_ev
+                .state_key
+                .clone()
+                .expect("create must have state_key"),
+        ),
         create_ev.event_id.clone(),
     );
 

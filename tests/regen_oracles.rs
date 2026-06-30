@@ -53,7 +53,7 @@ fn write_oracle(fixture_path: &str, oracle_path: &str, version: StateResVersion)
         .map(|((t, sk), eid)| {
             serde_json::json!({
                 "type": t,
-                "state_key": sk.unwrap_or_default(),
+                "state_key": sk,
                 "event_id": eid,
             })
         })

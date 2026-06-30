@@ -53,7 +53,8 @@ pub fn detect_version(
     )
 }
 
-pub fn compute_state_hash(state: &imbl::OrdMap<(String, Option<String>), String>) -> String {
+/// Computes an FNV-1a hash of `StateEntries`.
+pub fn compute_state_hash(state: &imbl::OrdMap<(String, String), String>) -> String {
     let mut hash: u64 = 14_695_981_039_346_656_037; // FNV offset basis
     for ((event_type, state_key), event_id) in state {
         for &byte in event_type.as_bytes() {
@@ -62,11 +63,9 @@ pub fn compute_state_hash(state: &imbl::OrdMap<(String, Option<String>), String>
         }
         hash ^= 0x00;
         hash = hash.wrapping_mul(1_099_511_628_211);
-        if let Some(key) = state_key {
-            for &byte in key.as_bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(1_099_511_628_211);
-            }
+        for &byte in state_key.as_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(1_099_511_628_211);
         }
         hash ^= 0x00;
         hash = hash.wrapping_mul(1_099_511_628_211);
@@ -240,14 +239,14 @@ fn collect_reachable_events<'a>(
 fn build_state_map(
     sorted_events: Vec<&LeanEvent>,
     raw_map: &HashMap<String, serde_json::Value>,
-) -> HashMap<(String, Option<String>), String> {
+) -> HashMap<(String, String), String> {
     let mut state_map = std::collections::HashMap::new();
     for ev in sorted_events {
         if raw_map
             .get(&ev.event_id)
             .is_some_and(|r| r.get("state_key").is_some())
         {
-            let key = (ev.event_type.clone(), ev.state_key.clone());
+            let key = (ev.event_type.clone(), ev.state_key.clone().unwrap());
             state_map.insert(key, ev.event_id.clone());
         }
     }
@@ -258,7 +257,7 @@ pub fn compute_state_maps(
     heads: &[String],
     events_map: &HashMap<String, LeanEvent>,
     raw_map: &HashMap<String, serde_json::Value>,
-) -> Vec<HashMap<(String, Option<String>), String>> {
+) -> Vec<HashMap<(String, String), String>> {
     if heads.len() <= 1 {
         let reachable_set: std::collections::HashSet<String> = if heads.len() == 1 {
             collect_reachable_events(&heads[0], events_map)
@@ -287,7 +286,7 @@ pub fn compute_state_maps(
     }
 }
 
-pub type ResolvedState = imbl::OrdMap<(String, Option<String>), String>;
+pub type ResolvedState = imbl::OrdMap<(String, String), String>;
 
 fn partition_state_occurrences<'a, I, Iter>(
     state_maps: I,
@@ -295,9 +294,9 @@ fn partition_state_occurrences<'a, I, Iter>(
 ) -> (ResolvedState, Vec<String>)
 where
     I: IntoIterator<Item = Iter>,
-    Iter: IntoIterator<Item = (&'a (String, Option<String>), &'a String)>,
+    Iter: IntoIterator<Item = (&'a (String, String), &'a String)>,
 {
-    let mut occurrences: HashMap<(String, Option<String>), HashMap<String, usize>> = HashMap::new();
+    let mut occurrences: HashMap<(String, String), HashMap<String, usize>> = HashMap::new();
     for map in state_maps {
         for (key, id) in map {
             let val = occurrences
@@ -371,7 +370,7 @@ pub fn resolve_parent_states(
 pub fn partition_and_resolve_state(
     heads: &[String],
     events_map: &HashMap<String, LeanEvent>,
-    state_maps: &[HashMap<(String, Option<String>), String>],
+    state_maps: &[HashMap<(String, String), String>],
     version: StateResVersion,
     auth_graph: &rezzy::auth::roaring::AuthGraph,
 ) -> (ResolvedState, std::time::Duration) {
@@ -468,14 +467,13 @@ pub fn apply_global_power_levels(
     let mut resolved_power_state = imbl::OrdMap::new();
     for id in sorted_power_ids {
         if let Some(ev) = power_events.get(&id) {
-            resolved_power_state.insert((ev.event_type.clone(), ev.state_key.clone()), id);
+            resolved_power_state.insert((ev.event_type.clone(), ev.state_key.clone().unwrap()), id);
         }
     }
 
     let mut user_power_levels = HashMap::new();
     let mut default_power_level = 0;
-    if let Some(id) =
-        resolved_power_state.get(&("m.room.power_levels".to_string(), Some(String::new())))
+    if let Some(id) = resolved_power_state.get(&("m.room.power_levels".to_string(), String::new()))
     {
         if let Some(ev) = events_map.get(id) {
             if let Some(users) = ev.content.get("users").and_then(|u| u.as_object()) {
