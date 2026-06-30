@@ -86,8 +86,8 @@ authorization rules. Three distinct rule sets exist:
 ### Critical (affects authorization correctness)
 
 1. ~~**Rule 5.8**: Unknown membership should reject, not allow~~ — FIXED
-2. **Rule 5.4.1**: Third-party invite validation not implemented
-3. **Rule 7**: `m.room.third_party_invite` PL check missing
+2. ~~**Rule 5.4.1**: Third-party invite validation not implemented~~ — FIXED
+3. ~~**Rule 7**: `m.room.third_party_invite` PL check missing~~ — FIXED
 4. **Rule 10.x**: Power level event validation entirely missing
 
 ### Medium (federation/integrity concerns, not core auth)

@@ -344,6 +344,10 @@ fn get_required_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
         if let Some(pl) = pl_event.get_event_power_level(&event.event_type) {
             return pl;
         }
+        // Spec Rule 7: m.room.third_party_invite events require the invite level
+        if event.event_type == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE {
+            return pl_event.get_invite().unwrap_or(0); // 0 is the default invite level
+        }
         // Fall back to state_default for state events, events_default for others
         if event.state_key.is_some() {
             return pl_event.get_state_default().unwrap_or(50);
@@ -352,7 +356,9 @@ fn get_required_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     }
     // No restrictions if no power_levels event exists
     // However, Matrix spec says if NO PL event exists, state events require 50.
-    if event.state_key.is_some() {
+    if event.event_type == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE {
+        0 // Spec Rule 7: m.room.third_party_invite defaults to 0
+    } else if event.state_key.is_some() {
         50
     } else {
         0

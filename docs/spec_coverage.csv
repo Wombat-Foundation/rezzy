@@ -24,3 +24,5 @@ spec/v1.13§3.3,Knock Rules,spec,stable,V7+,full,"Knock membership validation (M
 spec/v1.13§3.3,Auth Chain,spec,stable,all,full,Roaring bitmap-based auth chain computation and diff
 spec/v1.13§3.3,Invite Rules,spec,stable,all,full,"Reject invite if target is already joined or banned; sender != target; sender has invite PL"
 spec/v1.13§rule9,Owned State Key,spec,stable,all,full,"If state_key starts with '@' and != sender, reject (auth rule 9, all room versions)"
+spec/v1.13§3.3,Third-Party Invite Rules,spec,stable,all,full,"Strict 3PI token validation (rule 5.4.1) and invite PL check (rule 7)"
+spec/v1.13§3.3,Self-Leave Rules,spec,stable,all,full,"Strict self-leave enforcement (rule 5.5.1)"
