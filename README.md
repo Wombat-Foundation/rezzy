@@ -11,8 +11,8 @@ Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolu
 
 - Auth check engine.
 - Full state resolution pipeline.
-- Topological & mainline Sorting.
-- `n-way` fork resolution
+- Topological & mainline sorting.
+- `n-way` fork resolution.
 - In-place bitshift heaps and roaring bitmaps for fast graph computations.
 - **Lazy projection**: Fast, memory-efficient state resolution by only loading required membership events.
 
@@ -28,6 +28,7 @@ Everything re-exports from the crate root — `use rezzy::*` gets you `LeanEvent
 - Generic `EventId` trait — `String`, `u32`, `u64`, `ruma::OwnedEventId` all just work.
 - `EventContent` trait — skip JSON parsing in the hot path. `serde_json::Value` works via default impl.
 - **TODO:** delta compression (`StateDelta`, `CompactedCheckpoint`) is `String`-only currently
+- **TODO:** explicit API/return variants for "soft-fail" evaluation (checking an event's `auth_events` vs room's `current_state`) and forward extremity validation.
 
 ## Performance settings
 
