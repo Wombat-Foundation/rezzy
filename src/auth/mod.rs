@@ -25,9 +25,9 @@ use core::fmt;
 
 use crate::basespec::event_types::{
     FIELD_MEMBERSHIP, FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE,
-    MEM_JOIN, MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
-    M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_KNOCK_RESTRICTED, RULE_PUBLIC,
-    RULE_RESTRICTED,
+    MEM_JOIN, MEM_KNOCK, MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER,
+    M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_KNOCK_RESTRICTED,
+    RULE_PUBLIC, RULE_RESTRICTED,
 };
 use crate::basespec::rezzy_types::LeanEvent;
 use crate::basespec::rezzy_types::StateResVersion;
@@ -493,6 +493,7 @@ fn check_membership_rules<Id: Clone, C: crate::basespec::rezzy_types::EventConte
         MEM_LEAVE => check_leave_rules(event, state, target_user, current_membership, version)?,
         MEM_BAN => check_ban_rules(event, state, version)?,
         MEM_INVITE => check_invite_rules(event, state, target_user, current_membership, version)?,
+        MEM_KNOCK => check_knock_rules(event, state, target_user)?,
         _ => {}
     }
 
@@ -571,6 +572,56 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
             event_id: event.event_id.clone(),
         });
     }
+    Ok(())
+}
+
+/// Validate knock rules: knocking is only allowed when `join_rule` is
+/// `knock` or `knock_restricted` (room versions 7+ / 10+).
+fn check_knock_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
+    event: &LeanEvent<Id, C>,
+    state: &impl StateProvider<Id, C>,
+    target_user: &str,
+) -> Result<(), AuthError<Id>> {
+    // A user can only knock as themselves
+    if target_user != event.sender {
+        return Err(AuthError::InvalidStateKey {
+            expected: event.sender.clone(),
+            actual: target_user.into(),
+        });
+    }
+
+    let current_membership = state
+        .get_event(M_ROOM_MEMBER, target_user)
+        .and_then(|ev| ev.get_membership())
+        .unwrap_or("");
+
+    // MSC2403 §f.iii: allow only if membership is NOT ban, invite, or join.
+    if current_membership == MEM_BAN {
+        return Err(AuthError::BannedUser {
+            sender: event.sender.clone(),
+            event_id: event.event_id.clone(),
+        });
+    }
+
+    if current_membership == MEM_INVITE || current_membership == MEM_JOIN {
+        return Err(AuthError::NotMember {
+            sender: event.sender.clone(),
+            event_id: event.event_id.clone(),
+        });
+    }
+
+    let join_rule = state
+        .get_event(M_ROOM_JOIN_RULES, "")
+        .and_then(|ev| ev.get_join_rule())
+        .unwrap_or(RULE_INVITE);
+
+    if join_rule != RULE_KNOCK && join_rule != RULE_KNOCK_RESTRICTED {
+        return Err(AuthError::NotMember {
+            sender: event.sender.clone(),
+            event_id: event.event_id.clone(),
+        });
+    }
+
     Ok(())
 }
 

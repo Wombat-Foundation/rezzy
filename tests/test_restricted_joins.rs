@@ -260,6 +260,94 @@ fn test_restricted_knock_rejected() {
 }
 
 #[test]
+fn test_invite_only_knock_rejected() {
+    // Knocking should NOT be allowed in an invite-only room.
+    let state = room_with_join_rule("invite");
+
+    let knock_event = make_event(
+        "$dave_knock",
+        "m.room.member",
+        Some("@dave:example.com"),
+        "@dave:example.com",
+        json!({"membership": "knock"}),
+    );
+
+    let result = check_auth(&knock_event, &state, StateResVersion::V2);
+    assert!(
+        result.is_err(),
+        "knocking must NOT be allowed in invite-only room"
+    );
+}
+
+#[test]
+fn test_public_knock_rejected() {
+    // Knocking should NOT be allowed in a public room (just join directly).
+    let state = room_with_join_rule("public");
+
+    let knock_event = make_event(
+        "$dave_knock",
+        "m.room.member",
+        Some("@dave:example.com"),
+        "@dave:example.com",
+        json!({"membership": "knock"}),
+    );
+
+    let result = check_auth(&knock_event, &state, StateResVersion::V2);
+    assert!(
+        result.is_err(),
+        "knocking must NOT be allowed in public room"
+    );
+}
+
+#[test]
+fn test_knock_room_knock_allowed() {
+    // Knocking SHOULD be allowed when join_rule is "knock".
+    let state = room_with_join_rule("knock");
+
+    let knock_event = make_event(
+        "$dave_knock",
+        "m.room.member",
+        Some("@dave:example.com"),
+        "@dave:example.com",
+        json!({"membership": "knock"}),
+    );
+
+    let result = check_auth(&knock_event, &state, StateResVersion::V2);
+    assert!(
+        result.is_ok(),
+        "knocking should be allowed in knock room, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_banned_user_cannot_knock() {
+    // A banned user must not be able to knock.
+    let mut state = room_with_join_rule("knock");
+
+    state.insert(
+        ("m.room.member".into(), "@evil:example.com".into()),
+        make_event(
+            "$ban_evil",
+            "m.room.member",
+            Some("@evil:example.com"),
+            "@admin:example.com",
+            json!({"membership": "ban"}),
+        ),
+    );
+
+    let knock_event = make_event(
+        "$evil_knock",
+        "m.room.member",
+        Some("@evil:example.com"),
+        "@evil:example.com",
+        json!({"membership": "knock"}),
+    );
+
+    let result = check_auth(&knock_event, &state, StateResVersion::V2);
+    assert!(result.is_err(), "banned user must NOT be able to knock");
+}
+
+#[test]
 fn test_restricted_banned_user_cannot_join_even_with_authorized_via() {
     // A banned user must not be able to join even with join_authorised_via_users_server.
     let mut state = room_with_join_rule("restricted");
