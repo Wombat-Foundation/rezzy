@@ -294,6 +294,95 @@ mod tests {
         assert_eq!(p_base.cmp(&p_larger_id), Ordering::Greater);
     }
 
+    /// V2.1.1 introduces an `auth_chain_distance` tie-breaker between equal PLs.
+    #[test]
+    fn test_sort_priority_v2_1_1_auth_chain_distance_tie_break() {
+        let evs = utils::parse_jsonl_events(
+            r#"
+            {"event_id": "$close", "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 10}
+            {"event_id": "$far",   "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 10}
+        "#,
+        );
+
+        // Case 1: Equal PL, different auth_chain_distance.
+        let p_close = SortPriority {
+            power_level: 100,
+            event: &evs[0],
+            auth_chain_distance: 1,
+            version: rezzy::StateResVersion::V2_1_1,
+        };
+        let p_far = SortPriority {
+            power_level: 100,
+            event: &evs[1],
+            auth_chain_distance: 5,
+            version: rezzy::StateResVersion::V2_1_1,
+        };
+        // cmp uses `other.distance.cmp(&self.distance)`:
+        //   p_far.cmp(p_close) → other(1).cmp(self(5)) → Less
+        assert_eq!(p_far.cmp(&p_close), Ordering::Less);
+        assert_eq!(p_close.cmp(&p_far), Ordering::Greater);
+
+        // Case 2: Equal PL AND equal distance → falls through to origin_server_ts.
+        let evs2 = utils::parse_jsonl_events(
+            r#"
+            {"event_id": "$early", "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 10}
+            {"event_id": "$late",  "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 20}
+        "#,
+        );
+        let p_early = SortPriority {
+            power_level: 100,
+            event: &evs2[0],
+            auth_chain_distance: 3,
+            version: rezzy::StateResVersion::V2_1_1,
+        };
+        let p_late = SortPriority {
+            power_level: 100,
+            event: &evs2[1],
+            auth_chain_distance: 3,
+            version: rezzy::StateResVersion::V2_1_1,
+        };
+        // Equal distance → earlier ts pops first (Greater = loses).
+        assert_eq!(p_early.cmp(&p_late), Ordering::Greater);
+        assert_eq!(p_late.cmp(&p_early), Ordering::Less);
+    }
+
+    /// `SortPriority` derives Copy; the manual Clone impl must agree.
+    #[test]
+    fn test_sort_priority_clone() {
+        let evs = utils::parse_jsonl_events(
+            r#"
+            {"event_id": "$a", "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 10}
+        "#,
+        );
+        let p = SortPriority {
+            power_level: 50,
+            event: &evs[0],
+            auth_chain_distance: 3,
+            version: rezzy::StateResVersion::V2_1_1,
+        };
+        #[allow(clippy::clone_on_copy)]
+        let p2 = p.clone();
+        assert_eq!(p.cmp(&p2), Ordering::Equal);
+    }
+
+    /// `cmp_by_depth`: depth ascending, then `event_id` ascending.
+    #[test]
+    fn test_cmp_by_depth() {
+        let evs = utils::parse_jsonl_events(
+            r#"
+            {"event_id": "$a",  "type": "m.room.member", "sender": "@a:x", "depth": 5,  "origin_server_ts": 0}
+            {"event_id": "$b",  "type": "m.room.member", "sender": "@a:x", "depth": 10, "origin_server_ts": 0}
+            {"event_id": "$a2", "type": "m.room.member", "sender": "@a:x", "depth": 5,  "origin_server_ts": 0}
+        "#,
+        );
+        // Different depth: lower depth comes first.
+        assert_eq!(evs[0].cmp_by_depth(&evs[1]), Ordering::Less);
+        assert_eq!(evs[1].cmp_by_depth(&evs[0]), Ordering::Greater);
+        // Same depth: lexicographic event_id tie-break.
+        assert_eq!(evs[0].cmp_by_depth(&evs[2]), Ordering::Less);
+        assert_eq!(evs[0].cmp_by_depth(&evs[0]), Ordering::Equal);
+    }
+
     #[test]
     fn test_v1_resolution_happy_path() {
         let mut events: HashMap<String, LeanEvent> = HashMap::new();

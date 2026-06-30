@@ -574,8 +574,7 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
     {
         use crate::basespec::event_types::{
             FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
-            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_SIGNATURES, FIELD_STATE_KEY,
-            FIELD_TYPE, FIELD_UNSIGNED,
+            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_STATE_KEY, FIELD_TYPE,
         };
 
         let value = Value::deserialize(deserializer)?;
@@ -585,6 +584,7 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
         } else {
             #[cfg(feature = "hashing")]
             {
+                use crate::basespec::event_types::{FIELD_SIGNATURES, FIELD_UNSIGNED};
                 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
                 use sha2::{Digest, Sha256};
 
@@ -924,19 +924,16 @@ impl<Id: Ord, C> PartialOrd for SortPriority<'_, Id, C> {
 /// function in the first place!
 #[must_use]
 pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
-    let val = if let Some(i) = pl.as_i64() {
-        Some(i)
-    } else if let Some(u) = pl.as_u64() {
-        Some(i64::try_from(u).unwrap_or(i64::MAX))
-    } else if let Some(f) = pl.as_f64() {
-        // Legacy float power levels (e.g. 50.0) — truncate toward zero,
-        // then convert via serde_json::Number to avoid lossy `as` casts.
-        serde_json::Number::from_f64(f.trunc()).and_then(|n| n.as_i64())
-    } else if let Some(s) = pl.as_str() {
-        s.parse::<i64>().ok()
-    } else {
-        None
-    };
+    let val = pl
+        .as_i64()
+        .or_else(|| pl.as_u64().map(|u| i64::try_from(u).unwrap_or(i64::MAX)))
+        // Legacy float power levels (e.g. 50.0) — truncate toward zero
+        .or_else(|| {
+            pl.as_f64()
+                .and_then(|f| serde_json::Number::from_f64(f.trunc()))
+                .and_then(|n| n.as_i64())
+        })
+        .or_else(|| pl.as_str().and_then(|s| s.parse::<i64>().ok()));
     // Matrix Spec (Client-Server API) — m.room.power_levels:
     // "The power level ... must be an integer between -2^53 + 1 and 2^53 - 1."
     val.map(|v| v.clamp(-MAX_POWER_LEVEL_JSON, MAX_POWER_LEVEL_JSON))
