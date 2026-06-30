@@ -1807,3 +1807,84 @@ fn test_self_leave_allowed_from_knock() {
         "self-leave from knock should be allowed, got {result:?}"
     );
 }
+
+#[test]
+fn test_third_party_invite_allowed_when_issuer_has_power() {
+    use rezzy::basespec::event_types::{
+        M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,
+    };
+
+    // Alice has PL to invite. Bob doesn't.
+    // Alice creates m.room.third_party_invite with state_key "abc_token".
+    // Bob issues m.room.member (invite) for Charlie, referencing "abc_token".
+    // This should pass because Alice has the PL.
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:matrix.org",
+            json!({"creator": "@alice:matrix.org"}),
+        ),
+    );
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({
+                "users": { "@alice:matrix.org": 100, "@bob:matrix.org": 0 },
+                "invite": 50
+            }),
+        ),
+    );
+
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@bob:matrix.org".into()),
+        make_event(
+            "$b",
+            M_ROOM_MEMBER,
+            Some("@bob:matrix.org"),
+            "@bob:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Alice creates the third party invite
+    state.insert(
+        (M_ROOM_THIRD_PARTY_INVITE.into(), "abc_token".into()),
+        make_event(
+            "$tpi",
+            M_ROOM_THIRD_PARTY_INVITE,
+            Some("abc_token"),
+            "@alice:matrix.org",
+            json!({"display_name": "charlie"}),
+        ),
+    );
+
+    // Bob sends the actual invite, leveraging Alice's 3PI token
+    let bob_invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@bob:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "signed": {
+                    "token": "abc_token"
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&bob_invite, &state, StateResVersion::V2);
+    assert!(
+        result.is_ok(),
+        "3PI invite should be allowed since Alice (the 3PI issuer) has invite PL: {result:?}"
+    );
+}

@@ -16,6 +16,14 @@ Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolu
 - In-place bitshift heaps and roaring bitmaps for fast graph computations.
 - **Lazy projection**: Fast, memory-efficient state resolution by only loading required membership events.
 
+## Core Philosophy: TDD
+
+Development in this repository strictly follows Test-Driven Development (TDD):
+
+1. **Write tests first**. New features or bug fixes must begin with failing tests that codify the expected behavior.
+2. **Implement the logic**. Write the minimal code required to make the tests pass.
+3. **Prove the fix**. After the dust settles on an implementation, we verify that the new tests _fail_ when run against the old code, proving the tests are valid and the fix is strictly necessary.
+
 ## API
 
 Everything re-exports from the crate root — `use rezzy::*` gets you `LeanEvent`, `SharedState`, `StateResVersion`, `HashMap`, the works.

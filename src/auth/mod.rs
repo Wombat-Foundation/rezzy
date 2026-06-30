@@ -435,14 +435,31 @@ fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         });
     }
 
-    let sender_pl = get_sender_power_level(&event.sender, state, version);
     let invite_pl = get_invite_power_level(state);
-    if sender_pl < invite_pl {
-        return Err(AuthError::InsufficientPowerLevel {
-            required: invite_pl,
-            actual: sender_pl,
-            event_type: "invite".into(),
-        });
+
+    // Rule 5.4.1: If third_party_invite is present, check the issuer's power level.
+    let mut has_power = false;
+    if let Some(token) = event.content.get_third_party_invite_token() {
+        if let Some(tpi_event) = state.get_event(
+            crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE,
+            token,
+        ) {
+            let issuer_pl = get_sender_power_level(&tpi_event.sender, state, version);
+            if issuer_pl >= invite_pl {
+                has_power = true;
+            }
+        }
+    }
+
+    if !has_power {
+        let sender_pl = get_sender_power_level(&event.sender, state, version);
+        if sender_pl < invite_pl {
+            return Err(AuthError::InsufficientPowerLevel {
+                required: invite_pl,
+                actual: sender_pl,
+                event_type: "invite".into(),
+            });
+        }
     }
 
     // Check target isn't already joined or banned

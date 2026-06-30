@@ -50,7 +50,7 @@ authorization rules. Three distinct rule sets exist:
 | 5.3.5 | **join (knock_restricted)**: same as restricted                  | V10+     | [x]   | `RULE_KNOCK_RESTRICTED`                               |
 | 5.3.6 | **join (public)**: allow                                         | all      | [x]   | `RULE_PUBLIC` path                                    |
 | 5.3.7 | **join**: otherwise reject                                       | all      | [x]   | `NotMember`                                           |
-| 5.4.1 | **invite (3pi)**: full third-party invite validation             | all      | [ ]   | Not implemented                                       |
+| 5.4.1 | **invite (3pi)**: full third-party invite validation             | all      | [x]   | `check_invite_rules` 3PI token validation             |
 | 5.4.2 | **invite**: sender must be joined                                | all      | [x]   | Checked in rule 6                                     |
 | 5.4.3 | **invite**: reject if target is joined or banned                 | all      | [x]   | Added this session                                    |
 | 5.4.4 | **invite**: sender PL ≥ invite level                             | all      | [x]   | `InsufficientPowerLevel`                              |

@@ -275,6 +275,9 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     /// Returns the `join_authorised_via_users_server` field, if present.
     /// Used for `restricted`/`knock_restricted` join rules (room version 8+).
     fn get_join_authorised_via_users_server(&self) -> Option<&str>;
+
+    /// Returns the signed token from the `third_party_invite` field, if present.
+    fn get_third_party_invite_token(&self) -> Option<&str>;
 }
 
 impl EventContent for Value {
@@ -349,6 +352,13 @@ impl EventContent for Value {
 
     fn get_join_authorised_via_users_server(&self) -> Option<&str> {
         self.get(crate::basespec::event_types::FIELD_JOIN_AUTHORISED_VIA_USERS_SERVER)?
+            .as_str()
+    }
+
+    fn get_third_party_invite_token(&self) -> Option<&str> {
+        self.get("third_party_invite")?
+            .get("signed")?
+            .get("token")?
             .as_str()
     }
 }
