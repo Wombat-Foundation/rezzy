@@ -238,28 +238,38 @@ pub fn compute_local_naive_topological_depth(events: &mut [LeanEvent]) {
         event_map: &std::collections::HashMap<String, usize>,
         events: &[LeanEvent],
         depths: &mut std::collections::HashMap<String, u64>,
+        in_progress: &mut std::collections::HashSet<String>,
     ) -> u64 {
         if let Some(&d) = depths.get(event_id) {
             return d;
         }
 
+        assert!(
+            in_progress.insert(event_id.to_string()),
+            "cycle detected in prev_events at {event_id}"
+        );
+
         let Some(&idx) = event_map.get(event_id) else {
+            in_progress.remove(event_id);
             return 1;
         };
 
         let ev = &events[idx];
         if ev.prev_events.is_empty() {
             depths.insert(event_id.to_string(), 1);
+            in_progress.remove(event_id);
             return 1;
         }
 
         let mut max_prev_depth = 0;
         for prev_id in &ev.prev_events {
-            max_prev_depth = max_prev_depth.max(get_depth(prev_id, event_map, events, depths));
+            max_prev_depth =
+                max_prev_depth.max(get_depth(prev_id, event_map, events, depths, in_progress));
         }
 
         let d = max_prev_depth.saturating_add(1);
         depths.insert(event_id.to_string(), d);
+        in_progress.remove(event_id);
         d
     }
 
@@ -269,9 +279,10 @@ pub fn compute_local_naive_topological_depth(events: &mut [LeanEvent]) {
     }
 
     let mut depths: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let mut in_progress: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for i in 0..events.len() {
         let ev_id = events[i].event_id.clone();
-        events[i].depth = get_depth(&ev_id, &event_map, events, &mut depths);
+        events[i].depth = get_depth(&ev_id, &event_map, events, &mut depths, &mut in_progress);
     }
 }
