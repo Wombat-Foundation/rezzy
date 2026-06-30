@@ -17,6 +17,7 @@ exclude = [
     "RumaLean.lean",
     "lake*",
     "lean-toolchain",
+    ".codecov.yml",
     ".envrc",
     ".env.example",
     ".github",
