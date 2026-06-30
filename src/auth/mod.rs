@@ -629,6 +629,49 @@ pub fn check_auth_chain<Id: Clone + Ord, C: crate::basespec::rezzy_types::EventC
     (accepted, rejected)
 }
 
+/// Warns to stderr if an event's `auth_events` reference types outside the
+/// spec-expected subset. For v12+, `m.room.create` in `auth_events` is a hard reject (spec rule 3.2).
+#[cfg(all(feature = "std", not(test)))]
+pub fn warn_unexpected_auth_events<
+    Id: core::fmt::Debug + Clone + Eq + core::hash::Hash,
+    C: crate::basespec::rezzy_types::EventContent,
+>(
+    event: &LeanEvent<Id, C>,
+    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
+    version: StateResVersion,
+) {
+    const VALID_AUTH_TYPES: &[&str] = &[
+        M_ROOM_CREATE, // NOTE: only valid pre-v12 rooms
+        M_ROOM_MEMBER,
+        M_ROOM_POWER_LEVELS,
+        M_ROOM_JOIN_RULES,
+        M_ROOM_THIRD_PARTY_INVITE,
+    ];
+
+    let v12_plus = matches!(
+        version,
+        StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
+    );
+
+    for auth_id in &event.auth_events {
+        if let Some(auth_ev) = auth_context.get_event(auth_id) {
+            // Broken v12 invariant
+            if v12_plus && auth_ev.event_type == M_ROOM_CREATE {
+                std::eprintln!(
+                    "REZZY_ERROR: event {:?} references m.room.create in auth_events (forbidden in v12+)",
+                    event.event_id,
+                );
+            } else if !VALID_AUTH_TYPES.contains(&auth_ev.event_type.as_str()) {
+                std::eprintln!(
+                    "REZZY_WARN: event {:?} has unexpected auth type: {}",
+                    event.event_id,
+                    auth_ev.event_type,
+                );
+            }
+        }
+    }
+}
+
 /// Returns the state event types required to authorize an event.
 ///
 /// For state resolution V2.1 and later, `m.room.create` is no longer
