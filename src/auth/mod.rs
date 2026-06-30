@@ -471,7 +471,7 @@ fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
             ));
         }
 
-        // NOTE: We do not cryptographically verify the signature here. That is deferred to the homeserver layer.
+        // TODO: offer option of dalek-consensus for bulk signature verification.
 
         if mxid != target_user {
             return Err(AuthError::InvalidStateKey {
