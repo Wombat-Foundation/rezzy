@@ -1810,6 +1810,94 @@ fn test_self_leave_allowed_from_knock() {
 }
 
 #[test]
+fn test_third_party_invite_rejected_when_target_banned() {
+    use rezzy::basespec::event_types::{
+        M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,
+    };
+    // Rule 5.4.1.1: If target user is banned, reject — even if 3PI is valid.
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:matrix.org",
+            json!({"creator": "@alice:matrix.org"}),
+        ),
+    );
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({ "users": { "@alice:matrix.org": 100 }, "invite": 50 }),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@alice:matrix.org".into()),
+        make_event(
+            "$a",
+            M_ROOM_MEMBER,
+            Some("@alice:matrix.org"),
+            "@alice:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+    // Charlie is BANNED
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@charlie:matrix.org".into()),
+        make_event(
+            "$ban_charlie",
+            M_ROOM_MEMBER,
+            Some("@charlie:matrix.org"),
+            "@alice:matrix.org",
+            json!({"membership": "ban"}),
+        ),
+    );
+    // Alice created a valid 3PI token
+    state.insert(
+        (M_ROOM_THIRD_PARTY_INVITE.into(), "abc_token".into()),
+        make_event(
+            "$tpi",
+            M_ROOM_THIRD_PARTY_INVITE,
+            Some("abc_token"),
+            "@alice:matrix.org",
+            json!({"display_name": "charlie"}),
+        ),
+    );
+
+    // Alice tries to invite the banned user via 3PI
+    let invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@alice:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "display_name": "charlie",
+                "signed": {
+                    "token": "abc_token",
+                    "mxid": "@charlie:matrix.org",
+                    "signatures": {
+                        "example.com": { "ed25519:1": "dummy" }
+                    }
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&invite, &state, StateResVersion::V2);
+    assert!(
+        result.is_err(),
+        "3PI invite targeting a banned user must be rejected (Rule 5.4.1.1), got: {result:?}"
+    );
+}
+
+#[test]
 fn test_third_party_invite_allowed_when_issuer_has_power() {
     use rezzy::basespec::event_types::{
         M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,

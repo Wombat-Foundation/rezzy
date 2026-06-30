@@ -457,3 +457,81 @@ fn test_restricted_join_rejected_when_authorising_user_lacks_invite_pl() {
         "restricted join must be rejected when authorising user lacks invite PL"
     );
 }
+
+#[test]
+fn test_restricted_join_v12_creator_authorising() {
+    // V12: check_authorising_user manually queried the PL map instead of
+    // using get_sender_power_level, so the creator (not in `users` map) got PL 0.
+    // In V2_1 (room v12), the creator should get i64::MAX implicitly.
+    let mut state = RoomState::new();
+
+    // Creator creates the room — NOT listed in the PL users map
+    state.insert(
+        ("m.room.create".into(), String::new()),
+        make_event(
+            "$create",
+            "m.room.create",
+            Some(""),
+            "@creator:example.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@creator:example.com".into()),
+        make_event(
+            "$creator_join",
+            "m.room.member",
+            Some("@creator:example.com"),
+            "@creator:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    // PL event does NOT include creator in users map — V12 relies on implicit creator PL
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@creator:example.com",
+            json!({
+                "users_default": 0,
+                "invite": 50,
+            }),
+        ),
+    );
+    state.insert(
+        ("m.room.join_rules".into(), String::new()),
+        make_event(
+            "$jr",
+            "m.room.join_rules",
+            Some(""),
+            "@creator:example.com",
+            json!({
+                "join_rule": "restricted",
+                "allow": [
+                    {"type": "m.room_membership", "room_id": "!other:example.com"}
+                ]
+            }),
+        ),
+    );
+
+    // Bob joins via the creator as the authorising user
+    let join_event = make_event(
+        "$bob_join",
+        "m.room.member",
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({
+            "membership": "join",
+            "join_authorised_via_users_server": "@creator:example.com"
+        }),
+    );
+
+    // V2_1 = room v12: creator should have implicit max power
+    let result = check_auth(&join_event, &state, StateResVersion::V2_1);
+    assert!(
+        result.is_ok(),
+        "V12 creator should be able to authorise a restricted join even without being in PL users map, got: {result:?}"
+    );
+}

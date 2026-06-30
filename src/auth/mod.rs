@@ -446,6 +446,14 @@ fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     // Rule 5.4.1: If third_party_invite is present, check the issuer's power level.
     // It must strictly adhere to the rules, or be rejected. No fallback.
     if event.content.has_third_party_invite() {
+        // Rule 5.4.1.1: If target user is banned, reject.
+        if current_membership == MEM_BAN {
+            return Err(AuthError::BannedUser {
+                sender: target_user.into(),
+                event_id: event.event_id.clone(),
+            });
+        }
+
         let token = event
             .content
             .get_third_party_invite_token()
@@ -584,7 +592,7 @@ fn check_membership_rules<Id: Clone, C: crate::basespec::rezzy_types::EventConte
     }
 
     match new_membership {
-        MEM_JOIN => check_join_rules(event, state, target_user)?,
+        MEM_JOIN => check_join_rules(event, state, target_user, version)?,
         MEM_LEAVE => check_leave_rules(event, state, target_user, current_membership, version)?,
         MEM_BAN => check_ban_rules(event, state, version)?,
         MEM_INVITE => check_invite_rules(event, state, target_user, current_membership, version)?,
@@ -606,6 +614,7 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
     target_user: &str,
+    version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     // A user can only join as themselves
     if target_user != event.sender {
@@ -656,7 +665,7 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         if current_membership == MEM_INVITE || current_membership == MEM_JOIN {
             // Already invited or joined — allowed without further checks.
         } else if let Some(authorising_user) = event.get_join_authorised_via_users_server() {
-            check_authorising_user(event, state, authorising_user)?;
+            check_authorising_user(event, state, authorising_user, version)?;
         } else {
             return Err(AuthError::NotMember {
                 sender: event.sender.clone(),
@@ -678,6 +687,7 @@ fn check_authorising_user<Id: Clone, C: crate::basespec::rezzy_types::EventConte
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
     authorising_user: &str,
+    version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     let auth_membership = state
         .get_event(M_ROOM_MEMBER, authorising_user)
@@ -691,10 +701,8 @@ fn check_authorising_user<Id: Clone, C: crate::basespec::rezzy_types::EventConte
         });
     }
 
-    let auth_user_pl = state
-        .get_event(M_ROOM_POWER_LEVELS, "")
-        .and_then(|pl| pl.get_user_power_level(authorising_user))
-        .unwrap_or(0);
+    // Use get_sender_power_level to correctly handle V12 implicit creator PL
+    let auth_user_pl = get_sender_power_level(authorising_user, state, version);
     if auth_user_pl < get_invite_power_level(state) {
         return Err(AuthError::NotMember {
             sender: event.sender.clone(),
