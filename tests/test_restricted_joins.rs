@@ -1,4 +1,4 @@
-//! Tests for restricted and knock_restricted join rule support.
+//! Tests for restricted and `knock_restricted` join rule support.
 //!
 //! Previously, rezzy's `check_auth` only handled `public`, `invite`, and `knock`
 //! join rules. `restricted` (V8+) and `knock_restricted` (V10+) join rules were

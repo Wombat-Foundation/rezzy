@@ -5,16 +5,14 @@
 //! non-String event IDs. Previously these were hardcoded to `String`.
 
 use rezzy::auth::roaring::AuthGraph;
-use rezzy::resolve::subgraph::{compute_v2_1_conflicted_subgraph, compute_v2_1_conflicted_subgraph_bounded};
+use rezzy::resolve::subgraph::{
+    compute_v2_1_conflicted_subgraph, compute_v2_1_conflicted_subgraph_bounded,
+};
 use rezzy::{HashMap, LeanEvent};
 use serde_json::json;
 
 /// Helper: build a `LeanEvent<u32>` with integer event ID.
-fn make_u32_event(
-    id: u32,
-    event_type: &str,
-    auth_events: Vec<u32>,
-) -> LeanEvent<u32> {
+fn make_u32_event(id: u32, event_type: &str, auth_events: Vec<u32>) -> LeanEvent<u32> {
     LeanEvent {
         event_id: id,
         event_type: event_type.into(),
@@ -156,11 +154,23 @@ fn test_auth_graph_u32_build() {
     assert!(idx_2 < idx_3);
 
     // Auth bitmaps
-    assert!(graph.auth_bitmaps[idx_1 as usize].is_empty(), "root has no auth ancestors");
-    assert!(graph.auth_bitmaps[idx_2 as usize].contains(idx_1), "2 auths with 1");
+    assert!(
+        graph.auth_bitmaps[idx_1 as usize].is_empty(),
+        "root has no auth ancestors"
+    );
+    assert!(
+        graph.auth_bitmaps[idx_2 as usize].contains(idx_1),
+        "2 auths with 1"
+    );
     assert_eq!(graph.auth_bitmaps[idx_2 as usize].len(), 1);
-    assert!(graph.auth_bitmaps[idx_3 as usize].contains(idx_2), "3 auths with 2");
-    assert!(graph.auth_bitmaps[idx_3 as usize].contains(idx_1), "3 transitively auths with 1");
+    assert!(
+        graph.auth_bitmaps[idx_3 as usize].contains(idx_2),
+        "3 auths with 2"
+    );
+    assert!(
+        graph.auth_bitmaps[idx_3 as usize].contains(idx_1),
+        "3 transitively auths with 1"
+    );
     assert_eq!(graph.auth_bitmaps[idx_3 as usize].len(), 2);
 }
 
@@ -184,6 +194,10 @@ fn test_auth_graph_u32_diamond() {
 
     // Event 4's auth chain should contain 1, 2, and 3 (all ancestors)
     let bitmap_4 = &graph.auth_bitmaps[idx_4 as usize];
-    assert_eq!(bitmap_4.len(), 3, "4 should have 3 transitive auth ancestors");
+    assert_eq!(
+        bitmap_4.len(),
+        3,
+        "4 should have 3 transitive auth ancestors"
+    );
     assert!(bitmap_4.contains(idx_1), "4 must transitively reach 1");
 }

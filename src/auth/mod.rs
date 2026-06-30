@@ -26,7 +26,8 @@ use core::fmt;
 use crate::basespec::event_types::{
     FIELD_MEMBERSHIP, FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE,
     MEM_JOIN, MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
-    M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_PUBLIC,
+    M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_KNOCK_RESTRICTED, RULE_PUBLIC,
+    RULE_RESTRICTED,
 };
 use crate::basespec::rezzy_types::LeanEvent;
 use crate::basespec::rezzy_types::StateResVersion;
@@ -538,6 +539,25 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         // Room creator can always join
     } else if join_rule == RULE_INVITE || join_rule == RULE_KNOCK {
         if current_membership == MEM_INVITE || current_membership == MEM_JOIN {
+            // Allowed
+        } else {
+            return Err(AuthError::NotMember {
+                sender: event.sender.clone(),
+                event_id: event.event_id.clone(),
+            });
+        }
+    } else if join_rule == RULE_RESTRICTED || join_rule == RULE_KNOCK_RESTRICTED {
+        // Restricted/knock_restricted (room version 8+/10+):
+        // Allow if:
+        //   1. User is already invited, OR
+        //   2. User has join_authorised_via_users_server in the event content
+        if current_membership == MEM_INVITE
+            || current_membership == MEM_JOIN
+            || event
+                .content
+                .get_join_authorised_via_users_server()
+                .is_some()
+        {
             // Allowed
         } else {
             return Err(AuthError::NotMember {

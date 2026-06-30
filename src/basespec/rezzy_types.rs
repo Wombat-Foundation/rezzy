@@ -270,7 +270,11 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     fn get_invite(&self) -> Option<i64>;
     fn get_redact(&self) -> Option<i64>;
     fn get_creator(&self) -> Option<&str>;
+    /// Specific to V12+ rooms.
     fn has_additional_creator(&self, sender: &str) -> bool;
+    /// Returns the `join_authorised_via_users_server` field, if present.
+    /// Used for `restricted`/`knock_restricted` join rules (room version 8+).
+    fn get_join_authorised_via_users_server(&self) -> Option<&str>;
 }
 
 impl EventContent for Value {
@@ -341,6 +345,11 @@ impl EventContent for Value {
         self.get(crate::basespec::event_types::FIELD_ADDITIONAL_CREATORS)
             .and_then(|v| v.as_array())
             .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(sender)))
+    }
+
+    fn get_join_authorised_via_users_server(&self) -> Option<&str> {
+        self.get(crate::basespec::event_types::FIELD_JOIN_AUTHORISED_VIA_USERS_SERVER)?
+            .as_str()
     }
 }
 

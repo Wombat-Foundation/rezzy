@@ -41,6 +41,7 @@ pub const FIELD_THIRD_PARTY_INVITE: &str = "third_party_invite";
 pub const FIELD_SIGNED: &str = "signed";
 pub const FIELD_TOKEN: &str = "token";
 pub const FIELD_DISPLAY_NAME: &str = "display_name";
+pub const FIELD_JOIN_AUTHORISED_VIA_USERS_SERVER: &str = "join_authorised_via_users_server";
 
 // Membership and Join Rule string values
 pub const MEM_JOIN: &str = "join";
@@ -51,3 +52,5 @@ pub const MEM_KNOCK: &str = "knock";
 pub const RULE_PUBLIC: &str = "public";
 pub const RULE_INVITE: &str = "invite";
 pub const RULE_KNOCK: &str = "knock";
+pub const RULE_RESTRICTED: &str = "restricted";
+pub const RULE_KNOCK_RESTRICTED: &str = "knock_restricted";
