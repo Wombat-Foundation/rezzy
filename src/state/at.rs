@@ -74,7 +74,7 @@ impl<Id, C> LocalAuthCache<Id, C> {
 }
 
 pub(crate) struct OverlayState<'a, Id, C, S1, S2> {
-    pub(crate) resolved: &'a crate::state_at::SharedState<Id>,
+    pub(crate) resolved: &'a crate::state::at::SharedState<Id>,
     pub(crate) auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
     pub(crate) sort_set: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
     pub(crate) local_auth: BTreeMap<(String, Option<String>), LeanEvent<Id, C>>,
@@ -196,7 +196,7 @@ pub(crate) fn iterative_auth_ok<
     C: crate::basespec::rezzy_types::EventContent,
 >(
     ev: &LeanEvent<Id, C>,
-    resolved: &crate::state_at::SharedState<Id>,
+    resolved: &crate::state::at::SharedState<Id>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S1>,
     sort_set: &HashMap<Id, LeanEvent<Id, C>, S2>,
     local_auth: BTreeMap<(String, Option<String>), LeanEvent<Id, C>>,
@@ -344,7 +344,7 @@ pub type SharedState<Id = String> = imbl::OrdMap<(String, Option<String>), Id>;
 /// This walks the `prev_events` graph backwards from `target_event_id`,
 /// topologically sorts all reachable ancestors, and incrementally builds
 /// the state by applying each state event in order. Fork points are resolved
-/// via [`crate::resolve::resolve_lean`] with the given `version` semantics.
+/// via [`crate::resolve::iterative::resolve_lean`] with the given `version` semantics.
 ///
 /// Returns `None` if `target_event_id` is not found in `events_map`.
 ///
@@ -980,7 +980,7 @@ where
         }
     }
 
-    crate::resolve::resolve_lean_with_cache(
+    crate::resolve::iterative::resolve_lean_with_cache(
         unconflicted_state,
         conflicted_events,
         events_map,

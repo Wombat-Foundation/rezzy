@@ -15,13 +15,13 @@
 //! Lattice-coordinatized state resolution.
 //!
 //! This module provides [`resolve_lattice_coordinatized`], an alternative to
-//! [`crate::resolve::resolve_lean`] that replaces the sequential mainline sort
+//! [`crate::resolve::iterative::resolve_lean`] that replaces the sequential mainline sort
 //! with a parallel, `O(1)` causal coordinatization projection and commutative
 //! join-semilattice fold.
 //!
 //! ## How it works
 //!
-//! 1. The **power phase** is identical to [`resolve_lean`](crate::resolve::resolve_lean).
+//! 1. The **power phase** is identical to [`resolve_lean`](crate::resolve::iterative::resolve_lean).
 //! 2. Instead of sorting non-power events, each event is assigned a **mainline
 //!    coordinate** (its closest position on the power-levels chain).
 //! 3. Events are folded per `(type, state_key)` using a commutative **Least
@@ -46,8 +46,8 @@
 
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::{
-    sorting::{build_mainline, compute_closest_mainline_positions},
-    state_at::{compute_local_auth, iterative_auth_ok},
+    resolve::sorting::{build_mainline, compute_closest_mainline_positions},
+    state::at::{compute_local_auth, iterative_auth_ok},
     HashMap,
 };
 use alloc::{string::String, vec::Vec};
@@ -124,7 +124,7 @@ fn fold_lattice_chunk<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash::Bu
     chunk: &[&'a LeanEvent<Id, C>],
     mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
-    terminal_power_state: &crate::state_at::SharedState<Id>,
+    terminal_power_state: &crate::state::at::SharedState<Id>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     sort_set: &HashMap<Id, LeanEvent<Id, C>, S3>,
     version: StateResVersion,
@@ -136,7 +136,7 @@ where
     C: crate::basespec::rezzy_types::EventContent + Clone,
 {
     let mut thread_res: HashMap<(String, Option<String>), &'a LeanEvent<Id, C>> = HashMap::new();
-    let mut local_auth_cache = crate::state_at::LocalAuthCache::<Id, C>::new(version);
+    let mut local_auth_cache = crate::state::at::LocalAuthCache::<Id, C>::new(version);
 
     for &ev in chunk {
         // 1. VALIDATE FIRST (Filters out Byzantine garbage/Supremum Deletion attacks)
@@ -189,7 +189,7 @@ fn compute_lattice_coordinatized_winners<
     non_power_events: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
     mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
-    terminal_power_state: &crate::state_at::SharedState<Id>,
+    terminal_power_state: &crate::state::at::SharedState<Id>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     sort_set: &HashMap<Id, LeanEvent<Id, C>, S3>,
     version: StateResVersion,
@@ -307,7 +307,7 @@ pub fn route_power_events<
 /// Resolves conflicted state using `O(1)` causal coordinatization projection
 /// and commutative join-semilattice folding.
 ///
-/// This is functionally equivalent to [`crate::resolve::resolve_lean`] but
+/// This is functionally equivalent to [`crate::resolve::iterative::resolve_lean`] but
 /// replaces the sequential mainline sort + iterative auth-check loop with a
 /// parallel per-key fold. Each non-power event competes for its `(type, state_key)`
 /// slot via the [`is_lattice_winner_better`] LUB operator.
@@ -325,23 +325,27 @@ pub fn resolve_lattice_coordinatized<
     S1: core::hash::BuildHasher + Sync + Send,
     S2: core::hash::BuildHasher + Sync + Send,
 >(
-    unconflicted_state: crate::state_at::SharedState<Id>,
+    unconflicted_state: crate::state::at::SharedState<Id>,
     mut conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     version: StateResVersion,
-) -> crate::state_at::SharedState<Id>
+) -> crate::state::at::SharedState<Id>
 where
     Id: crate::basespec::rezzy_types::EventId + Sync + Send,
     C: crate::basespec::rezzy_types::EventContent + Sync + Send + Clone,
 {
     // jscpd:ignore-end
-    let original_conflicted_keys =
-        crate::resolve::prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
+    let original_conflicted_keys = crate::resolve::iterative::prepare_conflicted_and_keys(
+        &mut conflicted_events,
+        auth_context,
+        version,
+    );
 
-    let mut resolved = crate::resolve::get_initial_resolved_state(&unconflicted_state, version);
+    let mut resolved =
+        crate::resolve::iterative::get_initial_resolved_state(&unconflicted_state, version);
 
     let (sort_context, power_events, non_power_events, create_ev) =
-        crate::resolve::execute_power_phase(
+        crate::resolve::iterative::execute_power_phase(
             &unconflicted_state,
             &conflicted_events,
             auth_context,
@@ -350,9 +354,9 @@ where
         );
 
     // Initialize local auth cache for power-phase checks
-    let mut local_auth_cache = crate::state_at::LocalAuthCache::<Id, C>::new(version);
+    let mut local_auth_cache = crate::state::at::LocalAuthCache::<Id, C>::new(version);
 
-    crate::resolve::run_power_phase_iterative_checks(
+    crate::resolve::iterative::run_power_phase_iterative_checks(
         &mut resolved,
         &power_events,
         &sort_context,

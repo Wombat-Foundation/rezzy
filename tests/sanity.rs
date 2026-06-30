@@ -221,7 +221,7 @@ fn test_compute_state_at_batch() {
 
 #[test]
 fn test_streaming_correctness_with_branched_dag() {
-    use rezzy::state_at::compute_state_at_streaming;
+    use rezzy::state::at::compute_state_at_streaming;
     use rezzy::{LeanEvent, StateResVersion};
     use std::collections::HashMap;
 
@@ -395,7 +395,7 @@ fn make_chronological_test_events() -> Vec<rezzy::LeanEvent> {
 
 #[test]
 fn test_delta_chain_generation_correctness() {
-    use rezzy::state_delta::{compute_state_delta, compute_state_hash};
+    use rezzy::state::delta::{compute_state_delta, compute_state_hash};
     use std::collections::HashMap;
 
     let events = make_chronological_test_events();
@@ -462,7 +462,7 @@ fn test_delta_chain_generation_correctness() {
 
 #[test]
 fn test_state_delta_compression_robustness() {
-    use rezzy::state_delta::{compute_state_delta, compute_state_hash};
+    use rezzy::state::delta::{compute_state_delta, compute_state_hash};
     use rezzy::LeanEvent;
     use std::collections::HashMap;
 

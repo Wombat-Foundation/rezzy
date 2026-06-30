@@ -2896,7 +2896,7 @@ fn test_cdo_coverage_branches() {
     };
     events_map.insert(event_id.clone(), ev1);
 
-    let _filtered = rezzy::cdo::apply_cdo_filter(&events_map, &auth_context);
+    let _filtered = rezzy::resolve::cdo::apply_cdo_filter(&events_map, &auth_context);
 }
 
 #[test]
@@ -2904,7 +2904,7 @@ fn test_cdo_is_ancestor() {
     let mut ctx: HashMap<String, LeanEvent> = HashMap::new();
 
     // Equal IDs -> true
-    assert!(rezzy::cdo::is_ancestor("A", "A", &ctx));
+    assert!(rezzy::resolve::cdo::is_ancestor("A", "A", &ctx));
 
     // Missing child -> false
     ctx.insert(
@@ -2914,7 +2914,7 @@ fn test_cdo_is_ancestor() {
             ..Default::default()
         },
     );
-    assert!(!rezzy::cdo::is_ancestor("missing", "B", &ctx));
+    assert!(!rezzy::resolve::cdo::is_ancestor("missing", "B", &ctx));
 
     // Missing ancestor -> false
     ctx.insert(
@@ -2924,7 +2924,7 @@ fn test_cdo_is_ancestor() {
             ..Default::default()
         },
     );
-    assert!(!rezzy::cdo::is_ancestor("C", "missing", &ctx));
+    assert!(!rezzy::resolve::cdo::is_ancestor("C", "missing", &ctx));
 
     // Depth pruning - child depth > ancestor depth -> false
     let mut ev_child = LeanEvent {
@@ -2941,7 +2941,7 @@ fn test_cdo_is_ancestor() {
             ..Default::default()
         },
     );
-    assert!(!rezzy::cdo::is_ancestor(
+    assert!(!rezzy::resolve::cdo::is_ancestor(
         "child_pruned",
         "and_shallow",
         &ctx
@@ -2970,7 +2970,11 @@ fn test_cdo_is_ancestor() {
         },
     );
 
-    assert!(rezzy::cdo::is_ancestor("valid_child", "valid_and", &ctx));
+    assert!(rezzy::resolve::cdo::is_ancestor(
+        "valid_child",
+        "valid_and",
+        &ctx
+    ));
 }
 use serde_json::json;
 
@@ -3069,7 +3073,7 @@ fn test_sorting_v2_creator_gets_pl_100() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn test_resolve_lean_with_deltas_parity() {
-    use rezzy::state_delta::ResolvePhase;
+    use rezzy::state::delta::ResolvePhase;
     use rezzy::{resolve_lean, resolve_lean_with_deltas, LeanEvent, StateResVersion};
     use serde_json::json;
     use std::collections::HashMap;
@@ -3392,7 +3396,7 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
     // Test V2 (Rooms 2-11)
     let mut set1_v2_power = HashMap::new();
     let mut set1_v2_non_power = HashMap::new();
-    rezzy::lattice::route_power_events(
+    rezzy::resolve::lattice::route_power_events(
         &sort_set,
         &mut set1_v2_power,
         &mut set1_v2_non_power,
@@ -3425,7 +3429,7 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
     // Test V2.1 (Room 12+)
     let mut set2_v21_power = HashMap::new();
     let mut set2_v21_non_power = HashMap::new();
-    rezzy::lattice::route_power_events(
+    rezzy::resolve::lattice::route_power_events(
         &sort_set,
         &mut set2_v21_power,
         &mut set2_v21_non_power,
@@ -3792,10 +3796,10 @@ fn test_lean_event_get_redact_and_creator() {
 #[allow(clippy::too_many_lines)]
 fn test_coverage_sweeper_for_unreachable_edges() {
     use rezzy::basespec::rezzy_types::{EventProvider, SortPriority};
-    use rezzy::cdo::is_ancestor;
-    use rezzy::lattice::resolve_lattice_coordinatized;
-    use rezzy::state_at::StateComputationError;
-    use rezzy::state_delta::{reconstruct_state_batch, CompactedCheckpoint};
+    use rezzy::resolve::cdo::is_ancestor;
+    use rezzy::resolve::lattice::resolve_lattice_coordinatized;
+    use rezzy::state::at::StateComputationError;
+    use rezzy::state::delta::{reconstruct_state_batch, CompactedCheckpoint};
     use rezzy::{resolve_lean_with_deltas, LeanEvent, StateResVersion};
     use std::collections::{BTreeMap, HashMap};
 
@@ -4001,7 +4005,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     cyclic_kahn_events.insert("A".into(), ev_a.clone());
     cyclic_kahn_events.insert("B".into(), ev_b.clone());
 
-    let sorted_cyclic = rezzy::sorting::lean_kahn_sort(
+    let sorted_cyclic = rezzy::resolve::sorting::lean_kahn_sort(
         &cyclic_kahn_events,
         &HashMap::new(),
         None,

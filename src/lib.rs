@@ -74,25 +74,12 @@ extern crate alloc;
 
 pub mod auth;
 pub mod basespec;
-pub mod cdo;
-pub mod lattice;
-#[cfg(feature = "cli")]
-pub mod merge;
 pub mod resolve;
-pub mod sorting;
-pub mod state_at;
-pub mod state_delta;
-pub mod subgraph;
+pub mod state;
 
 pub use basespec::rezzy_types::*;
-pub use cdo::*;
-pub use lattice::*;
-#[cfg(feature = "cli")]
-pub use merge::*;
 pub use resolve::*;
-pub use sorting::*;
-pub use state_at::*;
-pub use subgraph::*;
+pub use state::*;
 
 /// Re-exported hashmap — uses `std::collections::HashMap` when `std` is
 /// enabled, falls back to `hashbrown::HashMap` for `no_std` targets.

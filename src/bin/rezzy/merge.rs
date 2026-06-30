@@ -1,7 +1,7 @@
+// CLI-only: Multi-file event set merging.
 #![cfg(feature = "cli")]
-
-use alloc::string::String;
-use alloc::vec::Vec;
+use std::string::String;
+use std::vec::Vec;
 
 fn perform_connectivity_check(
     per_file_ids: &[std::collections::HashSet<String>],
@@ -14,7 +14,7 @@ fn perform_connectivity_check(
 
     // Treat files as nodes in a graph. An edge exists if they share at least one event.
     // We check if the entire graph is connected starting from node 0.
-    let mut visited = alloc::vec![false; num_files];
+    let mut visited = vec![false; num_files];
     let mut queue = Vec::new();
     queue.push(0);
     visited[0] = true;
@@ -93,7 +93,7 @@ pub fn merge_event_sets(
     quiet: bool,
 ) -> Result<Vec<serde_json::Value>, anyhow::Error> {
     extern crate anyhow;
-    use alloc::borrow::ToOwned;
+    use std::borrow::ToOwned;
     use std::collections::HashSet;
 
     let num_files = file_sets.len();
@@ -169,4 +169,139 @@ pub fn merge_event_sets(
     }
 
     Ok(merged)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn ev(id: &str, depth: u64) -> serde_json::Value {
+        json!({
+            "event_id": id,
+            "type": "m.room.member",
+            "state_key": format!("@user:{id}"),
+            "origin_server_ts": 1000_u64.wrapping_add(depth),
+            "depth": depth,
+            "prev_events": [],
+            "auth_events": []
+        })
+    }
+
+    #[test]
+    fn test_merge_dedup_by_event_id() {
+        let a = vec![ev("$1", 1), ev("$2", 2), ev("$3", 3)];
+        let b = vec![ev("$2", 2), ev("$3", 3), ev("$4", 4)];
+        let result =
+            merge_event_sets(&[("a.jsonl".into(), a), ("b.jsonl".into(), b)], false, true).unwrap();
+
+        let ids: Vec<&str> = result
+            .iter()
+            .map(|v| v["event_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["$1", "$2", "$3", "$4"]);
+    }
+
+    #[test]
+    fn test_merge_disjoint_fails() {
+        let a = vec![ev("$1", 1), ev("$2", 2)];
+        let b = vec![ev("$3", 3), ev("$4", 4)];
+        let result = merge_event_sets(&[("a.jsonl".into(), a), ("b.jsonl".into(), b)], false, true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Disjoint DAGs"));
+    }
+
+    #[test]
+    fn test_merge_pairwise_shared() {
+        let a = vec![ev("$1", 1), ev("$2", 2)];
+        let b = vec![ev("$2", 2), ev("$3", 3)];
+        let c = vec![ev("$3", 3), ev("$4", 4)];
+        let result = merge_event_sets(
+            &[
+                ("a.jsonl".into(), a),
+                ("b.jsonl".into(), b),
+                ("c.jsonl".into(), c),
+            ],
+            false,
+            true,
+        )
+        .unwrap();
+
+        let ids: Vec<&str> = result
+            .iter()
+            .map(|v| v["event_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["$1", "$2", "$3", "$4"]);
+    }
+
+    #[test]
+    fn test_merge_single_file() {
+        let a = vec![ev("$1", 1), ev("$2", 2)];
+        let result = merge_event_sets(&[("a.jsonl".into(), a)], false, true).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_complete_overlap() {
+        let a = vec![ev("$1", 1), ev("$2", 2), ev("$3", 3)];
+        let b = vec![ev("$1", 1), ev("$2", 2), ev("$3", 3)];
+        let result =
+            merge_event_sets(&[("a.jsonl".into(), a), ("b.jsonl".into(), b)], false, true).unwrap();
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_merge_subset() {
+        let large = vec![ev("$1", 1), ev("$2", 2), ev("$3", 3), ev("$4", 4)];
+        let small = vec![ev("$1", 1), ev("$2", 2)];
+        let result = merge_event_sets(
+            &[("large.jsonl".into(), large), ("small.jsonl".into(), small)],
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(result.len(), 4);
+    }
+
+    #[test]
+    fn test_merge_debug_depths() {
+        let a = vec![ev("$1", 10), ev("$2", 20)];
+        let b = vec![ev("$2", 20), ev("$3", 30)];
+        let result =
+            merge_event_sets(&[("a.jsonl".into(), a), ("b.jsonl".into(), b)], true, true).unwrap();
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_merge_single_event_per_file() {
+        let a = vec![ev("$1", 1)];
+        let b = vec![ev("$1", 1)];
+        let result =
+            merge_event_sets(&[("a.jsonl".into(), a), ("b.jsonl".into(), b)], false, true).unwrap();
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_merge_two_single_events_disjoint() {
+        let a = vec![ev("$1", 1)];
+        let b = vec![ev("$2", 2)];
+        let result = merge_event_sets(&[("a.jsonl".into(), a), ("b.jsonl".into(), b)], false, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_merge_two_events_one_shared() {
+        let a = vec![ev("$1", 1), ev("$2", 2)];
+        let b = vec![ev("$2", 2), ev("$3", 3)];
+        let result =
+            merge_event_sets(&[("a.jsonl".into(), a), ("b.jsonl".into(), b)], false, true).unwrap();
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_merge_one_file_only() {
+        let a = vec![ev("$1", 1)];
+        let result = merge_event_sets(&[("a.jsonl".into(), a)], false, true).unwrap();
+        assert_eq!(result.len(), 1);
+    }
 }

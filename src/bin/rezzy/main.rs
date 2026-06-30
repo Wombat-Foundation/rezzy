@@ -13,6 +13,7 @@
 // limitations under the License.
 
 mod format;
+mod merge;
 mod network;
 mod utils;
 

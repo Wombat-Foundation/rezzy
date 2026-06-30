@@ -174,7 +174,7 @@ pub fn load_or_fetch_input_value(args: &Args) -> anyhow::Result<serde_json::Valu
                 let events = load_file(path)?;
                 file_sets.push((label, events));
             }
-            let merged = rezzy::merge_event_sets(&file_sets, args.debug, args.quiet)?;
+            let merged = crate::merge::merge_event_sets(&file_sets, args.debug, args.quiet)?;
             Ok(serde_json::Value::Array(merged))
         }
     } else {

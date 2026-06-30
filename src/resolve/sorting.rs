@@ -313,7 +313,7 @@ where
 }
 
 pub(crate) fn build_mainline<Id, C>(
-    resolved: &crate::state_at::SharedState<Id>,
+    resolved: &crate::state::at::SharedState<Id>,
     auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
 ) -> Vec<Id>
 where

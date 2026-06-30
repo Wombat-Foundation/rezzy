@@ -72,8 +72,8 @@ pub struct StateDelta {
 /// If the two states are identical, returns an empty `Vec`.
 #[must_use]
 pub fn compute_state_delta(
-    parent: &crate::state_at::SharedState<String>,
-    current: &crate::state_at::SharedState<String>,
+    parent: &crate::state::at::SharedState<String>,
+    current: &crate::state::at::SharedState<String>,
 ) -> Vec<StateDelta> {
     let mut deltas = Vec::new();
 
@@ -111,9 +111,9 @@ pub fn compute_state_delta(
 /// - Entries with `event_id = None` are removed from the base.
 #[must_use]
 pub fn apply_state_delta(
-    base: &crate::state_at::SharedState<String>,
+    base: &crate::state::at::SharedState<String>,
     deltas: &[StateDelta],
-) -> crate::state_at::SharedState<String> {
+) -> crate::state::at::SharedState<String> {
     let mut result = base.clone();
     for delta in deltas {
         let key = (delta.event_type.clone(), delta.state_key.clone());
@@ -138,7 +138,7 @@ pub fn apply_state_delta(
 /// **Not cryptographic** — use SHA-256 (via the `hashing` feature) for
 /// content-addressable storage.
 #[must_use]
-pub fn compute_state_hash(state: &crate::state_at::SharedState<String>) -> String {
+pub fn compute_state_hash(state: &crate::state::at::SharedState<String>) -> String {
     // FNV-1a 128-bit offset basis and prime
     // See: <https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function>
     const FNV128_PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
@@ -201,7 +201,7 @@ pub struct CompactedCheckpoint {
     pub deltas: Vec<StateDelta>,
     /// Full state snapshot, present every [`MAX_DELTA_CHAIN_HOPS`] checkpoints.
     /// When this is `Some`, `deltas` is empty and reconstruction starts here.
-    pub snapshot: Option<crate::state_at::SharedState<String>>,
+    pub snapshot: Option<crate::state::at::SharedState<String>>,
 }
 
 /// Builds a compacted delta chain from pre-resolved `(event_id, state_map)` pairs,
@@ -216,12 +216,12 @@ pub struct CompactedCheckpoint {
 /// [`MAX_DELTA_CHAIN_HOPS`] (100).
 #[must_use]
 pub fn compute_compacted_delta_chain_from_resolved(
-    resolved_states: impl IntoIterator<Item = (String, crate::state_at::SharedState<String>)>,
+    resolved_states: impl IntoIterator<Item = (String, crate::state::at::SharedState<String>)>,
     max_hops: Option<usize>,
 ) -> Vec<CompactedCheckpoint> {
     let max_hops = max_hops.unwrap_or(MAX_DELTA_CHAIN_HOPS);
     let mut checkpoints = Vec::new();
-    let mut prev_state: Option<crate::state_at::SharedState<String>> = None;
+    let mut prev_state: Option<crate::state::at::SharedState<String>> = None;
     let mut prev_hash: Option<String> = None;
     let mut hops_since_snapshot: usize = 0;
 
@@ -267,7 +267,7 @@ pub fn compute_compacted_delta_chain_from_resolved(
 pub fn reconstruct_state_at_by_event_id(
     checkpoints: &[CompactedCheckpoint],
     event_id: &str,
-) -> Option<crate::state_at::SharedState<String>> {
+) -> Option<crate::state::at::SharedState<String>> {
     let idx = checkpoints.iter().position(|cp| cp.event_id == event_id)?;
     reconstruct_state_at(checkpoints, idx)
 }
@@ -290,7 +290,7 @@ pub fn reconstruct_state_at_by_event_id(
 pub fn reconstruct_state_at(
     checkpoints: &[CompactedCheckpoint],
     target_index: usize,
-) -> Option<crate::state_at::SharedState<String>> {
+) -> Option<crate::state::at::SharedState<String>> {
     if target_index >= checkpoints.len() {
         return None;
     }
@@ -364,7 +364,7 @@ pub fn reconstruct_state_at(
 pub fn reconstruct_state_batch(
     checkpoints: &[CompactedCheckpoint],
     target_indices: &[usize],
-) -> imbl::OrdMap<usize, crate::state_at::SharedState<String>> {
+) -> imbl::OrdMap<usize, crate::state::at::SharedState<String>> {
     use crate::HashMap;
 
     let mut sorted_targets: Vec<usize> = target_indices
@@ -451,7 +451,7 @@ pub fn reconstruct_state_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    type StateMap = crate::state_at::SharedState<String>;
+    type StateMap = crate::state::at::SharedState<String>;
     type ResolvedStates = Vec<(String, StateMap)>;
 
     #[test]
