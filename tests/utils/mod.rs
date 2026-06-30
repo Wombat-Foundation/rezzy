@@ -1,9 +1,11 @@
+use rezzy::auth::RoomState;
 use rezzy::basespec::rezzy_types::LeanEvent;
 use std::collections::HashMap;
 
 /// Builds an initial unconflicted state map containing only the `m.room.create` event
 /// extracted from the provided `auth_context`. This avoids needing a massive `auth_context`
 /// fallback in the production state resolution algorithm just for test fixtures.
+#[allow(dead_code)]
 pub fn build_unconflicted_state_test_helper(
     auth_context: &HashMap<String, LeanEvent>,
 ) -> imbl::OrdMap<(String, String), String> {
@@ -33,6 +35,96 @@ pub fn build_unconflicted_state_test_helper(
     );
 
     unconflicted
+}
+
+/// Parses a multiline JSONL string into a vector of `LeanEvents`.
+/// Blank lines and lines starting with "//" are ignored.
+#[allow(dead_code)]
+pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
+    let mut events = Vec::new();
+    for line in input.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(line).expect("Invalid JSONL line");
+
+        let event_id = value
+            .get("event_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let event_type = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let state_key = value
+            .get("state_key")
+            .and_then(|v| v.as_str())
+            .map(std::string::ToString::to_string);
+        let sender = value
+            .get("sender")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let content = value
+            .get("content")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
+
+        events.push(LeanEvent {
+            event_id,
+            event_type,
+            state_key,
+            power_level: value
+                .get("power_level")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0),
+            origin_server_ts: value
+                .get("origin_server_ts")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            sender,
+            content,
+            prev_events: value
+                .get("prev_events")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            auth_events: value
+                .get("auth_events")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            depth: value
+                .get("depth")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+        });
+    }
+    events
+}
+
+/// Parses a multiline JSONL string directly into a `RoomState`.
+#[allow(dead_code)]
+pub fn parse_jsonl_state(input: &str) -> RoomState {
+    let mut state = RoomState::new();
+    let events = parse_jsonl_events(input);
+    for event in events {
+        if let Some(sk) = &event.state_key {
+            state.insert((event.event_type.clone(), sk.clone()), event);
+        }
+    }
+    state
 }
 
 /// A debug utility: computes a SHA-256 content hash of a raw JSON event string
@@ -87,4 +179,51 @@ pub fn print_canonical_hash(json_str: &str) {
     let encoded_hash = URL_SAFE_NO_PAD.encode(hash);
     std::println!("Computed Event ID: ${encoded_hash}");
     std::println!("============================");
+}
+
+/// Asserts that a given `RoomState` exactly matches the state defined in a JSONL string.
+#[allow(dead_code)]
+pub fn assert_jsonl_state_eq(actual: &RoomState, expected_jsonl: &str) {
+    let expected = parse_jsonl_state(expected_jsonl);
+
+    // First, assert the lengths are the same
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "State lengths differ. Expected {}, got {}",
+        expected.len(),
+        actual.len()
+    );
+
+    // Then, assert each element matches precisely
+    for (key, expected_event) in &expected {
+        let actual_event = actual.get(key).unwrap_or_else(|| {
+            panic!("Actual state missing expected event at key {key:?}");
+        });
+
+        assert_eq!(
+            actual_event, expected_event,
+            "Event mismatch at key {key:?}"
+        );
+    }
+}
+
+/// Asserts that a given slice of `LeanEvents` exactly matches the events defined in a JSONL string.
+#[allow(dead_code)]
+pub fn assert_jsonl_events_eq(actual: &[LeanEvent], expected_jsonl: &str) {
+    let expected = parse_jsonl_events(expected_jsonl);
+
+    // First, assert the lengths are the same
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "Events lengths differ. Expected {}, got {}",
+        expected.len(),
+        actual.len()
+    );
+
+    // Then, assert each element matches precisely
+    for (i, (actual_event, expected_event)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(actual_event, expected_event, "Event mismatch at index {i}");
+    }
 }

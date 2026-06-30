@@ -183,7 +183,7 @@ impl<Id, C> DagNode<Id> for LeanEvent<Id, C> {
 /// The generic `Id` parameter defaults to `String` but can be substituted with
 /// `u32` or `u64` for integer-interned resolution (see [`EventId`]).
 ///
-/// # Deserialization
+/// #[derive(Debug, Clone, Default, `PartialEq`)]Deserialization
 ///
 /// `LeanEvent<String>` implements `Deserialize` with the following behaviors:
 /// - `event_id`: If absent and the `hashing` feature is enabled, a SHA-256
@@ -193,7 +193,7 @@ impl<Id, C> DagNode<Id> for LeanEvent<Id, C> {
 /// - `typed_content`: Populated from `content` for auth-relevant events.
 /// - All other fields default to empty/zero if absent.
 ///
-/// # Note on Room ID
+/// #[derive(Debug, Clone, Default, `PartialEq`)]Note on Room ID
 ///
 /// `LeanEvent` omits `room_id`. `ruma-lean` is a specialized algorithmic engine
 /// that expects the host homeserver (e.g., Synapse, Conduit) to perform initial
@@ -389,11 +389,11 @@ impl<Id, C> LeanEvent<Id, C> {
     /// NOTE: Event types are NOT whitelisted — the spec does not restrict types at the auth level.
     /// Any event type is valid as long as the sender has sufficient PL.
     ///
-    /// # Errors
+    /// #[derive(Debug, Clone, Default, `PartialEq`)]Errors
     ///
     /// Returns static string error if structural limits are exceeded.
     ///
-    /// # TODO(compliance): PDU structural invariants not yet enforced
+    /// #[derive(Debug, Clone, Default, `PartialEq`)]TODO(compliance): PDU structural invariants not yet enforced
     /// - `content` is required (must be present, even if `{}`)
     /// - `hashes` is required (sha256 content hash)
     /// - `signatures` is required
@@ -402,7 +402,11 @@ impl<Id, C> LeanEvent<Id, C> {
     /// - `depth` must be < 2^53 - 1
     ///
     /// These should be validated and tested per room version.
+    ///
+    /// # Errors
+    /// Returns an error if the event violates spec invariants (e.g. >20 `prev_events`).
     pub fn validate_syntactic(&self) -> Result<(), &'static str> {
+        // TODO: Are there any other invariants?
         if self.prev_events.len() > 20 {
             return Err("prev_events exceeds maximum allowed length of 20");
         }
