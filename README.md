@@ -28,27 +28,11 @@ Everything re-exports from the crate root — `use rezzy::*` gets you `LeanEvent
 - `EventContent` trait — skip JSON parsing in the hot path. `serde_json::Value` works via default impl.
 - **TODO:** ancillary tools (subgraph, delta, auth graph) are `String`-only currently
 
-## Usage
+## Performance settings
 
-### Build
+`rezzy` is designed for extreme performance out of the box.
 
-```bash
-cargo build --release
-```
-
-_Note: Building the `rezzy` binary automatically injects `mimalloc` as the global allocator for a 10-20% throughput boost. The `rezzy` library crate remains strictly allocator-agnostic and will use whatever allocator your project configures._
-
-### Maximum Performance
-
-`rezzy` is designed for extreme performance, but to squeeze every last drop out of the engine, homeserver authors and binary consumers should opt-in to advanced compiler optimizations in their own `Cargo.toml`:
-
-```toml
-[profile.release]
-lto = "fat"
-codegen-units = 1
-```
-
-For even higher performance use this:
+For the even better tuning, use the `release-max-perf` Cargo profile:
 
 ```toml
 [profile.release-max-perf]
@@ -59,33 +43,19 @@ codegen-units = 1
 panic = "abort"
 ```
 
-Additionally, if you are building the binary for the specific machine it will run on, you can unlock native CPU instructions (like AVX-512) by building with:
+If you are building the binary _for_ a specific machine, you can unlock native CPU instructions (i.e., `avx-512`) with:
 
 ```bash
-RUSTFLAGS="-C target-cpu=native" cargo build --release
+RUSTFLAGS="-C target-cpu=native" make build install
 ```
 
-### Test
+## Test coverage
 
-```bash
-make test         # Run unit and integration tests
-make rust/e2e     # Run E2E parity tests
-```
-
-### Test Coverage
-
-To install and run test coverage via `cargo-tarpaulin`:
+To install and run test coverage:
 
 ```bash
 cargo install cargo-tarpaulin --features vendored-openssl
-cargo tarpaulin
-```
-
-### Format & Lint
-
-```bash
-make format
-make lint
+make cov
 ```
 
 ## Algorithmic & architectural engineering
@@ -116,80 +86,97 @@ Because we care about raw performance and mechanical efficiency, `rezzy` is buil
 - Batch state computation with shared topological traversal
 - `no_std` compatible (`alloc`-only, no system dependencies)
 
-## Architecture: The I/O Sandwich
+## Synchronous model
 
-Rezzy is **synchronous by design**. It accepts a fully materialized `HashMap` and returns resolved state without performing any I/O. This is not a limitation — it's the architecturally correct choice.
+Rezzy is **synchronous by design**. It accepts a fully materialized `HashMap` and returns resolved state without performing any I/O. This is not a limitation, it's a design choice.
 
-### Why not async?
+State resolution does **not** operate on the entire room history. It operates on the **Auth Difference**: `auth(C) - auth(U)` — the auth-chain events reachable from conflicted events `C` that aren't already in the agreed-upon unconflicted state `U`.
 
-State resolution does **not** operate on the entire room history. It operates on the **Auth Difference**: `auth(C) \ auth(U)` — the auth-chain events reachable from conflicted events `C` that aren't already in the agreed-upon unconflicted state `U`.
-
-Because `U` is already trusted, auth chains only need to be walked until they intersect `U`. Auth chains are shallow (Create → PL → Join → event = 3-4 hops), so homeservers can bulk-fetch the entire auth difference in **1–3 database queries**:
-
-| Approach                      | Queries | Used by      |
-| ----------------------------- | ------- | ------------ |
-| Bulk BFS against `U` boundary | 2–3     | Rust servers |
-| Pre-computed auth-chain index | 1       | Synapse      |
-
-If `resolve_lean` were async, every `auth_events` lookup would become a sequential `await` — triggering the **N+1 query problem** (50 serial DB calls instead of 1 batch). The synchronous API forces callers to batch-fetch upfront, which is always faster.
+Determining the auth difference is relatively easy and quick: either compute it on the fly (recursively in 20-50 database hops), or pre-compute and store in a "chain closure" index (for near-instant runtime performance).
 
 ### The three layers
 
 ```text
 ┌───────────────────────────────────────────────┐
-│  Homeserver (async I/O)                       │
-│  Bulk-fetch auth difference in 1-3 queries    │
+│  Homeserver    (async I/O)                    │
+│  Bulk-fetch auth difference in 1-50 queries   │
 ├───────────────────────────────────────────────┤
-│  Rezzy (sync CPU, #![no_std])                 │
-│  Topological sort + iterative auth in µs      │
+│  Rezzy        (sync: pure-CPU)                │
+│  Topological sort + iterative auth in µs-ms   │
 ├───────────────────────────────────────────────┤
-│  Homeserver (async I/O)                       │
-│  Persist resolved state, notify clients       │
+│  Homeserver   (async I/O)                     │
+│  Persist PDUs/resolved state; notify clients  │
 └───────────────────────────────────────────────┘
 ```
 
-Typical working set: **10–50 events** for a normal fork, fitting entirely in L1 cache. See [`docs/architecture.md`](docs/architecture.md) for details.
+Typical working set: **10–50 conflicting events** for a normal fork, fitting entirely in `L1` cache.
+
+### Transitive closure: auth chain vs. timeline DAG
+
+Both Synapse and Rust servers pre-compute the transitive closure of the **auth chain**, but they **cannot** realistically do this for the **timeline DAG** (`prev_events`).
+
+#### Transitive auth chain: `O(1)` size (pre-computed)
+
+Homeservers should pre-compute and store the transitive closure of the auth chain for every event (as a `RoaringTreemap` of `ShortEventId`s).
+
+The auth chain _should_ only contain state events that authorize other state events (e.g., `m.room.create`, `m.room.power_levels`, and membership transitions). Even in a room with 1,000,000 chat messages, the auth chain for a given event typically contains fewer than **50–100 events**.
+
+Live computing and storing of a 100-integer roaring bitmap `auth_chain` per event is _extremely_ cheap, and it greatly speeds up real-time federation!
+
+#### How Conduwuit and Synapse bypass need for timeline DAG closure
+
+Because we don't have the timeline DAG's closure, we have two different techniques at our disposal:
+
+**For state _resolution_:** We only need the **auth difference** (`auth(C) - auth(U)`). Because we have the pre-computed transitive auth chain bitmaps for the conflicted tips `C`, we can perform this set difference entirely in memory on integers and fetch the exact list of missing PDUs in a single batch database query—no timeline walking required.
+
+**For state _reconstruction_ (`state_at`):** Instead of walking the timeline DAG backward to build state, we use **compressed state snapshots and delta chains** (keyed by `shortstatehash`). It fetches a recent state snapshot and applies a small sequence of forward deltas, bypassing the need for full traversal.
+
+---
 
 ## Completed
 
-### Typed Content Fields (`EventContent` trait) ✓
+### Typed content fields (`EventContent` trait) ✓
 
-The generic `EventContent` trait replaces the need for a monolithic `LeanEventTyped`. Homeservers implement `EventContent` on their own content type to provide pre-extracted fields (`membership`, `join_rule`, `ban`, `kick` power levels, etc.) without JSON parsing in the hot path. `serde_json::Value` remains the default via a blanket impl.
+The generic `EventContent` trait: homeservers implement `EventContent` on their own content type to provide pre-extracted fields (`membership`, `join_rule`, `ban`, `kick` power levels, etc.) without JSON parsing in the hot path. `serde_json::Value` remains the default via a blanket impl.
 
 ### Per-Event State Deltas (`resolve_lean_with_deltas`) ✓
 
-`resolve_lean_with_deltas` emits per-step `ResolutionDelta`s alongside the final resolved state, capturing event_id, acceptance status, replaced event, and phase (power/non-power) for every conflicted event processed. See [`resolve_lean_with_deltas`](src/resolve.rs).
+`resolve_lean_with_deltas` emits per-step `ResolutionDelta`s alongside the final resolved state, capturing `event_id`, acceptance status, replaced event, and phase (power/non-power) for every conflicted event processed.
 
-### Batch State Computation (`compute_state_at_batch`) ✓
+### Batch state compute (`compute_state_at_batch`) ✓
 
-Compute state at N events in topological order, sharing the ancestor traversal and topological sort across all targets. See [`compute_state_at_batch`](src/state_at.rs).
+Compute state at `N` events in topological order, sharing the ancestor traversal and topological sort across all targets.
 
-### Streaming State Computation (`compute_state_at_streaming`) ✓
+### Streaming state compute (`compute_state_at_streaming`) ✓
 
-Like `compute_state_at_batch` but yields each resolved state to a callback as soon as it's ready, bounding peak memory to the live DAG frontier width. See [`compute_state_at_streaming`](src/state_at.rs).
+Like `compute_state_at_batch` but yields each resolved state to a callback as soon as it's ready, bounding peak memory to the streaming of the DAG's live frontier width.
 
 ### `auth_types_for_event` ✓
 
-Pure function that returns the list of `(event_type, state_key)` pairs required in auth state for a given event type. See [`auth_types_for_event`](src/auth/mod.rs).
+Pure function that returns the list of `(event_type, state_key)` pairs required in auth state for a given event type.
 
-### Integer-Keyed Resolution ✓
+### Integer-keyed resolution ✓
 
 `resolve_lean` is generic over `Id: EventId`, and `EventId` has a blanket impl for any `T: Clone + Eq + Hash + Ord + Debug`. This means `u32`, `u64`, and any interned short ID type work out of the box:
 
 ```rust
+let unconflicted: imbl::OrdMap<(String, String), u64> = /* ... */;
 let events: HashMap<u64, LeanEvent<u64>> = /* ... */;
-let resolved = resolve_lean(unconflicted, events, &auth_ctx, StateResVersion::V2);
+let auth_ctx: HashMap<u64, LeanEvent<u64>> = /* ... */;
+
+let resolved: imbl::OrdMap<(String, String), u64> =
+    resolve_lean(unconflicted, events, &auth_ctx, StateResVersion::V2);
 ```
 
-### Checkpoint / Partial-Join Support ✓
+### Snapshot/checkpoint (partial-join support) ✓
 
-`resolve_lean` already supports this by design — pass a trusted state snapshot as `unconflicted_state`. The conflicted events and auth context only need to cover the divergent portion of the DAG.
+`resolve_lean` supports this — pass a trusted state snapshot as `unconflicted_state`. The conflicted events and auth context only need to cover the divergent portion of the DAG.
 
-### State Delta Compression ✓
+### State delta compression ✓
 
-Full delta chain support with Synapse-compatible compaction:
+Full delta chain support with Synapse-like compaction:
 
 - `compute_state_delta` / `apply_state_delta` — single-event delta math
-- `compute_compacted_delta_chain_from_resolved` — bulk backfill with auto-snapshot every `MAX_DELTA_CHAIN_HOPS` (default: 100) events
+- `compute_compacted_delta_chain_from_resolved` — bulk backfill with auto-snapshot every `MAX_DELTA_CHAIN_HOPS` (default: `100`) events
 - `reconstruct_state_at` / `reconstruct_state_batch` — reconstruct state from stored delta chains
 - All checkpoint types derive `Serialize` / `Deserialize` for direct storage in RocksDB, bincode, etc.
