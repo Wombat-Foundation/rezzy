@@ -445,9 +445,7 @@ fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
 
     // Rule 5.4.1: If third_party_invite is present, check the issuer's power level.
     // It must strictly adhere to the rules, or be rejected. No fallback.
-    if event.content.get_third_party_invite_token().is_some()
-        || event.content.get_third_party_invite_mxid().is_some()
-    {
+    if event.content.has_third_party_invite() {
         let token = event
             .content
             .get_third_party_invite_token()
