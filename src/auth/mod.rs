@@ -438,28 +438,77 @@ fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     let invite_pl = get_invite_power_level(state);
 
     // Rule 5.4.1: If third_party_invite is present, check the issuer's power level.
-    let mut has_power = false;
-    if let Some(token) = event.content.get_third_party_invite_token() {
-        if let Some(tpi_event) = state.get_event(
-            crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE,
-            token,
-        ) {
-            let issuer_pl = get_sender_power_level(&tpi_event.sender, state, version);
-            if issuer_pl >= invite_pl {
-                has_power = true;
-            }
-        }
-    }
+    // It must strictly adhere to the rules, or be rejected. No fallback.
+    if event.content.get_third_party_invite_token().is_some()
+        || event.content.get_third_party_invite_mxid().is_some()
+    {
+        let token = event
+            .content
+            .get_third_party_invite_token()
+            .ok_or_else(|| AuthError::InvalidStateKey {
+                expected: "valid third_party_invite block with token".into(),
+                actual: "missing token".into(),
+            })?;
 
-    if !has_power {
-        let sender_pl = get_sender_power_level(&event.sender, state, version);
-        if sender_pl < invite_pl {
+        let mxid = event.content.get_third_party_invite_mxid().ok_or_else(|| {
+            AuthError::InvalidStateKey {
+                expected: "valid third_party_invite block with mxid".into(),
+                actual: "missing mxid".into(),
+            }
+        })?;
+
+        if !event.content.has_third_party_invite_signatures() {
+            return Err(AuthError::InvalidStateKey {
+                expected: "signatures block in third_party_invite.signed".into(),
+                actual: "missing".into(),
+            });
+        }
+
+        // NOTE: We do not cryptographically verify the signature here. That is deferred to the homeserver layer.
+
+        if mxid != target_user {
+            return Err(AuthError::InvalidStateKey {
+                expected: alloc::format!("mxid == {target_user}"),
+                actual: mxid.into(),
+            });
+        }
+
+        let tpi_event = state
+            .get_event(
+                crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE,
+                token,
+            )
+            .ok_or_else(|| AuthError::InvalidStateKey {
+                expected: "m.room.third_party_invite event exists".into(),
+                actual: "missing".into(),
+            })?;
+
+        if tpi_event.sender != event.sender {
+            return Err(AuthError::InvalidStateKey {
+                expected: alloc::format!("sender == {}", tpi_event.sender),
+                actual: event.sender.clone(),
+            });
+        }
+
+        let issuer_pl = get_sender_power_level(&tpi_event.sender, state, version);
+        if issuer_pl < invite_pl {
             return Err(AuthError::InsufficientPowerLevel {
                 required: invite_pl,
-                actual: sender_pl,
+                actual: issuer_pl,
                 event_type: "invite".into(),
             });
         }
+
+        return Ok(()); // 3PI validation passed! Do not fall through.
+    }
+
+    let sender_pl = get_sender_power_level(&event.sender, state, version);
+    if sender_pl < invite_pl {
+        return Err(AuthError::InsufficientPowerLevel {
+            required: invite_pl,
+            actual: sender_pl,
+            event_type: "invite".into(),
+        });
     }
 
     // Check target isn't already joined or banned

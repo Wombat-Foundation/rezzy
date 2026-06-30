@@ -278,6 +278,12 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
 
     /// Returns the signed token from the `third_party_invite` field, if present.
     fn get_third_party_invite_token(&self) -> Option<&str>;
+
+    /// Returns the mxid from the `third_party_invite` field, if present.
+    fn get_third_party_invite_mxid(&self) -> Option<&str>;
+
+    /// Check if signatures block exists in `third_party_invite.signed`.
+    fn has_third_party_invite_signatures(&self) -> bool;
 }
 
 impl EventContent for Value {
@@ -360,6 +366,20 @@ impl EventContent for Value {
             .get("signed")?
             .get("token")?
             .as_str()
+    }
+
+    fn get_third_party_invite_mxid(&self) -> Option<&str> {
+        self.get("third_party_invite")?
+            .get("signed")?
+            .get("mxid")?
+            .as_str()
+    }
+
+    fn has_third_party_invite_signatures(&self) -> bool {
+        self.get("third_party_invite")
+            .and_then(|tpi| tpi.get("signed"))
+            .and_then(|signed| signed.get("signatures"))
+            .is_some()
     }
 }
 

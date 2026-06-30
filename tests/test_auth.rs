@@ -1814,10 +1814,9 @@ fn test_third_party_invite_allowed_when_issuer_has_power() {
         M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,
     };
 
-    // Alice has PL to invite. Bob doesn't.
+    // Alice has PL to invite.
     // Alice creates m.room.third_party_invite with state_key "abc_token".
-    // Bob issues m.room.member (invite) for Charlie, referencing "abc_token".
-    // This should pass because Alice has the PL.
+    // Alice issues m.room.member (invite) for Charlie, referencing "abc_token" and her own mxid.
     let mut state = RoomState::new();
     state.insert(
         (M_ROOM_CREATE.into(), String::new()),
@@ -1842,7 +1841,16 @@ fn test_third_party_invite_allowed_when_issuer_has_power() {
             }),
         ),
     );
-
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@alice:matrix.org".into()),
+        make_event(
+            "$a",
+            M_ROOM_MEMBER,
+            Some("@alice:matrix.org"),
+            "@alice:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
     state.insert(
         (M_ROOM_MEMBER.into(), "@bob:matrix.org".into()),
         make_event(
@@ -1866,7 +1874,79 @@ fn test_third_party_invite_allowed_when_issuer_has_power() {
         ),
     );
 
-    // Bob sends the actual invite, leveraging Alice's 3PI token
+    // Alice sends the actual invite, leveraging her own 3PI token
+    let alice_invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@alice:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "display_name": "charlie",
+                "signed": {
+                    "token": "abc_token",
+                    "mxid": "@charlie:matrix.org",
+                    "signatures": {
+                        "example.com": {
+                            "ed25519:1": "dummy_signature"
+                        }
+                    }
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&alice_invite, &state, StateResVersion::V2);
+    assert!(
+        result.is_ok(),
+        "3PI invite should be allowed when issuer correctly sends the invite: {result:?}"
+    );
+}
+
+#[test]
+fn test_third_party_invite_rejected_when_sender_mismatch() {
+    use rezzy::basespec::event_types::{
+        M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,
+    };
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({
+                "users": { "@alice:matrix.org": 100, "@bob:matrix.org": 100 },
+                "invite": 50
+            }),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@bob:matrix.org".into()),
+        make_event(
+            "$b",
+            M_ROOM_MEMBER,
+            Some("@bob:matrix.org"),
+            "@bob:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // ALICE creates the third party invite
+    state.insert(
+        (M_ROOM_THIRD_PARTY_INVITE.into(), "abc_token".into()),
+        make_event(
+            "$tpi",
+            M_ROOM_THIRD_PARTY_INVITE,
+            Some("abc_token"),
+            "@alice:matrix.org",
+            json!({"display_name": "charlie"}),
+        ),
+    );
+
+    // BOB (who also has PL) tries to send the invite using ALICE's token
     let bob_invite = make_event(
         "$inv",
         M_ROOM_MEMBER,
@@ -1876,7 +1956,9 @@ fn test_third_party_invite_allowed_when_issuer_has_power() {
             "membership": "invite",
             "third_party_invite": {
                 "signed": {
-                    "token": "abc_token"
+                    "token": "abc_token",
+                    "mxid": "@charlie:matrix.org",
+                    "signatures": { "example.com": { "ed25519:1": "dummy" } }
                 }
             }
         }),
@@ -1884,7 +1966,186 @@ fn test_third_party_invite_allowed_when_issuer_has_power() {
 
     let result = check_auth(&bob_invite, &state, StateResVersion::V2);
     assert!(
-        result.is_ok(),
-        "3PI invite should be allowed since Alice (the 3PI issuer) has invite PL: {result:?}"
+        result.is_err(),
+        "3PI invite must fail if the sender of m.room.member does not match the sender of m.room.third_party_invite"
+    );
+}
+
+#[test]
+fn test_third_party_invite_rejected_when_mxid_mismatch() {
+    use rezzy::basespec::event_types::{
+        M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,
+    };
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({ "users": { "@alice:matrix.org": 100 }, "invite": 50 }),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@alice:matrix.org".into()),
+        make_event(
+            "$a",
+            M_ROOM_MEMBER,
+            Some("@alice:matrix.org"),
+            "@alice:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    state.insert(
+        (M_ROOM_THIRD_PARTY_INVITE.into(), "abc_token".into()),
+        make_event(
+            "$tpi",
+            M_ROOM_THIRD_PARTY_INVITE,
+            Some("abc_token"),
+            "@alice:matrix.org",
+            json!({"display_name": "charlie"}),
+        ),
+    );
+
+    // Alice sends the invite, but the mxid in the token does NOT match the state_key
+    let alice_invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@alice:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "signed": {
+                    "token": "abc_token",
+                    "mxid": "@wrong_user:matrix.org",
+                    "signatures": { "example.com": { "ed25519:1": "dummy" } }
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&alice_invite, &state, StateResVersion::V2);
+    assert!(
+        result.is_err(),
+        "3PI invite must fail if mxid does not match target user"
+    );
+}
+
+#[test]
+fn test_third_party_invite_rejected_when_signatures_missing() {
+    use rezzy::basespec::event_types::{
+        M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,
+    };
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({ "users": { "@alice:matrix.org": 100 }, "invite": 50 }),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@alice:matrix.org".into()),
+        make_event(
+            "$a",
+            M_ROOM_MEMBER,
+            Some("@alice:matrix.org"),
+            "@alice:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    state.insert(
+        (M_ROOM_THIRD_PARTY_INVITE.into(), "abc_token".into()),
+        make_event(
+            "$tpi",
+            M_ROOM_THIRD_PARTY_INVITE,
+            Some("abc_token"),
+            "@alice:matrix.org",
+            json!({"display_name": "charlie"}),
+        ),
+    );
+
+    let alice_invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@alice:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "signed": {
+                    "token": "abc_token",
+                    "mxid": "@charlie:matrix.org"
+                    // missing signatures
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&alice_invite, &state, StateResVersion::V2);
+    assert!(
+        result.is_err(),
+        "3PI invite must fail if signatures block is missing"
+    );
+}
+
+#[test]
+fn test_third_party_invite_rejected_when_token_missing() {
+    use rezzy::basespec::event_types::{
+        M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
+    };
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({ "users": { "@alice:matrix.org": 100 }, "invite": 50 }),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@alice:matrix.org".into()),
+        make_event(
+            "$a",
+            M_ROOM_MEMBER,
+            Some("@alice:matrix.org"),
+            "@alice:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // NO m.room.third_party_invite event is in the state!
+
+    // Alice sends the invite, referencing a token that doesn't exist
+    let alice_invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@alice:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "signed": {
+                    "token": "missing_token",
+                    "mxid": "@charlie:matrix.org",
+                    "signatures": { "example.com": { "ed25519:1": "dummy" } }
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&alice_invite, &state, StateResVersion::V2);
+    assert!(
+        result.is_err(),
+        "3PI invite must fail if token does not exist in state, EVEN IF sender has PL to invite normally"
     );
 }
