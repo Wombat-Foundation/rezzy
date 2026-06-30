@@ -224,12 +224,10 @@ pub(crate) fn update_local_auth<Id: Clone + Ord, C: Clone>(
     aev: &LeanEvent<Id, C>,
     depth: usize,
 ) {
-    let key = (
-        aev.event_type.clone(),
-        aev.state_key
-            .clone()
-            .expect("auth events must have a state_key"),
-    );
+    let Some(sk) = &aev.state_key else {
+        return;
+    };
+    let key = (aev.event_type.clone(), sk.clone());
     match local_auth.entry(key) {
         alloc::collections::btree_map::Entry::Vacant(e) => {
             e.insert(LocalAuthEntry {

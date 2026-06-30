@@ -234,11 +234,8 @@ fn assert_benign_convergence(jsonl_filename: &str) -> (ResolvedStateMap, EventMa
     let events = load_fixture(&absolute_path);
     let map = to_event_map(&events);
 
-    let mut resolved_v2_1 = resolve_full(&events, StateResVersion::V2_1);
-    let mut resolved_v2_1_1 = resolve_full(&events, StateResVersion::V2_1_1);
-
-    resolved_v2_1.retain(|k, _| !k.1.is_empty());
-    resolved_v2_1_1.retain(|k, _| !k.1.is_empty());
+    let resolved_v2_1 = resolve_full(&events, StateResVersion::V2_1);
+    let resolved_v2_1_1 = resolve_full(&events, StateResVersion::V2_1_1);
 
     assert_eq!(
         resolved_v2_1_1, resolved_v2_1,
