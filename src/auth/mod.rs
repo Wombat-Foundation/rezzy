@@ -549,17 +549,37 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         }
     } else if join_rule == RULE_RESTRICTED || join_rule == RULE_KNOCK_RESTRICTED {
         // Restricted/knock_restricted (room version 8+/10+):
-        // Allow if:
-        //   1. User is already invited, OR
-        //   2. User has join_authorised_via_users_server in the event content
-        if current_membership == MEM_INVITE
-            || current_membership == MEM_JOIN
-            || event
-                .content
-                .get_join_authorised_via_users_server()
-                .is_some()
+        // Allow if user is already invited/joined. Otherwise, require a valid
+        // join_authorised_via_users_server field whose referenced user is:
+        //   1. Joined to the room, AND
+        //   2. Has sufficient power level to invite.
+        if current_membership == MEM_INVITE || current_membership == MEM_JOIN {
+            // Already invited or joined — allowed without further checks.
+        } else if let Some(authorising_user) = event.content.get_join_authorised_via_users_server()
         {
-            // Allowed
+            // Validate the authorising user is joined to the room.
+            let auth_membership = state
+                .get_event(M_ROOM_MEMBER, authorising_user)
+                .and_then(|ev| ev.get_membership())
+                .unwrap_or("");
+            if auth_membership != MEM_JOIN {
+                return Err(AuthError::NotMember {
+                    sender: event.sender.clone(),
+                    event_id: event.event_id.clone(),
+                });
+            }
+            // Validate the authorising user has sufficient invite power level.
+            let auth_user_pl = state
+                .get_event(M_ROOM_POWER_LEVELS, "")
+                .and_then(|pl| pl.get_user_power_level(authorising_user))
+                .unwrap_or(0);
+            let invite_pl = get_invite_power_level(state);
+            if auth_user_pl < invite_pl {
+                return Err(AuthError::NotMember {
+                    sender: event.sender.clone(),
+                    event_id: event.event_id.clone(),
+                });
+            }
         } else {
             return Err(AuthError::NotMember {
                 sender: event.sender.clone(),
