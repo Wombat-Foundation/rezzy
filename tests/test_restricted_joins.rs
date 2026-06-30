@@ -380,3 +380,80 @@ fn test_restricted_banned_user_cannot_join_even_with_authorized_via() {
         "banned user must NOT be able to join even with authorized_via"
     );
 }
+
+// ─── Authorising user validation (MSC3083) ──────────────────────────────
+
+#[test]
+fn test_restricted_join_rejected_when_authorising_user_not_joined() {
+    // The authorising user must be joined to the room.
+    let state = room_with_join_rule("restricted");
+
+    // @bob tries to join with authorisation from @ghost who is NOT in the room.
+    let join_event = make_event(
+        "$bob_join",
+        "m.room.member",
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({
+            "membership": "join",
+            "join_authorised_via_users_server": "@ghost:example.com"
+        }),
+    );
+
+    let result = check_auth(&join_event, &state, StateResVersion::V2);
+    assert!(
+        result.is_err(),
+        "restricted join must be rejected when authorising user is not joined"
+    );
+}
+
+#[test]
+fn test_restricted_join_rejected_when_authorising_user_lacks_invite_pl() {
+    // The authorising user must have sufficient power level to invite.
+    let mut state = room_with_join_rule("restricted");
+
+    // @lowpl is joined but has PL 0 (invite requires PL 0 by default,
+    // so we set invite PL to 50 to make them insufficient).
+    state.insert(
+        ("m.room.member".into(), "@lowpl:example.com".into()),
+        make_event(
+            "$lowpl_join",
+            "m.room.member",
+            Some("@lowpl:example.com"),
+            "@lowpl:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    // Override power levels: set invite PL to 50 so @lowpl (PL 0) can't invite.
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl2",
+            "m.room.power_levels",
+            Some(""),
+            "@admin:example.com",
+            json!({
+                "users": {"@admin:example.com": 100},
+                "users_default": 0,
+                "invite": 50,
+            }),
+        ),
+    );
+
+    let join_event = make_event(
+        "$bob_join",
+        "m.room.member",
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({
+            "membership": "join",
+            "join_authorised_via_users_server": "@lowpl:example.com"
+        }),
+    );
+
+    let result = check_auth(&join_event, &state, StateResVersion::V2);
+    assert!(
+        result.is_err(),
+        "restricted join must be rejected when authorising user lacks invite PL"
+    );
+}

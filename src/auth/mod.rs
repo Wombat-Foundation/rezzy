@@ -557,29 +557,7 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
             // Already invited or joined — allowed without further checks.
         } else if let Some(authorising_user) = event.content.get_join_authorised_via_users_server()
         {
-            // Validate the authorising user is joined to the room.
-            let auth_membership = state
-                .get_event(M_ROOM_MEMBER, authorising_user)
-                .and_then(|ev| ev.get_membership())
-                .unwrap_or("");
-            if auth_membership != MEM_JOIN {
-                return Err(AuthError::NotMember {
-                    sender: event.sender.clone(),
-                    event_id: event.event_id.clone(),
-                });
-            }
-            // Validate the authorising user has sufficient invite power level.
-            let auth_user_pl = state
-                .get_event(M_ROOM_POWER_LEVELS, "")
-                .and_then(|pl| pl.get_user_power_level(authorising_user))
-                .unwrap_or(0);
-            let invite_pl = get_invite_power_level(state);
-            if auth_user_pl < invite_pl {
-                return Err(AuthError::NotMember {
-                    sender: event.sender.clone(),
-                    event_id: event.event_id.clone(),
-                });
-            }
+            check_authorising_user(event, state, authorising_user)?;
         } else {
             return Err(AuthError::NotMember {
                 sender: event.sender.clone(),
@@ -592,6 +570,39 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
             event_id: event.event_id.clone(),
         });
     }
+    Ok(())
+}
+
+/// Validate that the authorising user for a restricted join is joined to the
+/// room and has sufficient power level to invite (MSC3083).
+fn check_authorising_user<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
+    event: &LeanEvent<Id, C>,
+    state: &impl StateProvider<Id, C>,
+    authorising_user: &str,
+) -> Result<(), AuthError<Id>> {
+    let auth_membership = state
+        .get_event(M_ROOM_MEMBER, authorising_user)
+        .and_then(|ev| ev.get_membership())
+        .unwrap_or("");
+
+    if auth_membership != MEM_JOIN {
+        return Err(AuthError::NotMember {
+            sender: event.sender.clone(),
+            event_id: event.event_id.clone(),
+        });
+    }
+
+    let auth_user_pl = state
+        .get_event(M_ROOM_POWER_LEVELS, "")
+        .and_then(|pl| pl.get_user_power_level(authorising_user))
+        .unwrap_or(0);
+    if auth_user_pl < get_invite_power_level(state) {
+        return Err(AuthError::NotMember {
+            sender: event.sender.clone(),
+            event_id: event.event_id.clone(),
+        });
+    }
+
     Ok(())
 }
 
