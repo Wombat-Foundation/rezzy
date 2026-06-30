@@ -1563,15 +1563,16 @@ fn test_membership_rules_fallback() {
             json!({"membership": "join"}),
         ),
     );
-    // Custom/unknown membership transition: e.g. "knock"
-    let knock = make_event(
-        "$knock",
+    // Truly unknown membership transition: falls through the _ => {} catch-all
+    // Note: "knock" is no longer unknown — it has proper validation (MSC2403).
+    let unknown = make_event(
+        "$unknown",
         "m.room.member",
         Some("@alice:x.com"),
         "@alice:x.com",
-        json!({"membership": "knock"}),
+        json!({"membership": "custom_xyz"}),
     );
-    let result = check_auth(&knock, &state, rezzy::StateResVersion::V2_1);
+    let result = check_auth(&unknown, &state, rezzy::StateResVersion::V2_1);
     // Should fall through match in check_membership_rules, and check_membership_pl_hierarchies, and succeed.
     assert!(result.is_ok(), "Expected Ok(()), got {result:?}");
 }
