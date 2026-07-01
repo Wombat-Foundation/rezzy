@@ -1608,10 +1608,13 @@ fn test_v2_2_auth_distance_tiebreak() {
         StateResVersion::V2_2,
     );
 
-    // TODO: better assertion here; more state DAG tests
+    // $topic_b wins: both events have equal PL (0), empty mainline (position 0),
+    // equal origin_server_ts (500). Tiebreak: $topic_a < $topic_b lexicographically,
+    // so $topic_a sorts first -> $topic_b is applied last -> last-write-wins.
     let topic_key = ("m.room.topic".to_string(), String::new());
-    assert!(
-        resolved.contains_key(&topic_key),
-        "V2.2 resolution must produce a topic winner"
+    assert_eq!(
+        resolved.get(&topic_key),
+        Some(&"$topic_b".to_string()),
+        "V2.2: $topic_b must win via lexicographic event_id tiebreak (last-write-wins)"
     );
 }
