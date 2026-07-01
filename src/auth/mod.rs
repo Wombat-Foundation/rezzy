@@ -25,11 +25,11 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::basespec::event_types::{
-    DEFAULT_PL_BAN, DEFAULT_PL_INVITE, DEFAULT_PL_KICK, DEFAULT_PL_REDACT, DEFAULT_PL_USER,
-    FIELD_MEMBERSHIP, FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE,
-    MEM_JOIN, MEM_KNOCK, MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER,
-    M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_KNOCK_RESTRICTED,
-    RULE_PUBLIC, RULE_RESTRICTED,
+    DEFAULT_PL_BAN, DEFAULT_PL_INVITE, DEFAULT_PL_KICK, DEFAULT_PL_REDACT, FIELD_MEMBERSHIP,
+    FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE, MEM_JOIN, MEM_KNOCK,
+    MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
+    M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_KNOCK_RESTRICTED, RULE_PUBLIC,
+    RULE_RESTRICTED,
 };
 use crate::basespec::rezzy_types::LeanEvent;
 use crate::basespec::rezzy_types::StateResVersion;
@@ -271,7 +271,7 @@ pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         let is_first_pl = no_pl_event && event.event_type == M_ROOM_POWER_LEVELS;
 
         if !is_first_pl {
-            let sender_pl = get_sender_power_level(&event.sender, state, version);
+            let sender_pl = user::get_sender_power_level(&event.sender, state, version);
             let required_pl = get_required_power_level(event, state);
 
             if sender_pl < required_pl {
@@ -312,56 +312,13 @@ pub use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_POWER_LEVEL_RUS
 pub(crate) fn get_redact_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
+    // TODO: call chain nested statement. define FIELD_EMPTY_STRING
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         if let Some(redact) = pl_event.get_redact() {
             return redact;
         }
     }
     DEFAULT_PL_REDACT
-}
-
-/// Get the power level of a user from the current room state.
-pub(crate) fn get_sender_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
-    sender: &str,
-    state: &impl StateProvider<Id, C>,
-    version: StateResVersion,
-) -> i64 {
-    // V12+ (MSC4289): creators have spec-mandated infinite power level,
-    // immutable and not representable in the PL event.
-    if matches!(
-        version,
-        StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
-    ) {
-        if let Some(create_event) = state.get_event(M_ROOM_CREATE, "") {
-            let is_creator =
-                create_event.sender == sender || create_event.has_additional_creator(sender);
-
-            if is_creator {
-                // Use i64::MAX (not 2^53-1) so the creator always wins power
-                // comparisons, even against a malicious PL event that sets a
-                // user to the JSON-safe maximum. Incoming values are clamped
-                // to MAX_POWER_LEVEL_JSON on deserialization, so this is
-                // strictly unreachable by any wire value.
-                return MAX_POWER_LEVEL_RUST;
-            }
-        }
-    }
-
-    // State-based Power Levels (all versions)
-    // V1-V11: the auth rules have no implicit creator PL. The creator gets
-    // PL 100 only because the server explicitly lists them in the PL event's
-    // `users` map at room creation. If the PL event doesn't list them, they
-    // fall through to `users_default` like any other user.
-    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
-        if let Some(pl) = pl_event.get_user_power_level(sender) {
-            return pl;
-        }
-        // Fall back to users_default
-        if let Some(default_pl) = pl_event.get_users_default() {
-            return default_pl;
-        }
-    }
-    DEFAULT_PL_USER // Default power level if no power_levels event exists
 }
 
 /// Get the required power level to send an event based on room state.
@@ -415,7 +372,7 @@ fn check_leave_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     }
 
     // If target_user != sender, this is a kick or unban — requires power level
-    let sender_pl = get_sender_power_level(&event.sender, state, version);
+    let sender_pl = user::get_sender_power_level(&event.sender, state, version);
 
     // Unban: requires ban_pl. Kick: requires kick_pl.
     // Mutually exclusive per spec §10.2.1.
@@ -443,7 +400,7 @@ fn check_ban_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     // Banning requires the ban power level
-    let sender_pl = get_sender_power_level(&event.sender, state, version);
+    let sender_pl = user::get_sender_power_level(&event.sender, state, version);
     let ban_pl = get_ban_power_level(state);
     if sender_pl < ban_pl {
         return Err(AuthError::InsufficientPowerLevel {
@@ -538,7 +495,7 @@ fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
             });
         }
 
-        let issuer_pl = get_sender_power_level(&tpi_event.sender, state, version);
+        let issuer_pl = user::get_sender_power_level(&tpi_event.sender, state, version);
         if issuer_pl < invite_pl {
             return Err(AuthError::InsufficientPowerLevel {
                 required: invite_pl,
@@ -550,7 +507,7 @@ fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         return Ok(()); // 3PI validation passed! Do not fall through.
     }
 
-    let sender_pl = get_sender_power_level(&event.sender, state, version);
+    let sender_pl = user::get_sender_power_level(&event.sender, state, version);
     if sender_pl < invite_pl {
         return Err(AuthError::InsufficientPowerLevel {
             required: invite_pl,
@@ -585,8 +542,8 @@ fn check_membership_pl_hierarchies<Id: Clone, C: crate::basespec::rezzy_types::E
 ) -> Result<(), AuthError<Id>> {
     // 1. Kick/Ban power vs Target power: ONLY for "leave" (kick) or "ban" transitions.
     if target_user != event.sender && (new_membership == "leave" || new_membership == "ban") {
-        let sender_pl = get_sender_power_level(&event.sender, state, version);
-        let target_pl = get_sender_power_level(target_user, state, version);
+        let sender_pl = user::get_sender_power_level(&event.sender, state, version);
+        let target_pl = user::get_sender_power_level(target_user, state, version);
 
         if sender_pl <= target_pl {
             return Err(AuthError::InsufficientPowerLevel {
@@ -749,7 +706,7 @@ fn check_authorising_user<Id: Clone, C: crate::basespec::rezzy_types::EventConte
     }
 
     // Use get_sender_power_level to correctly handle V12 implicit creator PL
-    let auth_user_pl = get_sender_power_level(authorising_user, state, version);
+    let auth_user_pl = user::get_sender_power_level(authorising_user, state, version);
     if auth_user_pl < get_invite_power_level(state) {
         return Err(AuthError::NotMember {
             sender: event.sender.clone(),
@@ -1025,7 +982,7 @@ mod tests {
 
         // Assert that the primary creator gets i64::MAX
         let creator_pl =
-            get_sender_power_level("@creator:example.com", &state, StateResVersion::V2_1);
+            user::get_sender_power_level("@creator:example.com", &state, StateResVersion::V2_1);
         assert_eq!(
             creator_pl,
             i64::MAX,
@@ -1034,7 +991,7 @@ mod tests {
 
         // Assert that the additional creator gets i64::MAX
         let additional_pl =
-            get_sender_power_level("@additional:example.com", &state, StateResVersion::V2_1);
+            user::get_sender_power_level("@additional:example.com", &state, StateResVersion::V2_1);
         assert_eq!(
             additional_pl,
             i64::MAX,
@@ -1043,7 +1000,7 @@ mod tests {
 
         // Normal user should have default (0)
         let normal_pl =
-            get_sender_power_level("@normal:example.com", &state, StateResVersion::V2_1);
+            user::get_sender_power_level("@normal:example.com", &state, StateResVersion::V2_1);
         assert_eq!(normal_pl, 0, "Normal user should have default 0 power");
     }
 
