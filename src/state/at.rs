@@ -1101,4 +1101,73 @@ mod tests {
             "The message must be rejected because the conflicted power levels event was not resolved!"
         );
     }
+
+    /// Coverage: `LocalAuthCache` hit path (at.rs:263-268).
+    /// Calls `compute_local_auth` twice for the same event. Second call returns
+    /// from cache without re-walking the auth chain.
+    #[test]
+    fn test_local_auth_cache_hit() {
+        let create_ev: LeanEvent = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            depth: 1,
+            content: json!({"room_version": "10", "creator": "@alice:x"}),
+            ..Default::default()
+        };
+        let join_ev: LeanEvent = LeanEvent {
+            event_id: "$join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@alice:x".into()),
+            sender: "@alice:x".into(),
+            depth: 2,
+            auth_events: vec!["$create".into()],
+            content: json!({"membership": "join"}),
+            ..Default::default()
+        };
+        let topic_ev: LeanEvent = LeanEvent {
+            event_id: "$topic".into(),
+            event_type: "m.room.topic".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            depth: 3,
+            auth_events: vec!["$create".into(), "$join".into()],
+            content: json!({"topic": "hello"}),
+            ..Default::default()
+        };
+
+        let auth_context: HashMap<String, LeanEvent> =
+            [("$create".into(), create_ev), ("$join".into(), join_ev)]
+                .into_iter()
+                .collect();
+
+        let conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let mut cache = LocalAuthCache::new(StateResVersion::V2);
+
+        // First call: populates cache
+        let result1 = compute_local_auth(
+            &topic_ev,
+            &auth_context,
+            &conflicted,
+            &mut cache,
+            StateResVersion::V2,
+        );
+        assert!(
+            cache.map.contains_key("$topic"),
+            "Cache must be populated after first call"
+        );
+
+        // Second call: hits cache early return (at.rs:263-268)
+        let result2 = compute_local_auth(
+            &topic_ev,
+            &auth_context,
+            &conflicted,
+            &mut cache,
+            StateResVersion::V2,
+        );
+
+        // Both calls must produce identical results
+        assert_eq!(result1, result2, "Cached result must match uncached result");
+    }
 }

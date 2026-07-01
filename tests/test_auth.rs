@@ -1139,7 +1139,7 @@ fn test_msc4289_v2_1_creator_immune_to_pl_wipeout() {
 }
 /// MSC4289 (V12+): creators have spec-mandated infinite power level, immutable
 /// and not representable in the PL event. This test verifies the implicit PL
-/// for the primary creator and additional_creators in V2.1 (room version 12).
+/// for the primary creator and `additional_creators` in V2.1 (room version 12).
 #[test]
 #[allow(clippy::too_many_lines)]
 fn test_msc4289_creator_implicit_power_level() {

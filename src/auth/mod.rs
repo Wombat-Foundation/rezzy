@@ -348,7 +348,7 @@ fn get_sender_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
             return default_pl;
         }
     }
-    return DEFAULT_PL_USER; // Default power level if no power_levels event exists
+    DEFAULT_PL_USER // Default power level if no power_levels event exists
 }
 
 /// Get the required power level to send an event based on room state.

@@ -231,6 +231,7 @@ pub fn assert_jsonl_events_eq(actual: &[LeanEvent], expected_jsonl: &str) {
 /// Computes and assigns the topological depth for a set of events based on their `prev_events`.
 /// The depth of an event is 1 if it has no `prev_events`, or 1 greater than the maximum depth
 /// of its `prev_events` otherwise.
+#[cfg(test)]
 #[allow(dead_code)]
 pub fn compute_local_naive_topological_depth(events: &mut [LeanEvent]) {
     fn get_depth(
