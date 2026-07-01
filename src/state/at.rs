@@ -1158,7 +1158,7 @@ mod tests {
             ..Default::default()
         };
 
-        let auth_context: HashMap<String, LeanEvent> =
+        let mut auth_context: HashMap<String, LeanEvent> =
             [("$create".into(), create_ev), ("$join".into(), join_ev)]
                 .into_iter()
                 .collect();
@@ -1178,8 +1178,14 @@ mod tests {
             cache.map.contains_key("$topic"),
             "Cache must be populated after first call"
         );
+        let cache_len_after_first = cache.map.len();
 
-        // Second call: hits cache early return (at.rs:263-268)
+        // Mutate auth_context so a fresh (non-cached) re-computation would
+        // produce a DIFFERENT result. If the cache hit works, result2 will
+        // still equal result1 (the stale cached value).
+        auth_context.remove("$join");
+
+        // Second call: must hit cache early return
         let result2 = compute_local_auth(
             &topic_ev,
             &auth_context,
@@ -1188,7 +1194,15 @@ mod tests {
             StateResVersion::V2,
         );
 
-        // Both calls must produce identical results
+        // Cache size must not grow (no re-insert)
+        assert_eq!(
+            cache.map.len(),
+            cache_len_after_first,
+            "Cache must not grow on cache hit"
+        );
+
+        // Cached result must match original, proving the cache was used
+        // (a fresh computation with $join removed would differ)
         assert_eq!(result1, result2, "Cached result must match uncached result");
     }
 }
