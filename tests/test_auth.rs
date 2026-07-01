@@ -2511,3 +2511,221 @@ fn test_malformed_third_party_invite_presence() {
         "Invite with malformed third_party_invite property must be rejected as InvalidSyntax, got: {result:?}"
     );
 }
+
+// ─── EventVerifier trait coverage ───────────────────────────────────────────
+
+/// A pass-through verifier that uses all default `Ok(())` impls.
+struct PassThroughVerifier;
+impl rezzy::EventVerifier<String> for PassThroughVerifier {}
+
+/// A verifier that rejects on `verify_event_id_hash`.
+struct RejectEventIdHash;
+impl rezzy::EventVerifier<String> for RejectEventIdHash {
+    fn verify_event_id_hash(&self, _event_id: &String) -> Result<(), String> {
+        Err("bad event id hash".into())
+    }
+}
+
+/// A verifier that rejects on `verify_signatures`.
+struct RejectSignatures;
+impl rezzy::EventVerifier<String> for RejectSignatures {
+    fn verify_signatures(&self, _event_id: &String) -> Result<(), String> {
+        Err("bad signature".into())
+    }
+}
+
+/// A verifier that rejects on `verify_content_hash`.
+struct RejectContentHash;
+impl rezzy::EventVerifier<String> for RejectContentHash {
+    fn verify_content_hash(&self, _event_id: &String) -> Result<(), String> {
+        Err("bad content hash".into())
+    }
+}
+
+/// A verifier that rejects on `verify_third_party_invite`.
+struct RejectThirdPartyInvite;
+impl rezzy::EventVerifier<String> for RejectThirdPartyInvite {
+    fn verify_third_party_invite(
+        &self,
+        _event_id: &String,
+        _tpi_token: &str,
+    ) -> Result<(), String> {
+        Err("bad 3pi signature".into())
+    }
+}
+
+/// Helper: build minimal valid state + member event for verifier tests.
+fn make_verifier_test_state() -> (RoomState, LeanEvent) {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$create",
+            "m.room.create",
+            Some(""),
+            "@alice:x.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@alice:x.com".into()),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@alice:x.com"),
+            "@alice:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@alice:x.com",
+            json!({"users": {"@alice:x.com": 100}}),
+        ),
+    );
+    let msg = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:x.com",
+        json!({"body": "hi"}),
+    );
+    (state, msg)
+}
+
+#[test]
+fn test_event_verifier_passthrough_allows() {
+    let (state, msg) = make_verifier_test_state();
+    let result = check_auth(
+        &msg,
+        &state,
+        rezzy::StateResVersion::V2_1,
+        Some(&PassThroughVerifier),
+    );
+    assert!(
+        result.is_ok(),
+        "PassThroughVerifier should allow: {result:?}"
+    );
+}
+
+#[test]
+fn test_event_verifier_reject_event_id_hash() {
+    let (state, msg) = make_verifier_test_state();
+    let result = check_auth(
+        &msg,
+        &state,
+        rezzy::StateResVersion::V2_1,
+        Some(&RejectEventIdHash),
+    );
+    assert!(
+        matches!(&result, Err(AuthError::InvalidSyntax(s)) if s.contains("bad event id hash")),
+        "Should reject with bad event id hash: {result:?}"
+    );
+}
+
+#[test]
+fn test_event_verifier_reject_signatures() {
+    let (state, msg) = make_verifier_test_state();
+    let result = check_auth(
+        &msg,
+        &state,
+        rezzy::StateResVersion::V2_1,
+        Some(&RejectSignatures),
+    );
+    assert!(
+        matches!(&result, Err(AuthError::InvalidSyntax(s)) if s.contains("bad signature")),
+        "Should reject with bad signature: {result:?}"
+    );
+}
+
+#[test]
+fn test_event_verifier_reject_content_hash() {
+    let (state, msg) = make_verifier_test_state();
+    let result = check_auth(
+        &msg,
+        &state,
+        rezzy::StateResVersion::V2_1,
+        Some(&RejectContentHash),
+    );
+    assert!(
+        matches!(&result, Err(AuthError::InvalidSyntax(s)) if s.contains("bad content hash")),
+        "Should reject with bad content hash: {result:?}"
+    );
+}
+
+#[test]
+fn test_event_verifier_reject_third_party_invite() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$create",
+            "m.room.create",
+            Some(""),
+            "@alice:x.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@alice:x.com".into()),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@alice:x.com"),
+            "@alice:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@alice:x.com",
+            json!({"users": {"@alice:x.com": 100}}),
+        ),
+    );
+    state.insert(
+        ("m.room.third_party_invite".into(), "tok123".into()),
+        make_event(
+            "$tpi",
+            "m.room.third_party_invite",
+            Some("tok123"),
+            "@alice:x.com",
+            json!({"public_key": "abc"}),
+        ),
+    );
+
+    let invite = make_event(
+        "$inv",
+        "m.room.member",
+        Some("@bob:x.com"),
+        "@alice:x.com",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "signed": {
+                    "mxid": "@bob:x.com",
+                    "token": "tok123",
+                    "signatures": {"x.com": {"ed25519:auto": "sig"}}
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(
+        &invite,
+        &state,
+        rezzy::StateResVersion::V2_1,
+        Some(&RejectThirdPartyInvite),
+    );
+    assert!(
+        matches!(&result, Err(AuthError::InvalidSyntax(s)) if s.contains("bad 3pi signature")),
+        "Should reject with bad 3pi signature: {result:?}"
+    );
+}
