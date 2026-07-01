@@ -476,6 +476,12 @@ fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
 
     // Rule 5.4.1: If third_party_invite is present, check the issuer's power level.
     // It must strictly adhere to the rules, or be rejected. No fallback.
+    //
+    // NOTE: The spec (Room v10 §4.4.1) only checks for *banned* targets here,
+    // NOT already-joined targets. The "target is join" check (§4.4.3) is in the
+    // non-3PI path below and is never reached when third_party_invite is present.
+    // This means 3PI invites to already-joined users are spec-valid, which allows
+    // redundant invites. Arguably undesirable but matches the spec as written.
     if event.content.has_third_party_invite() {
         // Rule 5.4.1.1: If target user is banned, reject.
         if current_membership == MEM_BAN {

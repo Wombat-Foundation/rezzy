@@ -1,9 +1,15 @@
-//! Public query API — "can this user do X?"
+//! Power-level threshold queries — "does this user meet the PL requirement?"
 //!
-//! These decompose the monolithic [`check_auth`](super::check_auth) into
-//! reusable sub-queries for power-level threshold checks. They work with
-//! [`StateProvider`](super::StateProvider) (raw JSON) so callers don't need
-//! ruma content types.
+//! These are **threshold-only** sub-queries that check `sender_pl >= action_pl`.
+//! They do NOT perform full authorization — use [`check_auth`](super::check_auth)
+//! for complete Matrix auth rule evaluation.
+//!
+//! Full authorization for these actions depends on additional context not
+//! available here (target user, membership state, 3PI tokens, etc.):
+//!
+//! - **Invite**: also requires sender≠target, target not banned, 3PI checks.
+//! - **Ban/Kick**: also requires `sender_pl > target_pl`.
+//! - **Redact**: rules vary by room version, event sender, and creator status.
 
 use super::StateProvider;
 use crate::basespec::rezzy_types::{EventContent, StateResVersion};
@@ -20,7 +26,10 @@ pub fn user_power_level<Id, C: EventContent>(
     super::get_sender_power_level(user, state, version)
 }
 
-/// Whether a user has sufficient power to invite other users.
+/// Whether a user's power level meets the invite threshold.
+///
+/// **Threshold-only** — does not check target membership, sender≠target, or
+/// 3PI rules. Use [`check_auth`](super::check_auth) for full authorization.
 #[must_use]
 pub fn user_can_invite<Id, C: EventContent>(
     user: &str,
@@ -30,7 +39,10 @@ pub fn user_can_invite<Id, C: EventContent>(
     super::get_sender_power_level(user, state, version) >= super::get_invite_power_level(state)
 }
 
-/// Whether a user has sufficient power to ban other users.
+/// Whether a user's power level meets the ban threshold.
+///
+/// **Threshold-only** — does not check `sender_pl > target_pl`.
+/// Use [`check_auth`](super::check_auth) for full authorization.
 #[must_use]
 pub fn user_can_ban<Id, C: EventContent>(
     user: &str,
@@ -40,7 +52,10 @@ pub fn user_can_ban<Id, C: EventContent>(
     super::get_sender_power_level(user, state, version) >= super::get_ban_power_level(state)
 }
 
-/// Whether a user has sufficient power to kick other users.
+/// Whether a user's power level meets the kick threshold.
+///
+/// **Threshold-only** — does not check `sender_pl > target_pl`.
+/// Use [`check_auth`](super::check_auth) for full authorization.
 #[must_use]
 pub fn user_can_kick<Id, C: EventContent>(
     user: &str,
@@ -50,7 +65,10 @@ pub fn user_can_kick<Id, C: EventContent>(
     super::get_sender_power_level(user, state, version) >= super::get_kick_power_level(state)
 }
 
-/// Whether a user has sufficient power to redact other users' events.
+/// Whether a user's power level meets the redact threshold.
+///
+/// **Threshold-only** — does not check room version redaction rules or
+/// creator status. Use [`check_auth`](super::check_auth) for full authorization.
 #[must_use]
 pub fn user_can_redact<Id, C: EventContent>(
     user: &str,

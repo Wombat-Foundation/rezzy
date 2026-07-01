@@ -2532,8 +2532,7 @@ fn test_third_party_invite_override_is_ignored() {
         ),
     );
 
-    // TODO: store this value as `pub const FIELD_PL_DEFAULT_REQ_INVITE: &int = 50`
-    // invite requires 50 by default, but third_party_invite override is 0
+    // invite requires PL 50, but third_party_invite event-specific override (0) must be ignored
     let pl_content = json!({
         "invite": 50,
         "events": {

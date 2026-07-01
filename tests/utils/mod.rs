@@ -37,7 +37,7 @@ pub fn build_unconflicted_state_test_helper(
     unconflicted
 }
 
-/// Parses a multiline JSONL string into a vector of `LeanEvents`.
+/// Parses a multiline JSONL string into a vector of [`LeanEvent`]s.
 /// Blank lines and lines starting with "//" are ignored.
 #[allow(dead_code)]
 pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
@@ -208,7 +208,7 @@ pub fn assert_jsonl_state_eq(actual: &RoomState, expected_jsonl: &str) {
     }
 }
 
-/// Asserts that a given slice of `LeanEvents` exactly matches the events defined in a JSONL string.
+/// Asserts that a given slice of [`LeanEvent`]s exactly matches the events defined in a JSONL string.
 #[allow(dead_code)]
 pub fn assert_jsonl_events_eq(actual: &[LeanEvent], expected_jsonl: &str) {
     let expected = parse_jsonl_events(expected_jsonl);
