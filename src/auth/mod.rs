@@ -936,10 +936,8 @@ pub fn auth_types_for_event(
     auth_types.push((M_ROOM_POWER_LEVELS.into(), String::new()));
 
     if event_type == M_ROOM_MEMBER {
-        if let Some(sk) = state_key {
-            if sk != sender {
-                auth_types.push((M_ROOM_MEMBER.into(), sk.into()));
-            }
+        if let Some(sk) = state_key.filter(|sk| *sk != sender) {
+            auth_types.push((M_ROOM_MEMBER.into(), sk.into()));
         }
 
         let membership = content.get(FIELD_MEMBERSHIP).and_then(|v| v.as_str());

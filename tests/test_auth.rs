@@ -2865,3 +2865,47 @@ fn test_event_verifier_reject_third_party_invite() {
         "Should reject with bad 3pi signature: {result:?}"
     );
 }
+
+/// Coverage: `get_required_power_level` line 377 — `m.room.third_party_invite`
+/// defaults to PL 0 when no `m.room.power_levels` event exists.
+#[test]
+fn test_third_party_invite_default_pl_without_power_levels() {
+    use rezzy::basespec::event_types::{M_ROOM_MEMBER, M_ROOM_THIRD_PARTY_INVITE};
+
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:x",
+            json!({"creator": "@alice:x"}),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@alice:x".into()),
+        make_event(
+            "$j",
+            M_ROOM_MEMBER,
+            Some("@alice:x"),
+            "@alice:x",
+            json!({"membership": "join"}),
+        ),
+    );
+    // NO m.room.power_levels in state — triggers the fallback at line 376-377
+
+    let tpi = make_event(
+        "$tpi",
+        M_ROOM_THIRD_PARTY_INVITE,
+        Some("token123"),
+        "@alice:x",
+        json!({"display_name": "charlie"}),
+    );
+
+    let result = rezzy::auth::check_auth(&tpi, &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        result.is_ok(),
+        "TPI with no PL event should succeed (default PL=0): {result:?}"
+    );
+}
