@@ -381,7 +381,7 @@ fn test_create_event_no_prev_events() {
         "@alice:example.com",
         json!({}),
     );
-    let state = RoomState::new();
+    let state: RoomState = RoomState::new();
     assert!(check_auth(
         &create,
         &state,
@@ -401,7 +401,7 @@ fn test_create_event_with_prev_events() {
         json!({}),
     );
     create.prev_events = vec!["$other".into()];
-    let state = RoomState::new();
+    let state: RoomState = RoomState::new();
     assert_eq!(
         check_auth(
             &create,
@@ -422,7 +422,7 @@ fn test_non_member_rejection() {
         "@bob:example.com",
         json!({}),
     );
-    let state = RoomState::new();
+    let state: RoomState = RoomState::new();
     assert!(matches!(
         check_auth(&msg, &state, rezzy::StateResVersion::V2_1, None),
         Err(AuthError::NotMember { .. })
@@ -529,7 +529,7 @@ fn test_join_self_only() {
         "@alice:example.com",
         json!({"membership": "join"}),
     );
-    let state = RoomState::new();
+    let state: RoomState = RoomState::new();
     assert!(matches!(
         check_auth(&join, &state, rezzy::StateResVersion::V2_1, None),
         Err(AuthError::NotMember { .. })
