@@ -462,7 +462,7 @@ fn test_v2_1_1_fixes_invite_lock() {
         sender: "@admin:example.com".to_string(),
         origin_server_ts: 200,
         content: serde_json::json!({
-            "users": {},
+            "users": { "@admin:example.com": 100 },
         }),
         auth_events: vec!["$create".to_string()],
         ..Default::default()
@@ -1293,7 +1293,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         power_level: 100,
         prev_events: vec!["CREATE"],
         auth_events: vec!["CREATE"],
-        content: serde_json::Value::Null,
+        content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
     };
     events_map.insert("PL0", pl0);
 
@@ -1307,7 +1307,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         power_level: 100,
         prev_events: vec!["PL0"],
         auth_events: vec!["PL0"],
-        content: serde_json::Value::Null,
+        content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
     };
     events_map.insert("PL1", pl1);
 
@@ -1335,7 +1335,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         power_level: 100,
         prev_events: vec!["S_A1"],
         auth_events: vec!["PL1"],
-        content: serde_json::Value::Null,
+        content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
     };
     events_map.insert("PL2", pl2);
 
@@ -1363,7 +1363,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         power_level: 100,
         prev_events: vec!["S_B1"],
         auth_events: vec!["PL0"],
-        content: serde_json::Value::Null,
+        content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
     };
     events_map.insert("PL_B", pl_b);
 
@@ -1417,5 +1417,204 @@ fn test_missing_auth_diff_mainline_distortion() {
         resolved_buggy.get(&topic_key),
         resolved_fixed.get(&topic_key),
         "Buggy and fixed paths should agree when auth_diff doesn't alter mainline"
+    );
+}
+
+/// Coverage: V2.1.1 power-phase ban supplementation (at.rs:130).
+///
+/// During V2.1.1 power phase, `OverlayState::get_event` filters member events
+/// from resolved state — only returning bans and kicks (not joins/invites).
+/// This test constructs a scenario where a conflicted PL event's sender has
+/// `membership: "ban"` in the unconflicted resolved state. The auth check
+/// for that PL event calls `state.get_event("m.room.member", sender)`,
+/// triggering the ban supplementation return at line 130.
+#[test]
+fn test_v2_1_1_power_phase_ban_supplementation() {
+    // Room creator sets up the room
+    let create = LeanEvent {
+        event_id: "$create".to_string(),
+        event_type: "m.room.create".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".to_string(),
+        origin_server_ts: 100,
+        content: json!({"room_version": "10", "creator": "@admin:x"}),
+        ..Default::default()
+    };
+    let admin_join = LeanEvent {
+        event_id: "$admin_join".to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some("@admin:x".to_string()),
+        sender: "@admin:x".to_string(),
+        origin_server_ts: 200,
+        content: json!({"membership": "join"}),
+        auth_events: vec!["$create".to_string()],
+        ..Default::default()
+    };
+    let pl = LeanEvent {
+        event_id: "$pl".to_string(),
+        event_type: "m.room.power_levels".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".to_string(),
+        origin_server_ts: 300,
+        content: json!({
+            "users": { "@admin:x": 100, "@mallory:x": 50 },
+            "state_default": 50
+        }),
+        auth_events: vec!["$create".to_string(), "$admin_join".to_string()],
+        ..Default::default()
+    };
+    let mallory_join = LeanEvent {
+        event_id: "$mallory_join".to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some("@mallory:x".to_string()),
+        sender: "@mallory:x".to_string(),
+        origin_server_ts: 400,
+        content: json!({"membership": "join"}),
+        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        ..Default::default()
+    };
+
+    // Admin bans Mallory — this is unconflicted state
+    let mallory_ban = LeanEvent {
+        event_id: "$mallory_ban".to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some("@mallory:x".to_string()),
+        sender: "@admin:x".to_string(),
+        origin_server_ts: 500,
+        content: json!({"membership": "ban"}),
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$admin_join".to_string(),
+            "$mallory_join".to_string(),
+        ],
+        ..Default::default()
+    };
+
+    // Conflicted: Mallory somehow sends a PL event (will fail auth because banned,
+    // but the OverlayState still returns the ban via line 130).
+    let mallory_pl = LeanEvent {
+        event_id: "$mallory_pl".to_string(),
+        event_type: "m.room.power_levels".to_string(),
+        state_key: Some(String::new()),
+        sender: "@mallory:x".to_string(),
+        origin_server_ts: 600,
+        content: json!({
+            "users": { "@mallory:x": 100 }
+        }),
+        auth_events: vec![
+            "$create".to_string(),
+            "$mallory_join".to_string(),
+            "$pl".to_string(),
+        ],
+        ..Default::default()
+    };
+
+    // Admin's competing PL event (should win)
+    let admin_pl = LeanEvent {
+        event_id: "$admin_pl".to_string(),
+        event_type: "m.room.power_levels".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".to_string(),
+        origin_server_ts: 700,
+        content: json!({
+            "users": { "@admin:x": 100 },
+            "state_default": 50
+        }),
+        auth_events: vec![
+            "$create".to_string(),
+            "$admin_join".to_string(),
+            "$pl".to_string(),
+        ],
+        ..Default::default()
+    };
+
+    // Auth context: unconflicted events
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+    auth_context.insert("$create".to_string(), create);
+    auth_context.insert("$admin_join".to_string(), admin_join);
+    auth_context.insert("$pl".to_string(), pl);
+    auth_context.insert("$mallory_join".to_string(), mallory_join);
+    auth_context.insert("$mallory_ban".to_string(), mallory_ban);
+
+    // Conflicted: two competing PL events
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    conflicted.insert("$mallory_pl".to_string(), mallory_pl);
+    conflicted.insert("$admin_pl".to_string(), admin_pl);
+
+    // Unconflicted state includes the ban
+    let unconflicted = utils::build_unconflicted_state_test_helper(&auth_context);
+
+    let resolved = resolve_iterative_sort(
+        unconflicted,
+        conflicted,
+        &auth_context,
+        StateResVersion::V2_1_1,
+    );
+
+    // Mallory's PL event must be rejected (banned sender)
+    // Admin's PL event must win
+    let pl_key = ("m.room.power_levels".to_string(), String::new());
+    assert_eq!(
+        resolved.get(&pl_key),
+        Some(&"$admin_pl".to_string()),
+        "Admin's PL must win; Mallory's rejected because she's banned"
+    );
+}
+
+/// Coverage: `compute_auth_distance_iterative`
+///
+/// V2.2 uses auth chain distance from `$create` as a tie-breaker in Kahn sort.
+/// This test constructs two competing topic events with multi-hop auth chains,
+/// forcing the iterative DFS traversal through `auth_events` to compute distances.
+/// Multiple conflicted events processed through the same memo cache exercise
+/// the memoization hit path (line 96) and the stack walk logic (lines 106, 111, 123).
+#[test]
+fn test_v2_2_auth_distance_tiebreak() {
+    let auth_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:x", "origin_server_ts": 100, "content": {"room_version": "13", "creator": "@admin:x"}}
+        {"event_id": "$admin_join", "type": "m.room.member",       "state_key": "@admin:x", "sender": "@admin:x", "origin_server_ts": 200, "content": {"membership": "join"}, "auth_events": ["$create"]}
+        {"event_id": "$pl",         "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x", "origin_server_ts": 300, "content": {"users": {"@admin:x": 100, "@bob:x": 50}, "state_default": 50}, "auth_events": ["$create", "$admin_join"]}
+        {"event_id": "$bob_join",   "type": "m.room.member",       "state_key": "@bob:x", "sender": "@bob:x", "origin_server_ts": 400, "content": {"membership": "join"}, "auth_events": ["$create", "$pl"]}
+        {"event_id": "$jr",         "type": "m.room.join_rules",   "state_key": "", "sender": "@admin:x", "origin_server_ts": 450, "content": {"join_rule": "public"}, "auth_events": ["$create", "$pl", "$admin_join"]}
+    "#,
+    );
+
+    let conflicted_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$topic_a", "type": "m.room.topic", "state_key": "", "sender": "@admin:x", "origin_server_ts": 500, "content": {"topic": "Admin's topic"}, "auth_events": ["$create", "$pl", "$admin_join", "$jr"]}
+        {"event_id": "$topic_b", "type": "m.room.topic", "state_key": "", "sender": "@bob:x",   "origin_server_ts": 500, "content": {"topic": "Bob's topic"},   "auth_events": ["$create", "$pl", "$bob_join"]}
+    "#,
+    );
+
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in auth_evs {
+        auth_context.insert(ev.event_id.clone(), ev);
+    }
+
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in conflicted_evs {
+        conflicted.insert(ev.event_id.clone(), ev);
+    }
+
+    let unconflicted = utils::build_unconflicted_state_test_helper(&auth_context);
+
+    // Resolve with V2.2
+    let resolved = resolve_iterative_sort(
+        unconflicted,
+        conflicted,
+        &auth_context,
+        StateResVersion::V2_2,
+    );
+
+    // $topic_b wins: both events have equal PL (0), empty mainline (position 0),
+    // equal origin_server_ts (500). Tiebreak: $topic_a < $topic_b lexicographically,
+    // so $topic_a sorts first -> $topic_b is applied last -> last-write-wins.
+    let topic_key = ("m.room.topic".to_string(), String::new());
+    assert_eq!(
+        resolved.get(&topic_key),
+        Some(&"$topic_b".to_string()),
+        "V2.2: $topic_b must win via lexicographic event_id tiebreak (last-write-wins)"
     );
 }

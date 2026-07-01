@@ -1,3 +1,4 @@
 [submodule "res"]
-	path = res
+    path = res
+    branch = master
 	url = https://github.com/gamesguru/ruma-lean-res.git

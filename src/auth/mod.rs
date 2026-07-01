@@ -18,16 +18,18 @@
 //! their `prev_events` — never the current time.
 
 pub mod roaring;
+pub mod user;
 
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
 use crate::basespec::event_types::{
-    FIELD_MEMBERSHIP, FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE,
-    MEM_JOIN, MEM_KNOCK, MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER,
-    M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_KNOCK_RESTRICTED,
-    RULE_PUBLIC, RULE_RESTRICTED,
+    DEFAULT_PL_BAN, DEFAULT_PL_INVITE, DEFAULT_PL_KICK, DEFAULT_PL_REDACT, FIELD_MEMBERSHIP,
+    FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE, MEM_JOIN, MEM_KNOCK,
+    MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
+    M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_KNOCK_RESTRICTED, RULE_PUBLIC,
+    RULE_RESTRICTED,
 };
 use crate::basespec::rezzy_types::LeanEvent;
 use crate::basespec::rezzy_types::StateResVersion;
@@ -185,11 +187,29 @@ pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
     version: StateResVersion,
+    verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
 ) -> Result<(), AuthError<Id>> {
     // Rule 0: Custom syntactic validation
     event
         .validate_syntactic()
         .map_err(|e| AuthError::InvalidSyntax(e.into()))?;
+
+    // Optional verification pipeline (steps 1-3).
+    // Callers pass None during state resolution; Some during PDU receipt.
+    // TODO: different room versions use different hashing algorithms for event IDs:
+    //   - v1-v3: event IDs are opaque (assigned by origin server, no hash verification)
+    //   - v4:    SHA256 reference hash (URL-safe unpadded base64)
+    //   - v5+:   SHA256 reference hash (URL-safe unpadded base64, but with different
+    //            redaction rules affecting which fields are stripped before hashing)
+    //   Pass `version` to the verifier once per-version hashing is supported.
+    if let Some(v) = verifier {
+        v.verify_event_id_hash(&event.event_id)
+            .map_err(AuthError::InvalidSyntax)?;
+        v.verify_signatures(&event.event_id)
+            .map_err(AuthError::InvalidSyntax)?;
+        v.verify_content_hash(&event.event_id)
+            .map_err(AuthError::InvalidSyntax)?;
+    }
 
     // Rule 1: m.room.create must be the first event
     if event.event_type == "m.room.create" {
@@ -241,20 +261,26 @@ pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     }
 
     // Rule 4: Check power level requirements
+    // Skip for m.room.member (handled separately in check_membership_rules).
+    // Also skip for m.room.power_levels when no PL event exists in state:
+    // the spec's Rule 10.2 says "If there is no previous m.room.power_levels
+    // event in the room, allow", which takes precedence over Rule 8's generic
+    // PL check. Without this, the bootstrap PL event can never pass auth.
     if event.event_type != M_ROOM_MEMBER {
-        let sender_pl = get_sender_power_level(&event.sender, state, version);
-        let required_pl = get_required_power_level(event, state);
+        let no_pl_event = state.get_event(M_ROOM_POWER_LEVELS, "").is_none();
+        let is_first_pl = no_pl_event && event.event_type == M_ROOM_POWER_LEVELS;
 
-        let _pl_ev_id = state
-            .get_event(M_ROOM_POWER_LEVELS, "")
-            .map(|ev| ev.event_id.clone());
+        if !is_first_pl {
+            let sender_pl = user::get_sender_power_level(&event.sender, state, version);
+            let required_pl = get_required_power_level(event, state);
 
-        if sender_pl < required_pl {
-            return Err(AuthError::InsufficientPowerLevel {
-                required: required_pl,
-                actual: sender_pl,
-                event_type: event.event_type.clone(),
-            });
+            if sender_pl < required_pl {
+                return Err(AuthError::InsufficientPowerLevel {
+                    required: required_pl,
+                    actual: sender_pl,
+                    event_type: event.event_type.clone(),
+                });
+            }
         }
     }
 
@@ -273,65 +299,26 @@ pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
 
     // Rule 5: m.room.member state_key validation
     if event.event_type == M_ROOM_MEMBER {
-        check_membership_rules(event, state, version)?;
+        check_membership_rules(event, state, version, verifier)?;
     }
 
     Ok(())
 }
 
-/// Maximum safe INTERNAL power level value: usually 2^64 (prevents buffer overflows)
-///
-/// We allow a larger value here in case a buffer overflow attack seeks escalation.
-/// An `i64` defaults to `.wrapping_add(1)` which would wrap to a negative infinity.
-pub const MAX_POWER_LEVEL_RUST: i64 = i64::MAX;
+/// Re-export from [`crate::basespec::event_types`] for backwards compatibility.
+pub use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_POWER_LEVEL_RUST};
 
-/// Maximum safe power level value: 2^53 − 1 (the JavaScript `Number.MAX_SAFE_INTEGER`).
-///
-/// The Matrix spec constrains power levels to this bound because clients and
-/// servers in the ecosystem use JSON numbers, which are IEEE 754 doubles.
-/// Values above this lose integer precision.
-pub const MAX_POWER_LEVEL_JSON: i64 = 9_007_199_254_740_991; // 2^53 - 1;
-
-/// Get the power level of a user from the current room state.
-fn get_sender_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
-    sender: &str,
+/// Get the redact power level from room state.
+pub(crate) fn get_redact_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
-    version: StateResVersion,
 ) -> i64 {
-    if let Some(create_event) = state.get_event(M_ROOM_CREATE, "") {
-        let is_creator = create_event.sender == sender
-            || matches!(
-                version,
-                StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
-            ) && create_event.has_additional_creator(sender);
-
-        if is_creator {
-            return match version {
-                StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2 => {
-                    // Use i64::MAX (not 2^53-1) so the creator always wins power
-                    // comparisons, even against a malicious PL event that sets a
-                    // user to the JSON-safe maximum. Incoming values are clamped
-                    // to MAX_POWER_LEVEL_JSON on deserialization, so this is
-                    // strictly unreachable by any wire value.
-                    MAX_POWER_LEVEL_RUST
-                }
-                // Rooms v11 & earlier (state res v2 & earlier) default to CREATOR_PL: 100
-                _ => 100,
-            };
-        }
-    }
-
-    // State-based Power Levels
+    // TODO: call chain nested statement. define FIELD_EMPTY_STRING
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
-        if let Some(pl) = pl_event.get_user_power_level(sender) {
-            return pl;
-        }
-        // Fall back to users_default
-        if let Some(default_pl) = pl_event.get_users_default() {
-            return default_pl;
+        if let Some(redact) = pl_event.get_redact() {
+            return redact;
         }
     }
-    0 // Default power level if no power_levels event exists
+    DEFAULT_PL_REDACT
 }
 
 /// Get the required power level to send an event based on room state.
@@ -340,6 +327,10 @@ fn get_required_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
+        // Spec Rule 7: m.room.third_party_invite events require the invite level
+        if event.event_type == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE {
+            return pl_event.get_invite().unwrap_or(0); // 0 is the default invite level
+        }
         // Check specific event type overrides
         if let Some(pl) = pl_event.get_event_power_level(&event.event_type) {
             return pl;
@@ -352,7 +343,9 @@ fn get_required_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     }
     // No restrictions if no power_levels event exists
     // However, Matrix spec says if NO PL event exists, state events require 50.
-    if event.state_key.is_some() {
+    if event.event_type == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE {
+        0 // Spec Rule 7: m.room.third_party_invite defaults to 0
+    } else if event.state_key.is_some() {
         50
     } else {
         0
@@ -379,7 +372,7 @@ fn check_leave_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     }
 
     // If target_user != sender, this is a kick or unban — requires power level
-    let sender_pl = get_sender_power_level(&event.sender, state, version);
+    let sender_pl = user::get_sender_power_level(&event.sender, state, version);
 
     // Unban: requires ban_pl. Kick: requires kick_pl.
     // Mutually exclusive per spec §10.2.1.
@@ -407,7 +400,7 @@ fn check_ban_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     // Banning requires the ban power level
-    let sender_pl = get_sender_power_level(&event.sender, state, version);
+    let sender_pl = user::get_sender_power_level(&event.sender, state, version);
     let ban_pl = get_ban_power_level(state);
     if sender_pl < ban_pl {
         return Err(AuthError::InsufficientPowerLevel {
@@ -426,6 +419,7 @@ fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     target_user: &str,
     current_membership: &str,
     version: StateResVersion,
+    verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
 ) -> Result<(), AuthError<Id>> {
     // Inviting requires invite power level, and sender != target
     if target_user == event.sender {
@@ -435,8 +429,85 @@ fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         });
     }
 
-    let sender_pl = get_sender_power_level(&event.sender, state, version);
     let invite_pl = get_invite_power_level(state);
+
+    // Rule 5.4.1: If third_party_invite is present, check the issuer's power level.
+    // It must strictly adhere to the rules, or be rejected. No fallback.
+    //
+    // NOTE: The spec (Room v10 §4.4.1) only checks for *banned* targets here,
+    // NOT already-joined targets. The "target is join" check (§4.4.3) is in the
+    // non-3PI path below and is never reached when third_party_invite is present.
+    // This means 3PI invites to already-joined users are spec-valid, which allows
+    // redundant invites. Arguably undesirable but matches the spec as written.
+    if event.content.has_third_party_invite() {
+        // Rule 5.4.1.1: If target user is banned, reject.
+        if current_membership == MEM_BAN {
+            return Err(AuthError::BannedUser {
+                sender: target_user.into(),
+                event_id: event.event_id.clone(),
+            });
+        }
+
+        let token = event
+            .content
+            .get_third_party_invite_token()
+            .ok_or_else(|| {
+                AuthError::InvalidSyntax("invalid third_party_invite: missing signed.token".into())
+            })?;
+
+        let mxid = event.content.get_third_party_invite_mxid().ok_or_else(|| {
+            AuthError::InvalidSyntax("invalid third_party_invite: missing signed.mxid".into())
+        })?;
+
+        if !event.content.has_third_party_invite_signatures() {
+            return Err(AuthError::InvalidSyntax(
+                "invalid third_party_invite: missing or empty signed.signatures".into(),
+            ));
+        }
+
+        // Optional verification pipeline (step 4): 3PI signature verification.
+        if let Some(v) = verifier {
+            v.verify_third_party_invite(&event.event_id, token)
+                .map_err(AuthError::InvalidSyntax)?;
+        }
+
+        if mxid != target_user {
+            return Err(AuthError::InvalidStateKey {
+                expected: alloc::format!("mxid == {target_user}"),
+                actual: mxid.into(),
+            });
+        }
+
+        let tpi_event = state
+            .get_event(
+                crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE,
+                token,
+            )
+            .ok_or_else(|| AuthError::InvalidStateKey {
+                expected: "m.room.third_party_invite event exists".into(),
+                actual: "missing".into(),
+            })?;
+
+        if tpi_event.sender != event.sender {
+            return Err(AuthError::InvalidStateKey {
+                expected: alloc::format!("sender == {}", tpi_event.sender),
+                actual: event.sender.clone(),
+            });
+        }
+
+        let issuer_pl = user::get_sender_power_level(&tpi_event.sender, state, version);
+        if issuer_pl < invite_pl {
+            return Err(AuthError::InsufficientPowerLevel {
+                required: invite_pl,
+                actual: issuer_pl,
+                event_type: "invite".into(),
+            });
+        }
+
+        return Ok(()); // 3PI validation passed! Do not fall through.
+    }
+
+    let sender_pl = user::get_sender_power_level(&event.sender, state, version);
     if sender_pl < invite_pl {
         return Err(AuthError::InsufficientPowerLevel {
             required: invite_pl,
@@ -471,8 +542,8 @@ fn check_membership_pl_hierarchies<Id: Clone, C: crate::basespec::rezzy_types::E
 ) -> Result<(), AuthError<Id>> {
     // 1. Kick/Ban power vs Target power: ONLY for "leave" (kick) or "ban" transitions.
     if target_user != event.sender && (new_membership == "leave" || new_membership == "ban") {
-        let sender_pl = get_sender_power_level(&event.sender, state, version);
-        let target_pl = get_sender_power_level(target_user, state, version);
+        let sender_pl = user::get_sender_power_level(&event.sender, state, version);
+        let target_pl = user::get_sender_power_level(target_user, state, version);
 
         if sender_pl <= target_pl {
             return Err(AuthError::InsufficientPowerLevel {
@@ -496,6 +567,7 @@ fn check_membership_rules<Id: Clone, C: crate::basespec::rezzy_types::EventConte
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
     version: StateResVersion,
+    verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
 ) -> Result<(), AuthError<Id>> {
     let target_user = event.state_key.as_deref().unwrap_or("");
     let new_membership = event.get_membership().unwrap_or("");
@@ -514,10 +586,17 @@ fn check_membership_rules<Id: Clone, C: crate::basespec::rezzy_types::EventConte
     }
 
     match new_membership {
-        MEM_JOIN => check_join_rules(event, state, target_user)?,
+        MEM_JOIN => check_join_rules(event, state, target_user, version)?,
         MEM_LEAVE => check_leave_rules(event, state, target_user, current_membership, version)?,
         MEM_BAN => check_ban_rules(event, state, version)?,
-        MEM_INVITE => check_invite_rules(event, state, target_user, current_membership, version)?,
+        MEM_INVITE => check_invite_rules(
+            event,
+            state,
+            target_user,
+            current_membership,
+            version,
+            verifier,
+        )?,
         MEM_KNOCK => check_knock_rules(event, state, target_user)?,
         // Rule 5.8: Unknown membership — reject
         _ => {
@@ -536,6 +615,7 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
     target_user: &str,
+    version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     // A user can only join as themselves
     if target_user != event.sender {
@@ -550,6 +630,9 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         .and_then(|ev| ev.get_membership())
         .unwrap_or("");
 
+    // Defense-in-depth: the outer `check_auth` (line 240) catches banned senders
+    // before reaching this function. Since target_user == sender (enforced above),
+    // this branch is normally unreachable but is kept in place for spec compliance.
     if current_membership == MEM_BAN {
         return Err(AuthError::BannedUser {
             sender: event.sender.clone(),
@@ -586,7 +669,7 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         if current_membership == MEM_INVITE || current_membership == MEM_JOIN {
             // Already invited or joined — allowed without further checks.
         } else if let Some(authorising_user) = event.get_join_authorised_via_users_server() {
-            check_authorising_user(event, state, authorising_user)?;
+            check_authorising_user(event, state, authorising_user, version)?;
         } else {
             return Err(AuthError::NotMember {
                 sender: event.sender.clone(),
@@ -608,6 +691,7 @@ fn check_authorising_user<Id: Clone, C: crate::basespec::rezzy_types::EventConte
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
     authorising_user: &str,
+    version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     let auth_membership = state
         .get_event(M_ROOM_MEMBER, authorising_user)
@@ -621,10 +705,8 @@ fn check_authorising_user<Id: Clone, C: crate::basespec::rezzy_types::EventConte
         });
     }
 
-    let auth_user_pl = state
-        .get_event(M_ROOM_POWER_LEVELS, "")
-        .and_then(|pl| pl.get_user_power_level(authorising_user))
-        .unwrap_or(0);
+    // Use get_sender_power_level to correctly handle V12 implicit creator PL
+    let auth_user_pl = user::get_sender_power_level(authorising_user, state, version);
     if auth_user_pl < get_invite_power_level(state) {
         return Err(AuthError::NotMember {
             sender: event.sender.clone(),
@@ -642,7 +724,8 @@ fn check_knock_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
     target_user: &str,
 ) -> Result<(), AuthError<Id>> {
-    // A user can only knock as themselves
+    // A user can only knock as themselves.
+    // Defense-in-depth: state_key != sender is already caught by check_auth line 254.
     if target_user != event.sender {
         return Err(AuthError::InvalidStateKey {
             expected: event.sender.clone(),
@@ -656,6 +739,7 @@ fn check_knock_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         .unwrap_or("");
 
     // MSC2403 §f.iii: allow only if membership is NOT ban, invite, or join.
+    // Defense-in-depth: banned senders are caught by check_auth line 240 before reaching here.
     if current_membership == MEM_BAN {
         return Err(AuthError::BannedUser {
             sender: event.sender.clone(),
@@ -686,7 +770,7 @@ fn check_knock_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
 }
 
 /// Get the kick power level from room state.
-fn get_kick_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
+pub(crate) fn get_kick_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
@@ -694,11 +778,11 @@ fn get_kick_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
             return kick;
         }
     }
-    50 // Default kick power level per Matrix spec
+    DEFAULT_PL_KICK // Default kick power level per Matrix spec
 }
 
 /// Get the ban power level from room state.
-fn get_invite_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
+pub(crate) fn get_invite_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
@@ -706,10 +790,10 @@ fn get_invite_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
             return invite;
         }
     }
-    0 // Default invite power level per Matrix spec (v12)
+    DEFAULT_PL_INVITE // Default invite power level per Matrix spec
 }
 
-fn get_ban_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
+pub(crate) fn get_ban_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
@@ -717,7 +801,7 @@ fn get_ban_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
             return ban;
         }
     }
-    50 // Default ban power level per Matrix spec
+    DEFAULT_PL_BAN // Default ban power level per Matrix spec
 }
 
 /// Iteratively apply auth checks to a list of events in topological order.
@@ -734,7 +818,7 @@ pub fn check_auth_chain<Id: Clone + Ord, C: crate::basespec::rezzy_types::EventC
     let mut rejected = Vec::new();
 
     for event in sorted_events {
-        match check_auth(event, &state, version) {
+        match check_auth(event, &state, version, None) {
             Ok(()) => {
                 // Apply event to state if it's a state event
                 if let Some(state_key) = &event.state_key {
@@ -828,10 +912,8 @@ pub fn auth_types_for_event(
     auth_types.push((M_ROOM_POWER_LEVELS.into(), String::new()));
 
     if event_type == M_ROOM_MEMBER {
-        if let Some(sk) = state_key {
-            if sk != sender {
-                auth_types.push((M_ROOM_MEMBER.into(), sk.into()));
-            }
+        if let Some(sk) = state_key.filter(|sk| *sk != sender) {
+            auth_types.push((M_ROOM_MEMBER.into(), sk.into()));
         }
 
         let membership = content.get(FIELD_MEMBERSHIP).and_then(|v| v.as_str());
@@ -882,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn test_creator_has_i64_max_power() {
+    fn test_msc4289_creator_has_i64_max_power() {
         let mut state = RoomState::new();
         state.insert(
             (M_ROOM_CREATE.into(), String::new()),
@@ -900,7 +982,7 @@ mod tests {
 
         // Assert that the primary creator gets i64::MAX
         let creator_pl =
-            get_sender_power_level("@creator:example.com", &state, StateResVersion::V2_1);
+            user::get_sender_power_level("@creator:example.com", &state, StateResVersion::V2_1);
         assert_eq!(
             creator_pl,
             i64::MAX,
@@ -909,7 +991,7 @@ mod tests {
 
         // Assert that the additional creator gets i64::MAX
         let additional_pl =
-            get_sender_power_level("@additional:example.com", &state, StateResVersion::V2_1);
+            user::get_sender_power_level("@additional:example.com", &state, StateResVersion::V2_1);
         assert_eq!(
             additional_pl,
             i64::MAX,
@@ -918,7 +1000,96 @@ mod tests {
 
         // Normal user should have default (0)
         let normal_pl =
-            get_sender_power_level("@normal:example.com", &state, StateResVersion::V2_1);
+            user::get_sender_power_level("@normal:example.com", &state, StateResVersion::V2_1);
         assert_eq!(normal_pl, 0, "Normal user should have default 0 power");
+    }
+
+    /// Coverage: `check_knock_rules` — `target_user` != sender.
+    /// Defense-in-depth path unreachable via `check_auth` (caught at line 254).
+    #[test]
+    fn test_knock_state_key_mismatch_direct() {
+        let knock_event: LeanEvent<String> = LeanEvent {
+            event_id: "$knock".into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some("@alice:x".into()),
+            sender: "@alice:x".into(),
+            content: json!({"membership": "knock"}),
+            ..Default::default()
+        };
+
+        let state = RoomState::new();
+
+        // Call check_knock_rules directly with mismatched target_user
+        let result = check_knock_rules(&knock_event, &state, "@bob:x");
+        assert!(
+            matches!(result, Err(AuthError::InvalidStateKey { .. })),
+            "Must reject knock with mismatched target: {result:?}"
+        );
+    }
+
+    /// Coverage: `check_knock_rules` — banned target user.
+    /// Defense-in-depth path unreachable via `check_auth` (caught at line 240).
+    #[test]
+    fn test_knock_banned_target_direct() {
+        let knock_event: LeanEvent<String> = LeanEvent {
+            event_id: "$knock".into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some("@evil:x".into()),
+            sender: "@evil:x".into(),
+            content: json!({"membership": "knock"}),
+            ..Default::default()
+        };
+
+        let mut state = RoomState::new();
+        state.insert(
+            (M_ROOM_MEMBER.into(), "@evil:x".into()),
+            LeanEvent {
+                event_id: "$ban".into(),
+                event_type: M_ROOM_MEMBER.into(),
+                state_key: Some("@evil:x".into()),
+                sender: "@admin:x".into(),
+                content: json!({"membership": "ban"}),
+                ..Default::default()
+            },
+        );
+
+        let result = check_knock_rules(&knock_event, &state, "@evil:x");
+        assert!(
+            matches!(result, Err(AuthError::BannedUser { .. })),
+            "Must reject knock from banned user: {result:?}"
+        );
+    }
+
+    /// Coverage: `check_join_rules` — banned target user.
+    /// Defense-in-depth path unreachable via `check_auth`.
+    #[test]
+    fn test_join_banned_target_direct() {
+        let join_event: LeanEvent<String> = LeanEvent {
+            event_id: "$join".into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some("@evil:x".into()),
+            sender: "@evil:x".into(),
+            content: json!({"membership": "join"}),
+            ..Default::default()
+        };
+
+        let mut state = RoomState::new();
+        state.insert(
+            (M_ROOM_MEMBER.into(), "@evil:x".into()),
+            LeanEvent {
+                event_id: "$ban".into(),
+                event_type: M_ROOM_MEMBER.into(),
+                state_key: Some("@evil:x".into()),
+                sender: "@admin:x".into(),
+                content: json!({"membership": "ban"}),
+                ..Default::default()
+            },
+        );
+
+        let result = check_join_rules(&join_event, &state, "@evil:x", StateResVersion::V2);
+        assert!(
+            matches!(result, Err(AuthError::BannedUser { .. })),
+            "Must reject join from banned user: {result:?}"
+        );
     }
 }

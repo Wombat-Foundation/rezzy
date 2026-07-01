@@ -112,28 +112,27 @@ impl<
 
         if should_supplement {
             // Check consensus resolved state
-            if let Some(eid) = self.resolved.get(query) {
-                if let Some(ev) = self
-                    .auth_context
+            let resolved_ev = self.resolved.get(query).and_then(|eid| {
+                self.auth_context
                     .get(eid)
                     .or_else(|| self.sort_set.get(eid))
+            });
+
+            if let Some(ev) = resolved_ev {
+                if self.version == StateResVersion::V2_1_1
+                    && self.is_power_phase
+                    && event_type == "m.room.member"
                 {
-                    if self.version == StateResVersion::V2_1_1
-                        && self.is_power_phase
-                        && event_type == "m.room.member"
-                    {
-                        // V2.1.1 Fix: Only supplement bans and kicks in power phase
-                        if let Some(membership) = ev.get_membership() {
-                            let is_ban = membership == "ban";
-                            let is_kick = membership == "leave" && ev.sender.as_str() != state_key;
-                            if is_ban || is_kick {
-                                return Some(ev);
-                            }
-                        }
-                        // If it's a normal join/invite, fall through to local auth
-                    } else {
+                    // V2.1.1 Fix: Only supplement bans and kicks in power phase
+                    let is_ban_or_kick = ev.get_membership().is_some_and(|m| {
+                        m == "ban" || (m == "leave" && ev.sender.as_str() != state_key)
+                    });
+                    if is_ban_or_kick {
                         return Some(ev);
                     }
+                    // If it's a normal join/invite, fall through to local auth
+                } else {
+                    return Some(ev);
                 }
             }
         }
@@ -214,7 +213,7 @@ pub(crate) fn iterative_auth_ok<
         is_power_phase,
     };
 
-    crate::auth::check_auth(ev, &overlay, version).is_ok()
+    crate::auth::check_auth(ev, &overlay, version, None).is_ok()
 }
 
 /// Merges an event into a local auth map if it is an auth event (e.g. power levels, join rules).
@@ -592,17 +591,19 @@ where
 
         let mut prev_states = Vec::with_capacity(ev.prev_events.len());
         for pe in &ev.prev_events {
-            if let Some(&pe_idx) = id_to_index.get(pe) {
-                if out_degree[pe_idx] > 0 {
-                    out_degree[pe_idx] = out_degree[pe_idx].saturating_sub(1);
-                    if out_degree[pe_idx] == 0 {
-                        if let Some(pe_state) = state_after_map[pe_idx].take() {
-                            prev_states.push(pe_state);
-                        }
-                    } else if let Some(ref pe_state) = state_after_map[pe_idx] {
-                        prev_states.push(pe_state.clone());
-                    }
+            let Some(&pe_idx) = id_to_index.get(pe) else {
+                continue;
+            };
+            if out_degree[pe_idx] == 0 {
+                continue;
+            }
+            out_degree[pe_idx] = out_degree[pe_idx].saturating_sub(1);
+            if out_degree[pe_idx] == 0 {
+                if let Some(pe_state) = state_after_map[pe_idx].take() {
+                    prev_states.push(pe_state);
                 }
+            } else if let Some(ref pe_state) = state_after_map[pe_idx] {
+                prev_states.push(pe_state.clone());
             }
         }
 
@@ -716,9 +717,8 @@ where
     }
 
     while let Some((_, current_id)) = queue.pop() {
-        let current_mask = match masks.get(current_id) {
-            Some(m) => m.clone(),
-            None => continue,
+        let Some(current_mask) = masks.get(current_id).cloned() else {
+            continue;
         };
 
         // If reachable by ALL extremities, this is the merge base.
@@ -776,14 +776,15 @@ where
         let current_id = queue[head];
         head = head.saturating_add(1);
 
-        if let Some(ev) = events_map.get(current_id) {
-            for pe in &ev.prev_events {
-                if events_map.contains_key(pe) && !id_to_index.contains_key(pe) {
-                    let next_idx = index_to_id.len();
-                    id_to_index.insert(pe, next_idx);
-                    index_to_id.push(pe);
-                    queue.push(pe);
-                }
+        let Some(ev) = events_map.get(current_id) else {
+            continue;
+        };
+        for pe in &ev.prev_events {
+            if events_map.contains_key(pe) && !id_to_index.contains_key(pe) {
+                let next_idx = index_to_id.len();
+                id_to_index.insert(pe, next_idx);
+                index_to_id.push(pe);
+                queue.push(pe);
             }
         }
     }
@@ -810,13 +811,14 @@ where
     let mut out_degree = alloc::vec![0usize; num_reachable];
 
     for (i, id) in index_to_id.iter().enumerate() {
-        if let Some(ev) = events_map.get(*id) {
-            for parent in &ev.prev_events {
-                if let Some(&parent_idx) = id_to_index.get(parent) {
-                    in_degree[i] = in_degree[i].saturating_add(1);
-                    adjacency[parent_idx].push(i);
-                    out_degree[parent_idx] = out_degree[parent_idx].saturating_add(1);
-                }
+        let Some(ev) = events_map.get(*id) else {
+            continue;
+        };
+        for parent in &ev.prev_events {
+            if let Some(&parent_idx) = id_to_index.get(parent) {
+                in_degree[i] = in_degree[i].saturating_add(1);
+                adjacency[parent_idx].push(i);
+                out_degree[parent_idx] = out_degree[parent_idx].saturating_add(1);
             }
         }
     }
@@ -916,9 +918,38 @@ where
         }
     }
 
-    // Compute the auth difference (auth(C) \ auth(U)) using a bounded dual-heap traversal.
-    // This perfectly restores algorithmic invariants for `expand_v2_power_events_auth_chains`
-    // without the massive O(N) bottleneck of unbounded DAG walks.
+    // Supplement conflicted_events with the auth difference auth(C) \ auth(U)
+    let auth_diff = compute_auth_chain_diff(&unconflicted_state, &conflicted_state_set, events_map);
+    for id_val in auth_diff {
+        if let Some(event) = events_map.get(&id_val) {
+            conflicted_events.insert(id_val, event.clone());
+        }
+    }
+
+    crate::resolve::iterative::resolve_iterative_sort_with_cache(
+        unconflicted_state,
+        conflicted_events,
+        events_map,
+        Some(global_auth_cache),
+        version,
+    )
+}
+
+/// Computes auth(C) \ auth(U) using a bounded dual-heap traversal.
+///
+/// Walks unconflicted (U) and conflicted (C) auth chains in parallel by depth,
+/// pruning C-side events already reachable from U. Returns the set of event IDs
+/// in the conflicted auth chains that are NOT reachable from unconflicted state.
+fn compute_auth_chain_diff<Id, C, S>(
+    unconflicted_state: &SharedState<Id>,
+    conflicted_state_set: &hashbrown::HashSet<Id>,
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+) -> hashbrown::HashSet<Id>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    S: core::hash::BuildHasher,
+    C: crate::basespec::rezzy_types::EventContent,
+{
     let mut u_visited = hashbrown::HashSet::new();
     let mut u_heap_elements = Vec::with_capacity(unconflicted_state.len());
     for id in unconflicted_state.values() {
@@ -932,7 +963,7 @@ where
 
     let mut c_visited = hashbrown::HashSet::new();
     let mut c_heap = alloc::collections::BinaryHeap::new();
-    for id in &conflicted_state_set {
+    for id in conflicted_state_set {
         if u_visited.contains(id) {
             continue; // PRUNE EARLY
         }
@@ -952,12 +983,13 @@ where
                 break;
             }
             let (_, u_id) = u_heap.pop().unwrap();
-            if let Some(ev) = events_map.get(&u_id) {
-                for auth_id in &ev.auth_events {
-                    if u_visited.insert(auth_id.clone()) {
-                        if let Some(a_ev) = events_map.get(auth_id) {
-                            u_heap.push((a_ev.depth, auth_id.clone()));
-                        }
+            let Some(ev) = events_map.get(&u_id) else {
+                continue;
+            };
+            for auth_id in &ev.auth_events {
+                if u_visited.insert(auth_id.clone()) {
+                    if let Some(a_ev) = events_map.get(auth_id) {
+                        u_heap.push((a_ev.depth, auth_id.clone()));
                     }
                 }
             }
@@ -966,34 +998,23 @@ where
         let (_, c_id) = c_heap.pop().unwrap();
         if !u_visited.contains(&c_id) {
             auth_diff.insert(c_id.clone());
-            if let Some(ev) = events_map.get(&c_id) {
-                for auth_id in &ev.auth_events {
-                    if u_visited.contains(auth_id) {
-                        continue; // PRUNE EARLY
-                    }
-                    if c_visited.insert(auth_id.clone()) {
-                        if let Some(a_ev) = events_map.get(auth_id) {
-                            c_heap.push((a_ev.depth, auth_id.clone()));
-                        }
+            let Some(ev) = events_map.get(&c_id) else {
+                continue;
+            };
+            for auth_id in &ev.auth_events {
+                if u_visited.contains(auth_id) {
+                    continue; // PRUNE EARLY
+                }
+                if c_visited.insert(auth_id.clone()) {
+                    if let Some(a_ev) = events_map.get(auth_id) {
+                        c_heap.push((a_ev.depth, auth_id.clone()));
                     }
                 }
             }
         }
     }
 
-    for id_val in auth_diff {
-        if let Some(event) = events_map.get(&id_val) {
-            conflicted_events.insert(id_val, event.clone());
-        }
-    }
-
-    crate::resolve::iterative::resolve_iterative_sort_with_cache(
-        unconflicted_state,
-        conflicted_events,
-        events_map,
-        Some(global_auth_cache),
-        version,
-    )
+    auth_diff
 }
 
 #[cfg(test)]
@@ -1100,5 +1121,88 @@ mod tests {
             !is_ok,
             "The message must be rejected because the conflicted power levels event was not resolved!"
         );
+    }
+
+    /// Coverage: `LocalAuthCache` hit path (at.rs:263-268).
+    /// Calls `compute_local_auth` twice for the same event. Second call returns
+    /// from cache without re-walking the auth chain.
+    #[test]
+    fn test_local_auth_cache_hit() {
+        let create_ev: LeanEvent = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            depth: 1,
+            content: json!({"room_version": "10", "creator": "@alice:x"}),
+            ..Default::default()
+        };
+        let join_ev: LeanEvent = LeanEvent {
+            event_id: "$join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@alice:x".into()),
+            sender: "@alice:x".into(),
+            depth: 2,
+            auth_events: vec!["$create".into()],
+            content: json!({"membership": "join"}),
+            ..Default::default()
+        };
+        let topic_ev: LeanEvent = LeanEvent {
+            event_id: "$topic".into(),
+            event_type: "m.room.topic".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            depth: 3,
+            auth_events: vec!["$create".into(), "$join".into()],
+            content: json!({"topic": "hello"}),
+            ..Default::default()
+        };
+
+        let mut auth_context: HashMap<String, LeanEvent> =
+            [("$create".into(), create_ev), ("$join".into(), join_ev)]
+                .into_iter()
+                .collect();
+
+        let conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let mut cache = LocalAuthCache::new(StateResVersion::V2);
+
+        // First call: populates cache
+        let result1 = compute_local_auth(
+            &topic_ev,
+            &auth_context,
+            &conflicted,
+            &mut cache,
+            StateResVersion::V2,
+        );
+        assert!(
+            cache.map.contains_key("$topic"),
+            "Cache must be populated after first call"
+        );
+        let cache_len_after_first = cache.map.len();
+
+        // Mutate auth_context so a fresh (non-cached) re-computation would
+        // produce a DIFFERENT result. If the cache hit works, result2 will
+        // still equal result1 (the stale cached value).
+        auth_context.remove("$join");
+
+        // Second call: must hit cache early return
+        let result2 = compute_local_auth(
+            &topic_ev,
+            &auth_context,
+            &conflicted,
+            &mut cache,
+            StateResVersion::V2,
+        );
+
+        // Cache size must not grow (no re-insert)
+        assert_eq!(
+            cache.map.len(),
+            cache_len_after_first,
+            "Cache must not grow on cache hit"
+        );
+
+        // Cached result must match original, proving the cache was used
+        // (a fresh computation with $join removed would differ)
+        assert_eq!(result1, result2, "Cached result must match uncached result");
     }
 }

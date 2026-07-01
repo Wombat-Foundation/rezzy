@@ -114,7 +114,7 @@ fn test_restricted_join_with_invite_allowed() {
         json!({"membership": "join"}),
     );
 
-    let result = check_auth(&join_event, &state, StateResVersion::V2);
+    let result = check_auth(&join_event, &state, StateResVersion::V2, None);
     assert!(
         result.is_ok(),
         "invited user should be able to join a restricted room, got: {result:?}"
@@ -138,7 +138,7 @@ fn test_restricted_join_with_authorized_via_allowed() {
         }),
     );
 
-    let result = check_auth(&join_event, &state, StateResVersion::V2);
+    let result = check_auth(&join_event, &state, StateResVersion::V2, None);
     assert!(
         result.is_ok(),
         "user with join_authorised_via_users_server should be able to join restricted room, got: {result:?}"
@@ -158,7 +158,7 @@ fn test_restricted_join_without_invite_or_authorized_rejected() {
         json!({"membership": "join"}),
     );
 
-    let result = check_auth(&join_event, &state, StateResVersion::V2);
+    let result = check_auth(&join_event, &state, StateResVersion::V2, None);
     assert!(
         result.is_err(),
         "user without invite or authorized_via must be rejected from restricted room"
@@ -190,7 +190,7 @@ fn test_knock_restricted_join_with_invite_allowed() {
         json!({"membership": "join"}),
     );
 
-    let result = check_auth(&join_event, &state, StateResVersion::V2);
+    let result = check_auth(&join_event, &state, StateResVersion::V2, None);
     assert!(
         result.is_ok(),
         "invited user should be able to join knock_restricted room, got: {result:?}"
@@ -212,7 +212,7 @@ fn test_knock_restricted_join_with_authorized_via_allowed() {
         }),
     );
 
-    let result = check_auth(&join_event, &state, StateResVersion::V2);
+    let result = check_auth(&join_event, &state, StateResVersion::V2, None);
     assert!(
         result.is_ok(),
         "user with join_authorised_via_users_server should join knock_restricted room, got: {result:?}"
@@ -232,7 +232,7 @@ fn test_knock_restricted_knock_allowed() {
         json!({"membership": "knock"}),
     );
 
-    let result = check_auth(&knock_event, &state, StateResVersion::V2);
+    let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
     assert!(
         result.is_ok(),
         "knocking should be allowed in knock_restricted room, got: {result:?}"
@@ -252,7 +252,7 @@ fn test_restricted_knock_rejected() {
         json!({"membership": "knock"}),
     );
 
-    let result = check_auth(&knock_event, &state, StateResVersion::V2);
+    let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
     assert!(
         result.is_err(),
         "knocking must NOT be allowed in plain restricted room (only knock_restricted)"
@@ -272,7 +272,7 @@ fn test_invite_only_knock_rejected() {
         json!({"membership": "knock"}),
     );
 
-    let result = check_auth(&knock_event, &state, StateResVersion::V2);
+    let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
     assert!(
         result.is_err(),
         "knocking must NOT be allowed in invite-only room"
@@ -292,7 +292,7 @@ fn test_public_knock_rejected() {
         json!({"membership": "knock"}),
     );
 
-    let result = check_auth(&knock_event, &state, StateResVersion::V2);
+    let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
     assert!(
         result.is_err(),
         "knocking must NOT be allowed in public room"
@@ -312,7 +312,7 @@ fn test_knock_room_knock_allowed() {
         json!({"membership": "knock"}),
     );
 
-    let result = check_auth(&knock_event, &state, StateResVersion::V2);
+    let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
     assert!(
         result.is_ok(),
         "knocking should be allowed in knock room, got: {result:?}"
@@ -343,7 +343,7 @@ fn test_banned_user_cannot_knock() {
         json!({"membership": "knock"}),
     );
 
-    let result = check_auth(&knock_event, &state, StateResVersion::V2);
+    let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
     assert!(result.is_err(), "banned user must NOT be able to knock");
 }
 
@@ -374,7 +374,7 @@ fn test_restricted_banned_user_cannot_join_even_with_authorized_via() {
         }),
     );
 
-    let result = check_auth(&join_event, &state, StateResVersion::V2);
+    let result = check_auth(&join_event, &state, StateResVersion::V2, None);
     assert!(
         result.is_err(),
         "banned user must NOT be able to join even with authorized_via"
@@ -400,7 +400,7 @@ fn test_restricted_join_rejected_when_authorising_user_not_joined() {
         }),
     );
 
-    let result = check_auth(&join_event, &state, StateResVersion::V2);
+    let result = check_auth(&join_event, &state, StateResVersion::V2, None);
     assert!(
         result.is_err(),
         "restricted join must be rejected when authorising user is not joined"
@@ -451,9 +451,158 @@ fn test_restricted_join_rejected_when_authorising_user_lacks_invite_pl() {
         }),
     );
 
-    let result = check_auth(&join_event, &state, StateResVersion::V2);
+    let result = check_auth(&join_event, &state, StateResVersion::V2, None);
     assert!(
         result.is_err(),
         "restricted join must be rejected when authorising user lacks invite PL"
+    );
+}
+
+#[test]
+fn test_msc4289_restricted_join_v12_creator_authorising() {
+    // V12: check_authorising_user manually queried the PL map instead of
+    // using get_sender_power_level, so the creator (not in `users` map) got PL 0.
+    // In V2_1 (room v12), the creator should get i64::MAX implicitly.
+    let mut state = RoomState::new();
+
+    // Creator creates the room — NOT listed in the PL users map
+    state.insert(
+        ("m.room.create".into(), String::new()),
+        make_event(
+            "$create",
+            "m.room.create",
+            Some(""),
+            "@creator:example.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@creator:example.com".into()),
+        make_event(
+            "$creator_join",
+            "m.room.member",
+            Some("@creator:example.com"),
+            "@creator:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    // PL event does NOT include creator in users map — V12 relies on implicit creator PL
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@creator:example.com",
+            json!({
+                "users_default": 0,
+                "invite": 50,
+            }),
+        ),
+    );
+    state.insert(
+        ("m.room.join_rules".into(), String::new()),
+        make_event(
+            "$jr",
+            "m.room.join_rules",
+            Some(""),
+            "@creator:example.com",
+            json!({
+                "join_rule": "restricted",
+                "allow": [
+                    {"type": "m.room_membership", "room_id": "!other:example.com"}
+                ]
+            }),
+        ),
+    );
+
+    // Bob joins via the creator as the authorising user
+    let join_event = make_event(
+        "$bob_join",
+        "m.room.member",
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({
+            "membership": "join",
+            "join_authorised_via_users_server": "@creator:example.com"
+        }),
+    );
+
+    // V2_1 = room v12: creator should have implicit max power
+    let result = check_auth(&join_event, &state, StateResVersion::V2_1, None);
+    assert!(
+        result.is_ok(),
+        "V12 creator should be able to authorise a restricted join even without being in PL users map, got: {result:?}"
+    );
+}
+
+/// Coverage: `check_knock_rules` — joined user knocking is rejected.
+///
+/// A joined user sending a knock event passes the outer ban check (line 240)
+/// and the joined check (line 248), but `check_knock_rules` rejects the
+/// `join → knock` transition at line 769-773.
+#[test]
+fn test_joined_user_cannot_knock() {
+    let mut state = room_with_join_rule("knock");
+
+    // Alice is already joined
+    state.insert(
+        ("m.room.member".into(), "@alice:example.com".into()),
+        make_event(
+            "$alice_join",
+            "m.room.member",
+            Some("@alice:example.com"),
+            "@alice:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let knock_event = make_event(
+        "$alice_knock",
+        "m.room.member",
+        Some("@alice:example.com"),
+        "@alice:example.com",
+        json!({"membership": "knock"}),
+    );
+
+    let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
+    assert!(
+        result.is_err(),
+        "Joined user must NOT be able to knock: {result:?}"
+    );
+}
+
+/// Coverage: `check_knock_rules` line 770 — invited user knocking is rejected.
+///
+/// An invited user sending a knock event passes the outer ban/join checks,
+/// but `check_knock_rules` rejects the `invite → knock` transition.
+#[test]
+fn test_invited_user_cannot_knock() {
+    let mut state = room_with_join_rule("knock");
+
+    // Bob has been invited
+    state.insert(
+        ("m.room.member".into(), "@bob:example.com".into()),
+        make_event(
+            "$bob_invite",
+            "m.room.member",
+            Some("@bob:example.com"),
+            "@admin:example.com",
+            json!({"membership": "invite"}),
+        ),
+    );
+
+    let knock_event = make_event(
+        "$bob_knock",
+        "m.room.member",
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({"membership": "knock"}),
+    );
+
+    let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
+    assert!(
+        result.is_err(),
+        "Invited user must NOT be able to knock: {result:?}"
     );
 }

@@ -138,6 +138,10 @@ path = "tests/test_integer_keys.rs"
 name = "test_restricted_joins"
 path = "tests/test_restricted_joins.rs"
 
+[[test]]
+name = "test_utils"
+path = "tests/test_utils.rs"
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tarpaulin)"] }

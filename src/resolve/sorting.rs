@@ -17,7 +17,7 @@ use alloc::collections::{BinaryHeap, VecDeque};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use crate::auth::MAX_POWER_LEVEL_RUST;
+use crate::basespec::event_types::MAX_POWER_LEVEL_RUST;
 use crate::basespec::rezzy_types::{KahnSortResult, LeanEvent, SortPriority, StateResVersion};
 use crate::HashMap;
 
@@ -47,21 +47,16 @@ where
         }
     }
 
-    let is_creator = create_ev.is_some_and(|ev| {
-        ev.sender == event.sender
-            || matches!(
-                version,
-                StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
-            ) && ev.content.has_additional_creator(&event.sender)
-    });
-
-    if is_creator {
-        match version {
-            StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2 => {
-                // Rust flow. `i64::MAX`: strictly above any wire-clamped PL (2^53-1)
-                return MAX_POWER_LEVEL_RUST;
-            }
-            _ => return 100,
+    // V12+ (MSC4289): creators have spec-mandated infinite power level.
+    if matches!(
+        version,
+        StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
+    ) {
+        let is_creator = create_ev.is_some_and(|ev| {
+            ev.sender == event.sender || ev.content.has_additional_creator(&event.sender)
+        });
+        if is_creator {
+            return MAX_POWER_LEVEL_RUST;
         }
     }
 
@@ -76,10 +71,10 @@ where
         return 0; // Default if PL event exists but no users_default
     }
 
-    if event.auth_events.is_empty() {
-        return event.power_level; // Fallback for simple unit-test/mock events that don't have an auth chain
-    }
-    0
+    // No PL event in the auth chain — fall back to the pre-computed
+    // power_level field. This handles the bootstrap PL event (which only
+    // auths against $create) and simple unit-test events.
+    event.power_level
 }
 
 /// Computes the shortest distance from the event to the m.room.create event via `auth_events`.
@@ -652,5 +647,81 @@ mod tests {
         let dist = compute_closest_mainline_positions(&mut events, &mainline, &sort_ctx);
         // topic's auth chain → pl0 (position 0)
         assert_eq!(dist["topic"], 0);
+    }
+
+    /// Coverage: `compute_auth_distance_iterative`
+    /// Creates a 3-hop auth chain and verifies the iterative DFS + memoization.
+    #[test]
+    fn test_auth_distance_iterative_deep_chain() {
+        use crate::basespec::rezzy_types::SortContext;
+
+        let create = LeanEvent::<String> {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let pl = LeanEvent::<String> {
+            event_id: "$pl".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec!["$create".into()],
+            ..Default::default()
+        };
+        let join = LeanEvent::<String> {
+            event_id: "$join".into(),
+            event_type: "m.room.member".into(),
+            auth_events: alloc::vec!["$create".into(), "$pl".into()],
+            ..Default::default()
+        };
+        let topic = LeanEvent::<String> {
+            event_id: "$topic".into(),
+            event_type: "m.room.topic".into(),
+            auth_events: alloc::vec!["$create".into(), "$pl".into(), "$join".into()],
+            ..Default::default()
+        };
+
+        let mut primary: HashMap<String, LeanEvent<String>> = HashMap::new();
+        primary.insert("$create".into(), create.clone());
+        primary.insert("$pl".into(), pl);
+        primary.insert("$join".into(), join);
+        primary.insert("$topic".into(), topic);
+
+        let secondary: HashMap<String, LeanEvent<String>> = HashMap::new();
+        let sort_ctx = SortContext {
+            primary: &primary,
+            secondary: &secondary,
+        };
+
+        let mut memo = HashMap::new();
+        let topic_id: String = "$topic".into();
+        let create_id: String = "$create".into();
+        let pl_id: String = "$pl".into();
+        let join_id: String = "$join".into();
+
+        // First call: triggers iterative traversal through auth chain
+        // $topic → $join(dist=2), $pl(dist=1), $create(dist=0) → min = 1
+        let dist =
+            compute_auth_distance_iterative(&topic_id, &sort_ctx, Some(&create_id), &mut memo);
+        assert_eq!(
+            dist, 1,
+            "$topic should be distance 1 from $create (direct auth)"
+        );
+
+        // Second call: hits memoization early return (line 96)
+        let dist2 =
+            compute_auth_distance_iterative(&topic_id, &sort_ctx, Some(&create_id), &mut memo);
+        assert_eq!(dist2, dist, "Memoized result must match");
+
+        // Verify intermediate memos were populated
+        assert_eq!(
+            memo.get(&pl_id),
+            Some(&1),
+            "$pl should be distance 1 from $create"
+        );
+        assert_eq!(
+            memo.get(&join_id),
+            Some(&1),
+            "$join has $create in auth → distance 1"
+        );
     }
 }

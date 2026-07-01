@@ -1,3 +1,4 @@
+mod utils;
 use rezzy::auth::*;
 use rezzy::basespec::event_types::M_ROOM_CREATE;
 use rezzy::*;
@@ -54,7 +55,8 @@ fn test_self_ban_rejected() {
         check_auth(
             &self_ban,
             &state,
-            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
         )
         .is_err(),
         "Self-bans must be rejected"
@@ -103,7 +105,7 @@ fn test_invite_banned_user_rejected() {
     );
     assert!(
         matches!(
-            check_auth(&invite_banned, &state, rezzy::StateResVersion::V2_1),
+            check_auth(&invite_banned, &state, rezzy::StateResVersion::V2_1, None),
             Err(AuthError::BannedUser { .. })
         ),
         "Inviting a banned user must fail with BannedUser error"
@@ -146,7 +148,7 @@ fn test_invite_insufficient_power_level() {
     );
     assert!(
         matches!(
-            check_auth(&invite, &state, rezzy::StateResVersion::V2_1),
+            check_auth(&invite, &state, rezzy::StateResVersion::V2_1, None),
             Err(AuthError::InsufficientPowerLevel { .. })
         ),
         "Invite with PL 10 < invite PL 75 must fail"
@@ -179,7 +181,7 @@ fn test_self_invite_rejected() {
     );
     assert!(
         matches!(
-            check_auth(&self_invite, &state, rezzy::StateResVersion::V2_1),
+            check_auth(&self_invite, &state, rezzy::StateResVersion::V2_1, None),
             Err(AuthError::InvalidStateKey { .. })
         ),
         "Self-invites must be rejected with InvalidStateKey error"
@@ -222,7 +224,7 @@ fn test_join_banned_user_rejected() {
     );
     assert!(
         matches!(
-            check_auth(&join_attempt, &state, rezzy::StateResVersion::V2_1),
+            check_auth(&join_attempt, &state, rezzy::StateResVersion::V2_1, None),
             Err(AuthError::BannedUser { .. })
         ),
         "Banned user joining must fail"
@@ -257,7 +259,8 @@ fn test_public_room_join_allowed() {
         check_auth(
             &join,
             &state,
-            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
         )
         .is_ok(),
         "Public room join must succeed"
@@ -314,7 +317,8 @@ fn test_member_pl_hierarchy_enforcement() {
         check_auth(
             &kick,
             &state,
-            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
         )
         .is_err(),
         "Equal PL kick must fail"
@@ -381,7 +385,8 @@ fn test_create_event_no_prev_events() {
     assert!(check_auth(
         &create,
         &state,
-        rezzy::basespec::rezzy_types::StateResVersion::V2_1
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+        None
     )
     .is_ok());
 }
@@ -401,7 +406,8 @@ fn test_create_event_with_prev_events() {
         check_auth(
             &create,
             &state,
-            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
         ),
         Err(AuthError::CreateWithPrevEvents)
     );
@@ -418,7 +424,7 @@ fn test_non_member_rejection() {
     );
     let state = RoomState::new();
     assert!(matches!(
-        check_auth(&msg, &state, rezzy::StateResVersion::V2_1),
+        check_auth(&msg, &state, rezzy::StateResVersion::V2_1, None),
         Err(AuthError::NotMember { .. })
     ));
 }
@@ -446,7 +452,8 @@ fn test_joined_member_can_send() {
     assert!(check_auth(
         &msg,
         &state,
-        rezzy::basespec::rezzy_types::StateResVersion::V2_1
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+        None
     )
     .is_ok());
 }
@@ -472,7 +479,7 @@ fn test_banned_user_rejected() {
         ),
     );
     assert!(matches!(
-        check_auth(&msg, &state, rezzy::StateResVersion::V2_1),
+        check_auth(&msg, &state, rezzy::StateResVersion::V2_1, None),
         Err(AuthError::BannedUser { .. })
     ));
 }
@@ -508,7 +515,7 @@ fn test_insufficient_power_level() {
         ),
     );
     assert!(matches!(
-        check_auth(&msg, &state, rezzy::StateResVersion::V2_1),
+        check_auth(&msg, &state, rezzy::StateResVersion::V2_1, None),
         Err(AuthError::InsufficientPowerLevel { .. })
     ));
 }
@@ -524,7 +531,7 @@ fn test_join_self_only() {
     );
     let state = RoomState::new();
     assert!(matches!(
-        check_auth(&join, &state, rezzy::StateResVersion::V2_1),
+        check_auth(&join, &state, rezzy::StateResVersion::V2_1, None),
         Err(AuthError::NotMember { .. })
     ));
 }
@@ -655,6 +662,7 @@ fn test_moderator_can_override_admin_ban() {
         &mod_kick,
         &state,
         rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -733,6 +741,7 @@ fn test_moderator_can_unban_self_ban() {
         &mod_unban,
         &state,
         rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+        None,
     );
     assert!(result.is_ok(), "Expected Ok(()), got {result:?}");
 }
@@ -822,6 +831,7 @@ fn test_equal_power_invite_override_allowed() {
         &mod2_invite,
         &state,
         rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+        None,
     );
     assert!(result.is_ok(), "Expected Ok(()), got {result:?}");
 
@@ -851,6 +861,7 @@ fn test_equal_power_invite_override_allowed() {
         &mod2_invite_banned,
         &state,
         rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+        None,
     );
     assert!(
         matches!(
@@ -941,6 +952,7 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
         &unban,
         &state,
         rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -974,6 +986,7 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
         &kick,
         &state,
         rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+        None,
     );
     assert!(
         matches!(
@@ -988,12 +1001,148 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
     );
 }
 
-/// Creator implicit power level is version-agnostic (the check uses
-/// `has_room_creator` / `has_additional_creator` which don't branch on
-/// `room_version`), so a single test covers all versions.
+/// **KNOWN VULNERABILITY (V1-V11, all implementations):**
+/// PL wipeout — if a PL event with `users: {}` enters the room state (via state
+/// resolution, rogue federation peer, etc.), the creator drops to `users_default`
+/// (0). Nobody has sufficient PL to send state events or fix the PL event.
+/// The room is permanently bricked. No recovery possible.
+///
+/// This is spec-correct behavior — V1-V11 auth rules have no implicit creator
+/// power level. The creator gets PL 100 only because the server puts them in
+/// the PL event's `users` map at room creation. Synapse's `get_user_power_level`
+/// behaves identically: PL event present + `users: {}` → creator gets 0.
+///
+/// V12 (MSC4289) fixes this by granting creators immutable infinite PL.
+/// See `test_msc4289_v2_1_creator_immune_to_pl_wipeout` for passing test.
+///
+/// **xfail**: Asserts the vulnerable behavior. If a V2.0.1 state res patch is
+/// introduced to mitigate this, this test should be updated to assert recovery.
+#[test]
+fn test_v2_pl_wipeout_vulnerability() {
+    let mut state = RoomState::new();
+
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$create",
+            "m.room.create",
+            Some(""),
+            "@creator:x.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@creator:x.com".into()),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@creator:x.com"),
+            "@creator:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    // Attacker-crafted PL event with empty users map.
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@creator:x.com",
+            json!({"users": {}}),
+        ),
+    );
+
+    // Creator tries to send a state event → rejected (PL 0 < required 50).
+    let state_event = make_event(
+        "$topic",
+        "m.room.topic",
+        Some(""),
+        "@creator:x.com",
+        json!({"topic": "hello"}),
+    );
+    let result = check_auth(&state_event, &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        result.is_err(),
+        "xfail: SRV2 room is bricked; creator has PL 0, cannot send state events: {result:?}"
+    );
+
+    // Creator tries to fix the PL event → also rejected (same PL 0).
+    let fix_pl = make_event(
+        "$fix_pl",
+        "m.room.power_levels",
+        Some(""),
+        "@creator:x.com",
+        json!({"users": {"@creator:x.com": 100}}),
+    );
+    let result = check_auth(&fix_pl, &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        result.is_err(),
+        "xfail: SRV2 room is unrecoverable; creator cannot fix the PL event: {result:?}"
+    );
+}
+
+/// V2.1 (room V12, MSC4289) is immune to the PL wipeout vulnerability above.
+/// Even with `users: {}`, the creator has immutable infinite PL and can still
+/// send state events. This is the key security improvement over V1-V11.
+#[test]
+fn test_msc4289_v2_1_creator_immune_to_pl_wipeout() {
+    let mut state = RoomState::new();
+
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$create",
+            "m.room.create",
+            Some(""),
+            "@creator:x.com",
+            json!({"room_version": "12", "creator": "@creator:x.com"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@creator:x.com".into()),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@creator:x.com"),
+            "@creator:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    // PL event with empty users map — same scenario that bricks V2 rooms.
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@creator:x.com",
+            json!({"users": {}}),
+        ),
+    );
+
+    // Creator sends a state event. In V2 this is rejected (PL 0 < required 50).
+    // In V2.1, MSC4289 grants immutable i64::MAX PL → allowed.
+    let state_event = make_event(
+        "$topic",
+        "m.room.topic",
+        Some(""),
+        "@creator:x.com",
+        json!({"topic": "hello"}),
+    );
+
+    let result = check_auth(&state_event, &state, rezzy::StateResVersion::V2_1, None);
+    assert!(
+        result.is_ok(),
+        "V2.1 creator must retain infinite PL even with users:{{}} — immune to PL wipeout: {result:?}"
+    );
+}
+/// MSC4289 (V12+): creators have spec-mandated infinite power level, immutable
+/// and not representable in the PL event. This test verifies the implicit PL
+/// for the primary creator and `additional_creators` in V2.1 (room version 12).
 #[test]
 #[allow(clippy::too_many_lines)]
-fn test_creator_implicit_power_level() {
+fn test_msc4289_creator_implicit_power_level() {
     let mut state = RoomState::new();
 
     // Create event with V2.1 extensions (additional creators)
@@ -1094,7 +1243,8 @@ fn test_creator_implicit_power_level() {
         check_auth(
             &creator_kick,
             &state,
-            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
         )
         .is_ok(),
         "Primary creator should have implicit MAX_POWER_LEVEL and succeed."
@@ -1104,7 +1254,8 @@ fn test_creator_implicit_power_level() {
         check_auth(
             &additional_kick,
             &state,
-            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
         )
         .is_ok(),
         "Additional creator should have implicit MAX_POWER_LEVEL and succeed."
@@ -1112,7 +1263,7 @@ fn test_creator_implicit_power_level() {
 
     assert!(
         matches!(
-            check_auth(&normal_kick, &state, rezzy::StateResVersion::V2_1),
+            check_auth(&normal_kick, &state, rezzy::StateResVersion::V2_1, None),
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,
@@ -1125,7 +1276,7 @@ fn test_creator_implicit_power_level() {
 
 /// Verify that in V2 (pre-MSC4289), creators get PL 100, not `MAX_POWER_LEVEL`.
 #[test]
-fn test_v2_creator_gets_pl_100_not_max() {
+fn test_msc4289_v2_creator_gets_pl_100_not_max() {
     let mut state = RoomState::new();
     state.insert(
         (M_ROOM_CREATE.into(), String::new()),
@@ -1180,7 +1331,8 @@ fn test_v2_creator_gets_pl_100_not_max() {
         check_auth(
             &ban_event,
             &state,
-            rezzy::basespec::rezzy_types::StateResVersion::V2
+            rezzy::basespec::rezzy_types::StateResVersion::V2,
+            None
         )
         .is_err(),
         "V2 creator (PL 100) should NOT be able to ban (requires PL 150)"
@@ -1189,7 +1341,8 @@ fn test_v2_creator_gets_pl_100_not_max() {
         check_auth(
             &ban_event,
             &state,
-            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
         )
         .is_ok(),
         "V2.1 creator (MAX_POWER_LEVEL) should be able to ban (requires PL 150)"
@@ -1198,7 +1351,7 @@ fn test_v2_creator_gets_pl_100_not_max() {
 
 /// Verify that `additional_creators` are ignored in V2 (pre-MSC4289).
 #[test]
-fn test_v2_additional_creators_ignored() {
+fn test_msc4289_v2_additional_creators_ignored() {
     let mut state = RoomState::new();
     state.insert(
         (M_ROOM_CREATE.into(), String::new()),
@@ -1247,7 +1400,8 @@ fn test_v2_additional_creators_ignored() {
         check_auth(
             &kick_event,
             &state,
-            rezzy::basespec::rezzy_types::StateResVersion::V2
+            rezzy::basespec::rezzy_types::StateResVersion::V2,
+            None
         )
         .is_err(),
         "V2 should ignore additional_creators — user should have PL 0 and fail kick"
@@ -1258,7 +1412,8 @@ fn test_v2_additional_creators_ignored() {
         check_auth(
             &kick_event,
             &state,
-            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
         )
         .is_ok(),
         "V2.1 should honor additional_creators — user should have MAX_POWER_LEVEL"
@@ -1289,7 +1444,7 @@ fn test_ban_insufficient_power_level() {
         "@low:x.com",
         json!({"membership": "ban"}),
     );
-    let result = check_auth(&ban, &state, rezzy::StateResVersion::V2_1);
+    let result = check_auth(&ban, &state, rezzy::StateResVersion::V2_1, None);
     assert!(
         matches!(
             result,
@@ -1337,7 +1492,7 @@ fn test_kick_insufficient_power_level() {
         "@low:x.com",
         json!({"membership": "leave"}),
     );
-    let result = check_auth(&kick, &state, rezzy::StateResVersion::V2_1);
+    let result = check_auth(&kick, &state, rezzy::StateResVersion::V2_1, None);
     assert!(
         matches!(
             result,
@@ -1472,7 +1627,7 @@ fn test_join_rules_not_member_invite_only() {
         "@newcomer:x.com",
         json!({"membership": "join"}),
     );
-    let result = check_auth(&join_attempt, &state, rezzy::StateResVersion::V2_1);
+    let result = check_auth(&join_attempt, &state, rezzy::StateResVersion::V2_1, None);
     assert!(
         matches!(
             result,
@@ -1509,7 +1664,7 @@ fn test_join_rules_not_member_knock() {
         "@newcomer:x.com",
         json!({"membership": "join"}),
     );
-    let result = check_auth(&join_attempt, &state, rezzy::StateResVersion::V2_1);
+    let result = check_auth(&join_attempt, &state, rezzy::StateResVersion::V2_1, None);
     assert!(
         matches!(
             result,
@@ -1546,7 +1701,7 @@ fn test_join_rules_not_member_custom_rule() {
         "@newcomer:x.com",
         json!({"membership": "join"}),
     );
-    let result = check_auth(&join_attempt, &state, rezzy::StateResVersion::V2_1);
+    let result = check_auth(&join_attempt, &state, rezzy::StateResVersion::V2_1, None);
     assert!(
         matches!(
             result,
@@ -1585,7 +1740,7 @@ fn test_membership_rules_fallback() {
         "@alice:x.com",
         json!({"membership": "custom_xyz"}),
     );
-    let result = check_auth(&unknown, &state, rezzy::StateResVersion::V2_1);
+    let result = check_auth(&unknown, &state, rezzy::StateResVersion::V2_1, None);
     // Spec rule 5.8: unknown membership must be rejected.
     assert!(
         result.is_err(),
@@ -1642,7 +1797,7 @@ fn test_invite_already_joined_user_rejected() {
         "@admin:x.com",
         json!({"membership": "invite"}),
     );
-    let result = check_auth(&invite, &state, rezzy::StateResVersion::V2_1);
+    let result = check_auth(&invite, &state, rezzy::StateResVersion::V2_1, None);
     assert!(
         result.is_err(),
         "inviting an already-joined user must be rejected, got {result:?}"
@@ -1650,7 +1805,7 @@ fn test_invite_already_joined_user_rejected() {
 }
 
 #[test]
-fn test_owned_state_key_rejected_when_sender_mismatch() {
+fn test_unstable_msc3757_owned_state_key_rejected_when_sender_mismatch() {
     // Spec auth rule 9 (all versions): For non-member state events with @-prefixed state_key,
     // the sender must match the state_key.
     let mut state = RoomState::new();
@@ -1687,7 +1842,7 @@ fn test_owned_state_key_rejected_when_sender_mismatch() {
         "@admin:x.com",
         json!({"data": "hijack"}),
     );
-    let result = check_auth(&owned_event, &state, rezzy::StateResVersion::V2_1);
+    let result = check_auth(&owned_event, &state, rezzy::StateResVersion::V2_1, None);
     assert!(
         result.is_err(),
         "non-member state event with @-prefixed state_key must reject sender mismatch, got {result:?}"
@@ -1695,7 +1850,7 @@ fn test_owned_state_key_rejected_when_sender_mismatch() {
 }
 
 #[test]
-fn test_owned_state_key_allowed_when_sender_matches() {
+fn test_unstable_msc3757_owned_state_key_allowed_when_sender_matches() {
     // Spec auth rule 9: sender == state_key should be allowed.
     let mut state = RoomState::new();
     state.insert(
@@ -1731,7 +1886,7 @@ fn test_owned_state_key_allowed_when_sender_matches() {
         "@alice:x.com",
         json!({"data": "mine"}),
     );
-    let result = check_auth(&owned_event, &state, rezzy::StateResVersion::V2_1);
+    let result = check_auth(&owned_event, &state, rezzy::StateResVersion::V2_1, None);
     assert!(
         result.is_ok(),
         "sender matching @-prefixed state_key should be allowed, got {result:?}"
@@ -1767,7 +1922,7 @@ fn test_self_leave_rejected_when_already_left() {
         "@alice:x.com",
         json!({"membership": "leave"}),
     );
-    let result = check_auth(&leave, &state, rezzy::StateResVersion::V2_1);
+    let result = check_auth(&leave, &state, rezzy::StateResVersion::V2_1, None);
     assert!(
         result.is_err(),
         "self-leave when already left must be rejected, got {result:?}"
@@ -1801,9 +1956,955 @@ fn test_self_leave_allowed_from_knock() {
         "@alice:x.com",
         json!({"membership": "leave"}),
     );
-    let result = check_auth(&leave, &state, rezzy::StateResVersion::V2_1);
+    let result = check_auth(&leave, &state, rezzy::StateResVersion::V2_1, None);
     assert!(
         result.is_ok(),
         "self-leave from knock should be allowed, got {result:?}"
+    );
+}
+
+#[test]
+fn test_third_party_invite_rejected_when_target_banned() {
+    use rezzy::basespec::event_types::{
+        M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,
+    };
+    // Rule 5.4.1.1: If target user is banned, reject — even if 3PI is valid.
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:matrix.org",
+            json!({"creator": "@alice:matrix.org"}),
+        ),
+    );
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({ "users": { "@alice:matrix.org": 100 }, "invite": 50 }),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@alice:matrix.org".into()),
+        make_event(
+            "$a",
+            M_ROOM_MEMBER,
+            Some("@alice:matrix.org"),
+            "@alice:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+    // Charlie is BANNED
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@charlie:matrix.org".into()),
+        make_event(
+            "$ban_charlie",
+            M_ROOM_MEMBER,
+            Some("@charlie:matrix.org"),
+            "@alice:matrix.org",
+            json!({"membership": "ban"}),
+        ),
+    );
+    // Alice created a valid 3PI token
+    state.insert(
+        (M_ROOM_THIRD_PARTY_INVITE.into(), "abc_token".into()),
+        make_event(
+            "$tpi",
+            M_ROOM_THIRD_PARTY_INVITE,
+            Some("abc_token"),
+            "@alice:matrix.org",
+            json!({"display_name": "charlie"}),
+        ),
+    );
+
+    // Alice tries to invite the banned user via 3PI
+    let invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@alice:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "display_name": "charlie",
+                "signed": {
+                    "token": "abc_token",
+                    "mxid": "@charlie:matrix.org",
+                    "signatures": {
+                        "example.com": { "ed25519:1": "dummy" }
+                    }
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&invite, &state, StateResVersion::V2, None);
+    assert!(
+        matches!(result, Err(AuthError::BannedUser { .. })),
+        "3PI invite targeting a banned user must be rejected as BannedUser (Rule 5.4.1.1), got: {result:?}"
+    );
+}
+
+#[test]
+fn test_third_party_invite_allowed_when_issuer_has_power() {
+    use rezzy::basespec::event_types::{
+        M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,
+    };
+
+    // Alice has PL to invite.
+    // Alice creates m.room.third_party_invite with state_key "abc_token".
+    // Alice issues m.room.member (invite) for Charlie, referencing "abc_token" and her own mxid.
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:matrix.org",
+            json!({"creator": "@alice:matrix.org"}),
+        ),
+    );
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({
+                "users": { "@alice:matrix.org": 100, "@bob:matrix.org": 0 },
+                "invite": 50
+            }),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@alice:matrix.org".into()),
+        make_event(
+            "$a",
+            M_ROOM_MEMBER,
+            Some("@alice:matrix.org"),
+            "@alice:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@bob:matrix.org".into()),
+        make_event(
+            "$b",
+            M_ROOM_MEMBER,
+            Some("@bob:matrix.org"),
+            "@bob:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Alice creates the third party invite
+    state.insert(
+        (M_ROOM_THIRD_PARTY_INVITE.into(), "abc_token".into()),
+        make_event(
+            "$tpi",
+            M_ROOM_THIRD_PARTY_INVITE,
+            Some("abc_token"),
+            "@alice:matrix.org",
+            json!({"display_name": "charlie"}),
+        ),
+    );
+
+    // Alice sends the actual invite, leveraging her own 3PI token
+    let alice_invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@alice:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "display_name": "charlie",
+                "signed": {
+                    "token": "abc_token",
+                    "mxid": "@charlie:matrix.org",
+                    "signatures": {
+                        "example.com": {
+                            "ed25519:1": "dummy_signature"
+                        }
+                    }
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&alice_invite, &state, StateResVersion::V2, None);
+    assert!(
+        result.is_ok(),
+        "3PI invite should be allowed when issuer correctly sends the invite: {result:?}"
+    );
+}
+
+#[test]
+fn test_third_party_invite_rejected_when_sender_mismatch() {
+    use rezzy::basespec::event_types::{
+        M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,
+    };
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({
+                "users": { "@alice:matrix.org": 100, "@bob:matrix.org": 100 },
+                "invite": 50
+            }),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@bob:matrix.org".into()),
+        make_event(
+            "$b",
+            M_ROOM_MEMBER,
+            Some("@bob:matrix.org"),
+            "@bob:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // ALICE creates the third party invite
+    state.insert(
+        (M_ROOM_THIRD_PARTY_INVITE.into(), "abc_token".into()),
+        make_event(
+            "$tpi",
+            M_ROOM_THIRD_PARTY_INVITE,
+            Some("abc_token"),
+            "@alice:matrix.org",
+            json!({"display_name": "charlie"}),
+        ),
+    );
+
+    // BOB (who also has PL) tries to send the invite using ALICE's token
+    let bob_invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@bob:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "signed": {
+                    "token": "abc_token",
+                    "mxid": "@charlie:matrix.org",
+                    "signatures": { "example.com": { "ed25519:1": "dummy" } }
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&bob_invite, &state, StateResVersion::V2, None);
+    assert!(
+        matches!(result, Err(AuthError::InvalidStateKey { .. })),
+        "3PI invite must fail as InvalidStateKey if sender mismatches, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_third_party_invite_rejected_when_mxid_mismatch() {
+    use rezzy::basespec::event_types::{
+        M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,
+    };
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({ "users": { "@alice:matrix.org": 100 }, "invite": 50 }),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@alice:matrix.org".into()),
+        make_event(
+            "$a",
+            M_ROOM_MEMBER,
+            Some("@alice:matrix.org"),
+            "@alice:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    state.insert(
+        (M_ROOM_THIRD_PARTY_INVITE.into(), "abc_token".into()),
+        make_event(
+            "$tpi",
+            M_ROOM_THIRD_PARTY_INVITE,
+            Some("abc_token"),
+            "@alice:matrix.org",
+            json!({"display_name": "charlie"}),
+        ),
+    );
+
+    // Alice sends the invite, but the mxid in the token does NOT match the state_key
+    let alice_invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@alice:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "signed": {
+                    "token": "abc_token",
+                    "mxid": "@wrong_user:matrix.org",
+                    "signatures": { "example.com": { "ed25519:1": "dummy" } }
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&alice_invite, &state, StateResVersion::V2, None);
+    assert!(
+        matches!(result, Err(AuthError::InvalidStateKey { .. })),
+        "3PI invite must fail if mxid does not match target user, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_third_party_invite_rejected_when_signatures_missing() {
+    use rezzy::basespec::event_types::{
+        M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,
+    };
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({ "users": { "@alice:matrix.org": 100 }, "invite": 50 }),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@alice:matrix.org".into()),
+        make_event(
+            "$a",
+            M_ROOM_MEMBER,
+            Some("@alice:matrix.org"),
+            "@alice:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    state.insert(
+        (M_ROOM_THIRD_PARTY_INVITE.into(), "abc_token".into()),
+        make_event(
+            "$tpi",
+            M_ROOM_THIRD_PARTY_INVITE,
+            Some("abc_token"),
+            "@alice:matrix.org",
+            json!({"display_name": "charlie"}),
+        ),
+    );
+
+    let alice_invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@alice:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "signed": {
+                    "token": "abc_token",
+                    "mxid": "@charlie:matrix.org"
+                    // missing signatures
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&alice_invite, &state, StateResVersion::V2, None);
+    assert!(
+        matches!(result, Err(AuthError::InvalidSyntax(_))),
+        "3PI invite must fail as InvalidSyntax if signatures block is missing, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_third_party_invite_rejected_when_token_missing() {
+    use rezzy::basespec::event_types::{M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({ "users": { "@alice:matrix.org": 100 }, "invite": 50 }),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@alice:matrix.org".into()),
+        make_event(
+            "$a",
+            M_ROOM_MEMBER,
+            Some("@alice:matrix.org"),
+            "@alice:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // NO m.room.third_party_invite event is in the state!
+
+    // Alice sends the invite, referencing a token that doesn't exist
+    let alice_invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@alice:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "signed": {
+                    "token": "missing_token",
+                    "mxid": "@charlie:matrix.org",
+                    "signatures": { "example.com": { "ed25519:1": "dummy" } }
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&alice_invite, &state, StateResVersion::V2, None);
+    assert!(
+        matches!(result, Err(AuthError::InvalidStateKey { .. })),
+        "3PI invite must fail as InvalidStateKey if token does not exist in state, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_third_party_invite_rejected_when_issuer_lacks_power() {
+    use rezzy::basespec::event_types::{
+        M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,
+    };
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:matrix.org",
+            json!({"creator": "@alice:matrix.org"}),
+        ),
+    );
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({
+                "users": { "@alice:matrix.org": 100, "@bob:matrix.org": 10 },
+                "invite": 50
+            }),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@bob:matrix.org".into()),
+        make_event(
+            "$b",
+            M_ROOM_MEMBER,
+            Some("@bob:matrix.org"),
+            "@bob:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+    // Bob created the 3PI token but only has PL 10, invite requires 50
+    state.insert(
+        (M_ROOM_THIRD_PARTY_INVITE.into(), "abc_token".into()),
+        make_event(
+            "$tpi",
+            M_ROOM_THIRD_PARTY_INVITE,
+            Some("abc_token"),
+            "@bob:matrix.org",
+            json!({"display_name": "charlie"}),
+        ),
+    );
+
+    let invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@bob:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "signed": {
+                    "token": "abc_token",
+                    "mxid": "@charlie:matrix.org",
+                    "signatures": { "example.com": { "ed25519:1": "dummy" } }
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&invite, &state, StateResVersion::V2, None);
+    assert!(
+        matches!(result, Err(AuthError::InsufficientPowerLevel { .. })),
+        "3PI invite must fail as InsufficientPowerLevel when issuer PL < invite PL, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_third_party_invite_rejected_when_mxid_missing() {
+    use rezzy::basespec::event_types::{M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@alice:matrix.org",
+            json!({ "users": { "@alice:matrix.org": 100 }, "invite": 50 }),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@alice:matrix.org".into()),
+        make_event(
+            "$a",
+            M_ROOM_MEMBER,
+            Some("@alice:matrix.org"),
+            "@alice:matrix.org",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // third_party_invite.signed has token and signatures but NO mxid
+    let invite = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@charlie:matrix.org"),
+        "@alice:matrix.org",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "signed": {
+                    "token": "abc_token",
+                    "signatures": { "example.com": { "ed25519:1": "dummy" } }
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(&invite, &state, StateResVersion::V2, None);
+    assert!(
+        matches!(result, Err(AuthError::InvalidSyntax(_))),
+        "3PI invite must fail as InvalidSyntax when mxid is missing from signed block, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_third_party_invite_override_is_ignored() {
+    use rezzy::basespec::event_types::{
+        M_ROOM_CREATE, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE,
+    };
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@creator:example.com",
+            json!({ "creator": "@creator:example.com" }),
+        ),
+    );
+
+    // invite requires PL 50, but third_party_invite event-specific override (0) must be ignored
+    let pl_content = json!({
+        "invite": 50,
+        "events": {
+            "m.room.third_party_invite": 0
+        },
+        "users": {
+            "@creator:example.com": 100
+        }
+    });
+
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@creator:example.com",
+            pl_content,
+        ),
+    );
+
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@user:example.com".into()),
+        make_event(
+            "$join",
+            M_ROOM_MEMBER,
+            Some("@user:example.com"),
+            "@user:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let tpi_event = make_event(
+        "$tpi",
+        M_ROOM_THIRD_PARTY_INVITE,
+        Some("token"),
+        "@user:example.com", // user has default PL 0
+        json!({
+            "display_name": "bob",
+            "public_key": "abc"
+        }),
+    );
+
+    let result = rezzy::auth::check_auth(&tpi_event, &state, rezzy::StateResVersion::V2_1, None);
+    assert!(
+        matches!(result, Err(rezzy::auth::AuthError::InsufficientPowerLevel { .. })),
+        "m.room.third_party_invite must require the invite level (50) and ignore the event-specific override (0), got: {result:?}"
+    );
+}
+
+#[test]
+fn test_malformed_third_party_invite_presence() {
+    use rezzy::basespec::event_types::{M_ROOM_CREATE, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@creator:example.com",
+            json!({ "creator": "@creator:example.com" }),
+        ),
+    );
+
+    state.insert(
+        (M_ROOM_POWER_LEVELS.into(), String::new()),
+        make_event(
+            "$pl",
+            M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@creator:example.com",
+            json!({
+                "invite": 50,
+                "users": {
+                    "@admin:example.com": 100
+                }
+            }),
+        ),
+    );
+
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@admin:example.com".into()),
+        make_event(
+            "$join",
+            M_ROOM_MEMBER,
+            Some("@admin:example.com"),
+            "@admin:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Admin sends an invite to @target:example.com
+    // BUT the payload has a malformed third_party_invite object (missing signed)
+    let invite_event = make_event(
+        "$inv",
+        M_ROOM_MEMBER,
+        Some("@target:example.com"),
+        "@admin:example.com", // Admin has PL 100, which is enough to invite
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "display_name": "bob"
+            }
+        }),
+    );
+
+    let result = rezzy::auth::check_auth(&invite_event, &state, rezzy::StateResVersion::V2_1, None);
+    assert!(
+        matches!(result, Err(rezzy::auth::AuthError::InvalidSyntax(_))),
+        "Invite with malformed third_party_invite property must be rejected as InvalidSyntax, got: {result:?}"
+    );
+}
+
+// ─── EventVerifier trait coverage ───────────────────────────────────────────
+
+/// A pass-through verifier that uses all default `Ok(())` impls.
+struct PassThroughVerifier;
+impl rezzy::EventVerifier<String> for PassThroughVerifier {}
+
+/// A verifier that rejects on `verify_event_id_hash`.
+struct RejectEventIdHash;
+impl rezzy::EventVerifier<String> for RejectEventIdHash {
+    fn verify_event_id_hash(&self, _event_id: &String) -> Result<(), String> {
+        Err("bad event id hash".into())
+    }
+}
+
+/// A verifier that rejects on `verify_signatures`.
+struct RejectSignatures;
+impl rezzy::EventVerifier<String> for RejectSignatures {
+    fn verify_signatures(&self, _event_id: &String) -> Result<(), String> {
+        Err("bad signature".into())
+    }
+}
+
+/// A verifier that rejects on `verify_content_hash`.
+struct RejectContentHash;
+impl rezzy::EventVerifier<String> for RejectContentHash {
+    fn verify_content_hash(&self, _event_id: &String) -> Result<(), String> {
+        Err("bad content hash".into())
+    }
+}
+
+/// A verifier that rejects on `verify_third_party_invite`.
+struct RejectThirdPartyInvite;
+impl rezzy::EventVerifier<String> for RejectThirdPartyInvite {
+    fn verify_third_party_invite(
+        &self,
+        _event_id: &String,
+        _tpi_token: &str,
+    ) -> Result<(), String> {
+        Err("bad 3pi signature".into())
+    }
+}
+
+/// Helper: build minimal valid state + member event for verifier tests.
+fn make_verifier_test_state() -> (RoomState, LeanEvent) {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$create",
+            "m.room.create",
+            Some(""),
+            "@alice:x.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@alice:x.com".into()),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@alice:x.com"),
+            "@alice:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@alice:x.com",
+            json!({"users": {"@alice:x.com": 100}}),
+        ),
+    );
+    let msg = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:x.com",
+        json!({"body": "hi"}),
+    );
+    (state, msg)
+}
+
+#[test]
+fn test_event_verifier_passthrough_allows() {
+    let (state, msg) = make_verifier_test_state();
+    let result = check_auth(
+        &msg,
+        &state,
+        rezzy::StateResVersion::V2_1,
+        Some(&PassThroughVerifier),
+    );
+    assert!(
+        result.is_ok(),
+        "PassThroughVerifier should allow: {result:?}"
+    );
+}
+
+#[test]
+fn test_event_verifier_reject_event_id_hash() {
+    let (state, msg) = make_verifier_test_state();
+    let result = check_auth(
+        &msg,
+        &state,
+        rezzy::StateResVersion::V2_1,
+        Some(&RejectEventIdHash),
+    );
+    assert!(
+        matches!(&result, Err(AuthError::InvalidSyntax(s)) if s.contains("bad event id hash")),
+        "Should reject with bad event id hash: {result:?}"
+    );
+}
+
+#[test]
+fn test_event_verifier_reject_signatures() {
+    let (state, msg) = make_verifier_test_state();
+    let result = check_auth(
+        &msg,
+        &state,
+        rezzy::StateResVersion::V2_1,
+        Some(&RejectSignatures),
+    );
+    assert!(
+        matches!(&result, Err(AuthError::InvalidSyntax(s)) if s.contains("bad signature")),
+        "Should reject with bad signature: {result:?}"
+    );
+}
+
+#[test]
+fn test_event_verifier_reject_content_hash() {
+    let (state, msg) = make_verifier_test_state();
+    let result = check_auth(
+        &msg,
+        &state,
+        rezzy::StateResVersion::V2_1,
+        Some(&RejectContentHash),
+    );
+    assert!(
+        matches!(&result, Err(AuthError::InvalidSyntax(s)) if s.contains("bad content hash")),
+        "Should reject with bad content hash: {result:?}"
+    );
+}
+
+#[test]
+fn test_event_verifier_reject_third_party_invite() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$create",
+            "m.room.create",
+            Some(""),
+            "@alice:x.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@alice:x.com".into()),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@alice:x.com"),
+            "@alice:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@alice:x.com",
+            json!({"users": {"@alice:x.com": 100}}),
+        ),
+    );
+    state.insert(
+        ("m.room.third_party_invite".into(), "tok123".into()),
+        make_event(
+            "$tpi",
+            "m.room.third_party_invite",
+            Some("tok123"),
+            "@alice:x.com",
+            json!({"public_key": "abc"}),
+        ),
+    );
+
+    let invite = make_event(
+        "$inv",
+        "m.room.member",
+        Some("@bob:x.com"),
+        "@alice:x.com",
+        json!({
+            "membership": "invite",
+            "third_party_invite": {
+                "signed": {
+                    "mxid": "@bob:x.com",
+                    "token": "tok123",
+                    "signatures": {"x.com": {"ed25519:auto": "sig"}}
+                }
+            }
+        }),
+    );
+
+    let result = check_auth(
+        &invite,
+        &state,
+        rezzy::StateResVersion::V2_1,
+        Some(&RejectThirdPartyInvite),
+    );
+    assert!(
+        matches!(&result, Err(AuthError::InvalidSyntax(s)) if s.contains("bad 3pi signature")),
+        "Should reject with bad 3pi signature: {result:?}"
+    );
+}
+
+/// Coverage: `get_required_power_level` line 377 — `m.room.third_party_invite`
+/// defaults to PL 0 when no `m.room.power_levels` event exists.
+#[test]
+fn test_third_party_invite_default_pl_without_power_levels() {
+    use rezzy::basespec::event_types::{M_ROOM_MEMBER, M_ROOM_THIRD_PARTY_INVITE};
+
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:x",
+            json!({"creator": "@alice:x"}),
+        ),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@alice:x".into()),
+        make_event(
+            "$j",
+            M_ROOM_MEMBER,
+            Some("@alice:x"),
+            "@alice:x",
+            json!({"membership": "join"}),
+        ),
+    );
+    // NO m.room.power_levels in state — triggers the fallback at line 376-377
+
+    let tpi = make_event(
+        "$tpi",
+        M_ROOM_THIRD_PARTY_INVITE,
+        Some("token123"),
+        "@alice:x",
+        json!({"display_name": "charlie"}),
+    );
+
+    let result = rezzy::auth::check_auth(&tpi, &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        result.is_ok(),
+        "TPI with no PL event should succeed (default PL=0): {result:?}"
     );
 }

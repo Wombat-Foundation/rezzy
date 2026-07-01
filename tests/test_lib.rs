@@ -294,6 +294,95 @@ mod tests {
         assert_eq!(p_base.cmp(&p_larger_id), Ordering::Greater);
     }
 
+    /// V2.1.1 introduces an `auth_chain_distance` tie-breaker between equal PLs.
+    #[test]
+    fn test_sort_priority_v2_1_1_auth_chain_distance_tie_break() {
+        let evs = utils::parse_jsonl_events(
+            r#"
+            {"event_id": "$close", "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 10}
+            {"event_id": "$far",   "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 10}
+        "#,
+        );
+
+        // Case 1: Equal PL, different auth_chain_distance.
+        let p_close = SortPriority {
+            power_level: 100,
+            event: &evs[0],
+            auth_chain_distance: 1,
+            version: rezzy::StateResVersion::V2_1_1,
+        };
+        let p_far = SortPriority {
+            power_level: 100,
+            event: &evs[1],
+            auth_chain_distance: 5,
+            version: rezzy::StateResVersion::V2_1_1,
+        };
+        // cmp uses `other.distance.cmp(&self.distance)`:
+        //   p_far.cmp(p_close) → other(1).cmp(self(5)) → Less
+        assert_eq!(p_far.cmp(&p_close), Ordering::Less);
+        assert_eq!(p_close.cmp(&p_far), Ordering::Greater);
+
+        // Case 2: Equal PL AND equal distance → falls through to origin_server_ts.
+        let evs2 = utils::parse_jsonl_events(
+            r#"
+            {"event_id": "$early", "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 10}
+            {"event_id": "$late",  "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 20}
+        "#,
+        );
+        let p_early = SortPriority {
+            power_level: 100,
+            event: &evs2[0],
+            auth_chain_distance: 3,
+            version: rezzy::StateResVersion::V2_1_1,
+        };
+        let p_late = SortPriority {
+            power_level: 100,
+            event: &evs2[1],
+            auth_chain_distance: 3,
+            version: rezzy::StateResVersion::V2_1_1,
+        };
+        // Equal distance → earlier ts pops first (Greater = loses).
+        assert_eq!(p_early.cmp(&p_late), Ordering::Greater);
+        assert_eq!(p_late.cmp(&p_early), Ordering::Less);
+    }
+
+    /// `SortPriority` derives Copy; the manual Clone impl must agree.
+    #[test]
+    fn test_sort_priority_clone() {
+        let evs = utils::parse_jsonl_events(
+            r#"
+            {"event_id": "$a", "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 10}
+        "#,
+        );
+        let p = SortPriority {
+            power_level: 50,
+            event: &evs[0],
+            auth_chain_distance: 3,
+            version: rezzy::StateResVersion::V2_1_1,
+        };
+        #[allow(clippy::clone_on_copy)]
+        let p2 = p.clone();
+        assert_eq!(p.cmp(&p2), Ordering::Equal);
+    }
+
+    /// `cmp_by_depth`: depth ascending, then `event_id` ascending.
+    #[test]
+    fn test_cmp_by_depth() {
+        let evs = utils::parse_jsonl_events(
+            r#"
+            {"event_id": "$a",  "type": "m.room.member", "sender": "@a:x", "depth": 5,  "origin_server_ts": 0}
+            {"event_id": "$b",  "type": "m.room.member", "sender": "@a:x", "depth": 10, "origin_server_ts": 0}
+            {"event_id": "$a2", "type": "m.room.member", "sender": "@a:x", "depth": 5,  "origin_server_ts": 0}
+        "#,
+        );
+        // Different depth: lower depth comes first.
+        assert_eq!(evs[0].cmp_by_depth(&evs[1]), Ordering::Less);
+        assert_eq!(evs[1].cmp_by_depth(&evs[0]), Ordering::Greater);
+        // Same depth: lexicographic event_id tie-break.
+        assert_eq!(evs[0].cmp_by_depth(&evs[2]), Ordering::Less);
+        assert_eq!(evs[0].cmp_by_depth(&evs[0]), Ordering::Equal);
+    }
+
     #[test]
     fn test_v1_resolution_happy_path() {
         let mut events: HashMap<String, LeanEvent> = HashMap::new();
@@ -2205,7 +2294,8 @@ mod tests {
             check_auth(
                 &bad_create,
                 &state,
-                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+                None
             ),
             Err(AuthError::<String>::CreateWithPrevEvents)
         );
@@ -2221,7 +2311,8 @@ mod tests {
             check_auth(
                 &name_change,
                 &state,
-                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+                None
             ),
             Err(AuthError::NotMember {
                 sender: "@bob:example.com".into(),
@@ -2239,7 +2330,8 @@ mod tests {
         assert!(check_auth(
             &creator_name_change,
             &state,
-            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
         )
         .is_ok());
 
@@ -2272,7 +2364,8 @@ mod tests {
             check_auth(
                 &join_ev,
                 &state2,
-                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+                None
             ),
             Err(AuthError::BannedUser {
                 sender: "@bob:example.com".into(),
@@ -2292,7 +2385,8 @@ mod tests {
         assert!(check_auth(
             &self_invite,
             &state2,
-            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
         )
         .is_err());
 
@@ -2309,7 +2403,8 @@ mod tests {
             check_auth(
                 &bad_join,
                 &state2,
-                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+                None
             ),
             Err(AuthError::InvalidStateKey {
                 expected: "@alice:example.com".into(),
@@ -2344,7 +2439,8 @@ mod tests {
             check_auth(
                 &low_power_state_change,
                 &state3,
-                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+                None
             ),
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
@@ -2366,7 +2462,8 @@ mod tests {
             check_auth(
                 &invite_banned,
                 &state2,
-                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+                None
             ),
             Err(AuthError::BannedUser {
                 sender: "@bob:example.com".into(),
@@ -2402,10 +2499,27 @@ mod tests {
             event_id: "CREATE".into(),
             event_type: "m.room.create".into(),
             state_key: Some(String::new()),
-            sender: "@alice:example.com".into(), // Match the default sender of A and B
+            sender: "@alice:example.com".into(),
             ..Default::default()
         };
         auth.insert("CREATE".into(), create);
+
+        // Initial PL event from room creation — gives Alice explicit PL 100.
+        // Pre-V12 auth rules have no implicit creator PL; the server puts
+        // the creator in the PL event's `users` map at room creation.
+        let initial_pl = LeanEvent {
+            event_id: "INITIAL_PL".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            content: serde_json::from_value(serde_json::json!({
+                "users": { "@alice:example.com": 100 }
+            }))
+            .unwrap(),
+            auth_events: vec!["CREATE".into()],
+            ..Default::default()
+        };
+        auth.insert("INITIAL_PL".into(), initial_pl);
 
         // Create cyclic power events: A auths B, B authed by A, etc.
         let a: LeanEvent = LeanEvent {
@@ -2414,6 +2528,10 @@ mod tests {
             state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
             auth_events: vec!["B".into(), "CREATE".into()],
+            content: serde_json::from_value(serde_json::json!({
+                "users": { "@alice:example.com": 100 }
+            }))
+            .unwrap(),
             ..Default::default()
         };
         let b: LeanEvent = LeanEvent {
@@ -2422,12 +2540,23 @@ mod tests {
             state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
             auth_events: vec!["A".into(), "CREATE".into()],
+            content: serde_json::from_value(serde_json::json!({
+                "users": { "@alice:example.com": 100 }
+            }))
+            .unwrap(),
             ..Default::default()
         };
         conflicted.insert("A".into(), a);
         conflicted.insert("B".into(), b);
 
-        let unconflicted = imbl::OrdMap::new();
+        // The unconflicted state includes the initial PL so sorting can
+        // determine Alice's power level without relying on the cyclic
+        // conflicted events.
+        let mut unconflicted = imbl::OrdMap::new();
+        unconflicted.insert(
+            ("m.room.power_levels".into(), String::new()),
+            "INITIAL_PL".into(),
+        );
         // This will run kahn sort on power_events, detect a cycle, and print/handle it safely.
         let resolved =
             resolve_iterative_sort(unconflicted, conflicted, &auth, rezzy::StateResVersion::V2);
@@ -3014,7 +3143,7 @@ fn test_sorting_coverage() {
 }
 
 #[test]
-fn test_sorting_v2_creator_gets_pl_100() {
+fn test_msc4289_sorting_v2_creator_gets_pl_100() {
     let mut events: HashMap<String, LeanEvent> = HashMap::new();
     let auth: HashMap<String, LeanEvent> = HashMap::new();
 
@@ -3514,7 +3643,7 @@ fn test_event_content_blanket_impl_all_methods() {
 }
 
 #[test]
-fn test_additional_creators_version_gating() {
+fn test_msc4289_additional_creators_version_gating() {
     use rezzy::basespec::rezzy_types::EventContent;
     let content = serde_json::json!({
         "additional_creators": ["@ac:x.com"]
@@ -3722,6 +3851,95 @@ fn test_state_res_version_serde_roundtrip() {
     // Unknown variant must fail
     let invalid: Result<StateResVersion, _> = serde_json::from_str("\"V99\"");
     assert!(invalid.is_err());
+
+    // Non-string type triggers `expecting`
+    let wrong_type: Result<StateResVersion, _> = serde_json::from_str("42");
+    assert!(
+        wrong_type.is_err(),
+        "Deserializing an integer must fail with 'expected a StateResVersion string'"
+    );
+    let err_msg = wrong_type.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("StateResVersion"),
+        "Error message must mention StateResVersion: {err_msg}"
+    );
+}
+
+/// Coverage: default `EventContent` trait method impls (lines 299-316).
+/// Uses a minimal struct that does NOT override the `third_party_invite` defaults.
+#[test]
+fn test_event_content_default_trait_methods() {
+    use rezzy::basespec::rezzy_types::EventContent;
+
+    /// Minimal type that relies on ALL default trait impls for `third_party_invite`.
+    #[derive(Debug, Clone, Default)]
+    struct MinimalContent;
+    impl EventContent for MinimalContent {
+        fn get_membership(&self) -> Option<&str> {
+            None
+        }
+        fn get_join_rule(&self) -> Option<&str> {
+            None
+        }
+        fn get_user_power_level(&self, _: &str) -> Option<i64> {
+            None
+        }
+        fn get_event_power_level(&self, _: &str) -> Option<i64> {
+            None
+        }
+        fn get_users_default(&self) -> Option<i64> {
+            None
+        }
+        fn get_events_default(&self) -> Option<i64> {
+            None
+        }
+        fn get_state_default(&self) -> Option<i64> {
+            None
+        }
+        fn get_ban(&self) -> Option<i64> {
+            None
+        }
+        fn get_kick(&self) -> Option<i64> {
+            None
+        }
+        fn get_invite(&self) -> Option<i64> {
+            None
+        }
+        fn get_redact(&self) -> Option<i64> {
+            None
+        }
+        fn get_creator(&self) -> Option<&str> {
+            None
+        }
+        fn has_additional_creator(&self, _: &str) -> bool {
+            false
+        }
+        fn get_join_authorised_via_users_server(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    let c = MinimalContent;
+    assert!(!c.has_third_party_invite());
+    assert!(c.get_third_party_invite_token().is_none());
+    assert!(c.get_third_party_invite_mxid().is_none());
+    assert!(!c.has_third_party_invite_signatures());
+}
+
+/// Coverage: default `EventVerifier::verify_third_party_invite` (line 369-375).
+#[test]
+fn test_event_verifier_default_third_party_invite() {
+    use rezzy::basespec::rezzy_types::EventVerifier;
+
+    struct DefaultVerifier;
+    impl EventVerifier<String> for DefaultVerifier {}
+
+    let v = DefaultVerifier;
+    assert!(
+        v.verify_third_party_invite(&"$ev".to_string(), "some_token")
+            .is_ok(),
+        "Default verify_third_party_invite must return Ok"
+    );
 }
 
 #[test]
@@ -3766,7 +3984,7 @@ fn test_dag_node_trait_on_lean_event() {
 }
 
 #[test]
-fn test_lean_event_get_redact_and_creator() {
+fn test_msc4289_lean_event_get_redact_and_creator() {
     let ev = LeanEvent::<String> {
         event_id: "ev".into(),
         event_type: "m.room.power_levels".into(),

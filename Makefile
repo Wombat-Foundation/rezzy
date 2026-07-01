@@ -20,6 +20,11 @@ format: ##H Format codebase (Rust + Lean + scripts)
 	-shfmt -w $(LINT_LOCS_SH)
 	cargo sort --workspace --grouped
 
+.PHONY: fix
+fix:	##H Clippy auto-fix
+	$(CARGO) +nightly clippy --allow-dirty --fix --all-targets --all-features -- -W clippy::perf -W clippy::pedantic
+	$(CARGO) fix --all-targets --all-features --allow-dirty
+
 .PHONY: lint
 lint: ##H Run all linters
 	$(CARGO) +nightly clippy --all-targets --all-features -- -W clippy::perf -W clippy::pedantic
@@ -81,14 +86,14 @@ endif
 .PHONY: rust/coverage
 rust/coverage: fixtures ##H Run code coverage and generate HTML report
 	# TODO: include `src/bin/` in coverage
-	$(CARGO) tarpaulin --all-features --all-targets \
-		--out Html Xml \
-		--output-dir ../.tmp/coverage-lean \
-		--packages rezzy \
-		--exclude-files 'src/bin/*' \
-		--ignore-panics \
-		--ignore-tests \
-		--skip-clean
+	# Run coverage
+	$(CARGO) +nightly llvm-cov --all-features --all-targets \
+		--html --output-dir ./.tmp/coverage-lean \
+		--ignore-filename-regex 'src/bin/.*'
+	# Process report to codecov-compatible JSON
+	$(CARGO) +nightly llvm-cov report \
+		--ignore-filename-regex 'src/bin/.*' \
+		--codecov --output-path ./.tmp/coverage-lean/codecov.json
 
 .PHONY: rust/clean
 rust/clean: ##H Remove Rust build artifacts

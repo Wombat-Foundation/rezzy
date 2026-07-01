@@ -577,3 +577,191 @@ fn test_state_delta_compression_robustness() {
     assert_eq!(d4[0].state_key, "@alice:example.com".to_string());
     assert_eq!(d4[0].event_id, Some("$4".to_string()));
 }
+
+// ─── Supplemental coverage tests for state/at.rs  ────────────────────
+
+mod utils;
+
+/// Coverage: `compute_merge_base` (at.rs:679-748) — diamond DAG.
+/// Tests: empty extremities, single extremity, two-branch merge, disjoint DAGs.
+#[test]
+fn test_compute_merge_base_diamond() {
+    use rezzy::{compute_merge_base, LeanEvent};
+    use std::collections::HashMap;
+
+    let evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$root",  "type": "m.room.create", "state_key": "", "sender": "@a:x", "depth": 1, "prev_events": []}
+        {"event_id": "$left",  "type": "m.room.topic",  "state_key": "", "sender": "@a:x", "depth": 2, "prev_events": ["$root"]}
+        {"event_id": "$right", "type": "m.room.name",   "state_key": "", "sender": "@a:x", "depth": 2, "prev_events": ["$root"]}
+        {"event_id": "$merge", "type": "m.room.message", "sender": "@a:x", "depth": 3, "prev_events": ["$left", "$right"]}
+    "#,
+    );
+
+    let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in evs {
+        events_map.insert(ev.event_id.clone(), ev);
+    }
+
+    // Empty extremities → None
+    let result = compute_merge_base::<String, str, _, _>(&[], &events_map);
+    assert!(result.is_none(), "Empty extremities must return None");
+
+    // Single extremity → returns itself
+    let result = compute_merge_base(&["$merge"], &events_map);
+    assert_eq!(result, Some(&"$merge".to_string()));
+
+    // Two branches → merge base is $root
+    let result = compute_merge_base(&["$left", "$right"], &events_map);
+    assert_eq!(
+        result,
+        Some(&"$root".to_string()),
+        "Merge base of $left and $right must be $root"
+    );
+
+    // Merge tip + one branch → merge base is the branch (it's an ancestor of $merge)
+    let result = compute_merge_base(&["$merge", "$left"], &events_map);
+    assert_eq!(
+        result,
+        Some(&"$left".to_string()),
+        "Merge base of $merge and $left must be $left"
+    );
+
+    // Disjoint: add an orphan event
+    let orphan = LeanEvent {
+        event_id: "$orphan".to_string(),
+        depth: 1,
+        ..Default::default()
+    };
+    events_map.insert("$orphan".to_string(), orphan);
+    let result = compute_merge_base(&["$left", "$orphan"], &events_map);
+    assert!(result.is_none(), "Disjoint DAGs must return None");
+}
+
+/// Coverage: `CycleDetected` in `run_state_pipeline_streaming` (at.rs:580)
+/// and the handler in `compute_state_at_streaming` (at.rs:489-496).
+///
+/// Creates a `prev_events` cycle: $A→$B→$A. The topological sort detects the
+/// cycle and returns `CycleDetected`, which `compute_state_at_streaming`
+/// silently handles (prints to stderr).
+#[test]
+fn test_compute_state_at_prev_events_cycle() {
+    use rezzy::state::at::{
+        compute_state_at_streaming, try_compute_state_at_streaming, StateComputationError,
+    };
+    use rezzy::{LeanEvent, StateResVersion};
+    use std::collections::HashMap;
+
+    let evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@a:x", "depth": 1, "prev_events": []}
+        {"event_id": "$join",   "type": "m.room.member",  "state_key": "@a:x", "sender": "@a:x", "depth": 2, "prev_events": ["$create"]}
+    "#,
+    );
+
+    let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in &evs {
+        events_map.insert(ev.event_id.clone(), ev.clone());
+    }
+
+    // Add a cycle: $A→$B→$A
+    events_map.insert(
+        "$A".to_string(),
+        LeanEvent {
+            event_id: "$A".to_string(),
+            event_type: "m.room.topic".to_string(),
+            state_key: Some(String::new()),
+            sender: "@a:x".to_string(),
+            depth: 3,
+            prev_events: vec!["$join".to_string(), "$B".to_string()],
+            ..Default::default()
+        },
+    );
+    events_map.insert(
+        "$B".to_string(),
+        LeanEvent {
+            event_id: "$B".to_string(),
+            event_type: "m.room.name".to_string(),
+            state_key: Some(String::new()),
+            sender: "@a:x".to_string(),
+            depth: 3,
+            prev_events: vec!["$join".to_string(), "$A".to_string()],
+            ..Default::default()
+        },
+    );
+
+    // try_compute_state_at_streaming should return CycleDetected
+    let result = try_compute_state_at_streaming(
+        &["$A"],
+        &events_map,
+        StateResVersion::V2,
+        |_id, _state| -> Result<(), std::convert::Infallible> { Ok(()) },
+    );
+    assert!(
+        matches!(result, Err(StateComputationError::CycleDetected)),
+        "Must detect prev_events cycle: {result:?}"
+    );
+
+    // compute_state_at_streaming should silently handle CycleDetected
+    let mut callback_called = false;
+    compute_state_at_streaming(&["$A"], &events_map, StateResVersion::V2, |_id, _state| {
+        callback_called = true;
+    });
+    assert!(
+        !callback_called,
+        "Callback must not be called when there's a cycle"
+    );
+}
+
+/// Coverage: auth chain diff interleaving in `resolve_multiple_prev_states`
+/// (at.rs:948-982). The dual-heap interleaving requires:
+/// 1. Conflicted events whose auth chains include events NOT in unconflicted state
+/// 2. Those non-unconflicted auth events at depths overlapping with `u_heap` entries
+///
+/// DAG topology:
+/// ```text
+///   $create(1)→$join_a(2)→$pl(3)→$join_b(4)→$join_c(5)→$join_d(6)
+///                             \                              |
+///                              $deep_auth(4)        Fork A: $topic_a(7) auth=[$create,$pl,$join_a,$deep_auth]
+/// Key paths targeted:
+/// - **Line 958-960**: U-side auth chain traversal. `$name` (depth 5, unconflicted)
+///   has `$hidden_pl` (depth 3) in its `auth_events`, which is NOT in unconflicted
+///   state. When U catches up, it pops `$name` and discovers `$hidden_pl` → pushes
+///   onto `u_heap`.
+/// - **Line 972**: C-side PRUNE EARLY. `$topic_a`'s auth includes `$create` and `$pl`,
+///   which are already in `u_visited` → triggers `continue`.
+#[test]
+fn test_auth_chain_diff_interleaving() {
+    use rezzy::{compute_state_at, LeanEvent, StateResVersion};
+    use std::collections::HashMap;
+
+    let evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$create",    "type": "m.room.create",       "state_key": "",     "sender": "@a:x", "depth": 1, "prev_events": [],           "auth_events": [],                                         "content": {"room_version": "10", "creator": "@a:x"}}
+        {"event_id": "$join_a",    "type": "m.room.member",       "state_key": "@a:x", "sender": "@a:x", "depth": 2, "prev_events": ["$create"],  "auth_events": ["$create"],                                "content": {"membership": "join"}}
+        {"event_id": "$pl",        "type": "m.room.power_levels", "state_key": "",     "sender": "@a:x", "depth": 3, "prev_events": ["$join_a"],  "auth_events": ["$create", "$join_a"],                      "content": {"users": {"@a:x": 100}}}
+        {"event_id": "$hidden_pl", "type": "m.room.power_levels", "state_key": "",     "sender": "@a:x", "depth": 3, "prev_events": ["$pl"],      "auth_events": ["$create", "$join_a"],                      "content": {"users": {"@a:x": 100}}}
+        {"event_id": "$join_b",    "type": "m.room.member",       "state_key": "@b:x", "sender": "@b:x", "depth": 4, "prev_events": ["$pl"],      "auth_events": ["$create", "$pl"],                          "content": {"membership": "join"}}
+        {"event_id": "$name",      "type": "m.room.name",         "state_key": "",     "sender": "@a:x", "depth": 5, "prev_events": ["$pl"],      "auth_events": ["$create", "$pl", "$join_a", "$hidden_pl"], "content": {"name": "Test"}}
+        {"event_id": "$topic_a",   "type": "m.room.topic",        "state_key": "",     "sender": "@a:x", "depth": 6, "prev_events": ["$name"],    "auth_events": ["$create", "$pl", "$join_a"],               "content": {"topic": "A"}}
+        {"event_id": "$topic_b",   "type": "m.room.topic",        "state_key": "",     "sender": "@a:x", "depth": 6, "prev_events": ["$join_b"],  "auth_events": ["$create", "$pl", "$join_a"],               "content": {"topic": "B"}}
+        {"event_id": "$merge",     "type": "m.room.message",                           "sender": "@a:x", "depth": 7, "prev_events": ["$topic_a", "$topic_b"], "auth_events": ["$create", "$pl", "$join_a"], "content": {}}
+    "#,
+    );
+
+    let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in evs {
+        events_map.insert(ev.event_id.clone(), ev);
+    }
+
+    let state = compute_state_at("$merge", &events_map, StateResVersion::V2).unwrap();
+
+    assert!(
+        state.contains_key(&("m.room.create".to_string(), String::new())),
+        "Must have create event"
+    );
+    assert!(
+        state.contains_key(&("m.room.topic".to_string(), String::new())),
+        "Must have resolved topic"
+    );
+}

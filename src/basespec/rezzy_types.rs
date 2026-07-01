@@ -20,7 +20,7 @@ use core::cmp::Ordering;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::auth::MAX_POWER_LEVEL_JSON;
+use crate::basespec::event_types::MAX_POWER_LEVEL_JSON;
 
 /// Trait alias for types that can serve as event identifiers.
 ///
@@ -45,6 +45,21 @@ impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug> EventId for T {}
 ///
 /// [MSC4297]: https://github.com/matrix-org/matrix-spec-proposals/pull/4297
 /// [MSC4242]: https://github.com/matrix-org/matrix-spec-proposals/pull/4242
+///
+/// ## TODO: Redaction preserved keys
+///
+/// Rezzy does not implement redaction stripping. The spec defines which content
+/// keys survive redaction per event type, evolving across room versions:
+///
+/// | Fragment | Room Versions | Delta from previous |
+/// |----------|:---:|---|
+/// | `v1-redactions.txt` | 1–5 | Baseline. PL: `ban`, `events`, `events_default`, `kick`, `redact`, `state_default`, `users`, `users_default`. Member: `membership`. |
+/// | `v6-redactions.txt` | 6–8 | Removes `m.room.aliases`. |
+/// | `v9-redactions.txt` | 9–10 | Member: adds `join_authorised_via_users_server`. Join rules: adds `allow`. |
+/// | `v11-redactions.txt` | 11+ | PL: adds `invite`. Create: allows ALL keys. Member: adds `third_party_invite.signed`. Drops top-level `prev_state`, `origin`, `membership`. Adds `m.room.redaction` preserving `redacts`. |
+///
+/// **Key invariant:** `users` in `m.room.power_levels` is preserved on redaction
+/// in ALL versions. Redaction alone cannot cause the PL wipeout vulnerability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 #[allow(non_camel_case_types)]
@@ -55,7 +70,7 @@ pub enum StateResVersion {
     V2,
     /// State Resolution V2.1 — [MSC4297](https://github.com/matrix-org/matrix-spec-proposals/pull/4297) (room version 12+).
     V2_1,
-    /// State Resolution V2.1.1 — ban evasion fix (restricts power-phase supplementation).
+    /// State Resolution V2.1.1 — experimental algo (restricts power-phase supplementation).
     V2_1_1,
     /// State Resolution V2.2 — reserved for State DAGs ([MSC4242](https://github.com/matrix-org/matrix-spec-proposals/pull/4242)).
     V2_2,
@@ -195,7 +210,7 @@ impl<Id, C> DagNode<Id> for LeanEvent<Id, C> {
 ///
 /// # Note on Room ID
 ///
-/// `LeanEvent` omits `room_id`. `ruma-lean` is a specialized algorithmic engine
+/// `LeanEvent` omits `room_id`. `rezzy` is a specialized algorithmic engine
 /// that expects the host homeserver (e.g., Synapse, Conduit) to perform initial
 /// database-level filtering. The host is responsible for verifying cryptographic
 /// signatures and filtering events by `room_id` *before* passing them to `resolve_iterative_sort`.
@@ -235,20 +250,24 @@ impl<Id: serde::Serialize, C: serde::Serialize> serde::Serialize for LeanEvent<I
     where
         S: serde::Serializer,
     {
+        use crate::basespec::event_types::{
+            FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
+            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_STATE_KEY, FIELD_TYPE,
+        };
         use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("LeanEvent", 10)?;
-        state.serialize_field("event_id", &self.event_id)?;
-        state.serialize_field("type", &self.event_type)?;
+        state.serialize_field(FIELD_EVENT_ID, &self.event_id)?;
+        state.serialize_field(FIELD_TYPE, &self.event_type)?;
         if let Some(ref sk) = self.state_key {
-            state.serialize_field("state_key", sk)?;
+            state.serialize_field(FIELD_STATE_KEY, sk)?;
         }
-        state.serialize_field("power_level", &self.power_level)?;
-        state.serialize_field("origin_server_ts", &self.origin_server_ts)?;
-        state.serialize_field("sender", &self.sender)?;
-        state.serialize_field("content", &self.content)?;
-        state.serialize_field("prev_events", &self.prev_events)?;
-        state.serialize_field("auth_events", &self.auth_events)?;
-        state.serialize_field("depth", &self.depth)?;
+        state.serialize_field(FIELD_POWER_LEVEL, &self.power_level)?;
+        state.serialize_field(FIELD_ORIGIN_SERVER_TS, &self.origin_server_ts)?;
+        state.serialize_field(FIELD_SENDER, &self.sender)?;
+        state.serialize_field(FIELD_CONTENT, &self.content)?;
+        state.serialize_field(FIELD_PREV_EVENTS, &self.prev_events)?;
+        state.serialize_field(FIELD_AUTH_EVENTS, &self.auth_events)?;
+        state.serialize_field(FIELD_DEPTH, &self.depth)?;
         state.end()
     }
 }
@@ -275,6 +294,85 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     /// Returns the `join_authorised_via_users_server` field, if present.
     /// Used for `restricted`/`knock_restricted` join rules (room version 8+).
     fn get_join_authorised_via_users_server(&self) -> Option<&str>;
+
+    /// Returns whether a `third_party_invite` field is present.
+    fn has_third_party_invite(&self) -> bool {
+        false
+    }
+
+    /// Returns the signed token from the `third_party_invite` field, if present.
+    fn get_third_party_invite_token(&self) -> Option<&str> {
+        None
+    }
+
+    /// Returns the mxid from the `third_party_invite` field, if present.
+    fn get_third_party_invite_mxid(&self) -> Option<&str> {
+        None
+    }
+
+    /// Check if signatures block exists in `third_party_invite.signed`.
+    fn has_third_party_invite_signatures(&self) -> bool {
+        false
+    }
+}
+
+/// Caller-provided event verification pipeline.
+///
+/// Rezzy invokes these methods at the right points during auth checking.
+/// The caller holds raw JSON, server keys, and crypto — rezzy holds none.
+///
+/// **Default impls return `Ok(())`** (skip verification). Override individual
+/// methods to enable specific verification steps. Pass `None` instead of a
+/// verifier to skip all verification entirely (e.g. during state resolution).
+///
+/// # Verification Steps
+///
+/// | Step | Method | What it verifies |
+/// |------|--------|-----------------|
+/// | 1 | [`verify_event_id_hash`](Self::verify_event_id_hash) | Event ID = SHA256(canonical JSON) (room v4+) |
+/// | 2 | [`verify_signatures`](Self::verify_signatures) | Server ed25519 signatures on the PDU |
+/// | 3 | [`verify_content_hash`](Self::verify_content_hash) | `hashes.sha256` matches canonical JSON hash |
+/// | 4 | [`verify_third_party_invite`](Self::verify_third_party_invite) | 3PI `signed.signatures` against TPI public keys |
+pub trait EventVerifier<Id> {
+    /// Step 1: Verify event ID matches the SHA256 hash of the canonical JSON
+    /// (with `signatures` and `unsigned` stripped). For room versions 4+.
+    ///
+    /// # Errors
+    /// Return `Err(reason)` to reject the event.
+    fn verify_event_id_hash(&self, _event_id: &Id) -> Result<(), alloc::string::String> {
+        Ok(())
+    }
+
+    /// Step 2: Verify the event's server signatures against the origin server's
+    /// ed25519 public keys.
+    ///
+    /// # Errors
+    /// Return `Err(reason)` to reject the event.
+    fn verify_signatures(&self, _event_id: &Id) -> Result<(), alloc::string::String> {
+        Ok(())
+    }
+
+    /// Step 3: Verify the content hash (`hashes.sha256`) matches the computed
+    /// hash of the canonical JSON.
+    ///
+    /// # Errors
+    /// Return `Err(reason)` to reject the event.
+    fn verify_content_hash(&self, _event_id: &Id) -> Result<(), alloc::string::String> {
+        Ok(())
+    }
+
+    /// Step 4: Verify third-party invite signatures against the public keys
+    /// from the referenced `m.room.third_party_invite` event.
+    ///
+    /// # Errors
+    /// Return `Err(reason)` to reject the event.
+    fn verify_third_party_invite(
+        &self,
+        _event_id: &Id,
+        _tpi_token: &str,
+    ) -> Result<(), alloc::string::String> {
+        Ok(())
+    }
 }
 
 impl EventContent for Value {
@@ -351,6 +449,33 @@ impl EventContent for Value {
         self.get(crate::basespec::event_types::FIELD_JOIN_AUTHORISED_VIA_USERS_SERVER)?
             .as_str()
     }
+
+    fn has_third_party_invite(&self) -> bool {
+        self.get(crate::basespec::event_types::FIELD_THIRD_PARTY_INVITE)
+            .is_some()
+    }
+
+    fn get_third_party_invite_token(&self) -> Option<&str> {
+        self.get(crate::basespec::event_types::FIELD_THIRD_PARTY_INVITE)?
+            .get(crate::basespec::event_types::FIELD_SIGNED)?
+            .get(crate::basespec::event_types::FIELD_TOKEN)?
+            .as_str()
+    }
+
+    fn get_third_party_invite_mxid(&self) -> Option<&str> {
+        self.get(crate::basespec::event_types::FIELD_THIRD_PARTY_INVITE)?
+            .get(crate::basespec::event_types::FIELD_SIGNED)?
+            .get(crate::basespec::event_types::FIELD_MXID)?
+            .as_str()
+    }
+
+    fn has_third_party_invite_signatures(&self) -> bool {
+        self.get(crate::basespec::event_types::FIELD_THIRD_PARTY_INVITE)
+            .and_then(|tpi| tpi.get(crate::basespec::event_types::FIELD_SIGNED))
+            .and_then(|signed| signed.get(crate::basespec::event_types::FIELD_SIGNATURES))
+            .and_then(|s| s.as_object())
+            .is_some_and(|m| !m.is_empty())
+    }
 }
 
 impl<Id, C> LeanEvent<Id, C> {
@@ -364,6 +489,7 @@ impl<Id, C> LeanEvent<Id, C> {
     /// Returns static string error if structural limits are exceeded.
     ///
     /// # TODO(compliance): PDU structural invariants not yet enforced
+    ///
     /// - `content` is required (must be present, even if `{}`)
     /// - `hashes` is required (sha256 content hash)
     /// - `signatures` is required
@@ -372,7 +498,11 @@ impl<Id, C> LeanEvent<Id, C> {
     /// - `depth` must be < 2^53 - 1
     ///
     /// These should be validated and tested per room version.
+    ///
+    /// # Errors
+    /// Returns an error if the event violates spec invariants (e.g. >20 `prev_events`).
     pub fn validate_syntactic(&self) -> Result<(), &'static str> {
+        // TODO: Are there any other invariants?
         if self.prev_events.len() > 20 {
             return Err("prev_events exceeds maximum allowed length of 20");
         }
@@ -511,24 +641,31 @@ fn sort_json_value_keys(value: &mut Value) {
 }
 
 impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
+    #[allow(clippy::too_many_lines)]
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
+        use crate::basespec::event_types::{
+            FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
+            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_STATE_KEY, FIELD_TYPE,
+        };
+
         let value = Value::deserialize(deserializer)?;
 
-        let event_id = if let Some(id) = value.get("event_id").and_then(|v| v.as_str()) {
+        let event_id = if let Some(id) = value.get(FIELD_EVENT_ID).and_then(|v| v.as_str()) {
             String::from(id)
         } else {
             #[cfg(feature = "hashing")]
             {
+                use crate::basespec::event_types::{FIELD_SIGNATURES, FIELD_UNSIGNED};
                 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
                 use sha2::{Digest, Sha256};
 
                 let mut hash_value = value.clone();
                 if let Some(obj) = hash_value.as_object_mut() {
-                    obj.remove("unsigned");
-                    obj.remove("signatures");
+                    obj.remove(FIELD_UNSIGNED);
+                    obj.remove(FIELD_SIGNATURES);
                 }
                 sort_json_value_keys(&mut hash_value);
 
@@ -549,7 +686,7 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
         };
 
         let event_type: String = value
-            .get("type")
+            .get(FIELD_TYPE)
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .into();
@@ -560,11 +697,11 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
             ));
         }
         let state_key = value
-            .get("state_key")
+            .get(FIELD_STATE_KEY)
             .and_then(|v| v.as_str())
             .map(String::from);
 
-        let power_level = match value.get("power_level") {
+        let power_level = match value.get(FIELD_POWER_LEVEL) {
             Some(pl) => {
                 if let Some(i) = pl.as_i64() {
                     i.min(MAX_POWER_LEVEL_JSON)
@@ -584,17 +721,17 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
             None => 0,
         };
 
-        let origin_server_ts = match value.get("origin_server_ts") {
+        let origin_server_ts = match value.get(FIELD_ORIGIN_SERVER_TS) {
             Some(ts) => ts.as_u64().unwrap_or(0),
             None => 0,
         };
 
         let sender = value
-            .get("sender")
+            .get(FIELD_SENDER)
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .into();
-        let content = value.get("content").cloned().unwrap_or(Value::Null);
+        let content = value.get(FIELD_CONTENT).cloned().unwrap_or(Value::Null);
 
         let parse_string_array = |key: &str| -> Vec<String> {
             value
@@ -608,10 +745,10 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
                 .unwrap_or_default()
         };
 
-        let prev_events = parse_string_array("prev_events");
-        let auth_events = parse_string_array("auth_events");
+        let prev_events = parse_string_array(FIELD_PREV_EVENTS);
+        let auth_events = parse_string_array(FIELD_AUTH_EVENTS);
         let depth = value
-            .get("depth")
+            .get(FIELD_DEPTH)
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
 
@@ -680,12 +817,10 @@ impl<Id, C: EventContent> LeanEvent<Id, C> {
     /// Returns `true` if this is a `m.room.join_rules` event setting the room to invite-only.
     #[must_use]
     pub fn is_lockdown(&self) -> bool {
-        if self.event_type == crate::basespec::event_types::M_ROOM_JOIN_RULES {
-            if let Some(rule) = self.get_join_rule() {
-                return rule == crate::basespec::event_types::RULE_INVITE;
-            }
-        }
-        false
+        self.event_type == crate::basespec::event_types::M_ROOM_JOIN_RULES
+            && self
+                .get_join_rule()
+                .is_some_and(|rule| rule == crate::basespec::event_types::RULE_INVITE)
     }
 
     /// Returns `true` if this event restricts the given `sender` — either by
@@ -693,14 +828,10 @@ impl<Id, C: EventContent> LeanEvent<Id, C> {
     #[must_use]
     pub fn restricts_sender(&self, sender: &str) -> bool {
         if self.is_ban_or_kick() {
-            if let Some(ref state_key) = self.state_key {
-                return state_key == sender;
-            }
+            return self.state_key.as_deref() == Some(sender);
         }
         if self.is_demotion() {
-            if let Some(pl_int) = self.get_user_power_level(sender) {
-                return pl_int == 0;
-            }
+            return self.get_user_power_level(sender) == Some(0);
         }
         false
     }
@@ -714,12 +845,11 @@ impl<Id, C: EventContent> LeanEvent<Id, C> {
         if self.is_ban_or_kick() || self.is_demotion() {
             return self.restricts_sender(&other.sender);
         }
-        if self.is_lockdown() && other.event_type == crate::basespec::event_types::M_ROOM_MEMBER {
-            if let Some(membership) = other.get_membership() {
-                return membership == crate::basespec::event_types::MEM_JOIN;
-            }
-        }
-        false
+        self.is_lockdown()
+            && other.event_type == crate::basespec::event_types::M_ROOM_MEMBER
+            && other
+                .get_membership()
+                .is_some_and(|m| m == crate::basespec::event_types::MEM_JOIN)
     }
 }
 
@@ -816,7 +946,7 @@ impl<Id: Ord, C> Ord for SortPriority<'_, Id, C> {
                 // makes Alice's ban appear before Bob's concurrent PL change).
                 match self.power_level.cmp(&other.power_level) {
                     Ordering::Equal => {
-                        // V2.1.1 Invite-lock fix: prioritize topological depth over `origin_server_ts`.
+                        // V2.1.1: prioritize topological depth over `origin_server_ts`.
                         // Smaller Depth -> Greater TieBreaker -> Pops First -> Loses.
                         // Larger Depth -> Smaller TieBreaker -> Pops Last -> Wins.
                         if self.version == StateResVersion::V2_1_1
@@ -861,19 +991,16 @@ impl<Id: Ord, C> PartialOrd for SortPriority<'_, Id, C> {
 /// function in the first place!
 #[must_use]
 pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
-    let val = if let Some(i) = pl.as_i64() {
-        Some(i)
-    } else if let Some(u) = pl.as_u64() {
-        Some(i64::try_from(u).unwrap_or(i64::MAX))
-    } else if let Some(f) = pl.as_f64() {
-        // Legacy float power levels (e.g. 50.0) — truncate toward zero,
-        // then convert via serde_json::Number to avoid lossy `as` casts.
-        serde_json::Number::from_f64(f.trunc()).and_then(|n| n.as_i64())
-    } else if let Some(s) = pl.as_str() {
-        s.parse::<i64>().ok()
-    } else {
-        None
-    };
+    let val = pl
+        .as_i64()
+        .or_else(|| pl.as_u64().map(|u| i64::try_from(u).unwrap_or(i64::MAX)))
+        // Legacy float power levels (e.g. 50.0) — truncate toward zero
+        .or_else(|| {
+            pl.as_f64()
+                .and_then(|f| serde_json::Number::from_f64(f.trunc()))
+                .and_then(|n| n.as_i64())
+        })
+        .or_else(|| pl.as_str().and_then(|s| s.parse::<i64>().ok()));
     // Matrix Spec (Client-Server API) — m.room.power_levels:
     // "The power level ... must be an integer between -2^53 + 1 and 2^53 - 1."
     val.map(|v| v.clamp(-MAX_POWER_LEVEL_JSON, MAX_POWER_LEVEL_JSON))

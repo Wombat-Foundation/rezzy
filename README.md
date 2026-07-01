@@ -4,6 +4,7 @@
 [![Tests](https://raw.githubusercontent.com/gamesguru/rezzy/badges/tests.svg)](https://github.com/gamesguru/rezzy/actions/workflows/rust.yml)
 [![codecov](https://codecov.io/gh/gamesguru/rezzy/graph/badge.svg)](https://codecov.io/gh/gamesguru/rezzy)
 [![crates.io](https://img.shields.io/crates/v/rezzy.svg)](https://crates.io/crates/rezzy)
+[![TDD](https://img.shields.io/badge/development-TDD-green.svg)](https://en.wikipedia.org/wiki/Test-driven_development)
 
 Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolution — both a research model and highly-efficient reference implementation for Matrix state resolution `v1`, `v2`, `v2.1`, and `v2.1.1` (experimental), and **V2.2** (experimental [MSC4242]).
 
@@ -15,6 +16,14 @@ Rezzy is a high-performance, dependency-free Rust engine for Matrix State Resolu
 - `n-way` fork resolution.
 - In-place bitshift heaps and roaring bitmaps for fast graph computations.
 - **Lazy projection**: Fast, memory-efficient state resolution by only loading required membership events.
+
+## Core Philosophy: TDD
+
+Development in this repository strictly follows Test-Driven Development (TDD):
+
+1. **Write tests first**. New features or bug fixes must begin with failing tests that codify the expected behavior.
+2. **Implement the logic**. Write the minimal code required to make the tests pass.
+3. **Prove the fix**. After the dust settles on an implementation, we verify that the new tests _fail_ when run against the old code, proving the tests are valid and the fix is strictly necessary.
 
 ## API
 
@@ -56,7 +65,7 @@ RUSTFLAGS="-C target-cpu=native" make build install
 To install and run test coverage:
 
 ```bash
-cargo install cargo-tarpaulin --features vendored-openssl
+cargo install cargo-llvm-cov
 make cov
 ```
 

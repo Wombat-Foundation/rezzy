@@ -28,7 +28,7 @@ authorization rules. Three distinct rule sets exist:
 | 4 (V1–V3)  | **m.room.aliases**: reject if no `state_key` or domain mismatch                      | V1–V7    | [ ]   | Removed in V8+; not implemented                              |
 | —          | **m.room.member** rules (see below)                                                  | all      | [x]   | Detailed breakdown below                                     |
 | 6          | Sender must be joined (non-member events)                                            | all      | [x]   | `NotMember` error                                            |
-| 7          | **m.room.third_party_invite**: sender PL ≥ invite level                              | all      | [ ]   | Not checked                                                  |
+| 7          | **m.room.third_party_invite**: sender PL ≥ invite level                              | all      | [x]   | `get_required_power_level` returns invite level              |
 | 8          | Event type required PL check                                                         | all      | [x]   | `get_required_power_level`                                   |
 | 9          | **State key starts with `@`**: must match sender                                     | all      | [x]   | Added this session                                           |
 | 10         | **m.room.power_levels** validation (see below)                                       | all      | [~]   | Partial — see breakdown                                      |
@@ -50,7 +50,7 @@ authorization rules. Three distinct rule sets exist:
 | 5.3.5 | **join (knock_restricted)**: same as restricted                  | V10+     | [x]   | `RULE_KNOCK_RESTRICTED`                               |
 | 5.3.6 | **join (public)**: allow                                         | all      | [x]   | `RULE_PUBLIC` path                                    |
 | 5.3.7 | **join**: otherwise reject                                       | all      | [x]   | `NotMember`                                           |
-| 5.4.1 | **invite (3pi)**: full third-party invite validation             | all      | [ ]   | Not implemented                                       |
+| 5.4.1 | **invite (3pi)**: full third-party invite validation             | all      | [x]   | `check_invite_rules` 3PI token validation             |
 | 5.4.2 | **invite**: sender must be joined                                | all      | [x]   | Checked in rule 6                                     |
 | 5.4.3 | **invite**: reject if target is joined or banned                 | all      | [x]   | Added this session                                    |
 | 5.4.4 | **invite**: sender PL ≥ invite level                             | all      | [x]   | `InsufficientPowerLevel`                              |
@@ -86,8 +86,8 @@ authorization rules. Three distinct rule sets exist:
 ### Critical (affects authorization correctness)
 
 1. ~~**Rule 5.8**: Unknown membership should reject, not allow~~ — FIXED
-2. **Rule 5.4.1**: Third-party invite validation not implemented
-3. **Rule 7**: `m.room.third_party_invite` PL check missing
+2. ~~**Rule 5.4.1**: Third-party invite validation not implemented~~ — FIXED
+3. ~~**Rule 7**: `m.room.third_party_invite` PL check missing~~ — FIXED
 4. **Rule 10.x**: Power level event validation entirely missing
 
 ### Medium (federation/integrity concerns, not core auth)
