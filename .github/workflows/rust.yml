@@ -33,6 +33,9 @@ jobs:
       - name: Lint (Clippy)
         run: cargo clippy --all-targets --all-features -- -D warnings -D clippy::perf -D clippy::pedantic
 
+      - name: Install nightly toolchain (for llvm-cov)
+        run: rustup toolchain install nightly --profile minimal
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
@@ -66,7 +69,7 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ../.tmp/coverage-lean/codecov.json
+          files: ./.tmp/coverage-lean/codecov.json
           fail_ci_if_error: false
 
   publish-badge:
