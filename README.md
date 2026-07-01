@@ -65,7 +65,7 @@ RUSTFLAGS="-C target-cpu=native" make build install
 To install and run test coverage:
 
 ```bash
-cargo install cargo-tarpaulin --features vendored-openssl
+cargo install cargo-llvm-cov
 make cov
 ```
 

@@ -18,17 +18,18 @@
 //! their `prev_events` — never the current time.
 
 pub mod roaring;
+pub mod user;
 
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
 use crate::basespec::event_types::{
-    DEFAULT_PL_BAN, DEFAULT_PL_INVITE, DEFAULT_PL_KICK, DEFAULT_PL_USER, FIELD_MEMBERSHIP,
-    FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE, MEM_JOIN, MEM_KNOCK,
-    MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
-    M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_KNOCK_RESTRICTED, RULE_PUBLIC,
-    RULE_RESTRICTED,
+    DEFAULT_PL_BAN, DEFAULT_PL_INVITE, DEFAULT_PL_KICK, DEFAULT_PL_REDACT, DEFAULT_PL_USER,
+    FIELD_MEMBERSHIP, FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE,
+    MEM_JOIN, MEM_KNOCK, MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER,
+    M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_KNOCK_RESTRICTED,
+    RULE_PUBLIC, RULE_RESTRICTED,
 };
 use crate::basespec::rezzy_types::LeanEvent;
 use crate::basespec::rezzy_types::StateResVersion;
@@ -307,8 +308,20 @@ pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
 /// Re-export from [`crate::basespec::event_types`] for backwards compatibility.
 pub use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_POWER_LEVEL_RUST};
 
+/// Get the redact power level from room state.
+pub(crate) fn get_redact_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
+    state: &impl StateProvider<Id, C>,
+) -> i64 {
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
+        if let Some(redact) = pl_event.get_redact() {
+            return redact;
+        }
+    }
+    DEFAULT_PL_REDACT
+}
+
 /// Get the power level of a user from the current room state.
-fn get_sender_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
+pub(crate) fn get_sender_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     sender: &str,
     state: &impl StateProvider<Id, C>,
     version: StateResVersion,
@@ -794,7 +807,7 @@ fn check_knock_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
 }
 
 /// Get the kick power level from room state.
-fn get_kick_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
+pub(crate) fn get_kick_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
@@ -806,7 +819,7 @@ fn get_kick_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
 }
 
 /// Get the ban power level from room state.
-fn get_invite_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
+pub(crate) fn get_invite_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
@@ -817,7 +830,7 @@ fn get_invite_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     DEFAULT_PL_INVITE // Default invite power level per Matrix spec
 }
 
-fn get_ban_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
+pub(crate) fn get_ban_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
