@@ -3851,6 +3851,95 @@ fn test_state_res_version_serde_roundtrip() {
     // Unknown variant must fail
     let invalid: Result<StateResVersion, _> = serde_json::from_str("\"V99\"");
     assert!(invalid.is_err());
+
+    // Non-string type triggers `expecting`
+    let wrong_type: Result<StateResVersion, _> = serde_json::from_str("42");
+    assert!(
+        wrong_type.is_err(),
+        "Deserializing an integer must fail with 'expected a StateResVersion string'"
+    );
+    let err_msg = wrong_type.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("StateResVersion"),
+        "Error message must mention StateResVersion: {err_msg}"
+    );
+}
+
+/// Coverage: default `EventContent` trait method impls (lines 299-316).
+/// Uses a minimal struct that does NOT override the `third_party_invite` defaults.
+#[test]
+fn test_event_content_default_trait_methods() {
+    use rezzy::basespec::rezzy_types::EventContent;
+
+    /// Minimal type that relies on ALL default trait impls for `third_party_invite`.
+    #[derive(Debug, Clone, Default)]
+    struct MinimalContent;
+    impl EventContent for MinimalContent {
+        fn get_membership(&self) -> Option<&str> {
+            None
+        }
+        fn get_join_rule(&self) -> Option<&str> {
+            None
+        }
+        fn get_user_power_level(&self, _: &str) -> Option<i64> {
+            None
+        }
+        fn get_event_power_level(&self, _: &str) -> Option<i64> {
+            None
+        }
+        fn get_users_default(&self) -> Option<i64> {
+            None
+        }
+        fn get_events_default(&self) -> Option<i64> {
+            None
+        }
+        fn get_state_default(&self) -> Option<i64> {
+            None
+        }
+        fn get_ban(&self) -> Option<i64> {
+            None
+        }
+        fn get_kick(&self) -> Option<i64> {
+            None
+        }
+        fn get_invite(&self) -> Option<i64> {
+            None
+        }
+        fn get_redact(&self) -> Option<i64> {
+            None
+        }
+        fn get_creator(&self) -> Option<&str> {
+            None
+        }
+        fn has_additional_creator(&self, _: &str) -> bool {
+            false
+        }
+        fn get_join_authorised_via_users_server(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    let c = MinimalContent;
+    assert!(!c.has_third_party_invite());
+    assert!(c.get_third_party_invite_token().is_none());
+    assert!(c.get_third_party_invite_mxid().is_none());
+    assert!(!c.has_third_party_invite_signatures());
+}
+
+/// Coverage: default `EventVerifier::verify_third_party_invite` (line 369-375).
+#[test]
+fn test_event_verifier_default_third_party_invite() {
+    use rezzy::basespec::rezzy_types::EventVerifier;
+
+    struct DefaultVerifier;
+    impl EventVerifier<String> for DefaultVerifier {}
+
+    let v = DefaultVerifier;
+    assert!(
+        v.verify_third_party_invite(&"$ev".to_string(), "some_token")
+            .is_ok(),
+        "Default verify_third_party_invite must return Ok"
+    );
 }
 
 #[test]

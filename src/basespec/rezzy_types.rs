@@ -817,12 +817,10 @@ impl<Id, C: EventContent> LeanEvent<Id, C> {
     /// Returns `true` if this is a `m.room.join_rules` event setting the room to invite-only.
     #[must_use]
     pub fn is_lockdown(&self) -> bool {
-        if self.event_type == crate::basespec::event_types::M_ROOM_JOIN_RULES {
-            if let Some(rule) = self.get_join_rule() {
-                return rule == crate::basespec::event_types::RULE_INVITE;
-            }
-        }
-        false
+        self.event_type == crate::basespec::event_types::M_ROOM_JOIN_RULES
+            && self
+                .get_join_rule()
+                .is_some_and(|rule| rule == crate::basespec::event_types::RULE_INVITE)
     }
 
     /// Returns `true` if this event restricts the given `sender` — either by
@@ -830,14 +828,10 @@ impl<Id, C: EventContent> LeanEvent<Id, C> {
     #[must_use]
     pub fn restricts_sender(&self, sender: &str) -> bool {
         if self.is_ban_or_kick() {
-            if let Some(ref state_key) = self.state_key {
-                return state_key == sender;
-            }
+            return self.state_key.as_deref() == Some(sender);
         }
         if self.is_demotion() {
-            if let Some(pl_int) = self.get_user_power_level(sender) {
-                return pl_int == 0;
-            }
+            return self.get_user_power_level(sender) == Some(0);
         }
         false
     }
@@ -851,12 +845,11 @@ impl<Id, C: EventContent> LeanEvent<Id, C> {
         if self.is_ban_or_kick() || self.is_demotion() {
             return self.restricts_sender(&other.sender);
         }
-        if self.is_lockdown() && other.event_type == crate::basespec::event_types::M_ROOM_MEMBER {
-            if let Some(membership) = other.get_membership() {
-                return membership == crate::basespec::event_types::MEM_JOIN;
-            }
-        }
-        false
+        self.is_lockdown()
+            && other.event_type == crate::basespec::event_types::M_ROOM_MEMBER
+            && other
+                .get_membership()
+                .is_some_and(|m| m == crate::basespec::event_types::MEM_JOIN)
     }
 }
 
@@ -953,7 +946,7 @@ impl<Id: Ord, C> Ord for SortPriority<'_, Id, C> {
                 // makes Alice's ban appear before Bob's concurrent PL change).
                 match self.power_level.cmp(&other.power_level) {
                     Ordering::Equal => {
-                        // V2.1.1 Invite-lock fix: prioritize topological depth over `origin_server_ts`.
+                        // V2.1.1: prioritize topological depth over `origin_server_ts`.
                         // Smaller Depth -> Greater TieBreaker -> Pops First -> Loses.
                         // Larger Depth -> Smaller TieBreaker -> Pops Last -> Wins.
                         if self.version == StateResVersion::V2_1_1

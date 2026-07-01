@@ -112,28 +112,27 @@ impl<
 
         if should_supplement {
             // Check consensus resolved state
-            if let Some(eid) = self.resolved.get(query) {
-                if let Some(ev) = self
-                    .auth_context
+            let resolved_ev = self.resolved.get(query).and_then(|eid| {
+                self.auth_context
                     .get(eid)
                     .or_else(|| self.sort_set.get(eid))
+            });
+
+            if let Some(ev) = resolved_ev {
+                if self.version == StateResVersion::V2_1_1
+                    && self.is_power_phase
+                    && event_type == "m.room.member"
                 {
-                    if self.version == StateResVersion::V2_1_1
-                        && self.is_power_phase
-                        && event_type == "m.room.member"
-                    {
-                        // V2.1.1 Fix: Only supplement bans and kicks in power phase
-                        if let Some(membership) = ev.get_membership() {
-                            let is_ban = membership == "ban";
-                            let is_kick = membership == "leave" && ev.sender.as_str() != state_key;
-                            if is_ban || is_kick {
-                                return Some(ev);
-                            }
-                        }
-                        // If it's a normal join/invite, fall through to local auth
-                    } else {
+                    // V2.1.1 Fix: Only supplement bans and kicks in power phase
+                    let is_ban_or_kick = ev.get_membership().is_some_and(|m| {
+                        m == "ban" || (m == "leave" && ev.sender.as_str() != state_key)
+                    });
+                    if is_ban_or_kick {
                         return Some(ev);
                     }
+                    // If it's a normal join/invite, fall through to local auth
+                } else {
+                    return Some(ev);
                 }
             }
         }
@@ -592,17 +591,19 @@ where
 
         let mut prev_states = Vec::with_capacity(ev.prev_events.len());
         for pe in &ev.prev_events {
-            if let Some(&pe_idx) = id_to_index.get(pe) {
-                if out_degree[pe_idx] > 0 {
-                    out_degree[pe_idx] = out_degree[pe_idx].saturating_sub(1);
-                    if out_degree[pe_idx] == 0 {
-                        if let Some(pe_state) = state_after_map[pe_idx].take() {
-                            prev_states.push(pe_state);
-                        }
-                    } else if let Some(ref pe_state) = state_after_map[pe_idx] {
-                        prev_states.push(pe_state.clone());
-                    }
+            let Some(&pe_idx) = id_to_index.get(pe) else {
+                continue;
+            };
+            if out_degree[pe_idx] == 0 {
+                continue;
+            }
+            out_degree[pe_idx] = out_degree[pe_idx].saturating_sub(1);
+            if out_degree[pe_idx] == 0 {
+                if let Some(pe_state) = state_after_map[pe_idx].take() {
+                    prev_states.push(pe_state);
                 }
+            } else if let Some(ref pe_state) = state_after_map[pe_idx] {
+                prev_states.push(pe_state.clone());
             }
         }
 
@@ -716,9 +717,8 @@ where
     }
 
     while let Some((_, current_id)) = queue.pop() {
-        let current_mask = match masks.get(current_id) {
-            Some(m) => m.clone(),
-            None => continue,
+        let Some(current_mask) = masks.get(current_id).cloned() else {
+            continue;
         };
 
         // If reachable by ALL extremities, this is the merge base.
@@ -776,14 +776,15 @@ where
         let current_id = queue[head];
         head = head.saturating_add(1);
 
-        if let Some(ev) = events_map.get(current_id) {
-            for pe in &ev.prev_events {
-                if events_map.contains_key(pe) && !id_to_index.contains_key(pe) {
-                    let next_idx = index_to_id.len();
-                    id_to_index.insert(pe, next_idx);
-                    index_to_id.push(pe);
-                    queue.push(pe);
-                }
+        let Some(ev) = events_map.get(current_id) else {
+            continue;
+        };
+        for pe in &ev.prev_events {
+            if events_map.contains_key(pe) && !id_to_index.contains_key(pe) {
+                let next_idx = index_to_id.len();
+                id_to_index.insert(pe, next_idx);
+                index_to_id.push(pe);
+                queue.push(pe);
             }
         }
     }
@@ -810,13 +811,14 @@ where
     let mut out_degree = alloc::vec![0usize; num_reachable];
 
     for (i, id) in index_to_id.iter().enumerate() {
-        if let Some(ev) = events_map.get(*id) {
-            for parent in &ev.prev_events {
-                if let Some(&parent_idx) = id_to_index.get(parent) {
-                    in_degree[i] = in_degree[i].saturating_add(1);
-                    adjacency[parent_idx].push(i);
-                    out_degree[parent_idx] = out_degree[parent_idx].saturating_add(1);
-                }
+        let Some(ev) = events_map.get(*id) else {
+            continue;
+        };
+        for parent in &ev.prev_events {
+            if let Some(&parent_idx) = id_to_index.get(parent) {
+                in_degree[i] = in_degree[i].saturating_add(1);
+                adjacency[parent_idx].push(i);
+                out_degree[parent_idx] = out_degree[parent_idx].saturating_add(1);
             }
         }
     }
@@ -952,12 +954,13 @@ where
                 break;
             }
             let (_, u_id) = u_heap.pop().unwrap();
-            if let Some(ev) = events_map.get(&u_id) {
-                for auth_id in &ev.auth_events {
-                    if u_visited.insert(auth_id.clone()) {
-                        if let Some(a_ev) = events_map.get(auth_id) {
-                            u_heap.push((a_ev.depth, auth_id.clone()));
-                        }
+            let Some(ev) = events_map.get(&u_id) else {
+                continue;
+            };
+            for auth_id in &ev.auth_events {
+                if u_visited.insert(auth_id.clone()) {
+                    if let Some(a_ev) = events_map.get(auth_id) {
+                        u_heap.push((a_ev.depth, auth_id.clone()));
                     }
                 }
             }
@@ -966,15 +969,16 @@ where
         let (_, c_id) = c_heap.pop().unwrap();
         if !u_visited.contains(&c_id) {
             auth_diff.insert(c_id.clone());
-            if let Some(ev) = events_map.get(&c_id) {
-                for auth_id in &ev.auth_events {
-                    if u_visited.contains(auth_id) {
-                        continue; // PRUNE EARLY
-                    }
-                    if c_visited.insert(auth_id.clone()) {
-                        if let Some(a_ev) = events_map.get(auth_id) {
-                            c_heap.push((a_ev.depth, auth_id.clone()));
-                        }
+            let Some(ev) = events_map.get(&c_id) else {
+                continue;
+            };
+            for auth_id in &ev.auth_events {
+                if u_visited.contains(auth_id) {
+                    continue; // PRUNE EARLY
+                }
+                if c_visited.insert(auth_id.clone()) {
+                    if let Some(a_ev) = events_map.get(auth_id) {
+                        c_heap.push((a_ev.depth, auth_id.clone()));
                     }
                 }
             }

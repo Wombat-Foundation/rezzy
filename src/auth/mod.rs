@@ -654,6 +654,9 @@ fn check_join_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         .and_then(|ev| ev.get_membership())
         .unwrap_or("");
 
+    // Defense-in-depth: the outer `check_auth` (line 240) catches banned senders
+    // before reaching this function. Since target_user == sender (enforced above),
+    // this branch is normally unreachable but is kept in place for spec compliance.
     if current_membership == MEM_BAN {
         return Err(AuthError::BannedUser {
             sender: event.sender.clone(),
@@ -745,7 +748,8 @@ fn check_knock_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
     target_user: &str,
 ) -> Result<(), AuthError<Id>> {
-    // A user can only knock as themselves
+    // A user can only knock as themselves.
+    // Defense-in-depth: state_key != sender is already caught by check_auth line 254.
     if target_user != event.sender {
         return Err(AuthError::InvalidStateKey {
             expected: event.sender.clone(),
@@ -759,6 +763,7 @@ fn check_knock_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
         .unwrap_or("");
 
     // MSC2403 §f.iii: allow only if membership is NOT ban, invite, or join.
+    // Defense-in-depth: banned senders are caught by check_auth line 240 before reaching here.
     if current_membership == MEM_BAN {
         return Err(AuthError::BannedUser {
             sender: event.sender.clone(),
@@ -1023,5 +1028,94 @@ mod tests {
         let normal_pl =
             get_sender_power_level("@normal:example.com", &state, StateResVersion::V2_1);
         assert_eq!(normal_pl, 0, "Normal user should have default 0 power");
+    }
+
+    /// Coverage: `check_knock_rules` — `target_user` != sender.
+    /// Defense-in-depth path unreachable via `check_auth` (caught at line 254).
+    #[test]
+    fn test_knock_state_key_mismatch_direct() {
+        let knock_event: LeanEvent<String> = LeanEvent {
+            event_id: "$knock".into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some("@alice:x".into()),
+            sender: "@alice:x".into(),
+            content: json!({"membership": "knock"}),
+            ..Default::default()
+        };
+
+        let state = RoomState::new();
+
+        // Call check_knock_rules directly with mismatched target_user
+        let result = check_knock_rules(&knock_event, &state, "@bob:x");
+        assert!(
+            matches!(result, Err(AuthError::InvalidStateKey { .. })),
+            "Must reject knock with mismatched target: {result:?}"
+        );
+    }
+
+    /// Coverage: `check_knock_rules` — banned target user.
+    /// Defense-in-depth path unreachable via `check_auth` (caught at line 240).
+    #[test]
+    fn test_knock_banned_target_direct() {
+        let knock_event: LeanEvent<String> = LeanEvent {
+            event_id: "$knock".into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some("@evil:x".into()),
+            sender: "@evil:x".into(),
+            content: json!({"membership": "knock"}),
+            ..Default::default()
+        };
+
+        let mut state = RoomState::new();
+        state.insert(
+            (M_ROOM_MEMBER.into(), "@evil:x".into()),
+            LeanEvent {
+                event_id: "$ban".into(),
+                event_type: M_ROOM_MEMBER.into(),
+                state_key: Some("@evil:x".into()),
+                sender: "@admin:x".into(),
+                content: json!({"membership": "ban"}),
+                ..Default::default()
+            },
+        );
+
+        let result = check_knock_rules(&knock_event, &state, "@evil:x");
+        assert!(
+            matches!(result, Err(AuthError::BannedUser { .. })),
+            "Must reject knock from banned user: {result:?}"
+        );
+    }
+
+    /// Coverage: `check_join_rules` — banned target user.
+    /// Defense-in-depth path unreachable via `check_auth`.
+    #[test]
+    fn test_join_banned_target_direct() {
+        let join_event: LeanEvent<String> = LeanEvent {
+            event_id: "$join".into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some("@evil:x".into()),
+            sender: "@evil:x".into(),
+            content: json!({"membership": "join"}),
+            ..Default::default()
+        };
+
+        let mut state = RoomState::new();
+        state.insert(
+            (M_ROOM_MEMBER.into(), "@evil:x".into()),
+            LeanEvent {
+                event_id: "$ban".into(),
+                event_type: M_ROOM_MEMBER.into(),
+                state_key: Some("@evil:x".into()),
+                sender: "@admin:x".into(),
+                content: json!({"membership": "ban"}),
+                ..Default::default()
+            },
+        );
+
+        let result = check_join_rules(&join_event, &state, "@evil:x", StateResVersion::V2);
+        assert!(
+            matches!(result, Err(AuthError::BannedUser { .. })),
+            "Must reject join from banned user: {result:?}"
+        );
     }
 }

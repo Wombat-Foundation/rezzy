@@ -51,6 +51,33 @@ fn test_event_id_hashing_sequence_and_stripping() {
     assert_eq!(ev2.event_id, "$BQIRGBlb9b0LAYcQ0eiXWOiiVdEjZ2yKx9jMLrxejI0");
 }
 
+/// Coverage: `sort_json_value_keys` Array branch.
+/// Deserializing an event with array content forces the recursive key sorter
+/// to walk the Array arm.
+#[cfg(feature = "hashing")]
+#[test]
+fn test_event_hashing_with_array_content() {
+    let payload = json!({
+        "type": "m.room.message",
+        "sender": "@user:example.com",
+        "origin_server_ts": 2000,
+        "content": {
+            "items": [
+                {"z_key": 1, "a_key": 2},
+                {"nested": {"b": 1, "a": 0}}
+            ]
+        }
+    });
+
+    let ev: LeanEvent = serde_json::from_value(payload).unwrap();
+    // Just verify it hashed without panicking — the array branch was exercised
+    assert!(
+        ev.event_id.starts_with('$'),
+        "Event ID must be a valid hash: {}",
+        ev.event_id
+    );
+}
+
 #[cfg(not(feature = "hashing"))]
 #[test]
 fn test_missing_event_id_fails_without_hashing() {

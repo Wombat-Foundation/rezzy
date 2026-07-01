@@ -1561,3 +1561,56 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
         "Admin's PL must win; Mallory's rejected because she's banned"
     );
 }
+
+/// Coverage: `compute_auth_distance_iterative`
+///
+/// V2.2 uses auth chain distance from `$create` as a tie-breaker in Kahn sort.
+/// This test constructs two competing topic events with multi-hop auth chains,
+/// forcing the iterative DFS traversal through `auth_events` to compute distances.
+/// Multiple conflicted events processed through the same memo cache exercise
+/// the memoization hit path (line 96) and the stack walk logic (lines 106, 111, 123).
+#[test]
+fn test_v2_2_auth_distance_tiebreak() {
+    let auth_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:x", "origin_server_ts": 100, "content": {"room_version": "13", "creator": "@admin:x"}}
+        {"event_id": "$admin_join", "type": "m.room.member",       "state_key": "@admin:x", "sender": "@admin:x", "origin_server_ts": 200, "content": {"membership": "join"}, "auth_events": ["$create"]}
+        {"event_id": "$pl",         "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x", "origin_server_ts": 300, "content": {"users": {"@admin:x": 100, "@bob:x": 50}, "state_default": 50}, "auth_events": ["$create", "$admin_join"]}
+        {"event_id": "$bob_join",   "type": "m.room.member",       "state_key": "@bob:x", "sender": "@bob:x", "origin_server_ts": 400, "content": {"membership": "join"}, "auth_events": ["$create", "$pl"]}
+        {"event_id": "$jr",         "type": "m.room.join_rules",   "state_key": "", "sender": "@admin:x", "origin_server_ts": 450, "content": {"join_rule": "public"}, "auth_events": ["$create", "$pl", "$admin_join"]}
+    "#,
+    );
+
+    let conflicted_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$topic_a", "type": "m.room.topic", "state_key": "", "sender": "@admin:x", "origin_server_ts": 500, "content": {"topic": "Admin's topic"}, "auth_events": ["$create", "$pl", "$admin_join", "$jr"]}
+        {"event_id": "$topic_b", "type": "m.room.topic", "state_key": "", "sender": "@bob:x",   "origin_server_ts": 500, "content": {"topic": "Bob's topic"},   "auth_events": ["$create", "$pl", "$bob_join"]}
+    "#,
+    );
+
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in auth_evs {
+        auth_context.insert(ev.event_id.clone(), ev);
+    }
+
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in conflicted_evs {
+        conflicted.insert(ev.event_id.clone(), ev);
+    }
+
+    let unconflicted = utils::build_unconflicted_state_test_helper(&auth_context);
+
+    // Resolve with V2.2
+    let resolved = resolve_iterative_sort(
+        unconflicted,
+        conflicted,
+        &auth_context,
+        StateResVersion::V2_2,
+    );
+
+    let topic_key = ("m.room.topic".to_string(), String::new());
+    assert!(
+        resolved.contains_key(&topic_key),
+        "V2.2 resolution must produce a topic winner"
+    );
+}

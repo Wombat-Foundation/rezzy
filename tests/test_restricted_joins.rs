@@ -535,3 +535,74 @@ fn test_msc4289_restricted_join_v12_creator_authorising() {
         "V12 creator should be able to authorise a restricted join even without being in PL users map, got: {result:?}"
     );
 }
+
+/// Coverage: `check_knock_rules` — joined user knocking is rejected.
+///
+/// A joined user sending a knock event passes the outer ban check (line 240)
+/// and the joined check (line 248), but `check_knock_rules` rejects the
+/// `join → knock` transition at line 769-773.
+#[test]
+fn test_joined_user_cannot_knock() {
+    let mut state = room_with_join_rule("knock");
+
+    // Alice is already joined
+    state.insert(
+        ("m.room.member".into(), "@alice:example.com".into()),
+        make_event(
+            "$alice_join",
+            "m.room.member",
+            Some("@alice:example.com"),
+            "@alice:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let knock_event = make_event(
+        "$alice_knock",
+        "m.room.member",
+        Some("@alice:example.com"),
+        "@alice:example.com",
+        json!({"membership": "knock"}),
+    );
+
+    let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
+    assert!(
+        result.is_err(),
+        "Joined user must NOT be able to knock: {result:?}"
+    );
+}
+
+/// Coverage: `check_knock_rules` line 770 — invited user knocking is rejected.
+///
+/// An invited user sending a knock event passes the outer ban/join checks,
+/// but `check_knock_rules` rejects the `invite → knock` transition.
+#[test]
+fn test_invited_user_cannot_knock() {
+    let mut state = room_with_join_rule("knock");
+
+    // Bob has been invited
+    state.insert(
+        ("m.room.member".into(), "@bob:example.com".into()),
+        make_event(
+            "$bob_invite",
+            "m.room.member",
+            Some("@bob:example.com"),
+            "@admin:example.com",
+            json!({"membership": "invite"}),
+        ),
+    );
+
+    let knock_event = make_event(
+        "$bob_knock",
+        "m.room.member",
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({"membership": "knock"}),
+    );
+
+    let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
+    assert!(
+        result.is_err(),
+        "Invited user must NOT be able to knock: {result:?}"
+    );
+}

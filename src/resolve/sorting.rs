@@ -648,4 +648,80 @@ mod tests {
         // topic's auth chain → pl0 (position 0)
         assert_eq!(dist["topic"], 0);
     }
+
+    /// Coverage: `compute_auth_distance_iterative`
+    /// Creates a 3-hop auth chain and verifies the iterative DFS + memoization.
+    #[test]
+    fn test_auth_distance_iterative_deep_chain() {
+        use crate::basespec::rezzy_types::SortContext;
+
+        let create = LeanEvent::<String> {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let pl = LeanEvent::<String> {
+            event_id: "$pl".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec!["$create".into()],
+            ..Default::default()
+        };
+        let join = LeanEvent::<String> {
+            event_id: "$join".into(),
+            event_type: "m.room.member".into(),
+            auth_events: alloc::vec!["$create".into(), "$pl".into()],
+            ..Default::default()
+        };
+        let topic = LeanEvent::<String> {
+            event_id: "$topic".into(),
+            event_type: "m.room.topic".into(),
+            auth_events: alloc::vec!["$create".into(), "$pl".into(), "$join".into()],
+            ..Default::default()
+        };
+
+        let mut primary: HashMap<String, LeanEvent<String>> = HashMap::new();
+        primary.insert("$create".into(), create.clone());
+        primary.insert("$pl".into(), pl);
+        primary.insert("$join".into(), join);
+        primary.insert("$topic".into(), topic);
+
+        let secondary: HashMap<String, LeanEvent<String>> = HashMap::new();
+        let sort_ctx = SortContext {
+            primary: &primary,
+            secondary: &secondary,
+        };
+
+        let mut memo = HashMap::new();
+        let topic_id: String = "$topic".into();
+        let create_id: String = "$create".into();
+        let pl_id: String = "$pl".into();
+        let join_id: String = "$join".into();
+
+        // First call: triggers iterative traversal through auth chain
+        // $topic → $join(dist=2), $pl(dist=1), $create(dist=0) → min = 1
+        let dist =
+            compute_auth_distance_iterative(&topic_id, &sort_ctx, Some(&create_id), &mut memo);
+        assert_eq!(
+            dist, 1,
+            "$topic should be distance 1 from $create (direct auth)"
+        );
+
+        // Second call: hits memoization early return (line 96)
+        let dist2 =
+            compute_auth_distance_iterative(&topic_id, &sort_ctx, Some(&create_id), &mut memo);
+        assert_eq!(dist2, dist, "Memoized result must match");
+
+        // Verify intermediate memos were populated
+        assert_eq!(
+            memo.get(&pl_id),
+            Some(&1),
+            "$pl should be distance 1 from $create"
+        );
+        assert_eq!(
+            memo.get(&join_id),
+            Some(&1),
+            "$join has $create in auth → distance 1"
+        );
+    }
 }

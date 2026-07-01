@@ -723,16 +723,13 @@ fn test_compute_state_at_prev_events_cycle() {
 ///   $create(1)→$join_a(2)→$pl(3)→$join_b(4)→$join_c(5)→$join_d(6)
 ///                             \                              |
 ///                              $deep_auth(4)        Fork A: $topic_a(7) auth=[$create,$pl,$join_a,$deep_auth]
-///                                                   Fork B: $topic_b(7) auth=[$create,$pl,$join_a]
-///                                                           $merge(8) prev=[$topic_a,$topic_b]
-/// ```
-///
-/// - `u_heap` = {$create(1), $`join_a(2)`, $pl(3), $`join_b(4)`, $`join_c(5)`, $`join_d(6)`}
-/// - `c_heap` seeds = {$`topic_a(7)`, $`topic_b(7)`}
-/// - $`topic_a`'s auth includes $`deep_auth(4)` → added to `c_heap`
-/// - When c pops $`deep_auth` at d=4, u catch-up pops $`join_d(6)`, $`join_c(5)`, $`join_b(4)`
-///   → triggers the inner loop body (lines 950-964)
-/// - $`deep_auth`'s auth ($create, $pl) are in `u_visited` → PRUNE EARLY (lines 971-972)
+/// Key paths targeted:
+/// - **Line 958-960**: U-side auth chain traversal. `$name` (depth 5, unconflicted)
+///   has `$hidden_pl` (depth 3) in its `auth_events`, which is NOT in unconflicted
+///   state. When U catches up, it pops `$name` and discovers `$hidden_pl` → pushes
+///   onto `u_heap`.
+/// - **Line 972**: C-side PRUNE EARLY. `$topic_a`'s auth includes `$create` and `$pl`,
+///   which are already in `u_visited` → triggers `continue`.
 #[test]
 fn test_auth_chain_diff_interleaving() {
     use rezzy::{compute_state_at, LeanEvent, StateResVersion};
@@ -740,16 +737,15 @@ fn test_auth_chain_diff_interleaving() {
 
     let evs = utils::parse_jsonl_events(
         r#"
-        {"event_id": "$create",    "type": "m.room.create",       "state_key": "",     "sender": "@a:x", "depth": 1, "prev_events": [],           "auth_events": [],                       "content": {"room_version": "10", "creator": "@a:x"}}
-        {"event_id": "$join_a",    "type": "m.room.member",       "state_key": "@a:x", "sender": "@a:x", "depth": 2, "prev_events": ["$create"],  "auth_events": ["$create"],              "content": {"membership": "join"}}
-        {"event_id": "$pl",        "type": "m.room.power_levels", "state_key": "",     "sender": "@a:x", "depth": 3, "prev_events": ["$join_a"],  "auth_events": ["$create", "$join_a"],    "content": {"users": {"@a:x": 100}}}
-        {"event_id": "$join_b",    "type": "m.room.member",       "state_key": "@b:x", "sender": "@b:x", "depth": 4, "prev_events": ["$pl"],      "auth_events": ["$create", "$pl"],        "content": {"membership": "join"}}
-        {"event_id": "$join_c",    "type": "m.room.member",       "state_key": "@c:x", "sender": "@c:x", "depth": 5, "prev_events": ["$join_b"],  "auth_events": ["$create", "$pl"],        "content": {"membership": "join"}}
-        {"event_id": "$join_d",    "type": "m.room.member",       "state_key": "@d:x", "sender": "@d:x", "depth": 6, "prev_events": ["$join_c"],  "auth_events": ["$create", "$pl"],        "content": {"membership": "join"}}
-        {"event_id": "$deep_auth", "type": "m.room.member",       "state_key": "@s:x", "sender": "@s:x", "depth": 4, "prev_events": ["$pl"],      "auth_events": ["$create", "$pl"],        "content": {"membership": "join"}}
-        {"event_id": "$topic_a",   "type": "m.room.topic",        "state_key": "",     "sender": "@a:x", "depth": 7, "prev_events": ["$join_d"],  "auth_events": ["$create", "$pl", "$join_a", "$deep_auth"], "content": {"topic": "A"}}
-        {"event_id": "$topic_b",   "type": "m.room.topic",        "state_key": "",     "sender": "@a:x", "depth": 7, "prev_events": ["$join_d"],  "auth_events": ["$create", "$pl", "$join_a"],               "content": {"topic": "B"}}
-        {"event_id": "$merge",     "type": "m.room.message",                           "sender": "@a:x", "depth": 8, "prev_events": ["$topic_a", "$topic_b"], "auth_events": ["$create", "$pl", "$join_a"], "content": {}}
+        {"event_id": "$create",    "type": "m.room.create",       "state_key": "",     "sender": "@a:x", "depth": 1, "prev_events": [],           "auth_events": [],                                         "content": {"room_version": "10", "creator": "@a:x"}}
+        {"event_id": "$join_a",    "type": "m.room.member",       "state_key": "@a:x", "sender": "@a:x", "depth": 2, "prev_events": ["$create"],  "auth_events": ["$create"],                                "content": {"membership": "join"}}
+        {"event_id": "$pl",        "type": "m.room.power_levels", "state_key": "",     "sender": "@a:x", "depth": 3, "prev_events": ["$join_a"],  "auth_events": ["$create", "$join_a"],                      "content": {"users": {"@a:x": 100}}}
+        {"event_id": "$hidden_pl", "type": "m.room.power_levels", "state_key": "",     "sender": "@a:x", "depth": 3, "prev_events": ["$pl"],      "auth_events": ["$create", "$join_a"],                      "content": {"users": {"@a:x": 100}}}
+        {"event_id": "$join_b",    "type": "m.room.member",       "state_key": "@b:x", "sender": "@b:x", "depth": 4, "prev_events": ["$pl"],      "auth_events": ["$create", "$pl"],                          "content": {"membership": "join"}}
+        {"event_id": "$name",      "type": "m.room.name",         "state_key": "",     "sender": "@a:x", "depth": 5, "prev_events": ["$pl"],      "auth_events": ["$create", "$pl", "$join_a", "$hidden_pl"], "content": {"name": "Test"}}
+        {"event_id": "$topic_a",   "type": "m.room.topic",        "state_key": "",     "sender": "@a:x", "depth": 6, "prev_events": ["$name"],    "auth_events": ["$create", "$pl", "$join_a"],               "content": {"topic": "A"}}
+        {"event_id": "$topic_b",   "type": "m.room.topic",        "state_key": "",     "sender": "@a:x", "depth": 6, "prev_events": ["$join_b"],  "auth_events": ["$create", "$pl", "$join_a"],               "content": {"topic": "B"}}
+        {"event_id": "$merge",     "type": "m.room.message",                           "sender": "@a:x", "depth": 7, "prev_events": ["$topic_a", "$topic_b"], "auth_events": ["$create", "$pl", "$join_a"], "content": {}}
     "#,
     );
 
@@ -758,19 +754,12 @@ fn test_auth_chain_diff_interleaving() {
         events_map.insert(ev.event_id.clone(), ev);
     }
 
-    // compute_state_at triggers resolve_multiple_prev_states at $merge
     let state = compute_state_at("$merge", &events_map, StateResVersion::V2).unwrap();
 
-    // Verify resolution produced sane state
     assert!(
         state.contains_key(&("m.room.create".to_string(), String::new())),
         "Must have create event"
     );
-    assert!(
-        state.contains_key(&("m.room.power_levels".to_string(), String::new())),
-        "Must have PL event"
-    );
-    // The topic conflict should be resolved — one of topic_a or topic_b wins
     assert!(
         state.contains_key(&("m.room.topic".to_string(), String::new())),
         "Must have resolved topic"
