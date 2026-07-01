@@ -918,9 +918,38 @@ where
         }
     }
 
-    // Compute the auth difference (auth(C) \ auth(U)) using a bounded dual-heap traversal.
-    // This perfectly restores algorithmic invariants for `expand_v2_power_events_auth_chains`
-    // without the massive O(N) bottleneck of unbounded DAG walks.
+    // Supplement conflicted_events with the auth difference auth(C) \ auth(U)
+    let auth_diff = compute_auth_chain_diff(&unconflicted_state, &conflicted_state_set, events_map);
+    for id_val in auth_diff {
+        if let Some(event) = events_map.get(&id_val) {
+            conflicted_events.insert(id_val, event.clone());
+        }
+    }
+
+    crate::resolve::iterative::resolve_iterative_sort_with_cache(
+        unconflicted_state,
+        conflicted_events,
+        events_map,
+        Some(global_auth_cache),
+        version,
+    )
+}
+
+/// Computes auth(C) \ auth(U) using a bounded dual-heap traversal.
+///
+/// Walks unconflicted (U) and conflicted (C) auth chains in parallel by depth,
+/// pruning C-side events already reachable from U. Returns the set of event IDs
+/// in the conflicted auth chains that are NOT reachable from unconflicted state.
+fn compute_auth_chain_diff<Id, C, S>(
+    unconflicted_state: &SharedState<Id>,
+    conflicted_state_set: &hashbrown::HashSet<Id>,
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+) -> hashbrown::HashSet<Id>
+where
+    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    S: core::hash::BuildHasher,
+    C: crate::basespec::rezzy_types::EventContent,
+{
     let mut u_visited = hashbrown::HashSet::new();
     let mut u_heap_elements = Vec::with_capacity(unconflicted_state.len());
     for id in unconflicted_state.values() {
@@ -934,7 +963,7 @@ where
 
     let mut c_visited = hashbrown::HashSet::new();
     let mut c_heap = alloc::collections::BinaryHeap::new();
-    for id in &conflicted_state_set {
+    for id in conflicted_state_set {
         if u_visited.contains(id) {
             continue; // PRUNE EARLY
         }
@@ -985,19 +1014,7 @@ where
         }
     }
 
-    for id_val in auth_diff {
-        if let Some(event) = events_map.get(&id_val) {
-            conflicted_events.insert(id_val, event.clone());
-        }
-    }
-
-    crate::resolve::iterative::resolve_iterative_sort_with_cache(
-        unconflicted_state,
-        conflicted_events,
-        events_map,
-        Some(global_auth_cache),
-        version,
-    )
+    auth_diff
 }
 
 #[cfg(test)]
