@@ -24,11 +24,11 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::basespec::event_types::{
-    DEFAULT_PL_BAN, DEFAULT_PL_CREATOR_V11, DEFAULT_PL_INVITE, DEFAULT_PL_KICK, DEFAULT_PL_USER,
-    FIELD_MEMBERSHIP, FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE,
-    MEM_JOIN, MEM_KNOCK, MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER,
-    M_ROOM_POWER_LEVELS, M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_KNOCK_RESTRICTED,
-    RULE_PUBLIC, RULE_RESTRICTED,
+    DEFAULT_PL_BAN, DEFAULT_PL_INVITE, DEFAULT_PL_KICK, DEFAULT_PL_USER, FIELD_MEMBERSHIP,
+    FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE, MEM_JOIN, MEM_KNOCK,
+    MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
+    M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_KNOCK_RESTRICTED, RULE_PUBLIC,
+    RULE_RESTRICTED,
 };
 use crate::basespec::rezzy_types::LeanEvent;
 use crate::basespec::rezzy_types::StateResVersion;
@@ -260,20 +260,26 @@ pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     }
 
     // Rule 4: Check power level requirements
+    // Skip for m.room.member (handled separately in check_membership_rules).
+    // Also skip for m.room.power_levels when no PL event exists in state:
+    // the spec's Rule 10.2 says "If there is no previous m.room.power_levels
+    // event in the room, allow", which takes precedence over Rule 8's generic
+    // PL check. Without this, the bootstrap PL event can never pass auth.
     if event.event_type != M_ROOM_MEMBER {
-        let sender_pl = get_sender_power_level(&event.sender, state, version);
-        let required_pl = get_required_power_level(event, state);
+        let no_pl_event = state.get_event(M_ROOM_POWER_LEVELS, "").is_none();
+        let is_first_pl = no_pl_event && event.event_type == M_ROOM_POWER_LEVELS;
 
-        let _pl_ev_id = state
-            .get_event(M_ROOM_POWER_LEVELS, "")
-            .map(|ev| ev.event_id.clone());
+        if !is_first_pl {
+            let sender_pl = get_sender_power_level(&event.sender, state, version);
+            let required_pl = get_required_power_level(event, state);
 
-        if sender_pl < required_pl {
-            return Err(AuthError::InsufficientPowerLevel {
-                required: required_pl,
-                actual: sender_pl,
-                event_type: event.event_type.clone(),
-            });
+            if sender_pl < required_pl {
+                return Err(AuthError::InsufficientPowerLevel {
+                    required: required_pl,
+                    actual: sender_pl,
+                    event_type: event.event_type.clone(),
+                });
+            }
         }
     }
 
@@ -307,30 +313,32 @@ fn get_sender_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
     state: &impl StateProvider<Id, C>,
     version: StateResVersion,
 ) -> i64 {
-    if let Some(create_event) = state.get_event(M_ROOM_CREATE, "") {
-        let is_creator = create_event.sender == sender
-            || matches!(
-                version,
-                StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
-            ) && create_event.has_additional_creator(sender);
+    // V12+ (MSC4289): creators have spec-mandated infinite power level,
+    // immutable and not representable in the PL event.
+    if matches!(
+        version,
+        StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
+    ) {
+        if let Some(create_event) = state.get_event(M_ROOM_CREATE, "") {
+            let is_creator =
+                create_event.sender == sender || create_event.has_additional_creator(sender);
 
-        if is_creator {
-            return match version {
-                StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2 => {
-                    // Use i64::MAX (not 2^53-1) so the creator always wins power
-                    // comparisons, even against a malicious PL event that sets a
-                    // user to the JSON-safe maximum. Incoming values are clamped
-                    // to MAX_POWER_LEVEL_JSON on deserialization, so this is
-                    // strictly unreachable by any wire value.
-                    MAX_POWER_LEVEL_RUST
-                }
-                // Rooms v11 & earlier (state res v2 & earlier)
-                _ => DEFAULT_PL_CREATOR_V11,
-            };
+            if is_creator {
+                // Use i64::MAX (not 2^53-1) so the creator always wins power
+                // comparisons, even against a malicious PL event that sets a
+                // user to the JSON-safe maximum. Incoming values are clamped
+                // to MAX_POWER_LEVEL_JSON on deserialization, so this is
+                // strictly unreachable by any wire value.
+                return MAX_POWER_LEVEL_RUST;
+            }
         }
     }
 
-    // State-based Power Levels
+    // State-based Power Levels (all versions)
+    // V1-V11: the auth rules have no implicit creator PL. The creator gets
+    // PL 100 only because the server explicitly lists them in the PL event's
+    // `users` map at room creation. If the PL event doesn't list them, they
+    // fall through to `users_default` like any other user.
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         if let Some(pl) = pl_event.get_user_power_level(sender) {
             return pl;
@@ -340,7 +348,7 @@ fn get_sender_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
             return default_pl;
         }
     }
-    DEFAULT_PL_USER // Default power level if no power_levels event exists
+    return DEFAULT_PL_USER; // Default power level if no power_levels event exists
 }
 
 /// Get the required power level to send an event based on room state.

@@ -1001,9 +1001,145 @@ fn test_unban_succeeds_when_kick_pl_exceeds_ban_pl() {
     );
 }
 
-/// Creator implicit power level is version-agnostic (the check uses
-/// `has_room_creator` / `has_additional_creator` which don't branch on
-/// `room_version`), so a single test covers all versions.
+/// **KNOWN VULNERABILITY (V1-V11, all implementations):**
+/// PL wipeout — if a PL event with `users: {}` enters the room state (via state
+/// resolution, rogue federation peer, etc.), the creator drops to `users_default`
+/// (0). Nobody has sufficient PL to send state events or fix the PL event.
+/// The room is permanently bricked. No recovery possible.
+///
+/// This is spec-correct behavior — V1-V11 auth rules have no implicit creator
+/// power level. The creator gets PL 100 only because the server puts them in
+/// the PL event's `users` map at room creation. Synapse's `get_user_power_level`
+/// behaves identically: PL event present + `users: {}` → creator gets 0.
+///
+/// V12 (MSC4289) fixes this by granting creators immutable infinite PL.
+/// See `test_msc4289_v2_1_creator_immune_to_pl_wipeout` for passing test.
+///
+/// **xfail**: Asserts the vulnerable behavior. If a V2.0.1 state res patch is
+/// introduced to mitigate this, this test should be updated to assert recovery.
+#[test]
+fn test_v2_pl_wipeout_vulnerability() {
+    let mut state = RoomState::new();
+
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$create",
+            "m.room.create",
+            Some(""),
+            "@creator:x.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@creator:x.com".into()),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@creator:x.com"),
+            "@creator:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    // Attacker-crafted PL event with empty users map.
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@creator:x.com",
+            json!({"users": {}}),
+        ),
+    );
+
+    // Creator tries to send a state event → rejected (PL 0 < required 50).
+    let state_event = make_event(
+        "$topic",
+        "m.room.topic",
+        Some(""),
+        "@creator:x.com",
+        json!({"topic": "hello"}),
+    );
+    let result = check_auth(&state_event, &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        result.is_err(),
+        "xfail: SRV2 room is bricked; creator has PL 0, cannot send state events: {result:?}"
+    );
+
+    // Creator tries to fix the PL event → also rejected (same PL 0).
+    let fix_pl = make_event(
+        "$fix_pl",
+        "m.room.power_levels",
+        Some(""),
+        "@creator:x.com",
+        json!({"users": {"@creator:x.com": 100}}),
+    );
+    let result = check_auth(&fix_pl, &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        result.is_err(),
+        "xfail: SRV2 room is unrecoverable; creator cannot fix the PL event: {result:?}"
+    );
+}
+
+/// V2.1 (room V12, MSC4289) is immune to the PL wipeout vulnerability above.
+/// Even with `users: {}`, the creator has immutable infinite PL and can still
+/// send state events. This is the key security improvement over V1-V11.
+#[test]
+fn test_msc4289_v2_1_creator_immune_to_pl_wipeout() {
+    let mut state = RoomState::new();
+
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$create",
+            "m.room.create",
+            Some(""),
+            "@creator:x.com",
+            json!({"room_version": "12", "creator": "@creator:x.com"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@creator:x.com".into()),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@creator:x.com"),
+            "@creator:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+    // PL event with empty users map — same scenario that bricks V2 rooms.
+    state.insert(
+        ("m.room.power_levels".into(), String::new()),
+        make_event(
+            "$pl",
+            "m.room.power_levels",
+            Some(""),
+            "@creator:x.com",
+            json!({"users": {}}),
+        ),
+    );
+
+    // Creator sends a state event. In V2 this is rejected (PL 0 < required 50).
+    // In V2.1, MSC4289 grants immutable i64::MAX PL → allowed.
+    let state_event = make_event(
+        "$topic",
+        "m.room.topic",
+        Some(""),
+        "@creator:x.com",
+        json!({"topic": "hello"}),
+    );
+
+    let result = check_auth(&state_event, &state, rezzy::StateResVersion::V2_1, None);
+    assert!(
+        result.is_ok(),
+        "V2.1 creator must retain infinite PL even with users:{{}} — immune to PL wipeout: {result:?}"
+    );
+}
+/// MSC4289 (V12+): creators have spec-mandated infinite power level, immutable
+/// and not representable in the PL event. This test verifies the implicit PL
+/// for the primary creator and additional_creators in V2.1 (room version 12).
 #[test]
 #[allow(clippy::too_many_lines)]
 fn test_msc4289_creator_implicit_power_level() {

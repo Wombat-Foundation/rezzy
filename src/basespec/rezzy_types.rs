@@ -45,6 +45,21 @@ impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug> EventId for T {}
 ///
 /// [MSC4297]: https://github.com/matrix-org/matrix-spec-proposals/pull/4297
 /// [MSC4242]: https://github.com/matrix-org/matrix-spec-proposals/pull/4242
+///
+/// ## TODO: Redaction preserved keys
+///
+/// Rezzy does not implement redaction stripping. The spec defines which content
+/// keys survive redaction per event type, evolving across room versions:
+///
+/// | Fragment | Room Versions | Delta from previous |
+/// |----------|:---:|---|
+/// | `v1-redactions.txt` | 1–5 | Baseline. PL: `ban`, `events`, `events_default`, `kick`, `redact`, `state_default`, `users`, `users_default`. Member: `membership`. |
+/// | `v6-redactions.txt` | 6–8 | Removes `m.room.aliases`. |
+/// | `v9-redactions.txt` | 9–10 | Member: adds `join_authorised_via_users_server`. Join rules: adds `allow`. |
+/// | `v11-redactions.txt` | 11+ | PL: adds `invite`. Create: allows ALL keys. Member: adds `third_party_invite.signed`. Drops top-level `prev_state`, `origin`, `membership`. Adds `m.room.redaction` preserving `redacts`. |
+///
+/// **Key invariant:** `users` in `m.room.power_levels` is preserved on redaction
+/// in ALL versions. Redaction alone cannot cause the PL wipeout vulnerability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 #[allow(non_camel_case_types)]
@@ -55,7 +70,7 @@ pub enum StateResVersion {
     V2,
     /// State Resolution V2.1 — [MSC4297](https://github.com/matrix-org/matrix-spec-proposals/pull/4297) (room version 12+).
     V2_1,
-    /// State Resolution V2.1.1 — ban evasion fix (restricts power-phase supplementation).
+    /// State Resolution V2.1.1 — experimental algo (restricts power-phase supplementation).
     V2_1_1,
     /// State Resolution V2.2 — reserved for State DAGs ([MSC4242](https://github.com/matrix-org/matrix-spec-proposals/pull/4242)).
     V2_2,

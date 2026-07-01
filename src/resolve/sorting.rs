@@ -17,7 +17,7 @@ use alloc::collections::{BinaryHeap, VecDeque};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use crate::basespec::event_types::{DEFAULT_PL_CREATOR_V11, MAX_POWER_LEVEL_RUST};
+use crate::basespec::event_types::MAX_POWER_LEVEL_RUST;
 use crate::basespec::rezzy_types::{KahnSortResult, LeanEvent, SortPriority, StateResVersion};
 use crate::HashMap;
 
@@ -47,22 +47,16 @@ where
         }
     }
 
-    let is_creator = create_ev.is_some_and(|ev| {
-        ev.sender == event.sender
-            || matches!(
-                version,
-                StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
-            ) && ev.content.has_additional_creator(&event.sender)
-    });
-
-    if is_creator {
-        match version {
-            StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2 => {
-                // v12+ rooms (V2.1+ stat res) [infinity]
-                return MAX_POWER_LEVEL_RUST;
-            }
-            // Pre-v12 rooms [100]
-            _ => return DEFAULT_PL_CREATOR_V11,
+    // V12+ (MSC4289): creators have spec-mandated infinite power level.
+    if matches!(
+        version,
+        StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
+    ) {
+        let is_creator = create_ev.is_some_and(|ev| {
+            ev.sender == event.sender || ev.content.has_additional_creator(&event.sender)
+        });
+        if is_creator {
+            return MAX_POWER_LEVEL_RUST;
         }
     }
 
@@ -77,10 +71,10 @@ where
         return 0; // Default if PL event exists but no users_default
     }
 
-    if event.auth_events.is_empty() {
-        return event.power_level; // Fallback for simple unit-test/mock events that don't have an auth chain
-    }
-    0
+    // No PL event in the auth chain — fall back to the pre-computed
+    // power_level field. This handles the bootstrap PL event (which only
+    // auths against $create) and simple unit-test events.
+    event.power_level
 }
 
 /// Computes the shortest distance from the event to the m.room.create event via `auth_events`.

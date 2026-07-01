@@ -462,7 +462,7 @@ fn test_v2_1_1_fixes_invite_lock() {
         sender: "@admin:example.com".to_string(),
         origin_server_ts: 200,
         content: serde_json::json!({
-            "users": {},
+            "users": { "@admin:example.com": 100 },
         }),
         auth_events: vec!["$create".to_string()],
         ..Default::default()
@@ -1293,7 +1293,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         power_level: 100,
         prev_events: vec!["CREATE"],
         auth_events: vec!["CREATE"],
-        content: serde_json::Value::Null,
+        content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
     };
     events_map.insert("PL0", pl0);
 
@@ -1307,7 +1307,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         power_level: 100,
         prev_events: vec!["PL0"],
         auth_events: vec!["PL0"],
-        content: serde_json::Value::Null,
+        content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
     };
     events_map.insert("PL1", pl1);
 
@@ -1335,7 +1335,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         power_level: 100,
         prev_events: vec!["S_A1"],
         auth_events: vec!["PL1"],
-        content: serde_json::Value::Null,
+        content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
     };
     events_map.insert("PL2", pl2);
 
@@ -1363,7 +1363,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         power_level: 100,
         prev_events: vec!["S_B1"],
         auth_events: vec!["PL0"],
-        content: serde_json::Value::Null,
+        content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
     };
     events_map.insert("PL_B", pl_b);
 

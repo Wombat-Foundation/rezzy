@@ -2499,10 +2499,27 @@ mod tests {
             event_id: "CREATE".into(),
             event_type: "m.room.create".into(),
             state_key: Some(String::new()),
-            sender: "@alice:example.com".into(), // Match the default sender of A and B
+            sender: "@alice:example.com".into(),
             ..Default::default()
         };
         auth.insert("CREATE".into(), create);
+
+        // Initial PL event from room creation — gives Alice explicit PL 100.
+        // Pre-V12 auth rules have no implicit creator PL; the server puts
+        // the creator in the PL event's `users` map at room creation.
+        let initial_pl = LeanEvent {
+            event_id: "INITIAL_PL".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            content: serde_json::from_value(serde_json::json!({
+                "users": { "@alice:example.com": 100 }
+            }))
+            .unwrap(),
+            auth_events: vec!["CREATE".into()],
+            ..Default::default()
+        };
+        auth.insert("INITIAL_PL".into(), initial_pl);
 
         // Create cyclic power events: A auths B, B authed by A, etc.
         let a: LeanEvent = LeanEvent {
@@ -2511,6 +2528,10 @@ mod tests {
             state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
             auth_events: vec!["B".into(), "CREATE".into()],
+            content: serde_json::from_value(serde_json::json!({
+                "users": { "@alice:example.com": 100 }
+            }))
+            .unwrap(),
             ..Default::default()
         };
         let b: LeanEvent = LeanEvent {
@@ -2519,12 +2540,23 @@ mod tests {
             state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
             auth_events: vec!["A".into(), "CREATE".into()],
+            content: serde_json::from_value(serde_json::json!({
+                "users": { "@alice:example.com": 100 }
+            }))
+            .unwrap(),
             ..Default::default()
         };
         conflicted.insert("A".into(), a);
         conflicted.insert("B".into(), b);
 
-        let unconflicted = imbl::OrdMap::new();
+        // The unconflicted state includes the initial PL so sorting can
+        // determine Alice's power level without relying on the cyclic
+        // conflicted events.
+        let mut unconflicted = imbl::OrdMap::new();
+        unconflicted.insert(
+            ("m.room.power_levels".into(), String::new()),
+            "INITIAL_PL".into(),
+        );
         // This will run kahn sort on power_events, detect a cycle, and print/handle it safely.
         let resolved =
             resolve_iterative_sort(unconflicted, conflicted, &auth, rezzy::StateResVersion::V2);
