@@ -171,13 +171,35 @@ impl<Id> KahnSortResult<Id> {
 /// A generic interface for graph nodes required by topological algorithms
 /// (e.g., `compute_merge_base`). This allows consumers like `conduwuit` to
 /// pass their own lightweight `EventMeta` tuples without allocating dummy JSON structs.
-pub trait DagNode<Id> {
+///
+/// # Relationship to [`EventLike`]
+///
+/// `DagNode` is a supertrait of [`EventLike`]. Implementors who only need
+/// topological traversal (e.g. LCA / merge-base computation) can implement
+/// `DagNode` alone without the full suite of auth-related accessors.
+pub trait DagNode {
+    /// The event identifier type (e.g. `String`, `u32`).
+    type Id: EventId;
+
+    /// Returns a reference to this event's unique identifier.
+    fn event_id(&self) -> &Self::Id;
+
+    /// DAG depth (distance from the root `m.room.create` event).
     fn depth(&self) -> u64;
-    fn prev_events(&self) -> &[Id];
-    fn auth_events(&self) -> &[Id];
+
+    /// Event IDs of this event's parents in the timeline DAG.
+    fn prev_events(&self) -> &[Self::Id];
+
+    /// Event IDs of the authorization events for this event.
+    fn auth_events(&self) -> &[Self::Id];
 }
 
-impl<Id, C> DagNode<Id> for LeanEvent<Id, C> {
+impl<Id: EventId, C> DagNode for LeanEvent<Id, C> {
+    type Id = Id;
+
+    fn event_id(&self) -> &Id {
+        &self.event_id
+    }
     fn depth(&self) -> u64 {
         self.depth
     }
@@ -186,6 +208,188 @@ impl<Id, C> DagNode<Id> for LeanEvent<Id, C> {
     }
     fn auth_events(&self) -> &[Id] {
         &self.auth_events
+    }
+}
+
+/// Unified trait for Matrix events used by the auth and resolution engines.
+///
+/// `EventLike` extends [`DagNode`] with the full set of envelope fields
+/// (sender, event type, state key, etc.) and content accessors (membership,
+/// power levels, join rules, etc.) needed for authorization checks.
+///
+/// # For downstream homeservers
+///
+/// Implement this trait on your native event type (e.g. `PduEvent`) to call
+/// `check_auth` and `resolve_iterative_sort` without converting to `LeanEvent`.
+/// This eliminates all string cloning, content serialization, and `Vec`
+/// allocation at the rezzy boundary.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// impl EventLike for PduEvent {
+///     fn event_type(&self) -> &str { self.kind.to_string().as_str() }
+///     fn sender(&self) -> &str { self.sender.as_str() }
+///     fn get_membership(&self) -> Option<&str> { /* read from typed content */ }
+///     // ...
+/// }
+/// ```
+pub trait EventLike: DagNode {
+    /// Matrix event type (e.g. `m.room.member`, `m.room.power_levels`).
+    fn event_type(&self) -> &str;
+
+    /// The MXID of the user who sent the event.
+    fn sender(&self) -> &str;
+
+    /// State key for state events; `None` for timeline (non-state) events.
+    fn state_key(&self) -> Option<&str>;
+
+    /// Sender's cached power level at the time of the event.
+    fn power_level(&self) -> i64;
+
+    /// Origin server timestamp in milliseconds since Unix epoch.
+    fn origin_server_ts(&self) -> u64;
+
+    // === Content accessors (previously on EventContent) ===
+
+    /// Returns the `membership` field from event content.
+    fn get_membership(&self) -> Option<&str>;
+
+    /// Returns the `join_rule` field from event content.
+    fn get_join_rule(&self) -> Option<&str>;
+
+    /// Returns the power level for a specific user from `content.users`.
+    fn get_user_power_level(&self, user: &str) -> Option<i64>;
+
+    /// Returns the required power level for a specific event type from `content.events`.
+    fn get_event_power_level(&self, event_type: &str) -> Option<i64>;
+
+    /// Returns the `users_default` power level.
+    fn get_users_default(&self) -> Option<i64>;
+
+    /// Returns the `events_default` power level.
+    fn get_events_default(&self) -> Option<i64>;
+
+    /// Returns the `state_default` power level.
+    fn get_state_default(&self) -> Option<i64>;
+
+    /// Returns the `ban` power level threshold.
+    fn get_ban(&self) -> Option<i64>;
+
+    /// Returns the `kick` power level threshold.
+    fn get_kick(&self) -> Option<i64>;
+
+    /// Returns the `invite` power level threshold.
+    fn get_invite(&self) -> Option<i64>;
+
+    /// Returns the `redact` power level threshold.
+    fn get_redact(&self) -> Option<i64>;
+
+    /// Returns the `creator` field from `m.room.create` content.
+    fn get_creator(&self) -> Option<&str>;
+
+    /// Returns the `room_version` field from `m.room.create` content.
+    fn get_room_version(&self) -> Option<&str>;
+
+    /// Returns true if `sender` is listed in the V12+ `additional_creators` array.
+    fn has_additional_creator(&self, sender: &str) -> bool;
+
+    /// Returns the `join_authorised_via_users_server` field, if present.
+    fn get_join_authorised_via_users_server(&self) -> Option<&str>;
+
+    /// Returns whether a `third_party_invite` field is present.
+    fn has_third_party_invite(&self) -> bool {
+        false
+    }
+
+    /// Returns the signed token from `third_party_invite.signed.token`.
+    fn get_third_party_invite_token(&self) -> Option<&str> {
+        None
+    }
+
+    /// Returns the mxid from `third_party_invite.signed.mxid`.
+    fn get_third_party_invite_mxid(&self) -> Option<&str> {
+        None
+    }
+
+    /// Returns whether `third_party_invite.signed.signatures` is present and non-empty.
+    fn has_third_party_invite_signatures(&self) -> bool {
+        false
+    }
+}
+
+impl<Id: EventId, C: EventContent> EventLike for LeanEvent<Id, C> {
+    fn event_type(&self) -> &str {
+        &self.event_type
+    }
+    fn sender(&self) -> &str {
+        &self.sender
+    }
+    fn state_key(&self) -> Option<&str> {
+        self.state_key.as_deref()
+    }
+    fn power_level(&self) -> i64 {
+        self.power_level
+    }
+    fn origin_server_ts(&self) -> u64 {
+        self.origin_server_ts
+    }
+    fn get_membership(&self) -> Option<&str> {
+        self.content.get_membership()
+    }
+    fn get_join_rule(&self) -> Option<&str> {
+        self.content.get_join_rule()
+    }
+    fn get_user_power_level(&self, user: &str) -> Option<i64> {
+        self.content.get_user_power_level(user)
+    }
+    fn get_event_power_level(&self, event_type: &str) -> Option<i64> {
+        self.content.get_event_power_level(event_type)
+    }
+    fn get_users_default(&self) -> Option<i64> {
+        self.content.get_users_default()
+    }
+    fn get_events_default(&self) -> Option<i64> {
+        self.content.get_events_default()
+    }
+    fn get_state_default(&self) -> Option<i64> {
+        self.content.get_state_default()
+    }
+    fn get_ban(&self) -> Option<i64> {
+        self.content.get_ban()
+    }
+    fn get_kick(&self) -> Option<i64> {
+        self.content.get_kick()
+    }
+    fn get_invite(&self) -> Option<i64> {
+        self.content.get_invite()
+    }
+    fn get_redact(&self) -> Option<i64> {
+        self.content.get_redact()
+    }
+    fn get_creator(&self) -> Option<&str> {
+        self.content.get_creator()
+    }
+    fn get_room_version(&self) -> Option<&str> {
+        self.content.get_room_version()
+    }
+    fn has_additional_creator(&self, sender: &str) -> bool {
+        self.content.has_additional_creator(sender)
+    }
+    fn get_join_authorised_via_users_server(&self) -> Option<&str> {
+        self.content.get_join_authorised_via_users_server()
+    }
+    fn has_third_party_invite(&self) -> bool {
+        self.content.has_third_party_invite()
+    }
+    fn get_third_party_invite_token(&self) -> Option<&str> {
+        self.content.get_third_party_invite_token()
+    }
+    fn get_third_party_invite_mxid(&self) -> Option<&str> {
+        self.content.get_third_party_invite_mxid()
+    }
+    fn has_third_party_invite_signatures(&self) -> bool {
+        self.content.has_third_party_invite_signatures()
     }
 }
 
@@ -289,6 +493,8 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     fn get_invite(&self) -> Option<i64>;
     fn get_redact(&self) -> Option<i64>;
     fn get_creator(&self) -> Option<&str>;
+    /// Returns the `room_version` field from `m.room.create` content.
+    fn get_room_version(&self) -> Option<&str>;
     /// Specific to V12+ rooms.
     fn has_additional_creator(&self, sender: &str) -> bool;
     /// Returns the `join_authorised_via_users_server` field, if present.
@@ -436,6 +642,11 @@ impl EventContent for Value {
 
     fn get_creator(&self) -> Option<&str> {
         self.get(crate::basespec::event_types::FIELD_CREATOR)?
+            .as_str()
+    }
+
+    fn get_room_version(&self) -> Option<&str> {
+        self.get(crate::basespec::event_types::FIELD_ROOM_VERSION)?
             .as_str()
     }
 
@@ -607,6 +818,13 @@ impl<Id, C> LeanEvent<Id, C> {
         C: EventContent,
     {
         self.content.get_creator()
+    }
+
+    pub fn get_room_version(&self) -> Option<&str>
+    where
+        C: EventContent,
+    {
+        self.content.get_room_version()
     }
 
     pub fn has_additional_creator(&self, sender: &str) -> bool

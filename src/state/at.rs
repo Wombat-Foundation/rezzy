@@ -685,7 +685,7 @@ where
     Id: Clone + Eq + core::hash::Hash + Ord + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
-    Node: crate::basespec::rezzy_types::DagNode<Id>,
+    Node: crate::basespec::rezzy_types::DagNode<Id = Id>,
 {
     use alloc::collections::BinaryHeap;
 

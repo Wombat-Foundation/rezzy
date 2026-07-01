@@ -3911,6 +3911,9 @@ fn test_event_content_default_trait_methods() {
         fn get_creator(&self) -> Option<&str> {
             None
         }
+        fn get_room_version(&self) -> Option<&str> {
+            None
+        }
         fn has_additional_creator(&self, _: &str) -> bool {
             false
         }
