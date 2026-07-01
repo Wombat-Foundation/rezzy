@@ -2136,8 +2136,8 @@ fn test_third_party_invite_rejected_when_mxid_mismatch() {
 
     let result = check_auth(&alice_invite, &state, StateResVersion::V2, None);
     assert!(
-        result.is_err(),
-        "3PI invite must fail if mxid does not match target user"
+        matches!(result, Err(AuthError::InvalidStateKey { .. })),
+        "3PI invite must fail if mxid does not match target user, got: {result:?}"
     );
 }
 
