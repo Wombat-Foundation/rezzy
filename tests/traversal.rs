@@ -1608,6 +1608,7 @@ fn test_v2_2_auth_distance_tiebreak() {
         StateResVersion::V2_2,
     );
 
+    // TODO: better assertion here; more state DAG tests
     let topic_key = ("m.room.topic".to_string(), String::new());
     assert!(
         resolved.contains_key(&topic_key),

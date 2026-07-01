@@ -156,6 +156,7 @@ fn sort_cdo_events<'a, Id: Ord + Clone, C: Clone>(
     let mut sorted = events.to_vec();
     sorted.sort_by(|a, b| {
         let type_priority = |t: &str| match t {
+            // TODO: replace hard-coded strings
             "m.room.power_levels" => 0,
             "m.room.join_rules" => 1,
             _ => 2,
