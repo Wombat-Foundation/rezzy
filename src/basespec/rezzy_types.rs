@@ -301,6 +301,65 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     }
 }
 
+/// Caller-provided event verification pipeline.
+///
+/// Rezzy invokes these methods at the right points during auth checking.
+/// The caller holds raw JSON, server keys, and crypto — rezzy holds none.
+///
+/// **Default impls return `Ok(())`** (skip verification). Override individual
+/// methods to enable specific verification steps. Pass `None` instead of a
+/// verifier to skip all verification entirely (e.g. during state resolution).
+///
+/// # Verification Steps
+///
+/// | Step | Method | What it verifies |
+/// |------|--------|-----------------|
+/// | 1 | [`verify_event_id_hash`](Self::verify_event_id_hash) | Event ID = SHA256(canonical JSON) (room v4+) |
+/// | 2 | [`verify_signatures`](Self::verify_signatures) | Server ed25519 signatures on the PDU |
+/// | 3 | [`verify_content_hash`](Self::verify_content_hash) | `hashes.sha256` matches canonical JSON hash |
+/// | 4 | [`verify_third_party_invite`](Self::verify_third_party_invite) | 3PI `signed.signatures` against TPI public keys |
+pub trait EventVerifier<Id> {
+    /// Step 1: Verify event ID matches the SHA256 hash of the canonical JSON
+    /// (with `signatures` and `unsigned` stripped). For room versions 4+.
+    ///
+    /// # Errors
+    /// Return `Err(reason)` to reject the event.
+    fn verify_event_id_hash(&self, _event_id: &Id) -> Result<(), alloc::string::String> {
+        Ok(())
+    }
+
+    /// Step 2: Verify the event's server signatures against the origin server's
+    /// ed25519 public keys.
+    ///
+    /// # Errors
+    /// Return `Err(reason)` to reject the event.
+    fn verify_signatures(&self, _event_id: &Id) -> Result<(), alloc::string::String> {
+        Ok(())
+    }
+
+    /// Step 3: Verify the content hash (`hashes.sha256`) matches the computed
+    /// hash of the canonical JSON.
+    ///
+    /// # Errors
+    /// Return `Err(reason)` to reject the event.
+    fn verify_content_hash(&self, _event_id: &Id) -> Result<(), alloc::string::String> {
+        Ok(())
+    }
+
+    /// Step 4: Verify third-party invite signatures against the public keys
+    /// from the referenced `m.room.third_party_invite` event.
+    ///
+    /// # Errors
+    /// Return `Err(reason)` to reject the event.
+    fn verify_third_party_invite(
+        &self,
+        _event_id: &Id,
+        _tpi_token: &str,
+    ) -> Result<(), alloc::string::String> {
+        Ok(())
+    }
+}
+
 impl EventContent for Value {
     fn get_membership(&self) -> Option<&str> {
         self.get(crate::basespec::event_types::FIELD_MEMBERSHIP)?

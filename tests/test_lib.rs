@@ -2294,7 +2294,8 @@ mod tests {
             check_auth(
                 &bad_create,
                 &state,
-                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+                None
             ),
             Err(AuthError::<String>::CreateWithPrevEvents)
         );
@@ -2310,7 +2311,8 @@ mod tests {
             check_auth(
                 &name_change,
                 &state,
-                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+                None
             ),
             Err(AuthError::NotMember {
                 sender: "@bob:example.com".into(),
@@ -2328,7 +2330,8 @@ mod tests {
         assert!(check_auth(
             &creator_name_change,
             &state,
-            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
         )
         .is_ok());
 
@@ -2361,7 +2364,8 @@ mod tests {
             check_auth(
                 &join_ev,
                 &state2,
-                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+                None
             ),
             Err(AuthError::BannedUser {
                 sender: "@bob:example.com".into(),
@@ -2381,7 +2385,8 @@ mod tests {
         assert!(check_auth(
             &self_invite,
             &state2,
-            rezzy::basespec::rezzy_types::StateResVersion::V2_1
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
         )
         .is_err());
 
@@ -2398,7 +2403,8 @@ mod tests {
             check_auth(
                 &bad_join,
                 &state2,
-                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+                None
             ),
             Err(AuthError::InvalidStateKey {
                 expected: "@alice:example.com".into(),
@@ -2433,7 +2439,8 @@ mod tests {
             check_auth(
                 &low_power_state_change,
                 &state3,
-                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+                None
             ),
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
@@ -2455,7 +2462,8 @@ mod tests {
             check_auth(
                 &invite_banned,
                 &state2,
-                rezzy::basespec::rezzy_types::StateResVersion::V2_1
+                rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+                None
             ),
             Err(AuthError::BannedUser {
                 sender: "@bob:example.com".into(),

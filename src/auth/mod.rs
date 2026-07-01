@@ -186,11 +186,29 @@ pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
     version: StateResVersion,
+    verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
 ) -> Result<(), AuthError<Id>> {
     // Rule 0: Custom syntactic validation
     event
         .validate_syntactic()
         .map_err(|e| AuthError::InvalidSyntax(e.into()))?;
+
+    // Optional verification pipeline (steps 1-3).
+    // Callers pass None during state resolution; Some during PDU receipt.
+    // TODO: different room versions use different hashing algorithms for event IDs:
+    //   - v1-v3: event IDs are opaque (assigned by origin server, no hash verification)
+    //   - v4:    SHA256 reference hash (URL-safe unpadded base64)
+    //   - v5+:   SHA256 reference hash (URL-safe unpadded base64, but with different
+    //            redaction rules affecting which fields are stripped before hashing)
+    //   Pass `version` to the verifier once per-version hashing is supported.
+    if let Some(v) = verifier {
+        v.verify_event_id_hash(&event.event_id)
+            .map_err(AuthError::InvalidSyntax)?;
+        v.verify_signatures(&event.event_id)
+            .map_err(AuthError::InvalidSyntax)?;
+        v.verify_content_hash(&event.event_id)
+            .map_err(AuthError::InvalidSyntax)?;
+    }
 
     // Rule 1: m.room.create must be the first event
     if event.event_type == "m.room.create" {
@@ -274,7 +292,7 @@ pub fn check_auth<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
 
     // Rule 5: m.room.member state_key validation
     if event.event_type == M_ROOM_MEMBER {
-        check_membership_rules(event, state, version)?;
+        check_membership_rules(event, state, version, verifier)?;
     }
 
     Ok(())
@@ -423,6 +441,7 @@ fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
     target_user: &str,
     current_membership: &str,
     version: StateResVersion,
+    verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
 ) -> Result<(), AuthError<Id>> {
     // Inviting requires invite power level, and sender != target
     if target_user == event.sender {
@@ -462,7 +481,11 @@ fn check_invite_rules<Id: Clone, C: crate::basespec::rezzy_types::EventContent>(
             ));
         }
 
-        // TODO: offer option of dalek-consensus for bulk signature verification.
+        // Optional verification pipeline (step 4): 3PI signature verification.
+        if let Some(v) = verifier {
+            v.verify_third_party_invite(&event.event_id, token)
+                .map_err(AuthError::InvalidSyntax)?;
+        }
 
         if mxid != target_user {
             return Err(AuthError::InvalidStateKey {
@@ -560,6 +583,7 @@ fn check_membership_rules<Id: Clone, C: crate::basespec::rezzy_types::EventConte
     event: &LeanEvent<Id, C>,
     state: &impl StateProvider<Id, C>,
     version: StateResVersion,
+    verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
 ) -> Result<(), AuthError<Id>> {
     let target_user = event.state_key.as_deref().unwrap_or("");
     let new_membership = event.get_membership().unwrap_or("");
@@ -581,7 +605,14 @@ fn check_membership_rules<Id: Clone, C: crate::basespec::rezzy_types::EventConte
         MEM_JOIN => check_join_rules(event, state, target_user, version)?,
         MEM_LEAVE => check_leave_rules(event, state, target_user, current_membership, version)?,
         MEM_BAN => check_ban_rules(event, state, version)?,
-        MEM_INVITE => check_invite_rules(event, state, target_user, current_membership, version)?,
+        MEM_INVITE => check_invite_rules(
+            event,
+            state,
+            target_user,
+            current_membership,
+            version,
+            verifier,
+        )?,
         MEM_KNOCK => check_knock_rules(event, state, target_user)?,
         // Rule 5.8: Unknown membership — reject
         _ => {
@@ -798,7 +829,7 @@ pub fn check_auth_chain<Id: Clone + Ord, C: crate::basespec::rezzy_types::EventC
     let mut rejected = Vec::new();
 
     for event in sorted_events {
-        match check_auth(event, &state, version) {
+        match check_auth(event, &state, version, None) {
             Ok(()) => {
                 // Apply event to state if it's a state event
                 if let Some(state_key) = &event.state_key {
