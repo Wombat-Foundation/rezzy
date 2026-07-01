@@ -68,7 +68,7 @@ lint: ##H Run all linters
 
 .PHONY: rust/build
 rust/build: ##H Compile Rust binary (release)
-	$(CARGO) build --release --features cli,hashing
+	$(CARGO) build --release --timings --features cli,hashing
 
 .PHONY: rust/doc
 rust/doc: ##H Generate rustdoc API documentation
