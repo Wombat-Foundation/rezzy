@@ -182,6 +182,7 @@ impl<Id, C> StateProvider<Id, C> for RoomState<Id, C> {
 /// # Errors
 ///
 /// Returns an `AuthError` if the event fails authorization validation.
+#[allow(clippy::too_many_lines)]
 pub fn check_auth<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,

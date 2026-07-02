@@ -3453,7 +3453,10 @@ fn test_pl_v12_scalar_not_integer_rejected() {
 "#,
     );
     let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
-    assert!(res.is_err(), "Non-integer scalar PL should be rejected in V12: {res:?}");
+    assert!(
+        res.is_err(),
+        "Non-integer scalar PL should be rejected in V12: {res:?}"
+    );
 }
 
 /// Rule 10.1: same event passes in V2 (pre-V12) — no integer type check.
@@ -3471,7 +3474,10 @@ fn test_pl_v2_scalar_not_integer_allowed() {
 "#,
     );
     let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
-    assert!(res.is_ok(), "Non-integer scalar PL should be allowed in V2: {res:?}");
+    assert!(
+        res.is_ok(),
+        "Non-integer scalar PL should be allowed in V2: {res:?}"
+    );
 }
 
 /// Rule 10.2 (V12): `events` map with non-integer value → reject.
@@ -3489,7 +3495,10 @@ fn test_pl_v12_events_map_non_integer_rejected() {
 "#,
     );
     let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
-    assert!(res.is_err(), "Non-integer events map value should be rejected in V12: {res:?}");
+    assert!(
+        res.is_err(),
+        "Non-integer events map value should be rejected in V12: {res:?}"
+    );
 }
 
 /// Rule 10.2 (V12): `events` is not an object → reject.
@@ -3507,7 +3516,10 @@ fn test_pl_v12_events_not_object_rejected() {
 "#,
     );
     let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
-    assert!(res.is_err(), "events as non-object should be rejected in V12: {res:?}");
+    assert!(
+        res.is_err(),
+        "events as non-object should be rejected in V12: {res:?}"
+    );
 }
 
 /// Rule 10.4 (V12): `users` map contains the room creator → reject.
@@ -3526,10 +3538,13 @@ fn test_pl_v12_users_contains_creator_rejected() {
 "#,
     );
     let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
-    assert!(res.is_err(), "users containing creator should be rejected in V12: {res:?}");
+    assert!(
+        res.is_err(),
+        "users containing creator should be rejected in V12: {res:?}"
+    );
 }
 
-/// Rule 10.4 (V12): `users` map contains an additional_creator → reject.
+/// Rule 10.4 (V12): `users` map contains an `additional_creator` → reject.
 #[test]
 fn test_pl_v12_users_contains_additional_creator_rejected() {
     let state = utils::parse_jsonl_state(
@@ -3544,5 +3559,8 @@ fn test_pl_v12_users_contains_additional_creator_rejected() {
 "#,
     );
     let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
-    assert!(res.is_err(), "users containing additional_creator should be rejected in V12: {res:?}");
+    assert!(
+        res.is_err(),
+        "users containing additional_creator should be rejected in V12: {res:?}"
+    );
 }

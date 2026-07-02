@@ -70,10 +70,10 @@ authorization rules. Three distinct rule sets exist:
 
 | #     | Sub-rule                                                      | Versions | rezzy | Notes                                                |
 | ----- | ------------------------------------------------------------- | -------- | ----- | ---------------------------------------------------- |
-| 10.1  | Validate scalar PL properties are integers                    | V12      | [ ]   | Not checked                                          |
-| 10.2  | Validate `events`/`notifications` are objects with int values | V12      | [ ]   | Not checked                                          |
+| 10.1  | Validate scalar PL properties are integers                    | V12      | [x]   | `find_non_integer_scalar_pl` on EventContent         |
+| 10.2  | Validate `events`/`notifications` are objects with int values | V12      | [x]   | `find_non_integer_map_pl` on EventContent            |
 | 10.3  | `users` must be object with valid user ID keys + int values   | all      | [x]   | `check_power_levels_rules` validates `@` + `:`       |
-| 10.4  | Reject if `users` contains creator IDs                        | V12      | [ ]   | Not checked                                          |
+| 10.4  | Reject if `users` contains creator IDs                        | V12      | [x]   | `has_user_in_users` + `has_additional_creator` check |
 | 10.5  | Allow if no previous PL event                                 | all      | [x]   | `is_first_pl` skip logic                             |
 | 10.6  | Validate PL property changes don't exceed sender PL           | all      | [x]   | `check_scalar_pl` helper — old/new > sender rejected |
 | 10.7  | Validate `events`/`notifications` changes                     | all      | [x]   | Events map diff — old value > sender PL rejected     |
@@ -88,7 +88,7 @@ authorization rules. Three distinct rule sets exist:
 1. ~~**Rule 5.8**: Unknown membership should reject, not allow~~ — FIXED
 2. ~~**Rule 5.4.1**: Third-party invite validation not implemented~~ — FIXED
 3. ~~**Rule 7**: `m.room.third_party_invite` PL check missing~~ — FIXED
-4. ~~**Rule 10.x**: Power level event validation mostly missing (10.1–10.4, 10.6–10.10)~~ — 10.3, 10.6–10.10 FIXED; 10.1, 10.2, 10.4 (V12-only) remain
+4. ~~**Rule 10.x**: Power level event validation mostly missing (10.1–10.4, 10.6–10.10)~~ — ALL FIXED
 
 ### Medium (federation/integrity concerns, not core auth)
 

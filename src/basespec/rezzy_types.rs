@@ -909,7 +909,7 @@ impl EventContent for Value {
     }
 
     fn find_non_integer_scalar_pl(&self) -> Option<&'static str> {
-        use crate::basespec::event_types::*;
+        use crate::basespec::event_types::{FIELD_USERS_DEFAULT, FIELD_EVENTS_DEFAULT, FIELD_STATE_DEFAULT, FIELD_BAN, FIELD_REDACT, FIELD_KICK, FIELD_INVITE};
         let scalars: &[(&str, &'static str)] = &[
             (FIELD_USERS_DEFAULT, "users_default"),
             (FIELD_EVENTS_DEFAULT, "events_default"),
@@ -930,7 +930,7 @@ impl EventContent for Value {
     }
 
     fn find_non_integer_map_pl(&self) -> Option<&'static str> {
-        use crate::basespec::event_types::*;
+        use crate::basespec::event_types::{FIELD_EVENTS, FIELD_NOTIFICATIONS};
         let maps: &[(&str, &'static str)] = &[
             (FIELD_EVENTS, "events"),
             (FIELD_NOTIFICATIONS, "notifications"),

@@ -1617,3 +1617,87 @@ fn test_v2_2_auth_distance_tiebreak() {
         "V2.2: $topic_b must win via lexicographic event_id tiebreak (last-write-wins)"
     );
 }
+
+/// Rule 10.4 (V12): PL event with creator in `users` map is rejected during
+/// state resolution. A competing PL without the creator wins.
+#[test]
+fn test_v2_1_1_creator_in_users_map_rejected() {
+    let create = LeanEvent {
+        event_id: "$create".to_string(),
+        event_type: "m.room.create".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".to_string(),
+        origin_server_ts: 100,
+        content: json!({"room_version": "12", "creator": "@admin:x"}),
+        ..Default::default()
+    };
+    let admin_join = LeanEvent {
+        event_id: "$admin_join".to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some("@admin:x".to_string()),
+        sender: "@admin:x".to_string(),
+        origin_server_ts: 200,
+        content: json!({"membership": "join"}),
+        auth_events: vec!["$create".to_string()],
+        ..Default::default()
+    };
+    let pl_baseline = LeanEvent {
+        event_id: "$pl".to_string(),
+        event_type: "m.room.power_levels".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".to_string(),
+        origin_server_ts: 300,
+        content: json!({"state_default": 50}),
+        auth_events: vec!["$create".to_string(), "$admin_join".to_string()],
+        ..Default::default()
+    };
+
+    // Fork A: PL with creator in users — forbidden in V12
+    let pl_bad = LeanEvent {
+        event_id: "$pl_bad".to_string(),
+        event_type: "m.room.power_levels".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".to_string(),
+        origin_server_ts: 400,
+        content: json!({"users": {"@admin:x": 100}, "state_default": 50}),
+        auth_events: vec!["$create".to_string(), "$admin_join".to_string(), "$pl".to_string()],
+        ..Default::default()
+    };
+
+    // Fork B: PL without creator in users — valid
+    let pl_good = LeanEvent {
+        event_id: "$pl_good".to_string(),
+        event_type: "m.room.power_levels".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".to_string(),
+        origin_server_ts: 500,
+        content: json!({"state_default": 50}),
+        auth_events: vec!["$create".to_string(), "$admin_join".to_string(), "$pl".to_string()],
+        ..Default::default()
+    };
+
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+    auth_context.insert("$create".to_string(), create);
+    auth_context.insert("$admin_join".to_string(), admin_join);
+    auth_context.insert("$pl".to_string(), pl_baseline);
+
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    conflicted.insert("$pl_bad".to_string(), pl_bad);
+    conflicted.insert("$pl_good".to_string(), pl_good);
+
+    let unconflicted = utils::build_unconflicted_state_test_helper(&auth_context);
+
+    let resolved = resolve_iterative_sort(
+        unconflicted,
+        conflicted,
+        &auth_context,
+        StateResVersion::V2_1_1,
+    );
+
+    let pl_key = ("m.room.power_levels".to_string(), String::new());
+    assert_eq!(
+        resolved.get(&pl_key),
+        Some(&"$pl_good".to_string()),
+        "V12 Rule 10.4: PL with creator in users must be rejected; valid PL wins"
+    );
+}
