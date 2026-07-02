@@ -657,7 +657,9 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     fn get_redact(&self) -> Option<i64>;
     fn get_creator(&self) -> Option<&str>;
     /// Returns the `room_version` field from `m.room.create` content.
-    fn get_room_version(&self) -> Option<&str>;
+    fn get_room_version(&self) -> Option<&str> {
+        None
+    }
     /// Specific to V12+ rooms.
     fn has_additional_creator(&self, sender: &str) -> bool;
     /// Returns the `join_authorised_via_users_server` field, if present.
