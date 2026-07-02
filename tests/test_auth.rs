@@ -3844,55 +3844,67 @@ fn test_warn_unexpected_auth_events_valid() {
 }
 
 #[test]
-fn test_pl_v10_users_contains_non_integer_rejected() {
-    let mut state = RoomState::new();
-    state.insert(
-        (M_ROOM_CREATE.into(), String::new()),
-        make_event("$c", rezzy::basespec::event_types::M_ROOM_CREATE, Some(""), "@admin:x.com", json!({"room_version": "10"})),
-    );
-    let pl = make_event(
-        "$pl",
-        rezzy::basespec::event_types::M_ROOM_POWER_LEVELS,
-        Some(""),
-        "@admin:x.com",
-        json!({
-            "users": {
-                "@alice:x.com": "50" // string instead of integer
-            }
-        }),
-    );
-    assert!(
-        matches!(
-            check_auth(&pl, &state, rezzy::StateResVersion::V2, None),
-            Err(AuthError::InvalidSyntax(_))
-        ),
-        "V10 power levels with non-integer users value must be rejected"
-    );
+fn test_pl_v10_plus_users_contains_non_integer_rejected() {
+    let cases = vec![
+        ("10", rezzy::StateResVersion::V2),
+        ("12", rezzy::StateResVersion::V2_1),
+    ];
+    for (version_str, state_res) in cases {
+        let mut state = RoomState::new();
+        state.insert(
+            (M_ROOM_CREATE.into(), String::new()),
+            make_event("$c", rezzy::basespec::event_types::M_ROOM_CREATE, Some(""), "@admin:x.com", json!({"room_version": version_str})),
+        );
+        let pl = make_event(
+            "$pl",
+            rezzy::basespec::event_types::M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@admin:x.com",
+            json!({
+                "users": {
+                    "@alice:x.com": "50" // string instead of integer
+                }
+            }),
+        );
+        assert!(
+            matches!(
+                check_auth(&pl, &state, state_res, None),
+                Err(AuthError::InvalidSyntax(_))
+            ),
+            "V10+ (version {}) power levels with non-integer users value must be rejected", version_str
+        );
+    }
 }
 
 #[test]
-fn test_pl_v10_users_not_an_object_rejected() {
-    let mut state = RoomState::new();
-    state.insert(
-        (M_ROOM_CREATE.into(), String::new()),
-        make_event("$c", rezzy::basespec::event_types::M_ROOM_CREATE, Some(""), "@admin:x.com", json!({"room_version": "10"})),
-    );
-    let pl = make_event(
-        "$pl",
-        rezzy::basespec::event_types::M_ROOM_POWER_LEVELS,
-        Some(""),
-        "@admin:x.com",
-        json!({
-            "users": ["@alice:x.com"] // array instead of object
-        }),
-    );
-    assert!(
-        matches!(
-            check_auth(&pl, &state, rezzy::StateResVersion::V2, None),
-            Err(AuthError::InvalidSyntax(_))
-        ),
-        "V10 power levels with non-object users must be rejected"
-    );
+fn test_pl_v10_plus_users_not_an_object_rejected() {
+    let cases = vec![
+        ("10", rezzy::StateResVersion::V2),
+        ("12", rezzy::StateResVersion::V2_1),
+    ];
+    for (version_str, state_res) in cases {
+        let mut state = RoomState::new();
+        state.insert(
+            (M_ROOM_CREATE.into(), String::new()),
+            make_event("$c", rezzy::basespec::event_types::M_ROOM_CREATE, Some(""), "@admin:x.com", json!({"room_version": version_str})),
+        );
+        let pl = make_event(
+            "$pl",
+            rezzy::basespec::event_types::M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@admin:x.com",
+            json!({
+                "users": ["@alice:x.com"] // array instead of object
+            }),
+        );
+        assert!(
+            matches!(
+                check_auth(&pl, &state, state_res, None),
+                Err(AuthError::InvalidSyntax(_))
+            ),
+            "V10+ (version {}) power levels with non-object users must be rejected", version_str
+        );
+    }
 }
 
 #[test]
