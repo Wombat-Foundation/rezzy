@@ -3386,3 +3386,49 @@ fn test_pl_validation_users_self_demote_allowed() {
     let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
     assert!(res.is_ok(), "Self-demotion should be allowed: {res:?}");
 }
+
+/// Rule 10.7: mod tries to change an `events` entry whose current value > mod's PL -> reject.
+#[test]
+fn test_pl_validation_events_old_value_too_high_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "events": {"m.room.topic": 80}}}
+"#,
+    );
+    // Mod (PL 50) tries to lower events["m.room.topic"] from 80 to 30 — old value 80 > 50
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@mod:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "events": {"m.room.topic": 30}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_err(),
+        "Mod changing events entry with old value > own PL should be rejected: {res:?}"
+    );
+}
+
+/// Rule 10.6: mod tries to change a scalar property whose current value > mod's PL → reject.
+#[test]
+fn test_pl_validation_scalar_old_value_too_high_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "kick": 80}}
+"#,
+    );
+    // Mod (PL 50) tries to lower `kick` from 80 to 30 — old value 80 > 50
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@mod:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "kick": 30}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_err(),
+        "Mod changing scalar with old value > own PL should be rejected: {res:?}"
+    );
+}
