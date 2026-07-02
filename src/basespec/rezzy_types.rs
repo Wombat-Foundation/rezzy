@@ -688,18 +688,32 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
 
     /// Iterate over `(event_type, power_level)` entries in the `events` map.
     /// Used by Rule 10 PL validation to compare old vs new `events` entries.
+    ///
+    /// # Safety of empty default
+    ///
+    /// Returning an empty vec means "no entries exist" — the Rule 10 diff sees
+    /// no changes and no escalation, so validation passes without bypassing
+    /// anything.  The only production impl (`serde_json::Value`) overrides this.
+    /// Custom implementations **must** override this for PL map validation to
+    /// detect escalation in the `events` map.
     fn iter_event_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
         alloc::vec::Vec::new()
     }
 
     /// Iterate over `(user_id, power_level)` entries in the `users` map.
     /// Used by Rule 10 PL validation to compare old vs new `users` entries.
+    ///
+    /// See [`iter_event_power_levels`](Self::iter_event_power_levels) for safety
+    /// rationale of the empty default.
     fn iter_user_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
         alloc::vec::Vec::new()
     }
 
     /// Iterate over `(key, power_level)` entries in the `notifications` map.
     /// Used by Rule 10.7–10.8 PL validation to compare old vs new `notifications`.
+    ///
+    /// See [`iter_event_power_levels`](Self::iter_event_power_levels) for safety
+    /// rationale of the empty default.
     fn iter_notification_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
         alloc::vec::Vec::new()
     }

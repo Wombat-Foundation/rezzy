@@ -65,7 +65,7 @@ RUSTFLAGS="-C target-cpu=native" make build install
 The `res/` submodule contains large test fixtures. It uses `update = none` in `.gitmodules` so downstream Cargo consumers don't fetch it. For local development, init it with:
 
 ```bash
-git -c submodule.res.update=checkout submodule update --init
+git -c submodule.res.update=checkout submodule update --init --recursive
 ```
 
 Then generate synthetic fixtures and run the test suite:
