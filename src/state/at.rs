@@ -91,6 +91,8 @@ impl<
     > crate::auth::StateProvider<Id, C> for OverlayState<'_, Id, C, S1, S2>
 {
     fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C>> {
+        use crate::basespec::event_types::{M_EMPTY_STATE_KEY, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
+
         let query: &dyn crate::auth::StateKeyDyn = &(event_type, state_key);
 
         // In V2.1 (Stock MSC4297), we supplement with ONLY m.room.power_levels during Step 2 (power phase).
@@ -98,14 +100,14 @@ impl<
         let should_supplement = match self.version {
             StateResVersion::V2_1 => {
                 if self.is_power_phase {
-                    event_type == "m.room.power_levels" && state_key.is_empty()
+                    event_type == M_ROOM_POWER_LEVELS && state_key == M_EMPTY_STATE_KEY
                 } else {
                     true
                 }
             }
             StateResVersion::V2_1_1 => {
-                (event_type == "m.room.power_levels" && state_key.is_empty())
-                    || (event_type == "m.room.member")
+                (event_type == M_ROOM_POWER_LEVELS && state_key == M_EMPTY_STATE_KEY)
+                    || (event_type == M_ROOM_MEMBER)
             }
             _ => true,
         };
@@ -121,11 +123,13 @@ impl<
             if let Some(ev) = resolved_ev {
                 if self.version == StateResVersion::V2_1_1
                     && self.is_power_phase
-                    && event_type == "m.room.member"
+                    && event_type == M_ROOM_MEMBER
                 {
                     // V2.1.1 Fix: Only supplement bans and kicks in power phase
                     let is_ban_or_kick = ev.get_membership().is_some_and(|m| {
-                        m == "ban" || (m == "leave" && ev.sender.as_str() != state_key)
+                        m == crate::basespec::event_types::MEM_BAN
+                            || (m == crate::basespec::event_types::MEM_LEAVE
+                                && ev.sender.as_str() != state_key)
                     });
                     if is_ban_or_kick {
                         return Some(ev);
@@ -142,8 +146,8 @@ impl<
             // Under Matrix State Resolution, during the power phase, a required auth event in the conflicted set
             // can ONLY be used if it has been successfully authorized and resolved
             // (i.e. is present in the resolved state).
-            let is_required_type =
-                event_type == "m.room.power_levels" || event_type == "m.room.join_rules";
+            let is_required_type = event_type == M_ROOM_POWER_LEVELS
+                || event_type == crate::basespec::event_types::M_ROOM_JOIN_RULES;
 
             let is_v2_1_or_above = self.version == StateResVersion::V2_1
                 || self.version == StateResVersion::V2_1_1
@@ -869,6 +873,131 @@ where
     }
 }
 
+/// Maximum number of conflicted keys to consider "trivially resolvable" without
+/// the full state resolution pipeline. Beyond this threshold, the Kahn sort /
+/// mainline sort / auth chain diff machinery is needed.
+const TRIVIAL_CONFLICT_MAX_KEYS: usize = 2;
+
+/// Maximum total conflicting event IDs across all keys. This guards against
+/// pathological cases where 2 keys each have dozens of competing values from
+/// different forks.
+const TRIVIAL_CONFLICT_MAX_EVENTS: usize = 6;
+
+/// Attempts to resolve a small fork conflict without the full state resolution
+/// pipeline (Kahn sort, mainline sort, auth chain diff, iterative auth checks).
+///
+/// This is profitable when the conflict is "near the leaves" of the DAG —
+/// analogous to how nauty/Beyer-Hedetniemi graph generation skips canonical
+/// deduplication in the last 1-2 layers, because the branching factor is too
+/// small to justify the overhead.
+///
+/// # Guard conditions
+///
+/// Returns `None` (forcing fallthrough to full resolution) if:
+/// - Any conflicted event is a **power event** (create, PL, `join_rules`, ban/kick)
+/// - There are more than [`TRIVIAL_CONFLICT_MAX_KEYS`] conflicted keys
+/// - There are more than [`TRIVIAL_CONFLICT_MAX_EVENTS`] total conflicting event IDs
+///
+/// # Winner selection (per key)
+///
+/// Among the candidate events for a given `(type, state_key)` slot, the winner
+/// is chosen by the spec's standard non-power tie-breaking:
+///
+/// 1. **`origin_server_ts`** — later wins (last-write-wins)
+/// 2. **`event_id`** — lexicographically larger wins
+///
+/// This matches the spec's mainline sort behavior when all candidates share the
+/// same mainline position (which they do when there are no conflicting power
+/// events altering the PL chain).
+fn resolve_trivial_conflicts<Id, C, S>(
+    unconflicted_state: &SharedState<Id>,
+    conflicted_keys: &hashbrown::HashSet<(alloc::string::String, alloc::string::String)>,
+    conflicted_state_set: &hashbrown::HashSet<Id>,
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    version: StateResVersion,
+) -> Option<SharedState<Id>>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    S: core::hash::BuildHasher,
+    C: crate::basespec::rezzy_types::EventContent,
+{
+    if conflicted_keys.len() > TRIVIAL_CONFLICT_MAX_KEYS
+        || conflicted_state_set.len() > TRIVIAL_CONFLICT_MAX_EVENTS
+    {
+        return None;
+    }
+
+    // Guard: eject if any conflicted event is a power event.
+    // Power events require the full Kahn-sort power phase for correctness.
+    for id in conflicted_state_set {
+        if let Some(ev) = events_map.get(id) {
+            if ev.is_power_event(version) {
+                return None;
+            }
+        }
+    }
+
+    // Group competing events by (type, state_key)
+    let mut candidates: alloc::collections::BTreeMap<
+        &(alloc::string::String, alloc::string::String),
+        Vec<&LeanEvent<Id, C>>,
+    > = alloc::collections::BTreeMap::new();
+
+    for id in conflicted_state_set {
+        if let Some(ev) = events_map.get(id) {
+            if let Some(ref sk) = ev.state_key {
+                let key_ref = conflicted_keys
+                    .get(&(ev.event_type.clone(), sk.clone()))
+                    .unwrap_or_else(|| {
+                        // This event's (type, state_key) may be an Add/Remove from
+                        // a fork that doesn't exist in the other — still valid.
+                        // Use a temporary key match approach.
+                        conflicted_keys
+                            .iter()
+                            .find(|(t, s)| t == &ev.event_type && s == sk)
+                            .expect("conflicted event must match a conflicted key")
+                    });
+                candidates.entry(key_ref).or_default().push(ev);
+            }
+        }
+    }
+
+    // Pick the winner per key using spec tie-breaking:
+    // later origin_server_ts wins, then larger event_id wins.
+    // Auth-check each candidate — the best candidate that passes auth wins.
+    let mut resolved = unconflicted_state.clone();
+    for (key, mut evs) in candidates {
+        evs.sort_by(|a, b| {
+            a.origin_server_ts
+                .cmp(&b.origin_server_ts)
+                .then_with(|| a.event_id.cmp(&b.event_id))
+        });
+        // Try candidates from best (last) to worst (first).
+        // The first one that passes auth wins.
+        for winner in evs.iter().rev() {
+            let local_auth = compute_local_auth(
+                winner,
+                events_map,
+                events_map, // In the streaming pipeline, events_map IS the sort set
+                &mut LocalAuthCache::new(version),
+                version,
+            );
+            if iterative_auth_ok(
+                winner, &resolved, events_map, events_map, local_auth,
+                None, // No cached create — relies on resolved state
+                version, false,
+            ) {
+                resolved.insert(key.clone(), winner.event_id.clone());
+                break;
+            }
+            // If auth fails, try the next-best candidate
+        }
+        // If no candidate passes auth, key is left absent (correct)
+    }
+
+    Some(resolved)
+}
+
 /// Slow path for merging multiple parent states via the state resolution algorithm.
 /// Full state resolution path for DAG nodes with multiple parents (forks).
 /// Groups the unconflicted state and runs `resolve_iterative_sort` on the conflicted subset.
@@ -909,6 +1038,17 @@ where
     let mut unconflicted_state = base.clone();
     for k in &conflicted_keys {
         unconflicted_state.remove(k);
+    }
+
+    // DP fast path: skip full resolution for trivial leaf-level conflicts
+    if let Some(fast_result) = resolve_trivial_conflicts(
+        &unconflicted_state,
+        &conflicted_keys,
+        &conflicted_state_set,
+        events_map,
+        version,
+    ) {
+        return fast_result;
     }
 
     let mut conflicted_events = HashMap::new();
