@@ -4218,14 +4218,14 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     assert!(btree_provider.get_event(&"$none".to_string()).is_none());
 
     // Cover reconstruct_state_batch broken chain branches
-    let orphan_cp = CompactedCheckpoint {
+    let orphan_cp: CompactedCheckpoint<String> = CompactedCheckpoint {
         state_hash: "H1".into(),
         parent_hash: None,
         event_id: "E1".into(),
         deltas: vec![],
         snapshot: None, // Missing snapshot!
     };
-    let missing_parent_cp = CompactedCheckpoint {
+    let missing_parent_cp: CompactedCheckpoint<String> = CompactedCheckpoint {
         state_hash: "H2".into(),
         parent_hash: Some("MISSING".into()),
         event_id: "E2".into(),

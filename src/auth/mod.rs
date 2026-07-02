@@ -194,6 +194,47 @@ where
         .unwrap_or(1) // V1 rooms didn't have a room_version field
 }
 
+/// The result of validating a new forward extremity event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForwardExtremityResult<Id = String> {
+    /// The event is fully valid and updates the room state.
+    Valid,
+    /// The event is valid according to its own `auth_events`, but fails auth against the current room state.
+    /// It must be accepted into the DAG (timeline) to prevent graph fragmentation, but must **not**
+    /// update the room state.
+    SoftFailed(AuthError<Id>),
+    /// The event is completely invalid (fails auth against its own `auth_events`) and must be rejected.
+    Rejected(AuthError<Id>),
+}
+
+/// Validates a new incoming event (forward extremity) according to Matrix rules.
+///
+/// This performs a dual-pass auth check:
+/// 1. Checks the event against its declared `auth_events`. If this fails, the event is `Rejected`.
+/// 2. Checks the event against the room's current state. If this fails, the event is `SoftFailed`.
+/// 3. Otherwise, the event is `Valid`.
+pub fn validate_forward_extremity<
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    event: &E,
+    auth_events_state: &impl StateProvider<Id, C>,
+    current_room_state: &impl StateProvider<Id, C>,
+    version: StateResVersion,
+    verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
+) -> ForwardExtremityResult<Id> {
+    if let Err(e) = check_auth(event, auth_events_state, version, verifier) {
+        return ForwardExtremityResult::Rejected(e);
+    }
+
+    if let Err(e) = check_auth(event, current_room_state, version, None) {
+        return ForwardExtremityResult::SoftFailed(e);
+    }
+
+    ForwardExtremityResult::Valid
+}
+
 /// Check whether `event` is authorized given the room state at its `prev_events`.
 ///
 /// This implements the core Matrix authorization rules:
@@ -1290,6 +1331,15 @@ pub fn auth_types_for_event(
                 .and_then(|t| t.as_str())
             {
                 auth_types.push((M_ROOM_THIRD_PARTY_INVITE.into(), token.into()));
+            }
+        }
+
+        if membership == Some(MEM_JOIN) {
+            if let Some(authorising_user) = content
+                .get(crate::basespec::event_types::FIELD_JOIN_AUTHORISED_VIA_USERS_SERVER)
+                .and_then(|v| v.as_str())
+            {
+                auth_types.push((M_ROOM_MEMBER.into(), authorising_user.into()));
             }
         }
     }

@@ -30,7 +30,7 @@ pub(crate) fn get_power_level_from_auth_chain<Id, C>(
     version: StateResVersion,
 ) -> i64
 where
-    Id: Clone + Eq + core::hash::Hash,
+    Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
 {
     let mut pl_event = None;
@@ -86,7 +86,7 @@ pub(crate) fn compute_auth_distance_iterative<'a, Id, C>(
     memo: &mut HashMap<&'a Id, u64>,
 ) -> u64
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + 'a,
+    Id: crate::basespec::rezzy_types::EventId + 'a,
     C: 'a,
 {
     if Some(curr_id) == create_id {
@@ -162,7 +162,7 @@ pub fn lean_kahn_sort_with_cycle_diagnostics<Id, C, S1>(
     version: StateResVersion,
 ) -> KahnSortResult<Id>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    Id: crate::basespec::rezzy_types::EventId,
     S1: core::hash::BuildHasher,
     C: Clone + crate::basespec::rezzy_types::EventContent,
 {
@@ -280,7 +280,7 @@ pub fn lean_kahn_sort<Id, C, S1>(
     version: StateResVersion,
 ) -> Vec<Id>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    Id: crate::basespec::rezzy_types::EventId,
     S1: core::hash::BuildHasher,
     C: Clone + crate::basespec::rezzy_types::EventContent,
 {
@@ -312,7 +312,7 @@ pub(crate) fn build_mainline<Id, C>(
     auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
 ) -> Vec<Id>
 where
-    Id: Clone + Eq + core::hash::Hash,
+    Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
 {
     let mut mainline = Vec::new();
@@ -368,7 +368,7 @@ pub(crate) fn compute_closest_mainline_positions<Id, C>(
     auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
 ) -> HashMap<Id, usize>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord,
+    Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
 {
     let mut memo = HashMap::new();
@@ -443,7 +443,7 @@ pub fn mainline_sort<Id, C>(
     mainline: &[Id],
     auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
 ) where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
 {
     #[cfg(all(debug_assertions, not(test)))]

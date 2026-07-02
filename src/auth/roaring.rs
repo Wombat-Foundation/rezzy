@@ -31,7 +31,7 @@ pub struct AuthGraph<Id = String> {
 
 impl<Id> AuthGraph<Id>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord,
+    Id: crate::basespec::rezzy_types::EventId,
 {
     /// Build the `AuthGraph` topological structure.
     ///

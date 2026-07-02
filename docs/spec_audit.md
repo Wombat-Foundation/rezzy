@@ -30,8 +30,8 @@ authorization rules. Three distinct rule sets exist:
 | 6          | Sender must be joined (non-member events)                                            | all      | [x]   | `NotMember` error                                            |
 | 7          | **m.room.third_party_invite**: sender PL ≥ invite level                              | all      | [x]   | `get_required_power_level` returns invite level              |
 | 8          | Event type required PL check                                                         | all      | [x]   | `get_required_power_level`                                   |
-| 9          | **State key starts with `@`**: must match sender                                     | all      | [x]   | Added this session                                           |
-| 10         | **m.room.power_levels** validation (see below)                                       | all      | [~]   | Partial — see breakdown                                      |
+| 9          | **State key starts with `@`**: must match sender                                     | all      | [x]   | Implemented via exact match check                            |
+| 10         | **m.room.power_levels** validation (see below)                                       | all      | [x]   | Completed coverage                                           |
 | 11 (V1–V2) | **m.room.redaction**: PL ≥ redact level, or same domain                              | V1–V2    | [ ]   | Not checked                                                  |
 | 11         | Otherwise, allow                                                                     | V3+      | [x]   | Implicit                                                     |
 

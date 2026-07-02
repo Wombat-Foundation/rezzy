@@ -36,7 +36,7 @@ pub fn compute_v2_1_conflicted_subgraph<Id, S>(
     conflicted_set: &[Id],
 ) -> HashMap<Id, LeanEvent<Id>>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord,
+    Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
 {
     compute_v2_1_conflicted_subgraph_bounded(auth_graph, conflicted_set, None).subgraph
@@ -62,7 +62,7 @@ pub fn compute_v2_1_conflicted_subgraph_bounded<Id, S>(
     max_auth_depth: Option<usize>,
 ) -> SubgraphResult<Id>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord,
+    Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
 {
     if conflicted_set.is_empty() {
