@@ -605,8 +605,16 @@ fn check_membership_rules<
     version: StateResVersion,
     verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
 ) -> Result<(), AuthError<Id>> {
-    let target_user = event.state_key().unwrap_or("");
-    let new_membership = event.get_membership().unwrap_or("");
+    let Some(target_user) = event.state_key() else {
+        return Err(AuthError::InvalidSyntax(
+            "m.room.member event missing state_key".into(),
+        ));
+    };
+    let Some(new_membership) = event.get_membership() else {
+        return Err(AuthError::InvalidSyntax(
+            "m.room.member event missing membership field".into(),
+        ));
+    };
 
     let current_membership = state
         .get_event(M_ROOM_MEMBER, target_user)

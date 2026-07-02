@@ -395,7 +395,7 @@ impl<Id: EventId, C: EventContent> EventLike for LeanEvent<Id, C> {
 /// 20 content accessors (`get_membership`, `get_join_rule`, etc.) are
 /// inherited automatically.
 ///
-/// # Example (from [continuwuity](https://github.com/girlbossceo/conduwuit))
+/// # Example
 ///
 /// ```rust,ignore
 /// impl rezzy::RawEvent for Pdu {
@@ -477,6 +477,27 @@ pub struct ParsedEvent<'a, T: RawEvent> {
 
 impl<'a, T: RawEvent> ParsedEvent<'a, T> {
     /// Create a new `ParsedEvent`, parsing the raw JSON content once.
+    ///
+    /// Returns an error if `raw_content_json()` is not valid JSON.
+    /// Prefer this over [`new`](Self::new) when you want to surface
+    /// parse failures instead of silently falling back to empty content.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`serde_json::Error`] if the raw content string is not valid JSON.
+    pub fn try_new(event: &'a T) -> Result<Self, serde_json::Error> {
+        let content = serde_json::from_str(event.raw_content_json())?;
+        Ok(Self {
+            raw: event,
+            content,
+        })
+    }
+
+    /// Create a new `ParsedEvent`, parsing the raw JSON content once.
+    ///
+    /// If the content JSON is malformed, falls back to `Value::Null`
+    /// (all content accessors will return `None`/defaults).
+    /// Use [`try_new`](Self::try_new) for strict error handling.
     #[must_use]
     pub fn new(event: &'a T) -> Self {
         let content = serde_json::from_str(event.raw_content_json()).unwrap_or_default();

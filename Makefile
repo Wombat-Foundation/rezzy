@@ -88,16 +88,17 @@ rust/coverage: fixtures ##H Run code coverage and generate HTML report
 	# TODO: include `src/bin/` in coverage
 	# Run coverage
 	$(CARGO) +nightly llvm-cov --all-features --all-targets \
-		--html --output-dir ./.tmp/coverage-lean \
+		--html --output-dir .coverage \
 		--ignore-filename-regex 'src/bin/.*'
 	# Process report to codecov-compatible JSON
 	$(CARGO) +nightly llvm-cov report \
 		--ignore-filename-regex 'src/bin/.*' \
-		--codecov --output-path ./.tmp/coverage-lean/codecov.json
+		--codecov --output-path .coverage/codecov.json
 
 .PHONY: rust/clean
 rust/clean: ##H Remove Rust build artifacts
 	-$(CARGO) clean
+	rm -rf .coverage/
 
 .PHONY: rust/install
 rust/install: ##H Install rezzy binary to cargo bin
