@@ -4518,74 +4518,82 @@ fn test_restricts_sender_false_for_non_admin_event() {
 fn test_local_auth_cache_version_invalidation() {
     use rezzy::state::at::LocalAuthCache;
 
-    // Build minimal conflicted state
-    let create_ev = LeanEvent::<String> {
-        event_id: "$create".into(),
-        event_type: "m.room.create".into(),
-        state_key: Some(String::new()),
-        sender: "@alice:x".into(),
-        depth: 1,
-        content: serde_json::json!({"room_version": "10", "creator": "@alice:x"}),
-        ..Default::default()
-    };
-    let join_ev = LeanEvent::<String> {
-        event_id: "$join".into(),
-        event_type: "m.room.member".into(),
-        state_key: Some("@alice:x".into()),
-        sender: "@alice:x".into(),
-        depth: 2,
-        auth_events: vec!["$create".into()],
-        content: serde_json::json!({"membership": "join"}),
-        ..Default::default()
-    };
-    #[allow(clippy::similar_names)]
-    let topic_a = LeanEvent::<String> {
-        event_id: "$topicA".into(),
-        event_type: "m.room.topic".into(),
-        state_key: Some(String::new()),
-        sender: "@alice:x".into(),
-        depth: 3,
-        auth_events: vec!["$create".into(), "$join".into()],
-        content: serde_json::json!({"topic": "A"}),
-        ..Default::default()
-    };
-    #[allow(clippy::similar_names)]
-    let topic_b = LeanEvent::<String> {
-        event_id: "$topicB".into(),
-        event_type: "m.room.topic".into(),
-        state_key: Some(String::new()),
-        sender: "@alice:x".into(),
-        depth: 3,
-        auth_events: vec!["$create".into(), "$join".into()],
-        origin_server_ts: 1,
-        content: serde_json::json!({"topic": "B"}),
-        ..Default::default()
-    };
+    /// Build a minimal conflicted-state fixture for cache invalidation tests.
+    #[allow(clippy::type_complexity)]
+    fn make_fixture() -> (
+        imbl::OrdMap<(String, String), String>,
+        HashMap<String, LeanEvent<String>>,
+        HashMap<String, LeanEvent<String>>,
+    ) {
+        let create_ev = LeanEvent::<String> {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            depth: 1,
+            content: serde_json::json!({"room_version": "10", "creator": "@alice:x"}),
+            ..Default::default()
+        };
+        let join_ev = LeanEvent::<String> {
+            event_id: "$join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@alice:x".into()),
+            sender: "@alice:x".into(),
+            depth: 2,
+            auth_events: vec!["$create".into()],
+            content: serde_json::json!({"membership": "join"}),
+            ..Default::default()
+        };
+        #[allow(clippy::similar_names)]
+        let topic_a = LeanEvent::<String> {
+            event_id: "$topicA".into(),
+            event_type: "m.room.topic".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            depth: 3,
+            auth_events: vec!["$create".into(), "$join".into()],
+            content: serde_json::json!({"topic": "A"}),
+            ..Default::default()
+        };
+        #[allow(clippy::similar_names)]
+        let topic_b = LeanEvent::<String> {
+            event_id: "$topicB".into(),
+            event_type: "m.room.topic".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            depth: 3,
+            auth_events: vec!["$create".into(), "$join".into()],
+            origin_server_ts: 1,
+            content: serde_json::json!({"topic": "B"}),
+            ..Default::default()
+        };
 
-    let unconflicted: imbl::OrdMap<(String, String), String> = [
-        (
-            ("m.room.create".into(), String::new()),
-            String::from("$create"),
-        ),
-        (
-            ("m.room.member".into(), "@alice:x".into()),
-            String::from("$join"),
-        ),
-    ]
-    .into_iter()
-    .collect();
+        let unconflicted = [
+            (
+                ("m.room.create".into(), String::new()),
+                String::from("$create"),
+            ),
+            (
+                ("m.room.member".into(), "@alice:x".into()),
+                String::from("$join"),
+            ),
+        ]
+        .into_iter()
+        .collect();
 
-    let conflicted: HashMap<String, LeanEvent<String>> =
-        [("$topicA".into(), topic_a), ("$topicB".into(), topic_b)]
+        let conflicted = [("$topicA".into(), topic_a), ("$topicB".into(), topic_b)]
             .into_iter()
             .collect();
 
-    let auth_context: HashMap<String, LeanEvent<String>> =
-        [("$create".into(), create_ev), ("$join".into(), join_ev)]
+        let auth_context = [("$create".into(), create_ev), ("$join".into(), join_ev)]
             .into_iter()
             .collect();
 
-    // Create cache with V2, then resolve with V2_1 → triggers version invalidation
+        (unconflicted, conflicted, auth_context)
+    }
+
+    // ── resolve_iterative_sort_with_cache (iterative.rs:419-426) ──
+    let (unconflicted, conflicted, auth_context) = make_fixture();
     let mut cache = LocalAuthCache::new(StateResVersion::V2);
     cache
         .map
@@ -4600,86 +4608,20 @@ fn test_local_auth_cache_version_invalidation() {
         Some(&mut cache),
         StateResVersion::V2_1,
     );
-
-    // After resolution, cache version must be updated and stale entries cleared
     assert_eq!(cache.version, StateResVersion::V2_1);
-    // The stale "stale_key" must be gone (cache was cleared)
     assert!(!cache.map.contains_key("stale_key"));
 
-    // Also exercise `resolve_iterative_sort_with_cache_and_deltas` (iterative.rs:551-559)
+    // ── resolve_iterative_sort_with_cache_and_deltas (iterative.rs:551-559) ──
+    let (unconflicted, conflicted, auth_context) = make_fixture();
     let mut cache2 = LocalAuthCache::new(StateResVersion::V2);
     cache2
         .map
         .insert("stale2".into(), std::collections::BTreeMap::new());
 
-    let unconflicted2: imbl::OrdMap<(String, String), String> = [
-        (
-            ("m.room.create".into(), String::new()),
-            String::from("$create"),
-        ),
-        (
-            ("m.room.member".into(), "@alice:x".into()),
-            String::from("$join"),
-        ),
-    ]
-    .into_iter()
-    .collect();
-
-    let create_ev2 = LeanEvent::<String> {
-        event_id: "$create".into(),
-        event_type: "m.room.create".into(),
-        state_key: Some(String::new()),
-        sender: "@alice:x".into(),
-        depth: 1,
-        content: serde_json::json!({"room_version": "10", "creator": "@alice:x"}),
-        ..Default::default()
-    };
-    let join_ev2 = LeanEvent::<String> {
-        event_id: "$join".into(),
-        event_type: "m.room.member".into(),
-        state_key: Some("@alice:x".into()),
-        sender: "@alice:x".into(),
-        depth: 2,
-        auth_events: vec!["$create".into()],
-        content: serde_json::json!({"membership": "join"}),
-        ..Default::default()
-    };
-    let topic_alpha = LeanEvent::<String> {
-        event_id: "$topicA".into(),
-        event_type: "m.room.topic".into(),
-        state_key: Some(String::new()),
-        sender: "@alice:x".into(),
-        depth: 3,
-        auth_events: vec!["$create".into(), "$join".into()],
-        content: serde_json::json!({"topic": "A"}),
-        ..Default::default()
-    };
-    let topic_beta = LeanEvent::<String> {
-        event_id: "$topicB".into(),
-        event_type: "m.room.topic".into(),
-        state_key: Some(String::new()),
-        sender: "@alice:x".into(),
-        depth: 3,
-        auth_events: vec!["$create".into(), "$join".into()],
-        origin_server_ts: 1,
-        content: serde_json::json!({"topic": "B"}),
-        ..Default::default()
-    };
-    let conflicted2: HashMap<String, LeanEvent<String>> = [
-        ("$topicA".into(), topic_alpha),
-        ("$topicB".into(), topic_beta),
-    ]
-    .into_iter()
-    .collect();
-    let auth_context2: HashMap<String, LeanEvent<String>> =
-        [("$create".into(), create_ev2), ("$join".into(), join_ev2)]
-            .into_iter()
-            .collect();
-
     let (_result2, _deltas) = rezzy::resolve_iterative_sort_with_cache_and_deltas(
-        unconflicted2,
-        conflicted2,
-        &auth_context2,
+        unconflicted,
+        conflicted,
+        &auth_context,
         Some(&mut cache2),
         StateResVersion::V2_1,
     );

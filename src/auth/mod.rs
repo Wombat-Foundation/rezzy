@@ -203,7 +203,13 @@ pub fn check_auth<
             "auth_events exceeds maximum allowed length of 10".into(),
         ));
     }
-    if event.event_type().is_empty() {
+
+    // Cache event_type once — avoids repeated Cow allocations for
+    // RawEvent impls that return Cow::Owned.
+    let event_type = event.event_type();
+    let event_type: &str = &event_type;
+
+    if event_type.is_empty() {
         return Err(AuthError::InvalidSyntax(
             "event_type cannot be empty".into(),
         ));
@@ -227,7 +233,7 @@ pub fn check_auth<
     }
 
     // Rule 1: m.room.create must be the first event
-    if event.event_type() == "m.room.create" {
+    if event_type == "m.room.create" {
         if !event.prev_events().is_empty() {
             return Err(AuthError::CreateWithPrevEvents);
         }
@@ -263,7 +269,7 @@ pub fn check_auth<
     // Rule 3: Sender must be joined (with exceptions for self-membership events)
     if membership != MEM_JOIN {
         // Exceptions: Self-membership transitions (except ban).
-        let is_self_membership = event.event_type() == M_ROOM_MEMBER
+        let is_self_membership = event_type == M_ROOM_MEMBER
             && event.state_key() == Some(event.sender())
             && event.get_membership() != Some(MEM_BAN);
 
@@ -281,19 +287,19 @@ pub fn check_auth<
     // the spec's Rule 10.2 says "If there is no previous m.room.power_levels
     // event in the room, allow", which takes precedence over Rule 8's generic
     // PL check. Without this, the bootstrap PL event can never pass auth.
-    if event.event_type() != M_ROOM_MEMBER {
+    if event_type != M_ROOM_MEMBER {
         let no_pl_event = state.get_event(M_ROOM_POWER_LEVELS, "").is_none();
-        let is_first_pl = no_pl_event && event.event_type() == M_ROOM_POWER_LEVELS;
+        let is_first_pl = no_pl_event && event_type == M_ROOM_POWER_LEVELS;
 
         if !is_first_pl {
             let sender_pl = user::get_sender_power_level(event.sender(), state, version);
-            let required_pl = get_required_power_level(event, state);
+            let required_pl = get_required_power_level(event_type, event.state_key(), state);
 
             if sender_pl < required_pl {
                 return Err(AuthError::InsufficientPowerLevel {
                     required: required_pl,
                     actual: sender_pl,
-                    event_type: event.event_type().into(),
+                    event_type: event_type.into(),
                 });
             }
         }
@@ -301,7 +307,7 @@ pub fn check_auth<
 
     // Rule 4b (spec §rule 9, all versions): If the event has a state_key
     // that starts with '@' and does not match the sender, reject.
-    if event.event_type() != M_ROOM_MEMBER {
+    if event_type != M_ROOM_MEMBER {
         if let Some(sk) = event.state_key() {
             if sk.starts_with('@') && sk != event.sender() {
                 return Err(AuthError::InvalidStateKey {
@@ -313,7 +319,7 @@ pub fn check_auth<
     }
 
     // Rule 5: m.room.member state_key validation
-    if event.event_type() == M_ROOM_MEMBER {
+    if event_type == M_ROOM_MEMBER {
         check_membership_rules(event, state, version, verifier)?;
     }
 
@@ -340,31 +346,31 @@ pub(crate) fn get_redact_power_level<Id, C: crate::basespec::rezzy_types::EventC
 fn get_required_power_level<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
 >(
-    event: &E,
+    event_type: &str,
+    state_key: Option<&str>,
     state: &impl StateProvider<Id, C>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         // Spec Rule 7: m.room.third_party_invite events require the invite level
-        if event.event_type() == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE {
+        if event_type == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE {
             return pl_event.get_invite().unwrap_or(0); // 0 is the default invite level
         }
         // Check specific event type overrides
-        if let Some(pl) = pl_event.get_event_power_level(&event.event_type()) {
+        if let Some(pl) = pl_event.get_event_power_level(event_type) {
             return pl;
         }
         // Fall back to state_default for state events, events_default for others
-        if event.state_key().is_some() {
+        if state_key.is_some() {
             return pl_event.get_state_default().unwrap_or(50);
         }
         return pl_event.get_events_default().unwrap_or(0);
     }
     // No restrictions if no power_levels event exists
     // However, Matrix spec says if NO PL event exists, state events require 50.
-    if event.event_type() == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE {
+    if event_type == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE {
         0 // Spec Rule 7: m.room.third_party_invite defaults to 0
-    } else if event.state_key().is_some() {
+    } else if state_key.is_some() {
         50
     } else {
         0
