@@ -228,7 +228,7 @@ impl<Id: EventId, C> DagNode for LeanEvent<Id, C> {
 ///
 /// ```rust,ignore
 /// impl EventLike for PduEvent {
-///     fn event_type(&self) -> &str { self.kind.to_string().as_str() }
+///     fn event_type(&self) -> Cow<'_, str> { self.kind.to_cow_str() }
 ///     fn sender(&self) -> &str { self.sender.as_str() }
 ///     fn get_membership(&self) -> Option<&str> { /* read from typed content */ }
 ///     // ...
@@ -236,7 +236,10 @@ impl<Id: EventId, C> DagNode for LeanEvent<Id, C> {
 /// ```
 pub trait EventLike: DagNode {
     /// Matrix event type (e.g. `m.room.member`, `m.room.power_levels`).
-    fn event_type(&self) -> &str;
+    ///
+    /// Returns `Cow::Borrowed` when the type string is stored inline (e.g. `LeanEvent`),
+    /// or `Cow::Owned`/`Cow::Borrowed` from a typed enum (e.g. ruma `TimelineEventType`).
+    fn event_type(&self) -> alloc::borrow::Cow<'_, str>;
 
     /// The MXID of the user who sent the event.
     fn sender(&self) -> &str;
@@ -319,8 +322,8 @@ pub trait EventLike: DagNode {
 }
 
 impl<Id: EventId, C: EventContent> EventLike for LeanEvent<Id, C> {
-    fn event_type(&self) -> &str {
-        &self.event_type
+    fn event_type(&self) -> alloc::borrow::Cow<'_, str> {
+        alloc::borrow::Cow::Borrowed(&self.event_type)
     }
     fn sender(&self) -> &str {
         &self.sender

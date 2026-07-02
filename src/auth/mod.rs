@@ -351,7 +351,7 @@ fn get_required_power_level<
             return pl_event.get_invite().unwrap_or(0); // 0 is the default invite level
         }
         // Check specific event type overrides
-        if let Some(pl) = pl_event.get_event_power_level(event.event_type()) {
+        if let Some(pl) = pl_event.get_event_power_level(&event.event_type()) {
             return pl;
         }
         // Fall back to state_default for state events, events_default for others
