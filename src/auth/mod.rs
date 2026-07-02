@@ -384,12 +384,16 @@ pub fn check_auth<
                 }
                 // Check additional_creators — use key-only iteration so non-integer
                 // valued entries are still caught.
-                for user_id in new_content.iter_user_keys() {
+                let mut invalid_additional_creator = None;
+                new_content.visit_user_keys(&mut |user_id| {
                     if create_content.has_additional_creator(user_id) {
-                        return Err(AuthError::InvalidSyntax(alloc::format!(
+                        invalid_additional_creator = Some(AuthError::InvalidSyntax(alloc::format!(
                             "m.room.power_levels users contains additional_creator {user_id}"
                         )));
                     }
+                });
+                if let Some(e) = invalid_additional_creator {
+                    return Err(e);
                 }
             }
         }
@@ -401,12 +405,16 @@ pub fn check_auth<
                 "m.room.power_levels users contains non-integer value or is not an object".into(),
             ));
         }
-        for user_id in new_content.iter_user_keys() {
+        let mut invalid_user = None;
+        new_content.visit_user_keys(&mut |user_id| {
             if !user_id.starts_with('@') || !user_id.contains(':') {
-                return Err(AuthError::InvalidSyntax(alloc::format!(
+                invalid_user = Some(AuthError::InvalidSyntax(alloc::format!(
                     "users key is not a valid user ID: {user_id}"
                 )));
             }
+        });
+        if let Some(e) = invalid_user {
+            return Err(e);
         }
 
         // Rules 10.5–10.10: only when a previous PL event exists.
@@ -487,9 +495,14 @@ fn check_power_levels_rules<
     )?;
 
     // Rules 10.7–10.8: events map changes.
-    let old_events: BTreeMap<&str, i64> = prev_pl.iter_event_power_levels().into_iter().collect();
-    let new_events: BTreeMap<&str, i64> =
-        new_content.iter_event_power_levels().into_iter().collect();
+    let mut old_events: BTreeMap<&str, i64> = BTreeMap::new();
+    prev_pl.visit_event_power_levels(&mut |k, v| {
+        old_events.insert(k, v);
+    });
+    let mut new_events: BTreeMap<&str, i64> = BTreeMap::new();
+    new_content.visit_event_power_levels(&mut |k, v| {
+        new_events.insert(k, v);
+    });
 
     // Rule 10.7: entries changed or removed — current value must not exceed sender PL.
     for (key, &old_val) in &old_events {
@@ -511,25 +524,25 @@ fn check_power_levels_rules<
     }
 
     // Rules 10.7–10.8 also apply to `notifications` map.
-    let old_notifs: BTreeMap<&str, i64> = prev_pl
-        .iter_notification_power_levels()
-        .into_iter()
-        .collect();
-    let new_notifs: BTreeMap<&str, i64> = new_content
-        .iter_notification_power_levels()
-        .into_iter()
-        .collect();
+    let mut old_notifications: BTreeMap<&str, i64> = BTreeMap::new();
+    prev_pl.visit_notification_power_levels(&mut |k, v| {
+        old_notifications.insert(k, v);
+    });
+    let mut new_notifications: BTreeMap<&str, i64> = BTreeMap::new();
+    new_content.visit_notification_power_levels(&mut |k, v| {
+        new_notifications.insert(k, v);
+    });
 
-    for (key, &old_val) in &old_notifs {
-        let changed = new_notifs.get(key).is_none_or(|&nv| nv != old_val);
+    for (key, &old_val) in &old_notifications {
+        let changed = new_notifications.get(key).is_none_or(|&nv| nv != old_val);
         if changed && old_val > sender_pl {
             return Err(AuthError::InvalidSyntax(alloc::format!(
                 "cannot change notifications[{key}]: current value {old_val} > sender PL {sender_pl}"
             )));
         }
     }
-    for (key, &new_val) in &new_notifs {
-        let changed = old_notifs.get(key).is_none_or(|&ov| ov != new_val);
+    for (key, &new_val) in &new_notifications {
+        let changed = old_notifications.get(key).is_none_or(|&ov| ov != new_val);
         if changed && new_val > sender_pl {
             return Err(AuthError::InvalidSyntax(alloc::format!(
                 "cannot set notifications[{key}] to {new_val}: exceeds sender PL {sender_pl}"
@@ -538,8 +551,14 @@ fn check_power_levels_rules<
     }
 
     // Rules 10.9–10.10: users map changes.
-    let old_users: BTreeMap<&str, i64> = prev_pl.iter_user_power_levels().into_iter().collect();
-    let new_users: BTreeMap<&str, i64> = new_content.iter_user_power_levels().into_iter().collect();
+    let mut old_users: BTreeMap<&str, i64> = BTreeMap::new();
+    prev_pl.visit_user_power_levels(&mut |k, v| {
+        old_users.insert(k, v);
+    });
+    let mut new_users: BTreeMap<&str, i64> = BTreeMap::new();
+    new_content.visit_user_power_levels(&mut |k, v| {
+        new_users.insert(k, v);
+    });
 
     // Rule 10.9: entries changed or removed (excluding sender's own entry).
     // Current value must be strictly less than sender PL (i.e. >= is rejected).

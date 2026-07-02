@@ -696,23 +696,25 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     /// anything.  The only production impl (`serde_json::Value`) overrides this.
     /// Custom implementations **must** override this for PL map validation to
     /// detect escalation in the `events` map.
-    fn iter_event_power_levels(&self) -> alloc::vec::Vec<(&str, i64)>;
+    /// Visit `(event_type, power_level)` entries in the `events` map.
+    /// Used by Rule 10 PL validation to compare old vs new `events` entries.
+    fn visit_event_power_levels<'a>(&'a self, visitor: &mut dyn FnMut(&'a str, i64));
 
-    /// Iterate over `(user_id, power_level)` entries in the `users` map.
+    /// Visit `(user_id, power_level)` entries in the `users` map.
     /// Used by Rule 10 PL validation to compare old vs new `users` entries.
-    fn iter_user_power_levels(&self) -> alloc::vec::Vec<(&str, i64)>;
+    fn visit_user_power_levels<'a>(&'a self, visitor: &mut dyn FnMut(&'a str, i64));
 
-    /// Iterate over `(key, power_level)` entries in the `notifications` map.
+    /// Visit `(key, power_level)` entries in the `notifications` map.
     /// Used by Rule 10.7–10.8 PL validation to compare old vs new `notifications`.
-    fn iter_notification_power_levels(&self) -> alloc::vec::Vec<(&str, i64)>;
+    fn visit_notification_power_levels<'a>(&'a self, visitor: &mut dyn FnMut(&'a str, i64));
 
-    /// Rule 10.1 (V12): Returns the name of any scalar PL property that is
+    /// Rule 10.1 (V10+): Returns the name of any scalar PL property that is
     /// present but not an integer (or integer-coercible string).
     fn find_non_integer_scalar_pl(&self) -> Option<&'static str> {
         None
     }
 
-    /// Rule 10.2 (V12): Returns true if `events` or `notifications` is present
+    /// Rule 10.2 (V10+): Returns true if `events` or `notifications` is present
     /// but is not an object, or contains any non-integer values.
     fn find_non_integer_map_pl(&self) -> Option<&'static str> {
         None
@@ -720,18 +722,16 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
 
     /// Rule 10.3: Returns true if `users` is present but is not an object,
     /// or contains any non-integer values.  Unlike `find_non_integer_map_pl`,
-    /// this applies to **all** room versions, not just V12+.
+    /// this applies to **all** room versions, not just V10+.
     fn has_non_integer_users_pl(&self, strict: bool) -> bool {
         let _ = strict;
         false
     }
 
-    /// Iterate over all keys in the `users` map, regardless of value type.
+    /// Visit all keys in the `users` map, regardless of value type.
     /// Used by Rule 10.4 to detect `additional_creators` even when their
-    /// PL value is non-integer (and would be filtered by `iter_user_power_levels`).
-    fn iter_user_keys(&self) -> alloc::vec::Vec<&str> {
-        alloc::vec::Vec::new()
-    }
+    /// PL value is non-integer (and would be filtered by `visit_user_power_levels`).
+    fn visit_user_keys<'a>(&'a self, _visitor: &mut dyn FnMut(&'a str)) {}
 
     /// Rule 10.4 (V12): Returns true if the `users` map contains the given user ID.
     fn has_user_in_users(&self, _user_id: &str) -> bool {
@@ -905,43 +905,43 @@ impl EventContent for Value {
             .is_some_and(|m| !m.is_empty())
     }
 
-    fn iter_event_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
-        self.get(crate::basespec::event_types::FIELD_EVENTS)
+    fn visit_event_power_levels<'a>(&'a self, visitor: &mut dyn FnMut(&'a str, i64)) {
+        if let Some(obj) = self
+            .get(crate::basespec::event_types::FIELD_EVENTS)
             .and_then(|v| v.as_object())
-            .map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        coerce_json_to_i64(v).map(|pl| (k.as_str(), pl.min(MAX_POWER_LEVEL_JSON)))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        {
+            for (k, v) in obj.iter() {
+                if let Some(pl) = coerce_json_to_i64(v) {
+                    visitor(k.as_str(), pl.min(MAX_POWER_LEVEL_JSON));
+                }
+            }
+        }
     }
 
-    fn iter_user_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
-        self.get(crate::basespec::event_types::FIELD_USERS)
+    fn visit_user_power_levels<'a>(&'a self, visitor: &mut dyn FnMut(&'a str, i64)) {
+        if let Some(obj) = self
+            .get(crate::basespec::event_types::FIELD_USERS)
             .and_then(|v| v.as_object())
-            .map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        coerce_json_to_i64(v).map(|pl| (k.as_str(), pl.min(MAX_POWER_LEVEL_JSON)))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        {
+            for (k, v) in obj.iter() {
+                if let Some(pl) = coerce_json_to_i64(v) {
+                    visitor(k.as_str(), pl.min(MAX_POWER_LEVEL_JSON));
+                }
+            }
+        }
     }
 
-    fn iter_notification_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
-        self.get(crate::basespec::event_types::FIELD_NOTIFICATIONS)
+    fn visit_notification_power_levels<'a>(&'a self, visitor: &mut dyn FnMut(&'a str, i64)) {
+        if let Some(obj) = self
+            .get(crate::basespec::event_types::FIELD_NOTIFICATIONS)
             .and_then(|v| v.as_object())
-            .map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| {
-                        coerce_json_to_i64(v).map(|pl| (k.as_str(), pl.min(MAX_POWER_LEVEL_JSON)))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        {
+            for (k, v) in obj.iter() {
+                if let Some(pl) = coerce_json_to_i64(v) {
+                    visitor(k.as_str(), pl.min(MAX_POWER_LEVEL_JSON));
+                }
+            }
+        }
     }
 
     fn find_non_integer_scalar_pl(&self) -> Option<&'static str> {
@@ -1015,11 +1015,15 @@ impl EventContent for Value {
         false
     }
 
-    fn iter_user_keys(&self) -> alloc::vec::Vec<&str> {
-        self.get(crate::basespec::event_types::FIELD_USERS)
+    fn visit_user_keys<'a>(&'a self, visitor: &mut dyn FnMut(&'a str)) {
+        if let Some(obj) = self
+            .get(crate::basespec::event_types::FIELD_USERS)
             .and_then(|v| v.as_object())
-            .map(|obj| obj.keys().map(String::as_str).collect())
-            .unwrap_or_default()
+        {
+            for k in obj.keys() {
+                visitor(k.as_str());
+            }
+        }
     }
 
     fn has_user_in_users(&self, user_id: &str) -> bool {
