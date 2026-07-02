@@ -730,6 +730,20 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
         None
     }
 
+    /// Rule 10.3: Returns true if `users` is present but is not an object,
+    /// or contains any non-integer values.  Unlike `find_non_integer_map_pl`,
+    /// this applies to **all** room versions, not just V12+.
+    fn has_non_integer_users_pl(&self) -> bool {
+        false
+    }
+
+    /// Iterate over all keys in the `users` map, regardless of value type.
+    /// Used by Rule 10.4 to detect `additional_creators` even when their
+    /// PL value is non-integer (and would be filtered by `iter_user_power_levels`).
+    fn iter_user_keys(&self) -> alloc::vec::Vec<&str> {
+        alloc::vec::Vec::new()
+    }
+
     /// Rule 10.4 (V12): Returns true if the `users` map contains the given user ID.
     fn has_user_in_users(&self, _user_id: &str) -> bool {
         false
@@ -985,6 +999,30 @@ impl EventContent for Value {
             }
         }
         None
+    }
+
+    fn has_non_integer_users_pl(&self) -> bool {
+        use crate::basespec::event_types::FIELD_USERS;
+        if let Some(val) = self.get(FIELD_USERS) {
+            if let Some(obj) = val.as_object() {
+                for v in obj.values() {
+                    if coerce_json_to_i64(v).is_none() {
+                        return true;
+                    }
+                }
+            } else {
+                // `users` present but not an object
+                return true;
+            }
+        }
+        false
+    }
+
+    fn iter_user_keys(&self) -> alloc::vec::Vec<&str> {
+        self.get(crate::basespec::event_types::FIELD_USERS)
+            .and_then(|v| v.as_object())
+            .map(|obj| obj.keys().map(String::as_str).collect())
+            .unwrap_or_default()
     }
 
     fn has_user_in_users(&self, user_id: &str) -> bool {

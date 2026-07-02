@@ -170,6 +170,30 @@ impl<Id, C> StateProvider<Id, C> for RoomState<Id, C> {
     }
 }
 
+/// Get the numeric room version from the create event in state.
+///
+/// Returns 1 if the `room_version` field is absent (room V1 didn't have it).
+///
+/// # Panics
+///
+/// Panics if the create event is missing from state (Rule 2.4 should have
+/// already rejected the event before we get here).
+fn get_room_version_num<Id, C, S>(state: &S) -> u32
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    S: StateProvider<Id, C>,
+{
+    let create = state
+        .get_event(M_ROOM_CREATE, "")
+        .expect("m.room.create must exist in state (Rule 2.4)");
+    create
+        .content()
+        .get_room_version()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(1) // V1 rooms didn't have a room_version field
+}
+
 /// Check whether `event` is authorized given the room state at its `prev_events`.
 ///
 /// This implements the core Matrix authorization rules:
@@ -323,28 +347,32 @@ pub fn check_auth<
     if event_type == M_ROOM_POWER_LEVELS {
         let new_content = event.content();
 
-        // Rules 10.1–10.4 apply to ALL PL events (even the first one).
         let is_v12_plus = matches!(
             version,
             StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
         );
 
-        if is_v12_plus {
-            // Rule 10.1 (V12): Scalar PL properties must be integers.
+        // Rules 10.1–10.3 were added in room version 10.
+        let is_room_v10_plus = get_room_version_num(state) >= 10;
+
+        if is_room_v10_plus {
+            // Rule 10.1 (V10+): Scalar PL properties must be integers.
             if let Some(field) = new_content.find_non_integer_scalar_pl() {
                 return Err(AuthError::InvalidSyntax(alloc::format!(
                     "m.room.power_levels {field} is not an integer"
                 )));
             }
 
-            // Rule 10.2 (V12): `events`/`notifications` must be objects with integer values.
+            // Rule 10.2 (V10+): `events`/`notifications` must be objects with integer values.
             if let Some(field) = new_content.find_non_integer_map_pl() {
                 return Err(AuthError::InvalidSyntax(alloc::format!(
                     "m.room.power_levels {field} is not an object with integer values"
                 )));
             }
+        }
 
-            // Rule 10.4 (V12): `users` must not contain creator or additional_creators.
+        // Rule 10.4 (V12+ only): `users` must not contain creator or additional_creators.
+        if is_v12_plus {
             if let Some(create_event) = state.get_event(M_ROOM_CREATE, "") {
                 let create_content = create_event.content();
                 if let Some(creator) = create_content.get_creator() {
@@ -354,8 +382,9 @@ pub fn check_auth<
                         )));
                     }
                 }
-                // Check additional_creators too — iterate user entries to find any match
-                for (user_id, _) in new_content.iter_user_power_levels() {
+                // Check additional_creators — use key-only iteration so non-integer
+                // valued entries are still caught.
+                for user_id in new_content.iter_user_keys() {
                     if create_content.has_additional_creator(user_id) {
                         return Err(AuthError::InvalidSyntax(alloc::format!(
                             "m.room.power_levels users contains additional_creator {user_id}"
@@ -365,7 +394,23 @@ pub fn check_auth<
             }
         }
 
-        // Rules 10.3, 10.5–10.10: only when a previous PL event exists.
+        // Rule 10.3: `users` keys must be valid user IDs with integer values.
+        // Integer value check applies V10+ (same as 10.1/10.2).
+        // User ID key format validation applies to all versions.
+        if is_room_v10_plus && new_content.has_non_integer_users_pl() {
+            return Err(AuthError::InvalidSyntax(
+                "m.room.power_levels users contains non-integer value".into(),
+            ));
+        }
+        for user_id in new_content.iter_user_keys() {
+            if !user_id.starts_with('@') || !user_id.contains(':') {
+                return Err(AuthError::InvalidSyntax(alloc::format!(
+                    "users key is not a valid user ID: {user_id}"
+                )));
+            }
+        }
+
+        // Rules 10.5–10.10: only when a previous PL event exists.
         // (Rule 10.5 — first PL event — is handled above by the is_first_pl skip.)
         if let Some(prev_pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
             let sender_pl = user::get_sender_power_level(event.sender(), state, version);
@@ -386,10 +431,11 @@ pub fn check_auth<
     Ok(())
 }
 
-/// Validate `m.room.power_levels` changes per spec Rules 10.3, 10.6–10.10.
+/// Validate `m.room.power_levels` changes per spec Rules 10.6–10.10.
 ///
 /// Called only when there is an existing PL event in state (Rule 10.5 is
-/// handled by the `is_first_pl` skip in `check_auth`).
+/// handled by the `is_first_pl` skip in `check_auth`).  Rules 10.1–10.4
+/// are checked unconditionally in `check_auth` before this function.
 #[allow(clippy::too_many_lines)]
 fn check_power_levels_rules<
     Id: crate::basespec::rezzy_types::EventId,
@@ -401,15 +447,6 @@ fn check_power_levels_rules<
     sender_pl: i64,
 ) -> Result<(), AuthError<Id>> {
     use alloc::collections::BTreeMap;
-
-    // Rule 10.3: Validate `users` keys are valid user IDs with integer values.
-    for (user_id, _pl) in new_content.iter_user_power_levels() {
-        if !user_id.starts_with('@') || !user_id.contains(':') {
-            return Err(AuthError::InvalidSyntax(alloc::format!(
-                "users key is not a valid user ID: {user_id}"
-            )));
-        }
-    }
 
     // Rule 10.6: Scalar PL properties — reject if old or new value > sender PL.
     check_scalar_pl(

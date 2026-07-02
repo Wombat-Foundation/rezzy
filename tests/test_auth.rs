@@ -3459,12 +3459,13 @@ fn test_pl_v12_scalar_not_integer_rejected() {
     );
 }
 
-/// Rule 10.1: same event passes in V2 (pre-V12) — no integer type check.
+/// Rule 10.1: non-integer scalar PL passes in room version 9 (pre-V10).
+/// V10+ enforces integer types; V9 and earlier do not.
 #[test]
 fn test_pl_v2_scalar_not_integer_allowed() {
     let state = utils::parse_jsonl_state(
         r#"
-{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "9"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
 "#,
     );
@@ -3476,7 +3477,7 @@ fn test_pl_v2_scalar_not_integer_allowed() {
     let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
     assert!(
         res.is_ok(),
-        "Non-integer scalar PL should be allowed in V2: {res:?}"
+        "Non-integer scalar PL should be allowed in room V9: {res:?}"
     );
 }
 

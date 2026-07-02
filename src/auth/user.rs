@@ -61,13 +61,14 @@ pub fn get_sender_power_level<Id, C: EventContent>(
             return default_pl;
         }
     } else if let Some(create_event) = state.get_event(M_ROOM_CREATE, "") {
-        // V1-V10 fallback: if no PL event exists, the room creator gets PL 100.
-        // Uses `content.creator` (not `sender`) because V1-V10 spec defines the
-        // creator via that field.  V11 deprecated `content.creator` in favor of
-        // `sender`, but V11 rooms always have a PL event so this path is not
-        // reachable.  V12+ creators get `i64::MAX` via the `create_event.sender`
-        // check above (lines 31-47) and never reach here.
-        if create_event.get_creator() == Some(sender) {
+        // V1–V11 fallback: if no PL event exists, the room creator gets PL 100.
+        // V1–V10 define the creator via `content.creator`; V11 deprecated that
+        // field in favor of `sender`.  Falls back to `sender` if absent.
+        // V12+ creators get `i64::MAX` via the path above and never reach here.
+        let creator = create_event
+            .get_creator()
+            .unwrap_or(create_event.sender.as_str());
+        if creator == sender {
             return 100;
         }
     }
