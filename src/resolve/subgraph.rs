@@ -122,11 +122,18 @@ where
 
     // Intersect and build the final Conflicted Subgraph
     let mut subgraph = HashMap::new();
-    let backwards_ids: BTreeSet<Id> = backwards_reachable.iter().cloned().collect();
-    let forwards_ids: BTreeSet<Id> = forwards_reachable.iter().cloned().collect();
-
-    for id in backwards_ids.intersection(&forwards_ids) {
-        let Some(event) = auth_graph.get(id) else { continue };
+    let (smaller, larger) = if backwards_reachable.len() <= forwards_reachable.len() {
+        (&backwards_reachable, &forwards_reachable)
+    } else {
+        (&forwards_reachable, &backwards_reachable)
+    };
+    for id in smaller {
+        if !larger.contains(id) {
+            continue;
+        }
+        let Some(event) = auth_graph.get(id) else {
+            continue;
+        };
         subgraph.insert(id.clone(), event.clone());
     }
 
