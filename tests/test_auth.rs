@@ -3586,7 +3586,7 @@ fn test_pl_v12_notifications_non_integer_rejected() {
     );
 }
 
-/// Rule 10.8: mod tries to set notifications["room"] above own PL → reject.
+/// Rule 10.8: mod tries to set `notifications[room]` above own PL -> reject.
 #[test]
 fn test_pl_validation_notifications_escalation_rejected() {
     let state = utils::parse_jsonl_state(
@@ -3609,7 +3609,7 @@ fn test_pl_validation_notifications_escalation_rejected() {
     );
 }
 
-/// Rule 10.7: mod tries to lower notifications["room"] whose old value > own PL → reject.
+/// Rule 10.7: mod tries to lower `notifications[room]` whose old value > own PL -> reject.
 #[test]
 fn test_pl_validation_notifications_old_value_too_high_rejected() {
     let state = utils::parse_jsonl_state(

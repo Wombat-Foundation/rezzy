@@ -390,6 +390,7 @@ pub fn check_auth<
 ///
 /// Called only when there is an existing PL event in state (Rule 10.5 is
 /// handled by the `is_first_pl` skip in `check_auth`).
+#[allow(clippy::too_many_lines)]
 fn check_power_levels_rules<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
@@ -474,8 +475,10 @@ fn check_power_levels_rules<
     }
 
     // Rules 10.7–10.8 also apply to `notifications` map.
-    let old_notifs: BTreeMap<&str, i64> =
-        prev_pl.iter_notification_power_levels().into_iter().collect();
+    let old_notifs: BTreeMap<&str, i64> = prev_pl
+        .iter_notification_power_levels()
+        .into_iter()
+        .collect();
     let new_notifs: BTreeMap<&str, i64> = new_content
         .iter_notification_power_levels()
         .into_iter()
