@@ -39,7 +39,7 @@ authorization rules. Three distinct rule sets exist:
 
 | #     | Sub-rule                                                         | Versions | rezzy | Notes                                                 |
 | ----- | ---------------------------------------------------------------- | -------- | ----- | ----------------------------------------------------- |
-| 5.1   | Reject if no `state_key` or no `membership` in content           | all      | [x]   | `InvalidStateKey` / `InvalidSyntax`                   |
+| 5.1   | Reject if no `state_key` or no `membership` in content           | all      | [x]   | `InvalidSyntax`                                       |
 | 5.2   | `join_authorised_via_users_server` signature check               | V8+      | [o]   | Signature validation is HS-side, not rezzy            |
 | 5.3.1 | **join**: creator can always join (first event is create)        | all      | [x]   | `is_creator` check                                    |
 | 5.3.2 | **join**: sender must match state_key                            | all      | [x]   | `InvalidStateKey`                                     |
@@ -68,18 +68,18 @@ authorization rules. Three distinct rule sets exist:
 
 ## m.room.power_levels Validation (Rule 10)
 
-| #     | Sub-rule                                                      | Versions | rezzy | Notes       |
-| ----- | ------------------------------------------------------------- | -------- | ----- | ----------- |
-| 10.1  | Validate scalar PL properties are integers                    | V12      | [ ]   | Not checked |
-| 10.2  | Validate `events`/`notifications` are objects with int values | V12      | [ ]   | Not checked |
-| 10.3  | `users` must be object with valid user ID keys + int values   | all      | [ ]   | Not checked |
-| 10.4  | Reject if `users` contains creator IDs                        | V12      | [ ]   | Not checked |
-| 10.5  | Allow if no previous PL event                                 | all      | [ ]   | Not checked |
-| 10.6  | Validate PL property changes don't exceed sender PL           | all      | [ ]   | Not checked |
-| 10.7  | Validate `events`/`notifications` changes                     | V8+      | [ ]   | Not checked |
-| 10.8  | Validate `events`/`notifications` additions                   | V8+      | [ ]   | Not checked |
-| 10.9  | Validate `users` removals/changes                             | all      | [ ]   | Not checked |
-| 10.10 | Validate `users` additions                                    | all      | [ ]   | Not checked |
+| #     | Sub-rule                                                      | Versions | rezzy | Notes                    |
+| ----- | ------------------------------------------------------------- | -------- | ----- | ------------------------ |
+| 10.1  | Validate scalar PL properties are integers                    | V12      | [ ]   | Not checked              |
+| 10.2  | Validate `events`/`notifications` are objects with int values | V12      | [ ]   | Not checked              |
+| 10.3  | `users` must be object with valid user ID keys + int values   | all      | [ ]   | Not checked              |
+| 10.4  | Reject if `users` contains creator IDs                        | V12      | [ ]   | Not checked              |
+| 10.5  | Allow if no previous PL event                                 | all      | [x]   | `is_first_pl` skip logic |
+| 10.6  | Validate PL property changes don't exceed sender PL           | all      | [ ]   | Not checked              |
+| 10.7  | Validate `events`/`notifications` changes                     | V8+      | [ ]   | Not checked              |
+| 10.8  | Validate `events`/`notifications` additions                   | V8+      | [ ]   | Not checked              |
+| 10.9  | Validate `users` removals/changes                             | all      | [ ]   | Not checked              |
+| 10.10 | Validate `users` additions                                    | all      | [ ]   | Not checked              |
 
 ## Key Gaps (Prioritized)
 
@@ -88,7 +88,7 @@ authorization rules. Three distinct rule sets exist:
 1. ~~**Rule 5.8**: Unknown membership should reject, not allow~~ — FIXED
 2. ~~**Rule 5.4.1**: Third-party invite validation not implemented~~ — FIXED
 3. ~~**Rule 7**: `m.room.third_party_invite` PL check missing~~ — FIXED
-4. **Rule 10.x**: Power level event validation entirely missing
+4. **Rule 10.x**: Power level event validation mostly missing (10.1–10.4, 10.6–10.10)
 
 ### Medium (federation/integrity concerns, not core auth)
 
