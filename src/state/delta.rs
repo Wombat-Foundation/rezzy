@@ -137,13 +137,27 @@ pub fn apply_state_delta<Id: crate::basespec::rezzy_types::EventId>(
 ///
 /// **Not cryptographic** — use SHA-256 (via the `hashing` feature) for
 /// content-addressable storage.
+struct FnvHasher<'a>(&'a mut u128);
+
+const FNV128_PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+
+impl core::fmt::Write for FnvHasher<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for &byte in s.as_bytes() {
+            *self.0 ^= u128::from(byte);
+            *self.0 = self.0.wrapping_mul(FNV128_PRIME);
+        }
+        Ok(())
+    }
+}
+
 #[must_use]
 pub fn compute_state_hash<Id: crate::basespec::rezzy_types::EventId>(
     state: &crate::state::at::SharedState<Id>,
 ) -> String {
+    use core::fmt::Write;
     // FNV-1a 128-bit offset basis and prime
     // See: <https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function>
-    const FNV128_PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
     let mut hash: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
 
     for ((event_type, state_key), event_id) in state {
@@ -159,11 +173,9 @@ pub fn compute_state_hash<Id: crate::basespec::rezzy_types::EventId>(
         }
         hash ^= 0x00;
         hash = hash.wrapping_mul(FNV128_PRIME);
-        let event_id_str = alloc::format!("{event_id}");
-        for &byte in event_id_str.as_bytes() {
-            hash ^= u128::from(byte);
-            hash = hash.wrapping_mul(FNV128_PRIME);
-        }
+
+        let mut writer = FnvHasher(&mut hash);
+        let _ = write!(writer, "{event_id}");
         hash ^= 0xff;
         hash = hash.wrapping_mul(FNV128_PRIME);
     }

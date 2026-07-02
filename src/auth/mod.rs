@@ -227,7 +227,8 @@ pub fn validate_forward_extremity<
         return ForwardExtremityResult::Rejected(e);
     }
 
-    if let Err(e) = check_auth(event, current_room_state, version, verifier) {
+    // TODO: add support for generic verifier(s) throughout this call chain
+    if let Err(e) = check_auth(event, current_room_state, version, None) {
         return ForwardExtremityResult::SoftFailed(e);
     }
 
