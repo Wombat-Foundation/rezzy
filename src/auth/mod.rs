@@ -319,13 +319,58 @@ pub fn check_auth<
     }
 
     // Rule 10: m.room.power_levels validation
-    // (Rule 10.5 — first PL event — is handled above by the is_first_pl skip.)
     if event_type == M_ROOM_POWER_LEVELS {
+        let new_content = event.content();
+
+        // Rules 10.1–10.4 apply to ALL PL events (even the first one).
+        let is_v12_plus = matches!(
+            version,
+            StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
+        );
+
+        if is_v12_plus {
+            // Rule 10.1 (V12): Scalar PL properties must be integers.
+            if let Some(field) = new_content.find_non_integer_scalar_pl() {
+                return Err(AuthError::InvalidSyntax(alloc::format!(
+                    "m.room.power_levels {field} is not an integer"
+                )));
+            }
+
+            // Rule 10.2 (V12): `events`/`notifications` must be objects with integer values.
+            if let Some(field) = new_content.find_non_integer_map_pl() {
+                return Err(AuthError::InvalidSyntax(alloc::format!(
+                    "m.room.power_levels {field} is not an object with integer values"
+                )));
+            }
+
+            // Rule 10.4 (V12): `users` must not contain creator or additional_creators.
+            if let Some(create_event) = state.get_event(M_ROOM_CREATE, "") {
+                let create_content = create_event.content();
+                if let Some(creator) = create_content.get_creator() {
+                    if new_content.has_user_in_users(creator) {
+                        return Err(AuthError::InvalidSyntax(alloc::format!(
+                            "m.room.power_levels users contains creator {creator}"
+                        )));
+                    }
+                }
+                // Check additional_creators too — iterate user entries to find any match
+                for (user_id, _) in new_content.iter_user_power_levels() {
+                    if create_content.has_additional_creator(user_id) {
+                        return Err(AuthError::InvalidSyntax(alloc::format!(
+                            "m.room.power_levels users contains additional_creator {user_id}"
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Rules 10.3, 10.5–10.10: only when a previous PL event exists.
+        // (Rule 10.5 — first PL event — is handled above by the is_first_pl skip.)
         if let Some(prev_pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
             let sender_pl = user::get_sender_power_level(event.sender(), state, version);
             check_power_levels_rules(
                 event.sender(),
-                event.content(),
+                new_content,
                 prev_pl_event.content(),
                 sender_pl,
             )?;

@@ -697,6 +697,23 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     fn iter_user_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
         alloc::vec::Vec::new()
     }
+
+    /// Rule 10.1 (V12): Returns the name of any scalar PL property that is
+    /// present but not an integer (or integer-coercible string).
+    fn find_non_integer_scalar_pl(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Rule 10.2 (V12): Returns true if `events` or `notifications` is present
+    /// but is not an object, or contains any non-integer values.
+    fn find_non_integer_map_pl(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Rule 10.4 (V12): Returns true if the `users` map contains the given user ID.
+    fn has_user_in_users(&self, _user_id: &str) -> bool {
+        false
+    }
 }
 
 /// Caller-provided event verification pipeline.
@@ -889,6 +906,55 @@ impl EventContent for Value {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    fn find_non_integer_scalar_pl(&self) -> Option<&'static str> {
+        use crate::basespec::event_types::*;
+        let scalars: &[(&str, &'static str)] = &[
+            (FIELD_USERS_DEFAULT, "users_default"),
+            (FIELD_EVENTS_DEFAULT, "events_default"),
+            (FIELD_STATE_DEFAULT, "state_default"),
+            (FIELD_BAN, "ban"),
+            (FIELD_REDACT, "redact"),
+            (FIELD_KICK, "kick"),
+            (FIELD_INVITE, "invite"),
+        ];
+        for &(field, label) in scalars {
+            if let Some(val) = self.get(field) {
+                if coerce_json_to_i64(val).is_none() {
+                    return Some(label);
+                }
+            }
+        }
+        None
+    }
+
+    fn find_non_integer_map_pl(&self) -> Option<&'static str> {
+        use crate::basespec::event_types::*;
+        let maps: &[(&str, &'static str)] = &[
+            (FIELD_EVENTS, "events"),
+            (FIELD_NOTIFICATIONS, "notifications"),
+        ];
+        for &(field, label) in maps {
+            if let Some(val) = self.get(field) {
+                let obj = match val.as_object() {
+                    Some(o) => o,
+                    None => return Some(label),
+                };
+                for v in obj.values() {
+                    if coerce_json_to_i64(v).is_none() {
+                        return Some(label);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn has_user_in_users(&self, user_id: &str) -> bool {
+        self.get(crate::basespec::event_types::FIELD_USERS)
+            .and_then(|v| v.as_object())
+            .is_some_and(|obj| obj.contains_key(user_id))
     }
 }
 

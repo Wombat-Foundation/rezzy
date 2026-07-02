@@ -1457,7 +1457,7 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
         sender: "@admin:x".to_string(),
         origin_server_ts: 300,
         content: json!({
-            "users": { "@admin:x": 100, "@mallory:x": 50 },
+            "users": { "@mallory:x": 50 },
             "state_default": 50
         }),
         auth_events: vec!["$create".to_string(), "$admin_join".to_string()],
@@ -1518,7 +1518,6 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
         sender: "@admin:x".to_string(),
         origin_server_ts: 700,
         content: json!({
-            "users": { "@admin:x": 100 },
             "state_default": 50
         }),
         auth_events: vec![

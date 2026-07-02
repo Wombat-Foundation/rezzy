@@ -3432,3 +3432,117 @@ fn test_pl_validation_scalar_old_value_too_high_rejected() {
         "Mod changing scalar with old value > own PL should be rejected: {res:?}"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Rule 10 V12-only: 10.1, 10.2, 10.4
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Rule 10.1 (V12): scalar PL property that is not an integer → reject.
+#[test]
+fn test_pl_v12_scalar_not_integer_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
+"#,
+    );
+    // First PL event with ban as a boolean instead of integer
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"ban": true}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+    assert!(res.is_err(), "Non-integer scalar PL should be rejected in V12: {res:?}");
+}
+
+/// Rule 10.1: same event passes in V2 (pre-V12) — no integer type check.
+#[test]
+fn test_pl_v2_scalar_not_integer_allowed() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
+"#,
+    );
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"ban": true}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(res.is_ok(), "Non-integer scalar PL should be allowed in V2: {res:?}");
+}
+
+/// Rule 10.2 (V12): `events` map with non-integer value → reject.
+#[test]
+fn test_pl_v12_events_map_non_integer_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
+"#,
+    );
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"events": {"m.room.topic": "not_a_number"}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+    assert!(res.is_err(), "Non-integer events map value should be rejected in V12: {res:?}");
+}
+
+/// Rule 10.2 (V12): `events` is not an object → reject.
+#[test]
+fn test_pl_v12_events_not_object_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
+"#,
+    );
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"events": 42}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+    assert!(res.is_err(), "events as non-object should be rejected in V12: {res:?}");
+}
+
+/// Rule 10.4 (V12): `users` map contains the room creator → reject.
+#[test]
+fn test_pl_v12_users_contains_creator_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
+"#,
+    );
+    // First PL event listing the creator in `users` — forbidden in V12
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+    assert!(res.is_err(), "users containing creator should be rejected in V12: {res:?}");
+}
+
+/// Rule 10.4 (V12): `users` map contains an additional_creator → reject.
+#[test]
+fn test_pl_v12_users_contains_additional_creator_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12", "additional_creators": ["@extra:example.com"]}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@other:example.com", "sender": "@other:example.com", "content": {"membership": "join"}}
+"#,
+    );
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@other:example.com", "content": {"users": {"@other:example.com": 50, "@extra:example.com": 80}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+    assert!(res.is_err(), "users containing additional_creator should be rejected in V12: {res:?}");
+}
