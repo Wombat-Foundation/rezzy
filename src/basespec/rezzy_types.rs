@@ -731,7 +731,7 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     /// Visit all keys in the `users` map, regardless of value type.
     /// Used by Rule 10.4 to detect `additional_creators` even when their
     /// PL value is non-integer (and would be filtered by `visit_user_power_levels`).
-    fn visit_user_keys<'a>(&'a self, _visitor: &mut dyn FnMut(&'a str)) {}
+    fn visit_user_keys<'a>(&'a self, visitor: &mut dyn FnMut(&'a str));
 
     /// Rule 10.4 (V12): Returns true if the `users` map contains the given user ID.
     fn has_user_in_users(&self, _user_id: &str) -> bool {
@@ -910,7 +910,7 @@ impl EventContent for Value {
             .get(crate::basespec::event_types::FIELD_EVENTS)
             .and_then(|v| v.as_object())
         {
-            for (k, v) in obj.iter() {
+            for (k, v) in obj {
                 if let Some(pl) = coerce_json_to_i64(v) {
                     visitor(k.as_str(), pl.min(MAX_POWER_LEVEL_JSON));
                 }
@@ -923,7 +923,7 @@ impl EventContent for Value {
             .get(crate::basespec::event_types::FIELD_USERS)
             .and_then(|v| v.as_object())
         {
-            for (k, v) in obj.iter() {
+            for (k, v) in obj {
                 if let Some(pl) = coerce_json_to_i64(v) {
                     visitor(k.as_str(), pl.min(MAX_POWER_LEVEL_JSON));
                 }
@@ -936,7 +936,7 @@ impl EventContent for Value {
             .get(crate::basespec::event_types::FIELD_NOTIFICATIONS)
             .and_then(|v| v.as_object())
         {
-            for (k, v) in obj.iter() {
+            for (k, v) in obj {
                 if let Some(pl) = coerce_json_to_i64(v) {
                     visitor(k.as_str(), pl.min(MAX_POWER_LEVEL_JSON));
                 }

@@ -3948,15 +3948,10 @@ fn test_event_content_default_trait_methods() {
         fn get_join_authorised_via_users_server(&self) -> Option<&str> {
             None
         }
-        fn iter_event_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
-            alloc::vec::Vec::new()
-        }
-        fn iter_user_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
-            alloc::vec::Vec::new()
-        }
-        fn iter_notification_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
-            alloc::vec::Vec::new()
-        }
+        fn visit_event_power_levels<'a>(&'a self, _v: &mut dyn FnMut(&'a str, i64)) {}
+        fn visit_user_power_levels<'a>(&'a self, _v: &mut dyn FnMut(&'a str, i64)) {}
+        fn visit_notification_power_levels<'a>(&'a self, _v: &mut dyn FnMut(&'a str, i64)) {}
+        fn visit_user_keys<'a>(&'a self, _v: &mut dyn FnMut(&'a str)) {}
     }
 
     let c = MinimalContent;
@@ -3965,9 +3960,17 @@ fn test_event_content_default_trait_methods() {
     assert!(c.get_third_party_invite_mxid().is_none());
     assert!(!c.has_third_party_invite_signatures());
     // Rule 10 defaults
-    assert!(c.iter_event_power_levels().is_empty());
-    assert!(c.iter_user_power_levels().is_empty());
-    assert!(c.iter_notification_power_levels().is_empty());
+    let mut ev_count = 0;
+    c.visit_event_power_levels(&mut |_, _| ev_count += 1);
+    assert_eq!(ev_count, 0);
+
+    let mut user_count = 0;
+    c.visit_user_power_levels(&mut |_, _| user_count += 1);
+    assert_eq!(user_count, 0);
+
+    let mut notif_count = 0;
+    c.visit_notification_power_levels(&mut |_, _| notif_count += 1);
+    assert_eq!(notif_count, 0);
     assert!(c.find_non_integer_scalar_pl().is_none());
     assert!(c.find_non_integer_map_pl().is_none());
     assert!(!c.has_user_in_users("@someone:x"));
@@ -4477,15 +4480,10 @@ fn test_event_content_get_room_version() {
         fn get_join_authorised_via_users_server(&self) -> Option<&str> {
             None
         }
-        fn iter_event_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
-            alloc::vec::Vec::new()
-        }
-        fn iter_user_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
-            alloc::vec::Vec::new()
-        }
-        fn iter_notification_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
-            alloc::vec::Vec::new()
-        }
+        fn visit_event_power_levels<'a>(&'a self, _v: &mut dyn FnMut(&'a str, i64)) {}
+        fn visit_user_power_levels<'a>(&'a self, _v: &mut dyn FnMut(&'a str, i64)) {}
+        fn visit_notification_power_levels<'a>(&'a self, _v: &mut dyn FnMut(&'a str, i64)) {}
+        fn visit_user_keys<'a>(&'a self, _v: &mut dyn FnMut(&'a str)) {}
     }
 
     let with_version = serde_json::json!({"room_version": "11"});

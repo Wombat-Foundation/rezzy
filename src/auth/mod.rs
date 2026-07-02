@@ -387,9 +387,10 @@ pub fn check_auth<
                 let mut invalid_additional_creator = None;
                 new_content.visit_user_keys(&mut |user_id| {
                     if create_content.has_additional_creator(user_id) {
-                        invalid_additional_creator = Some(AuthError::InvalidSyntax(alloc::format!(
-                            "m.room.power_levels users contains additional_creator {user_id}"
-                        )));
+                        invalid_additional_creator =
+                            Some(AuthError::InvalidSyntax(alloc::format!(
+                                "m.room.power_levels users contains additional_creator {user_id}"
+                            )));
                     }
                 });
                 if let Some(e) = invalid_additional_creator {
