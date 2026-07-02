@@ -198,7 +198,7 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForwardExtremityResult<Id = String> {
     /// The event is fully valid and updates the room state.
-    Valid,
+    ValidMaybePendingSigHashVer,
     /// The event is valid according to its own `auth_events`, but fails auth against the current room state.
     /// It should be accepted into the DAG but must not update the room state.
     SoftFailed(AuthError<Id>),
@@ -231,7 +231,7 @@ pub fn validate_forward_extremity<
         return ForwardExtremityResult::SoftFailed(e);
     }
 
-    ForwardExtremityResult::Valid
+    ForwardExtremityResult::ValidMaybePendingSigHashVer
 }
 
 /// Check whether `event` is authorized given the room state at its `prev_events`.
