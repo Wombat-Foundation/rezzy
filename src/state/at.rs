@@ -937,6 +937,16 @@ where
         }
     }
 
+    // Guard: create event must be in unconflicted state for auth checks.
+    // Without it, iterative_auth_ok rejects everything — bail to full pipeline
+    // which handles bootstrapping correctly.
+    let has_create = unconflicted_state
+        .iter()
+        .any(|((t, _), _)| t == crate::basespec::event_types::M_ROOM_CREATE);
+    if !has_create {
+        return None;
+    }
+
     // Group competing events by (type, state_key)
     let mut candidates: alloc::collections::BTreeMap<
         &(alloc::string::String, alloc::string::String),

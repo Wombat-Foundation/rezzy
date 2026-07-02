@@ -4615,7 +4615,6 @@ fn test_restricts_sender_false_for_non_admin_event() {
 /// Exercises iterative.rs:424-425 — when an external cache has a stale
 /// version, it must be cleared before use.
 #[test]
-#[allow(clippy::too_many_lines)]
 fn test_local_auth_cache_version_invalidation() {
     use rezzy::state::at::LocalAuthCache;
 
@@ -4626,48 +4625,17 @@ fn test_local_auth_cache_version_invalidation() {
         HashMap<String, LeanEvent<String>>,
         HashMap<String, LeanEvent<String>>,
     ) {
-        let create_ev = LeanEvent::<String> {
-            event_id: "$create".into(),
-            event_type: "m.room.create".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:x".into(),
-            depth: 1,
-            content: serde_json::json!({"room_version": "10", "creator": "@alice:x"}),
-            ..Default::default()
-        };
-        let join_ev = LeanEvent::<String> {
-            event_id: "$join".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@alice:x".into()),
-            sender: "@alice:x".into(),
-            depth: 2,
-            auth_events: vec!["$create".into()],
-            content: serde_json::json!({"membership": "join"}),
-            ..Default::default()
-        };
-        #[allow(clippy::similar_names)]
-        let topic_a = LeanEvent::<String> {
-            event_id: "$topicA".into(),
-            event_type: "m.room.topic".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:x".into(),
-            depth: 3,
-            auth_events: vec!["$create".into(), "$join".into()],
-            content: serde_json::json!({"topic": "A"}),
-            ..Default::default()
-        };
-        #[allow(clippy::similar_names)]
-        let topic_b = LeanEvent::<String> {
-            event_id: "$topicB".into(),
-            event_type: "m.room.topic".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:x".into(),
-            depth: 3,
-            auth_events: vec!["$create".into(), "$join".into()],
-            origin_server_ts: 1,
-            content: serde_json::json!({"topic": "B"}),
-            ..Default::default()
-        };
+        let all = utils::parse_jsonl_events(
+            r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:x","depth":1,"origin_server_ts":0,"prev_events":[],"auth_events":[],"content":{"room_version":"10","creator":"@alice:x"}}
+{"event_id":"$join","type":"m.room.member","state_key":"@alice:x","sender":"@alice:x","depth":2,"origin_server_ts":0,"prev_events":[],"auth_events":["$create"],"content":{"membership":"join"}}
+{"event_id":"$topicA","type":"m.room.topic","state_key":"","sender":"@alice:x","depth":3,"origin_server_ts":0,"prev_events":[],"auth_events":["$create","$join"],"content":{"topic":"A"}}
+{"event_id":"$topicB","type":"m.room.topic","state_key":"","sender":"@alice:x","depth":3,"origin_server_ts":1,"prev_events":[],"auth_events":["$create","$join"],"content":{"topic":"B"}}
+        "#,
+        );
+
+        let by_id: HashMap<String, LeanEvent> =
+            all.into_iter().map(|e| (e.event_id.clone(), e)).collect();
 
         let unconflicted = [
             (
@@ -4682,13 +4650,19 @@ fn test_local_auth_cache_version_invalidation() {
         .into_iter()
         .collect();
 
-        let conflicted = [("$topicA".into(), topic_a), ("$topicB".into(), topic_b)]
-            .into_iter()
-            .collect();
+        let conflicted = [
+            ("$topicA".into(), by_id["$topicA"].clone()),
+            ("$topicB".into(), by_id["$topicB"].clone()),
+        ]
+        .into_iter()
+        .collect();
 
-        let auth_context = [("$create".into(), create_ev), ("$join".into(), join_ev)]
-            .into_iter()
-            .collect();
+        let auth_context = [
+            ("$create".into(), by_id["$create"].clone()),
+            ("$join".into(), by_id["$join"].clone()),
+        ]
+        .into_iter()
+        .collect();
 
         (unconflicted, conflicted, auth_context)
     }
@@ -4728,4 +4702,111 @@ fn test_local_auth_cache_version_invalidation() {
     );
     assert_eq!(cache2.version, StateResVersion::V2_1);
     assert!(!cache2.map.contains_key("stale2"));
+}
+
+/// Tests that the trivial-conflict fast path resolves a 1-key non-power fork
+/// correctly by picking the later-timestamp winner.
+///
+/// DAG:
+///   CREATE → JOIN → PL → A (topic ts=100) ─┐
+///                       └→ B (topic ts=200) ─┴→ D (merge)
+#[test]
+fn test_trivial_conflict_fast_path_picks_later_ts() {
+    let events: Vec<LeanEvent> = utils::parse_jsonl_events(
+        r#"
+{"event_id":"CREATE","type":"m.room.create","state_key":"","sender":"@alice:example.com","origin_server_ts":1,"prev_events":[],"auth_events":[],"content":{}}
+{"event_id":"JOIN","type":"m.room.member","state_key":"@alice:example.com","sender":"@alice:example.com","origin_server_ts":2,"prev_events":["CREATE"],"auth_events":["CREATE"],"content":{"membership":"join"}}
+{"event_id":"PL","type":"m.room.power_levels","state_key":"","sender":"@alice:example.com","origin_server_ts":3,"prev_events":["JOIN"],"auth_events":["CREATE","JOIN"],"content":{"users":{"@alice:example.com":100}}}
+{"event_id":"A","type":"m.room.topic","state_key":"","sender":"@alice:example.com","origin_server_ts":100,"prev_events":["PL"],"auth_events":["CREATE","JOIN","PL"],"content":{}}
+{"event_id":"B","type":"m.room.topic","state_key":"","sender":"@alice:example.com","origin_server_ts":200,"prev_events":["PL"],"auth_events":["CREATE","JOIN","PL"],"content":{}}
+{"event_id":"D","type":"m.room.message","sender":"@alice:example.com","origin_server_ts":300,"prev_events":["A","B"],"auth_events":["CREATE","JOIN","PL"],"content":{}}
+    "#,
+    );
+    let events_map: HashMap<String, LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    // B (ts=200) should win the topic slot
+    assert_eq!(
+        state.get(&("m.room.topic".into(), String::new())),
+        Some(&"B".to_string()),
+        "Later timestamp should win in trivial conflict fast path"
+    );
+}
+
+/// Tests that when origin_server_ts ties, the lexicographically larger
+/// event_id wins (spec tie-breaking rule).
+///
+/// Both A and B have ts=100, but "B" > "A" lexicographically → B wins.
+#[test]
+fn test_trivial_conflict_fast_path_ts_tie_falls_back_to_event_id() {
+    let events: Vec<LeanEvent> = utils::parse_jsonl_events(
+        r#"
+{"event_id":"CREATE","type":"m.room.create","state_key":"","sender":"@alice:example.com","origin_server_ts":1,"prev_events":[],"auth_events":[],"content":{}}
+{"event_id":"JOIN","type":"m.room.member","state_key":"@alice:example.com","sender":"@alice:example.com","origin_server_ts":2,"prev_events":["CREATE"],"auth_events":["CREATE"],"content":{"membership":"join"}}
+{"event_id":"PL","type":"m.room.power_levels","state_key":"","sender":"@alice:example.com","origin_server_ts":3,"prev_events":["JOIN"],"auth_events":["CREATE","JOIN"],"content":{"users":{"@alice:example.com":100}}}
+{"event_id":"A","type":"m.room.topic","state_key":"","sender":"@alice:example.com","origin_server_ts":100,"prev_events":["PL"],"auth_events":["CREATE","JOIN","PL"],"content":{}}
+{"event_id":"B","type":"m.room.topic","state_key":"","sender":"@alice:example.com","origin_server_ts":100,"prev_events":["PL"],"auth_events":["CREATE","JOIN","PL"],"content":{}}
+{"event_id":"D","type":"m.room.message","sender":"@alice:example.com","origin_server_ts":300,"prev_events":["A","B"],"auth_events":["CREATE","JOIN","PL"],"content":{}}
+    "#,
+    );
+    let events_map: HashMap<String, LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    // Same ts=100, so event_id tiebreak: "B" > "A" → B wins
+    assert_eq!(
+        state.get(&("m.room.topic".into(), String::new())),
+        Some(&"B".to_string()),
+        "Equal timestamps should fall back to lexicographic event_id comparison"
+    );
+}
+
+/// Tests that a power event conflict (e.g., competing PL events) correctly
+/// falls through to the full resolution pipeline, NOT the trivial fast path.
+#[test]
+fn test_trivial_conflict_power_event_fallthrough() {
+    let events: Vec<LeanEvent> = utils::parse_jsonl_events(
+        r#"
+{"event_id":"CREATE","type":"m.room.create","state_key":"","sender":"@alice:example.com","origin_server_ts":1,"prev_events":[],"auth_events":[],"content":{}}
+{"event_id":"JOIN","type":"m.room.member","state_key":"@alice:example.com","sender":"@alice:example.com","origin_server_ts":2,"prev_events":["CREATE"],"auth_events":["CREATE"],"content":{"membership":"join"}}
+{"event_id":"PL_A","type":"m.room.power_levels","state_key":"","sender":"@alice:example.com","origin_server_ts":100,"prev_events":["JOIN"],"auth_events":["CREATE","JOIN"],"content":{"users":{"@alice:example.com":100}}}
+{"event_id":"PL_B","type":"m.room.power_levels","state_key":"","sender":"@alice:example.com","origin_server_ts":200,"prev_events":["JOIN"],"auth_events":["CREATE","JOIN"],"content":{"users":{"@alice:example.com":100}}}
+{"event_id":"D","type":"m.room.message","sender":"@alice:example.com","origin_server_ts":300,"prev_events":["PL_A","PL_B"],"auth_events":["CREATE","JOIN"],"content":{}}
+    "#,
+    );
+    let events_map: HashMap<String, LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    assert!(
+        state.contains_key(&("m.room.power_levels".into(), String::new())),
+        "Power level conflict must be resolved by full pipeline"
+    );
+}
+
+/// Tests that forks with no create event in unconflicted state bail to
+/// full resolution (the fast path can't auth-check without create).
+#[test]
+fn test_trivial_conflict_no_create_bails_to_full_pipeline() {
+    let events: Vec<LeanEvent> = utils::parse_jsonl_events(
+        r#"
+{"event_id":"A","type":"m.room.message","sender":"@alice:example.com","origin_server_ts":1,"prev_events":[],"auth_events":[],"content":{}}
+{"event_id":"B","type":"m.room.name","state_key":"","sender":"@alice:example.com","origin_server_ts":100,"prev_events":["A"],"auth_events":[],"content":{}}
+{"event_id":"C","type":"m.room.name","state_key":"","sender":"@alice:example.com","origin_server_ts":200,"prev_events":["A"],"auth_events":[],"content":{}}
+{"event_id":"D","type":"m.room.message","sender":"@alice:example.com","origin_server_ts":300,"prev_events":["B","C"],"auth_events":[],"content":{}}
+    "#,
+    );
+    let events_map: HashMap<String, LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    assert!(
+        state.is_empty(),
+        "Missing create event should result in empty state (fast path bails, full pipeline rejects all)"
+    );
 }

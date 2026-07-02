@@ -353,7 +353,8 @@ where
 
         // Check cache first
         if let Some(cached) = pl_parent_cache.get(&eid) {
-            #[allow(clippy::assigning_clones)] // `current` was consumed by while-let, no alloc to reuse
+            #[allow(clippy::assigning_clones)]
+            // `current` was consumed by while-let, no alloc to reuse
             {
                 current = cached.clone();
             }
@@ -385,12 +386,12 @@ where
 
             // Cache all visited non-PL events as having this PL ancestor
             // (or None if no PL was found)
-            for vid in &visited {
-                if let Some(vev) = auth_context.get_event(vid) {
-                    if vev.event_type != M_ROOM_POWER_LEVELS {
-                        pl_parent_cache.entry(vid.clone()).or_insert(found.clone());
-                    }
-                }
+            for vid in visited.iter().filter(|v| {
+                auth_context
+                    .get_event(v)
+                    .is_some_and(|e| e.event_type != M_ROOM_POWER_LEVELS)
+            }) {
+                pl_parent_cache.entry(vid.clone()).or_insert(found.clone());
             }
         }
 
