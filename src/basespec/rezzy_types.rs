@@ -696,27 +696,15 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     /// anything.  The only production impl (`serde_json::Value`) overrides this.
     /// Custom implementations **must** override this for PL map validation to
     /// detect escalation in the `events` map.
-    fn iter_event_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
-        alloc::vec::Vec::new()
-    }
+    fn iter_event_power_levels(&self) -> alloc::vec::Vec<(&str, i64)>;
 
     /// Iterate over `(user_id, power_level)` entries in the `users` map.
     /// Used by Rule 10 PL validation to compare old vs new `users` entries.
-    ///
-    /// See [`iter_event_power_levels`](Self::iter_event_power_levels) for safety
-    /// rationale of the empty default.
-    fn iter_user_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
-        alloc::vec::Vec::new()
-    }
+    fn iter_user_power_levels(&self) -> alloc::vec::Vec<(&str, i64)>;
 
     /// Iterate over `(key, power_level)` entries in the `notifications` map.
     /// Used by Rule 10.7–10.8 PL validation to compare old vs new `notifications`.
-    ///
-    /// See [`iter_event_power_levels`](Self::iter_event_power_levels) for safety
-    /// rationale of the empty default.
-    fn iter_notification_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
-        alloc::vec::Vec::new()
-    }
+    fn iter_notification_power_levels(&self) -> alloc::vec::Vec<(&str, i64)>;
 
     /// Rule 10.1 (V12): Returns the name of any scalar PL property that is
     /// present but not an integer (or integer-coercible string).
@@ -733,7 +721,8 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     /// Rule 10.3: Returns true if `users` is present but is not an object,
     /// or contains any non-integer values.  Unlike `find_non_integer_map_pl`,
     /// this applies to **all** room versions, not just V12+.
-    fn has_non_integer_users_pl(&self) -> bool {
+    fn has_non_integer_users_pl(&self, strict: bool) -> bool {
+        let _ = strict;
         false
     }
 
@@ -971,7 +960,8 @@ impl EventContent for Value {
         ];
         for &(field, label) in scalars {
             if let Some(val) = self.get(field) {
-                if coerce_json_to_i64(val).is_none() {
+                // V10+ strict integer checking (forbids strings/floats)
+                if !val.is_i64() && !val.is_u64() {
                     return Some(label);
                 }
             }
@@ -992,7 +982,8 @@ impl EventContent for Value {
                 };
 
                 for v in obj.values() {
-                    if coerce_json_to_i64(v).is_none() {
+                    // V10+ strict integer checking
+                    if !v.is_i64() && !v.is_u64() {
                         return Some(label);
                     }
                 }
@@ -1001,12 +992,18 @@ impl EventContent for Value {
         None
     }
 
-    fn has_non_integer_users_pl(&self) -> bool {
+    fn has_non_integer_users_pl(&self, strict: bool) -> bool {
         use crate::basespec::event_types::FIELD_USERS;
         if let Some(val) = self.get(FIELD_USERS) {
             if let Some(obj) = val.as_object() {
                 for v in obj.values() {
-                    if coerce_json_to_i64(v).is_none() {
+                    if strict {
+                        // V10+ strict integer checking
+                        if !v.is_i64() && !v.is_u64() {
+                            return true;
+                        }
+                    } else if coerce_json_to_i64(v).is_none() {
+                        // V1-V9 allows coercible strings
                         return true;
                     }
                 }

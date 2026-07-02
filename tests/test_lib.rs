@@ -3948,6 +3948,15 @@ fn test_event_content_default_trait_methods() {
         fn get_join_authorised_via_users_server(&self) -> Option<&str> {
             None
         }
+        fn iter_event_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+            alloc::vec::Vec::new()
+        }
+        fn iter_user_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+            alloc::vec::Vec::new()
+        }
+        fn iter_notification_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+            alloc::vec::Vec::new()
+        }
     }
 
     let c = MinimalContent;
@@ -4467,6 +4476,15 @@ fn test_event_content_get_room_version() {
         }
         fn get_join_authorised_via_users_server(&self) -> Option<&str> {
             None
+        }
+        fn iter_event_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+            alloc::vec::Vec::new()
+        }
+        fn iter_user_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+            alloc::vec::Vec::new()
+        }
+        fn iter_notification_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+            alloc::vec::Vec::new()
         }
     }
 

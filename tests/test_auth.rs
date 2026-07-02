@@ -3481,6 +3481,20 @@ fn test_pl_v2_scalar_not_integer_allowed() {
     );
 }
 
+/// Rule 2.4 / 10.1: `get_room_version_num` panics if m.room.create is absent.
+/// This enforces the invariant that the create event must be in the state.
+#[test]
+#[should_panic(expected = "m.room.create must exist in state (Rule 2.4)")]
+fn test_pl_missing_create_event_panics() {
+    let state = utils::parse_jsonl_state(
+        r#"{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}"#,
+    );
+    let events = utils::parse_jsonl_events(
+        r#"{"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {}}"#,
+    );
+    let _ = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+}
+
 /// Rule 10.2 (V12): `events` map with non-integer value → reject.
 #[test]
 fn test_pl_v12_events_map_non_integer_rejected() {

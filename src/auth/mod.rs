@@ -395,11 +395,10 @@ pub fn check_auth<
         }
 
         // Rule 10.3: `users` keys must be valid user IDs with integer values.
-        // Integer value check applies V10+ (same as 10.1/10.2).
-        // User ID key format validation applies to all versions.
-        if is_room_v10_plus && new_content.has_non_integer_users_pl() {
+        // Applies to ALL versions. Strict JSON integers required in V10+, coercible strings allowed in V9-.
+        if new_content.has_non_integer_users_pl(is_room_v10_plus) {
             return Err(AuthError::InvalidSyntax(
-                "m.room.power_levels users contains non-integer value".into(),
+                "m.room.power_levels users contains non-integer value or is not an object".into(),
             ));
         }
         for user_id in new_content.iter_user_keys() {

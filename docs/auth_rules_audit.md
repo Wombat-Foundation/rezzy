@@ -70,10 +70,10 @@ authorization rules. Three distinct rule sets exist:
 
 | #     | Sub-rule                                                      | Versions | rezzy | Notes                                                |
 | ----- | ------------------------------------------------------------- | -------- | ----- | ---------------------------------------------------- |
-| 10.1  | Validate scalar PL properties are integers                    | V12      | [x]   | `find_non_integer_scalar_pl` on EventContent         |
-| 10.2  | Validate `events`/`notifications` are objects with int values | V12      | [x]   | `find_non_integer_map_pl` on EventContent            |
+| 10.1  | Validate scalar PL properties are integers                    | V10+     | [x]   | `find_non_integer_scalar_pl` on EventContent         |
+| 10.2  | Validate `events`/`notifications` are objects with int values | V10+     | [x]   | `find_non_integer_map_pl` on EventContent            |
 | 10.3  | `users` must be object with valid user ID keys + int values   | all      | [x]   | `check_power_levels_rules` validates `@` + `:`       |
-| 10.4  | Reject if `users` contains creator IDs                        | V12      | [x]   | `has_user_in_users` + `has_additional_creator` check |
+| 10.4  | Reject if `users` contains creator IDs                        | V12+     | [x]   | `has_user_in_users` + `has_additional_creator` check |
 | 10.5  | Allow if no previous PL event                                 | all      | [x]   | `is_first_pl` skip logic                             |
 | 10.6  | Validate PL property changes don't exceed sender PL           | all      | [x]   | `check_scalar_pl` helper — old/new > sender rejected |
 | 10.7  | Validate `events`/`notifications` changes                     | all      | [x]   | Events map diff — old value > sender PL rejected     |
