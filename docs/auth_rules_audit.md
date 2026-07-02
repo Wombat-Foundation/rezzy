@@ -39,7 +39,7 @@ authorization rules. Three distinct rule sets exist:
 
 | #     | Sub-rule                                                         | Versions | rezzy | Notes                                                 |
 | ----- | ---------------------------------------------------------------- | -------- | ----- | ----------------------------------------------------- |
-| 5.1   | Reject if no `state_key` or no `membership` in content           | all      | [ ]   | Not explicitly checked                                |
+| 5.1   | Reject if no `state_key` or no `membership` in content           | all      | [x]   | `InvalidStateKey` / `InvalidSyntax`                   |
 | 5.2   | `join_authorised_via_users_server` signature check               | V8+      | [o]   | Signature validation is HS-side, not rezzy            |
 | 5.3.1 | **join**: creator can always join (first event is create)        | all      | [x]   | `is_creator` check                                    |
 | 5.3.2 | **join**: sender must match state_key                            | all      | [x]   | `InvalidStateKey`                                     |
@@ -95,7 +95,7 @@ authorization rules. Three distinct rule sets exist:
 5. **Rule 2.x**: auth_events validation (duplicates, wrong types, wrong room_id)
 6. **Rule 3**: `m.federate` enforcement
 7. **Rule 1.2–1.4**: m.room.create content validation
-8. **Rule 5.1**: Missing state_key/membership presence check
+8. ~~**Rule 5.1**: Missing state_key/membership presence check~~ — FIXED
 
 ### Low (version-specific, rarely triggered)
 
