@@ -685,6 +685,18 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     fn has_third_party_invite_signatures(&self) -> bool {
         false
     }
+
+    /// Iterate over `(event_type, power_level)` entries in the `events` map.
+    /// Used by Rule 10 PL validation to compare old vs new `events` entries.
+    fn iter_event_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+        alloc::vec::Vec::new()
+    }
+
+    /// Iterate over `(user_id, power_level)` entries in the `users` map.
+    /// Used by Rule 10 PL validation to compare old vs new `users` entries.
+    fn iter_user_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+        alloc::vec::Vec::new()
+    }
 }
 
 /// Caller-provided event verification pipeline.
@@ -851,6 +863,32 @@ impl EventContent for Value {
             .and_then(|signed| signed.get(crate::basespec::event_types::FIELD_SIGNATURES))
             .and_then(|s| s.as_object())
             .is_some_and(|m| !m.is_empty())
+    }
+
+    fn iter_event_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+        self.get(crate::basespec::event_types::FIELD_EVENTS)
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| {
+                        coerce_json_to_i64(v).map(|pl| (k.as_str(), pl.min(MAX_POWER_LEVEL_JSON)))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn iter_user_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+        self.get(crate::basespec::event_types::FIELD_USERS)
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| {
+                        coerce_json_to_i64(v).map(|pl| (k.as_str(), pl.min(MAX_POWER_LEVEL_JSON)))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 

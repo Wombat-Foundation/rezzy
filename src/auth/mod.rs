@@ -185,7 +185,7 @@ impl<Id, C> StateProvider<Id, C> for RoomState<Id, C> {
 pub fn check_auth<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
     state: &impl StateProvider<Id, C>,
@@ -318,11 +318,170 @@ pub fn check_auth<
         }
     }
 
+    // Rule 10: m.room.power_levels validation
+    // (Rule 10.5 — first PL event — is handled above by the is_first_pl skip.)
+    if event_type == M_ROOM_POWER_LEVELS {
+        if let Some(prev_pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
+            let sender_pl = user::get_sender_power_level(event.sender(), state, version);
+            check_power_levels_rules(
+                event.sender(),
+                event.content(),
+                prev_pl_event.content(),
+                sender_pl,
+            )?;
+        }
+    }
+
     // Rule 5: m.room.member state_key validation
     if event_type == M_ROOM_MEMBER {
         check_membership_rules(event, state, version, verifier)?;
     }
 
+    Ok(())
+}
+
+/// Validate `m.room.power_levels` changes per spec Rules 10.3, 10.6–10.10.
+///
+/// Called only when there is an existing PL event in state (Rule 10.5 is
+/// handled by the `is_first_pl` skip in `check_auth`).
+fn check_power_levels_rules<
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+>(
+    sender: &str,
+    new_content: &C,
+    prev_pl: &C,
+    sender_pl: i64,
+) -> Result<(), AuthError<Id>> {
+    use alloc::collections::BTreeMap;
+
+    // Rule 10.3: Validate `users` keys are valid user IDs with integer values.
+    for (user_id, _pl) in new_content.iter_user_power_levels() {
+        if !user_id.starts_with('@') || !user_id.contains(':') {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "users key is not a valid user ID: {user_id}"
+            )));
+        }
+    }
+
+    // Rule 10.6: Scalar PL properties — reject if old or new value > sender PL.
+    check_scalar_pl(
+        "users_default",
+        prev_pl.get_users_default(),
+        new_content.get_users_default(),
+        sender_pl,
+    )?;
+    check_scalar_pl(
+        "events_default",
+        prev_pl.get_events_default(),
+        new_content.get_events_default(),
+        sender_pl,
+    )?;
+    check_scalar_pl(
+        "state_default",
+        prev_pl.get_state_default(),
+        new_content.get_state_default(),
+        sender_pl,
+    )?;
+    check_scalar_pl("ban", prev_pl.get_ban(), new_content.get_ban(), sender_pl)?;
+    check_scalar_pl(
+        "redact",
+        prev_pl.get_redact(),
+        new_content.get_redact(),
+        sender_pl,
+    )?;
+    check_scalar_pl(
+        "kick",
+        prev_pl.get_kick(),
+        new_content.get_kick(),
+        sender_pl,
+    )?;
+    check_scalar_pl(
+        "invite",
+        prev_pl.get_invite(),
+        new_content.get_invite(),
+        sender_pl,
+    )?;
+
+    // Rules 10.7–10.8: events map changes.
+    let old_events: BTreeMap<&str, i64> = prev_pl.iter_event_power_levels().into_iter().collect();
+    let new_events: BTreeMap<&str, i64> =
+        new_content.iter_event_power_levels().into_iter().collect();
+
+    // Rule 10.7: entries changed or removed — current value must not exceed sender PL.
+    for (key, &old_val) in &old_events {
+        let changed = new_events.get(key).is_none_or(|&nv| nv != old_val);
+        if changed && old_val > sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot change events[{key}]: current value {old_val} > sender PL {sender_pl}"
+            )));
+        }
+    }
+    // Rule 10.8: entries added or changed — new value must not exceed sender PL.
+    for (key, &new_val) in &new_events {
+        let changed = old_events.get(key).is_none_or(|&ov| ov != new_val);
+        if changed && new_val > sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot set events[{key}] to {new_val}: exceeds sender PL {sender_pl}"
+            )));
+        }
+    }
+
+    // Rules 10.9–10.10: users map changes.
+    let old_users: BTreeMap<&str, i64> = prev_pl.iter_user_power_levels().into_iter().collect();
+    let new_users: BTreeMap<&str, i64> = new_content.iter_user_power_levels().into_iter().collect();
+
+    // Rule 10.9: entries changed or removed (excluding sender's own entry).
+    // Current value must be strictly less than sender PL (i.e. >= is rejected).
+    for (key, &old_val) in &old_users {
+        if *key == sender {
+            continue; // sender's own entry is exempt
+        }
+        let changed = new_users.get(key).is_none_or(|&nv| nv != old_val);
+        if changed && old_val >= sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot change users[{key}]: current PL {old_val} >= sender PL {sender_pl}"
+            )));
+        }
+    }
+    // Rule 10.10: entries added or changed — new value must not exceed sender PL.
+    for (key, &new_val) in &new_users {
+        let changed = old_users.get(key).is_none_or(|&ov| ov != new_val);
+        if changed && new_val > sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot set users[{key}] to {new_val}: exceeds sender PL {sender_pl}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Helper for Rule 10.6: reject if a scalar PL property was changed and
+/// either the old or new value exceeds the sender's power level.
+fn check_scalar_pl<Id>(
+    field: &str,
+    old: Option<i64>,
+    new: Option<i64>,
+    sender_pl: i64,
+) -> Result<(), AuthError<Id>> {
+    if old == new {
+        return Ok(());
+    }
+    if let Some(old_val) = old {
+        if old_val > sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot change {field}: current value {old_val} > sender PL {sender_pl}"
+            )));
+        }
+    }
+    if let Some(new_val) = new {
+        if new_val > sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot set {field} to {new_val}: exceeds sender PL {sender_pl}"
+            )));
+        }
+    }
     Ok(())
 }
 
