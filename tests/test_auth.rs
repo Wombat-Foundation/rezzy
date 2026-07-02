@@ -3564,3 +3564,24 @@ fn test_pl_v12_users_contains_additional_creator_rejected() {
         "users containing additional_creator should be rejected in V12: {res:?}"
     );
 }
+
+/// Rule 10.2 (V12): `notifications` map with non-integer value → reject.
+#[test]
+fn test_pl_v12_notifications_non_integer_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
+"#,
+    );
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"notifications": {"room": "not_a_number"}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+    assert!(
+        res.is_err(),
+        "Non-integer notifications value should be rejected in V12: {res:?}"
+    );
+}
