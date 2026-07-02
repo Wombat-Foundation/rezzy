@@ -219,19 +219,24 @@ impl<Id: EventId, C> DagNode for LeanEvent<Id, C> {
 ///
 /// # For downstream homeservers
 ///
-/// Implement this trait on your native event type (e.g. `PduEvent`) to call
-/// `check_auth` and `resolve_iterative_sort` without converting to `LeanEvent`.
-/// This eliminates all string cloning, content serialization, and `Vec`
-/// allocation at the rezzy boundary.
+/// The recommended path is [`RawEvent`] + [`ParsedEvent`], which gives you
+/// `DagNode + EventLike` for free with ~9 one-liner field accessors.
+///
+/// If you need full control (e.g. typed content without JSON parsing),
+/// implement `EventLike` directly with a [`Content`](Self::Content) type
+/// that implements [`EventContent`].
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// impl EventLike for PduEvent {
-///     fn event_type(&self) -> Cow<'_, str> { self.kind.to_cow_str() }
-///     fn sender(&self) -> &str { self.sender.as_str() }
-///     fn get_membership(&self) -> Option<&str> { /* read from typed content */ }
-///     // ...
+/// // Recommended: use RawEvent + ParsedEvent (see RawEvent docs).
+/// // Direct impl only needed for custom Content types:
+/// impl EventLike for MyEvent {
+///     type Content = serde_json::Value;
+///     fn event_type(&self) -> Cow<'_, str> { /* ... */ }
+///     fn sender(&self) -> &str { /* ... */ }
+///     fn content(&self) -> &serde_json::Value { &self.parsed_content }
+///     // ... remaining structural accessors
 /// }
 /// ```
 pub trait EventLike: DagNode {
@@ -386,25 +391,40 @@ impl<Id: EventId, C: EventContent> EventLike for LeanEvent<Id, C> {
 ///
 /// Implement this on your native PDU type (~9 one-liner field accessors),
 /// then wrap with [`ParsedEvent`] to get [`DagNode`] + [`EventLike`] for free.
+/// Content is parsed once from raw JSON at [`ParsedEvent::new`] time; all
+/// 20 content accessors (`get_membership`, `get_join_rule`, etc.) are
+/// inherited automatically.
 ///
-/// # Example
+/// # Example (from [continuwuity](https://github.com/girlbossceo/conduwuit))
 ///
 /// ```rust,ignore
-/// impl RawEvent for MyPdu {
+/// impl rezzy::RawEvent for Pdu {
 ///     type Id = OwnedEventId;
+///
 ///     fn raw_event_id(&self) -> &OwnedEventId { &self.event_id }
-///     fn raw_event_type(&self) -> Cow<'_, str> { self.kind.to_cow_str() }
+///
+///     /// `TimelineEventType` enum → `"m.room.member"` etc.
+///     fn raw_event_type(&self) -> Cow<'_, str> {
+///         Cow::Owned(self.kind.to_string())
+///     }
+///
+///     /// `OwnedUserId` → `"@user:server"`
 ///     fn raw_sender(&self) -> &str { self.sender.as_str() }
+///
+///     /// `Option<StateKey>` → `Option<&str>`
 ///     fn raw_state_key(&self) -> Option<&str> { self.state_key.as_deref() }
+///
+///     /// `Box<RawJsonValue>` → raw JSON string
 ///     fn raw_content_json(&self) -> &str { self.content.get() }
+///
 ///     fn raw_prev_events(&self) -> &[OwnedEventId] { &self.prev_events }
 ///     fn raw_auth_events(&self) -> &[OwnedEventId] { &self.auth_events }
 ///     fn raw_depth(&self) -> u64 { self.depth.into() }
 ///     fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts.into() }
 /// }
 ///
-/// // Then:
-/// let event = ParsedEvent::new(&my_pdu);
+/// // Usage — zero boilerplate, one JSON parse:
+/// let event = rezzy::ParsedEvent::new(&pdu);
 /// rezzy::auth::check_auth(&event, &state, version, None)?;
 /// ```
 pub trait RawEvent {
