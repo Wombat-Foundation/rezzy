@@ -84,7 +84,7 @@ pub(crate) struct OverlayState<'a, Id, C, S1, S2> {
 }
 
 impl<
-        Id: Clone + Eq + core::hash::Hash + Ord,
+        Id: crate::basespec::rezzy_types::EventId,
         C: crate::basespec::rezzy_types::EventContent,
         S1: core::hash::BuildHasher,
         S2: core::hash::BuildHasher,
@@ -189,7 +189,7 @@ impl<
 /// Authenticates an event against the current resolved state and an optional local auth context.
 /// Ensures the event complies with the Matrix spec rules for its given type.
 pub(crate) fn iterative_auth_ok<
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    Id: crate::basespec::rezzy_types::EventId,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
@@ -254,7 +254,7 @@ pub(crate) fn compute_local_auth<Id, C, S1, S2>(
     version: StateResVersion,
 ) -> BTreeMap<(String, String), LeanEvent<Id, C>>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    Id: crate::basespec::rezzy_types::EventId,
     C: Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
@@ -362,7 +362,7 @@ pub fn compute_state_at<Id, C, Q, S>(
     version: StateResVersion,
 ) -> Option<BTreeMap<(String, String), Id>>
 where
-    Id: Clone + Eq + Ord + core::fmt::Debug + core::hash::Hash + core::borrow::Borrow<Q>,
+    Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + Ord + core::hash::Hash,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
@@ -409,7 +409,7 @@ pub fn compute_state_at_batch<Id, C, Q, S>(
     version: StateResVersion,
 ) -> HashMap<Id, BTreeMap<(String, String), Id>>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
+    Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
@@ -468,7 +468,7 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F>(
     version: StateResVersion,
     mut on_target_resolved: F,
 ) where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
+    Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
@@ -511,7 +511,7 @@ pub fn try_compute_state_at_streaming<Id, C, Q, S, F, E>(
     mut on_target_resolved: F,
 ) -> Result<(), StateComputationError<E>>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::borrow::Borrow<Q>,
+    Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
@@ -567,7 +567,7 @@ fn run_state_pipeline_streaming<'a, Id, C, S, F, E>(
     mut on_target: F,
 ) -> Result<(), StateComputationError<E>>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
     F: FnMut(usize, SharedState<Id>) -> Result<(), E>,
@@ -682,7 +682,7 @@ pub fn compute_merge_base<'a, Id, Q, S, Node>(
     events_map: &'a HashMap<Id, Node, S>,
 ) -> Option<&'a Id>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::borrow::Borrow<Q>,
+    Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
     Node: crate::basespec::rezzy_types::DagNode<Id = Id>,
@@ -754,7 +754,7 @@ fn collect_ancestor_short_ids_batch<'a, Id, C, S>(
     events_map: &'a HashMap<Id, LeanEvent<Id, C>, S>,
 ) -> (HashMap<&'a Id, usize>, Vec<&'a Id>)
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: Clone,
 {
@@ -801,7 +801,7 @@ fn topological_sort_short_ids<Id, C, S>(
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
 ) -> (Vec<usize>, Vec<usize>)
 where
-    Id: Clone + Eq + core::hash::Hash,
+    Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: Clone,
 {
@@ -853,7 +853,7 @@ fn resolve_merge_fast_path<Id, C, S>(
     version: StateResVersion,
 ) -> SharedState<Id>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
 {
@@ -879,7 +879,7 @@ fn resolve_multiple_prev_states<Id, C, S>(
     version: StateResVersion,
 ) -> SharedState<Id>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
 {
@@ -946,7 +946,7 @@ fn compute_auth_chain_diff<Id, C, S>(
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
 ) -> hashbrown::HashSet<Id>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
 {

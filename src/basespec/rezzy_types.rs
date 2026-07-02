@@ -28,8 +28,11 @@ use crate::basespec::event_types::MAX_POWER_LEVEL_JSON;
 /// this trait via a blanket impl. In practice, this is either `String` (for
 /// human-readable event IDs like `$abc123:example.com`) or `u32`/`u64` (for
 /// integer-interned short IDs used by homeservers).
-pub trait EventId: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug {}
-impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug> EventId for T {}
+pub trait EventId:
+    Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display
+{
+}
+impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display> EventId for T {}
 
 /// Selects which state resolution algorithm to use.
 ///

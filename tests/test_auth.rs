@@ -3646,3 +3646,267 @@ fn test_pl_validation_notifications_old_value_too_high_rejected() {
         "Lowering notifications with old value > own PL should be rejected: {res:?}"
     );
 }
+
+#[test]
+fn test_forward_extremity_validation_valid() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    state.insert(
+        ("m.room.member".into(), "@alice:x.com".into()),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@alice:x.com"),
+            "@alice:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let event = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:x.com",
+        json!({"body": "hello"}),
+    );
+
+    // Pass same state for both to ensure it's valid
+    let result =
+        validate_forward_extremity(&event, &state, &state, rezzy::StateResVersion::V2_1, None);
+    assert_eq!(result, ForwardExtremityResult::Valid);
+}
+
+#[test]
+fn test_forward_extremity_validation_rejected() {
+    let mut auth_state = RoomState::new();
+    // No join event for alice in auth_state!
+    auth_state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+
+    let mut room_state = RoomState::new();
+    room_state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+
+    let event = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:x.com",
+        json!({"body": "hello"}),
+    );
+
+    // Fails the auth_events check -> Rejected
+    let result = validate_forward_extremity(
+        &event,
+        &auth_state,
+        &room_state,
+        rezzy::StateResVersion::V2_1,
+        None,
+    );
+    assert!(matches!(result, ForwardExtremityResult::Rejected(_)));
+}
+
+#[test]
+fn test_forward_extremity_validation_soft_failed() {
+    let mut auth_state = RoomState::new();
+    // Alice is joined in auth_state
+    auth_state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    auth_state.insert(
+        ("m.room.member".into(), "@alice:x.com".into()),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@alice:x.com"),
+            "@alice:x.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let mut room_state = RoomState::new();
+    // Alice is BANNED in room_state
+    room_state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", M_ROOM_CREATE, Some(""), "@admin:x.com", json!({})),
+    );
+    room_state.insert(
+        ("m.room.member".into(), "@alice:x.com".into()),
+        make_event(
+            "$ban",
+            "m.room.member",
+            Some("@alice:x.com"),
+            "@admin:x.com",
+            json!({"membership": "ban"}),
+        ),
+    );
+
+    let event = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:x.com",
+        json!({"body": "hello"}),
+    );
+
+    // Passes auth_state, fails room_state -> SoftFailed
+    let result = validate_forward_extremity(
+        &event,
+        &auth_state,
+        &room_state,
+        rezzy::StateResVersion::V2_1,
+        None,
+    );
+    assert!(matches!(result, ForwardExtremityResult::SoftFailed(_)));
+}
+
+#[test]
+fn test_warn_unexpected_auth_events_v12_create() {
+    let mut auth_context = std::collections::HashMap::new();
+    let create_event = make_event(
+        "$c",
+        rezzy::basespec::event_types::M_ROOM_CREATE,
+        Some(""),
+        "@alice:x.com",
+        json!({}),
+    );
+    auth_context.insert("$c".to_string(), create_event);
+
+    let mut event = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:x.com",
+        json!({"body": "hello"}),
+    );
+    event.auth_events = vec!["$c".to_string()];
+
+    // Should hit the v12+ m.room.create branch
+    warn_unexpected_auth_events(&event, &auth_context, rezzy::StateResVersion::V2_1);
+}
+
+#[test]
+fn test_warn_unexpected_auth_events_unexpected_type() {
+    let mut auth_context = std::collections::HashMap::new();
+    let unexpected_event = make_event(
+        "$u",
+        "m.room.message",
+        None,
+        "@alice:x.com",
+        json!({"body": "hello"}),
+    );
+    auth_context.insert("$u".to_string(), unexpected_event);
+
+    let mut event = make_event(
+        "$msg2",
+        "m.room.message",
+        None,
+        "@alice:x.com",
+        json!({"body": "world"}),
+    );
+    event.auth_events = vec!["$u".to_string()];
+
+    // Should hit the unexpected auth type branch
+    warn_unexpected_auth_events(&event, &auth_context, rezzy::StateResVersion::V1);
+}
+
+#[test]
+fn test_warn_unexpected_auth_events_valid() {
+    let mut auth_context = std::collections::HashMap::new();
+    let member_event = make_event(
+        "$j",
+        rezzy::basespec::event_types::M_ROOM_MEMBER,
+        Some("@alice:x.com"),
+        "@alice:x.com",
+        json!({"membership": "join"}),
+    );
+    auth_context.insert("$j".to_string(), member_event);
+
+    let mut event = make_event(
+        "$msg3",
+        "m.room.message",
+        None,
+        "@alice:x.com",
+        json!({"body": "ok"}),
+    );
+    event.auth_events = vec!["$j".to_string()];
+
+    // Should not hit any warnings
+    warn_unexpected_auth_events(&event, &auth_context, rezzy::StateResVersion::V1);
+}
+
+#[test]
+fn test_pl_v10_users_contains_non_integer_rejected() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", rezzy::basespec::event_types::M_ROOM_CREATE, Some(""), "@admin:x.com", json!({"room_version": "10"})),
+    );
+    let pl = make_event(
+        "$pl",
+        rezzy::basespec::event_types::M_ROOM_POWER_LEVELS,
+        Some(""),
+        "@admin:x.com",
+        json!({
+            "users": {
+                "@alice:x.com": "50" // string instead of integer
+            }
+        }),
+    );
+    assert!(
+        matches!(
+            check_auth(&pl, &state, rezzy::StateResVersion::V2, None),
+            Err(AuthError::InvalidSyntax(_))
+        ),
+        "V10 power levels with non-integer users value must be rejected"
+    );
+}
+
+#[test]
+fn test_pl_v10_users_not_an_object_rejected() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event("$c", rezzy::basespec::event_types::M_ROOM_CREATE, Some(""), "@admin:x.com", json!({"room_version": "10"})),
+    );
+    let pl = make_event(
+        "$pl",
+        rezzy::basespec::event_types::M_ROOM_POWER_LEVELS,
+        Some(""),
+        "@admin:x.com",
+        json!({
+            "users": ["@alice:x.com"] // array instead of object
+        }),
+    );
+    assert!(
+        matches!(
+            check_auth(&pl, &state, rezzy::StateResVersion::V2, None),
+            Err(AuthError::InvalidSyntax(_))
+        ),
+        "V10 power levels with non-object users must be rejected"
+    );
+}
+
+#[test]
+fn test_auth_types_for_event_join_authorised_via_users_server() {
+    let content = json!({
+        "membership": "join",
+        "join_authorised_via_users_server": "@admin:x.com"
+    });
+    let types = auth_types_for_event(
+        "m.room.member",
+        "@alice:x.com",
+        Some("@alice:x.com"),
+        &content,
+        StateResVersion::V2_1,
+    );
+    assert!(types.contains(&("m.room.member".to_string(), "@admin:x.com".to_string())));
+}

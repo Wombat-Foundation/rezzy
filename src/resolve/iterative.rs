@@ -35,7 +35,7 @@ use alloc::{string::String, vec::Vec};
 
 /// Prepares the conflicted events map and tracks original conflicted keys before CDO pre-filtering.
 pub(crate) fn prepare_conflicted_and_keys<
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
@@ -69,7 +69,7 @@ pub(crate) fn prepare_conflicted_and_keys<
 /// [v2-spec]: https://spec.matrix.org/v1.13/rooms/v2/#state-resolution
 /// Expands the auth chains for a set of V2 power events, building an auth context.
 pub fn expand_v2_power_events_auth_chains<
-    Id: Clone + Eq + core::hash::Hash,
+    Id: crate::basespec::rezzy_types::EventId,
     C: Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
@@ -97,7 +97,7 @@ pub fn expand_v2_power_events_auth_chains<
 
 /// MSC4297 (v2.1+): Routes administrative ancestral power events from `auth_context` into `power_events`.
 pub(crate) fn route_msc4297_ancestral_power_events<
-    Id: Clone + Eq + core::hash::Hash + Ord,
+    Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,

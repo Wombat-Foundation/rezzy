@@ -37,7 +37,7 @@ pub enum ResolvePhase {
 /// these for every conflicted event that is auth-checked, regardless of whether
 /// it was accepted or rejected.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ResolutionDelta<Id = String> {
+pub struct ResolutionDelta<Id: crate::basespec::rezzy_types::EventId = String> {
     /// The event that was auth-checked.
     pub event_id: Id,
     /// Whether the event passed the iterative auth check.
@@ -53,13 +53,13 @@ pub struct ResolutionDelta<Id = String> {
 
 /// A single state delta entry — an addition, modification, or deletion.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct StateDelta {
+pub struct StateDelta<Id: crate::basespec::rezzy_types::EventId = String> {
     /// The event type (e.g. `"m.room.member"`).
     pub event_type: String,
     /// The state key (e.g. `"@alice:example.com"` or `""`).
     pub state_key: String,
     /// The new event ID, or `None` if this key was deleted.
-    pub event_id: Option<String>,
+    pub event_id: Option<Id>,
 }
 
 /// Computes the delta between a parent state and the current state.
@@ -71,10 +71,10 @@ pub struct StateDelta {
 ///
 /// If the two states are identical, returns an empty `Vec`.
 #[must_use]
-pub fn compute_state_delta(
-    parent: &crate::state::at::SharedState<String>,
-    current: &crate::state::at::SharedState<String>,
-) -> Vec<StateDelta> {
+pub fn compute_state_delta<Id: crate::basespec::rezzy_types::EventId>(
+    parent: &crate::state::at::SharedState<Id>,
+    current: &crate::state::at::SharedState<Id>,
+) -> Vec<StateDelta<Id>> {
     let mut deltas = Vec::new();
 
     // Additions and modifications
@@ -110,10 +110,10 @@ pub fn compute_state_delta(
 /// - Entries with `event_id = Some(id)` are inserted/overwritten.
 /// - Entries with `event_id = None` are removed from the base.
 #[must_use]
-pub fn apply_state_delta(
-    base: &crate::state::at::SharedState<String>,
-    deltas: &[StateDelta],
-) -> crate::state::at::SharedState<String> {
+pub fn apply_state_delta<Id: crate::basespec::rezzy_types::EventId>(
+    base: &crate::state::at::SharedState<Id>,
+    deltas: &[StateDelta<Id>],
+) -> crate::state::at::SharedState<Id> {
     let mut result = base.clone();
     for delta in deltas {
         let key = (delta.event_type.clone(), delta.state_key.clone());
@@ -138,7 +138,9 @@ pub fn apply_state_delta(
 /// **Not cryptographic** — use SHA-256 (via the `hashing` feature) for
 /// content-addressable storage.
 #[must_use]
-pub fn compute_state_hash(state: &crate::state::at::SharedState<String>) -> String {
+pub fn compute_state_hash<Id: crate::basespec::rezzy_types::EventId>(
+    state: &crate::state::at::SharedState<Id>,
+) -> String {
     // FNV-1a 128-bit offset basis and prime
     // See: <https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function>
     const FNV128_PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
@@ -157,7 +159,8 @@ pub fn compute_state_hash(state: &crate::state::at::SharedState<String>) -> Stri
         }
         hash ^= 0x00;
         hash = hash.wrapping_mul(FNV128_PRIME);
-        for &byte in event_id.as_bytes() {
+        let event_id_str = alloc::format!("{event_id}");
+        for &byte in event_id_str.as_bytes() {
             hash ^= u128::from(byte);
             hash = hash.wrapping_mul(FNV128_PRIME);
         }
@@ -183,18 +186,18 @@ pub const MAX_DELTA_CHAIN_HOPS: usize = 100;
 /// Readers walk backwards from any checkpoint, applying deltas, until they
 /// hit a snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct CompactedCheckpoint {
+pub struct CompactedCheckpoint<Id: crate::basespec::rezzy_types::EventId = String> {
     /// 128-bit FNV-1a hash of the state map at this point.
     pub state_hash: String,
     /// Hash of the parent checkpoint (if any).
     pub parent_hash: Option<String>,
     /// The event ID that produced this checkpoint.
-    pub event_id: String,
+    pub event_id: Id,
     /// Deltas from the parent state. Empty when `snapshot` is `Some`.
-    pub deltas: Vec<StateDelta>,
+    pub deltas: Vec<StateDelta<Id>>,
     /// Full state snapshot, present every [`MAX_DELTA_CHAIN_HOPS`] checkpoints.
     /// When this is `Some`, `deltas` is empty and reconstruction starts here.
-    pub snapshot: Option<crate::state::at::SharedState<String>>,
+    pub snapshot: Option<crate::state::at::SharedState<Id>>,
 }
 
 /// Builds a compacted delta chain from pre-resolved `(event_id, state_map)` pairs,
@@ -208,13 +211,13 @@ pub struct CompactedCheckpoint {
 /// A custom `max_hops` can be provided; pass `None` to use the default
 /// [`MAX_DELTA_CHAIN_HOPS`] (100).
 #[must_use]
-pub fn compute_compacted_delta_chain_from_resolved(
-    resolved_states: impl IntoIterator<Item = (String, crate::state::at::SharedState<String>)>,
+pub fn compute_compacted_delta_chain_from_resolved<Id: crate::basespec::rezzy_types::EventId>(
+    resolved_states: impl IntoIterator<Item = (Id, crate::state::at::SharedState<Id>)>,
     max_hops: Option<usize>,
-) -> Vec<CompactedCheckpoint> {
+) -> Vec<CompactedCheckpoint<Id>> {
     let max_hops = max_hops.unwrap_or(MAX_DELTA_CHAIN_HOPS);
     let mut checkpoints = Vec::new();
-    let mut prev_state: Option<crate::state::at::SharedState<String>> = None;
+    let mut prev_state: Option<crate::state::at::SharedState<Id>> = None;
     let mut prev_hash: Option<String> = None;
     let mut hops_since_snapshot: usize = 0;
 
@@ -257,11 +260,11 @@ pub fn compute_compacted_delta_chain_from_resolved(
 /// Returns `None` if the event ID is not found in the checkpoint chain or
 /// the chain is broken.
 #[must_use]
-pub fn reconstruct_state_at_by_event_id(
-    checkpoints: &[CompactedCheckpoint],
-    event_id: &str,
-) -> Option<crate::state::at::SharedState<String>> {
-    let idx = checkpoints.iter().position(|cp| cp.event_id == event_id)?;
+pub fn reconstruct_state_at_by_event_id<Id: crate::basespec::rezzy_types::EventId>(
+    checkpoints: &[CompactedCheckpoint<Id>],
+    event_id: &Id,
+) -> Option<crate::state::at::SharedState<Id>> {
+    let idx = checkpoints.iter().position(|cp| cp.event_id == *event_id)?;
     reconstruct_state_at(checkpoints, idx)
 }
 
@@ -280,16 +283,16 @@ pub fn reconstruct_state_at_by_event_id(
 /// `Some(state_map)` if a snapshot base was found, `None` if the chain is
 /// broken (no snapshot ancestor exists).
 #[must_use]
-pub fn reconstruct_state_at(
-    checkpoints: &[CompactedCheckpoint],
+pub fn reconstruct_state_at<Id: crate::basespec::rezzy_types::EventId>(
+    checkpoints: &[CompactedCheckpoint<Id>],
     target_index: usize,
-) -> Option<crate::state::at::SharedState<String>> {
+) -> Option<crate::state::at::SharedState<Id>> {
     if target_index >= checkpoints.len() {
         return None;
     }
 
     // Collect deltas by walking backwards until we hit a snapshot
-    let mut delta_stack: Vec<&[StateDelta]> = Vec::new();
+    let mut delta_stack: Vec<&[StateDelta<Id>]> = Vec::new();
     let mut current_idx = target_index;
 
     loop {
@@ -354,10 +357,10 @@ pub fn reconstruct_state_at(
 /// Panics if an internal index increment overflows `usize` (should never
 /// happen with valid checkpoint data).
 #[must_use]
-pub fn reconstruct_state_batch(
-    checkpoints: &[CompactedCheckpoint],
+pub fn reconstruct_state_batch<Id: crate::basespec::rezzy_types::EventId>(
+    checkpoints: &[CompactedCheckpoint<Id>],
     target_indices: &[usize],
-) -> imbl::OrdMap<usize, crate::state::at::SharedState<String>> {
+) -> imbl::OrdMap<usize, crate::state::at::SharedState<Id>> {
     use crate::HashMap;
 
     let mut sorted_targets: Vec<usize> = target_indices
@@ -449,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_identity() {
-        let mut state = imbl::OrdMap::new();
+        let mut state = StateMap::new();
         state.insert(("m.room.create".into(), String::new()), "$1".into());
         state.insert(
             ("m.room.member".into(), "@alice:example.com".into()),
@@ -465,14 +468,14 @@ mod tests {
 
     #[test]
     fn test_roundtrip_add_modify_delete() {
-        let mut parent = imbl::OrdMap::new();
+        let mut parent = StateMap::new();
         parent.insert(("m.room.create".into(), String::new()), "$1".into());
         parent.insert(
             ("m.room.member".into(), "@alice:example.com".into()),
             "$2".into(),
         );
 
-        let mut current = imbl::OrdMap::new();
+        let mut current = StateMap::new();
         current.insert(
             ("m.room.create".into(), String::new()),
             "$1".into(), // unchanged
@@ -495,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_deletion_roundtrip() {
-        let mut parent = imbl::OrdMap::new();
+        let mut parent = StateMap::new();
         parent.insert(("m.room.create".into(), String::new()), "$1".into());
         parent.insert(
             ("m.room.member".into(), "@alice:example.com".into()),
@@ -503,7 +506,7 @@ mod tests {
         );
 
         // Current state has alice removed
-        let mut current = imbl::OrdMap::new();
+        let mut current = StateMap::new();
         current.insert(("m.room.create".into(), String::new()), "$1".into());
 
         let delta = compute_state_delta(&parent, &current);
@@ -516,7 +519,7 @@ mod tests {
 
     #[test]
     fn test_state_hash_determinism() {
-        let mut state = imbl::OrdMap::new();
+        let mut state = StateMap::new();
         state.insert(("m.room.create".into(), String::new()), "$1".into());
         state.insert(
             ("m.room.member".into(), "@alice:example.com".into()),
@@ -531,10 +534,10 @@ mod tests {
 
     #[test]
     fn test_state_hash_sensitivity() {
-        let mut state_a = imbl::OrdMap::new();
+        let mut state_a = StateMap::new();
         state_a.insert(("m.room.create".into(), String::new()), "$1".into());
 
-        let mut state_b = imbl::OrdMap::new();
+        let mut state_b = StateMap::new();
         state_b.insert(("m.room.create".into(), String::new()), "$2".into());
 
         assert_ne!(
@@ -549,7 +552,7 @@ mod tests {
         // Build 250 pre-resolved states — should trigger snapshots at 0, 100, 200
         let states: ResolvedStates = (1..=250)
             .map(|i| {
-                let mut state = imbl::OrdMap::new();
+                let mut state = StateMap::new();
                 for j in 1..=i {
                     state.insert(
                         (
@@ -611,7 +614,7 @@ mod tests {
         // Build 150 pre-resolved states — will have snapshots at 0 and ~100
         let states: ResolvedStates = (1..=150)
             .map(|i| {
-                let mut state = imbl::OrdMap::new();
+                let mut state = StateMap::new();
                 for j in 1..=i {
                     state.insert(
                         (
@@ -651,10 +654,10 @@ mod tests {
 
     #[test]
     fn test_reconstruct_out_of_bounds() {
-        let result = reconstruct_state_at(&[], 0);
+        let result = reconstruct_state_at::<String>(&[], 0);
         assert!(result.is_none());
 
-        let result = reconstruct_state_at(&[], 42);
+        let result = reconstruct_state_at::<String>(&[], 42);
         assert!(result.is_none());
     }
 
@@ -663,7 +666,7 @@ mod tests {
         // Create 250 sequential resolved states
         let states: ResolvedStates = (1..=250)
             .map(|i| {
-                let mut state = imbl::OrdMap::new();
+                let mut state = StateMap::new();
                 state.insert(
                     (
                         "m.room.member".into(),
@@ -726,7 +729,7 @@ mod tests {
     fn test_reconstruct_state_at_by_event_id_lookup() {
         let states: ResolvedStates = (1..=10)
             .map(|i| {
-                let mut state = imbl::OrdMap::new();
+                let mut state = StateMap::new();
                 for j in 1..=i {
                     state.insert(
                         (
@@ -743,15 +746,16 @@ mod tests {
         let checkpoints = compute_compacted_delta_chain_from_resolved(states, Some(100));
 
         // Lookup by event ID
-        let state_5 = reconstruct_state_at_by_event_id(&checkpoints, "$5").expect("should find $5");
+        let state_5 = reconstruct_state_at_by_event_id(&checkpoints, &String::from("$5"))
+            .expect("should find $5");
         assert_eq!(state_5.len(), 5);
 
-        let state_10 =
-            reconstruct_state_at_by_event_id(&checkpoints, "$10").expect("should find $10");
+        let state_10 = reconstruct_state_at_by_event_id(&checkpoints, &String::from("$10"))
+            .expect("should find $10");
         assert_eq!(state_10.len(), 10);
 
         // Missing event ID
-        assert!(reconstruct_state_at_by_event_id(&checkpoints, "$999").is_none());
+        assert!(reconstruct_state_at_by_event_id(&checkpoints, &String::from("$999")).is_none());
     }
 
     #[test]
@@ -759,7 +763,7 @@ mod tests {
         // Consecutive states with identical content produce identical hashes.
         // This must not break backward reconstruction.
         let state = {
-            let mut s = imbl::OrdMap::new();
+            let mut s = StateMap::new();
             s.insert(("m.room.create".into(), String::new()), "$create".into());
             s
         };
@@ -801,7 +805,7 @@ mod tests {
         let different_hash: String = "HASH_B".into();
 
         let state_a = {
-            let mut s = imbl::OrdMap::new();
+            let mut s = StateMap::new();
             s.insert(("m.room.create".into(), String::new()), "$c".into());
             s
         };
@@ -812,14 +816,14 @@ mod tests {
         };
 
         let checkpoints = alloc::vec![
-            CompactedCheckpoint {
+            CompactedCheckpoint::<String> {
                 state_hash: shared_hash.clone(),
                 parent_hash: None,
                 event_id: "$0".into(),
                 deltas: alloc::vec![],
                 snapshot: Some(state_a.clone()),
             },
-            CompactedCheckpoint {
+            CompactedCheckpoint::<String> {
                 state_hash: different_hash.clone(),
                 parent_hash: Some(shared_hash.clone()),
                 event_id: "$1".into(),
@@ -830,7 +834,7 @@ mod tests {
                 }],
                 snapshot: None,
             },
-            CompactedCheckpoint {
+            CompactedCheckpoint::<String> {
                 state_hash: shared_hash.clone(), // same as checkpoint 0!
                 parent_hash: Some(different_hash),
                 event_id: "$2".into(),
@@ -890,7 +894,7 @@ mod tests {
         let hash_d: String = "HASH_D".into();
 
         let state_a = {
-            let mut s = imbl::OrdMap::new();
+            let mut s = StateMap::new();
             s.insert(("m.room.create".into(), String::new()), "$c".into());
             s
         };
@@ -902,14 +906,14 @@ mod tests {
         // The trap: hash_to_idx["HASH_A"] would be 4 (last), not 0.
         // Reconstructing index 1 needs HASH_A → index 0, but HashMap returns 4.
         let checkpoints = alloc::vec![
-            CompactedCheckpoint {
+            CompactedCheckpoint::<String> {
                 state_hash: hash_a.clone(),
                 parent_hash: None,
                 event_id: "$0".into(),
                 deltas: alloc::vec![],
                 snapshot: Some(state_a.clone()),
             },
-            CompactedCheckpoint {
+            CompactedCheckpoint::<String> {
                 state_hash: hash_b.clone(),
                 parent_hash: Some(hash_a.clone()),
                 event_id: "$1".into(),
@@ -920,7 +924,7 @@ mod tests {
                 }],
                 snapshot: None,
             },
-            CompactedCheckpoint {
+            CompactedCheckpoint::<String> {
                 state_hash: hash_c.clone(),
                 parent_hash: Some(hash_b.clone()),
                 event_id: "$2".into(),
@@ -931,7 +935,7 @@ mod tests {
                 }],
                 snapshot: None,
             },
-            CompactedCheckpoint {
+            CompactedCheckpoint::<String> {
                 state_hash: hash_d.clone(),
                 parent_hash: Some(hash_c),
                 event_id: "$3".into(),
@@ -942,7 +946,7 @@ mod tests {
                 }],
                 snapshot: None,
             },
-            CompactedCheckpoint {
+            CompactedCheckpoint::<String> {
                 state_hash: hash_a.clone(), // Duplicate of index 0!
                 parent_hash: Some(hash_d),
                 event_id: "$4".into(),
@@ -981,16 +985,16 @@ mod tests {
     /// predecessor — e.g. after a fork/merge or gap in the chain.
     #[test]
     fn test_reconstruct_rposition_fallback() {
-        let mut state_a = imbl::OrdMap::new();
+        let mut state_a = StateMap::new();
         state_a.insert(("m.room.create".into(), String::new()), "$c".into());
         let hash_a = compute_state_hash(&state_a);
 
-        let mut state_b = imbl::OrdMap::new();
+        let mut state_b = StateMap::new();
         state_b.insert(("m.room.create".into(), String::new()), "$c".into());
         state_b.insert(("m.room.member".into(), "@alice:x".into()), "$j".into());
         let hash_b = compute_state_hash(&state_b);
 
-        let mut state_c = imbl::OrdMap::new();
+        let mut state_c = StateMap::new();
         state_c.insert(("m.room.create".into(), String::new()), "$c".into());
         state_c.insert(("m.room.member".into(), "@bob:x".into()), "$k".into());
         let hash_c = compute_state_hash(&state_c);
@@ -1000,21 +1004,21 @@ mod tests {
         // so the immediate-predecessor check fails and rposition scans backwards.
         let delta_c_from_a = compute_state_delta(&state_a, &state_c);
         let checkpoints = alloc::vec![
-            CompactedCheckpoint {
+            CompactedCheckpoint::<String> {
                 state_hash: hash_a.clone(),
                 parent_hash: None,
                 event_id: "$e0".into(),
                 deltas: alloc::vec![],
                 snapshot: Some(state_a.clone()),
             },
-            CompactedCheckpoint {
+            CompactedCheckpoint::<String> {
                 state_hash: hash_b,
                 parent_hash: Some(hash_a.clone()),
                 event_id: "$e1".into(),
                 deltas: compute_state_delta(&state_a, &state_b),
                 snapshot: None,
             },
-            CompactedCheckpoint {
+            CompactedCheckpoint::<String> {
                 state_hash: hash_c,
                 parent_hash: Some(hash_a.clone()), // points to index 0, NOT index 1
                 event_id: "$e2".into(),
@@ -1029,7 +1033,7 @@ mod tests {
         assert_eq!(reconstructed, state_c);
 
         // Verify single-event lookup also works
-        let by_id = reconstruct_state_at_by_event_id(&checkpoints, "$e2")
+        let by_id = reconstruct_state_at_by_event_id(&checkpoints, &String::from("$e2"))
             .expect("event ID lookup should work");
         assert_eq!(by_id, state_c);
     }

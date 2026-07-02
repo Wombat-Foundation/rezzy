@@ -70,7 +70,7 @@ pub fn is_lattice_winner_better<Id, C, S: core::hash::BuildHasher>(
     mainline_len: usize,
 ) -> bool
 where
-    Id: Clone + Eq + core::hash::Hash + Ord,
+    Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
 {
     let ev_pos = mainline_distances
@@ -104,7 +104,7 @@ fn update_winner_if_better<'a, Id, C>(
     mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
 ) where
-    Id: Clone + Eq + core::hash::Hash + Ord,
+    Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
 {
     let is_better = if let Some(current_winner) = winners.get(&key) {
@@ -132,7 +132,7 @@ fn fold_lattice_chunk<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash::Bu
     // jscpd:ignore-end
 ) -> HashMap<(String, String), &'a LeanEvent<Id, C>>
 where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug,
+    Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + Clone,
 {
     let mut thread_res: HashMap<(String, String), &'a LeanEvent<Id, C>> = HashMap::new();
@@ -174,7 +174,7 @@ fn merge_lattice_winners<'a, Id, C>(
     mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
 ) where
-    Id: Clone + Eq + core::hash::Hash + Ord,
+    Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
 {
     for (key, ev) in thread_res {
@@ -203,7 +203,7 @@ fn compute_lattice_coordinatized_winners<
     // jscpd:ignore-end
     key_winners: &mut HashMap<(String, String), &'a LeanEvent<Id, C>>,
 ) where
-    Id: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + Sync + Send,
+    Id: crate::basespec::rezzy_types::EventId + Sync + Send,
     C: crate::basespec::rezzy_types::EventContent + Clone + Sync + Send,
 {
     let v: Vec<&'a LeanEvent<Id, C>> = non_power_events.values().collect();
@@ -273,7 +273,7 @@ fn compute_lattice_coordinatized_winners<
 ///
 /// Non-power events are everything else (messages, topics, `m.room.third_party_invite`, etc.).
 pub fn route_power_events<
-    Id: Clone + Eq + core::hash::Hash,
+    Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
