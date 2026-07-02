@@ -126,9 +126,8 @@ where
     let forwards_ids: BTreeSet<Id> = forwards_reachable.iter().cloned().collect();
 
     for id in backwards_ids.intersection(&forwards_ids) {
-        if let Some(event) = auth_graph.get(id) {
-            subgraph.insert(id.clone(), event.clone());
-        }
+        let Some(event) = auth_graph.get(id) else { continue };
+        subgraph.insert(id.clone(), event.clone());
     }
 
     SubgraphResult {

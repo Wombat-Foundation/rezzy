@@ -3014,11 +3014,23 @@ fn test_prev_events_exceeds_max_rejected() {
     let mut state: RoomState = RoomState::new();
     state.insert(
         (M_ROOM_CREATE.into(), String::new()),
-        make_event("$c", M_ROOM_CREATE, Some(""), "@a:x", json!({"creator": "@a:x"})),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@a:x",
+            json!({"creator": "@a:x"}),
+        ),
     );
     state.insert(
         ("m.room.member".into(), "@a:x".into()),
-        make_event("$j", "m.room.member", Some("@a:x"), "@a:x", json!({"membership": "join"})),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@a:x"),
+            "@a:x",
+            json!({"membership": "join"}),
+        ),
     );
 
     let too_many: Vec<String> = (0..21).map(|i| format!("$prev{i}")).collect();
@@ -3035,7 +3047,10 @@ fn test_prev_events_exceeds_max_rejected() {
     let result = rezzy::auth::check_auth(&event, &state, rezzy::StateResVersion::V2, None);
     assert!(result.is_err(), "Should reject >20 prev_events: {result:?}");
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("prev_events"), "Error should mention prev_events: {msg}");
+    assert!(
+        msg.contains("prev_events"),
+        "Error should mention prev_events: {msg}"
+    );
 }
 
 /// Events with >10 `auth_events` must be rejected.
@@ -3044,11 +3059,23 @@ fn test_auth_events_exceeds_max_rejected() {
     let mut state: RoomState = RoomState::new();
     state.insert(
         (M_ROOM_CREATE.into(), String::new()),
-        make_event("$c", M_ROOM_CREATE, Some(""), "@a:x", json!({"creator": "@a:x"})),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@a:x",
+            json!({"creator": "@a:x"}),
+        ),
     );
     state.insert(
         ("m.room.member".into(), "@a:x".into()),
-        make_event("$j", "m.room.member", Some("@a:x"), "@a:x", json!({"membership": "join"})),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@a:x"),
+            "@a:x",
+            json!({"membership": "join"}),
+        ),
     );
 
     let too_many: Vec<String> = (0..11).map(|i| format!("$auth{i}")).collect();
@@ -3065,5 +3092,60 @@ fn test_auth_events_exceeds_max_rejected() {
     let result = rezzy::auth::check_auth(&event, &state, rezzy::StateResVersion::V2, None);
     assert!(result.is_err(), "Should reject >10 auth_events: {result:?}");
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("auth_events"), "Error should mention auth_events: {msg}");
+    assert!(
+        msg.contains("auth_events"),
+        "Error should mention auth_events: {msg}"
+    );
+}
+
+/// Events with empty `event_type` must be rejected.
+#[test]
+fn test_empty_event_type_rejected() {
+    let mut state: RoomState = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@a:x",
+            json!({"creator": "@a:x"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@a:x".into()),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@a:x"),
+            "@a:x",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let event = LeanEvent {
+        event_id: "$bad".into(),
+        event_type: String::new(), // empty!
+        state_key: None,
+        sender: "@a:x".into(),
+        content: json!({"body": "hi"}),
+        ..Default::default()
+    };
+
+    // check_auth path
+    let result = rezzy::auth::check_auth(&event, &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        result.is_err(),
+        "Should reject empty event_type: {result:?}"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("event_type"),
+        "Error should mention event_type: {msg}"
+    );
+
+    // validate_syntactic path
+    let syntactic = event.validate_syntactic();
+    assert!(syntactic.is_err());
+    assert_eq!(syntactic.unwrap_err(), "event_type cannot be empty");
 }

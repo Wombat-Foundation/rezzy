@@ -975,4 +975,62 @@ mod tests {
             assert_eq!(single, results[&i], "single vs batch mismatch at index {i}");
         }
     }
+
+    /// Coverage: exercises the `rposition` fallback in `reconstruct_state_at`
+    /// (lines 325-327) when the parent hash doesn't match the immediate
+    /// predecessor — e.g. after a fork/merge or gap in the chain.
+    #[test]
+    fn test_reconstruct_rposition_fallback() {
+        let mut state_a = imbl::OrdMap::new();
+        state_a.insert(("m.room.create".into(), String::new()), "$c".into());
+        let hash_a = compute_state_hash(&state_a);
+
+        let mut state_b = imbl::OrdMap::new();
+        state_b.insert(("m.room.create".into(), String::new()), "$c".into());
+        state_b.insert(("m.room.member".into(), "@alice:x".into()), "$j".into());
+        let hash_b = compute_state_hash(&state_b);
+
+        let mut state_c = imbl::OrdMap::new();
+        state_c.insert(("m.room.create".into(), String::new()), "$c".into());
+        state_c.insert(("m.room.member".into(), "@bob:x".into()), "$k".into());
+        let hash_c = compute_state_hash(&state_c);
+
+        // Chain: [0]=snapshot(A), [1]=delta->A(B), [2]=delta->A(C)
+        // Index 2's parent_hash points to A (index 0), but index 1 has hash_b ≠ hash_a,
+        // so the immediate-predecessor check fails and rposition scans backwards.
+        let delta_c_from_a = compute_state_delta(&state_a, &state_c);
+        let checkpoints = alloc::vec![
+            CompactedCheckpoint {
+                state_hash: hash_a.clone(),
+                parent_hash: None,
+                event_id: "$e0".into(),
+                deltas: alloc::vec![],
+                snapshot: Some(state_a.clone()),
+            },
+            CompactedCheckpoint {
+                state_hash: hash_b,
+                parent_hash: Some(hash_a.clone()),
+                event_id: "$e1".into(),
+                deltas: compute_state_delta(&state_a, &state_b),
+                snapshot: None,
+            },
+            CompactedCheckpoint {
+                state_hash: hash_c,
+                parent_hash: Some(hash_a.clone()), // points to index 0, NOT index 1
+                event_id: "$e2".into(),
+                deltas: delta_c_from_a,
+                snapshot: None,
+            },
+        ];
+
+        // Reconstruct index 2 — must use rposition to find parent at index 0
+        let reconstructed = reconstruct_state_at(&checkpoints, 2)
+            .expect("should reconstruct via rposition fallback");
+        assert_eq!(reconstructed, state_c);
+
+        // Verify single-event lookup also works
+        let by_id = reconstruct_state_at_by_event_id(&checkpoints, "$e2")
+            .expect("event ID lookup should work");
+        assert_eq!(by_id, state_c);
+    }
 }
