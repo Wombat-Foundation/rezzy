@@ -60,6 +60,13 @@ pub fn get_sender_power_level<Id, C: EventContent>(
         if let Some(default_pl) = pl_event.get_users_default() {
             return default_pl;
         }
+    } else if let Some(create_event) = state.get_event(M_ROOM_CREATE, "") {
+        // C-S API §Permissions (v1.16): "room creators are special in that:
+        // In room versions 1 through 11, room creators by default have power level 100"
+        // Auth rules preamble: "Power levels are inferred from defaults when not explicitly supplied."
+        if create_event.get_creator() == Some(sender) {
+            return 100;
+        }
     }
     DEFAULT_PL_USER // Default power level if no power_levels event exists
 }

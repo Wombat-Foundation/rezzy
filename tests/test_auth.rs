@@ -1274,6 +1274,51 @@ fn test_msc4289_creator_implicit_power_level() {
     );
 }
 
+/// Verify that in V1-V11, if `m.room.power_levels` is entirely missing,
+/// the room creator gets PL 100 and other users get PL 0.
+#[test]
+fn test_v1_v11_missing_pl_event_creator_fallback() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@creator:example.com", "content": {"creator": "@creator:example.com", "room_version": "10"}}
+{"event_id": "$join1", "type": "m.room.member", "state_key": "@creator:example.com", "sender": "@creator:example.com", "content": {"membership": "join"}}
+{"event_id": "$join2", "type": "m.room.member", "state_key": "@normal:example.com", "sender": "@normal:example.com", "content": {"membership": "join"}}
+"#,
+    );
+
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$topic1", "type": "m.room.topic", "state_key": "", "sender": "@creator:example.com", "content": {"topic": "allowed"}}
+{"event_id": "$topic2", "type": "m.room.topic", "state_key": "", "sender": "@normal:example.com", "content": {"topic": "rejected"}}
+"#,
+    );
+    let creator_event = &events[0];
+    let normal_event = &events[1];
+
+    // Creator tries to send a state event (m.room.topic requires PL 50 by default when no PL event exists).
+    // Creator should have PL 100 due to the fallback.
+    let res = check_auth(creator_event, &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_ok(),
+        "Creator should get PL 100 and be allowed to send state events: {res:?}"
+    );
+
+    // Normal user tries to send a state event.
+    // Normal user gets PL 0, so 0 < 50, should be rejected.
+    let res = check_auth(normal_event, &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        matches!(
+            res,
+            Err(crate::auth::AuthError::InsufficientPowerLevel {
+                required: 50,
+                actual: 0,
+                ..
+            })
+        ),
+        "Normal user should have PL 0 and be rejected: {res:?}"
+    );
+}
+
 /// Verify that in V2 (pre-MSC4289), creators get PL 100, not `MAX_POWER_LEVEL`.
 #[test]
 fn test_msc4289_v2_creator_gets_pl_100_not_max() {
