@@ -235,6 +235,9 @@ impl<Id: EventId, C> DagNode for LeanEvent<Id, C> {
 /// }
 /// ```
 pub trait EventLike: DagNode {
+    /// The content type (e.g. `serde_json::Value` or a typed struct).
+    type Content: EventContent;
+
     /// Matrix event type (e.g. `m.room.member`, `m.room.power_levels`).
     ///
     /// Returns `Cow::Borrowed` when the type string is stored inline (e.g. `LeanEvent`),
@@ -253,75 +256,110 @@ pub trait EventLike: DagNode {
     /// Origin server timestamp in milliseconds since Unix epoch.
     fn origin_server_ts(&self) -> u64;
 
-    // === Content accessors (previously on EventContent) ===
+    /// Access the event content (parsed or stored).
+    fn content(&self) -> &Self::Content;
+
+    // === Content accessors — default impls delegate to self.content() ===
 
     /// Returns the `membership` field from event content.
-    fn get_membership(&self) -> Option<&str>;
+    fn get_membership(&self) -> Option<&str> {
+        self.content().get_membership()
+    }
 
     /// Returns the `join_rule` field from event content.
-    fn get_join_rule(&self) -> Option<&str>;
+    fn get_join_rule(&self) -> Option<&str> {
+        self.content().get_join_rule()
+    }
 
     /// Returns the power level for a specific user from `content.users`.
-    fn get_user_power_level(&self, user: &str) -> Option<i64>;
+    fn get_user_power_level(&self, user: &str) -> Option<i64> {
+        self.content().get_user_power_level(user)
+    }
 
     /// Returns the required power level for a specific event type from `content.events`.
-    fn get_event_power_level(&self, event_type: &str) -> Option<i64>;
+    fn get_event_power_level(&self, event_type: &str) -> Option<i64> {
+        self.content().get_event_power_level(event_type)
+    }
 
     /// Returns the `users_default` power level.
-    fn get_users_default(&self) -> Option<i64>;
+    fn get_users_default(&self) -> Option<i64> {
+        self.content().get_users_default()
+    }
 
     /// Returns the `events_default` power level.
-    fn get_events_default(&self) -> Option<i64>;
+    fn get_events_default(&self) -> Option<i64> {
+        self.content().get_events_default()
+    }
 
     /// Returns the `state_default` power level.
-    fn get_state_default(&self) -> Option<i64>;
+    fn get_state_default(&self) -> Option<i64> {
+        self.content().get_state_default()
+    }
 
     /// Returns the `ban` power level threshold.
-    fn get_ban(&self) -> Option<i64>;
+    fn get_ban(&self) -> Option<i64> {
+        self.content().get_ban()
+    }
 
     /// Returns the `kick` power level threshold.
-    fn get_kick(&self) -> Option<i64>;
+    fn get_kick(&self) -> Option<i64> {
+        self.content().get_kick()
+    }
 
     /// Returns the `invite` power level threshold.
-    fn get_invite(&self) -> Option<i64>;
+    fn get_invite(&self) -> Option<i64> {
+        self.content().get_invite()
+    }
 
     /// Returns the `redact` power level threshold.
-    fn get_redact(&self) -> Option<i64>;
+    fn get_redact(&self) -> Option<i64> {
+        self.content().get_redact()
+    }
 
     /// Returns the `creator` field from `m.room.create` content.
-    fn get_creator(&self) -> Option<&str>;
+    fn get_creator(&self) -> Option<&str> {
+        self.content().get_creator()
+    }
 
     /// Returns the `room_version` field from `m.room.create` content.
-    fn get_room_version(&self) -> Option<&str>;
+    fn get_room_version(&self) -> Option<&str> {
+        self.content().get_room_version()
+    }
 
     /// Returns true if `sender` is listed in the V12+ `additional_creators` array.
-    fn has_additional_creator(&self, sender: &str) -> bool;
+    fn has_additional_creator(&self, sender: &str) -> bool {
+        self.content().has_additional_creator(sender)
+    }
 
     /// Returns the `join_authorised_via_users_server` field, if present.
-    fn get_join_authorised_via_users_server(&self) -> Option<&str>;
+    fn get_join_authorised_via_users_server(&self) -> Option<&str> {
+        self.content().get_join_authorised_via_users_server()
+    }
 
     /// Returns whether a `third_party_invite` field is present.
     fn has_third_party_invite(&self) -> bool {
-        false
+        self.content().has_third_party_invite()
     }
 
     /// Returns the signed token from `third_party_invite.signed.token`.
     fn get_third_party_invite_token(&self) -> Option<&str> {
-        None
+        self.content().get_third_party_invite_token()
     }
 
     /// Returns the mxid from `third_party_invite.signed.mxid`.
     fn get_third_party_invite_mxid(&self) -> Option<&str> {
-        None
+        self.content().get_third_party_invite_mxid()
     }
 
     /// Returns whether `third_party_invite.signed.signatures` is present and non-empty.
     fn has_third_party_invite_signatures(&self) -> bool {
-        false
+        self.content().has_third_party_invite_signatures()
     }
 }
 
 impl<Id: EventId, C: EventContent> EventLike for LeanEvent<Id, C> {
+    type Content = C;
+
     fn event_type(&self) -> alloc::borrow::Cow<'_, str> {
         alloc::borrow::Cow::Borrowed(&self.event_type)
     }
@@ -337,62 +375,8 @@ impl<Id: EventId, C: EventContent> EventLike for LeanEvent<Id, C> {
     fn origin_server_ts(&self) -> u64 {
         self.origin_server_ts
     }
-    fn get_membership(&self) -> Option<&str> {
-        self.content.get_membership()
-    }
-    fn get_join_rule(&self) -> Option<&str> {
-        self.content.get_join_rule()
-    }
-    fn get_user_power_level(&self, user: &str) -> Option<i64> {
-        self.content.get_user_power_level(user)
-    }
-    fn get_event_power_level(&self, event_type: &str) -> Option<i64> {
-        self.content.get_event_power_level(event_type)
-    }
-    fn get_users_default(&self) -> Option<i64> {
-        self.content.get_users_default()
-    }
-    fn get_events_default(&self) -> Option<i64> {
-        self.content.get_events_default()
-    }
-    fn get_state_default(&self) -> Option<i64> {
-        self.content.get_state_default()
-    }
-    fn get_ban(&self) -> Option<i64> {
-        self.content.get_ban()
-    }
-    fn get_kick(&self) -> Option<i64> {
-        self.content.get_kick()
-    }
-    fn get_invite(&self) -> Option<i64> {
-        self.content.get_invite()
-    }
-    fn get_redact(&self) -> Option<i64> {
-        self.content.get_redact()
-    }
-    fn get_creator(&self) -> Option<&str> {
-        self.content.get_creator()
-    }
-    fn get_room_version(&self) -> Option<&str> {
-        self.content.get_room_version()
-    }
-    fn has_additional_creator(&self, sender: &str) -> bool {
-        self.content.has_additional_creator(sender)
-    }
-    fn get_join_authorised_via_users_server(&self) -> Option<&str> {
-        self.content.get_join_authorised_via_users_server()
-    }
-    fn has_third_party_invite(&self) -> bool {
-        self.content.has_third_party_invite()
-    }
-    fn get_third_party_invite_token(&self) -> Option<&str> {
-        self.content.get_third_party_invite_token()
-    }
-    fn get_third_party_invite_mxid(&self) -> Option<&str> {
-        self.content.get_third_party_invite_mxid()
-    }
-    fn has_third_party_invite_signatures(&self) -> bool {
-        self.content.has_third_party_invite_signatures()
+    fn content(&self) -> &C {
+        &self.content
     }
 }
 
