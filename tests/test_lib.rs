@@ -1832,6 +1832,34 @@ mod tests {
     }
 
     #[test]
+    fn test_subgraph_missing_event_in_intersection() {
+        let mut graph: HashMap<String, LeanEvent> = HashMap::new();
+        graph.insert(
+            "X".to_string(),
+            LeanEvent {
+                event_id: "X".into(),
+                event_type: "m.room.member".into(),
+                state_key: Some("@alice:example.com".into()),
+                auth_events: vec!["MISSING_1".into()],
+                ..Default::default()
+            },
+        );
+        // By including "MISSING_1" in the conflicted_set, it enters `forwards_reachable`.
+        // Because "X" references it, it also enters `backwards_reachable`.
+        // This ensures the intersection contains "MISSING_1", triggering the `continue`
+        // when `auth_graph.get("MISSING_1")` returns None in the final loop.
+        let result = compute_v2_1_conflicted_subgraph_bounded(
+            &graph,
+            &["X".to_string(), "MISSING_1".to_string()],
+            None,
+        );
+        assert!(result
+            .missing_auth_events
+            .contains(&"MISSING_1".to_string()));
+        assert!(!result.subgraph.contains_key("MISSING_1"));
+    }
+
+    #[test]
     fn test_subgraph_bounded_depth_off_by_one() {
         // Graph structure: E <- C <- D
         // E has no auth events.
@@ -4388,6 +4416,53 @@ fn test_parsed_event_try_new() {
 fn test_event_content_get_room_version() {
     use rezzy::basespec::rezzy_types::EventContent;
 
+    #[derive(Clone, Debug, Default)]
+    struct CustomContent;
+    impl EventContent for CustomContent {
+        fn get_membership(&self) -> Option<&str> {
+            None
+        }
+        fn get_join_rule(&self) -> Option<&str> {
+            None
+        }
+        fn get_user_power_level(&self, _u: &str) -> Option<i64> {
+            None
+        }
+        fn get_event_power_level(&self, _e: &str) -> Option<i64> {
+            None
+        }
+        fn get_users_default(&self) -> Option<i64> {
+            None
+        }
+        fn get_events_default(&self) -> Option<i64> {
+            None
+        }
+        fn get_state_default(&self) -> Option<i64> {
+            None
+        }
+        fn get_ban(&self) -> Option<i64> {
+            None
+        }
+        fn get_kick(&self) -> Option<i64> {
+            None
+        }
+        fn get_invite(&self) -> Option<i64> {
+            None
+        }
+        fn get_redact(&self) -> Option<i64> {
+            None
+        }
+        fn get_creator(&self) -> Option<&str> {
+            None
+        }
+        fn has_additional_creator(&self, _s: &str) -> bool {
+            false
+        }
+        fn get_join_authorised_via_users_server(&self) -> Option<&str> {
+            None
+        }
+    }
+
     let with_version = serde_json::json!({"room_version": "11"});
     assert_eq!(with_version.get_room_version(), Some("11"));
 
@@ -4396,6 +4471,9 @@ fn test_event_content_get_room_version() {
 
     let non_string = serde_json::json!({"room_version": 42});
     assert_eq!(non_string.get_room_version(), None);
+
+    // Verify the default trait implementation returns None
+    assert_eq!(CustomContent.get_room_version(), None);
 }
 
 // ── Coverage: LeanEvent inherent methods ────────────────────────────
