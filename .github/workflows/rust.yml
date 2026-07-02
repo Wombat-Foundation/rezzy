@@ -16,8 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Init optional submodules
-        run: git submodule update --init --recursive
+      - name: Init submodules
+        run: git -c submodule.res.update=checkout submodule update --init --recursive
 
       - name: Install dependencies
         run: |
