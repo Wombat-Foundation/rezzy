@@ -1274,6 +1274,51 @@ fn test_msc4289_creator_implicit_power_level() {
     );
 }
 
+/// Verify that in V1-V11, if `m.room.power_levels` is entirely missing,
+/// the room creator gets PL 100 and other users get PL 0.
+#[test]
+fn test_v1_v11_missing_pl_event_creator_fallback() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@creator:example.com", "content": {"creator": "@creator:example.com", "room_version": "10"}}
+{"event_id": "$join1", "type": "m.room.member", "state_key": "@creator:example.com", "sender": "@creator:example.com", "content": {"membership": "join"}}
+{"event_id": "$join2", "type": "m.room.member", "state_key": "@normal:example.com", "sender": "@normal:example.com", "content": {"membership": "join"}}
+"#,
+    );
+
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$topic1", "type": "m.room.topic", "state_key": "", "sender": "@creator:example.com", "content": {"topic": "allowed"}}
+{"event_id": "$topic2", "type": "m.room.topic", "state_key": "", "sender": "@normal:example.com", "content": {"topic": "rejected"}}
+"#,
+    );
+    let creator_event = &events[0];
+    let normal_event = &events[1];
+
+    // Creator tries to send a state event (m.room.topic requires PL 50 by default when no PL event exists).
+    // Creator should have PL 100 due to the fallback.
+    let res = check_auth(creator_event, &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_ok(),
+        "Creator should get PL 100 and be allowed to send state events: {res:?}"
+    );
+
+    // Normal user tries to send a state event.
+    // Normal user gets PL 0, so 0 < 50, should be rejected.
+    let res = check_auth(normal_event, &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        matches!(
+            res,
+            Err(crate::auth::AuthError::InsufficientPowerLevel {
+                required: 50,
+                actual: 0,
+                ..
+            })
+        ),
+        "Normal user should have PL 0 and be rejected: {res:?}"
+    );
+}
+
 /// Verify that in V2 (pre-MSC4289), creators get PL 100, not `MAX_POWER_LEVEL`.
 #[test]
 fn test_msc4289_v2_creator_gets_pl_100_not_max() {
@@ -3148,4 +3193,456 @@ fn test_empty_event_type_rejected() {
     let syntactic = event.validate_syntactic();
     assert!(syntactic.is_err());
     assert_eq!(syntactic.unwrap_err(), "event_type cannot be empty");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Rule 10: m.room.power_levels validation
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Rule 10.3: `users` map with a non-user-ID key should be rejected.
+#[test]
+fn test_pl_validation_users_invalid_key_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100}}}
+"#,
+    );
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "not_a_user_id": 50}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_err(),
+        "Invalid user ID key should be rejected: {res:?}"
+    );
+    let err = res.unwrap_err();
+    assert!(
+        matches!(err, crate::auth::AuthError::InvalidSyntax(ref s) if s.contains("not_a_user_id")),
+        "Error should mention the bad key: {err:?}"
+    );
+}
+
+/// Rule 10.6: sender tries to set `ban` higher than their own PL → reject.
+#[test]
+fn test_pl_validation_scalar_escalation_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "ban": 50}}
+"#,
+    );
+    // Mod (PL 50) tries to raise `ban` to 60
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@mod:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "ban": 60}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_err(),
+        "Mod raising ban above own PL should be rejected: {res:?}"
+    );
+}
+
+/// Rule 10.6: sender sets `ban` to a value ≤ their PL → allow.
+#[test]
+fn test_pl_validation_scalar_change_allowed() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "ban": 40}}
+"#,
+    );
+    // Mod (PL 50) changes `ban` from 40 to 50 — both ≤ 50, so allowed
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@mod:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "ban": 50}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_ok(),
+        "Mod changing ban within own PL should be allowed: {res:?}"
+    );
+}
+
+/// Rules 10.7–10.8: sender adds an `events` entry > their PL → reject.
+#[test]
+fn test_pl_validation_events_escalation_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}}}
+"#,
+    );
+    // Mod (PL 50) adds events["m.room.topic"] = 60
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@mod:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "events": {"m.room.topic": 60}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_err(),
+        "Mod adding events entry above own PL should be rejected: {res:?}"
+    );
+}
+
+/// Rule 10.10: sender promotes another user above their own PL → reject.
+#[test]
+fn test_pl_validation_users_promote_above_self_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join1", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
+{"event_id": "$join2", "type": "m.room.member", "state_key": "@user:example.com", "sender": "@user:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50, "@user:example.com": 0}}}
+"#,
+    );
+    // Mod (PL 50) promotes user to 60
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@mod:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50, "@user:example.com": 60}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_err(),
+        "Mod promoting user above own PL should be rejected: {res:?}"
+    );
+}
+
+/// Rule 10.9: sender tries to demote a user at equal PL → reject (uses >=).
+#[test]
+fn test_pl_validation_users_demote_equal_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join1", "type": "m.room.member", "state_key": "@mod1:example.com", "sender": "@mod1:example.com", "content": {"membership": "join"}}
+{"event_id": "$join2", "type": "m.room.member", "state_key": "@mod2:example.com", "sender": "@mod2:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "@mod1:example.com": 50, "@mod2:example.com": 50}}}
+"#,
+    );
+    // Mod1 (PL 50) tries to demote Mod2 (also PL 50) to 0
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@mod1:example.com", "content": {"users": {"@admin:example.com": 100, "@mod1:example.com": 50, "@mod2:example.com": 0}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_err(),
+        "Mod demoting equal-PL user should be rejected (>= check): {res:?}"
+    );
+}
+
+/// Rule 10.9: sender demotes a user below their own PL → allow.
+#[test]
+fn test_pl_validation_users_demote_lower_allowed() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join1", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
+{"event_id": "$join2", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}}}
+"#,
+    );
+    // Admin (PL 100) demotes mod (PL 50) to 10 — 50 < 100, so allowed
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 10}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_ok(),
+        "Admin demoting lower-PL user should be allowed: {res:?}"
+    );
+}
+
+/// Rule 10.9 exemption: sender lowers their own PL → allow (self-entry exempt).
+#[test]
+fn test_pl_validation_users_self_demote_allowed() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100}}}
+"#,
+    );
+    // Admin demotes themselves from 100 to 50
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 50}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(res.is_ok(), "Self-demotion should be allowed: {res:?}");
+}
+
+/// Rule 10.7: mod tries to change an `events` entry whose current value > mod's PL -> reject.
+#[test]
+fn test_pl_validation_events_old_value_too_high_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "events": {"m.room.topic": 80}}}
+"#,
+    );
+    // Mod (PL 50) tries to lower events["m.room.topic"] from 80 to 30 — old value 80 > 50
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@mod:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "events": {"m.room.topic": 30}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_err(),
+        "Mod changing events entry with old value > own PL should be rejected: {res:?}"
+    );
+}
+
+/// Rule 10.6: mod tries to change a scalar property whose current value > mod's PL → reject.
+#[test]
+fn test_pl_validation_scalar_old_value_too_high_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "kick": 80}}
+"#,
+    );
+    // Mod (PL 50) tries to lower `kick` from 80 to 30 — old value 80 > 50
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@mod:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "kick": 30}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_err(),
+        "Mod changing scalar with old value > own PL should be rejected: {res:?}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Rule 10 V12-only: 10.1, 10.2, 10.4
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Rule 10.1 (V12): scalar PL property that is not an integer → reject.
+#[test]
+fn test_pl_v12_scalar_not_integer_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
+"#,
+    );
+    // First PL event with ban as a boolean instead of integer
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"ban": true}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+    assert!(
+        res.is_err(),
+        "Non-integer scalar PL should be rejected in V12: {res:?}"
+    );
+}
+
+/// Rule 10.1: non-integer scalar PL passes in room version 9 (pre-V10).
+/// V10+ enforces integer types; V9 and earlier do not.
+#[test]
+fn test_pl_v2_scalar_not_integer_allowed() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "9"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
+"#,
+    );
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"ban": true}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_ok(),
+        "Non-integer scalar PL should be allowed in room V9: {res:?}"
+    );
+}
+
+/// Rule 2.4 / 10.1: `get_room_version_num` panics if m.room.create is absent.
+/// This enforces the invariant that the create event must be in the state.
+#[test]
+#[should_panic(expected = "m.room.create must exist in state (Rule 2.4)")]
+fn test_pl_missing_create_event_panics() {
+    let state = utils::parse_jsonl_state(
+        r#"{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}"#,
+    );
+    let events = utils::parse_jsonl_events(
+        r#"{"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {}}"#,
+    );
+    let _ = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+}
+
+/// Rule 10.2 (V12): `events` map with non-integer value → reject.
+#[test]
+fn test_pl_v12_events_map_non_integer_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
+"#,
+    );
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"events": {"m.room.topic": "not_a_number"}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+    assert!(
+        res.is_err(),
+        "Non-integer events map value should be rejected in V12: {res:?}"
+    );
+}
+
+/// Rule 10.2 (V12): `events` is not an object → reject.
+#[test]
+fn test_pl_v12_events_not_object_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
+"#,
+    );
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"events": 42}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+    assert!(
+        res.is_err(),
+        "events as non-object should be rejected in V12: {res:?}"
+    );
+}
+
+/// Rule 10.4 (V12): `users` map contains the room creator → reject.
+#[test]
+fn test_pl_v12_users_contains_creator_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
+"#,
+    );
+    // First PL event listing the creator in `users` — forbidden in V12
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+    assert!(
+        res.is_err(),
+        "users containing creator should be rejected in V12: {res:?}"
+    );
+}
+
+/// Rule 10.4 (V12): `users` map contains an `additional_creator` → reject.
+#[test]
+fn test_pl_v12_users_contains_additional_creator_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12", "additional_creators": ["@extra:example.com"]}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@other:example.com", "sender": "@other:example.com", "content": {"membership": "join"}}
+"#,
+    );
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@other:example.com", "content": {"users": {"@other:example.com": 50, "@extra:example.com": 80}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+    assert!(
+        res.is_err(),
+        "users containing additional_creator should be rejected in V12: {res:?}"
+    );
+}
+
+/// Rule 10.2 (V12): `notifications` map with non-integer value → reject.
+#[test]
+fn test_pl_v12_notifications_non_integer_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
+"#,
+    );
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"notifications": {"room": "not_a_number"}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+    assert!(
+        res.is_err(),
+        "Non-integer notifications value should be rejected in V12: {res:?}"
+    );
+}
+
+/// Rule 10.8: mod tries to set `notifications[room]` above own PL -> reject.
+#[test]
+fn test_pl_validation_notifications_escalation_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}}}
+"#,
+    );
+    // Mod (PL 50) tries to set notifications["room"] to 80
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@mod:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "notifications": {"room": 80}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_err(),
+        "Setting notifications above own PL should be rejected: {res:?}"
+    );
+}
+
+/// Rule 10.7: mod tries to lower `notifications[room]` whose old value > own PL -> reject.
+#[test]
+fn test_pl_validation_notifications_old_value_too_high_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "notifications": {"room": 80}}}
+"#,
+    );
+    // Mod (PL 50) tries to lower notifications["room"] from 80 to 30
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@mod:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "notifications": {"room": 30}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_err(),
+        "Lowering notifications with old value > own PL should be rejected: {res:?}"
+    );
 }

@@ -170,6 +170,30 @@ impl<Id, C> StateProvider<Id, C> for RoomState<Id, C> {
     }
 }
 
+/// Get the numeric room version from the create event in state.
+///
+/// Returns 1 if the `room_version` field is absent (room V1 didn't have it).
+///
+/// # Panics
+///
+/// Panics if the create event is missing from state (Rule 2.4 should have
+/// already rejected the event before we get here).
+fn get_room_version_num<Id, C, S>(state: &S) -> u32
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    S: StateProvider<Id, C>,
+{
+    let create = state
+        .get_event(M_ROOM_CREATE, "")
+        .expect("m.room.create must exist in state (Rule 2.4)");
+    create
+        .content()
+        .get_room_version()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(1) // V1 rooms didn't have a room_version field
+}
+
 /// Check whether `event` is authorized given the room state at its `prev_events`.
 ///
 /// This implements the core Matrix authorization rules:
@@ -182,10 +206,11 @@ impl<Id, C> StateProvider<Id, C> for RoomState<Id, C> {
 /// # Errors
 ///
 /// Returns an `AuthError` if the event fails authorization validation.
+#[allow(clippy::too_many_lines)]
 pub fn check_auth<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
     state: &impl StateProvider<Id, C>,
@@ -318,11 +343,255 @@ pub fn check_auth<
         }
     }
 
+    // Rule 10: m.room.power_levels validation
+    if event_type == M_ROOM_POWER_LEVELS {
+        let new_content = event.content();
+
+        let is_v12_plus = matches!(
+            version,
+            StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
+        );
+
+        // Rules 10.1–10.3 were added in room version 10.
+        let is_room_v10_plus = get_room_version_num(state) >= 10;
+
+        if is_room_v10_plus {
+            // Rule 10.1 (V10+): Scalar PL properties must be integers.
+            if let Some(field) = new_content.find_non_integer_scalar_pl() {
+                return Err(AuthError::InvalidSyntax(alloc::format!(
+                    "m.room.power_levels {field} is not an integer"
+                )));
+            }
+
+            // Rule 10.2 (V10+): `events`/`notifications` must be objects with integer values.
+            if let Some(field) = new_content.find_non_integer_map_pl() {
+                return Err(AuthError::InvalidSyntax(alloc::format!(
+                    "m.room.power_levels {field} is not an object with integer values"
+                )));
+            }
+        }
+
+        // Rule 10.4 (V12+ only): `users` must not contain creator or additional_creators.
+        if is_v12_plus {
+            if let Some(create_event) = state.get_event(M_ROOM_CREATE, "") {
+                let create_content = create_event.content();
+                if let Some(creator) = create_content.get_creator() {
+                    if new_content.has_user_in_users(creator) {
+                        return Err(AuthError::InvalidSyntax(alloc::format!(
+                            "m.room.power_levels users contains creator {creator}"
+                        )));
+                    }
+                }
+                // Check additional_creators — use key-only iteration so non-integer
+                // valued entries are still caught.
+                for user_id in new_content.iter_user_keys() {
+                    if create_content.has_additional_creator(user_id) {
+                        return Err(AuthError::InvalidSyntax(alloc::format!(
+                            "m.room.power_levels users contains additional_creator {user_id}"
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Rule 10.3: `users` keys must be valid user IDs with integer values.
+        // Applies to ALL versions. Strict JSON integers required in V10+, coercible strings allowed in V9-.
+        if new_content.has_non_integer_users_pl(is_room_v10_plus) {
+            return Err(AuthError::InvalidSyntax(
+                "m.room.power_levels users contains non-integer value or is not an object".into(),
+            ));
+        }
+        for user_id in new_content.iter_user_keys() {
+            if !user_id.starts_with('@') || !user_id.contains(':') {
+                return Err(AuthError::InvalidSyntax(alloc::format!(
+                    "users key is not a valid user ID: {user_id}"
+                )));
+            }
+        }
+
+        // Rules 10.5–10.10: only when a previous PL event exists.
+        // (Rule 10.5 — first PL event — is handled above by the is_first_pl skip.)
+        if let Some(prev_pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
+            let sender_pl = user::get_sender_power_level(event.sender(), state, version);
+            check_power_levels_rules(
+                event.sender(),
+                new_content,
+                prev_pl_event.content(),
+                sender_pl,
+            )?;
+        }
+    }
+
     // Rule 5: m.room.member state_key validation
     if event_type == M_ROOM_MEMBER {
         check_membership_rules(event, state, version, verifier)?;
     }
 
+    Ok(())
+}
+
+/// Validate `m.room.power_levels` changes per spec Rules 10.6–10.10.
+///
+/// Called only when there is an existing PL event in state (Rule 10.5 is
+/// handled by the `is_first_pl` skip in `check_auth`).  Rules 10.1–10.4
+/// are checked unconditionally in `check_auth` before this function.
+#[allow(clippy::too_many_lines)]
+fn check_power_levels_rules<
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+>(
+    sender: &str,
+    new_content: &C,
+    prev_pl: &C,
+    sender_pl: i64,
+) -> Result<(), AuthError<Id>> {
+    use alloc::collections::BTreeMap;
+
+    // Rule 10.6: Scalar PL properties — reject if old or new value > sender PL.
+    check_scalar_pl(
+        "users_default",
+        prev_pl.get_users_default(),
+        new_content.get_users_default(),
+        sender_pl,
+    )?;
+    check_scalar_pl(
+        "events_default",
+        prev_pl.get_events_default(),
+        new_content.get_events_default(),
+        sender_pl,
+    )?;
+    check_scalar_pl(
+        "state_default",
+        prev_pl.get_state_default(),
+        new_content.get_state_default(),
+        sender_pl,
+    )?;
+    check_scalar_pl("ban", prev_pl.get_ban(), new_content.get_ban(), sender_pl)?;
+    check_scalar_pl(
+        "redact",
+        prev_pl.get_redact(),
+        new_content.get_redact(),
+        sender_pl,
+    )?;
+    check_scalar_pl(
+        "kick",
+        prev_pl.get_kick(),
+        new_content.get_kick(),
+        sender_pl,
+    )?;
+    check_scalar_pl(
+        "invite",
+        prev_pl.get_invite(),
+        new_content.get_invite(),
+        sender_pl,
+    )?;
+
+    // Rules 10.7–10.8: events map changes.
+    let old_events: BTreeMap<&str, i64> = prev_pl.iter_event_power_levels().into_iter().collect();
+    let new_events: BTreeMap<&str, i64> =
+        new_content.iter_event_power_levels().into_iter().collect();
+
+    // Rule 10.7: entries changed or removed — current value must not exceed sender PL.
+    for (key, &old_val) in &old_events {
+        let changed = new_events.get(key).is_none_or(|&nv| nv != old_val);
+        if changed && old_val > sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot change events[{key}]: current value {old_val} > sender PL {sender_pl}"
+            )));
+        }
+    }
+    // Rule 10.8: entries added or changed — new value must not exceed sender PL.
+    for (key, &new_val) in &new_events {
+        let changed = old_events.get(key).is_none_or(|&ov| ov != new_val);
+        if changed && new_val > sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot set events[{key}] to {new_val}: exceeds sender PL {sender_pl}"
+            )));
+        }
+    }
+
+    // Rules 10.7–10.8 also apply to `notifications` map.
+    let old_notifs: BTreeMap<&str, i64> = prev_pl
+        .iter_notification_power_levels()
+        .into_iter()
+        .collect();
+    let new_notifs: BTreeMap<&str, i64> = new_content
+        .iter_notification_power_levels()
+        .into_iter()
+        .collect();
+
+    for (key, &old_val) in &old_notifs {
+        let changed = new_notifs.get(key).is_none_or(|&nv| nv != old_val);
+        if changed && old_val > sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot change notifications[{key}]: current value {old_val} > sender PL {sender_pl}"
+            )));
+        }
+    }
+    for (key, &new_val) in &new_notifs {
+        let changed = old_notifs.get(key).is_none_or(|&ov| ov != new_val);
+        if changed && new_val > sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot set notifications[{key}] to {new_val}: exceeds sender PL {sender_pl}"
+            )));
+        }
+    }
+
+    // Rules 10.9–10.10: users map changes.
+    let old_users: BTreeMap<&str, i64> = prev_pl.iter_user_power_levels().into_iter().collect();
+    let new_users: BTreeMap<&str, i64> = new_content.iter_user_power_levels().into_iter().collect();
+
+    // Rule 10.9: entries changed or removed (excluding sender's own entry).
+    // Current value must be strictly less than sender PL (i.e. >= is rejected).
+    for (key, &old_val) in &old_users {
+        if *key == sender {
+            continue; // sender's own entry is exempt
+        }
+        let changed = new_users.get(key).is_none_or(|&nv| nv != old_val);
+        if changed && old_val >= sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot change users[{key}]: current PL {old_val} >= sender PL {sender_pl}"
+            )));
+        }
+    }
+    // Rule 10.10: entries added or changed — new value must not exceed sender PL.
+    for (key, &new_val) in &new_users {
+        let changed = old_users.get(key).is_none_or(|&ov| ov != new_val);
+        if changed && new_val > sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot set users[{key}] to {new_val}: exceeds sender PL {sender_pl}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Helper for Rule 10.6: reject if a scalar PL property was changed and
+/// either the old or new value exceeds the sender's power level.
+fn check_scalar_pl<Id>(
+    field: &str,
+    old: Option<i64>,
+    new: Option<i64>,
+    sender_pl: i64,
+) -> Result<(), AuthError<Id>> {
+    if old == new {
+        return Ok(());
+    }
+    if let Some(old_val) = old {
+        if old_val > sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot change {field}: current value {old_val} > sender PL {sender_pl}"
+            )));
+        }
+    }
+    if let Some(new_val) = new {
+        if new_val > sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot set {field} to {new_val}: exceeds sender PL {sender_pl}"
+            )));
+        }
+    }
     Ok(())
 }
 

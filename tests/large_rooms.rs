@@ -106,7 +106,7 @@ fn test_ruma_bootstrap_auth_chain() {
     let (accepted, rejected) = check_auth_chain(
         &events,
         &RoomState::new(),
-        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+        rezzy::basespec::rezzy_types::StateResVersion::V2,
     );
 
     // All bootstrap events should pass auth

@@ -21,12 +21,9 @@ def text_width(text: str) -> float:
 
 
 blocks = [{"text": "tests", "color": "#555"}]
-if passed > 0 or (failed == 0 and skipped == 0):
-    blocks.append({"text": f"{passed} pass", "color": "#4c1"})
-if failed > 0:
-    blocks.append({"text": f"{failed} fail", "color": "#e05d44"})
-if skipped > 0:
-    blocks.append({"text": f"{skipped} skip", "color": "#dfb317"})
+blocks.append({"text": f"{passed} pass", "color": "#4c1"})
+blocks.append({"text": f"{failed} fail", "color": "#e05d44"})
+blocks.append({"text": f"{skipped} skip", "color": "#9f9f9f"})
 
 total_width = sum(text_width(b["text"]) for b in blocks)
 svg = f"""<svg xmlns="http://www.w3.org/2000/svg"

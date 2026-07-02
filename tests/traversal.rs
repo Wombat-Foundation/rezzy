@@ -1457,7 +1457,7 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
         sender: "@admin:x".to_string(),
         origin_server_ts: 300,
         content: json!({
-            "users": { "@admin:x": 100, "@mallory:x": 50 },
+            "users": { "@mallory:x": 50 },
             "state_default": 50
         }),
         auth_events: vec!["$create".to_string(), "$admin_join".to_string()],
@@ -1518,7 +1518,6 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
         sender: "@admin:x".to_string(),
         origin_server_ts: 700,
         content: json!({
-            "users": { "@admin:x": 100 },
             "state_default": 50
         }),
         auth_events: vec![
@@ -1616,5 +1615,49 @@ fn test_v2_2_auth_distance_tiebreak() {
         resolved.get(&topic_key),
         Some(&"$topic_b".to_string()),
         "V2.2: $topic_b must win via lexicographic event_id tiebreak (last-write-wins)"
+    );
+}
+
+/// Rule 10.4 (V12): PL event with creator in `users` map is rejected during
+/// state resolution. A competing PL without the creator wins.
+#[test]
+fn test_v2_1_1_creator_in_users_map_rejected() {
+    let auth_evs = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:x", "origin_server_ts": 100, "content": {"room_version": "12", "creator": "@admin:x"}}
+{"event_id": "$admin_join", "type": "m.room.member",       "state_key": "@admin:x", "sender": "@admin:x", "origin_server_ts": 200, "content": {"membership": "join"}, "auth_events": ["$create"]}
+{"event_id": "$pl",         "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x", "origin_server_ts": 300, "content": {"state_default": 50}, "auth_events": ["$create", "$admin_join"]}
+"#,
+    );
+    // Fork A: creator in users (forbidden in V12) vs Fork B: valid
+    let conflicted_evs = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl_bad",  "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x", "origin_server_ts": 400, "content": {"users": {"@admin:x": 100}, "state_default": 50}, "auth_events": ["$create", "$admin_join", "$pl"]}
+{"event_id": "$pl_good", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x", "origin_server_ts": 500, "content": {"state_default": 50}, "auth_events": ["$create", "$admin_join", "$pl"]}
+"#,
+    );
+
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in auth_evs {
+        auth_context.insert(ev.event_id.clone(), ev);
+    }
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in conflicted_evs {
+        conflicted.insert(ev.event_id.clone(), ev);
+    }
+
+    let unconflicted = utils::build_unconflicted_state_test_helper(&auth_context);
+    let resolved = resolve_iterative_sort(
+        unconflicted,
+        conflicted,
+        &auth_context,
+        StateResVersion::V2_1_1,
+    );
+
+    let pl_key = ("m.room.power_levels".to_string(), String::new());
+    assert_eq!(
+        resolved.get(&pl_key),
+        Some(&"$pl_good".to_string()),
+        "V12 Rule 10.4: PL with creator in users must be rejected; valid PL wins"
     );
 }

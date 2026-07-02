@@ -15,8 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Init submodules
+        run: git -c submodule.res.update=checkout submodule update --init --recursive
 
       - name: Install dependencies
         run: |

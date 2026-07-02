@@ -3948,6 +3948,15 @@ fn test_event_content_default_trait_methods() {
         fn get_join_authorised_via_users_server(&self) -> Option<&str> {
             None
         }
+        fn iter_event_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+            alloc::vec::Vec::new()
+        }
+        fn iter_user_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+            alloc::vec::Vec::new()
+        }
+        fn iter_notification_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+            alloc::vec::Vec::new()
+        }
     }
 
     let c = MinimalContent;
@@ -3955,6 +3964,13 @@ fn test_event_content_default_trait_methods() {
     assert!(c.get_third_party_invite_token().is_none());
     assert!(c.get_third_party_invite_mxid().is_none());
     assert!(!c.has_third_party_invite_signatures());
+    // Rule 10 defaults
+    assert!(c.iter_event_power_levels().is_empty());
+    assert!(c.iter_user_power_levels().is_empty());
+    assert!(c.iter_notification_power_levels().is_empty());
+    assert!(c.find_non_integer_scalar_pl().is_none());
+    assert!(c.find_non_integer_map_pl().is_none());
+    assert!(!c.has_user_in_users("@someone:x"));
 }
 
 /// Coverage: default `EventVerifier::verify_third_party_invite` (line 369-375).
@@ -4460,6 +4476,15 @@ fn test_event_content_get_room_version() {
         }
         fn get_join_authorised_via_users_server(&self) -> Option<&str> {
             None
+        }
+        fn iter_event_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+            alloc::vec::Vec::new()
+        }
+        fn iter_user_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+            alloc::vec::Vec::new()
+        }
+        fn iter_notification_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+            alloc::vec::Vec::new()
         }
     }
 
