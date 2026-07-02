@@ -3585,3 +3585,49 @@ fn test_pl_v12_notifications_non_integer_rejected() {
         "Non-integer notifications value should be rejected in V12: {res:?}"
     );
 }
+
+/// Rule 10.8: mod tries to set notifications["room"] above own PL → reject.
+#[test]
+fn test_pl_validation_notifications_escalation_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}}}
+"#,
+    );
+    // Mod (PL 50) tries to set notifications["room"] to 80
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@mod:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "notifications": {"room": 80}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_err(),
+        "Setting notifications above own PL should be rejected: {res:?}"
+    );
+}
+
+/// Rule 10.7: mod tries to lower notifications["room"] whose old value > own PL → reject.
+#[test]
+fn test_pl_validation_notifications_old_value_too_high_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
+{"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "notifications": {"room": 80}}}
+"#,
+    );
+    // Mod (PL 50) tries to lower notifications["room"] from 80 to 30
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@mod:example.com", "content": {"users": {"@admin:example.com": 100, "@mod:example.com": 50}, "notifications": {"room": 30}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_err(),
+        "Lowering notifications with old value > own PL should be rejected: {res:?}"
+    );
+}

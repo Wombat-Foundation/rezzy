@@ -698,6 +698,12 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
         alloc::vec::Vec::new()
     }
 
+    /// Iterate over `(key, power_level)` entries in the `notifications` map.
+    /// Used by Rule 10.7–10.8 PL validation to compare old vs new `notifications`.
+    fn iter_notification_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+        alloc::vec::Vec::new()
+    }
+
     /// Rule 10.1 (V12): Returns the name of any scalar PL property that is
     /// present but not an integer (or integer-coercible string).
     fn find_non_integer_scalar_pl(&self) -> Option<&'static str> {
@@ -897,6 +903,19 @@ impl EventContent for Value {
 
     fn iter_user_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
         self.get(crate::basespec::event_types::FIELD_USERS)
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| {
+                        coerce_json_to_i64(v).map(|pl| (k.as_str(), pl.min(MAX_POWER_LEVEL_JSON)))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn iter_notification_power_levels(&self) -> alloc::vec::Vec<(&str, i64)> {
+        self.get(crate::basespec::event_types::FIELD_NOTIFICATIONS)
             .and_then(|v| v.as_object())
             .map(|obj| {
                 obj.iter()

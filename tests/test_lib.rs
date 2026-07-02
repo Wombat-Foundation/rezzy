@@ -3958,6 +3958,7 @@ fn test_event_content_default_trait_methods() {
     // Rule 10 defaults
     assert!(c.iter_event_power_levels().is_empty());
     assert!(c.iter_user_power_levels().is_empty());
+    assert!(c.iter_notification_power_levels().is_empty());
     assert!(c.find_non_integer_scalar_pl().is_none());
     assert!(c.find_non_integer_map_pl().is_none());
     assert!(!c.has_user_in_users("@someone:x"));

@@ -473,6 +473,31 @@ fn check_power_levels_rules<
         }
     }
 
+    // Rules 10.7–10.8 also apply to `notifications` map.
+    let old_notifs: BTreeMap<&str, i64> =
+        prev_pl.iter_notification_power_levels().into_iter().collect();
+    let new_notifs: BTreeMap<&str, i64> = new_content
+        .iter_notification_power_levels()
+        .into_iter()
+        .collect();
+
+    for (key, &old_val) in &old_notifs {
+        let changed = new_notifs.get(key).is_none_or(|&nv| nv != old_val);
+        if changed && old_val > sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot change notifications[{key}]: current value {old_val} > sender PL {sender_pl}"
+            )));
+        }
+    }
+    for (key, &new_val) in &new_notifs {
+        let changed = old_notifs.get(key).is_none_or(|&ov| ov != new_val);
+        if changed && new_val > sender_pl {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cannot set notifications[{key}] to {new_val}: exceeds sender PL {sender_pl}"
+            )));
+        }
+    }
+
     // Rules 10.9–10.10: users map changes.
     let old_users: BTreeMap<&str, i64> = prev_pl.iter_user_power_levels().into_iter().collect();
     let new_users: BTreeMap<&str, i64> = new_content.iter_user_power_levels().into_iter().collect();
