@@ -380,6 +380,141 @@ impl<Id: EventId, C: EventContent> EventLike for LeanEvent<Id, C> {
     }
 }
 
+// ── RawEvent + ParsedEvent: zero-boilerplate adapter ────────────────
+
+/// Trait for external event types that store content as raw JSON.
+///
+/// Implement this on your native PDU type (~9 one-liner field accessors),
+/// then wrap with [`ParsedEvent`] to get [`DagNode`] + [`EventLike`] for free.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// impl RawEvent for MyPdu {
+///     type Id = OwnedEventId;
+///     fn raw_event_id(&self) -> &OwnedEventId { &self.event_id }
+///     fn raw_event_type(&self) -> Cow<'_, str> { self.kind.to_cow_str() }
+///     fn raw_sender(&self) -> &str { self.sender.as_str() }
+///     fn raw_state_key(&self) -> Option<&str> { self.state_key.as_deref() }
+///     fn raw_content_json(&self) -> &str { self.content.get() }
+///     fn raw_prev_events(&self) -> &[OwnedEventId] { &self.prev_events }
+///     fn raw_auth_events(&self) -> &[OwnedEventId] { &self.auth_events }
+///     fn raw_depth(&self) -> u64 { self.depth.into() }
+///     fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts.into() }
+/// }
+///
+/// // Then:
+/// let event = ParsedEvent::new(&my_pdu);
+/// rezzy::auth::check_auth(&event, &state, version, None)?;
+/// ```
+pub trait RawEvent {
+    /// The event ID type (e.g. `OwnedEventId`, `String`).
+    type Id: EventId;
+
+    /// The event's unique identifier.
+    fn raw_event_id(&self) -> &Self::Id;
+
+    /// The Matrix event type as a string (e.g. `"m.room.member"`).
+    fn raw_event_type(&self) -> alloc::borrow::Cow<'_, str>;
+
+    /// The sender's MXID as a string slice.
+    fn raw_sender(&self) -> &str;
+
+    /// The state key, if this is a state event.
+    fn raw_state_key(&self) -> Option<&str>;
+
+    /// The raw JSON content of the event.
+    fn raw_content_json(&self) -> &str;
+
+    /// References to parent event IDs in the DAG.
+    fn raw_prev_events(&self) -> &[Self::Id];
+
+    /// References to auth event IDs.
+    fn raw_auth_events(&self) -> &[Self::Id];
+
+    /// DAG depth.
+    fn raw_depth(&self) -> u64;
+
+    /// Origin server timestamp in milliseconds since Unix epoch.
+    fn raw_origin_server_ts(&self) -> u64;
+
+    /// Cached power level (used for state resolution sort priority).
+    /// Defaults to `0` — override if your type caches this.
+    fn raw_power_level(&self) -> i64 {
+        0
+    }
+}
+
+/// Wraps a `&T` (where `T: RawEvent`) with a cached parsed
+/// `serde_json::Value` content, providing [`DagNode`] + [`EventLike`]
+/// for free.
+///
+/// Content is parsed once at construction from [`RawEvent::raw_content_json`].
+pub struct ParsedEvent<'a, T: RawEvent> {
+    raw: &'a T,
+    content: serde_json::Value,
+}
+
+impl<'a, T: RawEvent> ParsedEvent<'a, T> {
+    /// Create a new `ParsedEvent`, parsing the raw JSON content once.
+    #[must_use]
+    pub fn new(event: &'a T) -> Self {
+        let content = serde_json::from_str(event.raw_content_json()).unwrap_or_default();
+        Self {
+            raw: event,
+            content,
+        }
+    }
+}
+
+impl<T: RawEvent> DagNode for ParsedEvent<'_, T> {
+    type Id = T::Id;
+
+    fn event_id(&self) -> &T::Id {
+        self.raw.raw_event_id()
+    }
+
+    fn depth(&self) -> u64 {
+        self.raw.raw_depth()
+    }
+
+    fn prev_events(&self) -> &[T::Id] {
+        self.raw.raw_prev_events()
+    }
+
+    fn auth_events(&self) -> &[T::Id] {
+        self.raw.raw_auth_events()
+    }
+}
+
+impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
+    type Content = serde_json::Value;
+
+    fn event_type(&self) -> alloc::borrow::Cow<'_, str> {
+        self.raw.raw_event_type()
+    }
+
+    fn sender(&self) -> &str {
+        self.raw.raw_sender()
+    }
+
+    fn state_key(&self) -> Option<&str> {
+        self.raw.raw_state_key()
+    }
+
+    fn power_level(&self) -> i64 {
+        self.raw.raw_power_level()
+    }
+
+    fn origin_server_ts(&self) -> u64 {
+        self.raw.raw_origin_server_ts()
+    }
+
+    fn content(&self) -> &serde_json::Value {
+        &self.content
+    }
+}
+
 /// A lightweight Matrix event representation optimized for state resolution.
 ///
 /// `LeanEvent` strips away fields irrelevant to state resolution (e.g. `unsigned`,
