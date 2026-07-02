@@ -1622,71 +1622,31 @@ fn test_v2_2_auth_distance_tiebreak() {
 /// state resolution. A competing PL without the creator wins.
 #[test]
 fn test_v2_1_1_creator_in_users_map_rejected() {
-    let create = LeanEvent {
-        event_id: "$create".to_string(),
-        event_type: "m.room.create".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:x".to_string(),
-        origin_server_ts: 100,
-        content: json!({"room_version": "12", "creator": "@admin:x"}),
-        ..Default::default()
-    };
-    let admin_join = LeanEvent {
-        event_id: "$admin_join".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@admin:x".to_string()),
-        sender: "@admin:x".to_string(),
-        origin_server_ts: 200,
-        content: json!({"membership": "join"}),
-        auth_events: vec!["$create".to_string()],
-        ..Default::default()
-    };
-    let pl_baseline = LeanEvent {
-        event_id: "$pl".to_string(),
-        event_type: "m.room.power_levels".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:x".to_string(),
-        origin_server_ts: 300,
-        content: json!({"state_default": 50}),
-        auth_events: vec!["$create".to_string(), "$admin_join".to_string()],
-        ..Default::default()
-    };
-
-    // Fork A: PL with creator in users — forbidden in V12
-    let pl_bad = LeanEvent {
-        event_id: "$pl_bad".to_string(),
-        event_type: "m.room.power_levels".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:x".to_string(),
-        origin_server_ts: 400,
-        content: json!({"users": {"@admin:x": 100}, "state_default": 50}),
-        auth_events: vec!["$create".to_string(), "$admin_join".to_string(), "$pl".to_string()],
-        ..Default::default()
-    };
-
-    // Fork B: PL without creator in users — valid
-    let pl_good = LeanEvent {
-        event_id: "$pl_good".to_string(),
-        event_type: "m.room.power_levels".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:x".to_string(),
-        origin_server_ts: 500,
-        content: json!({"state_default": 50}),
-        auth_events: vec!["$create".to_string(), "$admin_join".to_string(), "$pl".to_string()],
-        ..Default::default()
-    };
+    let auth_evs = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:x", "origin_server_ts": 100, "content": {"room_version": "12", "creator": "@admin:x"}}
+{"event_id": "$admin_join", "type": "m.room.member",       "state_key": "@admin:x", "sender": "@admin:x", "origin_server_ts": 200, "content": {"membership": "join"}, "auth_events": ["$create"]}
+{"event_id": "$pl",         "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x", "origin_server_ts": 300, "content": {"state_default": 50}, "auth_events": ["$create", "$admin_join"]}
+"#,
+    );
+    // Fork A: creator in users (forbidden in V12) vs Fork B: valid
+    let conflicted_evs = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl_bad",  "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x", "origin_server_ts": 400, "content": {"users": {"@admin:x": 100}, "state_default": 50}, "auth_events": ["$create", "$admin_join", "$pl"]}
+{"event_id": "$pl_good", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x", "origin_server_ts": 500, "content": {"state_default": 50}, "auth_events": ["$create", "$admin_join", "$pl"]}
+"#,
+    );
 
     let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
-    auth_context.insert("$create".to_string(), create);
-    auth_context.insert("$admin_join".to_string(), admin_join);
-    auth_context.insert("$pl".to_string(), pl_baseline);
-
+    for ev in auth_evs {
+        auth_context.insert(ev.event_id.clone(), ev);
+    }
     let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
-    conflicted.insert("$pl_bad".to_string(), pl_bad);
-    conflicted.insert("$pl_good".to_string(), pl_good);
+    for ev in conflicted_evs {
+        conflicted.insert(ev.event_id.clone(), ev);
+    }
 
     let unconflicted = utils::build_unconflicted_state_test_helper(&auth_context);
-
     let resolved = resolve_iterative_sort(
         unconflicted,
         conflicted,

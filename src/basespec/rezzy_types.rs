@@ -909,7 +909,10 @@ impl EventContent for Value {
     }
 
     fn find_non_integer_scalar_pl(&self) -> Option<&'static str> {
-        use crate::basespec::event_types::{FIELD_USERS_DEFAULT, FIELD_EVENTS_DEFAULT, FIELD_STATE_DEFAULT, FIELD_BAN, FIELD_REDACT, FIELD_KICK, FIELD_INVITE};
+        use crate::basespec::event_types::{
+            FIELD_BAN, FIELD_EVENTS_DEFAULT, FIELD_INVITE, FIELD_KICK, FIELD_REDACT,
+            FIELD_STATE_DEFAULT, FIELD_USERS_DEFAULT,
+        };
         let scalars: &[(&str, &'static str)] = &[
             (FIELD_USERS_DEFAULT, "users_default"),
             (FIELD_EVENTS_DEFAULT, "events_default"),
@@ -937,10 +940,10 @@ impl EventContent for Value {
         ];
         for &(field, label) in maps {
             if let Some(val) = self.get(field) {
-                let obj = match val.as_object() {
-                    Some(o) => o,
-                    None => return Some(label),
+                let Some(obj) = val.as_object() else {
+                    return Some(label);
                 };
+
                 for v in obj.values() {
                     if coerce_json_to_i64(v).is_none() {
                         return Some(label);
