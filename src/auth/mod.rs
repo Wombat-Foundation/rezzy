@@ -198,9 +198,10 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForwardExtremityResult<Id = String> {
     /// The event is fully valid and updates the room state.
-    ValidMaybePendingSigHashVer,
+    Valid,
     /// The event is valid according to its own `auth_events`, but fails auth against the current room state.
-    /// It should be accepted into the DAG but must not update the room state.
+    /// It must be accepted into the DAG (timeline) to prevent graph fragmentation, but must **not**
+    /// update the room state.
     SoftFailed(AuthError<Id>),
     /// The event is completely invalid (fails auth against its own `auth_events`) and must be rejected.
     Rejected(AuthError<Id>),
@@ -227,12 +228,11 @@ pub fn validate_forward_extremity<
         return ForwardExtremityResult::Rejected(e);
     }
 
-    // TODO: add support for generic verifier(s) throughout this call chain
     if let Err(e) = check_auth(event, current_room_state, version, None) {
         return ForwardExtremityResult::SoftFailed(e);
     }
 
-    ForwardExtremityResult::ValidMaybePendingSigHashVer
+    ForwardExtremityResult::Valid
 }
 
 /// Check whether `event` is authorized given the room state at its `prev_events`.

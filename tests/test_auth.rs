@@ -3676,7 +3676,7 @@ fn test_forward_extremity_validation_valid() {
     // Pass same state for both to ensure it's valid
     let result =
         validate_forward_extremity(&event, &state, &state, rezzy::StateResVersion::V2_1, None);
-    assert_eq!(result, ForwardExtremityResult::ValidMaybePendingSigHashVer);
+    assert_eq!(result, ForwardExtremityResult::Valid);
 }
 
 #[test]

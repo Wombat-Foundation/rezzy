@@ -175,7 +175,7 @@ pub fn compute_state_hash<Id: crate::basespec::rezzy_types::EventId>(
         hash = hash.wrapping_mul(FNV128_PRIME);
 
         let mut writer = FnvHasher(&mut hash);
-        let _ = write!(writer, "{event_id}");
+        write!(writer, "{event_id}").expect("FnvHasher formatting is infallible");
         hash ^= 0xff;
         hash = hash.wrapping_mul(FNV128_PRIME);
     }
@@ -276,7 +276,7 @@ pub fn reconstruct_state_at_by_event_id<Id: crate::basespec::rezzy_types::EventI
     checkpoints: &[CompactedCheckpoint<Id>],
     event_id: &Id,
 ) -> Option<crate::state::at::SharedState<Id>> {
-    let idx = checkpoints.iter().position(|cp| cp.event_id == *event_id)?;
+    let idx = checkpoints.iter().position(|cp| &cp.event_id == event_id)?;
     reconstruct_state_at(checkpoints, idx)
 }
 
