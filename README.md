@@ -60,6 +60,20 @@ If you are building the binary _for_ a specific machine, you can unlock native C
 RUSTFLAGS="-C target-cpu=native" make build install
 ```
 
+## Development setup
+
+The `res/` submodule contains large test fixtures. It uses `update = none` in `.gitmodules` so downstream Cargo consumers don't fetch it. For local development, init it with:
+
+```bash
+git -c submodule.res.update=checkout submodule update --init
+```
+
+Then generate synthetic fixtures and run the test suite:
+
+```bash
+make test
+```
+
 ## Test coverage
 
 To install and run test coverage:
