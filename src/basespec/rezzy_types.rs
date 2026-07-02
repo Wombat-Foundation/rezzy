@@ -171,13 +171,35 @@ impl<Id> KahnSortResult<Id> {
 /// A generic interface for graph nodes required by topological algorithms
 /// (e.g., `compute_merge_base`). This allows consumers like `conduwuit` to
 /// pass their own lightweight `EventMeta` tuples without allocating dummy JSON structs.
-pub trait DagNode<Id> {
+///
+/// # Relationship to [`EventLike`]
+///
+/// `DagNode` is a supertrait of [`EventLike`]. Implementors who only need
+/// topological traversal (e.g. LCA / merge-base computation) can implement
+/// `DagNode` alone without the full suite of auth-related accessors.
+pub trait DagNode {
+    /// The event identifier type (e.g. `String`, `u32`).
+    type Id: EventId;
+
+    /// Returns a reference to this event's unique identifier.
+    fn event_id(&self) -> &Self::Id;
+
+    /// DAG depth (distance from the root `m.room.create` event).
     fn depth(&self) -> u64;
-    fn prev_events(&self) -> &[Id];
-    fn auth_events(&self) -> &[Id];
+
+    /// Event IDs of this event's parents in the timeline DAG.
+    fn prev_events(&self) -> &[Self::Id];
+
+    /// Event IDs of the authorization events for this event.
+    fn auth_events(&self) -> &[Self::Id];
 }
 
-impl<Id, C> DagNode<Id> for LeanEvent<Id, C> {
+impl<Id: EventId, C> DagNode for LeanEvent<Id, C> {
+    type Id = Id;
+
+    fn event_id(&self) -> &Id {
+        &self.event_id
+    }
     fn depth(&self) -> u64 {
         self.depth
     }
@@ -186,6 +208,351 @@ impl<Id, C> DagNode<Id> for LeanEvent<Id, C> {
     }
     fn auth_events(&self) -> &[Id] {
         &self.auth_events
+    }
+}
+
+/// Unified trait for Matrix events used by the auth and resolution engines.
+///
+/// `EventLike` extends [`DagNode`] with the full set of envelope fields
+/// (sender, event type, state key, etc.) and content accessors (membership,
+/// power levels, join rules, etc.) needed for authorization checks.
+///
+/// # For downstream homeservers
+///
+/// The recommended path is [`RawEvent`] + [`ParsedEvent`], which gives you
+/// `DagNode + EventLike` for free with ~9 one-liner field accessors.
+///
+/// If you need full control (e.g. typed content without JSON parsing),
+/// implement `EventLike` directly with a [`Content`](Self::Content) type
+/// that implements [`EventContent`].
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // Recommended: use RawEvent + ParsedEvent (see RawEvent docs).
+/// // Direct impl only needed for custom Content types:
+/// impl EventLike for MyEvent {
+///     type Content = serde_json::Value;
+///     fn event_type(&self) -> Cow<'_, str> { /* ... */ }
+///     fn sender(&self) -> &str { /* ... */ }
+///     fn content(&self) -> &serde_json::Value { &self.parsed_content }
+///     // ... remaining structural accessors
+/// }
+/// ```
+pub trait EventLike: DagNode {
+    /// The content type (e.g. `serde_json::Value` or a typed struct).
+    type Content: EventContent;
+
+    /// Matrix event type (e.g. `m.room.member`, `m.room.power_levels`).
+    ///
+    /// Returns `Cow::Borrowed` when the type string is stored inline (e.g. `LeanEvent`),
+    /// or `Cow::Owned`/`Cow::Borrowed` from a typed enum (e.g. ruma `TimelineEventType`).
+    fn event_type(&self) -> alloc::borrow::Cow<'_, str>;
+
+    /// The MXID of the user who sent the event.
+    fn sender(&self) -> &str;
+
+    /// State key for state events; `None` for timeline (non-state) events.
+    fn state_key(&self) -> Option<&str>;
+
+    /// Sender's cached power level at the time of the event.
+    fn power_level(&self) -> i64;
+
+    /// Origin server timestamp in milliseconds since Unix epoch.
+    fn origin_server_ts(&self) -> u64;
+
+    /// Access the event content (parsed or stored).
+    fn content(&self) -> &Self::Content;
+
+    // === Content accessors — default impls delegate to self.content() ===
+
+    /// Returns the `membership` field from event content.
+    fn get_membership(&self) -> Option<&str> {
+        self.content().get_membership()
+    }
+
+    /// Returns the `join_rule` field from event content.
+    fn get_join_rule(&self) -> Option<&str> {
+        self.content().get_join_rule()
+    }
+
+    /// Returns the power level for a specific user from `content.users`.
+    fn get_user_power_level(&self, user: &str) -> Option<i64> {
+        self.content().get_user_power_level(user)
+    }
+
+    /// Returns the required power level for a specific event type from `content.events`.
+    fn get_event_power_level(&self, event_type: &str) -> Option<i64> {
+        self.content().get_event_power_level(event_type)
+    }
+
+    /// Returns the `users_default` power level.
+    fn get_users_default(&self) -> Option<i64> {
+        self.content().get_users_default()
+    }
+
+    /// Returns the `events_default` power level.
+    fn get_events_default(&self) -> Option<i64> {
+        self.content().get_events_default()
+    }
+
+    /// Returns the `state_default` power level.
+    fn get_state_default(&self) -> Option<i64> {
+        self.content().get_state_default()
+    }
+
+    /// Returns the `ban` power level threshold.
+    fn get_ban(&self) -> Option<i64> {
+        self.content().get_ban()
+    }
+
+    /// Returns the `kick` power level threshold.
+    fn get_kick(&self) -> Option<i64> {
+        self.content().get_kick()
+    }
+
+    /// Returns the `invite` power level threshold.
+    fn get_invite(&self) -> Option<i64> {
+        self.content().get_invite()
+    }
+
+    /// Returns the `redact` power level threshold.
+    fn get_redact(&self) -> Option<i64> {
+        self.content().get_redact()
+    }
+
+    /// Returns the `creator` field from `m.room.create` content.
+    fn get_creator(&self) -> Option<&str> {
+        self.content().get_creator()
+    }
+
+    /// Returns the `room_version` field from `m.room.create` content.
+    fn get_room_version(&self) -> Option<&str> {
+        self.content().get_room_version()
+    }
+
+    /// Returns true if `sender` is listed in the V12+ `additional_creators` array.
+    fn has_additional_creator(&self, sender: &str) -> bool {
+        self.content().has_additional_creator(sender)
+    }
+
+    /// Returns the `join_authorised_via_users_server` field, if present.
+    fn get_join_authorised_via_users_server(&self) -> Option<&str> {
+        self.content().get_join_authorised_via_users_server()
+    }
+
+    /// Returns whether a `third_party_invite` field is present.
+    fn has_third_party_invite(&self) -> bool {
+        self.content().has_third_party_invite()
+    }
+
+    /// Returns the signed token from `third_party_invite.signed.token`.
+    fn get_third_party_invite_token(&self) -> Option<&str> {
+        self.content().get_third_party_invite_token()
+    }
+
+    /// Returns the mxid from `third_party_invite.signed.mxid`.
+    fn get_third_party_invite_mxid(&self) -> Option<&str> {
+        self.content().get_third_party_invite_mxid()
+    }
+
+    /// Returns whether `third_party_invite.signed.signatures` is present and non-empty.
+    fn has_third_party_invite_signatures(&self) -> bool {
+        self.content().has_third_party_invite_signatures()
+    }
+}
+
+impl<Id: EventId, C: EventContent> EventLike for LeanEvent<Id, C> {
+    type Content = C;
+
+    fn event_type(&self) -> alloc::borrow::Cow<'_, str> {
+        alloc::borrow::Cow::Borrowed(&self.event_type)
+    }
+    fn sender(&self) -> &str {
+        &self.sender
+    }
+    fn state_key(&self) -> Option<&str> {
+        self.state_key.as_deref()
+    }
+    fn power_level(&self) -> i64 {
+        self.power_level
+    }
+    fn origin_server_ts(&self) -> u64 {
+        self.origin_server_ts
+    }
+    fn content(&self) -> &C {
+        &self.content
+    }
+}
+
+// ── RawEvent + ParsedEvent: zero-boilerplate adapter ────────────────
+
+/// Trait for external event types that store content as raw JSON.
+///
+/// Implement this on your native PDU type (~9 one-liner field accessors),
+/// then wrap with [`ParsedEvent`] to get [`DagNode`] + [`EventLike`] for free.
+/// Content is parsed once from raw JSON at [`ParsedEvent::new`] time; all
+/// 20 content accessors (`get_membership`, `get_join_rule`, etc.) are
+/// inherited automatically.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// impl rezzy::RawEvent for Pdu {
+///     type Id = OwnedEventId;
+///
+///     fn raw_event_id(&self) -> &OwnedEventId { &self.event_id }
+///
+///     /// `TimelineEventType` enum → `"m.room.member"` etc.
+///     fn raw_event_type(&self) -> Cow<'_, str> {
+///         Cow::Owned(self.kind.to_string())
+///     }
+///
+///     /// `OwnedUserId` → `"@user:server"`
+///     fn raw_sender(&self) -> &str { self.sender.as_str() }
+///
+///     /// `Option<StateKey>` → `Option<&str>`
+///     fn raw_state_key(&self) -> Option<&str> { self.state_key.as_deref() }
+///
+///     /// `Box<RawJsonValue>` → raw JSON string
+///     fn raw_content_json(&self) -> &str { self.content.get() }
+///
+///     fn raw_prev_events(&self) -> &[OwnedEventId] { &self.prev_events }
+///     fn raw_auth_events(&self) -> &[OwnedEventId] { &self.auth_events }
+///     fn raw_depth(&self) -> u64 { self.depth.into() }
+///     fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts.into() }
+/// }
+///
+/// // Usage — zero boilerplate, one JSON parse:
+/// let event = rezzy::ParsedEvent::new(&pdu);
+/// rezzy::auth::check_auth(&event, &state, version, None)?;
+/// ```
+pub trait RawEvent {
+    /// The event ID type (e.g. `OwnedEventId`, `String`).
+    type Id: EventId;
+
+    /// The event's unique identifier.
+    fn raw_event_id(&self) -> &Self::Id;
+
+    /// The Matrix event type as a string (e.g. `"m.room.member"`).
+    fn raw_event_type(&self) -> alloc::borrow::Cow<'_, str>;
+
+    /// The sender's MXID as a string slice.
+    fn raw_sender(&self) -> &str;
+
+    /// The state key, if this is a state event.
+    fn raw_state_key(&self) -> Option<&str>;
+
+    /// The raw JSON content of the event.
+    fn raw_content_json(&self) -> &str;
+
+    /// References to parent event IDs in the DAG.
+    fn raw_prev_events(&self) -> &[Self::Id];
+
+    /// References to auth event IDs.
+    fn raw_auth_events(&self) -> &[Self::Id];
+
+    /// DAG depth.
+    fn raw_depth(&self) -> u64;
+
+    /// Origin server timestamp in milliseconds since Unix epoch.
+    fn raw_origin_server_ts(&self) -> u64;
+
+    /// Cached power level (used for state resolution sort priority).
+    /// Defaults to `0` — override if your type caches this.
+    fn raw_power_level(&self) -> i64 {
+        0
+    }
+}
+
+/// Wraps a `&T` (where `T: RawEvent`) with a cached parsed
+/// `serde_json::Value` content, providing [`DagNode`] + [`EventLike`]
+/// for free.
+///
+/// Content is parsed once at construction from [`RawEvent::raw_content_json`].
+pub struct ParsedEvent<'a, T: RawEvent> {
+    raw: &'a T,
+    content: serde_json::Value,
+}
+
+impl<'a, T: RawEvent> ParsedEvent<'a, T> {
+    /// Create a new `ParsedEvent`, parsing the raw JSON content once.
+    ///
+    /// Returns an error if `raw_content_json()` is not valid JSON.
+    /// Prefer this over [`new`](Self::new) when you want to surface
+    /// parse failures instead of silently falling back to empty content.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`serde_json::Error`] if the raw content string is not valid JSON.
+    pub fn try_new(event: &'a T) -> Result<Self, serde_json::Error> {
+        let content = serde_json::from_str(event.raw_content_json())?;
+        Ok(Self {
+            raw: event,
+            content,
+        })
+    }
+
+    /// Create a new `ParsedEvent`, parsing the raw JSON content once.
+    ///
+    /// If the content JSON is malformed, falls back to `Value::Null`
+    /// (all content accessors will return `None`/defaults).
+    /// Use [`try_new`](Self::try_new) for strict error handling.
+    #[must_use]
+    pub fn new(event: &'a T) -> Self {
+        let content = serde_json::from_str(event.raw_content_json()).unwrap_or_default();
+        Self {
+            raw: event,
+            content,
+        }
+    }
+}
+
+impl<T: RawEvent> DagNode for ParsedEvent<'_, T> {
+    type Id = T::Id;
+
+    fn event_id(&self) -> &T::Id {
+        self.raw.raw_event_id()
+    }
+
+    fn depth(&self) -> u64 {
+        self.raw.raw_depth()
+    }
+
+    fn prev_events(&self) -> &[T::Id] {
+        self.raw.raw_prev_events()
+    }
+
+    fn auth_events(&self) -> &[T::Id] {
+        self.raw.raw_auth_events()
+    }
+}
+
+impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
+    type Content = serde_json::Value;
+
+    fn event_type(&self) -> alloc::borrow::Cow<'_, str> {
+        self.raw.raw_event_type()
+    }
+
+    fn sender(&self) -> &str {
+        self.raw.raw_sender()
+    }
+
+    fn state_key(&self) -> Option<&str> {
+        self.raw.raw_state_key()
+    }
+
+    fn power_level(&self) -> i64 {
+        self.raw.raw_power_level()
+    }
+
+    fn origin_server_ts(&self) -> u64 {
+        self.raw.raw_origin_server_ts()
+    }
+
+    fn content(&self) -> &serde_json::Value {
+        &self.content
     }
 }
 
@@ -289,6 +656,10 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     fn get_invite(&self) -> Option<i64>;
     fn get_redact(&self) -> Option<i64>;
     fn get_creator(&self) -> Option<&str>;
+    /// Returns the `room_version` field from `m.room.create` content.
+    fn get_room_version(&self) -> Option<&str> {
+        None
+    }
     /// Specific to V12+ rooms.
     fn has_additional_creator(&self, sender: &str) -> bool;
     /// Returns the `join_authorised_via_users_server` field, if present.
@@ -436,6 +807,11 @@ impl EventContent for Value {
 
     fn get_creator(&self) -> Option<&str> {
         self.get(crate::basespec::event_types::FIELD_CREATOR)?
+            .as_str()
+    }
+
+    fn get_room_version(&self) -> Option<&str> {
+        self.get(crate::basespec::event_types::FIELD_ROOM_VERSION)?
             .as_str()
     }
 
@@ -607,6 +983,13 @@ impl<Id, C> LeanEvent<Id, C> {
         C: EventContent,
     {
         self.content.get_creator()
+    }
+
+    pub fn get_room_version(&self) -> Option<&str>
+    where
+        C: EventContent,
+    {
+        self.content.get_room_version()
     }
 
     pub fn has_additional_creator(&self, sender: &str) -> bool

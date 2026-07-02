@@ -69,7 +69,7 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./.tmp/coverage-lean/codecov.json
+          files: .coverage/codecov.json
           fail_ci_if_error: false
 
   publish-badge:

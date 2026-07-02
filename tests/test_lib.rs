@@ -1832,6 +1832,34 @@ mod tests {
     }
 
     #[test]
+    fn test_subgraph_missing_event_in_intersection() {
+        let mut graph: HashMap<String, LeanEvent> = HashMap::new();
+        graph.insert(
+            "X".to_string(),
+            LeanEvent {
+                event_id: "X".into(),
+                event_type: "m.room.member".into(),
+                state_key: Some("@alice:example.com".into()),
+                auth_events: vec!["MISSING_1".into()],
+                ..Default::default()
+            },
+        );
+        // By including "MISSING_1" in the conflicted_set, it enters `forwards_reachable`.
+        // Because "X" references it, it also enters `backwards_reachable`.
+        // This ensures the intersection contains "MISSING_1", triggering the `continue`
+        // when `auth_graph.get("MISSING_1")` returns None in the final loop.
+        let result = compute_v2_1_conflicted_subgraph_bounded(
+            &graph,
+            &["X".to_string(), "MISSING_1".to_string()],
+            None,
+        );
+        assert!(result
+            .missing_auth_events
+            .contains(&"MISSING_1".to_string()));
+        assert!(!result.subgraph.contains_key("MISSING_1"));
+    }
+
+    #[test]
     fn test_subgraph_bounded_depth_off_by_one() {
         // Graph structure: E <- C <- D
         // E has no auth events.
@@ -3911,6 +3939,9 @@ fn test_event_content_default_trait_methods() {
         fn get_creator(&self) -> Option<&str> {
             None
         }
+        fn get_room_version(&self) -> Option<&str> {
+            None
+        }
         fn has_additional_creator(&self, _: &str) -> bool {
             false
         }
@@ -4219,4 +4250,459 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         StateResVersion::V2,
     );
     assert_eq!(sorted_cyclic.len(), 2);
+}
+
+// ── Coverage: ParsedEvent + RawEvent adapter ────────────────────────
+
+/// Minimal `RawEvent` impl for coverage testing.
+struct TestRawEvent {
+    id: String,
+    event_type: String,
+    sender: String,
+    state_key: Option<String>,
+    content_json: String,
+    prev_events: Vec<String>,
+    auth_events: Vec<String>,
+    depth: u64,
+    origin_server_ts: u64,
+}
+
+impl rezzy::RawEvent for TestRawEvent {
+    type Id = String;
+    fn raw_event_id(&self) -> &String {
+        &self.id
+    }
+    fn raw_event_type(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.event_type)
+    }
+    fn raw_sender(&self) -> &str {
+        &self.sender
+    }
+    fn raw_state_key(&self) -> Option<&str> {
+        self.state_key.as_deref()
+    }
+    fn raw_content_json(&self) -> &str {
+        &self.content_json
+    }
+    fn raw_prev_events(&self) -> &[String] {
+        &self.prev_events
+    }
+    fn raw_auth_events(&self) -> &[String] {
+        &self.auth_events
+    }
+    fn raw_depth(&self) -> u64 {
+        self.depth
+    }
+    fn raw_origin_server_ts(&self) -> u64 {
+        self.origin_server_ts
+    }
+    // raw_power_level uses the default impl (returns 0) — exercises line 463-465
+}
+
+/// Exercises `ParsedEvent::new`, `try_new`, all `DagNode` + `EventLike`
+/// delegations, and the `RawEvent::raw_power_level` default.
+#[test]
+fn test_parsed_event_full_coverage() {
+    use rezzy::basespec::rezzy_types::{DagNode, EventLike};
+
+    let _raw = TestRawEvent {
+        id: "$test1".into(),
+        event_type: "m.room.member".into(),
+        sender: "@alice:x".into(),
+        state_key: Some("@bob:x".into()),
+        content_json: r#"{"membership":"invite"}"#.into(),
+        prev_events: vec!["$prev1".into()],
+        auth_events: vec!["$auth1".into(), "$auth2".into()],
+        depth: 42,
+        origin_server_ts: 1_700_000_000,
+    };
+
+    // ParsedEvent::new (line 502-508)
+    // Use a PL-like event so we can test all EventLike default methods
+    let raw_pl = TestRawEvent {
+        id: "$pl".into(),
+        event_type: "m.room.power_levels".into(),
+        sender: "@admin:x".into(),
+        state_key: Some(String::new()),
+        content_json: r#"{
+            "ban": 50, "kick": 50, "invite": 25, "redact": 50,
+            "users_default": 0, "events_default": 0, "state_default": 50,
+            "creator": "@admin:x", "room_version": "11",
+            "users": {"@mod:x": 50},
+            "events": {"m.room.topic": 25},
+            "membership": "join",
+            "join_rule": "public",
+            "join_authorised_via_users_server": "@auth:x",
+            "additional_creators": ["@ac:x"]
+        }"#
+        .into(),
+        prev_events: vec!["$prev1".into()],
+        auth_events: vec!["$auth1".into(), "$auth2".into()],
+        depth: 42,
+        origin_server_ts: 1_700_000_000,
+    };
+    let parsed = rezzy::ParsedEvent::new(&raw_pl);
+
+    // DagNode impl (lines 514-528)
+    assert_eq!(parsed.event_id(), "$pl");
+    assert_eq!(parsed.depth(), 42);
+    assert_eq!(parsed.prev_events(), &["$prev1"]);
+    assert_eq!(parsed.auth_events().len(), 2);
+
+    // EventLike required methods (lines 534-556)
+    assert_eq!(parsed.event_type().as_ref(), "m.room.power_levels");
+    assert_eq!(parsed.sender(), "@admin:x");
+    assert_eq!(parsed.state_key(), Some(""));
+    assert_eq!(parsed.power_level(), 0); // raw_power_level default
+    assert_eq!(parsed.origin_server_ts(), 1_700_000_000);
+
+    // EventLike DEFAULT methods (lines 279-337) — no inherent shadowing on ParsedEvent
+    assert_eq!(parsed.get_membership(), Some("join"));
+    assert_eq!(parsed.get_join_rule(), Some("public"));
+    assert_eq!(parsed.get_user_power_level("@mod:x"), Some(50));
+    assert_eq!(parsed.get_user_power_level("@nobody:x"), None);
+    assert_eq!(parsed.get_event_power_level("m.room.topic"), Some(25));
+    assert_eq!(parsed.get_event_power_level("m.room.message"), None);
+    assert_eq!(parsed.get_users_default(), Some(0));
+    assert_eq!(parsed.get_events_default(), Some(0));
+    assert_eq!(parsed.get_state_default(), Some(50));
+    assert_eq!(parsed.get_ban(), Some(50));
+    assert_eq!(parsed.get_kick(), Some(50));
+    assert_eq!(parsed.get_invite(), Some(25));
+    assert_eq!(parsed.get_redact(), Some(50));
+    assert_eq!(parsed.get_creator(), Some("@admin:x"));
+    assert_eq!(parsed.get_room_version(), Some("11"));
+    assert!(!parsed.has_additional_creator("@nobody:x"));
+    assert!(parsed.has_additional_creator("@ac:x"));
+    assert_eq!(
+        parsed.get_join_authorised_via_users_server(),
+        Some("@auth:x")
+    );
+}
+
+/// Exercises `ParsedEvent::try_new` success and error paths (lines 488-494).
+#[test]
+fn test_parsed_event_try_new() {
+    let valid = TestRawEvent {
+        id: "$ok".into(),
+        event_type: "m.room.message".into(),
+        sender: "@a:x".into(),
+        state_key: None,
+        content_json: r#"{"body":"hi"}"#.into(),
+        prev_events: vec![],
+        auth_events: vec![],
+        depth: 1,
+        origin_server_ts: 0,
+    };
+    assert!(rezzy::ParsedEvent::try_new(&valid).is_ok());
+
+    let invalid = TestRawEvent {
+        id: "$bad".into(),
+        event_type: "m.room.message".into(),
+        sender: "@a:x".into(),
+        state_key: None,
+        content_json: "NOT VALID JSON {{".into(),
+        prev_events: vec![],
+        auth_events: vec![],
+        depth: 1,
+        origin_server_ts: 0,
+    };
+    assert!(rezzy::ParsedEvent::try_new(&invalid).is_err());
+}
+
+// ── Coverage: EventContent::get_room_version (line 811-814) ─────────
+
+#[test]
+fn test_event_content_get_room_version() {
+    use rezzy::basespec::rezzy_types::EventContent;
+
+    #[derive(Clone, Debug, Default)]
+    struct CustomContent;
+    impl EventContent for CustomContent {
+        fn get_membership(&self) -> Option<&str> {
+            None
+        }
+        fn get_join_rule(&self) -> Option<&str> {
+            None
+        }
+        fn get_user_power_level(&self, _u: &str) -> Option<i64> {
+            None
+        }
+        fn get_event_power_level(&self, _e: &str) -> Option<i64> {
+            None
+        }
+        fn get_users_default(&self) -> Option<i64> {
+            None
+        }
+        fn get_events_default(&self) -> Option<i64> {
+            None
+        }
+        fn get_state_default(&self) -> Option<i64> {
+            None
+        }
+        fn get_ban(&self) -> Option<i64> {
+            None
+        }
+        fn get_kick(&self) -> Option<i64> {
+            None
+        }
+        fn get_invite(&self) -> Option<i64> {
+            None
+        }
+        fn get_redact(&self) -> Option<i64> {
+            None
+        }
+        fn get_creator(&self) -> Option<&str> {
+            None
+        }
+        fn has_additional_creator(&self, _s: &str) -> bool {
+            false
+        }
+        fn get_join_authorised_via_users_server(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    let with_version = serde_json::json!({"room_version": "11"});
+    assert_eq!(with_version.get_room_version(), Some("11"));
+
+    let without = serde_json::json!({"membership": "join"});
+    assert_eq!(without.get_room_version(), None);
+
+    let non_string = serde_json::json!({"room_version": 42});
+    assert_eq!(non_string.get_room_version(), None);
+
+    // Verify the default trait implementation returns None
+    assert_eq!(CustomContent.get_room_version(), None);
+}
+
+// ── Coverage: LeanEvent inherent methods ────────────────────────────
+
+#[test]
+fn test_lean_event_get_room_version() {
+    let event = LeanEvent::<String> {
+        event_id: "$c".into(),
+        event_type: "m.room.create".into(),
+        state_key: Some(String::new()),
+        sender: "@a:x".into(),
+        content: serde_json::json!({"room_version": "10"}),
+        ..Default::default()
+    };
+    assert_eq!(event.get_room_version(), Some("10"));
+}
+
+#[test]
+fn test_lean_event_get_join_authorised_via_users_server() {
+    let event = LeanEvent::<String> {
+        event_id: "$j".into(),
+        event_type: "m.room.member".into(),
+        state_key: Some("@bob:x".into()),
+        sender: "@bob:x".into(),
+        content: serde_json::json!({
+            "membership": "join",
+            "join_authorised_via_users_server": "@alice:x"
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        event.get_join_authorised_via_users_server(),
+        Some("@alice:x")
+    );
+
+    let without = LeanEvent::<String> {
+        content: serde_json::json!({"membership": "join"}),
+        ..event.clone()
+    };
+    assert_eq!(without.get_join_authorised_via_users_server(), None);
+}
+
+// ── Coverage: EventLike default methods + LeanEvent pl/ts ───────────
+
+/// Exercises all `EventLike` default methods (lines 279-337) via trait
+/// dispatch, plus `LeanEvent`'s `power_level` and `origin_server_ts`
+/// (lines 377-382).
+#[test]
+fn test_event_like_default_methods_on_lean_event() {
+    use rezzy::basespec::rezzy_types::EventLike;
+
+    let pl_event = LeanEvent::<String> {
+        event_id: "$pl".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".into(),
+        power_level: 100,
+        origin_server_ts: 1_700_000_000,
+        content: serde_json::json!({
+            "ban": 50,
+            "kick": 50,
+            "invite": 25,
+            "redact": 50,
+            "users_default": 0,
+            "events_default": 0,
+            "state_default": 50,
+            "creator": "@admin:x",
+            "room_version": "11",
+            "users": {"@mod:x": 50},
+            "events": {"m.room.topic": 25}
+        }),
+        ..Default::default()
+    };
+
+    // LeanEvent EventLike impl: power_level, origin_server_ts (lines 377-382)
+    assert_eq!(pl_event.power_level(), 100);
+    assert_eq!(pl_event.origin_server_ts(), 1_700_000_000);
+
+    // EventLike default methods (lines 279-337)
+    assert_eq!(pl_event.get_user_power_level("@mod:x"), Some(50));
+    assert_eq!(pl_event.get_user_power_level("@nobody:x"), None);
+    assert_eq!(pl_event.get_event_power_level("m.room.topic"), Some(25));
+    assert_eq!(pl_event.get_event_power_level("m.room.message"), None);
+    assert_eq!(pl_event.get_users_default(), Some(0));
+    assert_eq!(pl_event.get_events_default(), Some(0));
+    assert_eq!(pl_event.get_state_default(), Some(50));
+    assert_eq!(pl_event.get_ban(), Some(50));
+    assert_eq!(pl_event.get_kick(), Some(50));
+    assert_eq!(pl_event.get_invite(), Some(25));
+    assert_eq!(pl_event.get_redact(), Some(50));
+    assert_eq!(pl_event.get_creator(), Some("@admin:x"));
+    assert_eq!(pl_event.get_room_version(), Some("11"));
+    assert!(!pl_event.has_additional_creator("@admin:x"));
+}
+
+// ── Coverage: restricts_sender false fallback (line 1216-1217) ──────
+
+#[test]
+fn test_restricts_sender_false_for_non_admin_event() {
+    // A regular message event is neither ban/kick nor demotion
+    let msg = LeanEvent::<String> {
+        event_id: "$msg".into(),
+        event_type: "m.room.message".into(),
+        state_key: None,
+        sender: "@alice:x".into(),
+        content: serde_json::json!({"body": "hello"}),
+        ..Default::default()
+    };
+    // Should return false — not a ban/kick/demotion
+    assert!(!msg.restricts_sender("@alice:x"));
+    assert!(!msg.restricts_sender("@bob:x"));
+}
+
+// ── Coverage: local_auth_cache version invalidation ─────────────────
+
+/// Exercises iterative.rs:424-425 — when an external cache has a stale
+/// version, it must be cleared before use.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_local_auth_cache_version_invalidation() {
+    use rezzy::state::at::LocalAuthCache;
+
+    /// Build a minimal conflicted-state fixture for cache invalidation tests.
+    #[allow(clippy::type_complexity)]
+    fn make_fixture() -> (
+        imbl::OrdMap<(String, String), String>,
+        HashMap<String, LeanEvent<String>>,
+        HashMap<String, LeanEvent<String>>,
+    ) {
+        let create_ev = LeanEvent::<String> {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            depth: 1,
+            content: serde_json::json!({"room_version": "10", "creator": "@alice:x"}),
+            ..Default::default()
+        };
+        let join_ev = LeanEvent::<String> {
+            event_id: "$join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@alice:x".into()),
+            sender: "@alice:x".into(),
+            depth: 2,
+            auth_events: vec!["$create".into()],
+            content: serde_json::json!({"membership": "join"}),
+            ..Default::default()
+        };
+        #[allow(clippy::similar_names)]
+        let topic_a = LeanEvent::<String> {
+            event_id: "$topicA".into(),
+            event_type: "m.room.topic".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            depth: 3,
+            auth_events: vec!["$create".into(), "$join".into()],
+            content: serde_json::json!({"topic": "A"}),
+            ..Default::default()
+        };
+        #[allow(clippy::similar_names)]
+        let topic_b = LeanEvent::<String> {
+            event_id: "$topicB".into(),
+            event_type: "m.room.topic".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            depth: 3,
+            auth_events: vec!["$create".into(), "$join".into()],
+            origin_server_ts: 1,
+            content: serde_json::json!({"topic": "B"}),
+            ..Default::default()
+        };
+
+        let unconflicted = [
+            (
+                ("m.room.create".into(), String::new()),
+                String::from("$create"),
+            ),
+            (
+                ("m.room.member".into(), "@alice:x".into()),
+                String::from("$join"),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let conflicted = [("$topicA".into(), topic_a), ("$topicB".into(), topic_b)]
+            .into_iter()
+            .collect();
+
+        let auth_context = [("$create".into(), create_ev), ("$join".into(), join_ev)]
+            .into_iter()
+            .collect();
+
+        (unconflicted, conflicted, auth_context)
+    }
+
+    // ── resolve_iterative_sort_with_cache (iterative.rs:419-426) ──
+    let (unconflicted, conflicted, auth_context) = make_fixture();
+    let mut cache = LocalAuthCache::new(StateResVersion::V2);
+    cache
+        .map
+        .insert("stale_key".into(), std::collections::BTreeMap::new());
+    assert_eq!(cache.version, StateResVersion::V2);
+    assert!(!cache.map.is_empty(), "cache should have stale entry");
+
+    let _result = rezzy::resolve_iterative_sort_with_cache(
+        unconflicted,
+        conflicted,
+        &auth_context,
+        Some(&mut cache),
+        StateResVersion::V2_1,
+    );
+    assert_eq!(cache.version, StateResVersion::V2_1);
+    assert!(!cache.map.contains_key("stale_key"));
+
+    // ── resolve_iterative_sort_with_cache_and_deltas (iterative.rs:551-559) ──
+    let (unconflicted, conflicted, auth_context) = make_fixture();
+    let mut cache2 = LocalAuthCache::new(StateResVersion::V2);
+    cache2
+        .map
+        .insert("stale2".into(), std::collections::BTreeMap::new());
+
+    let (_result2, _deltas) = rezzy::resolve_iterative_sort_with_cache_and_deltas(
+        unconflicted,
+        conflicted,
+        &auth_context,
+        Some(&mut cache2),
+        StateResVersion::V2_1,
+    );
+    assert_eq!(cache2.version, StateResVersion::V2_1);
+    assert!(!cache2.map.contains_key("stale2"));
 }

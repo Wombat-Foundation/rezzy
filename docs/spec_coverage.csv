@@ -1,7 +1,7 @@
 spec_id,title,type,status,room_versions,rezzy_support,notes
 MSC1693,State Resolution Reloaded (v2),MSC,merged,V2-V11,full,"Core v2 algorithm: reverse topological power ordering, mainline sort, iterative auth"
 MSC2403,Add knock feature,MSC,merged,V7+,full,"check_knock_rules: sender==state_key, reject ban/invite/join, gate on knock/knock_restricted join rule"
-MSC4297,State Resolution v2.1,MSC,merged,V12+,full,"Empty initial state, conflicted subgraph extraction, CDO filtering, ancestral power event routing"
+MSC4297,State Resolution v2.1,MSC,merged,V12+,full,"Empty initial state, conflicted subgraph extraction, CDO filtering, ancestral power event routing, missing auth event tolerance"
 MSC3757,Restricting who can overwrite a state event,MSC,unstable,org.matrix.msc3757[.10],none,"Future: suffix matching + admin PL override for owned state. Not yet implemented."
 MSC4242,State DAGs (v2.2),MSC,proposed,org.matrix.msc4242.12,experimental,State DAGs (with possible lattice fold parallel resolution). Reserved for future room versions
 MSC4289,Explicitly privilege room creators,MSC,merged,V12+,full,"Creator gets i64::MAX power; additional_creators array; creators excluded from PL users map"

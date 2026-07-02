@@ -381,7 +381,7 @@ fn test_create_event_no_prev_events() {
         "@alice:example.com",
         json!({}),
     );
-    let state = RoomState::new();
+    let state: RoomState = RoomState::new();
     assert!(check_auth(
         &create,
         &state,
@@ -401,7 +401,7 @@ fn test_create_event_with_prev_events() {
         json!({}),
     );
     create.prev_events = vec!["$other".into()];
-    let state = RoomState::new();
+    let state: RoomState = RoomState::new();
     assert_eq!(
         check_auth(
             &create,
@@ -422,7 +422,7 @@ fn test_non_member_rejection() {
         "@bob:example.com",
         json!({}),
     );
-    let state = RoomState::new();
+    let state: RoomState = RoomState::new();
     assert!(matches!(
         check_auth(&msg, &state, rezzy::StateResVersion::V2_1, None),
         Err(AuthError::NotMember { .. })
@@ -529,7 +529,7 @@ fn test_join_self_only() {
         "@alice:example.com",
         json!({"membership": "join"}),
     );
-    let state = RoomState::new();
+    let state: RoomState = RoomState::new();
     assert!(matches!(
         check_auth(&join, &state, rezzy::StateResVersion::V2_1, None),
         Err(AuthError::NotMember { .. })
@@ -2907,4 +2907,245 @@ fn test_third_party_invite_default_pl_without_power_levels() {
         result.is_ok(),
         "TPI with no PL event should succeed (default PL=0): {result:?}"
     );
+}
+
+// ── Regression tests: malformed m.room.member events ────────────────
+
+/// Regression: m.room.member event with no `state_key` must be rejected
+/// with `InvalidSyntax`, not silently authorized with `target_user`="".
+#[test]
+fn test_member_event_missing_state_key_rejected() {
+    let mut state: RoomState = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:x",
+            json!({"creator": "@alice:x"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@alice:x".into()),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@alice:x"),
+            "@alice:x",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Member event with NO state_key
+    let malformed = LeanEvent {
+        event_id: "$bad".into(),
+        event_type: "m.room.member".into(),
+        state_key: None,
+        sender: "@alice:x".into(),
+        content: json!({"membership": "join"}),
+        ..Default::default()
+    };
+
+    let result = rezzy::auth::check_auth(&malformed, &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        result.is_err(),
+        "Member event without state_key must be rejected: {result:?}"
+    );
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("missing state_key"),
+        "Error should mention missing state_key: {err_msg}"
+    );
+}
+
+/// Regression: m.room.member event with no membership field must be
+/// rejected with `InvalidSyntax`, not silently authorized with membership="".
+#[test]
+fn test_member_event_missing_membership_rejected() {
+    let mut state: RoomState = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:x",
+            json!({"creator": "@alice:x"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@alice:x".into()),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@alice:x"),
+            "@alice:x",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    // Member event with state_key but NO membership in content
+    let malformed = make_event(
+        "$bad",
+        "m.room.member",
+        Some("@alice:x"),
+        "@alice:x",
+        json!({}), // empty content — no "membership" field
+    );
+
+    let result = rezzy::auth::check_auth(&malformed, &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        result.is_err(),
+        "Member event without membership field must be rejected: {result:?}"
+    );
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("missing membership"),
+        "Error should mention missing membership: {err_msg}"
+    );
+}
+
+// ── Coverage: syntactic validation limits ────────────────────────────
+
+/// Events with >20 `prev_events` must be rejected.
+#[test]
+fn test_prev_events_exceeds_max_rejected() {
+    let mut state: RoomState = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@a:x",
+            json!({"creator": "@a:x"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@a:x".into()),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@a:x"),
+            "@a:x",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let too_many: Vec<String> = (0..21).map(|i| format!("$prev{i}")).collect();
+    let event = LeanEvent {
+        event_id: "$bad".into(),
+        event_type: "m.room.message".into(),
+        state_key: None,
+        sender: "@a:x".into(),
+        content: json!({"body": "hi"}),
+        prev_events: too_many,
+        ..Default::default()
+    };
+
+    let result = rezzy::auth::check_auth(&event, &state, rezzy::StateResVersion::V2, None);
+    assert!(result.is_err(), "Should reject >20 prev_events: {result:?}");
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("prev_events"),
+        "Error should mention prev_events: {msg}"
+    );
+}
+
+/// Events with >10 `auth_events` must be rejected.
+#[test]
+fn test_auth_events_exceeds_max_rejected() {
+    let mut state: RoomState = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@a:x",
+            json!({"creator": "@a:x"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@a:x".into()),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@a:x"),
+            "@a:x",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let too_many: Vec<String> = (0..11).map(|i| format!("$auth{i}")).collect();
+    let event = LeanEvent {
+        event_id: "$bad".into(),
+        event_type: "m.room.message".into(),
+        state_key: None,
+        sender: "@a:x".into(),
+        content: json!({"body": "hi"}),
+        auth_events: too_many,
+        ..Default::default()
+    };
+
+    let result = rezzy::auth::check_auth(&event, &state, rezzy::StateResVersion::V2, None);
+    assert!(result.is_err(), "Should reject >10 auth_events: {result:?}");
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("auth_events"),
+        "Error should mention auth_events: {msg}"
+    );
+}
+
+/// Events with empty `event_type` must be rejected.
+#[test]
+fn test_empty_event_type_rejected() {
+    let mut state: RoomState = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$c",
+            M_ROOM_CREATE,
+            Some(""),
+            "@a:x",
+            json!({"creator": "@a:x"}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@a:x".into()),
+        make_event(
+            "$j",
+            "m.room.member",
+            Some("@a:x"),
+            "@a:x",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let event = LeanEvent {
+        event_id: "$bad".into(),
+        event_type: String::new(), // empty!
+        state_key: None,
+        sender: "@a:x".into(),
+        content: json!({"body": "hi"}),
+        ..Default::default()
+    };
+
+    // check_auth path
+    let result = rezzy::auth::check_auth(&event, &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        result.is_err(),
+        "Should reject empty event_type: {result:?}"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("event_type"),
+        "Error should mention event_type: {msg}"
+    );
+
+    // validate_syntactic path
+    let syntactic = event.validate_syntactic();
+    assert!(syntactic.is_err());
+    assert_eq!(syntactic.unwrap_err(), "event_type cannot be empty");
 }
