@@ -3853,7 +3853,13 @@ fn test_pl_v10_plus_users_contains_non_integer_rejected() {
         let mut state = RoomState::new();
         state.insert(
             (M_ROOM_CREATE.into(), String::new()),
-            make_event("$c", rezzy::basespec::event_types::M_ROOM_CREATE, Some(""), "@admin:x.com", json!({"room_version": version_str})),
+            make_event(
+                "$c",
+                rezzy::basespec::event_types::M_ROOM_CREATE,
+                Some(""),
+                "@admin:x.com",
+                json!({"room_version": version_str}),
+            ),
         );
         let pl = make_event(
             "$pl",
@@ -3871,7 +3877,7 @@ fn test_pl_v10_plus_users_contains_non_integer_rejected() {
                 check_auth(&pl, &state, state_res, None),
                 Err(AuthError::InvalidSyntax(_))
             ),
-            "V10+ (version {}) power levels with non-integer users value must be rejected", version_str
+            "V10+ (version {version_str}) power levels with non-integer users value must be rejected"
         );
     }
 }
@@ -3886,7 +3892,13 @@ fn test_pl_v10_plus_users_not_an_object_rejected() {
         let mut state = RoomState::new();
         state.insert(
             (M_ROOM_CREATE.into(), String::new()),
-            make_event("$c", rezzy::basespec::event_types::M_ROOM_CREATE, Some(""), "@admin:x.com", json!({"room_version": version_str})),
+            make_event(
+                "$c",
+                rezzy::basespec::event_types::M_ROOM_CREATE,
+                Some(""),
+                "@admin:x.com",
+                json!({"room_version": version_str}),
+            ),
         );
         let pl = make_event(
             "$pl",
@@ -3902,7 +3914,7 @@ fn test_pl_v10_plus_users_not_an_object_rejected() {
                 check_auth(&pl, &state, state_res, None),
                 Err(AuthError::InvalidSyntax(_))
             ),
-            "V10+ (version {}) power levels with non-object users must be rejected", version_str
+            "V10+ (version {version_str}) power levels with non-object users must be rejected"
         );
     }
 }
