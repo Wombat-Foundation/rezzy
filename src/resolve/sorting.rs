@@ -315,11 +315,31 @@ where
     Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
 {
+    build_mainline_with_cache(resolved, auth_context, &mut HashMap::new())
+}
+
+/// Like [`build_mainline`], but populates a `pl_parent_cache` mapping each
+/// event ID to its nearest `m.room.power_levels` ancestor in the auth chain.
+///
+/// Subsequent calls sharing the same cache skip BFS entirely for events
+/// already resolved, turning the mainline walk from `O(M × B)` (M = mainline
+/// length, B = auth chain breadth) to `O(M)` on cache hits.
+pub(crate) fn build_mainline_with_cache<Id, C>(
+    resolved: &crate::state::at::SharedState<Id>,
+    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
+    pl_parent_cache: &mut HashMap<Id, Option<Id>>,
+) -> Vec<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: Clone + crate::basespec::rezzy_types::EventContent,
+{
+    use crate::basespec::event_types::{M_EMPTY_STATE_KEY, M_ROOM_POWER_LEVELS};
+
     let mut mainline = Vec::new();
     let mut seen_in_mainline = hashbrown::HashSet::new();
     let pl_key = (
-        alloc::string::String::from("m.room.power_levels"),
-        alloc::string::String::new(),
+        alloc::string::String::from(M_ROOM_POWER_LEVELS),
+        alloc::string::String::from(M_EMPTY_STATE_KEY),
     );
     let mut current = resolved.get(&pl_key).cloned();
 
@@ -330,7 +350,18 @@ where
             break; // Cycle detected in the power-levels mainline!
         }
         mainline.push(eid.clone());
-        current = None;
+
+        // Check cache first
+        if let Some(cached) = pl_parent_cache.get(&eid) {
+            #[allow(clippy::assigning_clones)] // `current` was consumed by while-let, no alloc to reuse
+            {
+                current = cached.clone();
+            }
+            continue;
+        }
+
+        // BFS to find the nearest PL ancestor
+        let mut found = None;
         if let Some(ev) = auth_context.get_event(&eid) {
             let mut queue = VecDeque::new();
             for auth_id in &ev.auth_events {
@@ -342,8 +373,8 @@ where
                     continue;
                 }
                 if let Some(auth_ev) = auth_context.get_event(&q_id) {
-                    if auth_ev.event_type == "m.room.power_levels" {
-                        current = Some(q_id);
+                    if auth_ev.event_type == M_ROOM_POWER_LEVELS {
+                        found = Some(q_id);
                         break;
                     }
                     for aid in &auth_ev.auth_events {
@@ -351,7 +382,20 @@ where
                     }
                 }
             }
+
+            // Cache all visited non-PL events as having this PL ancestor
+            // (or None if no PL was found)
+            for vid in &visited {
+                if let Some(vev) = auth_context.get_event(vid) {
+                    if vev.event_type != M_ROOM_POWER_LEVELS {
+                        pl_parent_cache.entry(vid.clone()).or_insert(found.clone());
+                    }
+                }
+            }
         }
+
+        pl_parent_cache.insert(eid, found.clone());
+        current = found;
     }
 
     mainline
