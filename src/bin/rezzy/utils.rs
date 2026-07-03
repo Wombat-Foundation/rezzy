@@ -293,6 +293,18 @@ pub fn resolve_parent_states(
     events_map: &HashMap<String, LeanEvent>,
     version: StateResVersion,
 ) -> SharedStateMap {
+    // Fast path: all parent states are identical (Arc::ptr_eq or value equality).
+    // Common in linear DAGs where every parent shares the same resolved state.
+    if parent_states.len() > 1 {
+        let first = &parent_states[0];
+        let all_identical = parent_states[1..]
+            .iter()
+            .all(|s| std::sync::Arc::ptr_eq(s, first) || s.as_ref() == first.as_ref());
+        if all_identical {
+            return first.clone();
+        }
+    }
+
     // Unwrap Arc<OrdMap> → &OrdMap for the library call
     let bare_maps: Vec<ResolvedState> = parent_states
         .iter()

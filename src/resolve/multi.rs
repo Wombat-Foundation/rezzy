@@ -174,27 +174,25 @@ where
     let (unconflicted_state, conflicted_ids) =
         partition_state_maps(state_maps.iter().map(AsRef::as_ref), state_maps.len());
 
-    // Build the conflicted events map from the event context
+    // Build the conflicted events map from the event context.
+    // Panic if a conflicted event is missing — events_map must contain all
+    // events referenced by the state maps.
     let mut conflicted_events: HashMap<Id, LeanEvent<Id, C>> = HashMap::new();
     for id in &conflicted_ids {
-        if let Some(ev) = events_map.get(id) {
-            conflicted_events.insert(id.clone(), ev.clone());
-        }
+        let ev = events_map
+            .get(id)
+            .unwrap_or_else(|| panic!("events_map missing conflicted event {id}"));
+        conflicted_events.insert(id.clone(), ev.clone());
     }
 
     // The full events_map serves as the auth context for resolution.
     // For V2.1+, resolve_iterative_sort internally computes the conflicted
     // subgraph via prepare_conflicted_and_keys, so we don't need to call
     // compute_v2_1_conflicted_subgraph separately here.
-    let mut auth_context: HashMap<Id, LeanEvent<Id, C>> = HashMap::new();
-    for (id, ev) in events_map {
-        auth_context.insert(id.clone(), ev.clone());
-    }
-
     crate::resolve::iterative::resolve_iterative_sort(
         unconflicted_state,
         conflicted_events,
-        &auth_context,
+        events_map,
         version,
     )
 }
@@ -409,8 +407,8 @@ mod tests {
 
     #[test]
     fn test_resolve_three_forks() {
-        // Three forks, two agree on alice's join, one has bob's join.
-        // The majority-agreed entry should be unconflicted.
+        // Three forks: two agree on alice's join, one differs.
+        // Partitioning requires unanimity, so this slot is conflicted and must be resolved.
         let mut events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
 
         events.insert(
