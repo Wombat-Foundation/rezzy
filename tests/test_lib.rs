@@ -5052,3 +5052,115 @@ fn test_mainline_position_beats_timestamp_on_divergent_auth_chains() {
         "Mainline position (closeness to current PL) must beat raw timestamp"
     );
 }
+
+/// MSC4297 Problem B parity: `resolve_state_maps` vs `resolve_iterative_sort`.
+///
+/// Problem B has two forks with different PL events. In V2.1+, the subgraph
+/// computation adds `$pl_bob_1` (an intermediate PL in the auth chain of
+/// `$pl_bob_2`) to the conflicted set. The reviewer flagged that
+/// `resolve_state_maps` might miss this step since it doesn't call
+/// `compute_v2_1_conflicted_subgraph` explicitly.
+///
+/// This test settles the question: if both APIs produce identical results,
+/// the full `events_map` as `event_context` implicitly satisfies the subgraph
+/// requirement via auth-chain expansion inside `resolve_iterative_sort`.
+#[test]
+fn test_msc4297_problem_b_resolve_state_maps_parity() {
+    // MSC4297 Problem B events (from fixtures/MSC4297-problem-B/pdus-v12.json)
+    let all_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$create",    "type": "m.room.create",       "state_key": "", "sender": "@alice:x", "origin_server_ts": 0, "content": {"room_version": "12"}}
+        {"event_id": "$join_a",    "type": "m.room.member",       "state_key": "@alice:x", "sender": "@alice:x", "origin_server_ts": 1, "content": {"membership": "join"}, "auth_events": ["$create"]}
+        {"event_id": "$pl0",       "type": "m.room.power_levels", "state_key": "", "sender": "@alice:x", "origin_server_ts": 2, "content": {}, "auth_events": ["$join_a"]}
+        {"event_id": "$jr",        "type": "m.room.join_rules",   "state_key": "", "sender": "@alice:x", "origin_server_ts": 3, "content": {"join_rule": "public"}, "auth_events": ["$join_a", "$pl0"]}
+        {"event_id": "$join_b",    "type": "m.room.member",       "state_key": "@bob:x", "sender": "@bob:x", "origin_server_ts": 4, "content": {"membership": "join"}, "auth_events": ["$pl0", "$jr"]}
+        {"event_id": "$join_c",    "type": "m.room.member",       "state_key": "@charlie:x", "sender": "@charlie:x", "origin_server_ts": 5, "content": {"membership": "join"}, "auth_events": ["$pl0", "$jr"]}
+        {"event_id": "$pl1",       "type": "m.room.power_levels", "state_key": "", "sender": "@alice:x", "origin_server_ts": 6, "content": {"users": {"@bob:x": 50}}, "auth_events": ["$pl0", "$join_a"]}
+        {"event_id": "$pl2",       "type": "m.room.power_levels", "state_key": "", "sender": "@bob:x",   "origin_server_ts": 7, "content": {"users": {"@bob:x": 50, "@charlie:x": 50}}, "auth_events": ["$pl1", "$join_b"]}
+        {"event_id": "$join_z",    "type": "m.room.member",       "state_key": "@zara:x", "sender": "@zara:x", "origin_server_ts": 8, "content": {"membership": "join"}, "auth_events": ["$pl2", "$jr"]}
+        {"event_id": "$join_e",    "type": "m.room.member",       "state_key": "@eve:x", "sender": "@eve:x", "origin_server_ts": 9, "content": {"membership": "join"}, "auth_events": ["$pl2", "$jr"]}
+        {"event_id": "$eve_dn",    "type": "m.room.member",       "state_key": "@eve:x", "sender": "@eve:x", "origin_server_ts": 9, "content": {"displayname": "eve++", "membership": "join"}, "auth_events": ["$pl2", "$join_e", "$jr"]}
+    "#,
+    );
+
+    let mut events_map: std::collections::HashMap<String, rezzy::LeanEvent> =
+        std::collections::HashMap::new();
+    for ev in all_evs {
+        events_map.insert(ev.event_id.clone(), ev);
+    }
+
+    // Fork "Eve": sees $pl0 as PL, has eve's display-name change
+    let mut state_eve = imbl::OrdMap::new();
+    state_eve.insert(("m.room.create".into(), String::new()), "$create".into());
+    state_eve.insert(
+        ("m.room.member".into(), "@alice:x".into()),
+        "$join_a".into(),
+    );
+    state_eve.insert(("m.room.power_levels".into(), String::new()), "$pl0".into());
+    state_eve.insert(("m.room.join_rules".into(), String::new()), "$jr".into());
+    state_eve.insert(("m.room.member".into(), "@bob:x".into()), "$join_b".into());
+    state_eve.insert(
+        ("m.room.member".into(), "@charlie:x".into()),
+        "$join_c".into(),
+    );
+    state_eve.insert(("m.room.member".into(), "@eve:x".into()), "$eve_dn".into());
+
+    // Fork "Zara": sees $pl2 as PL (Bob promoted Charlie), has zara's join
+    let mut state_zara = imbl::OrdMap::new();
+    state_zara.insert(("m.room.create".into(), String::new()), "$create".into());
+    state_zara.insert(
+        ("m.room.member".into(), "@alice:x".into()),
+        "$join_a".into(),
+    );
+    state_zara.insert(("m.room.join_rules".into(), String::new()), "$jr".into());
+    state_zara.insert(("m.room.member".into(), "@bob:x".into()), "$join_b".into());
+    state_zara.insert(
+        ("m.room.member".into(), "@charlie:x".into()),
+        "$join_c".into(),
+    );
+    state_zara.insert(("m.room.power_levels".into(), String::new()), "$pl2".into());
+    state_zara.insert(("m.room.member".into(), "@zara:x".into()), "$join_z".into());
+
+    // Path A: resolve_state_maps (new library API)
+    let state_maps = vec![state_eve.clone(), state_zara.clone()];
+    let resolved_api =
+        rezzy::resolve_state_maps(&state_maps, &events_map, rezzy::StateResVersion::V2_1);
+
+    // Path B: manual partition + subgraph + resolve_iterative_sort (old binary path)
+    let (unconflicted, conflicted_ids) =
+        rezzy::partition_state_maps(state_maps.iter().map(|m| m.iter()), state_maps.len());
+    let mut conflicted_events: std::collections::HashMap<String, rezzy::LeanEvent> =
+        std::collections::HashMap::new();
+    for id in &conflicted_ids {
+        if let Some(ev) = events_map.get(id) {
+            conflicted_events.insert(id.clone(), ev.clone());
+        }
+    }
+    // Explicitly add subgraph events (what the old binary path did)
+    let subgraph = rezzy::compute_v2_1_conflicted_subgraph(&events_map, &conflicted_ids);
+    for (id, ev) in subgraph {
+        conflicted_events.insert(id, ev);
+    }
+    let resolved_manual = rezzy::resolve_iterative_sort(
+        unconflicted,
+        conflicted_events,
+        &events_map,
+        rezzy::StateResVersion::V2_1,
+    );
+
+    // The decisive assertion: both paths must produce identical results
+    assert_eq!(
+        resolved_api, resolved_manual,
+        "resolve_state_maps must produce the same result as manual \
+         partition + subgraph + resolve_iterative_sort for MSC4297 Problem B.\n\
+         API result: {resolved_api:?}\n\
+         Manual result: {resolved_manual:?}"
+    );
+
+    // Sanity: PL should be resolved (not dropped)
+    let pl_key = ("m.room.power_levels".into(), String::new());
+    assert!(
+        resolved_api.contains_key(&pl_key),
+        "MSC4297 Problem B: power_levels must be present in resolved state"
+    );
+}

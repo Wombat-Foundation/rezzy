@@ -126,7 +126,9 @@ where
 /// 1. **Short-circuit**: if all maps are identical, returns the first one.
 /// 2. **Partition**: splits entries into unconflicted (unanimous) and
 ///    conflicted (differing across forks).
-/// 3. **Resolve**: delegates to [`resolve_iterative_sort`] with the
+/// 3. **Subgraph** (V2.1+ only): computes the MSC4297 conflicted subgraph
+///    from the auth DAG and adds subgraph events to the conflicted set.
+/// 4. **Resolve**: delegates to [`resolve_iterative_sort`] with the
 ///    partitioned state and conflicted events.
 ///
 /// # Parameters
@@ -188,12 +190,48 @@ where
         conflicted_events.insert(id.clone(), ev.clone());
     }
 
-    // event_context serves as the auth context for resolution.
-    // NOTE: For V2.1+ rooms, the spec requires computing the auth-chain
-    // difference (conflicted subgraph) to seed the conflicted set.  This
-    // function does NOT compute it — it relies on the caller having already
-    // populated event_context with the auth chain closure.  For V2 rooms
-    // (the common case), this is correct as-is.
+    // For V2.1+ rooms, compute the conflicted subgraph (MSC4297): events in
+    // the auth DAG that lie at the intersection of backwards-reachable
+    // (ancestors) and forwards-reachable (descendants) from the conflicted
+    // set.  These events must be added to the conflicted set so the mainline
+    // sort considers them — without this, intermediate PL events in the auth
+    // chain are missed and resolution picks wrong winners.
+    //
+    // We build a stripped event map (auth_events only, no content) to satisfy
+    // the `LeanEvent<Id>` signature of `compute_v2_1_conflicted_subgraph`.
+    if matches!(version, StateResVersion::V2_1 | StateResVersion::V2_1_1) {
+        let auth_only: HashMap<Id, LeanEvent<Id>> = event_context
+            .iter()
+            .map(|(id, ev)| {
+                (
+                    id.clone(),
+                    LeanEvent {
+                        event_id: ev.event_id.clone(),
+                        event_type: ev.event_type.clone(),
+                        state_key: ev.state_key.clone(),
+                        sender: ev.sender.clone(),
+                        auth_events: ev.auth_events.clone(),
+                        prev_events: Vec::new(),
+                        content: serde_json::Value::Null,
+                        power_level: 0,
+                        origin_server_ts: 0,
+                        depth: 0,
+                    },
+                )
+            })
+            .collect();
+        let subgraph =
+            crate::resolve::subgraph::compute_v2_1_conflicted_subgraph(&auth_only, &conflicted_ids);
+        for (id, _) in subgraph {
+            conflicted_events.entry(id.clone()).or_insert_with(|| {
+                event_context
+                    .get(&id)
+                    .expect("subgraph event must be in event_context")
+                    .clone()
+            });
+        }
+    }
+
     crate::resolve::iterative::resolve_iterative_sort(
         unconflicted_state,
         conflicted_events,

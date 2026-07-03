@@ -24,14 +24,6 @@ fn load_fixture(path: &str) -> Vec<LeanEvent> {
     serde_json::from_str(&content).unwrap_or_else(|e| panic!("Failed to parse fixture {path}: {e}"))
 }
 
-/// Load multiple fixture files and concatenate them into one event list.
-#[test]
-fn test_room_id() {
-    let s = "!00-m-room-create";
-    let id = ruma_common::RoomId::parse(s);
-    println!("id: {id:?}");
-}
-
 /// Build a `HashMap`<String, `LeanEvent`> from a list of events (keyed by `event_id`).
 fn to_event_map(events: &[LeanEvent]) -> HashMap<String, LeanEvent> {
     events

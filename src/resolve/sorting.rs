@@ -315,6 +315,10 @@ where
     Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
 {
+    // TODO: Thread a persistent cache through callers that invoke build_mainline
+    // repeatedly (e.g., the delta loop in compute_state_at, lattice fold checkpoints).
+    // Currently each call starts with a fresh cache, so the memoization never hits
+    // in production — only the unit test exercises the cache-hit path.
     build_mainline_with_cache(resolved, auth_context, &mut HashMap::new())
 }
 
