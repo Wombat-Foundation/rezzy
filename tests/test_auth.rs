@@ -569,6 +569,35 @@ fn test_iterative_auth_chain() {
 }
 
 #[test]
+fn test_auth_chain_rejects_unauthorized() {
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:x.com","depth":0,"origin_server_ts":1000,"content":{},"prev_events":[],"auth_events":[]}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:x.com","sender":"@alice:x.com","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@alice:x.com","depth":2,"origin_server_ts":1002,"content":{"ban":50,"users":{"@alice:x.com":100}},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
+{"event_id":"$ban_bob","type":"m.room.member","state_key":"@bob:x.com","sender":"@alice:x.com","depth":3,"origin_server_ts":1003,"content":{"membership":"ban"},"prev_events":["$pl"],"auth_events":["$create","$alice_join","$pl"]}
+{"event_id":"$bob_msg","type":"m.room.message","sender":"@bob:x.com","depth":4,"origin_server_ts":1004,"content":{"body":"I am banned"},"prev_events":["$ban_bob"],"auth_events":["$create"]}
+    "#,
+    );
+
+    let (accepted, rejected) =
+        check_auth_chain(&events, &RoomState::new(), rezzy::StateResVersion::V2_1);
+
+    assert_eq!(
+        accepted,
+        vec!["$create", "$alice_join", "$pl", "$ban_bob"],
+        "First four events should pass auth"
+    );
+    assert_eq!(rejected.len(), 1, "Bob's message should be rejected");
+    assert_eq!(rejected[0].0, "$bob_msg");
+    assert!(
+        matches!(rejected[0].1, AuthError::BannedUser { .. }),
+        "Rejection reason must be BannedUser, got: {:?}",
+        rejected[0].1
+    );
+}
+
+#[test]
 fn test_auth_error_display() {
     let err: AuthError = AuthError::NotMember {
         sender: "@bob:example.com".into(),
@@ -3878,6 +3907,70 @@ fn test_pl_v10_plus_users_contains_non_integer_rejected() {
                 Err(AuthError::InvalidSyntax(_))
             ),
             "V10+ (version {version_str}) power levels with non-integer users value must be rejected"
+        );
+    }
+}
+
+/// Parameterized across room versions.
+/// A coercible string `"50"` is accepted by V1-V9 (non-strict) but rejected by V10+ (strict).
+/// A non-coercible string `"banana"` is rejected by ALL versions.
+#[test]
+fn test_pl_users_non_integer_across_versions() {
+    use rezzy::StateResVersion;
+
+    // (room_version, StateResVersion, coercible "50" allowed?)
+    let versions = [
+        ("1", StateResVersion::V1, true),
+        ("6", StateResVersion::V2, true),
+        ("9", StateResVersion::V2, true),
+        ("10", StateResVersion::V2, false),
+        ("11", StateResVersion::V2, false),
+        ("12", StateResVersion::V2_1, false),
+    ];
+
+    for (room_ver, state_res, coercible_allowed) in versions {
+        // Test coercible "50"
+        let coercible = utils::parse_jsonl_events(&format!(
+            r#"
+{{"event_id":"$c","type":"m.room.create","state_key":"","sender":"@admin:x.com","depth":0,"origin_server_ts":1000,"content":{{"room_version":"{room_ver}"}},"prev_events":[],"auth_events":[]}}
+{{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@admin:x.com","depth":1,"origin_server_ts":1001,"content":{{"users":{{"@alice:x.com":"50"}}}},"prev_events":["$c"],"auth_events":["$c"]}}
+            "#
+        ));
+
+        let mut state = RoomState::new();
+        state.insert((M_ROOM_CREATE.into(), String::new()), coercible[0].clone());
+
+        let result = check_auth(&coercible[1], &state, state_res, None);
+        if coercible_allowed {
+            assert!(
+                result.is_ok(),
+                "room v{room_ver}: coercible '50' should be accepted, got {result:?}"
+            );
+        } else {
+            assert!(
+                matches!(result, Err(AuthError::InvalidSyntax(_))),
+                "room v{room_ver}: coercible '50' should be rejected (strict), got {result:?}"
+            );
+        }
+
+        // Test non-coercible "banana" — must be rejected by ALL versions
+        let non_coercible = utils::parse_jsonl_events(&format!(
+            r#"
+{{"event_id":"$c","type":"m.room.create","state_key":"","sender":"@admin:x.com","depth":0,"origin_server_ts":1000,"content":{{"room_version":"{room_ver}"}},"prev_events":[],"auth_events":[]}}
+{{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@admin:x.com","depth":1,"origin_server_ts":1001,"content":{{"users":{{"@alice:x.com":"banana"}}}},"prev_events":["$c"],"auth_events":["$c"]}}
+            "#
+        ));
+
+        let mut state2 = RoomState::new();
+        state2.insert(
+            (M_ROOM_CREATE.into(), String::new()),
+            non_coercible[0].clone(),
+        );
+
+        let result2 = check_auth(&non_coercible[1], &state2, state_res, None);
+        assert!(
+            matches!(result2, Err(AuthError::InvalidSyntax(_))),
+            "room v{room_ver}: non-coercible 'banana' must always be rejected, got {result2:?}"
         );
     }
 }

@@ -48,7 +48,7 @@ macro_rules! snapshot_test_batches {
     ($name:ident, $pdus_paths:expr $(,)?) => {
         #[test_log::test]
         fn $name() {
-            let resolved_state = crate::resolve::macros::test_resolve_batches(&$pdus_paths);
+            let resolved_state = self::macros::test_resolve_batches(&$pdus_paths);
 
             insta::with_settings!({
                 description => "Resolved state",
@@ -81,7 +81,7 @@ macro_rules! snapshot_test_state_maps {
     ($name:ident, $state_maps_paths:expr, $pdus_paths:expr $(,)?) => {
         #[test_log::test]
         fn $name() {
-            let resolved_state = crate::resolve::macros::test_resolve_state_maps(&$state_maps_paths, &$pdus_paths);
+            let resolved_state = self::macros::test_resolve_state_maps(&$state_maps_paths, &$pdus_paths);
 
             insta::with_settings!({
                 description => "Resolved state",

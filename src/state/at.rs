@@ -91,6 +91,8 @@ impl<
     > crate::auth::StateProvider<Id, C> for OverlayState<'_, Id, C, S1, S2>
 {
     fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C>> {
+        use crate::basespec::event_types::{M_EMPTY_STATE_KEY, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
+
         let query: &dyn crate::auth::StateKeyDyn = &(event_type, state_key);
 
         // In V2.1 (Stock MSC4297), we supplement with ONLY m.room.power_levels during Step 2 (power phase).
@@ -98,14 +100,14 @@ impl<
         let should_supplement = match self.version {
             StateResVersion::V2_1 => {
                 if self.is_power_phase {
-                    event_type == "m.room.power_levels" && state_key.is_empty()
+                    event_type == M_ROOM_POWER_LEVELS && state_key == M_EMPTY_STATE_KEY
                 } else {
                     true
                 }
             }
             StateResVersion::V2_1_1 => {
-                (event_type == "m.room.power_levels" && state_key.is_empty())
-                    || (event_type == "m.room.member")
+                (event_type == M_ROOM_POWER_LEVELS && state_key == M_EMPTY_STATE_KEY)
+                    || (event_type == M_ROOM_MEMBER)
             }
             _ => true,
         };
@@ -121,11 +123,13 @@ impl<
             if let Some(ev) = resolved_ev {
                 if self.version == StateResVersion::V2_1_1
                     && self.is_power_phase
-                    && event_type == "m.room.member"
+                    && event_type == M_ROOM_MEMBER
                 {
                     // V2.1.1 Fix: Only supplement bans and kicks in power phase
                     let is_ban_or_kick = ev.get_membership().is_some_and(|m| {
-                        m == "ban" || (m == "leave" && ev.sender.as_str() != state_key)
+                        m == crate::basespec::event_types::MEM_BAN
+                            || (m == crate::basespec::event_types::MEM_LEAVE
+                                && ev.sender.as_str() != state_key)
                     });
                     if is_ban_or_kick {
                         return Some(ev);
@@ -142,8 +146,8 @@ impl<
             // Under Matrix State Resolution, during the power phase, a required auth event in the conflicted set
             // can ONLY be used if it has been successfully authorized and resolved
             // (i.e. is present in the resolved state).
-            let is_required_type =
-                event_type == "m.room.power_levels" || event_type == "m.room.join_rules";
+            let is_required_type = event_type == M_ROOM_POWER_LEVELS
+                || event_type == crate::basespec::event_types::M_ROOM_JOIN_RULES;
 
             let is_v2_1_or_above = self.version == StateResVersion::V2_1
                 || self.version == StateResVersion::V2_1_1
@@ -637,6 +641,190 @@ where
     Ok(())
 }
 
+/// A point in the DAG where a subset of forward extremities converge.
+///
+/// Returned by [`compute_merge_bases`]. Each junction records which extremities
+/// are reachable (via `mask`), the event at the convergence point, and its depth.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeBase<Id> {
+    /// The event ID at the junction point.
+    pub event_id: Id,
+    /// Bitmask of which extremities can reach this node.
+    /// Bit `i` is set iff extremity `i` is an ancestor-or-self.
+    pub mask: u8,
+    /// DAG depth of the junction event.
+    pub depth: u64,
+}
+
+/// Default hard cap on backward walk steps for [`compute_merge_bases`].
+pub const MERGE_BASE_MAX_STEPS: usize = 5_000;
+
+/// Finds **all** primitive merge bases for up to 8 forward extremities in a
+/// single backward pass.
+///
+/// Unlike [`compute_merge_base`] (which returns only the global common
+/// ancestor), this function discovers every subset junction — the points where
+/// different subsets of extremities first converge. The result is a minimal set
+/// of [`MergeBase`] entries after superseding pruning.
+///
+/// # Algorithm (bitmask-propagating backward walk)
+///
+/// 1. Each extremity gets a unique bit in a `u8` mask.
+/// 2. A max-heap ordered by depth walks backward through `prev_events`,
+///    propagating masks via bitwise OR.
+/// 3. When a node's mask gains `popcount ≥ 2`, it is recorded as a candidate
+///    junction for that mask value.
+/// 4. Walk terminates when the global merge base is found (all bits set) and
+///    no unexplored paths remain, or when `max_steps` is exceeded.
+/// 5. Superseded junctions are pruned: if mask M₂ ⊃ M₁ and J₂.depth ≥ J₁.depth,
+///    then J₁ is redundant.
+///
+/// # Complexity
+///
+/// - **Time**: `O((V + E) · k)` where V/E are visited nodes/edges, k ≤ 8.
+///   Bitmask ops are single CPU instructions.
+/// - **Space**: `O(V)` for the mask map (one `u8` per visited event).
+///
+/// # Panics
+///
+/// Panics if `extremities.len() > 8` (bitmask overflow).
+///
+/// # Example
+///
+/// ```rust
+/// use rezzy::{compute_merge_bases, MERGE_BASE_MAX_STEPS, DagNode};
+/// use rezzy::{LeanEvent, HashMap};
+///
+/// let events: HashMap<String, LeanEvent<String>> = HashMap::new();
+/// let tips = vec!["$tip_a", "$tip_b", "$tip_c"];
+/// let junctions = compute_merge_bases(&tips, &events, MERGE_BASE_MAX_STEPS);
+/// for j in &junctions {
+///     println!("junction {:?} mask={:08b} depth={}", j.event_id, j.mask, j.depth);
+/// }
+/// ```
+#[must_use]
+pub fn compute_merge_bases<'a, Id, Q, S, Node>(
+    extremities: &[&Q],
+    events_map: &'a HashMap<Id, Node, S>,
+    max_steps: usize,
+) -> Vec<MergeBase<&'a Id>>
+where
+    Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
+    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    S: core::hash::BuildHasher,
+    Node: crate::basespec::rezzy_types::DagNode<Id = Id>,
+{
+    use alloc::collections::BinaryHeap;
+
+    assert!(
+        extremities.len() <= 8,
+        "compute_merge_bases supports at most 8 extremities, got {}",
+        extremities.len()
+    );
+
+    if extremities.len() < 2 {
+        return Vec::new();
+    }
+
+    let k = extremities.len();
+    let full_mask: u8 = 1u8
+        .checked_shl(u32::try_from(k).expect("extremity count overflow"))
+        .and_then(|v| v.checked_sub(1))
+        .expect("bitmask overflow: k must be <= 8");
+
+    // Max-heap: (depth, &Id) — highest depth pops first.
+    let mut queue: BinaryHeap<(u64, &Id)> = BinaryHeap::new();
+    let mut masks: HashMap<&Id, u8> = HashMap::new();
+
+    // Track the highest-depth (closest to tips) junction found per mask.
+    let mut best_junction: HashMap<u8, (&Id, u64)> = HashMap::new();
+
+    for (i, &head) in extremities.iter().enumerate() {
+        if let Some((k, ev)) = events_map.get_key_value(head) {
+            let bit = 1u8 << i;
+            let entry = masks.entry(k).or_insert(0);
+            *entry |= bit;
+            queue.push((ev.depth(), k));
+        }
+    }
+
+    let mut steps: usize = 0;
+
+    while let Some((depth, current_id)) = queue.pop() {
+        if steps >= max_steps {
+            break;
+        }
+        steps = steps.saturating_add(1);
+
+        let Some(&current_mask) = masks.get(current_id) else {
+            continue;
+        };
+
+        let popcount = current_mask.count_ones();
+
+        // Record junction if this is a convergence point (≥ 2 extremities).
+        if popcount >= 2 {
+            best_junction
+                .entry(current_mask)
+                .or_insert((current_id, depth));
+            // We use or_insert because the first time we see a mask, it's at
+            // the highest depth (closest to tips) due to max-heap ordering.
+        }
+
+        // Global merge base found — ancestors are redundant.
+        if current_mask == full_mask {
+            break;
+        }
+
+        // Propagate mask to parents.
+        if let Some(ev) = events_map.get(current_id.borrow()) {
+            for parent_id in ev.prev_events() {
+                let parent_q: &Q = parent_id.borrow();
+                if let Some((pk, parent_ev)) = events_map.get_key_value(parent_q) {
+                    let parent_mask = masks.entry(pk).or_insert(0);
+                    let old = *parent_mask;
+                    *parent_mask |= current_mask;
+
+                    if *parent_mask != old {
+                        queue.push((parent_ev.depth(), pk));
+                    }
+                }
+            }
+        }
+    }
+
+    // If we didn't find even a 2-bit convergence, return empty.
+    if best_junction.is_empty() {
+        return Vec::new();
+    }
+
+    // Superseding pruning: remove junction J₁ (mask M₁) if there exists
+    // J₂ (mask M₂ ⊃ M₁) where J₂.depth ≥ J₁.depth (the larger subset
+    // converged at least as close to the tips).
+    let mut junctions: Vec<MergeBase<&'a Id>> = Vec::new();
+    let masks_vec: Vec<(u8, &Id, u64)> = best_junction
+        .into_iter()
+        .map(|(mask, (id, depth))| (mask, id, depth))
+        .collect();
+
+    for &(mask, id, depth) in &masks_vec {
+        let superseded = masks_vec
+            .iter()
+            .any(|&(m2, _, d2)| m2 != mask && (m2 & mask) == mask && d2 >= depth);
+        if !superseded {
+            junctions.push(MergeBase {
+                event_id: id,
+                mask,
+                depth,
+            });
+        }
+    }
+
+    // Sort by descending depth (closest to tips first).
+    junctions.sort_by_key(|j| core::cmp::Reverse(j.depth));
+    junctions
+}
+
 /// Computes the most recent common ancestor (merge base) of multiple DAG tips.
 ///
 /// Uses a max-heap ordered by event `depth` with roaring bitmap reachability
@@ -1017,6 +1205,478 @@ where
     auth_diff
 }
 
+/// A backward extremity: an event in the local DAG whose `prev_events`
+/// reference one or more parent IDs that are neither present in the
+/// provided event map nor recognized by the caller's `exists` predicate.
+///
+/// Backward extremities represent gaps in the local DAG — points where
+/// the timeline is incomplete and a federation `/backfill` request should
+/// be issued to fill the hole.
+///
+/// # Fields
+///
+/// - `event_id`: The known event that has missing parents.
+/// - `missing_prev_events`: The specific parent IDs that are unknown locally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackwardExtremity<Id> {
+    /// The event that has one or more missing parents.
+    pub event_id: Id,
+    /// The parent event IDs that are missing from the local DAG.
+    pub missing_prev_events: Vec<Id>,
+}
+
+/// Scans a set of DAG events and identifies **backward extremities** —
+/// events whose `prev_events` reference parent IDs that are missing from
+/// both the provided `events` map and the caller's `exists` oracle.
+///
+/// This is the pure graph-analysis core of a homeserver's backfill loop.
+/// By extracting it into rezzy, it becomes testable and reusable without
+/// async database I/O or federation networking.
+///
+/// # Arguments
+///
+/// - `events`: The local event map to scan.
+/// - `exists`: A predicate that returns `true` if an event ID is known to
+///   exist outside `events` (e.g. in a database). This prevents reporting
+///   false gaps for events that are stored but not loaded into memory.
+///
+/// # Returns
+///
+/// A `Vec<BackwardExtremity<Id>>` for every event that has at least one
+/// missing parent. Events whose parents are all accounted for (either in
+/// `events` or via `exists`) are not included.
+///
+/// # Example
+///
+/// ```rust
+/// use rezzy::{find_backward_extremities, LeanEvent, HashMap};
+///
+/// let mut events: HashMap<String, LeanEvent> = HashMap::new();
+/// // ... populate events ...
+/// let gaps = find_backward_extremities(&events, |_id| false);
+/// for gap in &gaps {
+///     println!("Event {} missing parents: {:?}", gap.event_id, gap.missing_prev_events);
+/// }
+/// ```
+///
+/// # Complexity
+///
+/// - **Time**: `O(Σ |prev_events|)` — linear in the total number of parent
+///   references across all events.
+/// - **Space**: `O(G)` where `G` is the total number of missing parent IDs
+///   across all backward extremities.
+#[must_use]
+pub fn find_backward_extremities<Id, Node, S, F>(
+    events: &crate::HashMap<Id, Node, S>,
+    exists: F,
+) -> Vec<BackwardExtremity<Id>>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    Node: crate::basespec::rezzy_types::DagNode<Id = Id>,
+    S: core::hash::BuildHasher,
+    F: Fn(&Id) -> bool,
+{
+    let mut result = Vec::new();
+
+    for node in events.values() {
+        let mut missing = Vec::new();
+        for prev_id in node.prev_events() {
+            if !events.contains_key(prev_id) && !exists(prev_id) {
+                missing.push(prev_id.clone());
+            }
+        }
+        if !missing.is_empty() {
+            result.push(BackwardExtremity {
+                event_id: node.event_id().clone(),
+                missing_prev_events: missing,
+            });
+        }
+    }
+
+    result
+}
+
+// ─── Auth gap detection ──────────────────────────────────────────────
+
+/// An event whose `auth_events` reference IDs missing from the local set.
+///
+/// Unlike [`BackwardExtremity`] (which tracks missing `prev_events` —
+/// "incomplete timeline, backfill needed"), a missing auth event means
+/// "can't verify authorization — potentially unsafe state." Different
+/// severity, different remediation, different logging.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingAuthEvent<Id> {
+    /// The event that references missing auth events.
+    pub event_id: Id,
+    /// The auth event IDs that are missing from the local set.
+    pub missing_auth_events: Vec<Id>,
+}
+
+/// Scans a set of DAG events and identifies events whose `auth_events`
+/// reference IDs missing from both the provided `events` map and the
+/// caller's `exists` oracle.
+///
+/// This is the auth-chain counterpart of [`find_backward_extremities`].
+/// A homeserver uses this to detect authorization gaps — events it cannot
+/// fully auth-check because required auth chain entries are missing.
+///
+/// # Arguments
+///
+/// - `events`: The local event map to scan.
+/// - `exists`: A predicate that returns `true` if an event ID is known to
+///   exist outside `events` (e.g. in a database).
+///
+/// # Complexity
+///
+/// - **Time**: `O(Σ |auth_events|)` — linear in the total number of auth
+///   references across all events.
+/// - **Space**: `O(G)` where `G` is the total number of missing auth IDs.
+#[must_use]
+pub fn find_missing_auth_events<Id, Node, S, F>(
+    events: &crate::HashMap<Id, Node, S>,
+    exists: F,
+) -> Vec<MissingAuthEvent<Id>>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    Node: crate::basespec::rezzy_types::DagNode<Id = Id>,
+    S: core::hash::BuildHasher,
+    F: Fn(&Id) -> bool,
+{
+    let mut result = Vec::new();
+
+    for node in events.values() {
+        let mut missing = Vec::new();
+        for auth_id in node.auth_events() {
+            if !events.contains_key(auth_id) && !exists(auth_id) {
+                missing.push(auth_id.clone());
+            }
+        }
+        if !missing.is_empty() {
+            result.push(MissingAuthEvent {
+                event_id: node.event_id().clone(),
+                missing_auth_events: missing,
+            });
+        }
+    }
+
+    result
+}
+
+// ─── Position-based topological ordering ─────────────────────────────
+
+/// Computes position-based topological depths for all events in the map.
+///
+/// Unlike [`compute_depths`] (which returns `1 + max(parent_depths)` —
+/// the spec-correct DAG depth), this function returns the **1-indexed
+/// position** of each event in Kahn's topological sort. This produces a
+/// total ordering suitable for building a database index where every
+/// event gets a unique depth value.
+///
+/// The `tiebreak` closure determines the ordering of events at the same
+/// topological level (zero in-degree simultaneously). Typical choices:
+/// - `|a, b| ts(a).cmp(&ts(b)).then(a.cmp(b))` — chronological with
+///   lexicographic event ID fallback (deterministic).
+/// - `|_, _| Ordering::Equal` — arbitrary (fastest, non-deterministic).
+///
+/// # Difference from `compute_depths`
+///
+/// ```text
+///          A
+///         / \
+///        B   C
+///         \ /
+///          D
+///
+///  compute_depths:         A=1, B=2, C=2, D=3
+///  compute_topo_positions: A=1, B=2, C=3, D=4  (total order)
+/// ```
+///
+/// `compute_depths` preserves DAG structure (siblings share a depth).
+/// `compute_topo_positions` produces a strict total order (every event
+/// gets a unique position). The latter is what a homeserver needs for
+/// its `roomid_topologicalorder_pducount` index.
+///
+/// # Complexity
+///
+/// - **Time**: `O(V log V + E)` — Kahn sort plus a comparison sort for
+///   deterministic tiebreaking within topological levels.
+/// - **Space**: `O(V)` for the position map.
+#[must_use]
+pub fn compute_topo_positions<Id, C, S, F>(
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    tiebreak: F,
+) -> Vec<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    S: core::hash::BuildHasher,
+    C: Clone,
+    F: Fn(&Id, &Id) -> core::cmp::Ordering,
+{
+    if events_map.is_empty() {
+        return Vec::new();
+    }
+
+    let all_ids: Vec<&Id> = events_map.keys().collect();
+    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&all_ids, events_map);
+    let (sorted, _) = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
+
+    debug_assert_eq!(
+        sorted.len(),
+        index_to_id.len(),
+        "compute_topo_positions: Kahn sort returned fewer nodes than expected — \
+         the input graph contains a cycle ({} sorted vs {} total)",
+        sorted.len(),
+        index_to_id.len(),
+    );
+
+    // Kahn sort gives a valid topological order; apply tiebreak within
+    // each topological level for deterministic output.
+    // First compute parent-max depths to identify levels.
+    let mut depth_by_idx = alloc::vec![0u64; index_to_id.len()];
+    for &idx in &sorted {
+        let id = index_to_id[idx];
+        if let Some(ev) = events_map.get(id) {
+            let max_parent = ev
+                .prev_events
+                .iter()
+                .filter_map(|pe| id_to_index.get(pe))
+                .map(|&pi| depth_by_idx[pi])
+                .max()
+                .unwrap_or(0);
+            depth_by_idx[idx] = max_parent.saturating_add(1);
+        }
+    }
+
+    // Sort by depth ascending (parents first), tiebreak within level.
+    let mut result: Vec<Id> = sorted.iter().map(|&idx| index_to_id[idx].clone()).collect();
+
+    result.sort_by(|a, b| {
+        let da = id_to_index.get(a).map_or(0, |&i| depth_by_idx[i]);
+        let db = id_to_index.get(b).map_or(0, |&i| depth_by_idx[i]);
+        da.cmp(&db).then_with(|| tiebreak(a, b))
+    });
+
+    result
+}
+
+// ─── Pagination verification ─────────────────────────────────────────
+
+/// Computes the topological depth of every event reachable from the given
+/// targets in the DAG. Depth is defined as `1 + max(parent depths)`, with
+/// root events (no parents in the map) having depth 1.
+///
+/// This is the reference depth computation. A homeserver should use these
+/// values when building its topological index — any mismatch is a bug in
+/// the storage layer.
+///
+/// # Complexity
+///
+/// - **Time**: `O(V + E)` — one Kahn sort pass over the reachable subgraph.
+/// - **Space**: `O(V)` for the depth map.
+///
+/// # Panics
+///
+/// Panics if a sorted event ID is not found in `events_map` (indicates a
+/// bug in the topological sort).
+#[must_use]
+pub fn compute_depths<Id, C, S>(events_map: &HashMap<Id, LeanEvent<Id, C>, S>) -> HashMap<Id, u64>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    S: core::hash::BuildHasher,
+    C: Clone,
+{
+    if events_map.is_empty() {
+        return HashMap::new();
+    }
+
+    let all_ids: Vec<&Id> = events_map.keys().collect();
+    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&all_ids, events_map);
+    let (sorted, _) = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
+
+    let mut depths = alloc::vec![0u64; index_to_id.len()];
+
+    for idx in &sorted {
+        let id = index_to_id[*idx];
+        let ev = events_map.get(id).unwrap();
+        let max_parent_depth = ev
+            .prev_events
+            .iter()
+            .filter_map(|pe| id_to_index.get(pe))
+            .map(|&pi| depths[pi])
+            .max()
+            .unwrap_or(0);
+        depths[*idx] = max_parent_depth.saturating_add(1);
+    }
+
+    let mut result = HashMap::with_capacity(index_to_id.len());
+    for (i, &id) in index_to_id.iter().enumerate() {
+        result.insert(id.clone(), depths[i]);
+    }
+    result
+}
+
+/// Returns events reachable from `tip` in **reverse topological order**
+/// (newest first). This is the spec-correct ordering for
+/// `/messages?dir=b` backward pagination.
+///
+/// Tie-breaking within the same topological level is determined by
+/// `tiebreak`. Typical choices:
+/// - Homeserver: `|a, b| pdu_count(a).cmp(&pdu_count(b)).reverse()` (insertion order)
+/// - Tests: `|a, b| a.cmp(&b).reverse()` (lexicographic event ID)
+///
+/// # Complexity
+///
+/// - **Time**: `O(V + E)` for ancestor collection + Kahn sort.
+/// - **Space**: `O(V)`.
+#[must_use]
+pub fn reverse_topological_order<Id, C, Q, S, F>(
+    tip: &Q,
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    tiebreak: F,
+) -> Vec<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
+    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    S: core::hash::BuildHasher,
+    C: Clone,
+    F: Fn(&Id, &Id) -> core::cmp::Ordering,
+{
+    let Some((tip_key, _)) = events_map.get_key_value(tip) else {
+        return Vec::new();
+    };
+
+    let targets = [tip_key];
+    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&targets, events_map);
+    let (sorted, _) = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
+
+    // Compute depths inline using the index arrays
+    let mut depth_by_idx = alloc::vec![0u64; index_to_id.len()];
+    for &idx in &sorted {
+        let id = index_to_id[idx];
+        if let Some(ev) = events_map.get(id.borrow()) {
+            let max_parent = ev
+                .prev_events
+                .iter()
+                .filter_map(|pe| id_to_index.get(pe))
+                .map(|&pi| depth_by_idx[pi])
+                .max()
+                .unwrap_or(0);
+
+            depth_by_idx[idx] = max_parent.saturating_add(1);
+        }
+    }
+
+    // Kahn sort gives parents-first; reverse for newest-first,
+    // then stable-sort by depth descending with tiebreak.
+    let mut result: Vec<Id> = sorted
+        .iter()
+        .rev()
+        .map(|&idx| index_to_id[idx].clone())
+        .collect();
+
+    result.sort_by(|a, b| {
+        let da = id_to_index.get(a).map_or(0, |&i| depth_by_idx[i]);
+        let db = id_to_index.get(b).map_or(0, |&i| depth_by_idx[i]);
+        db.cmp(&da).then_with(|| tiebreak(a, b))
+    });
+
+    result
+}
+
+/// The kind of violation detected by [`verify_pagination`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaginationViolation<Id> {
+    /// An event appeared on more than one page.
+    Duplicate {
+        event_id: Id,
+        first_page: usize,
+        second_page: usize,
+    },
+    /// An ancestor appeared *after* its descendant in the page sequence
+    /// (violates the reverse-topological ordering invariant).
+    AncestorAfterDescendant {
+        ancestor: Id,
+        descendant: Id,
+        ancestor_page: usize,
+        descendant_page: usize,
+    },
+}
+
+/// Verifies that a sequence of pagination pages respects DAG ordering
+/// invariants:
+///
+/// 1. **No duplicates** — each event ID appears on at most one page.
+/// 2. **Topological monotonicity** — if event A is an ancestor of B,
+///    then A must not appear on an *earlier* page than B (in backward
+///    pagination, descendants come first).
+///
+/// This is a pure property checker. Feed it the actual pages from your
+/// paginator; any violation is a bug in the storage/pagination layer.
+///
+/// Completeness (every reachable event present) is intentionally NOT
+/// checked — pagination may stop at room creation, budget limits, or
+/// ACL boundaries.
+///
+/// # Returns
+///
+/// A `Vec` of violations. Empty means the pages are well-formed.
+#[must_use]
+pub fn verify_pagination<Id, C, S>(
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    pages: &[Vec<Id>],
+) -> Vec<PaginationViolation<Id>>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    S: core::hash::BuildHasher,
+    C: Clone,
+{
+    let mut violations = Vec::new();
+
+    // 1. Check for duplicates
+    let mut seen: HashMap<&Id, usize> = HashMap::new();
+    for (page_idx, page) in pages.iter().enumerate() {
+        for id in page {
+            if let Some(&first_page) = seen.get(id) {
+                violations.push(PaginationViolation::Duplicate {
+                    event_id: id.clone(),
+                    first_page,
+                    second_page: page_idx,
+                });
+            } else {
+                seen.insert(id, page_idx);
+            }
+        }
+    }
+
+    // 2. Check topological monotonicity (ancestor must not appear before descendant)
+    // In backward pagination, page 0 has the newest events. If event B is on
+    // page 1 and B's ancestor A is on page 0 (earlier), that's wrong — A should
+    // be on a later page (higher index).
+    for (page_idx, page) in pages.iter().enumerate() {
+        for id in page {
+            let Some(ev) = events_map.get(id) else {
+                continue;
+            };
+            // Each prev_event is an ancestor. It must be on a page with
+            // index >= this event's page (or not present at all).
+            for parent_id in &ev.prev_events {
+                if let Some(&parent_page) = seen.get(parent_id) {
+                    if parent_page < page_idx {
+                        violations.push(PaginationViolation::AncestorAfterDescendant {
+                            ancestor: parent_id.clone(),
+                            descendant: id.clone(),
+                            ancestor_page: parent_page,
+                            descendant_page: page_idx,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    violations
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1204,5 +1864,138 @@ mod tests {
         // Cached result must match original, proving the cache was used
         // (a fresh computation with $join removed would differ)
         assert_eq!(result1, result2, "Cached result must match uncached result");
+    }
+
+    /// Regression test: paginating a forked DAG must never produce
+    /// duplicate events or violate topological ordering.
+    ///
+    /// DAG shape:
+    /// ```text
+    ///         A (depth=1)
+    ///        / \
+    ///       B   C (fork: B at depth 2, C at depth 5)
+    ///       |   |
+    ///       D   |  (D at depth 3)
+    ///        \ /
+    ///         E (merge: depth 6)
+    /// ```
+    #[test]
+    #[allow(clippy::many_single_char_names)]
+    fn test_forked_dag_pagination_no_duplicates() {
+        let a = LeanEvent {
+            event_id: "A".into(),
+            depth: 1,
+            prev_events: vec![],
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@x:x".into(),
+            content: json!({"room_version": "10", "creator": "@x:x"}),
+            ..Default::default()
+        };
+        let b = LeanEvent {
+            event_id: "B".into(),
+            depth: 2,
+            prev_events: vec!["A".into()],
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            ..Default::default()
+        };
+        let c = LeanEvent {
+            event_id: "C".into(),
+            depth: 5,
+            prev_events: vec!["A".into()],
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            ..Default::default()
+        };
+        let d = LeanEvent {
+            event_id: "D".into(),
+            depth: 3,
+            prev_events: vec!["B".into()],
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            ..Default::default()
+        };
+        let e = LeanEvent {
+            event_id: "E".into(),
+            depth: 6,
+            prev_events: vec!["C".into(), "D".into()],
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+        events_map.insert("B".into(), b);
+        events_map.insert("C".into(), c);
+        events_map.insert("D".into(), d);
+        events_map.insert("E".into(), e);
+
+        // Get the reference ordering
+        let order = reverse_topological_order("E", &events_map, |a: &String, b: &String| {
+            a.cmp(b).reverse()
+        });
+        assert_eq!(order.len(), 5, "all 5 events should be reachable");
+
+        // Simulate pages of size 2
+        let pages: Vec<Vec<String>> = order
+            .chunks(2)
+            .map(<[std::string::String]>::to_vec)
+            .collect();
+
+        let violations = verify_pagination(&events_map, &pages);
+        assert!(
+            violations.is_empty(),
+            "pagination must have no violations, got: {violations:?}"
+        );
+    }
+
+    /// Test that `compute_depths` produces correct depths for a forked DAG.
+    #[test]
+    #[allow(clippy::many_single_char_names)]
+    fn test_compute_depths_forked_dag() {
+        let a = LeanEvent {
+            event_id: "A".into(),
+            prev_events: vec![],
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@x:x".into(),
+            content: json!({"room_version": "10", "creator": "@x:x"}),
+            ..Default::default()
+        };
+        let b = LeanEvent {
+            event_id: "B".into(),
+            prev_events: vec!["A".into()],
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            ..Default::default()
+        };
+        let c = LeanEvent {
+            event_id: "C".into(),
+            prev_events: vec!["A".into()],
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            ..Default::default()
+        };
+        let d = LeanEvent {
+            event_id: "D".into(),
+            prev_events: vec!["B".into(), "C".into()],
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+        events_map.insert("B".into(), b);
+        events_map.insert("C".into(), c);
+        events_map.insert("D".into(), d);
+
+        let depths = compute_depths(&events_map);
+        assert_eq!(depths["A"], 1, "root has depth 1");
+        assert_eq!(depths["B"], 2, "B is child of A");
+        assert_eq!(depths["C"], 2, "C is child of A");
+        assert_eq!(depths["D"], 3, "D is child of max(B, C) + 1");
     }
 }

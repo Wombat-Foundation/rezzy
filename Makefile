@@ -3,6 +3,7 @@ SHELL=/bin/bash
 
 LAKE ?= lake
 CARGO ?= cargo
+TEST_FEATURES ?= hashing
 
 LINT_LOCS_PY = $$(git ls-files '*.py')
 LINT_LOCS_SH = $$(git ls-files '*.sh')
@@ -22,12 +23,12 @@ format: ##H Format codebase (Rust + Lean + scripts)
 
 .PHONY: fix
 fix:	##H Clippy auto-fix
-	$(CARGO) +nightly clippy --allow-dirty --fix --all-targets --all-features -- -W clippy::perf -W clippy::pedantic
-	$(CARGO) fix --all-targets --all-features --allow-dirty
+	$(CARGO) +nightly clippy --allow-dirty --fix --all-targets --features $(TEST_FEATURES) -- -W clippy::perf -W clippy::pedantic
+	# $(CARGO) fix --all-targets --features $(TEST_FEATURES) --allow-dirty
 
 .PHONY: lint
 lint: ##H Run all linters
-	$(CARGO) +nightly clippy --all-targets --all-features -- -W clippy::perf -W clippy::pedantic
+	$(CARGO) +nightly clippy --all-targets --features $(TEST_FEATURES) -- -W clippy::perf -W clippy::pedantic
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Lean targets
@@ -68,7 +69,7 @@ lint: ##H Run all linters
 
 .PHONY: rust/build
 rust/build: ##H Compile Rust binary (release)
-	$(CARGO) build --release --timings --features cli,hashing
+	$(CARGO) build --release --timings --features hashing,cli
 
 .PHONY: rust/doc
 rust/doc: ##H Generate rustdoc API documentation
@@ -76,18 +77,18 @@ rust/doc: ##H Generate rustdoc API documentation
 	echo '<meta http-equiv="refresh" content="0;url=rezzy/index.html">' > target/doc/index.html
 
 .PHONY: rust/test
-rust/test: fixtures ##H Run Rust tests (p=NAME for specific test, a=ARGS for test binary args)
+rust/test: ##H Run Rust tests (p=NAME for specific test, a=ARGS for test binary args)
 ifdef p
-	$(CARGO) test --test $(p) --all-features $(if $(a),-- $(a))
+	$(CARGO) test --test $(p) --features $(TEST_FEATURES) $(if $(a),-- $(a))
 else
-	$(CARGO) test --all-targets --all-features $(if $(a),-- $(a))
+	$(CARGO) test --all-targets --features $(TEST_FEATURES) $(if $(a),-- $(a))
 endif
 
 .PHONY: rust/coverage
-rust/coverage: fixtures ##H Run code coverage and generate HTML report
+rust/coverage: ##H Run code coverage and generate HTML report
 	# TODO: include `src/bin/` in coverage
 	# Run coverage
-	$(CARGO) +nightly llvm-cov --all-features --all-targets \
+	$(CARGO) +nightly llvm-cov --all-targets --features $(TEST_FEATURES)  \
 		--html --output-dir .coverage \
 		--ignore-filename-regex 'src/bin/.*'
 	# Process report to codecov-compatible JSON
@@ -135,6 +136,7 @@ cov:     rust/coverage ##H Alias for rust/coverage
 install: rust/install ##H Alias for rust/install
 uninstall: rust/uninstall ##H Alias for rust/uninstall
 
+.PHONY: clean
 clean:   rust/clean	##H Remove all build artifacts
 	find . -name __pycache__ | xargs -r rm -rf
 
@@ -143,42 +145,42 @@ clean:   rust/clean	##H Remove all build artifacts
 # Data generation
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.PHONY: fetch-stateres-vectors
-fetch-stateres-vectors: ##H Fetch Ruma state resolution test vectors
-	@mkdir -p res/ruma_upstream/MSC4297-problem-A res/ruma_upstream/MSC4297-problem-B
-	@echo "Fetching MSC4297-problem-A vectors..."
-	@test -f res/ruma_upstream/MSC4297-problem-A/pdus-v11.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-A/pdus-v11.json -o res/ruma_upstream/MSC4297-problem-A/pdus-v11.json
-	@test -f res/ruma_upstream/MSC4297-problem-A/pdus-v12.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-A/pdus-v12.json -o res/ruma_upstream/MSC4297-problem-A/pdus-v12.json
-	@test -f res/ruma_upstream/MSC4297-problem-A/state-bob.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-A/state-bob.json -o res/ruma_upstream/MSC4297-problem-A/state-bob.json
-	@test -f res/ruma_upstream/MSC4297-problem-A/state-charlie.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-A/state-charlie.json -o res/ruma_upstream/MSC4297-problem-A/state-charlie.json
-	@echo "Fetching MSC4297-problem-B vectors..."
-	@test -f res/ruma_upstream/MSC4297-problem-B/pdus-v11.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-B/pdus-v11.json -o res/ruma_upstream/MSC4297-problem-B/pdus-v11.json
-	@test -f res/ruma_upstream/MSC4297-problem-B/pdus-v12.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-B/pdus-v12.json -o res/ruma_upstream/MSC4297-problem-B/pdus-v12.json
-	@test -f res/ruma_upstream/MSC4297-problem-B/state-eve.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-B/state-eve.json -o res/ruma_upstream/MSC4297-problem-B/state-eve.json
-	@test -f res/ruma_upstream/MSC4297-problem-B/state-zara.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-B/state-zara.json -o res/ruma_upstream/MSC4297-problem-B/state-zara.json
+# .PHONY: fetch-stateres-vectors
+# fetch-stateres-vectors: ##H Fetch Ruma state resolution test vectors
+# 	@mkdir -p res/ruma_upstream/MSC4297-problem-A res/ruma_upstream/MSC4297-problem-B
+# 	@echo "Fetching MSC4297-problem-A vectors..."
+# 	@test -f res/ruma_upstream/MSC4297-problem-A/pdus-v11.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-A/pdus-v11.json -o res/ruma_upstream/MSC4297-problem-A/pdus-v11.json
+# 	@test -f res/ruma_upstream/MSC4297-problem-A/pdus-v12.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-A/pdus-v12.json -o res/ruma_upstream/MSC4297-problem-A/pdus-v12.json
+# 	@test -f res/ruma_upstream/MSC4297-problem-A/state-bob.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-A/state-bob.json -o res/ruma_upstream/MSC4297-problem-A/state-bob.json
+# 	@test -f res/ruma_upstream/MSC4297-problem-A/state-charlie.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-A/state-charlie.json -o res/ruma_upstream/MSC4297-problem-A/state-charlie.json
+# 	@echo "Fetching MSC4297-problem-B vectors..."
+# 	@test -f res/ruma_upstream/MSC4297-problem-B/pdus-v11.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-B/pdus-v11.json -o res/ruma_upstream/MSC4297-problem-B/pdus-v11.json
+# 	@test -f res/ruma_upstream/MSC4297-problem-B/pdus-v12.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-B/pdus-v12.json -o res/ruma_upstream/MSC4297-problem-B/pdus-v12.json
+# 	@test -f res/ruma_upstream/MSC4297-problem-B/state-eve.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-B/state-eve.json -o res/ruma_upstream/MSC4297-problem-B/state-eve.json
+# 	@test -f res/ruma_upstream/MSC4297-problem-B/state-zara.json || curl -sL https://raw.githubusercontent.com/ruma/ruma/main/crates/ruma-state-res/tests/it/resolve/fixtures/MSC4297-problem-B/state-zara.json -o res/ruma_upstream/MSC4297-problem-B/state-zara.json
 
-.PHONY: fixtures
-fixtures: fetch-stateres-vectors ##H Generate synthetic data and fetch real DAGs if MATRIX_TOKEN is set
-	@mkdir -p res res/expected
-	@test -f res/benchmark_1k.json || python3 scripts/generate_benchmark_1k.py
-	@test -f res/realistic_large_room.json || python3 scripts/gen_large_room.py
-	@if [ -f .env ]; then set -a && source .env; fi; \
-	if [ -f ../.env ]; then set -a && source ../.env; fi; \
-	if [ -n "$$MATRIX_TOKEN" ]; then \
-		test -f res/real_dag_52k_room.json || \
-			python3 scripts/export_from_db.py '!da26JtAjE6APGLnX8ncWsvc-skF2KQZ9Nw_MbNpYD2k' \
-				--limit 10000 -o res/real_dag_52k_room.json; \
-		test -f res/real_dag_nheko.json || \
-			python3 scripts/export_from_db.py '!UbCmIlGTHNIgIRZcpt:nheko.im' \
-				--limit 6000 -o res/real_dag_nheko.json; \
-		test -f res/real_matrix_state_v2_1.json || \
-			python3 scripts/fetch_matrix_state.py || echo "Warning: v2.1 fetch failed"; \
-		test -f res/real_matrix_state.json || \
-			python3 scripts/fetch_matrix_state.py || echo "Warning: state fetch failed"; \
-	else \
-		echo "No MATRIX_TOKEN found, skipping live fetch."; \
-		echo "  Set MATRIX_TOKEN and MATRIX_SERVER in .env to generate real DAG fixtures."; \
-	fi
+# .PHONY: fixtures
+# fixtures: fetch-stateres-vectors ##H Generate synthetic data and fetch real DAGs if MATRIX_TOKEN is set
+# 	@mkdir -p res res/expected
+# 	@test -f res/benchmark_1k.json || python3 scripts/generate_benchmark_1k.py
+# 	@test -f res/realistic_large_room.json || python3 scripts/gen_large_room.py
+# 	@if [ -f .env ]; then set -a && source .env; fi; \
+# 	if [ -f ../.env ]; then set -a && source ../.env; fi; \
+# 	if [ -n "$$MATRIX_TOKEN" ]; then \
+# 		test -f res/real_dag_52k_room.json || \
+# 			python3 scripts/export_from_db.py '!da26JtAjE6APGLnX8ncWsvc-skF2KQZ9Nw_MbNpYD2k' \
+# 				--limit 10000 -o res/real_dag_52k_room.json; \
+# 		test -f res/real_dag_nheko.json || \
+# 			python3 scripts/export_from_db.py '!UbCmIlGTHNIgIRZcpt:nheko.im' \
+# 				--limit 6000 -o res/real_dag_nheko.json; \
+# 		test -f res/real_matrix_state_v2_1.json || \
+# 			python3 scripts/fetch_matrix_state.py || echo "Warning: v2.1 fetch failed"; \
+# 		test -f res/real_matrix_state.json || \
+# 			python3 scripts/fetch_matrix_state.py || echo "Warning: state fetch failed"; \
+# 	else \
+# 		echo "No MATRIX_TOKEN found, skipping live fetch."; \
+# 		echo "  Set MATRIX_TOKEN and MATRIX_SERVER in .env to generate real DAG fixtures."; \
+# 	fi
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

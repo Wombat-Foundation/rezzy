@@ -288,83 +288,30 @@ pub fn compute_state_maps(
 
 pub type ResolvedState = imbl::OrdMap<(String, String), String>;
 
-fn partition_state_occurrences<'a, I, Iter>(
-    state_maps: I,
-    num_sets: usize,
-) -> (ResolvedState, Vec<String>)
-where
-    I: IntoIterator<Item = Iter>,
-    Iter: IntoIterator<Item = (&'a (String, String), &'a String)>,
-{
-    let mut occurrences: HashMap<(String, String), HashMap<String, usize>> = HashMap::new();
-    for map in state_maps {
-        for (key, id) in map {
-            let val = occurrences
-                .entry(key.clone())
-                .or_default()
-                .entry(id.clone())
-                .or_insert(0);
-            *val = val.saturating_add(1);
-        }
-    }
-
-    let mut unconflicted_state = imbl::OrdMap::new();
-    let mut conflicted_state_set = Vec::new();
-
-    for (key, ids) in occurrences {
-        if ids.len() == 1 && ids.values().next().unwrap() == &num_sets {
-            let id = ids.keys().next().unwrap();
-            unconflicted_state.insert(key, id.clone());
-        } else {
-            for id in ids.keys() {
-                conflicted_state_set.push(id.clone());
-            }
-        }
-    }
-
-    (unconflicted_state, conflicted_state_set)
-}
-
 pub fn resolve_parent_states(
     parent_states: &[SharedStateMap],
     events_map: &HashMap<String, LeanEvent>,
     version: StateResVersion,
 ) -> SharedStateMap {
-    let mut all_identical = true;
-    let first_state = &parent_states[0];
-    for state in &parent_states[1..] {
-        if !std::sync::Arc::ptr_eq(state, first_state) && state != first_state {
-            all_identical = false;
-            break;
+    // Fast path: all parent states are identical (Arc::ptr_eq or value equality).
+    // Common in linear DAGs where every parent shares the same resolved state.
+    if parent_states.len() > 1 {
+        let first = &parent_states[0];
+        let all_identical = parent_states[1..]
+            .iter()
+            .all(|s| std::sync::Arc::ptr_eq(s, first) || s.as_ref() == first.as_ref());
+        if all_identical {
+            return first.clone();
         }
     }
 
-    if all_identical {
-        first_state.clone()
-    } else {
-        let (unconflicted_state, conflicted_state_set) = partition_state_occurrences(
-            parent_states.iter().map(std::convert::AsRef::as_ref),
-            parent_states.len(),
-        );
-
-        let mut conflicted_events = HashMap::new();
-        for id in &conflicted_state_set {
-            if let Some(parent_ev) = events_map.get(id) {
-                conflicted_events.insert(id.clone(), parent_ev.clone());
-            }
-        }
-
-        let auth_context =
-            rezzy::compute_v2_1_conflicted_subgraph(events_map, &conflicted_state_set);
-
-        let resolved = rezzy::resolve_iterative_sort(
-            unconflicted_state,
-            conflicted_events,
-            &auth_context,
-            version,
-        );
-        std::sync::Arc::new(resolved)
-    }
+    // Unwrap Arc<OrdMap> → &OrdMap for the library call
+    let bare_maps: Vec<ResolvedState> = parent_states
+        .iter()
+        .map(|arc| arc.as_ref().clone())
+        .collect();
+    let resolved = rezzy::resolve_state_maps(&bare_maps, events_map, version);
+    std::sync::Arc::new(resolved)
 }
 
 pub fn partition_and_resolve_state(
@@ -376,7 +323,7 @@ pub fn partition_and_resolve_state(
 ) -> (ResolvedState, std::time::Duration) {
     let start = Instant::now();
     let (unconflicted_state, conflicted_state_set) =
-        partition_state_occurrences(state_maps, state_maps.len());
+        rezzy::partition_state_maps(state_maps, state_maps.len());
 
     let mut auth_difference = std::collections::HashSet::new();
     if !heads.is_empty() {

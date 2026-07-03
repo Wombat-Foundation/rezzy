@@ -1661,3 +1661,88 @@ fn test_v2_1_1_creator_in_users_map_rejected() {
         "V12 Rule 10.4: PL with creator in users must be rejected; valid PL wins"
     );
 }
+
+/// Coverage: V2.1.1 power-phase ban supplementation return (at.rs:134-135).
+///
+/// During V2.1.1's power phase, `OverlayState::get_event` only supplements
+/// bans and kicks from the resolved state (not joins/invites). This test
+/// creates a scenario where:
+/// - The **unconflicted** resolved state contains a ban for `@mallory:x`
+/// - A conflicted PL event from `@mallory:x` is auth-checked during power phase
+/// - The auth checker queries `("m.room.member", "@mallory:x")` → the ban is
+///   returned via the `is_ban_or_kick` branch → auth rejects the PL event
+///
+/// The PL from `@admin:x` must win because `@mallory:x` is banned.
+#[test]
+fn test_v2_1_1_ban_supplementation_return_path() {
+    // Unconflicted auth context: room setup + mallory join + mallory ban
+    let auth_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:x", "origin_server_ts": 100, "content": {"room_version": "10"}}
+        {"event_id": "$admin_join", "type": "m.room.member",       "state_key": "@admin:x", "sender": "@admin:x", "origin_server_ts": 200, "content": {"membership": "join"}, "auth_events": ["$create"]}
+        {"event_id": "$pl",         "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x", "origin_server_ts": 300, "content": {"users": {"@admin:x": 100, "@mallory:x": 50}, "state_default": 50}, "auth_events": ["$create", "$admin_join"]}
+        {"event_id": "$jr",         "type": "m.room.join_rules",   "state_key": "", "sender": "@admin:x", "origin_server_ts": 350, "content": {"join_rule": "public"}, "auth_events": ["$create", "$pl", "$admin_join"]}
+        {"event_id": "$mal_join",   "type": "m.room.member",       "state_key": "@mallory:x", "sender": "@mallory:x", "origin_server_ts": 400, "content": {"membership": "join"}, "auth_events": ["$create", "$pl", "$jr"]}
+        {"event_id": "$mal_ban",    "type": "m.room.member",       "state_key": "@mallory:x", "sender": "@admin:x",   "origin_server_ts": 500, "content": {"membership": "ban"}, "auth_events": ["$create", "$pl", "$admin_join", "$mal_join"]}
+    "#,
+    );
+
+    // Two conflicted PL events: one from banned @mallory:x, one from @admin:x
+    // These are both PL events → power phase. When auth-checking $mal_pl,
+    // the auth checker queries ("m.room.member", "@mallory:x") which should
+    // return the ban via the V2.1.1 supplementation path.
+    let conflicted_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$mal_pl",   "type": "m.room.power_levels", "state_key": "", "sender": "@mallory:x", "origin_server_ts": 600, "content": {"users": {"@mallory:x": 100}}, "auth_events": ["$create", "$mal_join", "$pl"]}
+        {"event_id": "$admin_pl", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x",   "origin_server_ts": 700, "content": {"users": {"@admin:x": 100}, "state_default": 50}, "auth_events": ["$create", "$admin_join", "$pl"]}
+    "#,
+    );
+
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in auth_evs {
+        auth_context.insert(ev.event_id.clone(), ev);
+    }
+
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in conflicted_evs {
+        conflicted.insert(ev.event_id.clone(), ev);
+    }
+
+    // Build unconflicted state manually — must include the ban so that
+    // the power-phase auth checker finds it via OverlayState::get_event.
+    // Sort by origin_server_ts so the latest event per state key wins
+    // (HashMap iteration order is non-deterministic).
+    let mut unconflicted = imbl::OrdMap::new();
+    let mut sorted_auth: Vec<_> = auth_context.values().collect();
+    sorted_auth.sort_by_key(|ev| ev.origin_server_ts);
+    for ev in sorted_auth {
+        if let Some(sk) = &ev.state_key {
+            unconflicted.insert((ev.event_type.clone(), sk.clone()), ev.event_id.clone());
+        }
+    }
+
+    // Verify the ban is in the unconflicted state
+    let mal_key = ("m.room.member".to_string(), "@mallory:x".to_string());
+    assert_eq!(
+        unconflicted.get(&mal_key),
+        Some(&"$mal_ban".to_string()),
+        "Precondition: ban must be in unconflicted state"
+    );
+
+    let resolved = resolve_iterative_sort(
+        unconflicted,
+        conflicted,
+        &auth_context,
+        StateResVersion::V2_1_1,
+    );
+
+    // Mallory's PL must be rejected (she's banned)
+    // Admin's PL must win
+    let pl_key = ("m.room.power_levels".to_string(), String::new());
+    assert_eq!(
+        resolved.get(&pl_key),
+        Some(&"$admin_pl".to_string()),
+        "V2.1.1: Admin PL must win; Mallory's PL rejected because she's banned \
+         (ban supplementation at at.rs:134-135)"
+    );
+}

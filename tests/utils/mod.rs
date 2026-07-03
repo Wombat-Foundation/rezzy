@@ -114,6 +114,17 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
     events
 }
 
+/// Loads a JSONL fixture file and returns events as a `HashMap` keyed by `event_id`.
+#[allow(dead_code)]
+pub fn load_jsonl_fixture(path: &str) -> HashMap<String, LeanEvent> {
+    let content = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("Failed to read fixture {path}: {e}"));
+    parse_jsonl_events(&content)
+        .into_iter()
+        .map(|ev| (ev.event_id.clone(), ev))
+        .collect()
+}
+
 /// Parses a multiline JSONL string directly into a `RoomState`.
 #[allow(dead_code)]
 pub fn parse_jsonl_state(input: &str) -> RoomState {

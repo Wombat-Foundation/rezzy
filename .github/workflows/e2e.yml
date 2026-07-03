@@ -33,9 +33,6 @@ jobs:
       - name: Build release crate
         run: make build
 
-      - name: Generate benchmark data
-        run: make fixtures
-
       - name: Setup Ruma Reference
         run: bash scripts/setup_ruma_cli.sh
 

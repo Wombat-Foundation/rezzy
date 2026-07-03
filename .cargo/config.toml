@@ -1,0 +1,5 @@
+[build]
+rustc-wrapper = ".cargo/cargo-wrapper.sh"
+
+[env]
+# RUSTC_WRAPPER = { value = "sccache", force = false }

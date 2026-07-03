@@ -1,5 +1,7 @@
 //! State resolution integration tests.
 
+mod mock_ruma;
+
 #[macro_use]
 #[path = "resolve/macros.rs"]
 mod macros;
@@ -18,7 +20,10 @@ snapshot_test_batches!(minimal_public_chat, ["bootstrap-public-chat.json"]);
 // power levels of these events are equivalent, so they don't really matter.
 snapshot_test_batches!(
     origin_server_ts_tiebreak,
-    ["bootstrap-private-chat.json", "origin-server-ts-tiebreak.json"],
+    [
+        "bootstrap-private-chat.json",
+        "origin-server-ts-tiebreak.json"
+    ],
 );
 
 // Test that state res v2.0 is implemented starting from the unconflicted set, and NOT the empty
@@ -27,7 +32,10 @@ snapshot_test_batches!(
 // This example comes directly from the "Problem A" section of MSC4297.
 snapshot_test_state_maps!(
     msc4297_problem_a_state_res_v2_0,
-    ["MSC4297-problem-A/state-bob.json", "MSC4297-problem-A/state-charlie.json"],
+    [
+        "MSC4297-problem-A/state-bob.json",
+        "MSC4297-problem-A/state-charlie.json"
+    ],
     ["MSC4297-problem-A/pdus-v11.json"],
 );
 
@@ -37,7 +45,10 @@ snapshot_test_state_maps!(
 // This example comes directly from the "Problem A" section of MSC4297.
 snapshot_test_state_maps!(
     msc4297_problem_a_state_res_v2_1,
-    ["MSC4297-problem-A/state-bob.json", "MSC4297-problem-A/state-charlie.json"],
+    [
+        "MSC4297-problem-A/state-bob.json",
+        "MSC4297-problem-A/state-charlie.json"
+    ],
     ["MSC4297-problem-A/pdus-v12.json"],
 );
 
@@ -47,7 +58,10 @@ snapshot_test_state_maps!(
 // This example comes directly from the "Problem B" section of MSC4297.
 snapshot_test_state_maps!(
     msc4297_problem_b_state_res_v2_0,
-    ["MSC4297-problem-B/state-eve.json", "MSC4297-problem-B/state-zara.json"],
+    [
+        "MSC4297-problem-B/state-eve.json",
+        "MSC4297-problem-B/state-zara.json"
+    ],
     ["MSC4297-problem-B/pdus-v11.json"],
 );
 
@@ -57,7 +71,10 @@ snapshot_test_state_maps!(
 // This example comes directly from the "Problem B" section of MSC4297.
 snapshot_test_state_maps!(
     msc4297_problem_b_state_res_v2_1,
-    ["MSC4297-problem-B/state-eve.json", "MSC4297-problem-B/state-zara.json"],
+    [
+        "MSC4297-problem-B/state-eve.json",
+        "MSC4297-problem-B/state-zara.json"
+    ],
     ["MSC4297-problem-B/pdus-v12.json"],
 );
 
@@ -116,5 +133,9 @@ snapshot_test_batches!(
 // Test that concurrent joins both end up in the state.
 snapshot_test_batches!(
     concurrent_joins,
-    ["bootstrap-public-chat.json", "concurrent-joins-charlie.json", "concurrent-joins-ella.json",],
+    [
+        "bootstrap-public-chat.json",
+        "concurrent-joins-charlie.json",
+        "concurrent-joins-ella.json",
+    ],
 );

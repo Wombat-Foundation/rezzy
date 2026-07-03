@@ -1,4 +1,5 @@
 #![cfg(feature = "mock-ruma")]
+#![allow(dead_code, unused_imports)]
 extern crate alloc;
 extern crate ruma_state_res as original_ruma;
 use alloc::string::String;

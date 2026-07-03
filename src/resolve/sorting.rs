@@ -315,11 +315,35 @@ where
     Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
 {
+    // TODO: Thread a persistent cache through callers that invoke build_mainline
+    // repeatedly (e.g., the delta loop in compute_state_at, lattice fold checkpoints).
+    // Currently each call starts with a fresh cache, so the memoization never hits
+    // in production — only the unit test exercises the cache-hit path.
+    build_mainline_with_cache(resolved, auth_context, &mut HashMap::new())
+}
+
+/// Like [`build_mainline`], but populates a `pl_parent_cache` mapping each
+/// event ID to its nearest `m.room.power_levels` ancestor in the auth chain.
+///
+/// Subsequent calls sharing the same cache skip BFS entirely for events
+/// already resolved, turning the mainline walk from `O(M × B)` (M = mainline
+/// length, B = auth chain breadth) to `O(M)` on cache hits.
+pub(crate) fn build_mainline_with_cache<Id, C>(
+    resolved: &crate::state::at::SharedState<Id>,
+    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
+    pl_parent_cache: &mut HashMap<Id, Option<Id>>,
+) -> Vec<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: Clone + crate::basespec::rezzy_types::EventContent,
+{
+    use crate::basespec::event_types::{M_EMPTY_STATE_KEY, M_ROOM_POWER_LEVELS};
+
     let mut mainline = Vec::new();
     let mut seen_in_mainline = hashbrown::HashSet::new();
     let pl_key = (
-        alloc::string::String::from("m.room.power_levels"),
-        alloc::string::String::new(),
+        alloc::string::String::from(M_ROOM_POWER_LEVELS),
+        alloc::string::String::from(M_EMPTY_STATE_KEY),
     );
     let mut current = resolved.get(&pl_key).cloned();
 
@@ -330,7 +354,19 @@ where
             break; // Cycle detected in the power-levels mainline!
         }
         mainline.push(eid.clone());
-        current = None;
+
+        // Check cache first
+        if let Some(cached) = pl_parent_cache.get(&eid) {
+            #[allow(clippy::assigning_clones)]
+            // `current` was consumed by while-let, no alloc to reuse
+            {
+                current = cached.clone();
+            }
+            continue;
+        }
+
+        // BFS to find the nearest PL ancestor
+        let mut found = None;
         if let Some(ev) = auth_context.get_event(&eid) {
             let mut queue = VecDeque::new();
             for auth_id in &ev.auth_events {
@@ -342,8 +378,8 @@ where
                     continue;
                 }
                 if let Some(auth_ev) = auth_context.get_event(&q_id) {
-                    if auth_ev.event_type == "m.room.power_levels" {
-                        current = Some(q_id);
+                    if auth_ev.event_type == M_ROOM_POWER_LEVELS {
+                        found = Some(q_id);
                         break;
                     }
                     for aid in &auth_ev.auth_events {
@@ -352,6 +388,9 @@ where
                 }
             }
         }
+
+        pl_parent_cache.insert(eid, found.clone());
+        current = found;
     }
 
     mainline
@@ -723,5 +762,51 @@ mod tests {
             Some(&1),
             "$join has $create in auth → distance 1"
         );
+    }
+
+    /// Coverage: `build_mainline_with_cache` cache hit path (sorting.rs:355-361).
+    ///
+    /// Calling `build_mainline_with_cache` twice with the same cache: the first
+    /// call populates the cache for each PL event, and the second call hits the
+    /// cache early, skipping the BFS entirely.
+    #[test]
+    fn test_build_mainline_cache_hit() {
+        // Chain: PL2 → (auth) → PL1 → (auth) → PL0
+        let pl0 = LeanEvent::<String> {
+            event_id: "PL0".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let pl1 = LeanEvent::<String> {
+            event_id: "PL1".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec!["PL0".into()],
+            ..Default::default()
+        };
+        let pl2 = LeanEvent::<String> {
+            event_id: "PL2".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec!["PL1".into()],
+            ..Default::default()
+        };
+
+        let mut ctx = HashMap::new();
+        ctx.insert("PL0".into(), pl0);
+        ctx.insert("PL1".into(), pl1);
+        ctx.insert("PL2".into(), pl2);
+
+        let mut resolved = imbl::OrdMap::new();
+        resolved.insert(("m.room.power_levels".into(), String::new()), "PL2".into());
+
+        // First call: populates cache for PL2 → Some(PL1), PL1 → Some(PL0), PL0 → None
+        let mut cache = HashMap::new();
+        let ml1 = build_mainline_with_cache(&resolved, &ctx, &mut cache);
+        assert_eq!(ml1, alloc::vec!["PL2", "PL1", "PL0"]);
+        assert_eq!(cache.len(), 3, "all 3 PL events must be cached");
+
+        // Second call: hits cache immediately for PL2 → skips BFS
+        let ml2 = build_mainline_with_cache(&resolved, &ctx, &mut cache);
+        assert_eq!(ml2, ml1, "cached mainline must match original");
     }
 }

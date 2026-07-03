@@ -285,24 +285,7 @@ pub fn route_power_events<
     version: crate::StateResVersion,
 ) {
     for (id, ev) in sort_set {
-        let is_power = ev.event_type == crate::basespec::event_types::M_ROOM_CREATE
-            || ev.event_type == crate::basespec::event_types::M_ROOM_POWER_LEVELS
-            || ev.event_type == crate::basespec::event_types::M_ROOM_JOIN_RULES
-            || if matches!(
-                version,
-                // MSC4297 (State Resolution v2.1 onwards): Only member events that are bans or kicks
-                // are treated as power events.
-                // (Standard v2 treats *all* member events as power events, which is handled by the `else` branch).
-                crate::StateResVersion::V2_1
-                    | crate::StateResVersion::V2_1_1
-                    | crate::StateResVersion::V2_2
-            ) {
-                ev.is_ban_or_kick()
-            } else {
-                ev.event_type == crate::basespec::event_types::M_ROOM_MEMBER
-            };
-
-        if is_power {
+        if ev.is_power_event(version) {
             power_events.insert(id.clone(), ev.clone());
         } else {
             non_power_events.insert(id.clone(), ev.clone());

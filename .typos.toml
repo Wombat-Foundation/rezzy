@@ -4,4 +4,4 @@ ket = "ket"
 NAX = "NAX"
 
 [files]
-extend-exclude = ["tests/critique_data/**"]
+extend-exclude = ["tests/critique_data/**", "tests/fixtures/**"]

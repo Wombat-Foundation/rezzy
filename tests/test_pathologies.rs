@@ -8,7 +8,8 @@ use std::path::Path;
 
 /// Helper to parse a JSONL file into a list of `LeanEvents`
 fn parse_jsonl_dag<P: AsRef<Path>>(path: P) -> Vec<LeanEvent> {
-    let file = File::open(path).expect("Failed to open JSONL file");
+    let file = File::open(path.as_ref())
+        .unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.as_ref().display()));
     let reader = BufReader::new(file);
     let mut events = Vec::new();
 
@@ -26,7 +27,7 @@ fn parse_jsonl_dag<P: AsRef<Path>>(path: P) -> Vec<LeanEvent> {
 
 #[test]
 fn test_pathology_duplicate_auth_poisoning() {
-    let path = "res/pathology_data/03-duplicate-auth-poisoning.jsonl";
+    let path = "tests/fixtures/pathology_data/03-duplicate-auth-poisoning.jsonl";
     let events = parse_jsonl_dag(path);
 
     let mut auth_context = HashMap::new();
@@ -98,7 +99,7 @@ fn test_pathology_duplicate_auth_poisoning() {
 
 #[test]
 fn test_pathology_invite_lock() {
-    let path = "res/pathology_data/02-invite-lock-regression.jsonl";
+    let path = "tests/fixtures/pathology_data/02-invite-lock-regression.jsonl";
     let events = parse_jsonl_dag(path);
 
     let mut auth_context = HashMap::new();
@@ -187,7 +188,7 @@ fn simulate_federation_lag(
 #[test]
 fn test_pathology_fruitless_search_bounded() {
     // Note: The python script outputs hyphens, and we need to point to the python folder if we didn't move it properly
-    let path = "res/pathology_data/pathology_06-fruitless-search-small.jsonl";
+    let path = "tests/fixtures/pathology_data/pathology_06-fruitless-search-small.jsonl";
     let events = parse_jsonl_dag(path);
 
     let mut full_graph = HashMap::new();
