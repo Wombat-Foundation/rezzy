@@ -3453,6 +3453,76 @@ fn test_resolve_iterative_sort_with_deltas_no_duplicate_power_events() {
     );
 }
 
+/// Coverage: the `or_else(|| auth_context.get(id))` fallback on line 565.
+/// MSC4297 supplementation routes a PL from `auth_context` into the power phase.
+/// It's NOT in `conflicted_events`, so `sort_set.get(id)` misses and the fallback fires.
+#[test]
+fn test_deltas_supplemental_power_event_from_auth_context() {
+    use rezzy::{resolve_iterative_sort_with_deltas, LeanEvent, StateResVersion};
+
+    // Two conflicting PLs (alice vs bob), both auth-chained through an ancestor PL
+    // that lives only in auth_context. MSC4297 supplementation pulls $pl_ancestor
+    // into power_events, but it's NOT in conflicted_events → or_else fires.
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:x.com","depth":0,"origin_server_ts":1000,"content":{"room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:x.com","sender":"@alice:x.com","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:x.com","sender":"@bob:x.com","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl_ancestor","type":"m.room.power_levels","state_key":"","sender":"@alice:x.com","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:x.com":100,"@bob:x.com":50}},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
+{"event_id":"$pl_alice","type":"m.room.power_levels","state_key":"","sender":"@alice:x.com","depth":3,"origin_server_ts":2000,"content":{"users":{"@alice:x.com":100,"@bob:x.com":0}},"prev_events":["$pl_ancestor"],"auth_events":["$create","$alice_join","$pl_ancestor"]}
+{"event_id":"$pl_bob","type":"m.room.power_levels","state_key":"","sender":"@bob:x.com","depth":3,"origin_server_ts":3000,"content":{"users":{"@alice:x.com":100,"@bob:x.com":100}},"prev_events":["$pl_ancestor"],"auth_events":["$create","$bob_join","$pl_ancestor"]}
+    "#,
+    );
+
+    let map: std::collections::HashMap<String, LeanEvent> = events
+        .iter()
+        .map(|e| (e.event_id.clone(), e.clone()))
+        .collect();
+
+    // Unconflicted: create is settled
+    let mut unconflicted = imbl::OrdMap::new();
+    unconflicted.insert(("m.room.create".into(), String::new()), "$create".into());
+
+    // auth_context: everything EXCEPT the two conflicting PLs
+    let mut auth_context = std::collections::HashMap::new();
+    for id in &["$create", "$alice_join", "$bob_join", "$pl_ancestor"] {
+        auth_context.insert((*id).to_string(), map[*id].clone());
+    }
+
+    // Conflicted: only the two competing PLs
+    let mut conflicted = std::collections::HashMap::new();
+    conflicted.insert("$pl_alice".into(), map["$pl_alice"].clone());
+    conflicted.insert("$pl_bob".into(), map["$pl_bob"].clone());
+
+    // V2.1 triggers MSC4297 supplementation, pulling $pl from auth_context
+    // into the power phase. During the delta loop, sort_set.get("$pl") misses
+    // (it's not in conflicted_events), so the or_else fallback to auth_context fires.
+    let (resolved, deltas) = resolve_iterative_sort_with_deltas(
+        unconflicted,
+        conflicted,
+        &auth_context,
+        StateResVersion::V2_1,
+    );
+
+    // The PL slot must be resolved to one of the two conflicting PLs
+    let pl_key = ("m.room.power_levels".to_string(), String::new());
+    let winner = resolved.get(&pl_key).expect("PL must be resolved");
+    assert!(
+        winner == "$pl_alice" || winner == "$pl_bob",
+        "PL winner must be one of the conflicting PLs, got {winner}"
+    );
+
+    // Both conflicting PLs must appear in deltas
+    assert!(
+        deltas.iter().any(|d| d.event_id == "$pl_alice"),
+        "$pl_alice must appear in deltas"
+    );
+    assert!(
+        deltas.iter().any(|d| d.event_id == "$pl_bob"),
+        "$pl_bob must appear in deltas"
+    );
+}
+
 #[test]
 fn test_types_empty_event_type() {
     use rezzy::LeanEvent;

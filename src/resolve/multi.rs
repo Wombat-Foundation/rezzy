@@ -397,6 +397,35 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "events_map missing conflicted event")]
+    fn test_resolve_missing_conflicted_event_panics() {
+        // Two forks disagree on a member slot. The conflicted event ID
+        // is NOT in events_map, so the defensive panic should fire.
+        let mut fork_a = StateMap::new();
+        fork_a.insert(("m.room.create".into(), "".into()), "$create".into());
+        fork_a.insert(
+            ("m.room.member".into(), "@alice:x".into()),
+            "$join_a".into(),
+        );
+
+        let mut fork_b = StateMap::new();
+        fork_b.insert(("m.room.create".into(), "".into()), "$create".into());
+        fork_b.insert(
+            ("m.room.member".into(), "@alice:x".into()),
+            "$join_b".into(), // differs from fork_a → conflicted
+        );
+
+        // events_map only has create — missing both join events
+        let mut events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        events.insert(
+            "$create".into(),
+            make_event("$create", "m.room.create", "", "@alice:x", alloc::vec![], 0),
+        );
+
+        let _ = resolve_state_maps(&[fork_a, fork_b], &events, StateResVersion::V2);
+    }
+
+    #[test]
     fn test_resolve_single_map() {
         let mut map = StateMap::new();
         map.insert(("m.room.create".into(), "".into()), "$create".into());
