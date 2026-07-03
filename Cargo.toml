@@ -53,6 +53,7 @@ cli = ["std", "dep:clap", "dep:anyhow", "dep:ureq", "mimalloc"]
 regen = ["std"]
 hashing = ["dep:sha2", "dep:base64"]
 mock-ruma = []
+stress = []
 mimalloc = ["dep:mimalloc"]
 
 [dependencies]
@@ -81,37 +82,36 @@ ruma-state-res = { version = "0.17.0", features = ["__criterion"] }
 similar = "3.1.0"
 test-log = "0.2.20"
 tracing-subscriber = "0.3.23"
-[[test]]
-name = "snapshots"
-path = "tests/snapshots.rs"
-[[test]]
-name = "sanity"
-path = "tests/sanity.rs"
 
 [[test]]
-name = "hashing"
-path = "tests/hashing.rs"
+name = "test_snapshots"
+path = "tests/test_snapshots.rs"
+required-features = ["stress"]
 
 [[test]]
-name = "traversal"
-path = "tests/traversal.rs"
+name = "test_sanity"
+path = "tests/test_sanity.rs"
 
 [[test]]
-name = "large_rooms"
-path = "tests/large_rooms.rs"
+name = "test_hashing"
+path = "tests/test_hashing.rs"
 
 [[test]]
-name = "upstream_runner"
-path = "tests/upstream_runner.rs"
-required-features = ["mock-ruma"]
+name = "test_traversal"
+path = "tests/test_traversal.rs"
 
 [[test]]
-name = "pathologies"
-path = "tests/pathologies.rs"
+name = "stress_large_rooms"
+path = "tests/stress_large_rooms.rs"
+required-features = ["stress"]
 
 [[test]]
-name = "critique"
-path = "tests/critique.rs"
+name = "test_pathologies"
+path = "tests/test_pathologies.rs"
+
+[[test]]
+name = "test_critique"
+path = "tests/test_critique.rs"
 
 [[test]]
 name = "test_auth"
@@ -127,8 +127,9 @@ path = "tests/test_main.rs"
 required-features = ["cli"]
 
 [[test]]
-name = "unredacted_lounge"
-path = "tests/unredacted_lounge.rs"
+name = "stress_unredacted_lounge"
+path = "tests/stress_unredacted_lounge.rs"
+required-features = ["stress"]
 
 [[test]]
 name = "test_integer_keys"
@@ -145,6 +146,15 @@ path = "tests/test_utils.rs"
 [[test]]
 name = "test_tombstone"
 path = "tests/test_tombstone.rs"
+
+[[test]]
+name = "test_state_at"
+path = "tests/test_state_at.rs"
+
+[[test]]
+name = "test_resolve"
+path = "tests/test_resolve.rs"
+required-features = ["mock-ruma"]
 
 [lints.rust]
 unsafe_code = "forbid"

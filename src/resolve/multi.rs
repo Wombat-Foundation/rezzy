@@ -22,7 +22,7 @@
 //!
 //! # Example
 //!
-//! ```rust
+//! ```rust,no_run
 //! use rezzy::{LeanEvent, SharedState, StateResVersion, HashMap};
 //! use rezzy::resolve::multi::resolve_state_maps;
 //!

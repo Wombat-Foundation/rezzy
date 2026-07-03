@@ -1112,6 +1112,159 @@ where
     result
 }
 
+// ─── Auth gap detection ──────────────────────────────────────────────
+
+/// An event whose `auth_events` reference IDs missing from the local set.
+///
+/// Unlike [`BackwardExtremity`] (which tracks missing `prev_events` —
+/// "incomplete timeline, backfill needed"), a missing auth event means
+/// "can't verify authorization — potentially unsafe state." Different
+/// severity, different remediation, different logging.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingAuthEvent<Id> {
+    /// The event that references missing auth events.
+    pub event_id: Id,
+    /// The auth event IDs that are missing from the local set.
+    pub missing_auth_events: Vec<Id>,
+}
+
+/// Scans a set of DAG events and identifies events whose `auth_events`
+/// reference IDs missing from both the provided `events` map and the
+/// caller's `exists` oracle.
+///
+/// This is the auth-chain counterpart of [`find_backward_extremities`].
+/// A homeserver uses this to detect authorization gaps — events it cannot
+/// fully auth-check because required auth chain entries are missing.
+///
+/// # Arguments
+///
+/// - `events`: The local event map to scan.
+/// - `exists`: A predicate that returns `true` if an event ID is known to
+///   exist outside `events` (e.g. in a database).
+///
+/// # Complexity
+///
+/// - **Time**: `O(Σ |auth_events|)` — linear in the total number of auth
+///   references across all events.
+/// - **Space**: `O(G)` where `G` is the total number of missing auth IDs.
+#[must_use]
+pub fn find_missing_auth_events<Id, Node, S, F>(
+    events: &crate::HashMap<Id, Node, S>,
+    exists: F,
+) -> Vec<MissingAuthEvent<Id>>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    Node: crate::basespec::rezzy_types::DagNode<Id = Id>,
+    S: core::hash::BuildHasher,
+    F: Fn(&Id) -> bool,
+{
+    let mut result = Vec::new();
+
+    for node in events.values() {
+        let mut missing = Vec::new();
+        for auth_id in node.auth_events() {
+            if !events.contains_key(auth_id) && !exists(auth_id) {
+                missing.push(auth_id.clone());
+            }
+        }
+        if !missing.is_empty() {
+            result.push(MissingAuthEvent {
+                event_id: node.event_id().clone(),
+                missing_auth_events: missing,
+            });
+        }
+    }
+
+    result
+}
+
+// ─── Position-based topological ordering ─────────────────────────────
+
+/// Computes position-based topological depths for all events in the map.
+///
+/// Unlike [`compute_depths`] (which returns `1 + max(parent_depths)` —
+/// the spec-correct DAG depth), this function returns the **1-indexed
+/// position** of each event in Kahn's topological sort. This produces a
+/// total ordering suitable for building a database index where every
+/// event gets a unique depth value.
+///
+/// The `tiebreak` closure determines the ordering of events at the same
+/// topological level (zero in-degree simultaneously). Typical choices:
+/// - `|a, b| ts(a).cmp(&ts(b)).then(a.cmp(b))` — chronological with
+///   lexicographic event ID fallback (deterministic).
+/// - `|_, _| Ordering::Equal` — arbitrary (fastest, non-deterministic).
+///
+/// # Difference from `compute_depths`
+///
+/// ```text
+///          A
+///         / \
+///        B   C
+///         \ /
+///          D
+///
+///  compute_depths:         A=1, B=2, C=2, D=3
+///  compute_topo_positions: A=1, B=2, C=3, D=4  (total order)
+/// ```
+///
+/// `compute_depths` preserves DAG structure (siblings share a depth).
+/// `compute_topo_positions` produces a strict total order (every event
+/// gets a unique position). The latter is what a homeserver needs for
+/// its `roomid_topologicalorder_pducount` index.
+///
+/// # Complexity
+///
+/// - **Time**: `O(V + E)` — one Kahn sort pass.
+/// - **Space**: `O(V)` for the position map.
+#[must_use]
+pub fn compute_topo_positions<Id, C, S, F>(
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    tiebreak: F,
+) -> Vec<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    S: core::hash::BuildHasher,
+    C: Clone,
+    F: Fn(&Id, &Id) -> core::cmp::Ordering,
+{
+    if events_map.is_empty() {
+        return Vec::new();
+    }
+
+    let all_ids: Vec<&Id> = events_map.keys().collect();
+    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&all_ids, events_map);
+    let (sorted, _) = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
+
+    // Kahn sort gives a valid topological order; apply tiebreak within
+    // each topological level for deterministic output.
+    // First compute parent-max depths to identify levels.
+    let mut depth_by_idx = alloc::vec![0u64; index_to_id.len()];
+    for &idx in &sorted {
+        let id = index_to_id[idx];
+        if let Some(ev) = events_map.get(id) {
+            let max_parent = ev
+                .prev_events
+                .iter()
+                .filter_map(|pe| id_to_index.get(pe))
+                .map(|&pi| depth_by_idx[pi])
+                .max()
+                .unwrap_or(0);
+            depth_by_idx[idx] = max_parent.saturating_add(1);
+        }
+    }
+
+    // Sort by depth ascending (parents first), tiebreak within level.
+    let mut result: Vec<Id> = sorted.iter().map(|&idx| index_to_id[idx].clone()).collect();
+
+    result.sort_by(|a, b| {
+        let da = id_to_index.get(a).map_or(0, |&i| depth_by_idx[i]);
+        let db = id_to_index.get(b).map_or(0, |&i| depth_by_idx[i]);
+        da.cmp(&db).then_with(|| tiebreak(a, b))
+    });
+
+    result
+}
+
 // ─── Pagination verification ─────────────────────────────────────────
 
 /// Computes the topological depth of every event reachable from the given
