@@ -1167,6 +1167,97 @@ where
     auth_diff
 }
 
+/// A backward extremity: an event in the local DAG whose `prev_events`
+/// reference one or more parent IDs that are neither present in the
+/// provided event map nor recognized by the caller's `exists` predicate.
+///
+/// Backward extremities represent gaps in the local DAG — points where
+/// the timeline is incomplete and a federation `/backfill` request should
+/// be issued to fill the hole.
+///
+/// # Fields
+///
+/// - `event_id`: The known event that has missing parents.
+/// - `missing_prev_events`: The specific parent IDs that are unknown locally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackwardExtremity<Id> {
+    /// The event that has one or more missing parents.
+    pub event_id: Id,
+    /// The parent event IDs that are missing from the local DAG.
+    pub missing_prev_events: Vec<Id>,
+}
+
+/// Scans a set of DAG events and identifies **backward extremities** —
+/// events whose `prev_events` reference parent IDs that are missing from
+/// both the provided `events` map and the caller's `exists` oracle.
+///
+/// This is the pure graph-analysis core of a homeserver's backfill loop.
+/// By extracting it into rezzy, it becomes testable and reusable without
+/// async database I/O or federation networking.
+///
+/// # Arguments
+///
+/// - `events`: The local event map to scan.
+/// - `exists`: A predicate that returns `true` if an event ID is known to
+///   exist outside `events` (e.g. in a database). This prevents reporting
+///   false gaps for events that are stored but not loaded into memory.
+///
+/// # Returns
+///
+/// A `Vec<BackwardExtremity<Id>>` for every event that has at least one
+/// missing parent. Events whose parents are all accounted for (either in
+/// `events` or via `exists`) are not included.
+///
+/// # Example
+///
+/// ```rust
+/// use rezzy::{find_backward_extremities, LeanEvent, HashMap};
+///
+/// let mut events: HashMap<String, LeanEvent> = HashMap::new();
+/// // ... populate events ...
+/// let gaps = find_backward_extremities(&events, |_id| false);
+/// for gap in &gaps {
+///     println!("Event {} missing parents: {:?}", gap.event_id, gap.missing_prev_events);
+/// }
+/// ```
+///
+/// # Complexity
+///
+/// - **Time**: `O(Σ |prev_events|)` — linear in the total number of parent
+///   references across all events.
+/// - **Space**: `O(G)` where `G` is the total number of missing parent IDs
+///   across all backward extremities.
+#[must_use]
+pub fn find_backward_extremities<Id, Node, S, F>(
+    events: &crate::HashMap<Id, Node, S>,
+    exists: F,
+) -> Vec<BackwardExtremity<Id>>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    Node: crate::basespec::rezzy_types::DagNode<Id = Id>,
+    S: core::hash::BuildHasher,
+    F: Fn(&Id) -> bool,
+{
+    let mut result = Vec::new();
+
+    for (_, node) in events {
+        let mut missing = Vec::new();
+        for prev_id in node.prev_events() {
+            if !events.contains_key(prev_id) && !exists(prev_id) {
+                missing.push(prev_id.clone());
+            }
+        }
+        if !missing.is_empty() {
+            result.push(BackwardExtremity {
+                event_id: node.event_id().clone(),
+                missing_prev_events: missing,
+            });
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
