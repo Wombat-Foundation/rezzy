@@ -35,13 +35,13 @@
 //! fork_b.insert(("m.room.create".into(), "".into()), "$create".into());
 //! fork_b.insert(("m.room.member".into(), "@alice:x".into()), "$join_b".into());
 //!
-//! // Build event context
-//! let mut events: HashMap<String, LeanEvent> = HashMap::new();
-//! // ... populate with the actual events ...
+//! // Build event context (auth chain + conflicted events)
+//! let mut ctx: HashMap<String, LeanEvent> = HashMap::new();
+//! // ... populate with conflicted events and their auth chains ...
 //!
 //! let resolved = resolve_state_maps(
 //!     &[fork_a, fork_b],
-//!     &events,
+//!     &ctx,
 //!     StateResVersion::V2,
 //! );
 //! ```
@@ -134,8 +134,12 @@ where
 /// # Parameters
 ///
 /// - `state_maps`: Slice of N state maps (one per fork/extremity).
-/// - `events_map`: The full event context — must contain all events
-///   referenced by the conflicted set's auth chains.
+/// - `event_context`: The events needed for resolution. At minimum this
+///   must contain every conflicted state event (referenced by the state
+///   maps) **and** the transitive closure of their auth chains. Passing
+///   a full event map also works — extra events are harmless but waste
+///   memory. Homeservers with compressed auth-chain bitmaps can pass
+///   just the auth chain for optimal performance.
 /// - `version`: Which resolution algorithm to use.
 ///
 /// # Returns
@@ -144,13 +148,14 @@ where
 ///
 /// # Panics
 ///
-/// Panics if `state_maps` is empty.
+/// Panics if `state_maps` is empty, or if a conflicted event ID from
+/// the state maps is not found in `event_context`.
 ///
 /// [`resolve_iterative_sort`]: crate::resolve::iterative::resolve_iterative_sort
 #[must_use]
 pub fn resolve_state_maps<Id, C, S>(
     state_maps: &[SharedState<Id>],
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    event_context: &HashMap<Id, LeanEvent<Id, C>, S>,
     version: StateResVersion,
 ) -> SharedState<Id>
 where
@@ -175,26 +180,26 @@ where
         partition_state_maps(state_maps.iter().map(AsRef::as_ref), state_maps.len());
 
     // Build the conflicted events map from the event context.
-    // Panic if a conflicted event is missing — events_map must contain all
+    // Panic if a conflicted event is missing — event_context must contain all
     // events referenced by the state maps.
     let mut conflicted_events: HashMap<Id, LeanEvent<Id, C>> = HashMap::new();
     for id in &conflicted_ids {
-        let ev = events_map
+        let ev = event_context
             .get(id)
-            .unwrap_or_else(|| panic!("events_map missing conflicted event {id}"));
+            .unwrap_or_else(|| panic!("event_context missing conflicted event {id}"));
         conflicted_events.insert(id.clone(), ev.clone());
     }
 
-    // The full events_map serves as the auth context for resolution.
+    // event_context serves as the auth context for resolution.
     // NOTE: For V2.1+ rooms, the spec requires computing the auth-chain
     // difference (conflicted subgraph) to seed the conflicted set.  This
     // function does NOT compute it — it relies on the caller having already
-    // populated events_map with the full auth context.  For V2 rooms (the
-    // common case), this is correct as-is.
+    // populated event_context with the auth chain closure.  For V2 rooms
+    // (the common case), this is correct as-is.
     crate::resolve::iterative::resolve_iterative_sort(
         unconflicted_state,
         conflicted_events,
-        events_map,
+        event_context,
         version,
     )
 }
@@ -397,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "events_map missing conflicted event")]
+    #[should_panic(expected = "event_context missing conflicted event")]
     fn test_resolve_missing_conflicted_event_panics() {
         // Two forks disagree on a member slot. The conflicted event ID
         // is NOT in events_map, so the defensive panic should fire.
