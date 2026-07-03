@@ -1052,6 +1052,7 @@ where
     // fork branches have different PL ancestor distances in their auth
     // chains.  Re-enable once it uses build_mainline_with_cache for ordering.
     // See: TestNetworkPartitionOrdering, TestRestrictedRoomsRemoteJoinFailOver.
+    // Regression test: test_mainline_position_beats_timestamp_on_divergent_auth_chains
     //
     // if let Some(fast_result) = resolve_trivial_conflicts(
     //     &unconflicted_state, &conflicted_keys, &conflicted_state_set,

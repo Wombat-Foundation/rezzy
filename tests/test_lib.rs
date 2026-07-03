@@ -4925,3 +4925,58 @@ fn test_find_backward_extremities_with_exists_oracle() {
         vec!["$truly_missing".to_string()]
     );
 }
+
+/// Regression test: non-power events from fork branches with divergent PL
+/// ancestor distances must be resolved via mainline sort, not raw timestamp.
+///
+/// DAG (timeline):
+///   $create → $join → $`pl_v1` → $`pl_v2` ──┬── $`topic_old_pl` (ts=500, `auth→$pl_v1`)
+///                                       └── $`topic_new_pl` (ts=400, `auth→$pl_v2`)
+///                                                        │
+///                                                     $merge
+///
+/// Mainline after power phase: [$`pl_v2` (pos 0), $`pl_v1` (pos 1)]
+///
+/// $`topic_old_pl` → nearest PL ancestor = $`pl_v1` (pos 1, farther)
+/// $`topic_new_pl` → nearest PL ancestor = $`pl_v2` (pos 0, closer)
+///
+/// Full pipeline (mainline sort): farther events applied first, closer applied
+/// last → **$`topic_new_pl` wins** (last-write-wins).
+///
+/// Raw timestamp: **$`topic_old_pl` wins** (ts 500 > 400) — WRONG.
+///
+/// This catches the bug where a "trivial conflict" fast path bypasses mainline
+/// sort and uses raw timestamp, producing incorrect resolution when auth chains
+/// diverge across fork branches (e.g. network partitions).
+#[test]
+fn test_mainline_position_beats_timestamp_on_divergent_auth_chains() {
+    use std::collections::HashMap;
+
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:x","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],"content":{"creator":"@alice:x"}}
+{"event_id":"$join","type":"m.room.member","state_key":"@alice:x","sender":"@alice:x","origin_server_ts":2,"depth":2,"prev_events":["$create"],"auth_events":["$create"],"content":{"membership":"join"}}
+{"event_id":"$pl_v1","type":"m.room.power_levels","state_key":"","sender":"@alice:x","origin_server_ts":3,"depth":3,"prev_events":["$join"],"auth_events":["$create","$join"],"content":{"users":{"@alice:x":100}}}
+{"event_id":"$pl_v2","type":"m.room.power_levels","state_key":"","sender":"@alice:x","origin_server_ts":4,"depth":4,"prev_events":["$pl_v1"],"auth_events":["$create","$join","$pl_v1"],"content":{"users":{"@alice:x":100}}}
+{"event_id":"$topic_old_pl","type":"m.room.topic","state_key":"","sender":"@alice:x","origin_server_ts":500,"depth":5,"prev_events":["$pl_v2"],"auth_events":["$create","$join","$pl_v1"],"content":{}}
+{"event_id":"$topic_new_pl","type":"m.room.topic","state_key":"","sender":"@alice:x","origin_server_ts":400,"depth":5,"prev_events":["$pl_v2"],"auth_events":["$create","$join","$pl_v2"],"content":{}}
+{"event_id":"$merge","type":"m.room.message","sender":"@alice:x","origin_server_ts":600,"depth":6,"prev_events":["$topic_old_pl","$topic_new_pl"],"auth_events":["$create","$join","$pl_v2"],"content":{}}
+    "#,
+    );
+    let events_map: HashMap<String, LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
+
+    let state = compute_state_at("$merge", &events_map, StateResVersion::V2).unwrap();
+
+    // $topic_new_pl (ts=400) must win because it's closer to the current PL
+    // in the mainline (position 0). $topic_old_pl (ts=500) is farther
+    // (position 1) and gets applied first, then overwritten.
+    // A raw timestamp comparison would incorrectly pick $topic_old_pl.
+    assert_eq!(
+        state.get(&("m.room.topic".into(), String::new())),
+        Some(&"$topic_new_pl".to_string()),
+        "Mainline position (closeness to current PL) must beat raw timestamp"
+    );
+}
