@@ -3973,6 +3973,8 @@ fn test_event_content_default_trait_methods() {
     assert_eq!(notif_count, 0);
     assert!(c.find_non_integer_scalar_pl().is_none());
     assert!(c.find_non_integer_map_pl().is_none());
+    assert!(!c.has_non_integer_users_pl(true));
+    assert!(!c.has_non_integer_users_pl(false));
     assert!(!c.has_user_in_users("@someone:x"));
 }
 
