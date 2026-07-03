@@ -759,4 +759,50 @@ mod tests {
             "$join has $create in auth → distance 1"
         );
     }
+
+    /// Coverage: `build_mainline_with_cache` cache hit path (sorting.rs:355-361).
+    ///
+    /// Calling `build_mainline_with_cache` twice with the same cache: the first
+    /// call populates the cache for each PL event, and the second call hits the
+    /// cache early, skipping the BFS entirely.
+    #[test]
+    fn test_build_mainline_cache_hit() {
+        // Chain: PL2 → (auth) → PL1 → (auth) → PL0
+        let pl0 = LeanEvent::<String> {
+            event_id: "PL0".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let pl1 = LeanEvent::<String> {
+            event_id: "PL1".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec!["PL0".into()],
+            ..Default::default()
+        };
+        let pl2 = LeanEvent::<String> {
+            event_id: "PL2".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec!["PL1".into()],
+            ..Default::default()
+        };
+
+        let mut ctx = HashMap::new();
+        ctx.insert("PL0".into(), pl0);
+        ctx.insert("PL1".into(), pl1);
+        ctx.insert("PL2".into(), pl2);
+
+        let mut resolved = imbl::OrdMap::new();
+        resolved.insert(("m.room.power_levels".into(), String::new()), "PL2".into());
+
+        // First call: populates cache for PL2 → Some(PL1), PL1 → Some(PL0), PL0 → None
+        let mut cache = HashMap::new();
+        let ml1 = build_mainline_with_cache(&resolved, &ctx, &mut cache);
+        assert_eq!(ml1, alloc::vec!["PL2", "PL1", "PL0"]);
+        assert_eq!(cache.len(), 3, "all 3 PL events must be cached");
+
+        // Second call: hits cache immediately for PL2 → skips BFS
+        let ml2 = build_mainline_with_cache(&resolved, &ctx, &mut cache);
+        assert_eq!(ml2, ml1, "cached mainline must match original");
+    }
 }
