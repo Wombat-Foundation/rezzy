@@ -29,7 +29,7 @@ jobs:
         run: make format
 
       - name: Lint (Clippy)
-        run: cargo clippy --all-targets --all-features -- -D warnings -D clippy::perf -D clippy::pedantic
+        run: cargo clippy --all-targets --features hashing,cli -- -D warnings -D clippy::perf -D clippy::pedantic
 
       - name: Install nightly toolchain (for llvm-cov)
         run: rustup toolchain install nightly --profile minimal

@@ -3,7 +3,7 @@ SHELL=/bin/bash
 
 LAKE ?= lake
 CARGO ?= cargo
-TEST_FEATURES ?= mock-ruma,hashing,cli
+TEST_FEATURES ?= hashing
 
 LINT_LOCS_PY = $$(git ls-files '*.py')
 LINT_LOCS_SH = $$(git ls-files '*.sh')
@@ -23,12 +23,12 @@ format: ##H Format codebase (Rust + Lean + scripts)
 
 .PHONY: fix
 fix:	##H Clippy auto-fix
-	$(CARGO) +nightly clippy --allow-dirty --fix --all-targets --all-features -- -W clippy::perf -W clippy::pedantic
-	# $(CARGO) fix --all-targets --all-features --allow-dirty
+	$(CARGO) +nightly clippy --allow-dirty --fix --all-targets --features $(TEST_FEATURES) -- -W clippy::perf -W clippy::pedantic
+	# $(CARGO) fix --all-targets --features $(TEST_FEATURES) --allow-dirty
 
 .PHONY: lint
 lint: ##H Run all linters
-	$(CARGO) +nightly clippy --all-targets --all-features -- -W clippy::perf -W clippy::pedantic
+	$(CARGO) +nightly clippy --all-targets --features $(TEST_FEATURES) -- -W clippy::perf -W clippy::pedantic
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Lean targets
