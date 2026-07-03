@@ -582,11 +582,11 @@ fn test_state_delta_compression_robustness() {
 
 mod utils;
 
-/// Coverage: `compute_merge_base` (at.rs:679-748) — diamond DAG.
+/// Coverage: `compute_merge_base` (at.rs) — diamond DAG.
 /// Tests: empty extremities, single extremity, two-branch merge, disjoint DAGs.
 #[test]
 fn test_compute_merge_base_diamond() {
-    use rezzy::{compute_merge_base, LeanEvent};
+    use rezzy::{compute_merge_base, compute_merge_bases, LeanEvent, MERGE_BASE_MAX_STEPS};
     use std::collections::HashMap;
 
     let evs = utils::parse_jsonl_events(
@@ -636,6 +636,174 @@ fn test_compute_merge_base_diamond() {
     events_map.insert("$orphan".to_string(), orphan);
     let result = compute_merge_base(&["$left", "$orphan"], &events_map);
     assert!(result.is_none(), "Disjoint DAGs must return None");
+
+    // --- Junction-level: diamond should have exactly one junction at $root ---
+    let junctions = compute_merge_bases(&["$left", "$right"], &events_map, MERGE_BASE_MAX_STEPS);
+    assert_eq!(junctions.len(), 1, "Diamond should have exactly 1 junction");
+    assert_eq!(junctions[0].event_id, &"$root".to_string());
+    assert_eq!(junctions[0].mask, 0b11);
+    assert_eq!(junctions[0].depth, 1);
+
+    // Disjoint → no junctions
+    let junctions = compute_merge_bases(&["$left", "$orphan"], &events_map, MERGE_BASE_MAX_STEPS);
+    assert!(
+        junctions.is_empty(),
+        "Disjoint branches must yield no junctions"
+    );
+
+    // < 2 extremities → empty
+    let junctions =
+        compute_merge_bases::<String, str, _, _>(&["$left"], &events_map, MERGE_BASE_MAX_STEPS);
+    assert!(junctions.is_empty(), "Single extremity must return empty");
+}
+
+/// Coverage: `compute_merge_bases` — three extremities with staggered convergence.
+///
+/// ```text
+/// $root(1) ← $ab_merge(2) ← $a(3) (extremity 0)
+/// $root(1) ← $ab_merge(2) ← $b(3) (extremity 1)
+/// $root(1) ← $c(2)                 (extremity 2)
+/// ```
+///
+/// Expected junctions:
+/// - `$ab_merge` mask=0b011 depth=2 (A+B converge, closer to tips)
+/// - `$root`     mask=0b111 depth=1 (all three converge)
+#[test]
+fn test_compute_merge_bases_three_way() {
+    use rezzy::{compute_merge_bases, LeanEvent, MERGE_BASE_MAX_STEPS};
+    use std::collections::HashMap;
+
+    let evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$root",     "type": "m.room.create",  "state_key": "", "sender": "@a:x", "depth": 1, "prev_events": []}
+        {"event_id": "$ab_merge", "type": "m.room.message",                  "sender": "@a:x", "depth": 2, "prev_events": ["$root"]}
+        {"event_id": "$c",        "type": "m.room.message",                  "sender": "@a:x", "depth": 2, "prev_events": ["$root"]}
+        {"event_id": "$a",        "type": "m.room.message",                  "sender": "@a:x", "depth": 3, "prev_events": ["$ab_merge"]}
+        {"event_id": "$b",        "type": "m.room.message",                  "sender": "@a:x", "depth": 3, "prev_events": ["$ab_merge"]}
+    "#,
+    );
+
+    let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in evs {
+        events_map.insert(ev.event_id.clone(), ev);
+    }
+
+    let junctions = compute_merge_bases(&["$a", "$b", "$c"], &events_map, MERGE_BASE_MAX_STEPS);
+
+    // Should have 2 junctions: $ab_merge (A+B) and $root (all)
+    assert_eq!(
+        junctions.len(),
+        2,
+        "Expected 2 primitive junctions, got {junctions:?}"
+    );
+
+    // Sorted by descending depth: $ab_merge first (depth 2), then $root (depth 1)
+    assert_eq!(junctions[0].event_id, &"$ab_merge".to_string());
+    assert_eq!(junctions[0].mask, 0b011); // bits 0+1 = A+B
+    assert_eq!(junctions[0].depth, 2);
+
+    assert_eq!(junctions[1].event_id, &"$root".to_string());
+    assert_eq!(junctions[1].mask, 0b111); // all three
+    assert_eq!(junctions[1].depth, 1);
+}
+
+/// Coverage: `compute_merge_bases` — superseding pruning.
+///
+/// All three extremities merge at $global (depth 3), and A+B also merge
+/// at $ab (depth 2) — but $ab is BELOW $global, so it's superseded.
+///
+/// ```text
+/// $root(1) ← $ab(2) ← $global(3) ← $a(4) (extremity 0)
+///                      $global(3) ← $b(4) (extremity 1)
+///                      $global(3) ← $c(4) (extremity 2)
+/// ```
+#[test]
+fn test_compute_merge_bases_superseding() {
+    use rezzy::{compute_merge_bases, LeanEvent, MERGE_BASE_MAX_STEPS};
+    use std::collections::HashMap;
+
+    let evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$root",   "type": "m.room.create",  "state_key": "", "sender": "@a:x", "depth": 1, "prev_events": []}
+        {"event_id": "$ab",     "type": "m.room.message",                  "sender": "@a:x", "depth": 2, "prev_events": ["$root"]}
+        {"event_id": "$global", "type": "m.room.message",                  "sender": "@a:x", "depth": 3, "prev_events": ["$ab"]}
+        {"event_id": "$a",      "type": "m.room.message",                  "sender": "@a:x", "depth": 4, "prev_events": ["$global"]}
+        {"event_id": "$b",      "type": "m.room.message",                  "sender": "@a:x", "depth": 4, "prev_events": ["$global"]}
+        {"event_id": "$c",      "type": "m.room.message",                  "sender": "@a:x", "depth": 4, "prev_events": ["$global"]}
+    "#,
+    );
+
+    let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in evs {
+        events_map.insert(ev.event_id.clone(), ev);
+    }
+
+    let junctions = compute_merge_bases(&["$a", "$b", "$c"], &events_map, MERGE_BASE_MAX_STEPS);
+
+    // $ab (mask 0b011, depth 2) is superseded by $global (mask 0b111, depth 3)
+    // because 0b111 ⊃ 0b011 and depth 3 ≥ 2. Only $global should remain.
+    assert_eq!(
+        junctions.len(),
+        1,
+        "Superseded junction must be pruned: {junctions:?}"
+    );
+    assert_eq!(junctions[0].event_id, &"$global".to_string());
+    assert_eq!(junctions[0].mask, 0b111);
+    assert_eq!(junctions[0].depth, 3);
+}
+
+/// Coverage: `compute_merge_bases` — `max_steps` hard cap.
+#[test]
+fn test_compute_merge_bases_max_steps() {
+    use rezzy::{compute_merge_bases, LeanEvent};
+    use std::collections::HashMap;
+
+    // Build a deep linear chain: $0 ← $1 ← ... ← $999
+    // Fork at the end: $999 ← $left, $999 ← $right
+    let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+    for i in 0..1000u64 {
+        let prev = if i > 0 {
+            vec![format!("${}", i - 1)]
+        } else {
+            Vec::new()
+        };
+        events_map.insert(
+            format!("${i}"),
+            LeanEvent {
+                event_id: format!("${i}"),
+                depth: i + 1,
+                prev_events: prev,
+                ..Default::default()
+            },
+        );
+    }
+    events_map.insert(
+        "$left".to_string(),
+        LeanEvent {
+            event_id: "$left".to_string(),
+            depth: 1001,
+            prev_events: vec!["$999".to_string()],
+            ..Default::default()
+        },
+    );
+    events_map.insert(
+        "$right".to_string(),
+        LeanEvent {
+            event_id: "$right".to_string(),
+            depth: 1001,
+            prev_events: vec!["$999".to_string()],
+            ..Default::default()
+        },
+    );
+
+    // With enough steps, should find $999 as merge base
+    let junctions = compute_merge_bases(&["$left", "$right"], &events_map, 5000);
+    assert_eq!(junctions.len(), 1);
+    assert_eq!(junctions[0].event_id, &"$999".to_string());
+
+    // With max_steps=1, walk terminates before finding merge base
+    let junctions = compute_merge_bases(&["$left", "$right"], &events_map, 1);
+    assert!(junctions.is_empty(), "max_steps=1 should not find junction");
 }
 
 /// Coverage: `CycleDetected` in `run_state_pipeline_streaming` (at.rs:580)

@@ -641,6 +641,190 @@ where
     Ok(())
 }
 
+/// A point in the DAG where a subset of forward extremities converge.
+///
+/// Returned by [`compute_merge_bases`]. Each junction records which extremities
+/// are reachable (via `mask`), the event at the convergence point, and its depth.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeBase<Id> {
+    /// The event ID at the junction point.
+    pub event_id: Id,
+    /// Bitmask of which extremities can reach this node.
+    /// Bit `i` is set iff extremity `i` is an ancestor-or-self.
+    pub mask: u8,
+    /// DAG depth of the junction event.
+    pub depth: u64,
+}
+
+/// Default hard cap on backward walk steps for [`compute_merge_bases`].
+pub const MERGE_BASE_MAX_STEPS: usize = 5_000;
+
+/// Finds **all** primitive merge bases for up to 8 forward extremities in a
+/// single backward pass.
+///
+/// Unlike [`compute_merge_base`] (which returns only the global common
+/// ancestor), this function discovers every subset junction — the points where
+/// different subsets of extremities first converge. The result is a minimal set
+/// of [`MergeBase`] entries after superseding pruning.
+///
+/// # Algorithm (bitmask-propagating backward walk)
+///
+/// 1. Each extremity gets a unique bit in a `u8` mask.
+/// 2. A max-heap ordered by depth walks backward through `prev_events`,
+///    propagating masks via bitwise OR.
+/// 3. When a node's mask gains `popcount ≥ 2`, it is recorded as a candidate
+///    junction for that mask value.
+/// 4. Walk terminates when the global merge base is found (all bits set) and
+///    no unexplored paths remain, or when `max_steps` is exceeded.
+/// 5. Superseded junctions are pruned: if mask M₂ ⊃ M₁ and J₂.depth ≥ J₁.depth,
+///    then J₁ is redundant.
+///
+/// # Complexity
+///
+/// - **Time**: `O((V + E) · k)` where V/E are visited nodes/edges, k ≤ 8.
+///   Bitmask ops are single CPU instructions.
+/// - **Space**: `O(V)` for the mask map (one `u8` per visited event).
+///
+/// # Panics
+///
+/// Panics if `extremities.len() > 8` (bitmask overflow).
+///
+/// # Example
+///
+/// ```rust
+/// use rezzy::{compute_merge_bases, MERGE_BASE_MAX_STEPS, DagNode};
+/// use rezzy::{LeanEvent, HashMap};
+///
+/// let events: HashMap<String, LeanEvent<String>> = HashMap::new();
+/// let tips = vec!["$tip_a", "$tip_b", "$tip_c"];
+/// let junctions = compute_merge_bases(&tips, &events, MERGE_BASE_MAX_STEPS);
+/// for j in &junctions {
+///     println!("junction {:?} mask={:08b} depth={}", j.event_id, j.mask, j.depth);
+/// }
+/// ```
+#[must_use]
+pub fn compute_merge_bases<'a, Id, Q, S, Node>(
+    extremities: &[&Q],
+    events_map: &'a HashMap<Id, Node, S>,
+    max_steps: usize,
+) -> Vec<MergeBase<&'a Id>>
+where
+    Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
+    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    S: core::hash::BuildHasher,
+    Node: crate::basespec::rezzy_types::DagNode<Id = Id>,
+{
+    use alloc::collections::BinaryHeap;
+
+    assert!(
+        extremities.len() <= 8,
+        "compute_merge_bases supports at most 8 extremities, got {}",
+        extremities.len()
+    );
+
+    if extremities.len() < 2 {
+        return Vec::new();
+    }
+
+    let k = extremities.len();
+    let full_mask: u8 = 1u8
+        .checked_shl(u32::try_from(k).expect("extremity count overflow"))
+        .and_then(|v| v.checked_sub(1))
+        .expect("bitmask overflow: k must be <= 8");
+
+    // Max-heap: (depth, &Id) — highest depth pops first.
+    let mut queue: BinaryHeap<(u64, &Id)> = BinaryHeap::new();
+    let mut masks: HashMap<&Id, u8> = HashMap::new();
+
+    // Track the highest-depth (closest to tips) junction found per mask.
+    let mut best_junction: HashMap<u8, (&Id, u64)> = HashMap::new();
+
+    for (i, &head) in extremities.iter().enumerate() {
+        if let Some((k, ev)) = events_map.get_key_value(head) {
+            let bit = 1u8 << i;
+            let entry = masks.entry(k).or_insert(0);
+            *entry |= bit;
+            queue.push((ev.depth(), k));
+        }
+    }
+
+    let mut steps: usize = 0;
+
+    while let Some((depth, current_id)) = queue.pop() {
+        if steps >= max_steps {
+            break;
+        }
+        steps = steps.saturating_add(1);
+
+        let Some(&current_mask) = masks.get(current_id) else {
+            continue;
+        };
+
+        let popcount = current_mask.count_ones();
+
+        // Record junction if this is a convergence point (≥ 2 extremities).
+        if popcount >= 2 {
+            best_junction
+                .entry(current_mask)
+                .or_insert((current_id, depth));
+            // We use or_insert because the first time we see a mask, it's at
+            // the highest depth (closest to tips) due to max-heap ordering.
+        }
+
+        // Global merge base found — ancestors are redundant.
+        if current_mask == full_mask {
+            break;
+        }
+
+        // Propagate mask to parents.
+        if let Some(ev) = events_map.get(current_id.borrow()) {
+            for parent_id in ev.prev_events() {
+                let parent_q: &Q = parent_id.borrow();
+                if let Some((pk, parent_ev)) = events_map.get_key_value(parent_q) {
+                    let parent_mask = masks.entry(pk).or_insert(0);
+                    let old = *parent_mask;
+                    *parent_mask |= current_mask;
+
+                    if *parent_mask != old {
+                        queue.push((parent_ev.depth(), pk));
+                    }
+                }
+            }
+        }
+    }
+
+    // If we didn't find even a 2-bit convergence, return empty.
+    if best_junction.is_empty() {
+        return Vec::new();
+    }
+
+    // Superseding pruning: remove junction J₁ (mask M₁) if there exists
+    // J₂ (mask M₂ ⊃ M₁) where J₂.depth ≥ J₁.depth (the larger subset
+    // converged at least as close to the tips).
+    let mut junctions: Vec<MergeBase<&'a Id>> = Vec::new();
+    let masks_vec: Vec<(u8, &Id, u64)> = best_junction
+        .into_iter()
+        .map(|(mask, (id, depth))| (mask, id, depth))
+        .collect();
+
+    for &(mask, id, depth) in &masks_vec {
+        let superseded = masks_vec
+            .iter()
+            .any(|&(m2, _, d2)| m2 != mask && (m2 & mask) == mask && d2 >= depth);
+        if !superseded {
+            junctions.push(MergeBase {
+                event_id: id,
+                mask,
+                depth,
+            });
+        }
+    }
+
+    // Sort by descending depth (closest to tips first).
+    junctions.sort_by_key(|j| core::cmp::Reverse(j.depth));
+    junctions
+}
+
 /// Computes the most recent common ancestor (merge base) of multiple DAG tips.
 ///
 /// Uses a max-heap ordered by event `depth` with roaring bitmap reachability
