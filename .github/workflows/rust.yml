@@ -25,7 +25,6 @@ jobs:
           npm install -g prettier
           cargo install cargo-sort
 
-
       - name: Format Check
         run: make format
 
