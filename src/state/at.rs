@@ -1112,6 +1112,224 @@ where
     result
 }
 
+// ─── Pagination verification ─────────────────────────────────────────
+
+/// Computes the topological depth of every event reachable from the given
+/// targets in the DAG. Depth is defined as `1 + max(parent depths)`, with
+/// root events (no parents in the map) having depth 1.
+///
+/// This is the reference depth computation. A homeserver should use these
+/// values when building its topological index — any mismatch is a bug in
+/// the storage layer.
+///
+/// # Complexity
+///
+/// - **Time**: `O(V + E)` — one Kahn sort pass over the reachable subgraph.
+/// - **Space**: `O(V)` for the depth map.
+///
+/// # Panics
+///
+/// Panics if a sorted event ID is not found in `events_map` (indicates a
+/// bug in the topological sort).
+#[must_use]
+pub fn compute_depths<Id, C, S>(events_map: &HashMap<Id, LeanEvent<Id, C>, S>) -> HashMap<Id, u64>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    S: core::hash::BuildHasher,
+    C: Clone,
+{
+    if events_map.is_empty() {
+        return HashMap::new();
+    }
+
+    let all_ids: Vec<&Id> = events_map.keys().collect();
+    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&all_ids, events_map);
+    let (sorted, _) = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
+
+    let mut depths = alloc::vec![0u64; index_to_id.len()];
+
+    for idx in &sorted {
+        let id = index_to_id[*idx];
+        let ev = events_map.get(id).unwrap();
+        let max_parent_depth = ev
+            .prev_events
+            .iter()
+            .filter_map(|pe| id_to_index.get(pe))
+            .map(|&pi| depths[pi])
+            .max()
+            .unwrap_or(0);
+        depths[*idx] = max_parent_depth.saturating_add(1);
+    }
+
+    let mut result = HashMap::with_capacity(index_to_id.len());
+    for (i, &id) in index_to_id.iter().enumerate() {
+        result.insert(id.clone(), depths[i]);
+    }
+    result
+}
+
+/// Returns events reachable from `tip` in **reverse topological order**
+/// (newest first). This is the spec-correct ordering for
+/// `/messages?dir=b` backward pagination.
+///
+/// Tie-breaking within the same topological level is determined by
+/// `tiebreak`. Typical choices:
+/// - Homeserver: `|a, b| pdu_count(a).cmp(&pdu_count(b)).reverse()` (insertion order)
+/// - Tests: `|a, b| a.cmp(&b).reverse()` (lexicographic event ID)
+///
+/// # Complexity
+///
+/// - **Time**: `O(V + E)` for ancestor collection + Kahn sort.
+/// - **Space**: `O(V)`.
+#[must_use]
+pub fn reverse_topological_order<Id, C, Q, S, F>(
+    tip: &Q,
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    tiebreak: F,
+) -> Vec<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
+    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    S: core::hash::BuildHasher,
+    C: Clone,
+    F: Fn(&Id, &Id) -> core::cmp::Ordering,
+{
+    let Some((tip_key, _)) = events_map.get_key_value(tip) else {
+        return Vec::new();
+    };
+
+    let targets = [tip_key];
+    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&targets, events_map);
+    let (sorted, _) = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
+
+    // Compute depths inline using the index arrays
+    let mut depth_by_idx = alloc::vec![0u64; index_to_id.len()];
+    for &idx in &sorted {
+        let id = index_to_id[idx];
+        if let Some(ev) = events_map.get(id.borrow()) {
+            let max_parent = ev
+                .prev_events
+                .iter()
+                .filter_map(|pe| id_to_index.get(pe))
+                .map(|&pi| depth_by_idx[pi])
+                .max()
+                .unwrap_or(0);
+
+            depth_by_idx[idx] = max_parent.saturating_add(1);
+        }
+    }
+
+    // Kahn sort gives parents-first; reverse for newest-first,
+    // then stable-sort by depth descending with tiebreak.
+    let mut result: Vec<Id> = sorted
+        .iter()
+        .rev()
+        .map(|&idx| index_to_id[idx].clone())
+        .collect();
+
+    result.sort_by(|a, b| {
+        let da = id_to_index.get(a).map_or(0, |&i| depth_by_idx[i]);
+        let db = id_to_index.get(b).map_or(0, |&i| depth_by_idx[i]);
+        db.cmp(&da).then_with(|| tiebreak(a, b))
+    });
+
+    result
+}
+
+/// The kind of violation detected by [`verify_pagination`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaginationViolation<Id> {
+    /// An event appeared on more than one page.
+    Duplicate {
+        event_id: Id,
+        first_page: usize,
+        second_page: usize,
+    },
+    /// An ancestor appeared *after* its descendant in the page sequence
+    /// (violates the reverse-topological ordering invariant).
+    AncestorAfterDescendant {
+        ancestor: Id,
+        descendant: Id,
+        ancestor_page: usize,
+        descendant_page: usize,
+    },
+}
+
+/// Verifies that a sequence of pagination pages respects DAG ordering
+/// invariants:
+///
+/// 1. **No duplicates** — each event ID appears on at most one page.
+/// 2. **Topological monotonicity** — if event A is an ancestor of B,
+///    then A must not appear on an *earlier* page than B (in backward
+///    pagination, descendants come first).
+///
+/// This is a pure property checker. Feed it the actual pages from your
+/// paginator; any violation is a bug in the storage/pagination layer.
+///
+/// Completeness (every reachable event present) is intentionally NOT
+/// checked — pagination may stop at room creation, budget limits, or
+/// ACL boundaries.
+///
+/// # Returns
+///
+/// A `Vec` of violations. Empty means the pages are well-formed.
+#[must_use]
+pub fn verify_pagination<Id, C, S>(
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    pages: &[Vec<Id>],
+) -> Vec<PaginationViolation<Id>>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    S: core::hash::BuildHasher,
+    C: Clone,
+{
+    let mut violations = Vec::new();
+
+    // 1. Check for duplicates
+    let mut seen: HashMap<&Id, usize> = HashMap::new();
+    for (page_idx, page) in pages.iter().enumerate() {
+        for id in page {
+            if let Some(&first_page) = seen.get(id) {
+                violations.push(PaginationViolation::Duplicate {
+                    event_id: id.clone(),
+                    first_page,
+                    second_page: page_idx,
+                });
+            } else {
+                seen.insert(id, page_idx);
+            }
+        }
+    }
+
+    // 2. Check topological monotonicity (ancestor must not appear before descendant)
+    // In backward pagination, page 0 has the newest events. If event B is on
+    // page 1 and B's ancestor A is on page 0 (earlier), that's wrong — A should
+    // be on a later page (higher index).
+    for (page_idx, page) in pages.iter().enumerate() {
+        for id in page {
+            let Some(ev) = events_map.get(id) else {
+                continue;
+            };
+            // Each prev_event is an ancestor. It must be on a page with
+            // index >= this event's page (or not present at all).
+            for parent_id in &ev.prev_events {
+                if let Some(&parent_page) = seen.get(parent_id) {
+                    if parent_page < page_idx {
+                        violations.push(PaginationViolation::AncestorAfterDescendant {
+                            ancestor: parent_id.clone(),
+                            descendant: id.clone(),
+                            ancestor_page: parent_page,
+                            descendant_page: page_idx,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    violations
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1299,5 +1517,138 @@ mod tests {
         // Cached result must match original, proving the cache was used
         // (a fresh computation with $join removed would differ)
         assert_eq!(result1, result2, "Cached result must match uncached result");
+    }
+
+    /// Regression test: paginating a forked DAG must never produce
+    /// duplicate events or violate topological ordering.
+    ///
+    /// DAG shape:
+    /// ```text
+    ///         A (depth=1)
+    ///        / \
+    ///       B   C (fork: B at depth 2, C at depth 5)
+    ///       |   |
+    ///       D   |  (D at depth 3)
+    ///        \ /
+    ///         E (merge: depth 6)
+    /// ```
+    #[test]
+    #[allow(clippy::many_single_char_names)]
+    fn test_forked_dag_pagination_no_duplicates() {
+        let a = LeanEvent {
+            event_id: "A".into(),
+            depth: 1,
+            prev_events: vec![],
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@x:x".into(),
+            content: json!({"room_version": "10", "creator": "@x:x"}),
+            ..Default::default()
+        };
+        let b = LeanEvent {
+            event_id: "B".into(),
+            depth: 2,
+            prev_events: vec!["A".into()],
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            ..Default::default()
+        };
+        let c = LeanEvent {
+            event_id: "C".into(),
+            depth: 5,
+            prev_events: vec!["A".into()],
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            ..Default::default()
+        };
+        let d = LeanEvent {
+            event_id: "D".into(),
+            depth: 3,
+            prev_events: vec!["B".into()],
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            ..Default::default()
+        };
+        let e = LeanEvent {
+            event_id: "E".into(),
+            depth: 6,
+            prev_events: vec!["C".into(), "D".into()],
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+        events_map.insert("B".into(), b);
+        events_map.insert("C".into(), c);
+        events_map.insert("D".into(), d);
+        events_map.insert("E".into(), e);
+
+        // Get the reference ordering
+        let order = reverse_topological_order("E", &events_map, |a: &String, b: &String| {
+            a.cmp(b).reverse()
+        });
+        assert_eq!(order.len(), 5, "all 5 events should be reachable");
+
+        // Simulate pages of size 2
+        let pages: Vec<Vec<String>> = order
+            .chunks(2)
+            .map(<[std::string::String]>::to_vec)
+            .collect();
+
+        let violations = verify_pagination(&events_map, &pages);
+        assert!(
+            violations.is_empty(),
+            "pagination must have no violations, got: {violations:?}"
+        );
+    }
+
+    /// Test that `compute_depths` produces correct depths for a forked DAG.
+    #[test]
+    #[allow(clippy::many_single_char_names)]
+    fn test_compute_depths_forked_dag() {
+        let a = LeanEvent {
+            event_id: "A".into(),
+            prev_events: vec![],
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@x:x".into(),
+            content: json!({"room_version": "10", "creator": "@x:x"}),
+            ..Default::default()
+        };
+        let b = LeanEvent {
+            event_id: "B".into(),
+            prev_events: vec!["A".into()],
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            ..Default::default()
+        };
+        let c = LeanEvent {
+            event_id: "C".into(),
+            prev_events: vec!["A".into()],
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            ..Default::default()
+        };
+        let d = LeanEvent {
+            event_id: "D".into(),
+            prev_events: vec!["B".into(), "C".into()],
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+        events_map.insert("B".into(), b);
+        events_map.insert("C".into(), c);
+        events_map.insert("D".into(), d);
+
+        let depths = compute_depths(&events_map);
+        assert_eq!(depths["A"], 1, "root has depth 1");
+        assert_eq!(depths["B"], 2, "B is child of A");
+        assert_eq!(depths["C"], 2, "C is child of A");
+        assert_eq!(depths["D"], 3, "D is child of max(B, C) + 1");
     }
 }
