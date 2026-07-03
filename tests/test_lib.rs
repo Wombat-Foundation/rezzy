@@ -4931,9 +4931,9 @@ fn test_find_backward_extremities_with_exists_oracle() {
 ///
 /// DAG (timeline):
 ///   $create → $join → $`pl_v1` → $`pl_v2` ──┬── $`topic_old_pl` (ts=500, `auth→$pl_v1`)
-///                                       └── $`topic_new_pl` (ts=400, `auth→$pl_v2`)
-///                                                        │
-///                                                     $merge
+///                                           └── $`topic_new_pl` (ts=400, `auth→$pl_v2`)
+///                                                              │
+///                                                           $merge
 ///
 /// Mainline after power phase: [$`pl_v2` (pos 0), $`pl_v1` (pos 1)]
 ///
