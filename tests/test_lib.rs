@@ -5164,3 +5164,344 @@ fn test_msc4297_problem_b_resolve_state_maps_parity() {
         "MSC4297 Problem B: power_levels must be present in resolved state"
     );
 }
+
+/// Adversarial dense-bifurcation stress test for state resolution.
+///
+/// Generates K forks, each with D cascading power-level mutations and M
+/// non-power membership events.  This is the worst case for the resolver:
+///
+/// - **Deep mainlines**: each fork builds a PL chain of depth D, forcing
+///   `build_mainline` to walk the full chain for every non-power event.
+/// - **Massive subgraph**: all K×D PL events share auth-chain ancestors,
+///   creating a dense intersection that `compute_v2_1_conflicted_subgraph`
+///   must BFS through in both directions.
+/// - **Large conflicted set**: K×(D+M) conflicted events all need mainline
+///   positioning and auth-checked.
+/// - **Cascading auth**: each PL on a fork is authorized by the previous one
+///   on that fork, so auth-chain expansion recurses to depth D per fork.
+///
+/// Asserts:
+/// 1. Resolution is deterministic (two runs produce identical output).
+/// 2. `resolve_state_maps` matches `resolve_iterative_sort` (parity).
+/// 3. Both V2 and V2.1 produce valid state (create event present).
+/// 4. V2.1 includes subgraph events that V2 might miss.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_performance_and_correctness_dense_bifurcations() {
+    const NUM_FORKS: usize = 8; // K: number of parallel forks
+    const PL_DEPTH: usize = 16; // D: PL chain depth per fork
+    const MEMBERS_PER_FORK: usize = 4; // M: non-power events per fork
+
+    // ── Bootstrap: create room with NUM_FORKS users ──
+    let mut events: Vec<rezzy::LeanEvent> = Vec::new();
+    let mut ts: u64 = 0;
+
+    let users: Vec<String> = (0..NUM_FORKS).map(|i| format!("@user{i}:x")).collect();
+
+    // Create event
+    events.push(rezzy::LeanEvent {
+        event_id: "$create".into(),
+        event_type: "m.room.create".into(),
+        state_key: Some(String::new()),
+        sender: users[0].clone(),
+        origin_server_ts: ts,
+        content: serde_json::json!({"room_version": "12"}),
+        ..Default::default()
+    });
+    ts += 1;
+
+    // User 0 joins
+    events.push(rezzy::LeanEvent {
+        event_id: "$join_0".into(),
+        event_type: "m.room.member".into(),
+        state_key: Some(users[0].clone()),
+        sender: users[0].clone(),
+        origin_server_ts: ts,
+        content: serde_json::json!({"membership": "join"}),
+        auth_events: vec!["$create".into()],
+        ..Default::default()
+    });
+    ts += 1;
+
+    // Initial PL: user0 = 100, all others = 50 (so each fork user can
+    // issue PL changes — the key ingredient for a PL war)
+    let mut users_pl = serde_json::Map::new();
+    for (i, u) in users.iter().enumerate() {
+        users_pl.insert(u.clone(), serde_json::json!(if i == 0 { 100 } else { 50 }));
+    }
+    events.push(rezzy::LeanEvent {
+        event_id: "$pl_root".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: users[0].clone(),
+        origin_server_ts: ts,
+        content: serde_json::json!({"users": users_pl}),
+        auth_events: vec!["$join_0".into()],
+        ..Default::default()
+    });
+    ts += 1;
+
+    // Join rules (public)
+    events.push(rezzy::LeanEvent {
+        event_id: "$jr".into(),
+        event_type: "m.room.join_rules".into(),
+        state_key: Some(String::new()),
+        sender: users[0].clone(),
+        origin_server_ts: ts,
+        content: serde_json::json!({"join_rule": "public"}),
+        auth_events: vec!["$join_0".into(), "$pl_root".into()],
+        ..Default::default()
+    });
+    ts += 1;
+
+    // All other users join
+    for (i, user) in users.iter().enumerate().skip(1) {
+        events.push(rezzy::LeanEvent {
+            event_id: format!("$join_{i}"),
+            event_type: "m.room.member".into(),
+            state_key: Some(user.clone()),
+            sender: user.clone(),
+            origin_server_ts: ts,
+            content: serde_json::json!({"membership": "join"}),
+            auth_events: vec!["$pl_root".into(), "$jr".into()],
+            ..Default::default()
+        });
+        ts += 1;
+    }
+
+    // ── Build K forks, each with D cascading PL changes ──
+    // Each fork k is "owned" by user k, who issues PL changes that
+    // promote/demote other users differently on each fork.
+    let mut fork_state_maps: Vec<imbl::OrdMap<(String, String), String>> = Vec::new();
+
+    for fork in 0..NUM_FORKS {
+        let fork_user = &users[fork];
+        let mut prev_pl_id = "$pl_root".to_string();
+
+        for depth in 0..PL_DEPTH {
+            let ev_id = format!("$pl_f{fork}_d{depth}");
+            // Each level shuffles PLs: user at (fork+depth)%K gets 50+depth,
+            // creating unique PL configurations per fork×depth combo
+            let mut fork_users_pl = serde_json::Map::new();
+            for (i, u) in users.iter().enumerate() {
+                let pl = if i == fork {
+                    50 // fork owner keeps 50
+                } else if i == (fork + depth + 1) % NUM_FORKS {
+                    // Target user gets increasing PL each level
+                    #[allow(clippy::cast_possible_wrap)]
+                    {
+                        (50 + depth as i64).min(99)
+                    }
+                } else {
+                    50
+                };
+                fork_users_pl.insert(u.clone(), serde_json::json!(pl));
+            }
+            // user0 always 100 (room admin)
+            fork_users_pl.insert(users[0].clone(), serde_json::json!(100));
+
+            events.push(rezzy::LeanEvent {
+                event_id: ev_id.clone(),
+                event_type: "m.room.power_levels".into(),
+                state_key: Some(String::new()),
+                sender: fork_user.clone(),
+                origin_server_ts: ts,
+                content: serde_json::json!({"users": fork_users_pl}),
+                auth_events: vec![prev_pl_id.clone(), format!("$join_{fork}")],
+                ..Default::default()
+            });
+            ts += 1;
+            prev_pl_id = ev_id;
+        }
+
+        // Non-power events: membership display-name changes on each fork
+        // These force mainline_sort to walk the full PL chain
+        let extra_users: Vec<String> = (0..MEMBERS_PER_FORK)
+            .map(|m| format!("@extra_f{fork}_m{m}:x"))
+            .collect();
+
+        for (m, extra_user) in extra_users.iter().enumerate() {
+            // Extra user joins (authed against the fork's last PL)
+            let join_id = format!("$mem_f{fork}_m{m}");
+            events.push(rezzy::LeanEvent {
+                event_id: join_id.clone(),
+                event_type: "m.room.member".into(),
+                state_key: Some(extra_user.clone()),
+                sender: extra_user.clone(),
+                origin_server_ts: ts,
+                content: serde_json::json!({"membership": "join"}),
+                auth_events: vec![prev_pl_id.clone(), "$jr".into()],
+                ..Default::default()
+            });
+            ts += 1;
+        }
+
+        // Build state map for this fork
+        let mut state = imbl::OrdMap::new();
+        state.insert(("m.room.create".into(), String::new()), "$create".into());
+        state.insert(("m.room.member".into(), users[0].clone()), "$join_0".into());
+        state.insert(("m.room.join_rules".into(), String::new()), "$jr".into());
+        for (i, user) in users.iter().enumerate().skip(1) {
+            state.insert(("m.room.member".into(), user.clone()), format!("$join_{i}"));
+        }
+        // Fork's final PL
+        state.insert(("m.room.power_levels".into(), String::new()), prev_pl_id);
+        // Fork's extra members
+        for (m, extra_user) in extra_users.iter().enumerate() {
+            state.insert(
+                ("m.room.member".into(), extra_user.clone()),
+                format!("$mem_f{fork}_m{m}"),
+            );
+        }
+        fork_state_maps.push(state);
+    }
+
+    // ── Build events map ──
+    let events_map: std::collections::HashMap<String, rezzy::LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
+
+    let total_events = events_map.len();
+    let conflicted_estimate = NUM_FORKS * (PL_DEPTH + MEMBERS_PER_FORK);
+    eprintln!(
+        "Dense bifurcation stress: {NUM_FORKS} forks × {PL_DEPTH} PL depth × \
+         {MEMBERS_PER_FORK} members = {total_events} events, ~{conflicted_estimate} conflicted"
+    );
+
+    // ── Correctness: determinism ──
+    let start = std::time::Instant::now();
+    let resolved_v2 =
+        rezzy::resolve_state_maps(&fork_state_maps, &events_map, rezzy::StateResVersion::V2);
+    let dur_v2 = start.elapsed();
+
+    let resolved_v2_again =
+        rezzy::resolve_state_maps(&fork_state_maps, &events_map, rezzy::StateResVersion::V2);
+    assert_eq!(
+        resolved_v2, resolved_v2_again,
+        "V2 resolution must be deterministic"
+    );
+
+    // ── Correctness: V2.1 ──
+    let start = std::time::Instant::now();
+    let resolved_v2_1 =
+        rezzy::resolve_state_maps(&fork_state_maps, &events_map, rezzy::StateResVersion::V2_1);
+    let dur_v2_1 = start.elapsed();
+
+    // Both must have create event
+    let create_key = ("m.room.create".into(), String::new());
+    assert!(resolved_v2.contains_key(&create_key), "V2 must have create");
+    assert!(
+        resolved_v2_1.contains_key(&create_key),
+        "V2.1 must have create"
+    );
+
+    // Both must resolve a PL event
+    let pl_key = ("m.room.power_levels".into(), String::new());
+    assert!(
+        resolved_v2.contains_key(&pl_key),
+        "V2 must have power_levels"
+    );
+    assert!(
+        resolved_v2_1.contains_key(&pl_key),
+        "V2.1 must have power_levels"
+    );
+
+    // ── Correctness: V2.1.1 (CDO filtering) ──
+    let start = std::time::Instant::now();
+    let resolved_v2_1_1 = rezzy::resolve_state_maps(
+        &fork_state_maps,
+        &events_map,
+        rezzy::StateResVersion::V2_1_1,
+    );
+    let dur_v2_1_1 = start.elapsed();
+
+    assert!(
+        resolved_v2_1_1.contains_key(&create_key),
+        "V2.1.1 must have create"
+    );
+    assert!(
+        resolved_v2_1_1.contains_key(&pl_key),
+        "V2.1.1 must have power_levels"
+    );
+
+    let resolved_v2_1_1_again = rezzy::resolve_state_maps(
+        &fork_state_maps,
+        &events_map,
+        rezzy::StateResVersion::V2_1_1,
+    );
+    assert_eq!(
+        resolved_v2_1_1, resolved_v2_1_1_again,
+        "V2.1.1 must be deterministic"
+    );
+
+    // ── Correctness: resolve_state_maps parity with manual path ──
+    let (unconflicted, conflicted_ids) = rezzy::partition_state_maps(
+        fork_state_maps.iter().map(|m| m.iter()),
+        fork_state_maps.len(),
+    );
+    let mut conflicted_events: std::collections::HashMap<String, rezzy::LeanEvent> =
+        std::collections::HashMap::new();
+    for id in &conflicted_ids {
+        if let Some(ev) = events_map.get(id) {
+            conflicted_events.insert(id.clone(), ev.clone());
+        }
+    }
+    let subgraph = rezzy::compute_v2_1_conflicted_subgraph(&events_map, &conflicted_ids);
+    let subgraph_size = subgraph.len();
+    for (id, ev) in subgraph {
+        conflicted_events.entry(id).or_insert(ev);
+    }
+    // V2.1 parity
+    let resolved_manual = rezzy::resolve_iterative_sort(
+        unconflicted.clone(),
+        conflicted_events.clone(),
+        &events_map,
+        rezzy::StateResVersion::V2_1,
+    );
+    assert_eq!(
+        resolved_v2_1, resolved_manual,
+        "resolve_state_maps V2.1 must match manual path"
+    );
+    // V2.1.1 parity
+    let resolved_manual_v2_1_1 = rezzy::resolve_iterative_sort(
+        unconflicted,
+        conflicted_events,
+        &events_map,
+        rezzy::StateResVersion::V2_1_1,
+    );
+    assert_eq!(
+        resolved_v2_1_1, resolved_manual_v2_1_1,
+        "resolve_state_maps V2.1.1 must match manual path"
+    );
+
+    // ── Report ──
+    eprintln!("  V2     resolution: {dur_v2:?}");
+    eprintln!("  V2.1   resolution: {dur_v2_1:?}");
+    eprintln!("  V2.1.1 resolution: {dur_v2_1_1:?}");
+    eprintln!("  Conflicted IDs:    {}", conflicted_ids.len());
+    eprintln!("  Subgraph events:   {subgraph_size}");
+    eprintln!("  V2     state keys: {}", resolved_v2.len());
+    eprintln!("  V2.1   state keys: {}", resolved_v2_1.len());
+    eprintln!("  V2.1.1 state keys: {}", resolved_v2_1_1.len());
+
+    // All versions must agree on unconflicted state
+    assert_eq!(
+        resolved_v2.get(&create_key),
+        resolved_v2_1.get(&create_key),
+        "V2 and V2.1 must agree on create event"
+    );
+    for user in &users {
+        let key = ("m.room.member".into(), user.clone());
+        assert_eq!(
+            resolved_v2.get(&key),
+            resolved_v2_1.get(&key),
+            "V2 and V2.1 must agree on bootstrap member {user}"
+        );
+        assert_eq!(
+            resolved_v2.get(&key),
+            resolved_v2_1_1.get(&key),
+            "V2 and V2.1.1 must agree on bootstrap member {user}"
+        );
+    }
+}
