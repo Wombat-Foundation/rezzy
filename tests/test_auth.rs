@@ -569,6 +569,35 @@ fn test_iterative_auth_chain() {
 }
 
 #[test]
+fn test_auth_chain_rejects_unauthorized() {
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:x.com","depth":0,"origin_server_ts":1000,"content":{},"prev_events":[],"auth_events":[]}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:x.com","sender":"@alice:x.com","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@alice:x.com","depth":2,"origin_server_ts":1002,"content":{"ban":50,"users":{"@alice:x.com":100}},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
+{"event_id":"$ban_bob","type":"m.room.member","state_key":"@bob:x.com","sender":"@alice:x.com","depth":3,"origin_server_ts":1003,"content":{"membership":"ban"},"prev_events":["$pl"],"auth_events":["$create","$alice_join","$pl"]}
+{"event_id":"$bob_msg","type":"m.room.message","sender":"@bob:x.com","depth":4,"origin_server_ts":1004,"content":{"body":"I am banned"},"prev_events":["$ban_bob"],"auth_events":["$create"]}
+    "#,
+    );
+
+    let (accepted, rejected) =
+        check_auth_chain(&events, &RoomState::new(), rezzy::StateResVersion::V2_1);
+
+    assert_eq!(
+        accepted,
+        vec!["$create", "$alice_join", "$pl", "$ban_bob"],
+        "First four events should pass auth"
+    );
+    assert_eq!(rejected.len(), 1, "Bob's message should be rejected");
+    assert_eq!(rejected[0].0, "$bob_msg");
+    assert!(
+        matches!(rejected[0].1, AuthError::BannedUser { .. }),
+        "Rejection reason must be BannedUser, got: {:?}",
+        rejected[0].1
+    );
+}
+
+#[test]
 fn test_auth_error_display() {
     let err: AuthError = AuthError::NotMember {
         sender: "@bob:example.com".into(),

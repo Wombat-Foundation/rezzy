@@ -3,6 +3,7 @@ SHELL=/bin/bash
 
 LAKE ?= lake
 CARGO ?= cargo
+TEST_FEATURES ?= mock-ruma,hashing,cli
 
 LINT_LOCS_PY = $$(git ls-files '*.py')
 LINT_LOCS_SH = $$(git ls-files '*.sh')
@@ -78,16 +79,16 @@ rust/doc: ##H Generate rustdoc API documentation
 .PHONY: rust/test
 rust/test: ##H Run Rust tests (p=NAME for specific test, a=ARGS for test binary args)
 ifdef p
-	$(CARGO) test --test $(p) --all-features $(if $(a),-- $(a))
+	$(CARGO) test --test $(p) --features $(TEST_FEATURES) $(if $(a),-- $(a))
 else
-	$(CARGO) test --all-targets --all-features $(if $(a),-- $(a))
+	$(CARGO) test --all-targets --features $(TEST_FEATURES) $(if $(a),-- $(a))
 endif
 
 .PHONY: rust/coverage
 rust/coverage: ##H Run code coverage and generate HTML report
 	# TODO: include `src/bin/` in coverage
 	# Run coverage
-	$(CARGO) +nightly llvm-cov --all-features --all-targets \
+	$(CARGO) +nightly llvm-cov --all-targets --features $(TEST_FEATURES)  \
 		--html --output-dir .coverage \
 		--ignore-filename-regex 'src/bin/.*'
 	# Process report to codecov-compatible JSON

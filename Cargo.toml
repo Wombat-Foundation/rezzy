@@ -156,6 +156,10 @@ name = "test_resolve"
 path = "tests/test_resolve.rs"
 required-features = ["mock-ruma"]
 
+[[test]]
+name = "test_lattice"
+path = "tests/test_lattice.rs"
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tarpaulin)"] }
