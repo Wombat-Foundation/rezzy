@@ -180,3 +180,45 @@ fn test_lattice_fold_deterministic() {
     let r2 = resolve_lattice_fold(unconflicted, conflicted, &map, StateResVersion::V2);
     assert_eq!(r1, r2, "Lattice fold must be deterministic");
 }
+
+/// Coverage: `fold_lattice_chunk` skips events with `state_key: None`
+/// (lattice.rs:160-162). Non-state events (e.g. messages) that end up
+/// in the conflicted set should be silently ignored during the fold.
+#[test]
+fn test_lattice_fold_skips_non_state_events() {
+    // Base fixture plus a non-state event (message with no state_key)
+    let fixture = r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:a.com","depth":0,"origin_server_ts":1000,"content":{"creator":"@alice:a.com","room_version":"11"},"prev_events":[],"auth_events":[]}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:a.com","sender":"@alice:a.com","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@alice:a.com","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:a.com":100},"events_default":0,"state_default":50,"ban":50,"kick":50,"invite":0},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
+{"event_id":"$jr","type":"m.room.join_rules","state_key":"","sender":"@alice:a.com","depth":3,"origin_server_ts":1003,"content":{"join_rule":"public"},"prev_events":["$pl"],"auth_events":["$create","$alice_join","$pl"]}
+{"event_id":"$topic_a","type":"m.room.topic","state_key":"","sender":"@alice:a.com","depth":4,"origin_server_ts":2000,"content":{"topic":"Alice topic"},"prev_events":["$jr"],"auth_events":["$create","$alice_join","$pl"]}
+{"event_id":"$topic_b","type":"m.room.topic","state_key":"","sender":"@alice:a.com","depth":4,"origin_server_ts":3000,"content":{"topic":"Later topic"},"prev_events":["$jr"],"auth_events":["$create","$alice_join","$pl"]}
+{"event_id":"$msg","type":"m.room.message","sender":"@alice:a.com","depth":4,"origin_server_ts":2500,"content":{"body":"hello"},"prev_events":["$jr"],"auth_events":["$create","$alice_join","$pl"]}
+"#;
+    let events = utils::parse_jsonl_events(fixture);
+    let map = to_event_map(&events);
+
+    let unconflicted = utils::build_unconflicted_state_test_helper(&map);
+
+    // Include the message (state_key: None) in the conflicted set
+    let mut conflicted = HashMap::new();
+    conflicted.insert("$topic_a".to_string(), map["$topic_a"].clone());
+    conflicted.insert("$topic_b".to_string(), map["$topic_b"].clone());
+    conflicted.insert("$msg".to_string(), map["$msg"].clone());
+
+    let resolved = resolve_lattice_fold(unconflicted, conflicted, &map, StateResVersion::V2);
+
+    // topic_b wins (later ts), message is silently skipped
+    let topic_key = ("m.room.topic".to_string(), String::new());
+    assert_eq!(
+        resolved.get(&topic_key),
+        Some(&"$topic_b".to_string()),
+        "topic_b should win"
+    );
+    // No (m.room.message, _) key should appear — it has no state_key
+    assert!(
+        !resolved.iter().any(|((t, _), _)| t == "m.room.message"),
+        "message event must not appear in resolved state"
+    );
+}

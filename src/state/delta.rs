@@ -126,60 +126,119 @@ pub fn apply_state_delta<Id: crate::basespec::rezzy_types::EventId>(
     result
 }
 
-/// Computes a deterministic 128-bit FNV-1a fingerprint of a state map.
+/// A 256-bit order-independent state hash using Zobrist hashing.
 ///
-/// The hash is computed over `(event_type, state_key, event_id)` tuples in
-/// `BTreeMap` iteration order (lexicographic). This produces a stable,
-/// reproducible 128-bit hex string suitable for delta chain bookkeeping.
+/// Each `(event_type, state_key, event_id)` entry is assigned a
+/// deterministic 256-bit seed via SHA-256. The state hash is the
+/// XOR of all seeds for present entries. This gives:
 ///
-/// 128-bit FNV-1a gives a collision probability of ~2^-128 per pair,
-/// effectively zero for any realistic state map count.
-///
-/// **Not cryptographic** — use SHA-256 (via the `hashing` feature) for
-/// content-addressable storage.
-struct FnvHasher<'a>(&'a mut u128);
+/// - **O(1) incremental updates**: insert = `hash ^= seed`,
+///   remove = `hash ^= seed` (XOR is self-inverse).
+/// - **Order independence**: XOR is commutative + associative.
+/// - **256-bit collision resistance**: birthday bound is ~2^128,
+///   effectively zero for any realistic number of state maps.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ZobristStateHash(pub [u8; 32]);
 
-const FNV128_PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+impl ZobristStateHash {
+    /// The identity element (empty state).
+    pub const ZERO: Self = Self([0u8; 32]);
 
-impl core::fmt::Write for FnvHasher<'_> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        for &byte in s.as_bytes() {
-            *self.0 ^= u128::from(byte);
-            *self.0 = self.0.wrapping_mul(FNV128_PRIME);
+    /// Compute the seed for a single state entry.
+    ///
+    /// `SHA-256(event_type \x00 state_key \x00 event_id)`
+    #[must_use]
+    fn seed(event_type: &str, state_key: &str, event_id: &str) -> [u8; 32] {
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(event_type.as_bytes());
+        hasher.update(b"\x00");
+        hasher.update(state_key.as_bytes());
+        hasher.update(b"\x00");
+        hasher.update(event_id.as_bytes());
+        hasher.finalize().into()
+    }
+
+    /// XOR a seed into the hash (insert or remove).
+    fn xor_seed(&mut self, seed: &[u8; 32]) {
+        for (a, b) in self.0.iter_mut().zip(seed.iter()) {
+            *a ^= b;
+        }
+    }
+
+    /// Record a state entry being inserted.
+    pub fn insert(&mut self, event_type: &str, state_key: &str, event_id: &str) {
+        let s = Self::seed(event_type, state_key, event_id);
+        self.xor_seed(&s);
+    }
+
+    /// Record a state entry being removed.
+    ///
+    /// XOR is self-inverse, so this is identical to
+    /// [`insert`](Self::insert).
+    pub fn remove(&mut self, event_type: &str, state_key: &str, event_id: &str) {
+        self.insert(event_type, state_key, event_id);
+    }
+
+    /// Record a state entry being replaced (old → new).
+    pub fn replace(
+        &mut self,
+        event_type: &str,
+        state_key: &str,
+        old_event_id: &str,
+        new_event_id: &str,
+    ) {
+        let old = Self::seed(event_type, state_key, old_event_id);
+        let new = Self::seed(event_type, state_key, new_event_id);
+        self.xor_seed(&old);
+        self.xor_seed(&new);
+    }
+
+    /// Compute the full hash from a state map (non-incremental).
+    #[must_use]
+    pub fn from_state<Id>(state: &crate::state::at::SharedState<Id>) -> Self
+    where
+        Id: crate::basespec::rezzy_types::EventId,
+    {
+        let mut hash = Self::ZERO;
+        for ((event_type, state_key), event_id) in state {
+            let id_str = alloc::format!("{event_id}");
+            let s = Self::seed(event_type, state_key, &id_str);
+            hash.xor_seed(&s);
+        }
+        hash
+    }
+
+    /// Format as a 64-char lowercase hex string.
+    #[must_use]
+    pub fn to_hex(&self) -> alloc::string::String {
+        alloc::format!("{self}")
+    }
+}
+
+impl core::fmt::Display for ZobristStateHash {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for byte in &self.0 {
+            write!(f, "{byte:02x}")?;
         }
         Ok(())
     }
 }
 
+/// Computes a deterministic 256-bit Zobrist fingerprint of a
+/// state map, returned as a 64-char hex string.
+///
+/// This is a convenience wrapper around
+/// [`ZobristStateHash::from_state`]. Each
+/// `(event_type, state_key, event_id)` entry is hashed via
+/// SHA-256 to produce a 256-bit seed, and the state hash is the
+/// XOR of all seeds — making it order-independent and
+/// incrementally updatable.
 #[must_use]
 pub fn compute_state_hash<Id: crate::basespec::rezzy_types::EventId>(
     state: &crate::state::at::SharedState<Id>,
 ) -> String {
-    use core::fmt::Write;
-    // FNV-1a 128-bit offset basis and prime
-    // See: <https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function>
-    let mut hash: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
-
-    for ((event_type, state_key), event_id) in state {
-        for &byte in event_type.as_bytes() {
-            hash ^= u128::from(byte);
-            hash = hash.wrapping_mul(FNV128_PRIME);
-        }
-        hash ^= 0x00;
-        hash = hash.wrapping_mul(FNV128_PRIME);
-        for &byte in state_key.as_bytes() {
-            hash ^= u128::from(byte);
-            hash = hash.wrapping_mul(FNV128_PRIME);
-        }
-        hash ^= 0x00;
-        hash = hash.wrapping_mul(FNV128_PRIME);
-
-        let mut writer = FnvHasher(&mut hash);
-        write!(writer, "{event_id}").expect("FnvHasher formatting is infallible");
-        hash ^= 0xff;
-        hash = hash.wrapping_mul(FNV128_PRIME);
-    }
-    alloc::format!("{hash:032x}")
+    ZobristStateHash::from_state(state).to_hex()
 }
 
 /// Maximum number of delta hops before a full snapshot is inserted (default: 100,
@@ -199,7 +258,7 @@ pub const MAX_DELTA_CHAIN_HOPS: usize = 100;
 /// hit a snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CompactedCheckpoint<Id: crate::basespec::rezzy_types::EventId = String> {
-    /// 128-bit FNV-1a hash of the state map at this point.
+    /// 256-bit Zobrist hash of the state map at this point.
     pub state_hash: String,
     /// Hash of the parent checkpoint (if any).
     pub parent_hash: Option<String>,
@@ -237,15 +296,16 @@ pub fn compute_compacted_delta_chain_from_resolved<Id: crate::basespec::rezzy_ty
         let state_hash = compute_state_hash(&state);
         let current_hops = hops_since_snapshot.saturating_add(1);
 
-        let (deltas, snapshot, recorded_hops) = if current_hops >= max_hops || prev_state.is_none()
-        {
-            // Insert a full snapshot — resets the chain
-            (Vec::new(), Some(state.clone()), 0)
-        } else if let Some(ref base) = prev_state {
-            let deltas = compute_state_delta(base, &state);
-            (deltas, None, current_hops)
-        } else {
-            unreachable!()
+        let (deltas, snapshot, recorded_hops) = match prev_state {
+            Some(ref base) if current_hops < max_hops => {
+                let deltas = compute_state_delta(base, &state);
+                (deltas, None, current_hops)
+            }
+            _ => {
+                // First event or chain exceeded max_hops — insert a
+                // full snapshot to reset the chain.
+                (Vec::new(), Some(state.clone()), 0)
+            }
         };
 
         checkpoints.push(CompactedCheckpoint {
@@ -541,7 +601,7 @@ mod tests {
         let h1 = compute_state_hash(&state);
         let h2 = compute_state_hash(&state);
         assert_eq!(h1, h2, "same state must produce same hash");
-        assert_eq!(h1.len(), 32, "FNV-1a 128-bit hash should be 32 hex chars");
+        assert_eq!(h1.len(), 64, "Zobrist 256-bit hash should be 64 hex chars");
     }
 
     #[test]
@@ -557,6 +617,84 @@ mod tests {
             compute_state_hash(&state_b),
             "different states must produce different hashes"
         );
+    }
+
+    #[test]
+    fn test_zobrist_determinism() {
+        let mut state = StateMap::new();
+        state.insert(("m.room.create".into(), String::new()), "$1".into());
+        state.insert(("m.room.member".into(), "@a:x".into()), "$2".into());
+        let h1 = ZobristStateHash::from_state(&state);
+        let h2 = ZobristStateHash::from_state(&state);
+        assert_eq!(h1, h2);
+        assert_ne!(h1, ZobristStateHash::ZERO);
+        assert_eq!(h1.to_hex().len(), 64);
+    }
+
+    #[test]
+    fn test_zobrist_sensitivity() {
+        let mut a = StateMap::new();
+        a.insert(("m.room.create".into(), String::new()), "$1".into());
+        let mut b = StateMap::new();
+        b.insert(("m.room.create".into(), String::new()), "$2".into());
+        assert_ne!(
+            ZobristStateHash::from_state(&a),
+            ZobristStateHash::from_state(&b),
+        );
+    }
+
+    #[test]
+    fn test_zobrist_order_independence() {
+        // Insert in different orders, same result
+        let mut h1 = ZobristStateHash::ZERO;
+        h1.insert("m.room.create", "", "$c");
+        h1.insert("m.room.member", "@a:x", "$m");
+
+        let mut h2 = ZobristStateHash::ZERO;
+        h2.insert("m.room.member", "@a:x", "$m");
+        h2.insert("m.room.create", "", "$c");
+
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_zobrist_incremental_matches_full() {
+        let mut state = StateMap::new();
+        state.insert(("m.room.create".into(), String::new()), "$c".into());
+        state.insert(("m.room.topic".into(), String::new()), "$t".into());
+
+        let full = ZobristStateHash::from_state(&state);
+
+        let mut inc = ZobristStateHash::ZERO;
+        inc.insert("m.room.create", "", "$c");
+        inc.insert("m.room.topic", "", "$t");
+
+        assert_eq!(full, inc);
+    }
+
+    #[test]
+    fn test_zobrist_insert_remove_roundtrip() {
+        let mut h = ZobristStateHash::ZERO;
+        h.insert("m.room.topic", "", "$t");
+        assert_ne!(h, ZobristStateHash::ZERO);
+        h.remove("m.room.topic", "", "$t");
+        assert_eq!(h, ZobristStateHash::ZERO);
+    }
+
+    #[test]
+    fn test_zobrist_replace() {
+        // Build state with $t1, then replace → $t2
+        let mut h = ZobristStateHash::ZERO;
+        h.insert("m.room.create", "", "$c");
+        h.insert("m.room.topic", "", "$t1");
+        h.replace("m.room.topic", "", "$t1", "$t2");
+
+        // Build state with $t2 from scratch
+        let mut expected = ZobristStateHash::ZERO;
+        expected.insert("m.room.create", "", "$c");
+        expected.insert("m.room.topic", "", "$t2");
+
+        assert_eq!(h, expected);
     }
 
     #[test]
@@ -893,6 +1031,19 @@ mod tests {
         assert_eq!(results[&2], state_a);
     }
 
+    #[test]
+    fn test_batch_empty_and_oob_targets() {
+        let (checkpoints, _, _) = forward_jump_fixture();
+
+        // Empty targets
+        let results = reconstruct_state_batch(&checkpoints, &[]);
+        assert!(results.is_empty());
+
+        // All out-of-bounds
+        let results = reconstruct_state_batch(&checkpoints, &[999, 1000]);
+        assert!(results.is_empty());
+    }
+
     /// Regression: `hash_to_idx` `HashMap` shadowing — when duplicate hashes exist,
     /// `.collect()` only stores the LAST index, erasing the valid earlier parent.
     /// This test constructs a chain where `HASH_A` appears at indices 0 and 4, and
@@ -974,13 +1125,7 @@ mod tests {
         // Batch reconstruct all — with HashMap shadowing, indices 1-3 would
         // silently fail because HASH_A maps to index 4 (future), not index 0.
         let results = reconstruct_state_batch(&checkpoints, &[0, 1, 2, 3, 4]);
-        assert_eq!(
-            results.len(),
-            5,
-            "all 5 checkpoints should reconstruct, got {}: {:?}",
-            results.len(),
-            results.keys().collect::<alloc::vec::Vec<_>>()
-        );
+        assert_eq!(results.len(), 5, "all 5 checkpoints should reconstruct");
         assert_eq!(results[&0], state_a, "index 0 (snapshot)");
         assert_eq!(results[&4], state_a, "index 4 (reverted to state_a)");
 

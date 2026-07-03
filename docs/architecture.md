@@ -97,7 +97,8 @@ on rooms with millions of events.
 ## The Transitive Closure Index
 
 The I/O sandwich above describes the **normal case**: a single fork arrives,
-the homeserver bulk-fetches the auth difference, and `resolve_iterative_sort` runs once.
+the homeserver bulk-fetches the auth difference, and
+`resolve_iterative_sort` runs once.
 But there's a second scenario that demands a fundamentally different strategy:
 **full room state rebuilds**.
 
