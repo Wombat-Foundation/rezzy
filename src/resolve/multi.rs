@@ -126,9 +126,7 @@ where
 /// 1. **Short-circuit**: if all maps are identical, returns the first one.
 /// 2. **Partition**: splits entries into unconflicted (unanimous) and
 ///    conflicted (differing across forks).
-/// 3. **Subgraph**: computes the V2.1+ conflicted subgraph from the
-///    auth DAG (for V2.1+).
-/// 4. **Resolve**: delegates to [`resolve_iterative_sort`] with the
+/// 3. **Resolve**: delegates to [`resolve_iterative_sort`] with the
 ///    partitioned state and conflicted events.
 ///
 /// # Parameters
