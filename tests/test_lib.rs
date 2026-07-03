@@ -4735,8 +4735,8 @@ fn test_trivial_conflict_fast_path_picks_later_ts() {
     );
 }
 
-/// Tests that when origin_server_ts ties, the lexicographically larger
-/// event_id wins (spec tie-breaking rule).
+/// Tests that when `origin_server_ts` ties, the lexicographically larger
+/// `event_id` wins (spec tie-breaking rule).
 ///
 /// Both A and B have ts=100, but "B" > "A" lexicographically → B wins.
 #[test]
@@ -4782,9 +4782,13 @@ fn test_trivial_conflict_power_event_fallthrough() {
         .map(|e| (e.event_id.clone(), e))
         .collect();
     let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
-    assert!(
-        state.contains_key(&("m.room.power_levels".into(), String::new())),
-        "Power level conflict must be resolved by full pipeline"
+    // PL_B (ts=200) should win over PL_A (ts=100) via the full pipeline's
+    // Kahn sort + iterative auth. The trivial fast path skips power events
+    // entirely, so getting the correct winner proves fallthrough occurred.
+    assert_eq!(
+        state.get(&("m.room.power_levels".into(), String::new())),
+        Some(&"PL_B".to_string()),
+        "Full pipeline must resolve competing PLs — later ts wins"
     );
 }
 
@@ -4823,11 +4827,16 @@ fn test_find_backward_extremities_no_gaps() {
         {"event_id":"$msg","type":"m.room.message","sender":"@a:x","origin_server_ts":2,"depth":3,"prev_events":["$join"],"content":{}}
     "#,
     );
-    let events_map: HashMap<String, LeanEvent> =
-        events.into_iter().map(|e| (e.event_id.clone(), e)).collect();
+    let events_map: HashMap<String, LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
 
     let gaps = rezzy::find_backward_extremities(&events_map, |_| false);
-    assert!(gaps.is_empty(), "Complete DAG should have no backward extremities");
+    assert!(
+        gaps.is_empty(),
+        "Complete DAG should have no backward extremities"
+    );
 }
 
 /// One event references a parent not in the map → single backward extremity.
@@ -4840,17 +4849,22 @@ fn test_find_backward_extremities_single_gap() {
         {"event_id":"$msg","type":"m.room.message","sender":"@a:x","origin_server_ts":2,"depth":3,"prev_events":["$missing_parent"],"content":{}}
     "#,
     );
-    let events_map: HashMap<String, LeanEvent> =
-        events.into_iter().map(|e| (e.event_id.clone(), e)).collect();
+    let events_map: HashMap<String, LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
 
     let gaps = rezzy::find_backward_extremities(&events_map, |_| false);
     assert_eq!(gaps.len(), 1);
     assert_eq!(gaps[0].event_id, "$msg");
-    assert_eq!(gaps[0].missing_prev_events, vec!["$missing_parent".to_string()]);
+    assert_eq!(
+        gaps[0].missing_prev_events,
+        vec!["$missing_parent".to_string()]
+    );
 }
 
 /// Forked DAG: two events each reference different missing parents.
-/// Also tests that an event with multiple prev_events only reports the missing ones.
+/// Also tests that an event with multiple `prev_events` only reports the missing ones.
 #[test]
 fn test_find_backward_extremities_multiple_gaps() {
     use std::collections::HashMap;
@@ -4862,8 +4876,10 @@ fn test_find_backward_extremities_multiple_gaps() {
         {"event_id":"$fork_b","type":"m.room.message","sender":"@b:x","origin_server_ts":1,"depth":2,"prev_events":["$ghost_b"],"content":{}}
     "#,
     );
-    let events_map: HashMap<String, LeanEvent> =
-        events.into_iter().map(|e| (e.event_id.clone(), e)).collect();
+    let events_map: HashMap<String, LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
 
     let mut gaps = rezzy::find_backward_extremities(&events_map, |_| false);
     // Sort for deterministic assertion (HashMap iteration order is random)
@@ -4890,13 +4906,22 @@ fn test_find_backward_extremities_with_exists_oracle() {
         {"event_id":"$msg2","type":"m.room.message","sender":"@a:x","origin_server_ts":2,"depth":3,"prev_events":["$truly_missing"],"content":{}}
     "#,
     );
-    let events_map: HashMap<String, LeanEvent> =
-        events.into_iter().map(|e| (e.event_id.clone(), e)).collect();
+    let events_map: HashMap<String, LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
 
     // Simulate: "$in_db" exists in the database but wasn't loaded into the map
     let gaps = rezzy::find_backward_extremities(&events_map, |id| id == "$in_db");
 
-    assert_eq!(gaps.len(), 1, "Only the truly missing parent should be reported");
+    assert_eq!(
+        gaps.len(),
+        1,
+        "Only the truly missing parent should be reported"
+    );
     assert_eq!(gaps[0].event_id, "$msg2");
-    assert_eq!(gaps[0].missing_prev_events, vec!["$truly_missing".to_string()]);
+    assert_eq!(
+        gaps[0].missing_prev_events,
+        vec!["$truly_missing".to_string()]
+    );
 }

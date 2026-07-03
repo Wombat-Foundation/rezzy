@@ -956,17 +956,14 @@ where
     for id in conflicted_state_set {
         if let Some(ev) = events_map.get(id) {
             if let Some(ref sk) = ev.state_key {
-                let key_ref = conflicted_keys
-                    .get(&(ev.event_type.clone(), sk.clone()))
-                    .unwrap_or_else(|| {
-                        // This event's (type, state_key) may be an Add/Remove from
-                        // a fork that doesn't exist in the other — still valid.
-                        // Use a temporary key match approach.
-                        conflicted_keys
-                            .iter()
-                            .find(|(t, s)| t == &ev.event_type && s == sk)
-                            .expect("conflicted event must match a conflicted key")
-                    });
+                // Look up this event's (type, state_key) in the pre-built
+                // conflicted keys set.  If absent, this event belongs to a
+                // fork-specific slot that doesn't appear in the other fork —
+                // skip it in the fast path and let the full pipeline handle it.
+                let Some(key_ref) = conflicted_keys.get(&(ev.event_type.clone(), sk.clone()))
+                else {
+                    continue;
+                };
                 candidates.entry(key_ref).or_default().push(ev);
             }
         }
@@ -1240,7 +1237,7 @@ where
 {
     let mut result = Vec::new();
 
-    for (_, node) in events {
+    for node in events.values() {
         let mut missing = Vec::new();
         for prev_id in node.prev_events() {
             if !events.contains_key(prev_id) && !exists(prev_id) {
