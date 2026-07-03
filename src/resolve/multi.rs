@@ -17,8 +17,8 @@
 //! This module provides the high-level entry point for resolving state across
 //! multiple DAG forks (e.g., multiple forward extremities). Given N state maps,
 //! it partitions entries into unconflicted (agreed by all forks) and conflicted
-//! (differing across forks), then delegates to [`resolve_iterative_sort`] for
-//! the conflicted subset.
+//! (differing across forks), then delegates to [`resolve_iterative_sort`](crate::resolve::iterative::resolve_iterative_sort)
+//! for the conflicted subset.
 //!
 //! # Example
 //!

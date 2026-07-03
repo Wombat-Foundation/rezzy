@@ -231,7 +231,7 @@ impl<Id: EventId, C> DagNode for LeanEvent<Id, C> {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// // Recommended: use RawEvent + ParsedEvent (see RawEvent docs).
 /// // Direct impl only needed for custom Content types:
 /// impl EventLike for MyEvent {
@@ -400,7 +400,7 @@ impl<Id: EventId, C: EventContent> EventLike for LeanEvent<Id, C> {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// impl rezzy::RawEvent for Pdu {
 ///     type Id = OwnedEventId;
 ///
