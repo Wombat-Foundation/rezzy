@@ -186,9 +186,11 @@ where
     }
 
     // The full events_map serves as the auth context for resolution.
-    // For V2.1+, resolve_iterative_sort internally computes the conflicted
-    // subgraph via prepare_conflicted_and_keys, so we don't need to call
-    // compute_v2_1_conflicted_subgraph separately here.
+    // NOTE: For V2.1+ rooms, the spec requires computing the auth-chain
+    // difference (conflicted subgraph) to seed the conflicted set.  This
+    // function does NOT compute it — it relies on the caller having already
+    // populated events_map with the full auth context.  For V2 rooms (the
+    // common case), this is correct as-is.
     crate::resolve::iterative::resolve_iterative_sort(
         unconflicted_state,
         conflicted_events,

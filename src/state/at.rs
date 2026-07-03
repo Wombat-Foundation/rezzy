@@ -1047,16 +1047,18 @@ where
         unconflicted_state.remove(k);
     }
 
-    // DP fast path: skip full resolution for trivial leaf-level conflicts
-    if let Some(fast_result) = resolve_trivial_conflicts(
-        &unconflicted_state,
-        &conflicted_keys,
-        &conflicted_state_set,
-        events_map,
-        version,
-    ) {
-        return fast_result;
-    }
+    // NOTE: trivial conflict fast path DISABLED — it uses raw timestamp
+    // comparison instead of mainline sort, which picks wrong winners when
+    // fork branches have different PL ancestor distances in their auth
+    // chains.  Re-enable once it uses build_mainline_with_cache for ordering.
+    // See: TestNetworkPartitionOrdering, TestRestrictedRoomsRemoteJoinFailOver.
+    //
+    // if let Some(fast_result) = resolve_trivial_conflicts(
+    //     &unconflicted_state, &conflicted_keys, &conflicted_state_set,
+    //     events_map, version,
+    // ) {
+    //     return fast_result;
+    // }
 
     let mut conflicted_events = HashMap::new();
     for id_val in &conflicted_state_set {
