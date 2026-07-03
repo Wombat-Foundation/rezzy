@@ -1398,7 +1398,8 @@ where
 ///
 /// # Complexity
 ///
-/// - **Time**: `O(V + E)` — one Kahn sort pass.
+/// - **Time**: `O(V log V + E)` — Kahn sort plus a comparison sort for
+///   deterministic tiebreaking within topological levels.
 /// - **Space**: `O(V)` for the position map.
 #[must_use]
 pub fn compute_topo_positions<Id, C, S, F>(
@@ -1418,6 +1419,15 @@ where
     let all_ids: Vec<&Id> = events_map.keys().collect();
     let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&all_ids, events_map);
     let (sorted, _) = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
+
+    debug_assert_eq!(
+        sorted.len(),
+        index_to_id.len(),
+        "compute_topo_positions: Kahn sort returned fewer nodes than expected — \
+         the input graph contains a cycle ({} sorted vs {} total)",
+        sorted.len(),
+        index_to_id.len(),
+    );
 
     // Kahn sort gives a valid topological order; apply tiebreak within
     // each topological level for deterministic output.

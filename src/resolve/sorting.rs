@@ -383,16 +383,6 @@ where
                     }
                 }
             }
-
-            // Cache all visited non-PL events as having this PL ancestor
-            // (or None if no PL was found)
-            for vid in visited.iter().filter(|v| {
-                auth_context
-                    .get_event(v)
-                    .is_some_and(|e| e.event_type != M_ROOM_POWER_LEVELS)
-            }) {
-                pl_parent_cache.entry(vid.clone()).or_insert(found.clone());
-            }
         }
 
         pl_parent_cache.insert(eid, found.clone());
