@@ -42,7 +42,7 @@ pub struct StateDiff<Id> {
     pub entries: Vec<StateDiffEntry<Id>>,
 }
 
-impl<Id: EventId> StateDiff<Id> {
+impl<Id> StateDiff<Id> {
     /// Number of state keys that changed.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -106,33 +106,30 @@ pub fn compute_state_diff<Id: EventId>(
 ) -> StateDiff<Id> {
     let mut entries = Vec::new();
 
-    // Check old keys against new
-    for (key, old_id) in old {
-        match new.get(key) {
-            Some(new_id) if new_id != old_id => {
+    for diff_item in old.diff(new) {
+        match diff_item {
+            imbl::ordmap::DiffItem::Add(key, new_id) => {
+                entries.push(StateDiffEntry::Added {
+                    key: key.clone(),
+                    event_id: new_id.clone(),
+                });
+            }
+            imbl::ordmap::DiffItem::Remove(key, old_id) => {
+                entries.push(StateDiffEntry::Removed {
+                    key: key.clone(),
+                    event_id: old_id.clone(),
+                });
+            }
+            imbl::ordmap::DiffItem::Update {
+                old: (key, old_id),
+                new: (_, new_id),
+            } => {
                 entries.push(StateDiffEntry::Changed {
                     key: key.clone(),
                     old_event_id: old_id.clone(),
                     new_event_id: new_id.clone(),
                 });
             }
-            None => {
-                entries.push(StateDiffEntry::Removed {
-                    key: key.clone(),
-                    event_id: old_id.clone(),
-                });
-            }
-            _ => {} // identical — no diff
-        }
-    }
-
-    // Check for keys only in new
-    for (key, new_id) in new {
-        if !old.contains_key(key) {
-            entries.push(StateDiffEntry::Added {
-                key: key.clone(),
-                event_id: new_id.clone(),
-            });
         }
     }
 

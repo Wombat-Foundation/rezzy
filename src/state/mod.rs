@@ -1,6 +1,7 @@
 //! Room state computation and storage.
 
 pub mod at;
+pub mod cache;
 pub mod delta;
 pub mod diff;
 

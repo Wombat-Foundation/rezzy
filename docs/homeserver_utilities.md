@@ -11,10 +11,9 @@ no I/O, no async, `no_std`-compatible, generic over
 
 ### 1. Auth Chain Difference (public API)
 
-**Status**: ✅ Implemented internally, ❌ not public
+**Status**: ✅ Implemented and public
 
-`compute_auth_chain_diff` already exists in
-`src/state/at.rs:1131` as a private function. It computes
+`compute_auth_chain_diff` exists in `src/state/at.rs`. It computes
 `auth(C) \ auth(U)` — the auth-chain events reachable
 from conflicted state but not from unconflicted state.
 
@@ -23,40 +22,16 @@ homeserver must compute. Exposing it as a public API
 saves homeservers from reimplementing the bounded
 dual-heap traversal.
 
-```rust
-pub fn auth_chain_difference<Id, C, S>(
-    unconflicted_state: &SharedState<Id>,
-    conflicted_ids: &HashSet<Id>,
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
-) -> HashSet<Id>
-```
-
-**Work**: Make `compute_auth_chain_diff` public,
-rename for API consistency, add doc examples.
-
 ---
 
 ### 2. Auth Chain Difference (roaring bitmap variant)
 
-**Status**: ✅ `AuthGraph` exists, ❌ no diff method
+**Status**: ✅ Implemented
 
 `AuthGraph` in `src/auth/roaring.rs` builds roaring
-bitmap auth chains. Adding a `diff` method enables O(1)
+bitmap auth chains. `AuthGraph::auth_difference` enables O(|bitmap|)
 set-difference on pre-computed bitmaps — the fast path
 homeservers with pre-computed auth chains need.
-
-```rust
-impl AuthGraph<Id> {
-    /// auth(conflicted) \ auth(unconflicted)
-    pub fn auth_difference(
-        &self,
-        unconflicted_ids: &[Id],
-        conflicted_ids: &[Id],
-    ) -> Vec<Id>
-}
-```
-
-**Work**: Add `auth_difference` method to `AuthGraph`.
 
 ---
 
@@ -84,29 +59,14 @@ These are threshold-only checks. Full auth goes through
 
 ### 4. State Diff
 
-**Status**: ❌ Not implemented
+**Status**: ✅ Implemented
 
-Given two state snapshots, produce a typed diff showing
-what changed. Useful for:
+`src/state/diff.rs` produces a typed diff showing what changed between
+two state snapshots. Useful for:
 
 - Client sync (computing incremental state updates)
 - Admin tooling ("what changed in this fork?")
 - Delta compression validation
-
-```rust
-pub struct StateDiff<Id> {
-    pub added: Vec<((String, String), Id)>,
-    pub removed: Vec<((String, String), Id)>,
-    pub changed: Vec<((String, String), Id, Id)>, // old, new
-}
-
-pub fn compute_state_diff<Id>(
-    old: &SharedState<Id>,
-    new: &SharedState<Id>,
-) -> StateDiff<Id>
-```
-
-**Work**: New module, ~30 lines of core logic + tests.
 
 ---
 

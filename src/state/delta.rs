@@ -140,22 +140,37 @@ pub fn apply_state_delta<Id: crate::basespec::rezzy_types::EventId>(
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ZobristStateHash(pub [u8; 32]);
 
+struct HasherWrite<'a>(&'a mut sha2::Sha256);
+impl core::fmt::Write for HasherWrite<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        use sha2::Digest;
+        self.0.update(s.as_bytes());
+        Ok(())
+    }
+}
+
 impl ZobristStateHash {
     /// The identity element (empty state).
     pub const ZERO: Self = Self([0u8; 32]);
 
     /// Compute the seed for a single state entry.
     ///
-    /// `SHA-256(event_type \x00 state_key \x00 event_id)`
+    /// Hashes the length-prefixed `event_type` and `state_key`, followed by the
+    /// string representation of `event_id`. Length prefixing ensures the hash
+    /// remains injective even if components contain null bytes.
     #[must_use]
-    fn seed(event_type: &str, state_key: &str, event_id: &str) -> [u8; 32] {
+    fn seed(event_type: &str, state_key: &str, event_id: &dyn core::fmt::Display) -> [u8; 32] {
+        use core::fmt::Write;
         use sha2::Digest;
         let mut hasher = sha2::Sha256::new();
+        hasher.update((event_type.len() as u64).to_le_bytes());
         hasher.update(event_type.as_bytes());
-        hasher.update(b"\x00");
+        hasher.update((state_key.len() as u64).to_le_bytes());
         hasher.update(state_key.as_bytes());
-        hasher.update(b"\x00");
-        hasher.update(event_id.as_bytes());
+
+        let mut writer = HasherWrite(&mut hasher);
+        let _ = write!(writer, "{event_id}");
+
         hasher.finalize().into()
     }
 
@@ -168,7 +183,7 @@ impl ZobristStateHash {
 
     /// Record a state entry being inserted.
     pub fn insert(&mut self, event_type: &str, state_key: &str, event_id: &str) {
-        let s = Self::seed(event_type, state_key, event_id);
+        let s = Self::seed(event_type, state_key, &event_id);
         self.xor_seed(&s);
     }
 
@@ -188,8 +203,8 @@ impl ZobristStateHash {
         old_event_id: &str,
         new_event_id: &str,
     ) {
-        let old = Self::seed(event_type, state_key, old_event_id);
-        let new = Self::seed(event_type, state_key, new_event_id);
+        let old = Self::seed(event_type, state_key, &old_event_id);
+        let new = Self::seed(event_type, state_key, &new_event_id);
         self.xor_seed(&old);
         self.xor_seed(&new);
     }
@@ -202,8 +217,7 @@ impl ZobristStateHash {
     {
         let mut hash = Self::ZERO;
         for ((event_type, state_key), event_id) in state {
-            let id_str = alloc::format!("{event_id}");
-            let s = Self::seed(event_type, state_key, &id_str);
+            let s = Self::seed(event_type, state_key, event_id);
             hash.xor_seed(&s);
         }
         hash

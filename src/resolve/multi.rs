@@ -240,6 +240,152 @@ where
     )
 }
 
+/// Like [`resolve_state_maps`], but accepts an [`EventProvider`] instead of a
+/// concrete `HashMap`, enabling lazy/on-demand event loading from a database or
+/// LRU cache.
+///
+/// Instead of requiring the caller to pre-materialize the entire auth context
+/// into a `HashMap`, this function:
+///
+/// 1. Partitions state maps into unconflicted/conflicted (no events needed).
+/// 2. Fetches **only** the conflicted events via `provider.get_event(id)`.
+/// 3. BFS-walks auth chains from conflicted events to build the minimal auth
+///    context (lazy — only touches events reachable from the conflicted set).
+/// 4. For V2.1+, computes the conflicted subgraph from the lazily-built context.
+/// 5. Delegates to [`resolve_iterative_sort`](crate::resolve::iterative::resolve_iterative_sort).
+///
+/// # Performance
+///
+/// For rooms with large auth chains, this can be significantly faster than
+/// [`resolve_state_maps`] because it never loads events outside the
+/// backwards-reachable set of the conflicted events.
+///
+/// # Panics
+///
+/// Panics if `state_maps` is empty, or if a conflicted event ID from
+/// the state maps is not found via the provider.
+///
+/// [`EventProvider`]: crate::basespec::rezzy_types::EventProvider
+#[must_use]
+pub fn resolve_state_maps_lazy_with_diff<Id, C>(
+    state_maps: &[SharedState<Id>],
+    provider: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
+    precomputed_auth_diff: Option<impl IntoIterator<Item = Id>>,
+    version: StateResVersion,
+) -> SharedState<Id>
+where
+    Id: EventId,
+    C: EventContent + Clone,
+{
+    assert!(
+        !state_maps.is_empty(),
+        "resolve_state_maps_lazy requires at least one state map"
+    );
+
+    // Fast path: all maps identical
+    let first = &state_maps[0];
+    if state_maps[1..].iter().all(|m| m == first) {
+        return first.clone();
+    }
+
+    // Partition into unconflicted / conflicted (no events needed)
+    let (unconflicted_state, conflicted_ids) =
+        partition_state_maps(state_maps.iter().map(AsRef::as_ref), state_maps.len());
+
+    // Lazily fetch conflicted events
+    let mut conflicted_events: HashMap<Id, LeanEvent<Id, C>> = HashMap::new();
+    for id in &conflicted_ids {
+        let ev = provider
+            .get_event(id)
+            .unwrap_or_else(|| panic!("provider missing conflicted event {id}"));
+        conflicted_events.insert(id.clone(), ev.clone());
+    }
+
+    // Lazily BFS auth chains from conflicted events to build minimal auth context
+    let mut auth_context: HashMap<Id, LeanEvent<Id, C>> = HashMap::new();
+
+    if let Some(auth_diff) = precomputed_auth_diff {
+        // Fast path: we already know exactly which events are in the auth diff.
+        // Fetch them unconditionally.
+        for aid in auth_diff {
+            if !conflicted_events.contains_key(&aid) {
+                if let Some(ev) = provider.get_event(&aid) {
+                    auth_context.insert(aid, ev.clone());
+                }
+            }
+        }
+    } else {
+        // Slow path: dynamically discover the auth diff via BFS
+        let mut auth_queue: alloc::collections::VecDeque<Id> = alloc::collections::VecDeque::new();
+        for ev in conflicted_events.values() {
+            for aid in &ev.auth_events {
+                if !conflicted_events.contains_key(aid) {
+                    auth_queue.push_back(aid.clone());
+                }
+            }
+        }
+        while let Some(aid) = auth_queue.pop_front() {
+            if auth_context.contains_key(&aid) || conflicted_events.contains_key(&aid) {
+                continue;
+            }
+            if let Some(ev) = provider.get_event(&aid) {
+                auth_context.insert(aid, ev.clone());
+                for parent_id in &ev.auth_events {
+                    if !auth_context.contains_key(parent_id)
+                        && !conflicted_events.contains_key(parent_id)
+                    {
+                        auth_queue.push_back(parent_id.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // V2.1+ subgraph computation from the lazily-built context
+    if matches!(version, StateResVersion::V2_1 | StateResVersion::V2_1_1) {
+        // Build stripped auth-only map from what we've already fetched
+        let auth_only: HashMap<Id, LeanEvent<Id>> = auth_context
+            .iter()
+            .chain(conflicted_events.iter())
+            .map(|(id, ev)| {
+                (
+                    id.clone(),
+                    LeanEvent {
+                        event_id: ev.event_id.clone(),
+                        event_type: ev.event_type.clone(),
+                        state_key: ev.state_key.clone(),
+                        sender: ev.sender.clone(),
+                        auth_events: ev.auth_events.clone(),
+                        prev_events: Vec::new(),
+                        content: serde_json::Value::Null,
+                        power_level: 0,
+                        origin_server_ts: 0,
+                        depth: 0,
+                    },
+                )
+            })
+            .collect();
+        let subgraph =
+            crate::resolve::subgraph::compute_v2_1_conflicted_subgraph(&auth_only, &conflicted_ids);
+        for (id, _) in subgraph {
+            conflicted_events.entry(id.clone()).or_insert_with(|| {
+                auth_context
+                    .get(&id)
+                    .or_else(|| provider.get_event(&id))
+                    .expect("subgraph event must be reachable")
+                    .clone()
+            });
+        }
+    }
+
+    crate::resolve::iterative::resolve_iterative_sort(
+        unconflicted_state,
+        conflicted_events,
+        &auth_context,
+        version,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -538,5 +684,127 @@ mod tests {
 
         // Member slot should be resolved (alice_join or bob_join — both are valid joins)
         assert!(resolved.contains_key(&("m.room.member".into(), "@alice:x".into())));
+    }
+
+    #[test]
+    fn test_resolve_lazy_identical_maps() {
+        let mut map = StateMap::new();
+        map.insert(("m.room.create".into(), "".into()), "$create".into());
+
+        let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        let result = resolve_state_maps_lazy_with_diff(
+            &[map.clone(), map.clone()],
+            &events,
+            None::<alloc::vec::Vec<alloc::string::String>>,
+            StateResVersion::V2,
+        );
+        assert_eq!(result, map);
+    }
+
+    #[test]
+    fn test_resolve_lazy_matches_concrete() {
+        // Same two-fork scenario as test_resolve_two_forks —
+        // verify the lazy variant produces identical results.
+        let mut events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+
+        events.insert(
+            "$create".into(),
+            make_event("$create", "m.room.create", "", "@alice:x", alloc::vec![], 0),
+        );
+        events.insert("$alice_join".into(), {
+            let mut ev = make_event(
+                "$alice_join",
+                "m.room.member",
+                "@alice:x",
+                "@alice:x",
+                alloc::vec!["$create".into()],
+                1,
+            );
+            ev.content = serde_json::json!({"membership": "join"});
+            ev
+        });
+        events.insert("$bob_join".into(), {
+            let mut ev = make_event(
+                "$bob_join",
+                "m.room.member",
+                "@bob:x",
+                "@bob:x",
+                alloc::vec!["$create".into()],
+                1,
+            );
+            ev.content = serde_json::json!({"membership": "join"});
+            ev
+        });
+        events.insert("$pl_a".into(), {
+            let mut ev = make_event(
+                "$pl_a",
+                "m.room.power_levels",
+                "",
+                "@alice:x",
+                alloc::vec!["$create".into(), "$alice_join".into()],
+                2,
+            );
+            ev.content = serde_json::json!({"users": {"@alice:x": 100}});
+            ev.power_level = 100;
+            ev
+        });
+        events.insert("$pl_b".into(), {
+            let mut ev = make_event(
+                "$pl_b",
+                "m.room.power_levels",
+                "",
+                "@bob:x",
+                alloc::vec!["$create".into(), "$bob_join".into()],
+                2,
+            );
+            ev.content = serde_json::json!({"users": {"@bob:x": 100}});
+            ev.power_level = 0;
+            ev
+        });
+
+        let mut fork_a = StateMap::new();
+        fork_a.insert(("m.room.create".into(), "".into()), "$create".into());
+        fork_a.insert(
+            ("m.room.member".into(), "@alice:x".into()),
+            "$alice_join".into(),
+        );
+        fork_a.insert(("m.room.power_levels".into(), "".into()), "$pl_a".into());
+
+        let mut fork_b = StateMap::new();
+        fork_b.insert(("m.room.create".into(), "".into()), "$create".into());
+        fork_b.insert(
+            ("m.room.member".into(), "@bob:x".into()),
+            "$bob_join".into(),
+        );
+        fork_b.insert(("m.room.power_levels".into(), "".into()), "$pl_b".into());
+
+        let concrete = resolve_state_maps(
+            &[fork_a.clone(), fork_b.clone()],
+            &events,
+            StateResVersion::V2,
+        );
+        let lazy = resolve_state_maps_lazy_with_diff(
+            &[fork_a, fork_b],
+            &events,
+            None::<alloc::vec::Vec<alloc::string::String>>,
+            StateResVersion::V2,
+        );
+
+        assert_eq!(
+            concrete, lazy,
+            "lazy resolver must produce identical results to concrete"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "requires at least one state map")]
+    fn test_resolve_lazy_empty_panics() {
+        let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        let _ = resolve_state_maps_lazy_with_diff(
+            &[],
+            &events,
+            None::<alloc::vec::Vec<alloc::string::String>>,
+            StateResVersion::V2,
+        );
     }
 }

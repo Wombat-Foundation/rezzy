@@ -1070,8 +1070,8 @@ where
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
 {
-    let mut conflicted_keys = hashbrown::HashSet::new();
-    let mut conflicted_state_set = hashbrown::HashSet::new();
+    let mut conflicted_keys = crate::HashSet::new();
+    let mut conflicted_state_set = crate::HashSet::new();
     let base = &prev_states[0];
 
     for other in &prev_states[1..] {
@@ -1159,17 +1159,18 @@ where
 ///
 /// Internal `unwrap()` calls are guarded by `peek()`
 /// checks and cannot panic under normal operation.
-pub fn compute_auth_chain_diff<Id, C, S>(
+pub fn compute_auth_chain_diff<Id, C, S1, S2>(
     unconflicted_state: &SharedState<Id>,
-    conflicted_state_set: &hashbrown::HashSet<Id>,
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
-) -> hashbrown::HashSet<Id>
+    conflicted_state_set: &crate::HashSet<Id, S2>,
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S1>,
+) -> crate::HashSet<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
-    S: core::hash::BuildHasher,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
 {
-    let mut u_visited = hashbrown::HashSet::new();
+    let mut u_visited = crate::HashSet::new();
     let mut u_heap_elements = Vec::with_capacity(unconflicted_state.len());
     for id in unconflicted_state.values() {
         if u_visited.insert(id.clone()) {
@@ -1180,7 +1181,7 @@ where
     }
     let mut u_heap = alloc::collections::BinaryHeap::from(u_heap_elements);
 
-    let mut c_visited = hashbrown::HashSet::new();
+    let mut c_visited = crate::HashSet::new();
     let mut c_heap = alloc::collections::BinaryHeap::new();
     for id in conflicted_state_set {
         if u_visited.contains(id) {
@@ -1193,7 +1194,7 @@ where
         }
     }
 
-    let mut auth_diff = hashbrown::HashSet::new();
+    let mut auth_diff = crate::HashSet::new();
 
     while let Some(&(c_depth, _)) = c_heap.peek() {
         // Catch up U's traversal to C's current depth
@@ -2080,7 +2081,7 @@ mod tests {
         unconflicted.insert(("m.room.member".into(), "@a:x".into()), "shared".into());
 
         // conflicted set ALSO references "shared" → prune early
-        let mut conflicted = hashbrown::HashSet::new();
+        let mut conflicted = crate::HashSet::new();
         conflicted.insert("shared".to_string());
 
         let diff = compute_auth_chain_diff(&unconflicted, &conflicted, &events_map);
