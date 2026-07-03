@@ -52,18 +52,25 @@ alloc = []
 cli = ["std", "dep:clap", "dep:anyhow", "dep:ureq", "mimalloc"]
 regen = ["std"]
 hashing = ["dep:sha2", "dep:base64"]
-mock-ruma = ["dep:ruma-common", "dep:ruma-events", "dep:ruma-state-res"]
-stress = []
+mock-ruma = [
+    "dep:insta",
+    "dep:ruma-common",
+    "dep:ruma-events",
+    "dep:ruma-state-res",
+    "dep:test-log",
+    "dep:tracing-subscriber",
+]
+stress = ["dep:bincode"]
 mimalloc = ["dep:mimalloc"]
 
 [dependencies]
 anyhow = { version = "1.0", optional = true }
-
 base64 = { version = "0.22.1", optional = true }
+bincode = { version = "1", optional = true }
 clap = { version = "4.4", optional = true, features = ["derive", "env"] }
-
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
 imbl = { version = "4", default-features = false, features = ["serde"] }
+insta = { version = "1.47.2", optional = true }
 mimalloc = { version = "0.1.52", optional = true }
 roaring = "0.11.4"
 ruma-common = { version = "0.19.0", optional = true }
@@ -73,15 +80,12 @@ ruma-state-res = { version = "0.17.0", optional = true, features = ["__criterion
 serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.11.0", optional = true }
+test-log = { version = "0.2.20", optional = true }
+tracing-subscriber = { version = "0.3.23", optional = true }
 ureq = { version = "2.9", optional = true, features = ["json"] }
 
 [dev-dependencies]
-bincode = "1"
-insta = "1.47.2"
-mimalloc = "0.1.52"
 similar = "3.1.0"
-test-log = "0.2.20"
-tracing-subscriber = "0.3.23"
 
 [[test]]
 name = "test_snapshots"
