@@ -464,7 +464,8 @@ fn test_anomaly_17_sliced_dag_membership_desync() {
     let events = load_fixture(&path);
     println!("PARSED EVENTS COUNT: {}", events.len());
 
-    let (resolved, map) = resolve_pathology("17_sliced_dag_membership_desync.jsonl");
+    let map = to_event_map(&events);
+    let resolved = resolve_full(&events, StateResVersion::V2_1_1);
     println!("=== RESOLVED STATE ({} entries) ===", resolved.len());
     for (k, v) in &resolved {
         println!("  ({}, {:?}) -> {}", k.0, k.1, v);

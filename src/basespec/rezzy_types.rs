@@ -24,10 +24,19 @@ use crate::basespec::event_types::MAX_POWER_LEVEL_JSON;
 
 /// Trait alias for types that can serve as event identifiers.
 ///
-/// Any type that is `Clone + Eq + Hash + Ord + Debug` automatically implements
-/// this trait via a blanket impl. In practice, this is either `String` (for
-/// human-readable event IDs like `$abc123:example.com`) or `u32`/`u64` (for
-/// integer-interned short IDs used by homeservers).
+/// Any type that is `Clone + Eq + Hash + Ord + Debug + Display` automatically
+/// implements this trait via a blanket impl. In practice, this is either
+/// `String` (for human-readable event IDs like `$abc123:example.com`) or
+/// `u32`/`u64` (for integer-interned short IDs used by homeservers).
+///
+/// # `Display` contract
+///
+/// The [`Display`](core::fmt::Display) implementation **must** output the
+/// canonical wire-format representation of the event ID. This is relied upon
+/// by `LtHash::seed()` in [`crate::state::delta`] for
+/// content-addressed state hashing — if two implementations produce different
+/// `Display` output for the same logical event ID, state hashes will diverge
+/// across homeservers.
 pub trait EventId:
     Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display
 {

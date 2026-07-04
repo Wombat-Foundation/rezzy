@@ -44,6 +44,7 @@ fn sort_and_verify(events: &[LeanEvent], version: StateResVersion) -> Vec<String
 
 /// Run Kahn's sort on the events and verify it doesn't detect any cycles.
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_benchmark_1k_sort_no_cycles() {
     let content = std::fs::read_to_string("res/benchmark_1k.json").expect("benchmark_1k.json");
     let data: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -54,6 +55,7 @@ fn test_benchmark_1k_sort_no_cycles() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_benchmark_1k_v2_1_sort_no_cycles() {
     let content =
         std::fs::read_to_string("res/benchmark_1k_v2_1.json").expect("benchmark_1k_v2_1.json");
@@ -65,6 +67,7 @@ fn test_benchmark_1k_v2_1_sort_no_cycles() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_benchmark_1k_resolution_determinism() {
     let content = std::fs::read_to_string("res/benchmark_1k.json").expect("benchmark_1k.json");
     let data: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -91,6 +94,7 @@ fn test_benchmark_1k_resolution_determinism() {
 // ============================================================================
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_ruma_bootstrap_auth_chain() {
     use rezzy::auth::{check_auth_chain, RoomState};
 
@@ -123,6 +127,7 @@ fn load_large_room() -> Vec<LeanEvent> {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_large_room_10k_sort_no_cycles() {
     let events = load_large_room();
     assert!(
@@ -141,6 +146,7 @@ fn test_large_room_10k_sort_no_cycles() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_large_room_10k_v2_1_sort() {
     let events = load_large_room();
     let sorted = sort_and_verify(&events, StateResVersion::V2_1);
@@ -148,6 +154,7 @@ fn test_large_room_10k_v2_1_sort() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_large_room_10k_resolution_determinism() {
     let events = load_large_room();
     let r1 = resolve_iterative_sort(
@@ -166,6 +173,7 @@ fn test_large_room_10k_resolution_determinism() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_large_room_10k_v2_vs_v2_1_divergence() {
     let events = load_large_room();
     let map = to_event_map(&events);
@@ -194,6 +202,7 @@ fn test_large_room_10k_v2_vs_v2_1_divergence() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_large_room_10k_subgraph_bounded() {
     let events = load_large_room();
     let map = to_event_map(&events);
@@ -222,6 +231,7 @@ fn test_large_room_10k_subgraph_bounded() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_large_room_10k_auth_chain() {
     use rezzy::auth::{check_auth_chain, RoomState};
 
@@ -249,12 +259,9 @@ fn test_large_room_10k_auth_chain() {
 // ============================================================================
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_real_room_42k_state_deserialization() {
     let path = "res/real_matrix_state.json";
-    if !std::path::Path::new(path).exists() {
-        println!("Skipping test: {path} not found");
-        return;
-    }
     let content = std::fs::read_to_string(path).unwrap();
     let events: Vec<LeanEvent> = serde_json::from_str(&content).unwrap();
     assert!(
@@ -269,12 +276,9 @@ fn test_real_room_42k_state_deserialization() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_real_room_42k_power_level_coercion() {
     let path = "res/real_matrix_state.json";
-    if !std::path::Path::new(path).exists() {
-        println!("Skipping test: {path} not found");
-        return;
-    }
     // The real room dump likely has string/float power levels from old Synapse versions.
     let content = std::fs::read_to_string(path).unwrap();
     let events: Vec<LeanEvent> = serde_json::from_str(&content).unwrap();
@@ -297,12 +301,9 @@ fn test_real_room_42k_power_level_coercion() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_real_room_v2_1_deserialization() {
     let path = "res/real_matrix_state_v2_1.json";
-    if !std::path::Path::new(path).exists() {
-        println!("Skipping test: {path} not found");
-        return;
-    }
     let content = std::fs::read_to_string(path).unwrap();
     let val: serde_json::Value = serde_json::from_str(&content).unwrap();
     let events: Vec<LeanEvent> = if val.is_array() {
@@ -328,6 +329,7 @@ fn load_real_dag(path: &str) -> Vec<LeanEvent> {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_real_dag_52k_room_deserialization() {
     let events = load_real_dag("res/real_dag_52k_room.json");
     assert!(
@@ -346,6 +348,7 @@ fn test_real_dag_52k_room_deserialization() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_real_dag_52k_room_sort() {
     let events = load_real_dag("res/real_dag_52k_room.json");
     let sorted = sort_and_verify(&events, StateResVersion::V2);
@@ -353,6 +356,7 @@ fn test_real_dag_52k_room_sort() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_real_dag_52k_room_v2_1_sort() {
     let events = load_real_dag("res/real_dag_52k_room.json");
     let sorted = sort_and_verify(&events, StateResVersion::V2_1);
@@ -360,6 +364,7 @@ fn test_real_dag_52k_room_v2_1_sort() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_real_dag_52k_room_resolution() {
     let events = load_real_dag("res/real_dag_52k_room.json");
     let map = to_event_map(&events);
@@ -383,6 +388,7 @@ fn test_real_dag_52k_room_resolution() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_real_dag_nheko_room_sort() {
     let events = load_real_dag("res/real_dag_nheko.json");
     assert!(
@@ -395,6 +401,7 @@ fn test_real_dag_nheko_room_sort() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_real_dag_nheko_room_106_heads() {
     // This room has 106 DAG heads — a real federation mess
     let events = load_real_dag("res/real_dag_nheko.json");
@@ -448,6 +455,7 @@ fn parse_jsonl_line(line: &str) -> LeanEvent {
 
 #[test]
 #[allow(clippy::too_many_lines)]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_unredacted_spam_storm_v2_1_1() {
     use std::io::BufRead;
     const CACHE_FORMAT_VERSION: &str = "1";

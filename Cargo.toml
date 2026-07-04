@@ -167,7 +167,7 @@ path = "tests/test_lattice.rs"
 
 [lints.rust]
 unsafe_code = "forbid"
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tarpaulin)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tarpaulin)", "cfg(has_res_submodule)"] }
 
 [lints.clippy]
 pedantic = "warn"

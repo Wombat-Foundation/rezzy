@@ -3173,9 +3173,15 @@ fn test_cdo_is_ancestor_depth_prune_traversal() {
 }
 
 /// Coverage: CDO `dropped_ids.contains(*event_id)` skip (cdo.rs:349-351).
-/// When admin action A drops target B, and a later admin action A2 also
-/// existed but was itself dropped, verify the filter produces the correct
-/// safe set.
+/// Tests a genuine cascading-drop scenario:
+///   - Alice (PL 100) bans Bob → admin action, should survive.
+///   - Bob (PL 0) attempts a self-leave → restricted by Alice's ban
+///     (ban `state_key` matches leave sender), gets dropped.
+///   - Bob sets a topic → non-admin event that is also dropped by Alice's ban.
+///
+/// The `dropped_ids.contains(*event_id)` skip path fires in the priority
+/// iteration: once `$bob_leave` is dropped by Alice's ban, subsequent iterations
+/// encounter it in `dropped_ids` and skip it immediately.
 #[test]
 fn test_cdo_apply_filter_cascading_drops() {
     let events = utils::parse_jsonl_events(
@@ -3185,7 +3191,8 @@ fn test_cdo_apply_filter_cascading_drops() {
 {"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:a":100},"ban":50,"kick":50},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
 {"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":3,"origin_server_ts":1003,"content":{"membership":"join"},"prev_events":["$pl"],"auth_events":["$create","$pl"]}
 {"event_id":"$ban_bob","type":"m.room.member","state_key":"@bob:b","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"membership":"ban"},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl"],"power_level":100}
-{"event_id":"$bob_topic","type":"m.room.topic","state_key":"","sender":"@bob:b","depth":4,"origin_server_ts":2001,"content":{"topic":"bad topic"},"prev_events":["$bob_join"],"auth_events":["$create","$bob_join","$pl"],"power_level":0}
+{"event_id":"$bob_leave","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":4,"origin_server_ts":2001,"content":{"membership":"leave"},"prev_events":["$bob_join"],"auth_events":["$create","$bob_join","$pl"],"power_level":0}
+{"event_id":"$bob_topic","type":"m.room.topic","state_key":"","sender":"@bob:b","depth":4,"origin_server_ts":2002,"content":{"topic":"bad topic"},"prev_events":["$bob_join"],"auth_events":["$create","$bob_join","$pl"],"power_level":0}
 "#,
     );
     let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
@@ -3193,7 +3200,7 @@ fn test_cdo_apply_filter_cascading_drops() {
 
     for ev in &events {
         match ev.event_id.as_str() {
-            "$ban_bob" | "$bob_topic" => {
+            "$ban_bob" | "$bob_leave" | "$bob_topic" => {
                 conflicted.insert(ev.event_id.clone(), ev.clone());
             }
             _ => {
@@ -3203,17 +3210,28 @@ fn test_cdo_apply_filter_cascading_drops() {
     }
 
     let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
-    // $ban_bob should survive (admin action). $bob_topic may be dropped by
-    // the ban (if restricts_event fires) or survive otherwise.
-    // The key assertion: the filter completes without panic and returns
-    // a subset of the original.
+
+    // Alice's ban (PL 100) must survive — it's the highest-priority admin action.
+    assert!(safe.contains_key("$ban_bob"), "admin ban must survive CDO");
+
+    // Bob's leave (sender=@bob:b) is restricted by Alice's ban (state_key=@bob:b).
     assert!(
-        safe.len() <= conflicted.len(),
-        "safe set must be <= conflicted set"
+        !safe.contains_key("$bob_leave"),
+        "bob_leave should be dropped by the ban"
     );
+
+    // Bob's topic (sender=@bob:b) is also restricted by Alice's ban.
     assert!(
-        safe.contains_key("$ban_bob"),
-        "admin action must survive CDO"
+        !safe.contains_key("$bob_topic"),
+        "bob_topic should be dropped by the ban"
+    );
+
+    // Exact survivor count: only $ban_bob should remain.
+    assert_eq!(
+        safe.len(),
+        1,
+        "only the ban should survive, got: {:?}",
+        safe.keys().collect::<Vec<_>>()
     );
 }
 

@@ -34,7 +34,7 @@
 //!
 //! | Feature     | Default | Description |
 //! |-------------|:-------:|-------------|
-//! | `std`       | ✓       | Enables `std::collections::HashMap` and thread-parallel lattice resolution. |
+//! | `std`       | ✓       | Enables `std::collections::{HashMap, HashSet}` and thread-parallel lattice resolution. |
 //! | `alloc`     | ✓       | Bare `alloc` support for `no_std` targets (implied by `std`). |
 //! | `cli`       | ✗       | Builds the `rezzy` CLI binary and the `merge` module. |
 //! | `hashing`   | ✗       | SHA-256 content-hashing for events missing an `event_id`. |

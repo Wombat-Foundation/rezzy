@@ -2154,8 +2154,6 @@ mod tests {
     /// consumed by all its children.
     #[test]
     fn test_compute_state_at_out_degree_zero() {
-        use serde_json::json;
-
         // Diamond: A → B, A → C, B → D, C → D
         // When processing D, both B and C point to A.
         // After B consumes A's out_degree slot, C finds out_degree[A] == 0.

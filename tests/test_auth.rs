@@ -370,6 +370,10 @@ fn test_auth_error_display_variants() {
     let err7: AuthError<String> = AuthError::InvalidSyntax("bad json".into());
     let msg7 = format!("{err7}");
     assert!(msg7.contains("bad json"));
+
+    let err8: AuthError<String> = AuthError::MissingCreate;
+    let msg8 = format!("{err8}");
+    assert!(msg8.contains("m.room.create"));
 }
 
 #[test]
@@ -605,6 +609,66 @@ fn test_auth_error_display() {
     };
     let msg = format!("{err}");
     assert!(msg.contains("bob"));
+}
+
+/// Cover `get_required_power_level` → `get_event_power_level` return path:
+/// when the PL event has an `events` map with an override for the event type.
+#[test]
+fn test_event_type_power_level_override() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@admin:x.com", "content": {"creator": "@admin:x.com"}}
+{"event_id": "$j1", "type": "m.room.member", "state_key": "@alice:x.com", "sender": "@alice:x.com", "content": {"membership": "join"}}
+{"event_id": "$j2", "type": "m.room.member", "state_key": "@admin:x.com", "sender": "@admin:x.com", "content": {"membership": "join"}}
+{"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x.com", "content": {"users": {"@admin:x.com": 100, "@alice:x.com": 50}, "events": {"m.room.topic": 80}}}
+"#,
+    );
+    // Alice (PL 50) tries to send m.room.topic (requires 80 via events override) → rejected
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$topic", "type": "m.room.topic", "state_key": "", "sender": "@alice:x.com", "content": {"topic": "hello"}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_err(),
+        "Sender PL 50 should be rejected for event type requiring 80: {res:?}"
+    );
+
+    // Admin (PL 100) sends m.room.topic (requires 80 via events override) → allowed
+    let events2 = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$topic2", "type": "m.room.topic", "state_key": "", "sender": "@admin:x.com", "content": {"topic": "hello"}}
+"#,
+    );
+    let res2 = check_auth(&events2[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res2.is_ok(),
+        "Admin PL 100 should pass event type PL 80: {res2:?}"
+    );
+}
+
+/// Cover invite-join-rule branch: invited user self-joining under invite rules.
+#[test]
+fn test_invited_user_self_join_allowed() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@admin:x.com", "content": {"creator": "@admin:x.com"}}
+{"event_id": "$jr", "type": "m.room.join_rules", "state_key": "", "sender": "@admin:x.com", "content": {"join_rule": "invite"}}
+{"event_id": "$inv", "type": "m.room.member", "state_key": "@alice:x.com", "sender": "@admin:x.com", "content": {"membership": "invite"}}
+"#,
+    );
+    // Alice self-joins — should be allowed because she's invited
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$join", "type": "m.room.member", "state_key": "@alice:x.com", "sender": "@alice:x.com", "content": {"membership": "join"}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        res.is_ok(),
+        "Invited user should be allowed to self-join under invite rules: {res:?}"
+    );
 }
 
 #[test]
@@ -3510,18 +3574,26 @@ fn test_pl_v2_scalar_not_integer_allowed() {
     );
 }
 
-/// Rule 2.4 / 10.1: `get_room_version_num` panics if m.room.create is absent.
-/// This enforces the invariant that the create event must be in the state.
+/// Rule 2.4 / 10.1: `get_room_version_num` returns `Err(MissingCreate)` if
+/// `m.room.create` is absent. This previously panicked but now gracefully
+/// rejects the event — essential for state resolution over DAG forks where
+/// the create event may not yet be in accumulated state.
 #[test]
-#[should_panic(expected = "m.room.create must exist in state (Rule 2.4)")]
-fn test_pl_missing_create_event_panics() {
+fn test_pl_missing_create_event_returns_error() {
     let state = utils::parse_jsonl_state(
         r#"{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}"#,
     );
     let events = utils::parse_jsonl_events(
         r#"{"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {}}"#,
     );
-    let _ = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+    let result = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+    assert!(
+        matches!(result, Err(crate::auth::AuthError::MissingCreate)),
+        "Missing create should return MissingCreate error, got: {result:?}"
+    );
+    // Exercise Display impl for coverage
+    let msg = format!("{}", result.unwrap_err());
+    assert!(msg.contains("m.room.create"));
 }
 
 /// Rule 10.2 (V12): `events` map with non-integer value → reject.

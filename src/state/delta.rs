@@ -126,6 +126,30 @@ pub fn apply_state_delta<Id: crate::basespec::rezzy_types::EventId>(
     result
 }
 
+/// Decodes a 64-character ASCII hex string into a 32-byte array.
+///
+/// Returns `Err` with a static message if the input is not exactly 64 ASCII
+/// hex characters. This rejects non-ASCII UTF-8 up front, preventing panics
+/// from slicing inside multibyte character boundaries.
+fn decode_hex_32(s: &str) -> Result<[u8; 32], &'static str> {
+    if s.len() != 64 {
+        return Err("expected 64-character hex string");
+    }
+    if !s.is_ascii() {
+        return Err("hex string contains non-ASCII characters");
+    }
+    let mut bytes = [0u8; 32];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        let start = i.saturating_mul(2);
+        let end = start.saturating_add(2);
+        // SAFETY: s.is_ascii() guarantees every byte is a single-byte character,
+        // so slicing at any byte offset is always on a character boundary.
+        let byte_str = &s[start..end];
+        *byte = u8::from_str_radix(byte_str, 16).map_err(|_| "invalid hex character")?;
+    }
+    Ok(bytes)
+}
+
 pub mod hex_serde {
     use serde::{Deserialize, Deserializer, Serializer};
 
@@ -141,21 +165,10 @@ pub mod hex_serde {
     }
 
     /// # Errors
-    /// Returns an error if the string is not exactly 64 characters long or contains invalid hex characters.
+    /// Returns an error if the string is not exactly 64 ASCII hex characters.
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 32], D::Error> {
         let s = alloc::string::String::deserialize(deserializer)?;
-        if s.len() != 64 {
-            return Err(serde::de::Error::custom("expected 64-character hex string"));
-        }
-        let mut bytes = [0u8; 32];
-        for (i, byte) in bytes.iter_mut().enumerate() {
-            let start = i.saturating_mul(2);
-            let end = start.saturating_add(2);
-            let byte_str = &s[start..end];
-            *byte = u8::from_str_radix(byte_str, 16)
-                .map_err(|_| serde::de::Error::custom("invalid hex character"))?;
-        }
-        Ok(bytes)
+        super::decode_hex_32(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -175,26 +188,15 @@ pub mod hex_serde_opt {
     }
 
     /// # Errors
-    /// Returns an error if the string is present but is not exactly 64 characters long or contains invalid hex characters.
+    /// Returns an error if the string is present but is not exactly 64 ASCII hex characters.
     pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Option<[u8; 32]>, D::Error> {
         let opt = Option::<alloc::string::String>::deserialize(deserializer)?;
         match opt {
-            Some(s) => {
-                if s.len() != 64 {
-                    return Err(serde::de::Error::custom("expected 64-character hex string"));
-                }
-                let mut bytes = [0u8; 32];
-                for (i, byte) in bytes.iter_mut().enumerate() {
-                    let start = i.saturating_mul(2);
-                    let end = start.saturating_add(2);
-                    let byte_str = &s[start..end];
-                    *byte = u8::from_str_radix(byte_str, 16)
-                        .map_err(|_| serde::de::Error::custom("invalid hex character"))?;
-                }
-                Ok(Some(bytes))
-            }
+            Some(s) => super::decode_hex_32(&s)
+                .map(Some)
+                .map_err(serde::de::Error::custom),
             None => Ok(None),
         }
     }

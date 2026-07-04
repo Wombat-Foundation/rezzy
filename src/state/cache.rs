@@ -24,8 +24,8 @@
 //! events are converted hundreds of times.
 //!
 //! `LeanEventCache` amortizes this cost to once-per-event by caching
-//! `Arc<LeanEvent>` with LRU eviction. It implements [`EventProvider`] so
-//! it plugs directly into [`resolve_state_maps_lazy`](crate::resolve::multi::resolve_state_maps_lazy).
+//! `Arc<LeanEvent>` with LRU eviction. It implements [`EventProvider`](crate::basespec::rezzy_types::EventProvider) so
+//! it plugs directly into [`resolve_state_maps_lazy_with_diff`](crate::resolve::multi::resolve_state_maps_lazy_with_diff).
 //!
 //! # Example
 //!
@@ -53,9 +53,11 @@
 
 use crate::basespec::rezzy_types::{EventContent, EventId, LeanEvent};
 use crate::HashMap;
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use core::cell::{Cell, RefCell};
 
-/// A fixed-capacity, O(1) LRU cache for pre-constructed [`LeanEvent`]s.
+/// A fixed-capacity LRU cache for pre-constructed [`LeanEvent`]s.
 ///
 /// Events are stored as `Arc<LeanEvent<Id, C>>` for cheap cloning. When the
 /// cache exceeds capacity, the least-recently-used entry is evicted.
@@ -67,19 +69,34 @@ use alloc::sync::Arc;
 ///
 /// # Implementation
 ///
-/// Uses a `HashMap` for O(1) key lookup plus a generation counter for O(1)
-/// LRU tracking. Eviction scans for the minimum generation, which is O(n)
-/// in the worst case but amortized O(1) for typical access patterns where
-/// the eviction candidate is near the front.
+/// Uses a `HashMap` for O(1) key lookup plus a `BTreeMap<u64, Id>` side-index
+/// for **O(log n)** LRU eviction. The `BTreeMap` maps generation ticks to
+/// event IDs, so `pop_first()` instantly yields the least-recently-used entry.
+///
+/// # Interior mutability
+///
+/// The `BTreeMap` side-index is wrapped in [`RefCell`] and per-entry
+/// `last_access` fields use [`Cell<u64>`] so that the
+/// [`EventProvider`](crate::basespec::rezzy_types::EventProvider)
+/// implementation (which takes `&self`) can update LRU state. This ensures
+/// events accessed through the lazy resolver path are properly marked as
+/// recently used and not prematurely evicted.
 pub struct LeanEventCache<Id: EventId, C: EventContent = serde_json::Value> {
     map: HashMap<Id, CacheEntry<Id, C>>,
-    generation: u64,
+    /// Sorted index: generation → event ID. Enables O(log n) eviction via
+    /// `pop_first()`. Wrapped in `RefCell` for interior mutability through
+    /// `&self` (the `EventProvider` path).
+    access_order: RefCell<BTreeMap<u64, Id>>,
+    generation: Cell<u64>,
     capacity: usize,
+    hits: Cell<u32>,
+    misses: Cell<u32>,
+    evictions: Cell<u32>,
 }
 
 struct CacheEntry<Id: EventId, C: EventContent> {
     event: Arc<LeanEvent<Id, C>>,
-    last_access: u64,
+    last_access: Cell<u64>,
 }
 
 impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
@@ -93,8 +110,12 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
         assert!(capacity > 0, "LeanEventCache capacity must be > 0");
         Self {
             map: HashMap::with_capacity(capacity),
-            generation: 0,
+            access_order: RefCell::new(BTreeMap::new()),
+            generation: Cell::new(0),
             capacity,
+            hits: Cell::new(0),
+            misses: Cell::new(0),
+            evictions: Cell::new(0),
         }
     }
 
@@ -116,6 +137,48 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
         self.capacity
     }
 
+    /// Returns a snapshot of the current cache statistics.
+    #[must_use]
+    pub fn stats(&self) -> CacheStats {
+        CacheStats {
+            hits: self.hits.get(),
+            misses: self.misses.get(),
+            evictions: self.evictions.get(),
+        }
+    }
+
+    /// Shared LRU bump — increments generation, updates `last_access`,
+    /// and rotates the `BTreeMap` side-index entry. Called from both
+    /// `touch` (returns `Arc`) and `EventProvider::get_event` (returns `&`).
+    fn bump_entry(&self, entry: &CacheEntry<Id, C>) {
+        let old_gen = entry.last_access.get();
+        let new_gen = self.generation.get().wrapping_add(1);
+        self.generation.set(new_gen);
+        entry.last_access.set(new_gen);
+
+        let mut order = self.access_order.borrow_mut();
+        order.remove(&old_gen);
+        order.insert(new_gen, entry.event.event_id.clone());
+    }
+
+    /// Internal LRU touch — bumps generation and updates `last_access`
+    /// plus the `BTreeMap` side-index through interior mutability, so it
+    /// works from both `&self` and `&mut self` contexts.
+    fn touch<Q>(&self, id: &Q) -> Option<Arc<LeanEvent<Id, C>>>
+    where
+        Id: core::borrow::Borrow<Q>,
+        Q: ?Sized + Eq + core::hash::Hash,
+    {
+        if let Some(entry) = self.map.get(id) {
+            self.bump_entry(entry);
+            self.hits.set(self.hits.get().saturating_add(1));
+            Some(Arc::clone(&entry.event))
+        } else {
+            self.misses.set(self.misses.get().saturating_add(1));
+            None
+        }
+    }
+
     /// Looks up an event by ID, returning a shared reference and updating
     /// the LRU generation.
     pub fn get<Q>(&mut self, id: &Q) -> Option<Arc<LeanEvent<Id, C>>>
@@ -123,13 +186,7 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
         Id: core::borrow::Borrow<Q>,
         Q: ?Sized + Eq + core::hash::Hash,
     {
-        self.generation = self.generation.wrapping_add(1);
-        if let Some(entry) = self.map.get_mut(id) {
-            entry.last_access = self.generation;
-            Some(Arc::clone(&entry.event))
-        } else {
-            None
-        }
+        self.touch(id)
     }
 
     /// Inserts a `LeanEvent`, wrapping it in `Arc`. If the cache is at
@@ -145,33 +202,31 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
     /// Inserts a pre-wrapped `Arc<LeanEvent>`. Useful when the caller already
     /// has an `Arc` (e.g., from a shared database layer).
     pub fn insert_arc(&mut self, event: Arc<LeanEvent<Id, C>>) {
-        self.generation = self.generation.wrapping_add(1);
+        let gen = self.generation.get().wrapping_add(1);
+        self.generation.set(gen);
         let id = event.event_id.clone();
 
-        // Replace existing entry
-        if self.map.contains_key(&id) {
-            self.map.insert(
-                id,
-                CacheEntry {
-                    event,
-                    last_access: self.generation,
-                },
-            );
+        // Replace existing entry — remove old generation from side-index
+        if let Some(existing) = self.map.get_mut(&id) {
+            let old_gen = existing.last_access.get();
+            self.access_order.borrow_mut().remove(&old_gen);
+            existing.event = event;
+            existing.last_access.set(gen);
+            self.access_order.borrow_mut().insert(gen, id);
             return;
         }
 
-        // Evict if at capacity
+        // New entry — evict if at capacity
         if self.map.len() >= self.capacity {
             self.evict_lru();
         }
 
-        self.map.insert(
-            id,
-            CacheEntry {
-                event,
-                last_access: self.generation,
-            },
-        );
+        let entry = CacheEntry {
+            event,
+            last_access: Cell::new(gen),
+        };
+        self.access_order.borrow_mut().insert(gen, id.clone());
+        self.map.insert(id, entry);
     }
 
     /// Gets an event by ID, or inserts one created by the closure if missing.
@@ -195,6 +250,11 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
     ///     }
     /// });
     /// ```
+    ///
+    /// # Panics (debug only)
+    ///
+    /// In debug builds, panics if the closure returns a `LeanEvent` whose
+    /// `event_id` does not match the requested `id`.
     pub fn get_or_insert<Q>(
         &mut self,
         id: &Q,
@@ -207,7 +267,12 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
         if let Some(arc) = self.get(id) {
             return arc;
         }
-        self.insert(f())
+        let event = f();
+        debug_assert!(
+            event.event_id.borrow() == id,
+            "get_or_insert: closure produced event with mismatched event_id"
+        );
+        self.insert(event)
     }
 
     /// Inserts a batch of events, returning a `HashMap` of `Arc`s.
@@ -234,37 +299,39 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
     /// Removes all entries from the cache.
     pub fn clear(&mut self) {
         self.map.clear();
-        self.generation = 0;
+        self.access_order.borrow_mut().clear();
+        self.generation.set(0);
     }
 
-    /// Evicts the least-recently-used entry.
+    /// Evicts the least-recently-used entry in **O(log n)** via the
+    /// `BTreeMap` side-index.
     fn evict_lru(&mut self) {
-        // Find the entry with the smallest last_access generation
-        let mut min_gen = u64::MAX;
-        let mut evict_key: Option<Id> = None;
-        for (id, entry) in &self.map {
-            if entry.last_access < min_gen {
-                min_gen = entry.last_access;
-                evict_key = Some(id.clone());
-            }
-        }
-        if let Some(key) = evict_key {
-            self.map.remove(&key);
+        if let Some((_gen, id)) = self.access_order.borrow_mut().pop_first() {
+            self.map.remove(&id);
+            self.evictions.set(self.evictions.get().saturating_add(1));
         }
     }
 }
 
-/// `LeanEventCache` implements [`EventProvider`] so it can be passed directly
-/// to [`resolve_state_maps_lazy`](crate::resolve::multi::resolve_state_maps_lazy).
+/// `LeanEventCache` implements [`EventProvider`](crate::basespec::rezzy_types::EventProvider) so it can be passed directly
+/// to [`resolve_state_maps_lazy_with_diff`](crate::resolve::multi::resolve_state_maps_lazy_with_diff).
 ///
-/// The returned reference borrows from the internal `Arc`, which is valid for
-/// the lifetime of the cache entry. Because `EventProvider::get_event` returns
-/// `Option<&LeanEvent>`, we use the `Arc`'s `Deref` to provide the reference.
+/// Unlike a plain `HashMap` provider, this implementation updates the LRU
+/// generation for every access through interior mutability (`Cell` + `RefCell`),
+/// ensuring that events heavily used during lazy resolution are not prematurely
+/// evicted.
 impl<Id: EventId, C: EventContent> crate::basespec::rezzy_types::EventProvider<Id, C>
     for LeanEventCache<Id, C>
 {
     fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>> {
-        self.map.get(id).map(|entry| entry.event.as_ref())
+        if let Some(entry) = self.map.get(id) {
+            self.bump_entry(entry);
+            self.hits.set(self.hits.get().saturating_add(1));
+            Some(entry.event.as_ref())
+        } else {
+            self.misses.set(self.misses.get().saturating_add(1));
+            None
+        }
     }
 }
 
@@ -407,7 +474,7 @@ mod tests {
         let mut cache = LeanEventCache::new(10);
         cache.insert(make_event("$a", 1));
 
-        // EventProvider::get_event uses immutable borrow (no LRU update)
+        // EventProvider::get_event updates LRU state via interior mutability
         let key_a: String = "$a".into();
         let ev = EventProvider::get_event(&cache, &key_a);
         assert!(ev.is_some());
@@ -415,6 +482,31 @@ mod tests {
 
         let key_missing: String = "$missing".into();
         assert!(EventProvider::get_event(&cache, &key_missing).is_none());
+    }
+
+    #[test]
+    fn test_cache_event_provider_updates_lru() {
+        use crate::basespec::rezzy_types::EventProvider;
+
+        let mut cache = LeanEventCache::new(3);
+        cache.insert(make_event("$a", 1)); // gen 1
+        cache.insert(make_event("$b", 2)); // gen 2
+        cache.insert(make_event("$c", 3)); // gen 3
+
+        // Access $a via EventProvider (immutable borrow) — should update LRU
+        let key_a: String = "$a".into();
+        let _ = EventProvider::get_event(&cache, &key_a); // gen 4
+
+        // Now $b is the LRU (gen 2). Insert $d → should evict $b, not $a.
+        cache.insert(make_event("$d", 4));
+
+        assert!(
+            cache.get("$a").is_some(),
+            "$a was touched via EventProvider, should survive"
+        );
+        assert!(cache.get("$b").is_none(), "$b was LRU, should be evicted");
+        assert!(cache.get("$c").is_some());
+        assert!(cache.get("$d").is_some());
     }
 
     #[test]
@@ -466,5 +558,63 @@ mod tests {
 
         // Both Arcs point to the same allocation
         assert!(Arc::ptr_eq(&arc1, &arc2));
+    }
+
+    #[test]
+    fn test_cache_stats_tracking() {
+        let mut cache = LeanEventCache::new(3);
+
+        // Misses
+        assert!(cache.get("$missing").is_none());
+        assert_eq!(cache.stats().misses, 1);
+
+        // Inserts + hits
+        cache.insert(make_event("$a", 1));
+        cache.insert(make_event("$b", 2));
+        cache.insert(make_event("$c", 3));
+
+        let _ = cache.get("$a"); // hit
+        let _ = cache.get("$b"); // hit
+        assert_eq!(cache.stats().hits, 2);
+
+        // Eviction
+        cache.insert(make_event("$d", 4));
+        assert_eq!(cache.stats().evictions, 1);
+    }
+
+    #[test]
+    fn test_cache_stats_via_event_provider() {
+        use crate::basespec::rezzy_types::EventProvider;
+
+        let mut cache = LeanEventCache::new(10);
+        cache.insert(make_event("$a", 1));
+
+        let key_a: String = "$a".into();
+        let key_b: String = "$missing".into();
+
+        let _ = EventProvider::get_event(&cache, &key_a);
+        let _ = EventProvider::get_event(&cache, &key_b);
+
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 1, "EventProvider hit should be tracked");
+        assert_eq!(stats.misses, 1, "EventProvider miss should be tracked");
+    }
+
+    /// Verifies the `BTreeMap` side-index stays in sync: after multiple
+    /// accesses and replacements, the side-index length must equal map length.
+    #[test]
+    fn test_cache_side_index_consistency() {
+        let mut cache = LeanEventCache::new(5);
+        for i in 0..10 {
+            cache.insert(make_event(&alloc::format!("${i}"), i));
+        }
+        // After 10 inserts into capacity-5, should have exactly 5 entries
+        assert_eq!(cache.len(), 5);
+        assert_eq!(cache.access_order.borrow().len(), 5);
+
+        // Replace an existing entry
+        cache.insert(make_event("$9", 99));
+        assert_eq!(cache.len(), 5);
+        assert_eq!(cache.access_order.borrow().len(), 5);
     }
 }

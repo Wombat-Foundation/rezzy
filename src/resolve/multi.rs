@@ -192,38 +192,9 @@ where
         conflicted_events.insert(id.clone(), ev.clone());
     }
 
-    // For V2.1+ rooms, compute the conflicted subgraph (MSC4297): events in
-    // the auth DAG that lie at the intersection of backwards-reachable
-    // (ancestors) and forwards-reachable (descendants) from the conflicted
-    // set.  These events must be added to the conflicted set so the mainline
-    // sort considers them — without this, intermediate PL events in the auth
-    // chain are missed and resolution picks wrong winners.
-    //
-    // We build a stripped event map (auth_events only, no content) to satisfy
-    // the `LeanEvent<Id>` signature of `compute_v2_1_conflicted_subgraph`.
+    // For V2.1+ rooms, compute the conflicted subgraph (MSC4297).
     if matches!(version, StateResVersion::V2_1 | StateResVersion::V2_1_1) {
-        let auth_only: HashMap<Id, LeanEvent<Id>> = event_context
-            .iter()
-            .map(|(id, ev)| {
-                (
-                    id.clone(),
-                    LeanEvent {
-                        event_id: ev.event_id.clone(),
-                        event_type: ev.event_type.clone(),
-                        state_key: ev.state_key.clone(),
-                        sender: ev.sender.clone(),
-                        auth_events: ev.auth_events.clone(),
-                        prev_events: Vec::new(),
-                        content: serde_json::Value::Null,
-                        power_level: 0,
-                        origin_server_ts: 0,
-                        depth: 0,
-                    },
-                )
-            })
-            .collect();
-        let subgraph =
-            crate::resolve::subgraph::compute_v2_1_conflicted_subgraph(&auth_only, &conflicted_ids);
+        let subgraph = compute_v2_1_subgraph(event_context.iter(), &conflicted_ids);
         for (id, _) in subgraph {
             conflicted_events.entry(id.clone()).or_insert_with(|| {
                 event_context
@@ -240,6 +211,50 @@ where
         event_context,
         version,
     )
+}
+
+/// Builds a stripped auth-only event map and computes the V2.1+ conflicted
+/// subgraph (MSC4297).
+///
+/// Events in the auth DAG that lie at the intersection of backwards-reachable
+/// (ancestors) and forwards-reachable (descendants) from the conflicted set
+/// must be added to the conflicted set so the mainline sort considers them.
+///
+/// The `events` iterator provides all events to consider (e.g., `event_context`
+/// for the eager path, or `auth_context.chain(conflicted_events)` for the lazy
+/// path). The returned subgraph events must be merged into `conflicted_events`
+/// by the caller.
+#[inline(never)]
+fn compute_v2_1_subgraph<'a, Id, C, I>(
+    events: I,
+    conflicted_ids: &[Id],
+) -> HashMap<Id, LeanEvent<Id>>
+where
+    Id: EventId + 'a,
+    C: 'a,
+    I: IntoIterator<Item = (&'a Id, &'a LeanEvent<Id, C>)>,
+{
+    let auth_only: HashMap<Id, LeanEvent<Id>> = events
+        .into_iter()
+        .map(|(id, ev)| {
+            (
+                id.clone(),
+                LeanEvent {
+                    event_id: ev.event_id.clone(),
+                    event_type: ev.event_type.clone(),
+                    state_key: ev.state_key.clone(),
+                    sender: ev.sender.clone(),
+                    auth_events: ev.auth_events.clone(),
+                    prev_events: Vec::new(),
+                    content: serde_json::Value::Null,
+                    power_level: 0,
+                    origin_server_ts: 0,
+                    depth: 0,
+                },
+            )
+        })
+        .collect();
+    crate::resolve::subgraph::compute_v2_1_conflicted_subgraph(&auth_only, conflicted_ids)
 }
 
 /// Populate `auth_context` from a precomputed auth diff, skipping events
@@ -391,31 +406,19 @@ where
 
     // V2.1+ subgraph computation from the lazily-built context
     if matches!(version, StateResVersion::V2_1 | StateResVersion::V2_1_1) {
-        // Build stripped auth-only map from what we've already fetched
-        let auth_only: HashMap<Id, LeanEvent<Id>> = auth_context
-            .iter()
-            .chain(conflicted_events.iter())
-            .map(|(id, ev)| {
-                (
-                    id.clone(),
-                    LeanEvent {
-                        event_id: ev.event_id.clone(),
-                        event_type: ev.event_type.clone(),
-                        state_key: ev.state_key.clone(),
-                        sender: ev.sender.clone(),
-                        auth_events: ev.auth_events.clone(),
-                        prev_events: Vec::new(),
-                        content: serde_json::Value::Null,
-                        power_level: 0,
-                        origin_server_ts: 0,
-                        depth: 0,
-                    },
-                )
-            })
-            .collect();
-        let subgraph =
-            crate::resolve::subgraph::compute_v2_1_conflicted_subgraph(&auth_only, &conflicted_ids);
+        let subgraph = compute_v2_1_subgraph(
+            auth_context.iter().chain(conflicted_events.iter()),
+            &conflicted_ids,
+        );
         insert_subgraph_events(subgraph, &auth_context, &mut conflicted_events);
+    }
+
+    // Merge conflicted events into auth_context so that
+    // `route_msc4297_ancestral_power_events` (and `compute_local_auth`) can
+    // BFS through them — matching the non-lazy `resolve_state_maps` where
+    // `event_context` includes all events.
+    for (id, ev) in &conflicted_events {
+        auth_context.entry(id.clone()).or_insert_with(|| ev.clone());
     }
 
     crate::resolve::iterative::resolve_iterative_sort(
