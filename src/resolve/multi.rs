@@ -46,7 +46,9 @@
 //! );
 //! ```
 
-use crate::basespec::rezzy_types::{EventContent, EventId, LeanEvent, StateResVersion};
+use crate::basespec::rezzy_types::{
+    EventContent, EventId, EventProvider, LeanEvent, StateResVersion,
+};
 use crate::state::at::SharedState;
 use crate::HashMap;
 use alloc::vec::Vec;
@@ -240,6 +242,59 @@ where
     )
 }
 
+/// Populate `auth_context` from a precomputed auth diff, skipping events
+/// already in `conflicted_events`.
+///
+/// Extracted as a separate `#[inline(never)]` function to ensure LLVM
+/// coverage instruments it independently of the generic caller.
+#[inline(never)]
+fn populate_auth_from_diff<Id, C>(
+    auth_diff: impl IntoIterator<Item = Id>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C>>,
+    provider: &impl EventProvider<Id, C>,
+    auth_context: &mut HashMap<Id, LeanEvent<Id, C>>,
+) where
+    Id: EventId,
+    C: Clone,
+{
+    for aid in auth_diff {
+        if !conflicted_events.contains_key(&aid) {
+            if let Some(ev) = provider.get_event(&aid) {
+                auth_context.insert(aid, ev.clone());
+            }
+        }
+    }
+}
+
+/// Insert subgraph events into `conflicted_events`, sourcing them from
+/// `auth_context`.
+///
+/// # Invariant
+///
+/// `subgraph ⊆ auth_context ∪ conflicted_events`. If `or_insert_with`
+/// fires (event not in `conflicted_events`), it **must** be in
+/// `auth_context`.
+///
+/// # Panics
+///
+/// Panics if a subgraph event is found in neither `conflicted_events`
+/// nor `auth_context` (invariant violation).
+#[inline(never)]
+fn insert_subgraph_events<Id: EventId, C: Clone>(
+    subgraph: HashMap<Id, LeanEvent<Id>>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>>,
+    conflicted_events: &mut HashMap<Id, LeanEvent<Id, C>>,
+) {
+    for (id, _) in subgraph {
+        conflicted_events.entry(id.clone()).or_insert_with(|| {
+            auth_context
+                .get(&id)
+                .unwrap_or_else(|| panic!("subgraph event {id} must be in auth_context"))
+                .clone()
+        });
+    }
+}
+
 /// Like [`resolve_state_maps`], but accepts an [`EventProvider`] instead of a
 /// concrete `HashMap`, enabling lazy/on-demand event loading from a database or
 /// LRU cache.
@@ -306,14 +361,7 @@ where
 
     if let Some(auth_diff) = precomputed_auth_diff {
         // Fast path: we already know exactly which events are in the auth diff.
-        // Fetch them unconditionally.
-        for aid in auth_diff {
-            if !conflicted_events.contains_key(&aid) {
-                if let Some(ev) = provider.get_event(&aid) {
-                    auth_context.insert(aid, ev.clone());
-                }
-            }
-        }
+        populate_auth_from_diff(auth_diff, &conflicted_events, provider, &mut auth_context);
     } else {
         // Slow path: dynamically discover the auth diff via BFS
         let mut auth_queue: alloc::collections::VecDeque<Id> = alloc::collections::VecDeque::new();
@@ -367,15 +415,7 @@ where
             .collect();
         let subgraph =
             crate::resolve::subgraph::compute_v2_1_conflicted_subgraph(&auth_only, &conflicted_ids);
-        for (id, _) in subgraph {
-            conflicted_events.entry(id.clone()).or_insert_with(|| {
-                auth_context
-                    .get(&id)
-                    .or_else(|| provider.get_event(&id))
-                    .expect("subgraph event must be reachable")
-                    .clone()
-            });
-        }
+        insert_subgraph_events(subgraph, &auth_context, &mut conflicted_events);
     }
 
     crate::resolve::iterative::resolve_iterative_sort(
@@ -418,6 +458,21 @@ mod tests {
             power_level: 0,
             origin_server_ts: depth * 1000,
         }
+    }
+
+    /// Parse a JSONL string into a `HashMap<String, LeanEvent>` keyed by `event_id`.
+    fn parse_jsonl_map(input: &str) -> HashMap<alloc::string::String, LeanEvent> {
+        let mut map = HashMap::new();
+        for line in input.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+            let ev: LeanEvent = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("bad JSONL: {e}\n  line: {line}"));
+            map.insert(ev.event_id.clone(), ev);
+        }
+        map
     }
 
     #[test]
@@ -797,6 +852,138 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_lazy_matches_concrete_v2_1() {
+        // Deep auth chain to exercise:
+        //   1. Transitive BFS walk (lines 333-340): $create and $alice_join are
+        //      ONLY reachable via $pl's auth chain, not directly from the
+        //      conflicted events.
+        //   2. V2_1 subgraph insertion (lines 370-378): $pl sits in the auth
+        //      intersection of both conflicted events, so the subgraph
+        //      computation adds it to conflicted_events.
+        //
+        // Auth DAG (transitive-only links for $create, $alice_join):
+        //   $create ← $alice_join ← $pl ← $topic_a (fork A)
+        //                                ← $topic_b (fork B)
+        //
+        // NOTE: $topic_a/$topic_b only auth [$pl], NOT [$create, $alice_join].
+        // NOTE: $topic_a/$topic_b only auth [$pl] — $create and $alice_join
+        // must be discovered transitively by the BFS walk.
+        let events = parse_jsonl_map(
+            r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@alice:x", "content": {}}
+{"event_id": "$alice_join", "type": "m.room.member", "state_key": "@alice:x", "sender": "@alice:x", "auth_events": ["$create"], "depth": 1, "content": {"membership": "join"}}
+{"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@alice:x", "auth_events": ["$create", "$alice_join"], "depth": 2, "power_level": 100, "content": {"users": {"@alice:x": 100}}}
+{"event_id": "$topic_a", "type": "m.room.topic", "state_key": "", "sender": "@alice:x", "auth_events": ["$pl"], "depth": 3, "content": {}}
+{"event_id": "$topic_b", "type": "m.room.topic", "state_key": "", "sender": "@alice:x", "auth_events": ["$pl"], "depth": 3, "content": {}}
+"#,
+        );
+
+        let mut fork_a = StateMap::new();
+        fork_a.insert(("m.room.create".into(), "".into()), "$create".into());
+        fork_a.insert(
+            ("m.room.member".into(), "@alice:x".into()),
+            "$alice_join".into(),
+        );
+        fork_a.insert(("m.room.power_levels".into(), "".into()), "$pl".into());
+        fork_a.insert(("m.room.topic".into(), "".into()), "$topic_a".into());
+
+        let mut fork_b = StateMap::new();
+        fork_b.insert(("m.room.create".into(), "".into()), "$create".into());
+        fork_b.insert(
+            ("m.room.member".into(), "@alice:x".into()),
+            "$alice_join".into(),
+        );
+        fork_b.insert(("m.room.power_levels".into(), "".into()), "$pl".into());
+        fork_b.insert(("m.room.topic".into(), "".into()), "$topic_b".into());
+
+        let concrete = resolve_state_maps(
+            &[fork_a.clone(), fork_b.clone()],
+            &events,
+            StateResVersion::V2_1,
+        );
+        // None auth diff → exercises BFS slow path with transitive auth walk
+        let lazy = resolve_state_maps_lazy_with_diff(
+            &[fork_a, fork_b],
+            &events,
+            None::<alloc::vec::Vec<alloc::string::String>>,
+            StateResVersion::V2_1,
+        );
+
+        assert_eq!(
+            concrete, lazy,
+            "lazy resolver must produce identical results to concrete for V2_1"
+        );
+    }
+
+    #[test]
+    fn test_resolve_lazy_v2_1_subgraph_insertion() {
+        // Exercise the `or_insert_with` at L372-377: a non-conflicted event
+        // ($mid) sits between two conflicted state keys in the auth chain.
+        //
+        // Conflicted slots:
+        //   (m.room.power_levels, "") → $pl_a vs $pl_b
+        //   (m.room.topic, "")       → $topic_a vs $topic_b
+        //
+        // Auth DAG:
+        //   $create ← $pl_a ← $mid ← $topic_a
+        //           ← $pl_b         ← $topic_b
+        //
+        // $mid is AGREED (same in both forks) so it's NOT in conflicted_events.
+        // But the subgraph backward/forward intersection includes $mid because:
+        //   backwards: $topic_a → $mid → $pl_a → $create (ancestor path)
+        //   forwards:  $pl_a → children[$pl_a]=[$mid] → children[$mid]=[$topic_a]
+        // so $mid ∈ backwards ∩ forwards → triggers or_insert_with.
+        let events = parse_jsonl_map(
+            r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@alice:x", "content": {}}
+{"event_id": "$alice_join", "type": "m.room.member", "state_key": "@alice:x", "sender": "@alice:x", "auth_events": ["$create"], "depth": 1, "content": {"membership": "join"}}
+{"event_id": "$pl_a", "type": "m.room.power_levels", "state_key": "", "sender": "@alice:x", "auth_events": ["$create"], "depth": 2, "power_level": 100, "content": {"users": {"@alice:x": 100}}}
+{"event_id": "$pl_b", "type": "m.room.power_levels", "state_key": "", "sender": "@alice:x", "auth_events": ["$create"], "depth": 2, "power_level": 100, "content": {"users": {"@alice:x": 100}}}
+{"event_id": "$mid", "type": "m.room.name", "state_key": "", "sender": "@alice:x", "auth_events": ["$pl_a"], "depth": 3, "content": {"name": "test"}}
+{"event_id": "$topic_a", "type": "m.room.topic", "state_key": "", "sender": "@alice:x", "auth_events": ["$mid"], "depth": 4, "content": {}}
+{"event_id": "$topic_b", "type": "m.room.topic", "state_key": "", "sender": "@alice:x", "auth_events": ["$pl_b"], "depth": 4, "content": {}}
+"#,
+        );
+
+        let mut fork_a = StateMap::new();
+        fork_a.insert(("m.room.create".into(), "".into()), "$create".into());
+        fork_a.insert(
+            ("m.room.member".into(), "@alice:x".into()),
+            "$alice_join".into(),
+        );
+        fork_a.insert(("m.room.power_levels".into(), "".into()), "$pl_a".into());
+        fork_a.insert(("m.room.name".into(), "".into()), "$mid".into());
+        fork_a.insert(("m.room.topic".into(), "".into()), "$topic_a".into());
+
+        let mut fork_b = StateMap::new();
+        fork_b.insert(("m.room.create".into(), "".into()), "$create".into());
+        fork_b.insert(
+            ("m.room.member".into(), "@alice:x".into()),
+            "$alice_join".into(),
+        );
+        fork_b.insert(("m.room.power_levels".into(), "".into()), "$pl_b".into());
+        fork_b.insert(("m.room.name".into(), "".into()), "$mid".into());
+        fork_b.insert(("m.room.topic".into(), "".into()), "$topic_b".into());
+
+        let concrete = resolve_state_maps(
+            &[fork_a.clone(), fork_b.clone()],
+            &events,
+            StateResVersion::V2_1,
+        );
+        let lazy = resolve_state_maps_lazy_with_diff(
+            &[fork_a, fork_b],
+            &events,
+            None::<alloc::vec::Vec<alloc::string::String>>,
+            StateResVersion::V2_1,
+        );
+
+        assert_eq!(
+            concrete, lazy,
+            "lazy resolver with subgraph insertion must match concrete"
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "requires at least one state map")]
     fn test_resolve_lazy_empty_panics() {
         let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
@@ -805,6 +992,102 @@ mod tests {
             &events,
             None::<alloc::vec::Vec<alloc::string::String>>,
             StateResVersion::V2,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "subgraph event $orphan must be in auth_context")]
+    fn test_insert_subgraph_events_missing_auth_panics() {
+        // Directly test the defensive panic in insert_subgraph_events by
+        // violating its invariant: pass a subgraph containing an event
+        // that exists in neither conflicted_events nor auth_context.
+        let mut subgraph: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        subgraph.insert(
+            "$orphan".into(),
+            make_event("$orphan", "m.room.topic", "", "@alice:x", alloc::vec![], 0),
+        );
+
+        let auth_context: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        let mut conflicted_events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+
+        insert_subgraph_events(subgraph, &auth_context, &mut conflicted_events);
+    }
+
+    #[test]
+    #[should_panic(expected = "provider missing conflicted event")]
+    fn test_resolve_lazy_missing_conflicted_event_panics() {
+        let mut fork_a = StateMap::new();
+        fork_a.insert(("m.room.create".into(), "".into()), "$create".into());
+        fork_a.insert(
+            ("m.room.member".into(), "@alice:x".into()),
+            "$join_a".into(),
+        );
+
+        let mut fork_b = StateMap::new();
+        fork_b.insert(("m.room.create".into(), "".into()), "$create".into());
+        fork_b.insert(
+            ("m.room.member".into(), "@alice:x".into()),
+            "$join_b".into(),
+        );
+
+        // Provider has $create but NOT the conflicted join events
+        let events = parse_jsonl_map(
+            r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@alice:x", "content": {}}
+"#,
+        );
+
+        let _ = resolve_state_maps_lazy_with_diff(
+            &[fork_a, fork_b],
+            &events,
+            None::<alloc::vec::Vec<alloc::string::String>>,
+            StateResVersion::V2,
+        );
+    }
+
+    #[test]
+    fn test_resolve_lazy_with_precomputed_auth_diff() {
+        // Exercise the `Some(auth_diff)` fast path in resolve_state_maps_lazy_with_diff
+        let events = parse_jsonl_map(
+            r#"
+{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@alice:x", "content": {}}
+{"event_id": "$alice_join", "type": "m.room.member", "state_key": "@alice:x", "sender": "@alice:x", "auth_events": ["$create"], "depth": 1, "content": {"membership": "join"}}
+{"event_id": "$bob_join", "type": "m.room.member", "state_key": "@bob:x", "sender": "@bob:x", "auth_events": ["$create"], "depth": 1, "content": {"membership": "join"}}
+"#,
+        );
+
+        let mut fork_a = StateMap::new();
+        fork_a.insert(("m.room.create".into(), "".into()), "$create".into());
+        fork_a.insert(
+            ("m.room.member".into(), "@alice:x".into()),
+            "$alice_join".into(),
+        );
+
+        let mut fork_b = StateMap::new();
+        fork_b.insert(("m.room.create".into(), "".into()), "$create".into());
+        fork_b.insert(
+            ("m.room.member".into(), "@bob:x".into()),
+            "$bob_join".into(),
+        );
+
+        let concrete = resolve_state_maps(
+            &[fork_a.clone(), fork_b.clone()],
+            &events,
+            StateResVersion::V2,
+        );
+
+        // Pass a precomputed auth diff containing the create event
+        let auth_diff: alloc::vec::Vec<alloc::string::String> = alloc::vec!["$create".into()];
+        let lazy = resolve_state_maps_lazy_with_diff(
+            &[fork_a, fork_b],
+            &events,
+            Some(auth_diff),
+            StateResVersion::V2,
+        );
+
+        assert_eq!(
+            concrete, lazy,
+            "lazy resolver with precomputed auth diff must match concrete"
         );
     }
 }

@@ -403,7 +403,7 @@ fn test_delta_chain_generation_correctness() {
     // Perform delta-chain sequential processing using library functions
     let mut state_after_map: HashMap<String, imbl::OrdMap<(String, String), String>> =
         HashMap::new();
-    let mut state_hash_map: HashMap<String, String> = HashMap::new();
+    let mut state_hash_map: HashMap<String, [u8; 32]> = HashMap::new();
     let mut checkpoints = Vec::new();
 
     for ev in &events {
@@ -414,7 +414,7 @@ fn test_delta_chain_generation_correctness() {
             let prev_id = &ev.prev_events[0];
             if let Some(prev_state) = state_after_map.get(prev_id) {
                 state_before = prev_state.clone();
-                parent_hash = state_hash_map.get(prev_id).cloned();
+                parent_hash = state_hash_map.get(prev_id).copied();
             }
         }
 
@@ -428,7 +428,7 @@ fn test_delta_chain_generation_correctness() {
 
         let hash_str = compute_state_hash(&state_after);
         state_after_map.insert(ev.event_id.clone(), state_after.clone());
-        state_hash_map.insert(ev.event_id.clone(), hash_str.clone());
+        state_hash_map.insert(ev.event_id.clone(), hash_str);
 
         let deltas = compute_state_delta(&state_before, &state_after);
         checkpoints.push((hash_str, parent_hash, ev.event_id.clone(), deltas));
@@ -447,7 +447,7 @@ fn test_delta_chain_generation_correctness() {
 
     let (h2, p2, id2, d2) = &checkpoints[1];
     assert_eq!(id2, "$2");
-    assert_eq!(p2, &Some(h1.clone()));
+    assert_eq!(p2, &Some(*h1));
     assert_eq!(d2.len(), 1);
     assert_eq!(d2[0].event_type, "m.room.member");
     assert_eq!(d2[0].state_key, "@alice:example.com".to_string());
@@ -455,7 +455,7 @@ fn test_delta_chain_generation_correctness() {
 
     let (h3, p3, id3, d3) = &checkpoints[2];
     assert_eq!(id3, "$3");
-    assert_eq!(p3, &Some(h2.clone()));
+    assert_eq!(p3, &Some(*h2));
     assert_eq!(h3, h2); // State hash must be identical because it's a non-state event
     assert!(d3.is_empty()); // Delta list must be empty because state did not change
 }
@@ -508,7 +508,7 @@ fn test_state_delta_compression_robustness() {
 
     let mut state_after_map: HashMap<String, imbl::OrdMap<(String, String), String>> =
         HashMap::new();
-    let mut state_hash_map: HashMap<String, String> = HashMap::new();
+    let mut state_hash_map: HashMap<String, [u8; 32]> = HashMap::new();
     let mut checkpoints = Vec::new();
 
     let events = vec![ev1, ev2, ev3, ev4];
@@ -521,7 +521,7 @@ fn test_state_delta_compression_robustness() {
             let prev_id = &ev.prev_events[0];
             if let Some(prev_state) = state_after_map.get(prev_id) {
                 state_before = prev_state.clone();
-                parent_hash = state_hash_map.get(prev_id).cloned();
+                parent_hash = state_hash_map.get(prev_id).copied();
             }
         }
 
@@ -535,7 +535,7 @@ fn test_state_delta_compression_robustness() {
 
         let hash_str = compute_state_hash(&state_after);
         state_after_map.insert(ev.event_id.clone(), state_after.clone());
-        state_hash_map.insert(ev.event_id.clone(), hash_str.clone());
+        state_hash_map.insert(ev.event_id.clone(), hash_str);
 
         let deltas = compute_state_delta(&state_before, &state_after);
         checkpoints.push((hash_str, parent_hash, ev.event_id.clone(), deltas));
@@ -553,7 +553,7 @@ fn test_state_delta_compression_robustness() {
     // E2
     let (_, p2, id2, d2) = &checkpoints[1];
     assert_eq!(id2, "$2");
-    assert_eq!(p2, &Some(checkpoints[0].0.clone()));
+    assert_eq!(p2, &Some(checkpoints[0].0));
     assert_eq!(d2.len(), 1);
     assert_eq!(d2[0].event_type, "m.room.member");
     assert_eq!(d2[0].state_key, "@alice:example.com".to_string());
@@ -562,7 +562,7 @@ fn test_state_delta_compression_robustness() {
     // E3 (Fork A - Bob joins)
     let (_, p3, id3, d3) = &checkpoints[2];
     assert_eq!(id3, "$3");
-    assert_eq!(p3, &Some(checkpoints[1].0.clone()));
+    assert_eq!(p3, &Some(checkpoints[1].0));
     assert_eq!(d3.len(), 1);
     assert_eq!(d3[0].event_type, "m.room.member");
     assert_eq!(d3[0].state_key, "@bob:example.com".to_string());
@@ -571,7 +571,7 @@ fn test_state_delta_compression_robustness() {
     // E4 (Fork B - Alice leaves)
     let (_, p4, id4, d4) = &checkpoints[3];
     assert_eq!(id4, "$4");
-    assert_eq!(p4, &Some(checkpoints[1].0.clone()));
+    assert_eq!(p4, &Some(checkpoints[1].0));
     assert_eq!(d4.len(), 1);
     assert_eq!(d4[0].event_type, "m.room.member");
     assert_eq!(d4[0].state_key, "@alice:example.com".to_string());

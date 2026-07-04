@@ -4384,22 +4384,22 @@ fn test_coverage_sweeper_for_unreachable_edges() {
 
     // Cover reconstruct_state_batch broken chain branches
     let orphan_cp: CompactedCheckpoint<String> = CompactedCheckpoint {
-        state_hash: "H1".into(),
+        state_hash: [0x11; 32],
         parent_hash: None,
         event_id: "E1".into(),
         deltas: vec![],
         snapshot: None, // Missing snapshot!
     };
     let missing_parent_cp: CompactedCheckpoint<String> = CompactedCheckpoint {
-        state_hash: "H2".into(),
-        parent_hash: Some("MISSING".into()),
+        state_hash: [0x22; 32],
+        parent_hash: Some([0xFF; 32]),
         event_id: "E2".into(),
         deltas: vec![],
         snapshot: None,
     };
     let missing_grandparent_cp = CompactedCheckpoint {
-        state_hash: "H3".into(),
-        parent_hash: Some("H2".into()), // H2 exists, but it failed to reconstruct
+        state_hash: [0x33; 32],
+        parent_hash: Some([0x22; 32]), // H2 exists, but it failed to reconstruct
         event_id: "E3".into(),
         deltas: vec![],
         snapshot: None,

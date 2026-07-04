@@ -239,9 +239,6 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
 
     /// Evicts the least-recently-used entry.
     fn evict_lru(&mut self) {
-        if self.map.is_empty() {
-            return;
-        }
         // Find the entry with the smallest last_access generation
         let mut min_gen = u64::MAX;
         let mut evict_key: Option<Id> = None;
@@ -316,6 +313,7 @@ mod tests {
     #[test]
     fn test_cache_insert_and_get() {
         let mut cache = LeanEventCache::new(10);
+        assert_eq!(cache.capacity(), 10);
         cache.insert(make_event("$a", 1));
         cache.insert(make_event("$b", 2));
 
