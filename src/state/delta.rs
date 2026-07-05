@@ -211,7 +211,7 @@ pub mod hex_serde_opt {
 /// implementation in Meta's Folly library (`folly::crypto::LtHash`).
 ///
 /// Each `(event_type, state_key, event_id)` entry is expanded to 1024 16-bit
-/// integers via SHA-256 (acting as an XOF). The state hash is the wrapping
+/// integers via SHAKE256 XOF (NIST FIPS 202). The state hash is the wrapping
 /// addition of all these vectors. This provides:
 ///
 /// - **O(1) incremental updates**: insert = `hash + expanded`,
@@ -227,50 +227,39 @@ impl Default for LtHash {
     }
 }
 
-struct HasherWrite<'a>(&'a mut sha2::Sha256);
-impl core::fmt::Write for HasherWrite<'_> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        use sha2::Digest;
-        self.0.update(s.as_bytes());
-        Ok(())
-    }
-}
-
 impl LtHash {
     /// The identity element (empty state).
     pub const ZERO: Self = Self([0u16; 1024]);
 
-    /// Compute the 2048-byte expanded seed for a single state entry.
+    /// Domain separation tag per MSC4500.
+    const DST: &[u8] = b"msc4500_lthash16\x00";
+
+    /// Compute the 2048-byte SHAKE256 expansion for a single state entry.
+    ///
+    /// Input encoding (MSC4500 §2): `SHAKE256(tag || type || "\x00" || state_key || "\x00" || event_id, 2048)`
     #[must_use]
     fn seed(event_type: &str, state_key: &str, event_id: &dyn core::fmt::Display) -> Self {
-        use core::fmt::Write;
-        use sha2::{Digest, Sha256};
+        use sha3::digest::{ExtendableOutput, Update};
+
+        let mut input = alloc::vec::Vec::with_capacity(128);
+        input.extend_from_slice(Self::DST);
+        input.extend_from_slice(event_type.as_bytes());
+        input.push(0x00);
+        input.extend_from_slice(state_key.as_bytes());
+        input.push(0x00);
+        let eid = alloc::format!("{event_id}");
+        input.extend_from_slice(eid.as_bytes());
+
+        let mut xof = sha3::Shake256::default();
+        xof.update(&input);
+
+        let mut buf = [0u8; 2048];
+        xof.finalize_xof_into(&mut buf);
 
         let mut out = [0u16; 1024];
-
-        let mut base_hasher = Sha256::new();
-        base_hasher.update((event_type.len() as u64).to_le_bytes());
-        base_hasher.update(event_type.as_bytes());
-        base_hasher.update((state_key.len() as u64).to_le_bytes());
-        base_hasher.update(state_key.as_bytes());
-
-        let mut writer = HasherWrite(&mut base_hasher);
-        write!(writer, "{event_id}").expect("HasherWrite formatting is infallible");
-
-        for i in 0..64u16 {
-            let mut hasher = base_hasher.clone();
-            hasher.update(i.to_le_bytes());
-            let digest = hasher.finalize();
-
-            for j in 0..16usize {
-                let idx1 = j.saturating_mul(2);
-                let idx2 = idx1.saturating_add(1);
-                let bytes = [digest[idx1], digest[idx2]];
-                let out_idx = usize::from(i).saturating_mul(16).saturating_add(j);
-                out[out_idx] = u16::from_le_bytes(bytes);
-            }
+        for (i, chunk) in buf.chunks_exact(2).enumerate() {
+            out[i] = u16::from_le_bytes([chunk[0], chunk[1]]);
         }
-
         Self(out)
     }
 
@@ -338,11 +327,12 @@ impl LtHash {
         hash
     }
 
-    /// Finalize the 2048-byte lattice into a compact 32-byte cryptographic checksum.
+    /// Finalize the 2048-byte lattice into a compact 32-byte BLAKE2b-256 digest.
     #[must_use]
     pub fn checksum(&self) -> [u8; 32] {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
+        use blake2::digest::consts::U32;
+        use blake2::{Blake2b, Digest};
+        let mut hasher = Blake2b::<U32>::new();
         for val in &self.0 {
             hasher.update(val.to_le_bytes());
         }
@@ -355,8 +345,8 @@ impl LtHash {
 ///
 /// This is a convenience wrapper around
 /// [`LtHash::from_state`]. Each
-/// `(event_type, state_key, event_id)` entry is hashed via
-/// SHA-256 to produce a 2048-byte seed, and the state hash is the
+/// `(event_type, state_key, event_id)` entry is expanded via
+/// SHAKE256 to a 2048-byte seed, and the state hash is the
 /// wrapping addition of all seeds — making it order-independent and
 /// incrementally updatable.
 #[must_use]
@@ -821,10 +811,87 @@ mod tests {
         assert_eq!(h, expected);
     }
 
+    /// Validate against the official MSC4500 test vectors.
+    ///
+    /// These vectors use SHAKE256 expansion (with domain separation tag
+    /// `msc4500_lthash16\x00`) and BLAKE2b-256 collapse.
+    #[test]
+    fn test_msc4500_vectors() {
+        fn hex(bytes: &[u8]) -> alloc::string::String {
+            use core::fmt::Write;
+            bytes.iter().fold(
+                alloc::string::String::with_capacity(bytes.len() * 2),
+                |mut s, b| {
+                    write!(s, "{b:02x}").unwrap();
+                    s
+                },
+            )
+        }
+
+        // --- Empty state ---
+        let s0 = LtHash::ZERO;
+        assert_eq!(
+            hex(&s0.checksum()),
+            "200823e5158b3774c11b5c61850ada762f8264144a9bebec3ebac5a2adde67b8"
+        );
+
+        // --- Scenario 1: Add element 1 ---
+        let seed1 = LtHash::seed("m.room.member", "@alice:example.com", &"$event_1");
+        let exp1_bytes: Vec<u8> = seed1.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(hex(&exp1_bytes), "7f67472f95b708be0b6ff8794d6a4e6f");
+
+        let mut s1 = s0;
+        s1.add_seed(&seed1);
+        let s1_bytes: Vec<u8> = s1.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(hex(&s1_bytes), "7f67472f95b708be0b6ff8794d6a4e6f");
+        assert_eq!(
+            hex(&s1.checksum()),
+            "1c51ead276c255b5054025ef47b0c78f69259df45b9de9abc3c79a40ee3afa24"
+        );
+
+        // --- Scenario 2: Remove element 1 ---
+        let mut s_back = s1;
+        s_back.sub_seed(&seed1);
+        assert_eq!(s_back, LtHash::ZERO);
+        assert_eq!(
+            hex(&s_back.checksum()),
+            "200823e5158b3774c11b5c61850ada762f8264144a9bebec3ebac5a2adde67b8"
+        );
+
+        // --- Scenario 3: Add element 2 ---
+        let seed2 = LtHash::seed("m.room.name", "", &"$event_2");
+        let exp2_bytes: Vec<u8> = seed2.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(hex(&exp2_bytes), "6b09141708e2fae839bd632d8bc771ff");
+
+        let mut s2 = s1;
+        s2.add_seed(&seed2);
+        let s2_bytes: Vec<u8> = s2.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(hex(&s2_bytes), "ea705b469d9902a7442c5ba7d831bf6e");
+        assert_eq!(
+            hex(&s2.checksum()),
+            "b95fb7fc915d6d3dda12981340d73137d2d6cf22ac7d5966a96502a28442b676"
+        );
+
+        // --- Scenario 4: Replace element 1 with element 3 ---
+        let seed3 = LtHash::seed("m.room.member", "@alice:example.com", &"$event_3");
+        let exp3_bytes: Vec<u8> = seed3.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(hex(&exp3_bytes), "967af517a6581417a02f28604554f067");
+
+        let mut s3 = s2;
+        s3.sub_seed(&seed1);
+        s3.add_seed(&seed3);
+        let s3_bytes: Vec<u8> = s3.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(hex(&s3_bytes), "0184092fae3a0e00d9ec8b8dd01b6167");
+        assert_eq!(
+            hex(&s3.checksum()),
+            "7e46baafcd5cde7ee2583a91bd7f5be3b682cd5d682186b232383c148b7dbc56"
+        );
+    }
+
     #[test]
     fn test_compaction_inserts_snapshots() {
         // NOTE: This test creates `O(N^2)` state items as it builds the DAG.
-        // `LtHash` computes 64 SHA-256 iterations per item, making large `N` values
+        // `LtHash` computes a SHAKE256 XOF expansion per item, making large `N` values
         // extremely slow in debug builds. We keep `N=35` to ensure fast tests.
         // Build 35 pre-resolved states — should trigger snapshots at 0, 10, 20, 30
         let states: ResolvedStates = (1..=35)
