@@ -160,15 +160,19 @@ impl LtHash {
         hash
     }
 
-    /// Finalize the 2048-byte lattice into a compact 32-byte BLAKE2b-256 digest.
+    /// Finalize into the 32-byte wire digest per MSC4500 §6:
+    /// `BLAKE2b-256(S || uint64_le(n))`, where `n` is the cardinality of the
+    /// state set. The lattice does not track set membership, so the caller
+    /// (whose database is the source of truth for the state map) supplies `n`.
     #[must_use]
-    pub fn checksum(&self) -> [u8; 32] {
+    pub fn checksum(&self, n: u64) -> [u8; 32] {
         use blake2::digest::consts::U32;
         use blake2::{Blake2b, Digest};
         let mut hasher = Blake2b::<U32>::new();
         for val in &self.0 {
             hasher.update(val.to_le_bytes());
         }
+        hasher.update(n.to_le_bytes());
         hasher.finalize().into()
     }
 }
@@ -186,7 +190,7 @@ impl LtHash {
 pub fn compute_state_hash<Id: crate::basespec::rezzy_types::EventId>(
     state: &crate::state::at::SharedState<Id>,
 ) -> [u8; 32] {
-    LtHash::from_state(state).checksum()
+    LtHash::from_state(state).checksum(state.len() as u64)
 }
 
 #[cfg(test)]
@@ -236,7 +240,7 @@ mod tests {
         let h2 = LtHash::from_state(&state);
         assert_eq!(h1, h2);
         assert_ne!(h1, LtHash::ZERO);
-        assert_eq!(h1.checksum().len(), 32);
+        assert_eq!(h1.checksum(state.len() as u64).len(), 32);
     }
 
     #[test]
@@ -319,11 +323,11 @@ mod tests {
             )
         }
 
-        // --- Empty state ---
+        // --- Empty state (n=0) ---
         let s0 = LtHash::ZERO;
         assert_eq!(
-            hex(&s0.checksum()),
-            "200823e5158b3774c11b5c61850ada762f8264144a9bebec3ebac5a2adde67b8"
+            hex(&s0.checksum(0)),
+            "c389b152897d025d96b6ebeb3e5b710327f253463616bc045575a0e04b9bd2d4"
         );
 
         // --- Scenario 1: Add element 1 ---
@@ -336,8 +340,8 @@ mod tests {
         let s1_bytes: Vec<u8> = s1.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
         assert_eq!(hex(&s1_bytes), "d72df88a72ff61da6b2287649ff6001c");
         assert_eq!(
-            hex(&s1.checksum()),
-            "3bcd9f595b4b5c7095b300ec5cf37ff1ff3f79400643f7ba66171e150ddb6606"
+            hex(&s1.checksum(1)),
+            "3abebf9db51f7e8779a77e950a9575da7a1925c02f1c9d90c60d485efa9ac055"
         );
 
         // --- Scenario 2: Remove element 1 ---
@@ -345,8 +349,8 @@ mod tests {
         s_back.sub_seed(&seed1);
         assert_eq!(s_back, LtHash::ZERO);
         assert_eq!(
-            hex(&s_back.checksum()),
-            "200823e5158b3774c11b5c61850ada762f8264144a9bebec3ebac5a2adde67b8"
+            hex(&s_back.checksum(0)),
+            "c389b152897d025d96b6ebeb3e5b710327f253463616bc045575a0e04b9bd2d4"
         );
 
         // --- Scenario 3: Add element 2 ---
@@ -359,8 +363,8 @@ mod tests {
         let s2_bytes: Vec<u8> = s2.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
         assert_eq!(hex(&s2_bytes), "63cb41224c614368e98d0a8afef5066a");
         assert_eq!(
-            hex(&s2.checksum()),
-            "99d3ed0ae604d2fb5849f7280062e27ecea4425b64b25190e067e3d6a755680c"
+            hex(&s2.checksum(2)),
+            "1684b87211bd34155125a960a0ee4c037b0261d497ddda1865377e9e78ca2e9f"
         );
 
         // --- Scenario 4: Replace element 1 with element 3 ---
@@ -374,8 +378,8 @@ mod tests {
         let s3_bytes: Vec<u8> = s3.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
         assert_eq!(hex(&s3_bytes), "296ff8b7c050f4ec0c0419bdf2b7cc9e");
         assert_eq!(
-            hex(&s3.checksum()),
-            "8b611750bb056a38f9e3f9fcc74ae1f0771f12ade0daecc6963e302d15f8e67f"
+            hex(&s3.checksum(2)),
+            "3815b45cc1f1bff19d2dcd2ade545821c89b449985137f68b5f3d697d5c53e6b"
         );
     }
 
