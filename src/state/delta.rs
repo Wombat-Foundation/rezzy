@@ -289,13 +289,23 @@ impl LtHash {
     }
 
     /// Record a state entry being inserted.
-    pub fn insert(&mut self, event_type: &str, state_key: &str, event_id: &str) {
+    pub fn insert(
+        &mut self,
+        event_type: &str,
+        state_key: &str,
+        event_id: &(impl core::fmt::Display + ?Sized),
+    ) {
         let s = Self::seed(event_type, state_key, &event_id);
         self.add_seed(&s);
     }
 
     /// Record a state entry being removed.
-    pub fn remove(&mut self, event_type: &str, state_key: &str, event_id: &str) {
+    pub fn remove(
+        &mut self,
+        event_type: &str,
+        state_key: &str,
+        event_id: &(impl core::fmt::Display + ?Sized),
+    ) {
         let s = Self::seed(event_type, state_key, &event_id);
         self.sub_seed(&s);
     }
@@ -305,8 +315,8 @@ impl LtHash {
         &mut self,
         event_type: &str,
         state_key: &str,
-        old_event_id: &str,
-        new_event_id: &str,
+        old_event_id: &(impl core::fmt::Display + ?Sized),
+        new_event_id: &(impl core::fmt::Display + ?Sized),
     ) {
         let old = Self::seed(event_type, state_key, &old_event_id);
         let new = Self::seed(event_type, state_key, &new_event_id);
