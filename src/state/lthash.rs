@@ -384,4 +384,179 @@ mod tests {
     fn test_lthash_default() {
         let _def = LtHash::default();
     }
+
+    #[test]
+    fn test_lthash_wrapping_algebraic_properties() {
+        let seed = LtHash::seed("m.room.message", "", &"$1");
+
+        // 2^16 = 65536 additions of the same seed to ZERO
+        let mut h = LtHash::ZERO;
+        for _ in 0..65536 {
+            h.add_seed(&seed);
+        }
+        assert_eq!(
+            h,
+            LtHash::ZERO,
+            "65536 additions of any seed should wrap to ZERO"
+        );
+
+        // 2^16 - 1 = 65535 subtractions from ZERO should equal exactly 1 addition
+        let mut h_sub = LtHash::ZERO;
+        for _ in 0..65535 {
+            h_sub.sub_seed(&seed);
+        }
+        let mut h_add = LtHash::ZERO;
+        h_add.add_seed(&seed);
+        assert_eq!(
+            h_sub, h_add,
+            "65535 subtractions from ZERO should equal 1 addition"
+        );
+    }
+
+    #[test]
+    fn test_lthash_differential_random_mutations() {
+        struct Lcg(u32);
+        impl Lcg {
+            fn next(&mut self) -> u32 {
+                self.0 = self.0.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                self.0
+            }
+            fn next_range(&mut self, min: u32, max: u32) -> u32 {
+                min + (self.next() % (max - min + 1))
+            }
+        }
+
+        let mut rng = Lcg(12345);
+        let mut state = StateMap::new();
+        let mut running_hash = LtHash::ZERO;
+
+        // Populate state with some initial keys to work with
+        let mut keys = Vec::new();
+        for i in 0..15 {
+            let key = (alloc::format!("type_{i}"), alloc::format!("state_key_{i}"));
+            let val = alloc::format!("$initial_event_{i}");
+            state.insert(key.clone(), val.clone());
+            running_hash.insert(&key.0, &key.1, &val);
+            keys.push(key);
+        }
+
+        assert_eq!(running_hash, LtHash::from_state(&state));
+
+        // Let's do 200 mutations
+        for step in 0..200 {
+            let op = rng.next_range(0, 2); // 0 = insert/overwrite, 1 = remove, 2 = replace
+            if op == 0 || keys.is_empty() {
+                // Insert a new key or overwrite an existing one
+                let key = if !keys.is_empty() && rng.next_range(0, 1) == 1 {
+                    // Overwrite an existing key
+                    let keys_len = u32::try_from(keys.len()).unwrap();
+                    let idx = rng.next_range(0, keys_len - 1) as usize;
+                    keys[idx].clone()
+                } else {
+                    // Create a new key
+                    let id = rng.next();
+                    let key = (
+                        alloc::format!("type_{id}"),
+                        alloc::format!("state_key_{id}"),
+                    );
+                    keys.push(key.clone());
+                    key
+                };
+
+                let new_val = alloc::format!("$event_{}", rng.next());
+
+                // If it existed, we do a replace under the hood, or insert/remove.
+                if let Some(old_val) = state.get(&key) {
+                    running_hash.replace(&key.0, &key.1, old_val, &new_val);
+                } else {
+                    running_hash.insert(&key.0, &key.1, &new_val);
+                }
+                state.insert(key, new_val);
+            } else if op == 1 && !keys.is_empty() {
+                // Remove an existing key
+                let keys_len = u32::try_from(keys.len()).unwrap();
+                let idx = rng.next_range(0, keys_len - 1) as usize;
+                let key = keys.swap_remove(idx);
+                if let Some(val) = state.remove(&key) {
+                    running_hash.remove(&key.0, &key.1, &val);
+                }
+            } else {
+                // Replace via explicit .replace API
+                let keys_len = u32::try_from(keys.len()).unwrap();
+                let idx = rng.next_range(0, keys_len - 1) as usize;
+                let key = &keys[idx];
+                if let Some(old_val) = state.get(key).cloned() {
+                    let new_val = alloc::format!("$replaced_{}", rng.next());
+                    running_hash.replace(&key.0, &key.1, &old_val, &new_val);
+                    state.insert(key.clone(), new_val);
+                }
+            }
+
+            // Verify parity at every single step!
+            assert_eq!(
+                running_hash,
+                LtHash::from_state(&state),
+                "Hash mismatch at step {step}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_lthash_boundary_validation() {
+        // EXACT boundary of u16::MAX (65535 bytes) should work
+        let max_event_type = "a".repeat(65535);
+        let _seed_max = LtHash::seed(&max_event_type, "", &"$1");
+
+        let max_state_key = "b".repeat(65535);
+        let _seed_max_sk = LtHash::seed("", &max_state_key, &"$1");
+    }
+
+    #[test]
+    #[should_panic(expected = "event_type exceeds u16::MAX bytes")]
+    fn test_lthash_boundary_exceeded_event_type_panics() {
+        let over_max = "a".repeat(65536);
+        let _seed = LtHash::seed(&over_max, "", &"$1");
+    }
+
+    #[test]
+    #[should_panic(expected = "state_key exceeds u16::MAX bytes")]
+    fn test_lthash_boundary_exceeded_state_key_panics() {
+        let over_max = "b".repeat(65536);
+        let _seed = LtHash::seed("", &over_max, &"$1");
+    }
+
+    #[test]
+    fn test_lthash_cryptographic_uniformity_and_avalanche() {
+        let seed1 = LtHash::seed("m.room.message", "", &"$1");
+        let seed2 = LtHash::seed("m.room.message", "", &"$2");
+
+        // Avalanche Effect: seed1 and seed2 event_id differ by only 1 character ('1' vs '2').
+        let mut different_elements = 0;
+        for (a, b) in seed1.0.iter().zip(seed2.0.iter()) {
+            if a != b {
+                different_elements += 1;
+            }
+        }
+        // At least 95% of the elements should differ.
+        assert!(
+            different_elements > 950,
+            "Avalanche effect failed: only {different_elements} / 1024 elements differed"
+        );
+
+        // Uniformity: Mean of elements should be reasonably close to 32767.5.
+        let sum: u32 = seed1.0.iter().map(|&x| u32::from(x)).sum();
+        let mean = f64::from(sum) / 1024.0;
+        assert!(
+            (30000.0..=35000.0).contains(&mean),
+            "Uniformity check failed: mean of elements is {mean}"
+        );
+    }
+
+    #[test]
+    fn test_lthash_utf8_handling() {
+        let key = ("m.room.message💥", "🔑_🦀");
+        let val = "$🇩🇪_🇫🇷";
+        let seed = LtHash::seed(key.0, key.1, &val);
+        assert_ne!(seed, LtHash::ZERO);
+    }
 }
