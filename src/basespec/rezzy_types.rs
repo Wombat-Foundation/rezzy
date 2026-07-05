@@ -33,7 +33,7 @@ use crate::basespec::event_types::MAX_POWER_LEVEL_JSON;
 ///
 /// The [`Display`](core::fmt::Display) implementation **must** output the
 /// canonical wire-format representation of the event ID. This is relied upon
-/// by `LtHash::seed()` in [`crate::state::delta`] for
+/// by `LtHash::seed()` in [`crate::state::lthash`] for
 /// content-addressed state hashing — if two implementations produce different
 /// `Display` output for the same logical event ID, state hashes will diverge
 /// across homeservers.
