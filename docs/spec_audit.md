@@ -88,7 +88,8 @@ authorization rules. Three distinct rule sets exist:
 1. ~~**Rule 5.8**: Unknown membership should reject, not allow~~ — FIXED
 2. ~~**Rule 5.4.1**: Third-party invite validation not implemented~~ — FIXED
 3. ~~**Rule 7**: `m.room.third_party_invite` PL check missing~~ — FIXED
-4. ~~**Rule 10.x**: Power level event validation mostly missing (10.1–10.4, 10.6–10.10)~~ — ALL FIXED
+4. ~~**Rule 10.x**: Power level event validation mostly
+   missing (10.1–10.4, 10.6–10.10)~~ — ALL FIXED
 
 ### Medium (federation/integrity concerns, not core auth)
 
@@ -104,9 +105,14 @@ authorization rules. Three distinct rule sets exist:
 
 ## Notes
 
-- **Domain parsing**: Multiple rules require extracting the domain from user/room IDs.
-  rezzy currently has no domain parsing utility. Adding one would unblock rules 1.2, 3, and 4.
-- **Signature verification**: Rule 5.2 (`join_authorised_via_users_server` signature check)
-  is a homeserver networking concern, not a state resolution concern. Correctly excluded.
-- **Rejected event tracking**: Rule 2.3 requires knowing which events were previously
-  rejected. This is homeserver state, not available to rezzy.
+- **Domain parsing**: Multiple rules require extracting
+  the domain from user/room IDs. rezzy currently has no
+  domain parsing utility. Adding one would unblock
+  rules 1.2, 3, and 4.
+- **Signature verification**: Rule 5.2
+  (`join_authorised_via_users_server` signature check)
+  is a homeserver networking concern, not a state
+  resolution concern. Correctly excluded.
+- **Rejected event tracking**: Rule 2.3 requires knowing
+  which events were previously rejected. This is
+  homeserver state, not available to rezzy.

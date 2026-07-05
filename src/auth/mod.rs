@@ -53,6 +53,11 @@ pub enum AuthError<Id = String> {
     CreateWithPrevEvents,
     /// An auth event referenced by this event is missing from the provided state.
     MissingAuthEvent(Id),
+    /// The `m.room.create` event is missing from the room state.
+    ///
+    /// This can occur during state resolution when walking DAG forks where
+    /// the create event has not yet been accumulated into the local state.
+    MissingCreate,
     /// The event failed basic syntactic validation (e.g. invalid event type, too many `prev_events`).
     InvalidSyntax(String),
 }
@@ -79,6 +84,9 @@ impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
             }
             AuthError::MissingAuthEvent(id) => {
                 write!(f, "missing auth event: {id}")
+            }
+            AuthError::MissingCreate => {
+                write!(f, "m.room.create is missing from state")
             }
             AuthError::InvalidSyntax(reason) => {
                 write!(f, "invalid syntax: {reason}")
@@ -174,24 +182,25 @@ impl<Id, C> StateProvider<Id, C> for RoomState<Id, C> {
 ///
 /// Returns 1 if the `room_version` field is absent (room V1 didn't have it).
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the create event is missing from state (Rule 2.4 should have
-/// already rejected the event before we get here).
-fn get_room_version_num<Id, C, S>(state: &S) -> u32
+/// Returns [`AuthError::MissingCreate`] if the `m.room.create` event is not
+/// present in the provided state. This can happen during state resolution
+/// when walking DAG forks.
+fn get_room_version_num<Id, C, S>(state: &S) -> Result<u32, AuthError<Id>>
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
     S: StateProvider<Id, C>,
 {
-    let create = state
-        .get_event(M_ROOM_CREATE, "")
-        .expect("m.room.create must exist in state (Rule 2.4)");
-    create
+    let Some(create) = state.get_event(M_ROOM_CREATE, "") else {
+        return Err(AuthError::MissingCreate);
+    };
+    Ok(create
         .content()
         .get_room_version()
         .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(1) // V1 rooms didn't have a room_version field
+        .unwrap_or(1)) // V1 rooms didn't have a room_version field
 }
 
 /// The result of validating a new forward extremity event.
@@ -394,7 +403,7 @@ pub fn check_auth<
         );
 
         // Rules 10.1–10.3 were added in room version 10.
-        let is_room_v10_plus = get_room_version_num(state) >= 10;
+        let is_room_v10_plus = get_room_version_num(state)? >= 10;
 
         if is_room_v10_plus {
             // Rule 10.1 (V10+): Scalar PL properties must be integers.

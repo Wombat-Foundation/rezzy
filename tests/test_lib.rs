@@ -1,4 +1,5 @@
 mod utils;
+use serde_json::json;
 use std::collections::HashMap;
 extern crate alloc;
 
@@ -3122,7 +3123,117 @@ fn test_cdo_is_ancestor() {
         &ctx
     ));
 }
-use serde_json::json;
+
+/// Coverage: `is_ancestor` early return when ancestor.depth >= child.depth (cdo.rs:70-72).
+/// An event deeper in the DAG cannot be an ancestor of a shallower one.
+#[test]
+fn test_cdo_is_ancestor_depth_prune_early_return() {
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$child","type":"m.room.member","state_key":"@a:x","sender":"@a:x","depth":3,"origin_server_ts":100,"content":{"membership":"join"},"prev_events":["$and"],"auth_events":["$and"]}
+{"event_id":"$and","type":"m.room.member","state_key":"@b:x","sender":"@b:x","depth":5,"origin_server_ts":50,"content":{"membership":"join"},"prev_events":[],"auth_events":[]}
+"#,
+    );
+    let ctx: HashMap<String, LeanEvent> = events
+        .iter()
+        .map(|e| (e.event_id.clone(), e.clone()))
+        .collect();
+
+    // ancestor depth(5) >= child depth(3) → immediate false
+    assert!(
+        !rezzy::resolve::cdo::is_ancestor("$child", "$and", &ctx),
+        "deeper event cannot be ancestor of shallower one"
+    );
+}
+
+/// Coverage: `is_ancestor` traversal depth prune when intermediate event
+/// depth <= ancestor depth (cdo.rs:85-87). The DFS skips branches
+/// at or below the ancestor's depth since their parents are even shallower.
+#[test]
+fn test_cdo_is_ancestor_depth_prune_traversal() {
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$child","type":"m.room.member","state_key":"@a:x","sender":"@a:x","depth":10,"origin_server_ts":100,"content":{"membership":"join"},"prev_events":["$mid"],"auth_events":[]}
+{"event_id":"$mid","type":"m.room.member","state_key":"@b:x","sender":"@b:x","depth":3,"origin_server_ts":50,"content":{"membership":"join"},"prev_events":["$deep"],"auth_events":[]}
+{"event_id":"$deep","type":"m.room.member","state_key":"@c:x","sender":"@c:x","depth":1,"origin_server_ts":10,"content":{"membership":"join"},"prev_events":[],"auth_events":[]}
+{"event_id":"$and","type":"m.room.member","state_key":"@d:x","sender":"@d:x","depth":5,"origin_server_ts":80,"content":{"membership":"join"},"prev_events":[],"auth_events":[]}
+"#,
+    );
+    let ctx: HashMap<String, LeanEvent> = events
+        .iter()
+        .map(|e| (e.event_id.clone(), e.clone()))
+        .collect();
+
+    // Traversal from $child visits $mid. $mid.depth(3) <= $and.depth(5) → prune.
+    // $deep is never explored. $and is on a disconnected branch → false.
+    assert!(
+        !rezzy::resolve::cdo::is_ancestor("$child", "$and", &ctx),
+        "depth prune should stop traversal at mid"
+    );
+}
+
+/// Coverage: CDO `dropped_ids.contains(*event_id)` skip (cdo.rs:349-351).
+/// Tests a genuine cascading-drop scenario:
+///   - Alice (PL 100) bans Bob → admin action, should survive.
+///   - Bob (PL 0) attempts a self-leave → restricted by Alice's ban
+///     (ban `state_key` matches leave sender), gets dropped.
+///   - Bob sets a topic → non-admin event that is also dropped by Alice's ban.
+///
+/// The `dropped_ids.contains(*event_id)` skip path fires in the priority
+/// iteration: once `$bob_leave` is dropped by Alice's ban, subsequent iterations
+/// encounter it in `dropped_ids` and skip it immediately.
+#[test]
+fn test_cdo_apply_filter_cascading_drops() {
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@alice:a","room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:a","sender":"@alice:a","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:a":100},"ban":50,"kick":50},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":3,"origin_server_ts":1003,"content":{"membership":"join"},"prev_events":["$pl"],"auth_events":["$create","$pl"]}
+{"event_id":"$ban_bob","type":"m.room.member","state_key":"@bob:b","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"membership":"ban"},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl"],"power_level":100}
+{"event_id":"$bob_leave","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":4,"origin_server_ts":2001,"content":{"membership":"leave"},"prev_events":["$bob_join"],"auth_events":["$create","$bob_join","$pl"],"power_level":0}
+{"event_id":"$bob_topic","type":"m.room.topic","state_key":"","sender":"@bob:b","depth":4,"origin_server_ts":2002,"content":{"topic":"bad topic"},"prev_events":["$bob_join"],"auth_events":["$create","$bob_join","$pl"],"power_level":0}
+"#,
+    );
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+
+    for ev in &events {
+        match ev.event_id.as_str() {
+            "$ban_bob" | "$bob_leave" | "$bob_topic" => {
+                conflicted.insert(ev.event_id.clone(), ev.clone());
+            }
+            _ => {
+                auth_context.insert(ev.event_id.clone(), ev.clone());
+            }
+        }
+    }
+
+    let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
+
+    // Alice's ban (PL 100) must survive — it's the highest-priority admin action.
+    assert!(safe.contains_key("$ban_bob"), "admin ban must survive CDO");
+
+    // Bob's leave (sender=@bob:b) is restricted by Alice's ban (state_key=@bob:b).
+    assert!(
+        !safe.contains_key("$bob_leave"),
+        "bob_leave should be dropped by the ban"
+    );
+
+    // Bob's topic (sender=@bob:b) is also restricted by Alice's ban.
+    assert!(
+        !safe.contains_key("$bob_topic"),
+        "bob_topic should be dropped by the ban"
+    );
+
+    // Exact survivor count: only $ban_bob should remain.
+    assert_eq!(
+        safe.len(),
+        1,
+        "only the ban should survive, got: {:?}",
+        safe.keys().collect::<Vec<_>>()
+    );
+}
 
 #[test]
 fn test_sorting_coverage() {
@@ -4291,22 +4402,22 @@ fn test_coverage_sweeper_for_unreachable_edges() {
 
     // Cover reconstruct_state_batch broken chain branches
     let orphan_cp: CompactedCheckpoint<String> = CompactedCheckpoint {
-        state_hash: "H1".into(),
+        state_hash: [0x11; 32],
         parent_hash: None,
         event_id: "E1".into(),
         deltas: vec![],
         snapshot: None, // Missing snapshot!
     };
     let missing_parent_cp: CompactedCheckpoint<String> = CompactedCheckpoint {
-        state_hash: "H2".into(),
-        parent_hash: Some("MISSING".into()),
+        state_hash: [0x22; 32],
+        parent_hash: Some([0xFF; 32]),
         event_id: "E2".into(),
         deltas: vec![],
         snapshot: None,
     };
     let missing_grandparent_cp = CompactedCheckpoint {
-        state_hash: "H3".into(),
-        parent_hash: Some("H2".into()), // H2 exists, but it failed to reconstruct
+        state_hash: [0x33; 32],
+        parent_hash: Some([0x22; 32]), // H2 exists, but it failed to reconstruct
         event_id: "E3".into(),
         deltas: vec![],
         snapshot: None,

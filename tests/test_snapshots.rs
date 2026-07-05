@@ -166,6 +166,7 @@ fn strict_oracle_check(
 // ============================================================================
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn oracle_52k_room_strict() {
     strict_oracle_check(
         "res/real_dag_52k_room.json",
@@ -176,6 +177,7 @@ fn oracle_52k_room_strict() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn oracle_nheko_room_strict() {
     strict_oracle_check(
         "res/real_dag_nheko.json",
@@ -186,13 +188,10 @@ fn oracle_nheko_room_strict() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn oracle_v2_1_room_strict() {
     // v12 room — uses state resolution v2.1
     let fixture_path = "res/real_matrix_state_v2_1.json";
-    if !std::path::Path::new(fixture_path).exists() {
-        println!("Skipping test: {fixture_path} not found");
-        return;
-    }
     let oracle_path = "res/expected/oracle_v2_1_room.json";
 
     let fixture_events = load_fixture(fixture_path);
@@ -237,6 +236,7 @@ fn oracle_v2_1_room_strict() {
 // ============================================================================
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn regression_52k_room_determinism() {
     let a = resolve_and_get_state("res/real_dag_52k_room.json", StateResVersion::V2);
     let b = resolve_and_get_state("res/real_dag_52k_room.json", StateResVersion::V2);
@@ -244,6 +244,7 @@ fn regression_52k_room_determinism() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn regression_nheko_room_determinism() {
     let a = resolve_and_get_state("res/real_dag_nheko.json", StateResVersion::V2);
     let b = resolve_and_get_state("res/real_dag_nheko.json", StateResVersion::V2);
@@ -251,6 +252,7 @@ fn regression_nheko_room_determinism() {
 }
 
 #[test]
+#[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn regression_52k_room_v2_vs_v2_1() {
     let v2 = resolve_and_get_state("res/real_dag_52k_room.json", StateResVersion::V2);
     let v2_1 = resolve_and_get_state("res/real_dag_52k_room.json", StateResVersion::V2_1);

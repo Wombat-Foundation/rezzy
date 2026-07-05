@@ -718,8 +718,7 @@ where
 
     assert!(
         extremities.len() <= 8,
-        "compute_merge_bases supports at most 8 extremities, got {}",
-        extremities.len()
+        "compute_merge_bases supports at most 8 extremities"
     );
 
     if extremities.len() < 2 {
@@ -1071,8 +1070,8 @@ where
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
 {
-    let mut conflicted_keys = hashbrown::HashSet::new();
-    let mut conflicted_state_set = hashbrown::HashSet::new();
+    let mut conflicted_keys = crate::HashSet::new();
+    let mut conflicted_state_set = crate::HashSet::new();
     let base = &prev_states[0];
 
     for other in &prev_states[1..] {
@@ -1123,22 +1122,55 @@ where
     )
 }
 
-/// Computes auth(C) \ auth(U) using a bounded dual-heap traversal.
+/// Computes the **auth chain difference**: `auth(C) \ auth(U)`.
 ///
-/// Walks unconflicted (U) and conflicted (C) auth chains in parallel by depth,
-/// pruning C-side events already reachable from U. Returns the set of event IDs
-/// in the conflicted auth chains that are NOT reachable from unconflicted state.
-fn compute_auth_chain_diff<Id, C, S>(
+/// Walks the unconflicted (U) and conflicted (C) auth chains in
+/// parallel by depth, pruning C-side events already reachable
+/// from U. Returns the set of event IDs in the conflicted auth
+/// chains that are NOT reachable from unconflicted state.
+///
+/// This is the core input to state resolution — the set of
+/// events that must be considered during iterative auth. By
+/// exposing this as a public API, homeservers can compute the
+/// auth difference without reimplementing the bounded dual-heap
+/// traversal.
+///
+/// # Parameters
+///
+/// - `unconflicted_state`: The agreed-upon state (values are
+///   event IDs whose auth chains define the "known" baseline).
+/// - `conflicted_state_set`: Event IDs that differ across forks.
+/// - `events_map`: Full event context containing all referenced
+///   events and their auth chains.
+///
+/// # Returns
+///
+/// The set of event IDs reachable from `conflicted_state_set`'s
+/// auth chains but NOT reachable from `unconflicted_state`'s
+/// auth chains.
+///
+/// # Complexity
+///
+/// - **Time**: `O((|U| + |C|) · log(|U| + |C|))` — bounded by
+///   the total auth chain size, with early pruning.
+/// - **Space**: `O(|U| + |C|)` for visited sets.
+///
+/// # Panics
+///
+/// Internal `unwrap()` calls are guarded by `peek()`
+/// checks and cannot panic under normal operation.
+pub fn compute_auth_chain_diff<Id, C, S1, S2>(
     unconflicted_state: &SharedState<Id>,
-    conflicted_state_set: &hashbrown::HashSet<Id>,
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
-) -> hashbrown::HashSet<Id>
+    conflicted_state_set: &crate::HashSet<Id, S2>,
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S1>,
+) -> crate::HashSet<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
-    S: core::hash::BuildHasher,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
 {
-    let mut u_visited = hashbrown::HashSet::new();
+    let mut u_visited = crate::HashSet::new();
     let mut u_heap_elements = Vec::with_capacity(unconflicted_state.len());
     for id in unconflicted_state.values() {
         if u_visited.insert(id.clone()) {
@@ -1149,7 +1181,7 @@ where
     }
     let mut u_heap = alloc::collections::BinaryHeap::from(u_heap_elements);
 
-    let mut c_visited = hashbrown::HashSet::new();
+    let mut c_visited = crate::HashSet::new();
     let mut c_heap = alloc::collections::BinaryHeap::new();
     for id in conflicted_state_set {
         if u_visited.contains(id) {
@@ -1162,7 +1194,7 @@ where
         }
     }
 
-    let mut auth_diff = hashbrown::HashSet::new();
+    let mut auth_diff = crate::HashSet::new();
 
     while let Some(&(c_depth, _)) = c_heap.peek() {
         // Catch up U's traversal to C's current depth
@@ -1424,9 +1456,7 @@ where
         sorted.len(),
         index_to_id.len(),
         "compute_topo_positions: Kahn sort returned fewer nodes than expected — \
-         the input graph contains a cycle ({} sorted vs {} total)",
-        sorted.len(),
-        index_to_id.len(),
+         the input graph contains a cycle"
     );
 
     // Kahn sort gives a valid topological order; apply tiebreak within
@@ -1997,5 +2027,189 @@ mod tests {
         assert_eq!(depths["B"], 2, "B is child of A");
         assert_eq!(depths["C"], 2, "C is child of A");
         assert_eq!(depths["D"], 3, "D is child of max(B, C) + 1");
+    }
+
+    /// Coverage: `compute_topo_positions` with empty input (line 1447).
+    #[test]
+    fn test_compute_topo_positions_empty() {
+        let events_map: HashMap<String, LeanEvent> = HashMap::new();
+        let result = compute_topo_positions(&events_map, core::cmp::Ord::cmp);
+        assert!(result.is_empty());
+    }
+
+    /// Coverage: `compute_depths` with empty input (line 1520).
+    #[test]
+    fn test_compute_depths_empty() {
+        let events_map: HashMap<String, LeanEvent> = HashMap::new();
+        let result = compute_depths(&events_map);
+        assert!(result.is_empty());
+    }
+
+    /// Coverage: `reverse_topological_order` with missing tip (line 1576).
+    #[test]
+    fn test_reverse_topological_order_missing_tip() {
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert(
+            "A".into(),
+            LeanEvent {
+                event_id: "A".into(),
+                ..Default::default()
+            },
+        );
+        let result = reverse_topological_order("missing_tip", &events_map, core::cmp::Ord::cmp);
+        assert!(result.is_empty());
+    }
+
+    /// Coverage: `compute_auth_chain_diff` prune-early when conflicted ID
+    /// is already in the unconflicted set (line 1187).
+    #[test]
+    fn test_auth_chain_diff_prune_shared_id() {
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        let shared = LeanEvent {
+            event_id: "shared".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@a:x".into()),
+            sender: "@a:x".into(),
+            depth: 1,
+            content: json!({"membership": "join"}),
+            ..Default::default()
+        };
+        events_map.insert("shared".into(), shared);
+
+        // unconflicted state includes "shared"
+        let mut unconflicted = imbl::OrdMap::new();
+        unconflicted.insert(("m.room.member".into(), "@a:x".into()), "shared".into());
+
+        // conflicted set ALSO references "shared" → prune early
+        let mut conflicted = crate::HashSet::new();
+        conflicted.insert("shared".to_string());
+
+        let diff = compute_auth_chain_diff(&unconflicted, &conflicted, &events_map);
+        // shared is in both sets, so the diff should be empty
+        assert!(diff.is_empty(), "shared event should be pruned, empty diff");
+    }
+
+    /// Coverage: `compute_merge_base` when a popped event has no mask (line 908).
+    /// This happens when an extremity references a `prev_event` that was pushed
+    /// onto the heap but never had a mask entry (orphan in the graph).
+    #[test]
+    fn test_compute_merge_base_missing_mask_event() {
+        use crate::state::at::compute_merge_base;
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        // A references B as prev_event, but B references C which doesn't exist
+        events_map.insert(
+            "A".into(),
+            LeanEvent {
+                event_id: "A".into(),
+                depth: 3,
+                prev_events: vec!["B".into()],
+                ..Default::default()
+            },
+        );
+        events_map.insert(
+            "B".into(),
+            LeanEvent {
+                event_id: "B".into(),
+                depth: 2,
+                prev_events: vec!["orphan".into()],
+                ..Default::default()
+            },
+        );
+        // No "orphan" in map → when B tries to push orphan's parents, orphan won't be found
+        // Two extremities that don't share a common ancestor
+        events_map.insert(
+            "X".into(),
+            LeanEvent {
+                event_id: "X".into(),
+                depth: 3,
+                prev_events: vec![],
+                ..Default::default()
+            },
+        );
+
+        let tips = vec!["A", "X"];
+        let result = compute_merge_base(&tips, &events_map);
+        assert!(result.is_none(), "disjoint DAGs have no merge base");
+    }
+
+    /// Coverage: `verify_pagination` when `events_map` is missing an event (line 1689).
+    #[test]
+    fn test_verify_pagination_missing_event() {
+        use crate::state::at::verify_pagination;
+
+        let events_map: HashMap<String, LeanEvent> = HashMap::new();
+        // Page references an event not in the map
+        let pages: Vec<Vec<String>> = vec![vec!["missing".into()]];
+        let violations = verify_pagination(&events_map, &pages);
+        // No panic, no violations (event silently skipped)
+        assert!(
+            violations.is_empty(),
+            "missing event should be skipped, not crash"
+        );
+    }
+
+    /// Coverage: `out_degree[pe_idx] == 0` continue in `compute_state_at`
+    /// (line 601). This fires when a `prev_event` has already been fully
+    /// consumed by all its children.
+    #[test]
+    fn test_compute_state_at_out_degree_zero() {
+        // Diamond: A → B, A → C, B → D, C → D
+        // When processing D, both B and C point to A.
+        // After B consumes A's out_degree slot, C finds out_degree[A] == 0.
+        let a = LeanEvent {
+            event_id: "A".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@x:x".into(),
+            content: json!({"room_version": "10", "creator": "@x:x"}),
+            depth: 1,
+            ..Default::default()
+        };
+        let b = LeanEvent {
+            event_id: "B".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@x:x".into()),
+            sender: "@x:x".into(),
+            content: json!({"membership": "join"}),
+            depth: 2,
+            prev_events: vec!["A".into()],
+            auth_events: vec!["A".into()],
+            ..Default::default()
+        };
+        let c = LeanEvent {
+            event_id: "C".into(),
+            event_type: "m.room.topic".into(),
+            state_key: Some(String::new()),
+            sender: "@x:x".into(),
+            depth: 2,
+            prev_events: vec!["A".into()],
+            auth_events: vec!["A".into()],
+            ..Default::default()
+        };
+        let d = LeanEvent {
+            event_id: "D".into(),
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            depth: 3,
+            prev_events: vec!["B".into(), "C".into()],
+            auth_events: vec!["A".into(), "B".into()],
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+        events_map.insert("B".into(), b);
+        events_map.insert("C".into(), c);
+        events_map.insert("D".into(), d);
+
+        // compute_state_at traverses backwards from D. When both B and C
+        // reference A, the out_degree bookkeeping must handle the second
+        // reference finding out_degree[A] == 0.
+        let result = compute_state_at(&"D".to_string(), &events_map, crate::StateResVersion::V2);
+        assert!(result.is_some(), "should reconstruct state at D");
+        let state = result.unwrap();
+        // create event should be in state
+        assert!(state.contains_key(&("m.room.create".into(), String::new())));
     }
 }

@@ -104,6 +104,62 @@ where
             auth_bitmaps,
         }
     }
+
+    /// Compute the **auth chain difference**:
+    /// events in the auth chains of `conflicted_ids`
+    /// that are NOT in the auth chains of
+    /// `unconflicted_ids`.
+    ///
+    /// This is the roaring-bitmap fast path for the
+    /// same computation as
+    /// [`compute_auth_chain_diff`](crate::state::at::compute_auth_chain_diff),
+    /// but runs in `O(|bitmap|)` time on pre-computed
+    /// bitmaps instead of walking the DAG.
+    ///
+    /// Unknown IDs (not in the graph) are silently
+    /// skipped.
+    #[must_use]
+    pub fn auth_difference(&self, unconflicted_ids: &[Id], conflicted_ids: &[Id]) -> Vec<Id> {
+        // Union of all unconflicted auth chains
+        let mut u_bitmap = RoaringBitmap::new();
+        for id in unconflicted_ids {
+            if let Some(&idx) = self.id_to_index.get(id) {
+                u_bitmap |= &self.auth_bitmaps[idx as usize];
+                u_bitmap.insert(idx);
+            }
+        }
+
+        // Union of all conflicted auth chains
+        let mut c_bitmap = RoaringBitmap::new();
+        for id in conflicted_ids {
+            if let Some(&idx) = self.id_to_index.get(id) {
+                c_bitmap |= &self.auth_bitmaps[idx as usize];
+                c_bitmap.insert(idx);
+            }
+        }
+
+        // Difference: conflicted \ unconflicted
+        let diff = core::ops::Sub::sub(c_bitmap, u_bitmap);
+
+        diff.iter()
+            .map(|idx| self.index_to_id[idx as usize].clone())
+            .collect()
+    }
+
+    /// Check whether `ancestor` is in the transitive
+    /// auth chain of `descendant`.
+    ///
+    /// Returns `false` if either ID is unknown.
+    #[must_use]
+    pub fn is_in_auth_chain(&self, ancestor: &Id, descendant: &Id) -> bool {
+        let Some(&a_idx) = self.id_to_index.get(ancestor) else {
+            return false;
+        };
+        let Some(&d_idx) = self.id_to_index.get(descendant) else {
+            return false;
+        };
+        self.auth_bitmaps[d_idx as usize].contains(a_idx)
+    }
 }
 
 #[cfg(test)]
@@ -171,5 +227,135 @@ mod tests {
         assert!(bitmap_c.contains(idx_b));
         assert!(bitmap_c.contains(idx_a));
         assert_eq!(bitmap_c.len(), 2);
+    }
+
+    /// Helper: build a diamond-shaped auth DAG:
+    ///
+    /// ```text
+    ///   Create(A)
+    ///    / \
+    ///  PL(B) Join(C)
+    ///    \ /
+    ///   Topic(D)
+    /// ```
+    fn diamond_graph() -> (AuthGraph<String>, HashMap<String, LeanEvent>) {
+        let mut ctx: HashMap<String, LeanEvent> = HashMap::new();
+        ctx.insert(
+            "A".into(),
+            LeanEvent {
+                event_id: "A".into(),
+                event_type: "m.room.create".into(),
+                ..Default::default()
+            },
+        );
+        ctx.insert(
+            "B".into(),
+            LeanEvent {
+                event_id: "B".into(),
+                event_type: "m.room.power_levels".into(),
+                auth_events: vec!["A".into()],
+                ..Default::default()
+            },
+        );
+        ctx.insert(
+            "C".into(),
+            LeanEvent {
+                event_id: "C".into(),
+                event_type: "m.room.member".into(),
+                auth_events: vec!["A".into()],
+                ..Default::default()
+            },
+        );
+        ctx.insert(
+            "D".into(),
+            LeanEvent {
+                event_id: "D".into(),
+                event_type: "m.room.topic".into(),
+                auth_events: vec!["B".into(), "C".into()],
+                ..Default::default()
+            },
+        );
+        let graph = AuthGraph::build(&ctx);
+        (graph, ctx)
+    }
+
+    #[test]
+    fn test_is_in_auth_chain() {
+        let (graph, _) = diamond_graph();
+
+        // Direct parents
+        assert!(graph.is_in_auth_chain(&"A".into(), &"B".into()));
+        assert!(graph.is_in_auth_chain(&"A".into(), &"C".into()));
+
+        // Transitive: A is in D's auth chain (via B and C)
+        assert!(graph.is_in_auth_chain(&"A".into(), &"D".into()));
+        assert!(graph.is_in_auth_chain(&"B".into(), &"D".into()));
+        assert!(graph.is_in_auth_chain(&"C".into(), &"D".into()));
+
+        // Not ancestors
+        assert!(!graph.is_in_auth_chain(&"D".into(), &"A".into()));
+        assert!(!graph.is_in_auth_chain(&"B".into(), &"C".into()));
+        assert!(!graph.is_in_auth_chain(&"C".into(), &"B".into()));
+
+        // Self is not in own auth chain
+        assert!(!graph.is_in_auth_chain(&"A".into(), &"A".into()));
+
+        // Unknown IDs
+        assert!(!graph.is_in_auth_chain(&"Z".into(), &"A".into()));
+        assert!(!graph.is_in_auth_chain(&"A".into(), &"Z".into()));
+    }
+
+    #[test]
+    fn test_auth_difference_basic() {
+        let (graph, _) = diamond_graph();
+
+        // Unconflicted: {A}, Conflicted: {D}
+        // auth(D) = {A, B, C}, auth(A) = {}
+        // Union of conflicted chains: {A, B, C} ∪ {D}
+        // Union of unconflicted chains: {} ∪ {A}
+        // Diff: {B, C, D}
+        let diff = graph.auth_difference(&["A".into()], &["D".into()]);
+        assert_eq!(diff.len(), 3);
+        assert!(diff.contains(&"B".into()));
+        assert!(diff.contains(&"C".into()));
+        assert!(diff.contains(&"D".into()));
+        assert!(!diff.contains(&"A".into()));
+    }
+
+    #[test]
+    fn test_auth_difference_overlapping() {
+        let (graph, _) = diamond_graph();
+
+        // Unconflicted: {B, C}, Conflicted: {D}
+        // auth(B) ∪ auth(C) ∪ {B, C} = {A, B, C}
+        // auth(D) ∪ {D} = {A, B, C, D}
+        // Diff = {D}
+        let diff = graph.auth_difference(&["B".into(), "C".into()], &["D".into()]);
+        assert_eq!(diff.len(), 1);
+        assert_eq!(diff[0], "D");
+    }
+
+    #[test]
+    fn test_auth_difference_empty_inputs() {
+        let (graph, _) = diamond_graph();
+
+        // Empty unconflicted — full conflicted chain returned
+        let diff = graph.auth_difference(&[], &["B".into()]);
+        assert!(diff.contains(&"A".into()));
+        assert!(diff.contains(&"B".into()));
+
+        // Empty conflicted — nothing returned
+        let diff = graph.auth_difference(&["A".into()], &[]);
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn test_auth_difference_unknown_ids_ignored() {
+        let (graph, _) = diamond_graph();
+
+        // Unknown IDs in both lists are silently ignored
+        let diff = graph.auth_difference(&["Z".into()], &["D".into()]);
+        // All of D's auth chain + D itself
+        assert_eq!(diff.len(), 4);
     }
 }

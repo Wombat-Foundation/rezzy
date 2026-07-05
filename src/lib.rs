@@ -34,7 +34,7 @@
 //!
 //! | Feature     | Default | Description |
 //! |-------------|:-------:|-------------|
-//! | `std`       | ✓       | Enables `std::collections::HashMap` and thread-parallel lattice resolution. |
+//! | `std`       | ✓       | Enables `std::collections::{HashMap, HashSet}` and thread-parallel lattice resolution. |
 //! | `alloc`     | ✓       | Bare `alloc` support for `no_std` targets (implied by `std`). |
 //! | `cli`       | ✗       | Builds the `rezzy` CLI binary and the `merge` module. |
 //! | `hashing`   | ✗       | SHA-256 content-hashing for events missing an `event_id`. |
@@ -80,14 +80,14 @@ pub use basespec::rezzy_types::*;
 pub use resolve::*;
 pub use state::*;
 
-/// Re-exported hashmap — uses `std::collections::HashMap` when `std` is
-/// enabled, falls back to `hashbrown::HashMap` for `no_std` targets.
+/// Re-exported hashmap and hashset — uses `std::collections` when `std` is
+/// enabled, falls back to `hashbrown` for `no_std` targets.
 ///
 /// All resolution functions are generic over `BuildHasher`, so this is
 /// purely a convenience for callers who don't need a specific hasher.
 #[cfg(feature = "std")]
-pub use std::collections::HashMap;
+pub use std::collections::{HashMap, HashSet};
 
 /// See the `std` variant's documentation.
 #[cfg(not(feature = "std"))]
-pub use hashbrown::HashMap;
+pub use hashbrown::{HashMap, HashSet};

@@ -126,60 +126,244 @@ pub fn apply_state_delta<Id: crate::basespec::rezzy_types::EventId>(
     result
 }
 
-/// Computes a deterministic 128-bit FNV-1a fingerprint of a state map.
+/// Decodes a 64-character ASCII hex string into a 32-byte array.
 ///
-/// The hash is computed over `(event_type, state_key, event_id)` tuples in
-/// `BTreeMap` iteration order (lexicographic). This produces a stable,
-/// reproducible 128-bit hex string suitable for delta chain bookkeeping.
-///
-/// 128-bit FNV-1a gives a collision probability of ~2^-128 per pair,
-/// effectively zero for any realistic state map count.
-///
-/// **Not cryptographic** — use SHA-256 (via the `hashing` feature) for
-/// content-addressable storage.
-struct FnvHasher<'a>(&'a mut u128);
+/// Returns `Err` with a static message if the input is not exactly 64 ASCII
+/// hex characters. This rejects non-ASCII UTF-8 up front, preventing panics
+/// from slicing inside multibyte character boundaries.
+fn decode_hex_32(s: &str) -> Result<[u8; 32], &'static str> {
+    if s.len() != 64 {
+        return Err("expected 64-character hex string");
+    }
+    if !s.is_ascii() {
+        return Err("hex string contains non-ASCII characters");
+    }
+    let mut bytes = [0u8; 32];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        let start = i.saturating_mul(2);
+        let end = start.saturating_add(2);
+        // SAFETY: s.is_ascii() guarantees every byte is a single-byte character,
+        // so slicing at any byte offset is always on a character boundary.
+        let byte_str = &s[start..end];
+        *byte = u8::from_str_radix(byte_str, 16).map_err(|_| "invalid hex character")?;
+    }
+    Ok(bytes)
+}
 
-const FNV128_PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+pub mod hex_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
 
-impl core::fmt::Write for FnvHasher<'_> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        for &byte in s.as_bytes() {
-            *self.0 ^= u128::from(byte);
-            *self.0 = self.0.wrapping_mul(FNV128_PRIME);
+    /// # Errors
+    /// Returns an error if the hex string fails to serialize.
+    pub fn serialize<S: Serializer>(bytes: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error> {
+        let mut hex = alloc::string::String::with_capacity(64);
+        for b in bytes {
+            use core::fmt::Write;
+            write!(hex, "{b:02x}").expect("String formatting is infallible");
         }
+        serializer.serialize_str(&hex)
+    }
+
+    /// # Errors
+    /// Returns an error if the string is not exactly 64 ASCII hex characters.
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 32], D::Error> {
+        let s = alloc::string::String::deserialize(deserializer)?;
+        super::decode_hex_32(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+pub mod hex_serde_opt {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    /// # Errors
+    /// Returns an error if the underlying hex string fails to serialize.
+    pub fn serialize<S: Serializer>(
+        bytes: &Option<[u8; 32]>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match bytes {
+            Some(b) => super::hex_serde::serialize(b, serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    /// # Errors
+    /// Returns an error if the string is present but is not exactly 64 ASCII hex characters.
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<[u8; 32]>, D::Error> {
+        let opt = Option::<alloc::string::String>::deserialize(deserializer)?;
+        match opt {
+            Some(s) => super::decode_hex_32(&s)
+                .map(Some)
+                .map_err(serde::de::Error::custom),
+            None => Ok(None),
+        }
+    }
+}
+
+/// A 2048-byte homomorphic state hash using `LtHash`.
+///
+/// `LtHash` (Lattice Hash) is based on the homomorphic hashing paradigm first introduced
+/// by Bellare and Micciancio in their 1997 paper *"A New Paradigm for Collision-Free
+/// Hashing: Incrementality at Reduced Cost"*. This specific 2048-byte instantiation
+/// (using 1024 16-bit integers and wrapping addition) is modeled after the industry-standard
+/// implementation in Meta's Folly library (`folly::crypto::LtHash`).
+///
+/// Each `(event_type, state_key, event_id)` entry is expanded to 1024 16-bit
+/// integers via SHA-256 (acting as an XOF). The state hash is the wrapping
+/// addition of all these vectors. This provides:
+///
+/// - **O(1) incremental updates**: insert = `hash + expanded`,
+///   remove = `hash - expanded`.
+/// - **Order independence**: addition is commutative + associative.
+/// - **Cryptographic security**: hard to find multiset collisions (SVP).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LtHash(pub [u16; 1024]);
+
+impl Default for LtHash {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
+struct HasherWrite<'a>(&'a mut sha2::Sha256);
+impl core::fmt::Write for HasherWrite<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        use sha2::Digest;
+        self.0.update(s.as_bytes());
         Ok(())
     }
 }
 
+impl LtHash {
+    /// The identity element (empty state).
+    pub const ZERO: Self = Self([0u16; 1024]);
+
+    /// Compute the 2048-byte expanded seed for a single state entry.
+    #[must_use]
+    fn seed(event_type: &str, state_key: &str, event_id: &dyn core::fmt::Display) -> Self {
+        use core::fmt::Write;
+        use sha2::{Digest, Sha256};
+
+        let mut out = [0u16; 1024];
+
+        let mut base_hasher = Sha256::new();
+        base_hasher.update((event_type.len() as u64).to_le_bytes());
+        base_hasher.update(event_type.as_bytes());
+        base_hasher.update((state_key.len() as u64).to_le_bytes());
+        base_hasher.update(state_key.as_bytes());
+
+        let mut writer = HasherWrite(&mut base_hasher);
+        write!(writer, "{event_id}").expect("HasherWrite formatting is infallible");
+
+        for i in 0..64u16 {
+            let mut hasher = base_hasher.clone();
+            hasher.update(i.to_le_bytes());
+            let digest = hasher.finalize();
+
+            for j in 0..16usize {
+                let idx1 = j.saturating_mul(2);
+                let idx2 = idx1.saturating_add(1);
+                let bytes = [digest[idx1], digest[idx2]];
+                let out_idx = usize::from(i).saturating_mul(16).saturating_add(j);
+                out[out_idx] = u16::from_le_bytes(bytes);
+            }
+        }
+
+        Self(out)
+    }
+
+    /// Add a seed into the hash (insert).
+    fn add_seed(&mut self, seed: &Self) {
+        for (a, b) in self.0.iter_mut().zip(seed.0.iter()) {
+            *a = a.wrapping_add(*b);
+        }
+    }
+
+    /// Subtract a seed from the hash (remove).
+    fn sub_seed(&mut self, seed: &Self) {
+        for (a, b) in self.0.iter_mut().zip(seed.0.iter()) {
+            *a = a.wrapping_sub(*b);
+        }
+    }
+
+    /// Record a state entry being inserted.
+    pub fn insert(
+        &mut self,
+        event_type: &str,
+        state_key: &str,
+        event_id: &(impl core::fmt::Display + ?Sized),
+    ) {
+        let s = Self::seed(event_type, state_key, &event_id);
+        self.add_seed(&s);
+    }
+
+    /// Record a state entry being removed.
+    pub fn remove(
+        &mut self,
+        event_type: &str,
+        state_key: &str,
+        event_id: &(impl core::fmt::Display + ?Sized),
+    ) {
+        let s = Self::seed(event_type, state_key, &event_id);
+        self.sub_seed(&s);
+    }
+
+    /// Record a state entry being replaced (old → new).
+    pub fn replace(
+        &mut self,
+        event_type: &str,
+        state_key: &str,
+        old_event_id: &(impl core::fmt::Display + ?Sized),
+        new_event_id: &(impl core::fmt::Display + ?Sized),
+    ) {
+        let old = Self::seed(event_type, state_key, &old_event_id);
+        let new = Self::seed(event_type, state_key, &new_event_id);
+        self.sub_seed(&old);
+        self.add_seed(&new);
+    }
+
+    /// Compute the full hash from a state map (non-incremental).
+    #[must_use]
+    pub fn from_state<Id>(state: &crate::state::at::SharedState<Id>) -> Self
+    where
+        Id: crate::basespec::rezzy_types::EventId,
+    {
+        let mut hash = Self::ZERO;
+        for ((event_type, state_key), event_id) in state {
+            let s = Self::seed(event_type, state_key, event_id);
+            hash.add_seed(&s);
+        }
+        hash
+    }
+
+    /// Finalize the 2048-byte lattice into a compact 32-byte cryptographic checksum.
+    #[must_use]
+    pub fn checksum(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        for val in &self.0 {
+            hasher.update(val.to_le_bytes());
+        }
+        hasher.finalize().into()
+    }
+}
+
+/// Computes a deterministic 256-bit `LtHash` fingerprint of a
+/// state map, returned as a 32-byte array.
+///
+/// This is a convenience wrapper around
+/// [`LtHash::from_state`]. Each
+/// `(event_type, state_key, event_id)` entry is hashed via
+/// SHA-256 to produce a 2048-byte seed, and the state hash is the
+/// wrapping addition of all seeds — making it order-independent and
+/// incrementally updatable.
 #[must_use]
 pub fn compute_state_hash<Id: crate::basespec::rezzy_types::EventId>(
     state: &crate::state::at::SharedState<Id>,
-) -> String {
-    use core::fmt::Write;
-    // FNV-1a 128-bit offset basis and prime
-    // See: <https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function>
-    let mut hash: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
-
-    for ((event_type, state_key), event_id) in state {
-        for &byte in event_type.as_bytes() {
-            hash ^= u128::from(byte);
-            hash = hash.wrapping_mul(FNV128_PRIME);
-        }
-        hash ^= 0x00;
-        hash = hash.wrapping_mul(FNV128_PRIME);
-        for &byte in state_key.as_bytes() {
-            hash ^= u128::from(byte);
-            hash = hash.wrapping_mul(FNV128_PRIME);
-        }
-        hash ^= 0x00;
-        hash = hash.wrapping_mul(FNV128_PRIME);
-
-        let mut writer = FnvHasher(&mut hash);
-        write!(writer, "{event_id}").expect("FnvHasher formatting is infallible");
-        hash ^= 0xff;
-        hash = hash.wrapping_mul(FNV128_PRIME);
-    }
-    alloc::format!("{hash:032x}")
+) -> [u8; 32] {
+    LtHash::from_state(state).checksum()
 }
 
 /// Maximum number of delta hops before a full snapshot is inserted (default: 100,
@@ -199,10 +383,12 @@ pub const MAX_DELTA_CHAIN_HOPS: usize = 100;
 /// hit a snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CompactedCheckpoint<Id: crate::basespec::rezzy_types::EventId = String> {
-    /// 128-bit FNV-1a hash of the state map at this point.
-    pub state_hash: String,
+    /// 256-bit hash of the state map at this point.
+    #[serde(with = "hex_serde")]
+    pub state_hash: [u8; 32],
     /// Hash of the parent checkpoint (if any).
-    pub parent_hash: Option<String>,
+    #[serde(with = "hex_serde_opt")]
+    pub parent_hash: Option<[u8; 32]>,
     /// The event ID that produced this checkpoint.
     pub event_id: Id,
     /// Deltas from the parent state. Empty when `snapshot` is `Some`.
@@ -230,26 +416,27 @@ pub fn compute_compacted_delta_chain_from_resolved<Id: crate::basespec::rezzy_ty
     let max_hops = max_hops.unwrap_or(MAX_DELTA_CHAIN_HOPS);
     let mut checkpoints = Vec::new();
     let mut prev_state: Option<crate::state::at::SharedState<Id>> = None;
-    let mut prev_hash: Option<String> = None;
+    let mut prev_hash: Option<[u8; 32]> = None;
     let mut hops_since_snapshot: usize = 0;
 
     for (event_id, state) in resolved_states {
         let state_hash = compute_state_hash(&state);
         let current_hops = hops_since_snapshot.saturating_add(1);
 
-        let (deltas, snapshot, recorded_hops) = if current_hops >= max_hops || prev_state.is_none()
-        {
-            // Insert a full snapshot — resets the chain
-            (Vec::new(), Some(state.clone()), 0)
-        } else if let Some(ref base) = prev_state {
-            let deltas = compute_state_delta(base, &state);
-            (deltas, None, current_hops)
-        } else {
-            unreachable!()
+        let (deltas, snapshot, recorded_hops) = match prev_state {
+            Some(ref base) if current_hops < max_hops => {
+                let deltas = compute_state_delta(base, &state);
+                (deltas, None, current_hops)
+            }
+            _ => {
+                // First event or chain exceeded max_hops — insert a
+                // full snapshot to reset the chain.
+                (Vec::new(), Some(state.clone()), 0)
+            }
         };
 
         checkpoints.push(CompactedCheckpoint {
-            state_hash: state_hash.clone(),
+            state_hash,
             parent_hash: prev_hash,
             event_id,
             deltas,
@@ -339,7 +526,7 @@ pub fn reconstruct_state_at<Id: crate::basespec::rezzy_types::EventId>(
         } else {
             current_idx = checkpoints[..current_idx]
                 .iter()
-                .rposition(|cp| cp.state_hash.as_str() == parent_hash.as_str())?;
+                .rposition(|cp| cp.state_hash == *parent_hash)?;
         }
     }
 }
@@ -390,13 +577,13 @@ pub fn reconstruct_state_batch<Id: crate::basespec::rezzy_types::EventId>(
     // Backward-only parent lookup: prefer immediate predecessor, fall back to
     // scanning earlier checkpoints. This avoids the HashMap shadowing bug where
     // duplicate hashes overwrite earlier entries.
-    let find_parent_idx = |idx: usize, parent_hash: &str| -> Option<usize> {
+    let find_parent_idx = |idx: usize, parent_hash: &[u8; 32]| -> Option<usize> {
         idx.checked_sub(1)
-            .filter(|&pi| checkpoints[pi].state_hash == parent_hash)
+            .filter(|&pi| checkpoints[pi].state_hash == *parent_hash)
             .or_else(|| {
                 checkpoints[..idx]
                     .iter()
-                    .rposition(|cp| cp.state_hash == parent_hash)
+                    .rposition(|cp| cp.state_hash == *parent_hash)
             })
     };
 
@@ -541,7 +728,7 @@ mod tests {
         let h1 = compute_state_hash(&state);
         let h2 = compute_state_hash(&state);
         assert_eq!(h1, h2, "same state must produce same hash");
-        assert_eq!(h1.len(), 32, "FNV-1a 128-bit hash should be 32 hex chars");
+        assert_eq!(h1.len(), 32, "LtHash final checksum should be 32 bytes");
     }
 
     #[test]
@@ -560,9 +747,87 @@ mod tests {
     }
 
     #[test]
+    fn test_lthash_determinism() {
+        let mut state = StateMap::new();
+        state.insert(("m.room.create".into(), String::new()), "$1".into());
+        state.insert(("m.room.member".into(), "@a:x".into()), "$2".into());
+        let h1 = LtHash::from_state(&state);
+        let h2 = LtHash::from_state(&state);
+        assert_eq!(h1, h2);
+        assert_ne!(h1, LtHash::ZERO);
+        assert_eq!(h1.checksum().len(), 32);
+    }
+
+    #[test]
+    fn test_lthash_sensitivity() {
+        let mut a = StateMap::new();
+        a.insert(("m.room.create".into(), String::new()), "$1".into());
+        let mut b = StateMap::new();
+        b.insert(("m.room.create".into(), String::new()), "$2".into());
+        assert_ne!(LtHash::from_state(&a), LtHash::from_state(&b),);
+    }
+
+    #[test]
+    fn test_lthash_order_independence() {
+        // Insert in different orders, same result
+        let mut h1 = LtHash::ZERO;
+        h1.insert("m.room.create", "", "$c");
+        h1.insert("m.room.member", "@a:x", "$m");
+
+        let mut h2 = LtHash::ZERO;
+        h2.insert("m.room.member", "@a:x", "$m");
+        h2.insert("m.room.create", "", "$c");
+
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_lthash_incremental_matches_full() {
+        let mut state = StateMap::new();
+        state.insert(("m.room.create".into(), String::new()), "$c".into());
+        state.insert(("m.room.topic".into(), String::new()), "$t".into());
+
+        let full = LtHash::from_state(&state);
+
+        let mut inc = LtHash::ZERO;
+        inc.insert("m.room.create", "", "$c");
+        inc.insert("m.room.topic", "", "$t");
+
+        assert_eq!(full, inc);
+    }
+
+    #[test]
+    fn test_lthash_insert_remove_roundtrip() {
+        let mut h = LtHash::ZERO;
+        h.insert("m.room.topic", "", "$t");
+        assert_ne!(h, LtHash::ZERO);
+        h.remove("m.room.topic", "", "$t");
+        assert_eq!(h, LtHash::ZERO);
+    }
+
+    #[test]
+    fn test_lthash_replace() {
+        // Build state with $t1, then replace → $t2
+        let mut h = LtHash::ZERO;
+        h.insert("m.room.create", "", "$c");
+        h.insert("m.room.topic", "", "$t1");
+        h.replace("m.room.topic", "", "$t1", "$t2");
+
+        // Build state with $t2 from scratch
+        let mut expected = LtHash::ZERO;
+        expected.insert("m.room.create", "", "$c");
+        expected.insert("m.room.topic", "", "$t2");
+
+        assert_eq!(h, expected);
+    }
+
+    #[test]
     fn test_compaction_inserts_snapshots() {
-        // Build 250 pre-resolved states — should trigger snapshots at 0, 100, 200
-        let states: ResolvedStates = (1..=250)
+        // NOTE: This test creates `O(N^2)` state items as it builds the DAG.
+        // `LtHash` computes 64 SHA-256 iterations per item, making large `N` values
+        // extremely slow in debug builds. We keep `N=35` to ensure fast tests.
+        // Build 35 pre-resolved states — should trigger snapshots at 0, 10, 20, 30
+        let states: ResolvedStates = (1..=35)
             .map(|i| {
                 let mut state = StateMap::new();
                 for j in 1..=i {
@@ -578,8 +843,8 @@ mod tests {
             })
             .collect();
 
-        let checkpoints = compute_compacted_delta_chain_from_resolved(states, Some(100));
-        assert_eq!(checkpoints.len(), 250);
+        let checkpoints = compute_compacted_delta_chain_from_resolved(states, Some(10));
+        assert_eq!(checkpoints.len(), 35);
 
         // First event always gets a snapshot (no parent)
         assert!(
@@ -594,7 +859,7 @@ mod tests {
             .count();
         assert!(
             snapshot_count >= 3,
-            "250 events with max_hops=100 should produce at least 3 snapshots, got {snapshot_count}"
+            "35 events with max_hops=10 should produce at least 3 snapshots, got {snapshot_count}"
         );
 
         // No delta chain should exceed max_hops
@@ -615,16 +880,19 @@ mod tests {
                     .unwrap();
             }
             assert!(
-                hops < 100,
-                "delta chain at index {i} has {hops} hops, exceeds max 100"
+                hops < 10,
+                "delta chain at index {i} has {hops} hops, exceeds max 10"
             );
         }
     }
 
     #[test]
     fn test_reconstruct_state_at() {
-        // Build 150 pre-resolved states — will have snapshots at 0 and ~100
-        let states: ResolvedStates = (1..=150)
+        // NOTE: This test creates `O(N^2)` state items as it builds the DAG.
+        // `LtHash` computes 64 SHA-256 iterations per item, making large `N` values
+        // extremely slow in debug builds. We keep `N=45` to ensure fast tests.
+        // Build 45 pre-resolved states — will have snapshots at 0, 10, 20, 30, 40
+        let states: ResolvedStates = (1..=45)
             .map(|i| {
                 let mut state = StateMap::new();
                 for j in 1..=i {
@@ -640,18 +908,18 @@ mod tests {
             })
             .collect();
 
-        let checkpoints = compute_compacted_delta_chain_from_resolved(states, Some(100));
+        let checkpoints = compute_compacted_delta_chain_from_resolved(states, Some(10));
 
         // Reconstruct state at the last event
         let state =
-            reconstruct_state_at(&checkpoints, 149).expect("should reconstruct state at tip");
+            reconstruct_state_at(&checkpoints, 44).expect("should reconstruct state at tip");
 
-        // Should have 150 member entries
-        assert_eq!(state.len(), 150, "state at tip should have 150 entries");
+        // Should have 45 member entries
+        assert_eq!(state.len(), 45, "state at tip should have 45 entries");
 
         // Verify a specific entry
-        let key = ("m.room.member".into(), "@user_42:example.com".into());
-        assert_eq!(state.get(&key), Some(&"$42".into()));
+        let key = ("m.room.member".into(), "@user_12:example.com".into());
+        assert_eq!(state.get(&key), Some(&"$12".into()));
 
         // Reconstruct at the first event
         let state_first =
@@ -660,8 +928,8 @@ mod tests {
 
         // Reconstruct at mid-point
         let state_mid =
-            reconstruct_state_at(&checkpoints, 74).expect("should reconstruct at index 74");
-        assert_eq!(state_mid.len(), 75); // events 1..=75
+            reconstruct_state_at(&checkpoints, 22).expect("should reconstruct at index 22");
+        assert_eq!(state_mid.len(), 23); // events 1..=23
     }
 
     #[test]
@@ -675,8 +943,11 @@ mod tests {
 
     #[test]
     fn test_compacted_delta_chain_from_resolved_snapshots() {
-        // Create 250 sequential resolved states
-        let states: ResolvedStates = (1..=250)
+        // NOTE: This test creates `O(N^2)` state items as it builds the DAG.
+        // `LtHash` computes 64 SHA-256 iterations per item, making large `N` values
+        // extremely slow in debug builds. We keep `N=35` to ensure fast tests.
+        // Create 35 sequential resolved states
+        let states: ResolvedStates = (1..=35)
             .map(|i| {
                 let mut state = StateMap::new();
                 state.insert(
@@ -700,9 +971,9 @@ mod tests {
             })
             .collect();
 
-        let checkpoints = compute_compacted_delta_chain_from_resolved(states.clone(), Some(100));
+        let checkpoints = compute_compacted_delta_chain_from_resolved(states.clone(), Some(10));
 
-        assert_eq!(checkpoints.len(), 250);
+        assert_eq!(checkpoints.len(), 35);
 
         // First event always gets a snapshot
         assert!(checkpoints[0].snapshot.is_some());
@@ -714,12 +985,12 @@ mod tests {
             .count();
         assert!(
             snapshot_count >= 3,
-            "250 events with max_hops=100 should produce at least 3 snapshots, got {snapshot_count}"
+            "35 events with max_hops=10 should produce at least 3 snapshots, got {snapshot_count}"
         );
 
         // Verify all states are reconstructable
-        let last_state = reconstruct_state_at(&checkpoints, 249).expect("should reconstruct last");
-        assert_eq!(last_state.len(), 250);
+        let last_state = reconstruct_state_at(&checkpoints, 34).expect("should reconstruct last");
+        assert_eq!(last_state.len(), 35);
 
         // Verify no checkpoint is more than max_hops deltas away from a snapshot
         let mut hops = 0_usize;
@@ -729,8 +1000,8 @@ mod tests {
             } else {
                 hops += 1;
                 assert!(
-                    hops < 100,
-                    "checkpoint {} is {hops} hops from nearest snapshot, exceeds max_hops=100",
+                    hops < 10,
+                    "checkpoint {} is {hops} hops from nearest snapshot, exceeds max_hops=10",
                     cp.event_id
                 );
             }
@@ -813,8 +1084,8 @@ mod tests {
     /// indices 0 and 2 share the same state hash, with index 1 having a
     /// different hash. Returns `(checkpoints, state_a, state_b)`.
     fn forward_jump_fixture() -> (alloc::vec::Vec<CompactedCheckpoint>, StateMap, StateMap) {
-        let shared_hash: String = "HASH_A".into();
-        let different_hash: String = "HASH_B".into();
+        let shared_hash = [0xAA; 32];
+        let different_hash = [0xBB; 32];
 
         let state_a = {
             let mut s = StateMap::new();
@@ -829,15 +1100,15 @@ mod tests {
 
         let checkpoints = alloc::vec![
             CompactedCheckpoint::<String> {
-                state_hash: shared_hash.clone(),
+                state_hash: shared_hash,
                 parent_hash: None,
                 event_id: "$0".into(),
                 deltas: alloc::vec![],
                 snapshot: Some(state_a.clone()),
             },
             CompactedCheckpoint::<String> {
-                state_hash: different_hash.clone(),
-                parent_hash: Some(shared_hash.clone()),
+                state_hash: different_hash,
+                parent_hash: Some(shared_hash),
                 event_id: "$1".into(),
                 deltas: alloc::vec![StateDelta {
                     event_type: "m.room.topic".into(),
@@ -847,7 +1118,7 @@ mod tests {
                 snapshot: None,
             },
             CompactedCheckpoint::<String> {
-                state_hash: shared_hash.clone(), // same as checkpoint 0!
+                state_hash: shared_hash, // same as checkpoint 0!
                 parent_hash: Some(different_hash),
                 event_id: "$2".into(),
                 deltas: alloc::vec![StateDelta {
@@ -893,6 +1164,66 @@ mod tests {
         assert_eq!(results[&2], state_a);
     }
 
+    #[test]
+    fn test_checkpoint_serde_coverage() {
+        // Covers `hex_serde`, `hex_serde_opt`, and `LtHash::default()`
+        let _def = LtHash::default();
+
+        let cp: CompactedCheckpoint<String> = CompactedCheckpoint {
+            state_hash: [0xab; 32],
+            parent_hash: Some([0xcd; 32]),
+            event_id: "$1".into(),
+            deltas: alloc::vec![],
+            snapshot: None,
+        };
+
+        let serialized = serde_json::to_string(&cp).unwrap();
+        let deserialized: CompactedCheckpoint<String> = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(cp, deserialized);
+
+        let cp_none: CompactedCheckpoint<String> = CompactedCheckpoint {
+            state_hash: [0xab; 32],
+            parent_hash: None,
+            event_id: "$2".into(),
+            deltas: alloc::vec![],
+            snapshot: None,
+        };
+        let serialized_none = serde_json::to_string(&cp_none).unwrap();
+        let deserialized_none: CompactedCheckpoint<String> =
+            serde_json::from_str(&serialized_none).unwrap();
+        assert_eq!(cp_none, deserialized_none);
+
+        // Test error conditions
+        assert!(serde_json::from_str::<CompactedCheckpoint<String>>(
+            r#"{"state_hash":"deadbeef","parent_hash":null,"event_id":"$1","deltas":[],"snapshot":null}"#
+        ).is_err());
+
+        assert!(serde_json::from_str::<CompactedCheckpoint<String>>(
+            r#"{"state_hash":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz","parent_hash":null,"event_id":"$1","deltas":[],"snapshot":null}"#
+        ).is_err());
+
+        assert!(serde_json::from_str::<CompactedCheckpoint<String>>(
+            r#"{"state_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parent_hash":"deadbeef","event_id":"$1","deltas":[],"snapshot":null}"#
+        ).is_err());
+
+        assert!(serde_json::from_str::<CompactedCheckpoint<String>>(
+            r#"{"state_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parent_hash":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz","event_id":"$1","deltas":[],"snapshot":null}"#
+        ).is_err());
+    }
+
+    #[test]
+    fn test_batch_empty_and_oob_targets() {
+        let (checkpoints, _, _) = forward_jump_fixture();
+
+        // Empty targets
+        let results = reconstruct_state_batch(&checkpoints, &[]);
+        assert!(results.is_empty());
+
+        // All out-of-bounds
+        let results = reconstruct_state_batch(&checkpoints, &[999, 1000]);
+        assert!(results.is_empty());
+    }
+
     /// Regression: `hash_to_idx` `HashMap` shadowing — when duplicate hashes exist,
     /// `.collect()` only stores the LAST index, erasing the valid earlier parent.
     /// This test constructs a chain where `HASH_A` appears at indices 0 and 4, and
@@ -900,10 +1231,10 @@ mod tests {
     /// index 0, not silently fails because index 4 shadowed the lookup.
     #[test]
     fn test_batch_hash_shadowing_regression() {
-        let hash_a: String = "HASH_A".into();
-        let hash_b: String = "HASH_B".into();
-        let hash_c: String = "HASH_C".into();
-        let hash_d: String = "HASH_D".into();
+        let hash_a = [0xAA; 32];
+        let hash_b = [0xBB; 32];
+        let hash_c = [0xCC; 32];
+        let hash_d = [0xDD; 32];
 
         let state_a = {
             let mut s = StateMap::new();
@@ -919,15 +1250,15 @@ mod tests {
         // Reconstructing index 1 needs HASH_A → index 0, but HashMap returns 4.
         let checkpoints = alloc::vec![
             CompactedCheckpoint::<String> {
-                state_hash: hash_a.clone(),
+                state_hash: hash_a,
                 parent_hash: None,
                 event_id: "$0".into(),
                 deltas: alloc::vec![],
                 snapshot: Some(state_a.clone()),
             },
             CompactedCheckpoint::<String> {
-                state_hash: hash_b.clone(),
-                parent_hash: Some(hash_a.clone()),
+                state_hash: hash_b,
+                parent_hash: Some(hash_a),
                 event_id: "$1".into(),
                 deltas: alloc::vec![StateDelta {
                     event_type: "m.room.topic".into(),
@@ -937,8 +1268,8 @@ mod tests {
                 snapshot: None,
             },
             CompactedCheckpoint::<String> {
-                state_hash: hash_c.clone(),
-                parent_hash: Some(hash_b.clone()),
+                state_hash: hash_c,
+                parent_hash: Some(hash_b),
                 event_id: "$2".into(),
                 deltas: alloc::vec![StateDelta {
                     event_type: "m.room.topic".into(),
@@ -948,7 +1279,7 @@ mod tests {
                 snapshot: None,
             },
             CompactedCheckpoint::<String> {
-                state_hash: hash_d.clone(),
+                state_hash: hash_d,
                 parent_hash: Some(hash_c),
                 event_id: "$3".into(),
                 deltas: alloc::vec![StateDelta {
@@ -959,7 +1290,7 @@ mod tests {
                 snapshot: None,
             },
             CompactedCheckpoint::<String> {
-                state_hash: hash_a.clone(), // Duplicate of index 0!
+                state_hash: hash_a, // Duplicate of index 0!
                 parent_hash: Some(hash_d),
                 event_id: "$4".into(),
                 deltas: alloc::vec![StateDelta {
@@ -974,13 +1305,7 @@ mod tests {
         // Batch reconstruct all — with HashMap shadowing, indices 1-3 would
         // silently fail because HASH_A maps to index 4 (future), not index 0.
         let results = reconstruct_state_batch(&checkpoints, &[0, 1, 2, 3, 4]);
-        assert_eq!(
-            results.len(),
-            5,
-            "all 5 checkpoints should reconstruct, got {}: {:?}",
-            results.len(),
-            results.keys().collect::<alloc::vec::Vec<_>>()
-        );
+        assert_eq!(results.len(), 5, "all 5 checkpoints should reconstruct");
         assert_eq!(results[&0], state_a, "index 0 (snapshot)");
         assert_eq!(results[&4], state_a, "index 4 (reverted to state_a)");
 
@@ -1017,7 +1342,7 @@ mod tests {
         let delta_c_from_a = compute_state_delta(&state_a, &state_c);
         let checkpoints = alloc::vec![
             CompactedCheckpoint::<String> {
-                state_hash: hash_a.clone(),
+                state_hash: hash_a,
                 parent_hash: None,
                 event_id: "$e0".into(),
                 deltas: alloc::vec![],
@@ -1025,14 +1350,14 @@ mod tests {
             },
             CompactedCheckpoint::<String> {
                 state_hash: hash_b,
-                parent_hash: Some(hash_a.clone()),
+                parent_hash: Some(hash_a),
                 event_id: "$e1".into(),
                 deltas: compute_state_delta(&state_a, &state_b),
                 snapshot: None,
             },
             CompactedCheckpoint::<String> {
                 state_hash: hash_c,
-                parent_hash: Some(hash_a.clone()), // points to index 0, NOT index 1
+                parent_hash: Some(hash_a), // points to index 0, NOT index 1
                 event_id: "$e2".into(),
                 deltas: delta_c_from_a,
                 snapshot: None,
