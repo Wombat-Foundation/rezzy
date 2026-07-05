@@ -236,17 +236,22 @@ impl LtHash {
 
     /// Compute the 2048-byte SHAKE256 expansion for a single state entry.
     ///
-    /// Input encoding (MSC4500 §2): `SHAKE256(tag || type || "\x00" || state_key || "\x00" || event_id, 2048)`
+    /// Input encoding (MSC4500 §1): `len(type) || type || len(state_key) || state_key || event_id`
+    /// where each `len()` is an unsigned 16-bit little-endian byte count.
+    ///
+    /// Expansion (MSC4500 §2): `SHAKE256(tag || element, 2048)`
     #[must_use]
     fn seed(event_type: &str, state_key: &str, event_id: &dyn core::fmt::Display) -> Self {
         use sha3::digest::{ExtendableOutput, Update};
 
         let mut input = alloc::vec::Vec::with_capacity(128);
         input.extend_from_slice(Self::DST);
+        let type_len = u16::try_from(event_type.len()).expect("event_type exceeds u16::MAX bytes");
+        input.extend_from_slice(&type_len.to_le_bytes());
         input.extend_from_slice(event_type.as_bytes());
-        input.push(0x00);
+        let sk_len = u16::try_from(state_key.len()).expect("state_key exceeds u16::MAX bytes");
+        input.extend_from_slice(&sk_len.to_le_bytes());
         input.extend_from_slice(state_key.as_bytes());
-        input.push(0x00);
         let eid = alloc::format!("{event_id}");
         input.extend_from_slice(eid.as_bytes());
 
@@ -838,15 +843,15 @@ mod tests {
         // --- Scenario 1: Add element 1 ---
         let seed1 = LtHash::seed("m.room.member", "@alice:example.com", &"$event_1");
         let exp1_bytes: Vec<u8> = seed1.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&exp1_bytes), "7f67472f95b708be0b6ff8794d6a4e6f");
+        assert_eq!(hex(&exp1_bytes), "d72df88a72ff61da6b2287649ff6001c");
 
         let mut s1 = s0;
         s1.add_seed(&seed1);
         let s1_bytes: Vec<u8> = s1.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&s1_bytes), "7f67472f95b708be0b6ff8794d6a4e6f");
+        assert_eq!(hex(&s1_bytes), "d72df88a72ff61da6b2287649ff6001c");
         assert_eq!(
             hex(&s1.checksum()),
-            "1c51ead276c255b5054025ef47b0c78f69259df45b9de9abc3c79a40ee3afa24"
+            "3bcd9f595b4b5c7095b300ec5cf37ff1ff3f79400643f7ba66171e150ddb6606"
         );
 
         // --- Scenario 2: Remove element 1 ---
@@ -861,30 +866,30 @@ mod tests {
         // --- Scenario 3: Add element 2 ---
         let seed2 = LtHash::seed("m.room.name", "", &"$event_2");
         let exp2_bytes: Vec<u8> = seed2.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&exp2_bytes), "6b09141708e2fae839bd632d8bc771ff");
+        assert_eq!(hex(&exp2_bytes), "8c9d4997da61e28d7e6b83255fff064e");
 
         let mut s2 = s1;
         s2.add_seed(&seed2);
         let s2_bytes: Vec<u8> = s2.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&s2_bytes), "ea705b469d9902a7442c5ba7d831bf6e");
+        assert_eq!(hex(&s2_bytes), "63cb41224c614368e98d0a8afef5066a");
         assert_eq!(
             hex(&s2.checksum()),
-            "b95fb7fc915d6d3dda12981340d73137d2d6cf22ac7d5966a96502a28442b676"
+            "99d3ed0ae604d2fb5849f7280062e27ecea4425b64b25190e067e3d6a755680c"
         );
 
         // --- Scenario 4: Replace element 1 with element 3 ---
         let seed3 = LtHash::seed("m.room.member", "@alice:example.com", &"$event_3");
         let exp3_bytes: Vec<u8> = seed3.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&exp3_bytes), "967af517a6581417a02f28604554f067");
+        assert_eq!(hex(&exp3_bytes), "9dd1af20e6ee125f8e98969793b8c650");
 
         let mut s3 = s2;
         s3.sub_seed(&seed1);
         s3.add_seed(&seed3);
         let s3_bytes: Vec<u8> = s3.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&s3_bytes), "0184092fae3a0e00d9ec8b8dd01b6167");
+        assert_eq!(hex(&s3_bytes), "296ff8b7c050f4ec0c0419bdf2b7cc9e");
         assert_eq!(
             hex(&s3.checksum()),
-            "7e46baafcd5cde7ee2583a91bd7f5be3b682cd5d682186b232383c148b7dbc56"
+            "8b611750bb056a38f9e3f9fcc74ae1f0771f12ade0daecc6963e302d15f8e67f"
         );
     }
 
