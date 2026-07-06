@@ -20,9 +20,9 @@ jobs:
       MATRIX_TOKEN: ${{ secrets.MATRIX_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-
-      #      - name: Init submodules
-      #        run: git -c submodule.res.update=checkout submodule update --init --recursive
+        with:
+          token: ${{ secrets.SUBMODULE_ACCESS_TOKEN }}
+          submodules: recursive
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
