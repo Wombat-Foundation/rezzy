@@ -28,7 +28,7 @@
 //! - **O(1) incremental updates**: insert = `hash + expanded`,
 //!   remove = `hash - expanded`.
 //! - **Order independence**: addition is commutative + associative.
-//! - **Cryptographic security**: hard to find multiset collisions (SVP).
+//! - **Cryptographic security**: hard to find set collisions (SVP).
 
 /// A 2048-byte homomorphic state hash using `LtHash`.
 ///
@@ -45,13 +45,39 @@
 /// - **O(1) incremental updates**: insert = `hash + expanded`,
 ///   remove = `hash - expanded`.
 /// - **Order independence**: addition is commutative + associative.
-/// - **Cryptographic security**: hard to find multiset collisions (SVP).
+/// - **Cryptographic security**: hard to find set collisions (SVP).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LtHash(pub [u16; 1024]);
 
 impl Default for LtHash {
     fn default() -> Self {
         Self::ZERO
+    }
+}
+
+struct ValidatingHashWriter<'a, H> {
+    hasher: &'a mut H,
+    is_first: bool,
+    starts_with_dollar: bool,
+}
+
+impl<H> core::fmt::Write for ValidatingHashWriter<'_, H>
+where
+    H: sha3::digest::Update,
+{
+    #[inline]
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        if s.is_empty() {
+            return Ok(());
+        }
+        if self.is_first {
+            self.is_first = false;
+            if s.starts_with('$') {
+                self.starts_with_dollar = true;
+            }
+        }
+        self.hasher.update(s.as_bytes());
+        Ok(())
     }
 }
 
@@ -70,21 +96,29 @@ impl LtHash {
     /// Expansion (MSC4500 §2): `SHAKE256(tag || element, 2048)`
     #[must_use]
     fn seed(event_type: &str, state_key: &str, event_id: &dyn core::fmt::Display) -> Self {
+        use core::fmt::Write;
         use sha3::digest::{ExtendableOutput, Update};
 
-        let mut input = alloc::vec::Vec::with_capacity(128);
-        input.extend_from_slice(Self::DST);
-        let type_len = u16::try_from(event_type.len()).expect("event_type exceeds u16::MAX bytes");
-        input.extend_from_slice(&type_len.to_le_bytes());
-        input.extend_from_slice(event_type.as_bytes());
-        let sk_len = u16::try_from(state_key.len()).expect("state_key exceeds u16::MAX bytes");
-        input.extend_from_slice(&sk_len.to_le_bytes());
-        input.extend_from_slice(state_key.as_bytes());
-        let eid = alloc::format!("{event_id}");
-        input.extend_from_slice(eid.as_bytes());
-
         let mut xof = sha3::Shake256::default();
-        xof.update(&input);
+        xof.update(Self::DST);
+        let type_len = u16::try_from(event_type.len()).expect("event_type exceeds u16::MAX bytes");
+        xof.update(&type_len.to_le_bytes());
+        xof.update(event_type.as_bytes());
+        let sk_len = u16::try_from(state_key.len()).expect("state_key exceeds u16::MAX bytes");
+        xof.update(&sk_len.to_le_bytes());
+        xof.update(state_key.as_bytes());
+
+        let mut writer = ValidatingHashWriter {
+            hasher: &mut xof,
+            is_first: true,
+            starts_with_dollar: false,
+        };
+        write!(writer, "{event_id}").expect("failed to write event_id to hasher");
+
+        assert!(
+            writer.starts_with_dollar,
+            "LtHash requires strict event ID syntax starting with '$'."
+        );
 
         let mut buf = [0u8; 2048];
         xof.finalize_xof_into(&mut buf);
