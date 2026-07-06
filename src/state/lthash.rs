@@ -87,10 +87,10 @@ impl LtHash {
     /// # Performance & Validation
     ///
     /// Full cryptographic and syntactic validation of the Matrix Event ID (e.g., verifying
-    /// length, character sets, or room-version-specific syntax) is **not** performed within
-    /// this function for performance reasons. Since hashing is on a performance-critical hot
-    /// path, syntactic validation must be enforced at the event ingestion and parsing layer
-    /// (e.g., via `LeanEvent::validate_syntactic`).
+    /// length, prefix, character sets, or room-version-specific syntax) is intentionally
+    /// **not** performed within this function for performance reasons and to allow flexible
+    /// event ID formats across legacy/modern room versions. Any syntactic validation of
+    /// event IDs must be enforced by the caller at the application ingestion boundary if desired.
     #[must_use]
     fn seed(event_type: &str, state_key: &str, event_id: &dyn core::fmt::Display) -> Self {
         use core::fmt::Write;
