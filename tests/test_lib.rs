@@ -3262,6 +3262,7 @@ fn test_sorting_coverage() {
     let missing_pl_ev: LeanEvent = LeanEvent {
         event_id: "missing_pl".into(),
         sender: "bob".into(),
+        auth_events: vec!["pl".into()],
         ..Default::default()
     };
     events.insert("missing_pl".into(), missing_pl_ev);

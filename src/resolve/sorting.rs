@@ -102,11 +102,6 @@ where
     stack.push(curr_id);
 
     while let Some(&top) = stack.last() {
-        if Some(top) == create_id {
-            memo.insert(top, 0);
-            stack.pop();
-            continue;
-        }
         if let Some(&dist) = memo.get(top) {
             if dist != u64::MAX - 1 {
                 stack.pop();
