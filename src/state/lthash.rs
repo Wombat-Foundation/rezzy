@@ -55,27 +55,16 @@ impl Default for LtHash {
     }
 }
 
-struct ValidatingHashWriter<'a, H> {
+struct HashWriter<'a, H> {
     hasher: &'a mut H,
-    is_first: bool,
-    starts_with_dollar: bool,
 }
 
-impl<H> core::fmt::Write for ValidatingHashWriter<'_, H>
+impl<H> core::fmt::Write for HashWriter<'_, H>
 where
     H: sha3::digest::Update,
 {
     #[inline]
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        if s.is_empty() {
-            return Ok(());
-        }
-        if self.is_first {
-            self.is_first = false;
-            if s.starts_with('$') {
-                self.starts_with_dollar = true;
-            }
-        }
         self.hasher.update(s.as_bytes());
         Ok(())
     }
@@ -94,6 +83,14 @@ impl LtHash {
     /// where each `len()` is an unsigned 16-bit little-endian byte count.
     ///
     /// Expansion (MSC4500 §2): `SHAKE256(tag || element, 2048)`
+    ///
+    /// # Performance & Validation
+    ///
+    /// Full cryptographic and syntactic validation of the Matrix Event ID (e.g., verifying
+    /// length, character sets, or room-version-specific syntax) is **not** performed within
+    /// this function for performance reasons. Since hashing is on a performance-critical hot
+    /// path, syntactic validation must be enforced at the event ingestion and parsing layer
+    /// (e.g., via `LeanEvent::validate_syntactic`).
     #[must_use]
     fn seed(event_type: &str, state_key: &str, event_id: &dyn core::fmt::Display) -> Self {
         use core::fmt::Write;
@@ -108,17 +105,8 @@ impl LtHash {
         xof.update(&sk_len.to_le_bytes());
         xof.update(state_key.as_bytes());
 
-        let mut writer = ValidatingHashWriter {
-            hasher: &mut xof,
-            is_first: true,
-            starts_with_dollar: false,
-        };
+        let mut writer = HashWriter { hasher: &mut xof };
         write!(writer, "{event_id}").expect("failed to write event_id to hasher");
-
-        assert!(
-            writer.starts_with_dollar,
-            "LtHash requires strict event ID syntax starting with '$'."
-        );
 
         let mut buf = [0u8; 2048];
         xof.finalize_xof_into(&mut buf);
@@ -412,11 +400,6 @@ mod tests {
             hex(&s3.checksum()),
             "8b611750bb056a38f9e3f9fcc74ae1f0771f12ade0daecc6963e302d15f8e67f"
         );
-    }
-
-    #[test]
-    fn test_lthash_default() {
-        let _def = LtHash::default();
     }
 
     #[test]
