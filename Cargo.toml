@@ -10,6 +10,7 @@ repository = "https://github.com/gamesguru/rezzy"
 autotests = false
 default-run = "rezzy"
 exclude = [
+    "build.rs",
     "res/",
     "scripts/",
     "docs/",
@@ -30,6 +31,8 @@ exclude = [
     ".ignore",
     ".gitmodules",
     ".typos.toml",
+    ".cargo/cargo-wrapper.sh",
+    ".cargo/config.toml",
     "rustfmt.toml",
     "tests/",
     "Makefile",
