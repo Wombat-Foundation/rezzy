@@ -444,8 +444,12 @@ mod tests {
     #[test]
     fn test_cache_insert_batch() {
         let mut cache = LeanEventCache::new(10);
+
+        // Pre-insert "$a" to seed the cache
+        cache.insert(make_event("$a", 1));
+
         let events = alloc::vec![
-            make_event("$a", 1),
+            make_event("$a", 999), // Already cached, should return cached depth 1
             make_event("$b", 2),
             make_event("$c", 3),
         ];
@@ -453,7 +457,11 @@ mod tests {
         let result = cache.insert_batch(events);
         assert_eq!(result.len(), 3);
         assert_eq!(cache.len(), 3);
-        assert_eq!(result["$a"].depth, 1);
+        assert_eq!(
+            result["$a"].depth, 1,
+            "should have retrieved cached version of $a"
+        );
+        assert_eq!(result["$b"].depth, 2);
     }
 
     #[test]

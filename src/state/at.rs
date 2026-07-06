@@ -1813,6 +1813,92 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_v2_1_1_power_phase_ban_supplementation_coverage() {
+        use crate::auth::StateProvider;
+        use crate::basespec::event_types::M_ROOM_MEMBER;
+
+        let create_ev = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            sender: "@admin:example.com".into(),
+            ..Default::default()
+        };
+
+        // 1. A kick event (MEM_LEAVE with sender != state_key)
+        let kick_ev = LeanEvent {
+            event_id: "$kick".into(),
+            event_type: M_ROOM_MEMBER.to_string(),
+            state_key: Some("@target:example.com".into()),
+            sender: "@admin:example.com".into(),
+            content: json!({ "membership": "leave" }),
+            ..Default::default()
+        };
+
+        // 2. A self-leave event (MEM_LEAVE with sender == state_key)
+        let leave_ev = LeanEvent {
+            event_id: "$leave".into(),
+            event_type: M_ROOM_MEMBER.to_string(),
+            state_key: Some("@target:example.com".into()),
+            sender: "@target:example.com".into(),
+            content: json!({ "membership": "leave" }),
+            ..Default::default()
+        };
+
+        // Resolved map pointing to the event
+        let mut resolved = imbl::OrdMap::new();
+        resolved.insert(
+            (M_ROOM_MEMBER.to_string(), "@target:example.com".to_string()),
+            "$kick".to_string(),
+        );
+
+        let mut auth_context = HashMap::new();
+        auth_context.insert("$kick".to_string(), kick_ev.clone());
+        auth_context.insert("$leave".to_string(), leave_ev.clone());
+
+        let sort_set = HashMap::new();
+        let local_auth = BTreeMap::new();
+
+        // OverlayState with kick event: is_ban_or_kick evaluates to true, should supplement and return the kick event
+        {
+            let overlay = OverlayState {
+                resolved: &resolved,
+                auth_context: &auth_context,
+                sort_set: &sort_set,
+                local_auth: local_auth.clone(),
+                create_ev: Some(&create_ev),
+                version: StateResVersion::V2_1_1,
+                is_power_phase: true,
+            };
+
+            let supplemented = overlay.get_event(M_ROOM_MEMBER, "@target:example.com");
+            assert!(supplemented.is_some());
+            assert_eq!(supplemented.unwrap().event_id, "$kick");
+        }
+
+        // OverlayState with self-leave event: is_ban_or_kick evaluates to false, should NOT supplement
+        {
+            let mut resolved_leave = imbl::OrdMap::new();
+            resolved_leave.insert(
+                (M_ROOM_MEMBER.to_string(), "@target:example.com".to_string()),
+                "$leave".to_string(),
+            );
+
+            let overlay = OverlayState {
+                resolved: &resolved_leave,
+                auth_context: &auth_context,
+                sort_set: &sort_set,
+                local_auth: local_auth.clone(),
+                create_ev: Some(&create_ev),
+                version: StateResVersion::V2_1_1,
+                is_power_phase: true,
+            };
+
+            let supplemented = overlay.get_event(M_ROOM_MEMBER, "@target:example.com");
+            assert!(supplemented.is_none());
+        }
+    }
+
     /// Coverage: `LocalAuthCache` hit path (at.rs:263-268).
     /// Calls `compute_local_auth` twice for the same event. Second call returns
     /// from cache without re-walking the auth chain.
@@ -2131,6 +2217,53 @@ mod tests {
         let tips = vec!["A", "X"];
         let result = compute_merge_base(&tips, &events_map);
         assert!(result.is_none(), "disjoint DAGs have no merge base");
+    }
+
+    /// Coverage: missing event in `events_map` during `compute_state_at`.
+    /// Simultaneously hits:
+    /// - `collect_ancestor_short_ids_batch` line 967 continue
+    /// - `topological_sort_short_ids` line 1002 continue
+    /// - `compute_state_at` line 602 continue
+    #[test]
+    fn test_compute_state_at_with_missing_events_coverage() {
+        let p = LeanEvent {
+            event_id: "P".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:x".into(),
+            content: json!({"room_version": "10", "creator": "@admin:x"}),
+            depth: 1,
+            ..Default::default()
+        };
+        let a = LeanEvent {
+            event_id: "A".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@alice:x".into()),
+            sender: "@alice:x".into(),
+            content: json!({"membership": "join"}),
+            depth: 2,
+            prev_events: vec!["P".into()],
+            auth_events: vec!["P".into()],
+            ..Default::default()
+        };
+        // Event "C" is missing from events_map, but referenced by "D"
+        let d = LeanEvent {
+            event_id: "D".into(),
+            event_type: "m.room.message".into(),
+            sender: "@admin:x".into(),
+            depth: 3,
+            prev_events: vec!["A".into(), "C".into()],
+            auth_events: vec!["P".into(), "A".into()],
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("P".into(), p);
+        events_map.insert("A".into(), a);
+        events_map.insert("D".into(), d);
+
+        let result = compute_state_at(&"D".to_string(), &events_map, crate::StateResVersion::V2);
+        assert!(result.is_some());
     }
 
     /// Coverage: `verify_pagination` when `events_map` is missing an event (line 1689).

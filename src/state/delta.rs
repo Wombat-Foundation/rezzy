@@ -942,6 +942,15 @@ mod tests {
         assert!(serde_json::from_str::<CompactedCheckpoint<String>>(
             r#"{"state_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parent_hash":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz","event_id":"$1","deltas":[],"snapshot":null}"#
         ).is_err());
+
+        // Non-ASCII but exactly 64 bytes in length (32 copies of 'ä', which is 2 bytes each)
+        let non_ascii_64_bytes = "ääääääääääääääääääääääääääääääää";
+        assert_eq!(non_ascii_64_bytes.len(), 64);
+        assert!(!non_ascii_64_bytes.is_ascii());
+        assert_eq!(
+            super::decode_hex_32(non_ascii_64_bytes),
+            Err("hex string contains non-ASCII characters")
+        );
     }
 
     #[test]

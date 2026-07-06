@@ -96,6 +96,7 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
     for val in raw_events {
         match serde_json::from_value::<LeanEvent>(val.clone()) {
             Ok(ev) => {
+                // TODO: Invoke ev.validate_syntactic() during CLI ingestion once a robust error recovery / fallback strategy is defined for malformed inputs.
                 if ev.event_type == "m.room.create" {
                     creator_user_id.clone_from(&ev.sender);
                 }

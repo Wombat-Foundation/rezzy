@@ -1070,6 +1070,7 @@ impl<Id, C> LeanEvent<Id, C> {
     /// Returns an error if the event violates spec invariants (e.g. >20 `prev_events`).
     pub fn validate_syntactic(&self) -> Result<(), &'static str> {
         // TODO: Are there any other invariants?
+        // TODO: Validate event_id format/prefix syntax (e.g., starts with '$') once standard room version rules are fully integrated.
         if self.prev_events.len() > 20 {
             return Err("prev_events exceeds maximum allowed length of 20");
         }
