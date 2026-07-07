@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::utils::{compute_state_hash, epoch_days_to_ymd, resolve_parent_states, SharedStateMap};
+use crate::utils::{SharedStateMap, compute_state_hash, epoch_days_to_ymd, resolve_parent_states};
 use crate::{Args, OutputFormat};
 use rezzy::{LeanEvent, StateResVersion};
 use std::collections::HashMap;

@@ -22,7 +22,7 @@ mod utils;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use clap::{Parser, ValueEnum};
-use format::{format_cli_output, FormattingContext};
+use format::{FormattingContext, format_cli_output};
 use rezzy::{LeanEvent, StateResVersion};
 use std::collections::HashMap;
 use std::fs::File;

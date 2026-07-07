@@ -51,8 +51,8 @@
 //! assert_eq!(cached.sender, "@alice:x");
 //! ```
 
-use crate::basespec::rezzy_types::{EventContent, EventId, LeanEvent};
 use crate::HashMap;
+use crate::basespec::rezzy_types::{EventContent, EventId, LeanEvent};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::cell::{Cell, RefCell};
@@ -202,8 +202,8 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
     /// Inserts a pre-wrapped `Arc<LeanEvent>`. Useful when the caller already
     /// has an `Arc` (e.g., from a shared database layer).
     pub fn insert_arc(&mut self, event: Arc<LeanEvent<Id, C>>) {
-        let gen = self.generation.get().wrapping_add(1);
-        self.generation.set(gen);
+        let r#gen = self.generation.get().wrapping_add(1);
+        self.generation.set(r#gen);
         let id = event.event_id.clone();
 
         // Replace existing entry — remove old generation from side-index
@@ -211,8 +211,8 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
             let old_gen = existing.last_access.get();
             self.access_order.borrow_mut().remove(&old_gen);
             existing.event = event;
-            existing.last_access.set(gen);
-            self.access_order.borrow_mut().insert(gen, id);
+            existing.last_access.set(r#gen);
+            self.access_order.borrow_mut().insert(r#gen, id);
             return;
         }
 
@@ -223,9 +223,9 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
 
         let entry = CacheEntry {
             event,
-            last_access: Cell::new(gen),
+            last_access: Cell::new(r#gen),
         };
-        self.access_order.borrow_mut().insert(gen, id.clone());
+        self.access_order.borrow_mut().insert(r#gen, id.clone());
         self.map.insert(id, entry);
     }
 
@@ -286,10 +286,9 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
         let mut result = HashMap::new();
         for event in events {
             let id = event.event_id.clone();
-            let arc = if let Some(cached) = self.get(&id) {
-                cached
-            } else {
-                self.insert(event)
+            let arc = match self.get(&id) {
+                Some(cached) => cached,
+                _ => self.insert(event),
             };
             result.insert(id, arc);
         }

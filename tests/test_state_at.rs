@@ -1,6 +1,6 @@
 mod utils;
 
-use rezzy::{verify_pagination, LeanEvent, PaginationViolation, StateResVersion};
+use rezzy::{LeanEvent, PaginationViolation, StateResVersion, verify_pagination};
 use std::collections::HashMap;
 
 /// Negative test: `verify_pagination` must detect duplicate events
@@ -335,7 +335,7 @@ fn test_compute_topo_positions_ignores_federation_depth() {
 
 #[test]
 fn test_resolve_merge_fast_path_hashed_mismatch() {
-    use rezzy::state::at::{resolve_merge_fast_path_hashed, HashedState, LocalAuthCache};
+    use rezzy::state::at::{HashedState, LocalAuthCache, resolve_merge_fast_path_hashed};
 
     let creator = "@admin:example.com".to_string();
 

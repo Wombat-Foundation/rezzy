@@ -46,9 +46,9 @@
 
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::{
+    HashMap,
     resolve::sorting::{build_mainline, compute_closest_mainline_positions},
     state::at::{compute_local_auth, iterative_auth_ok},
-    HashMap,
 };
 use alloc::{string::String, vec::Vec};
 

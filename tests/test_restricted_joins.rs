@@ -4,7 +4,7 @@
 //! join rules. `restricted` (V8+) and `knock_restricted` (V10+) join rules were
 //! rejected with `NotMember` errors. These tests verify the fix.
 
-use rezzy::auth::{check_auth, RoomState};
+use rezzy::auth::{RoomState, check_auth};
 use rezzy::{LeanEvent, StateResVersion};
 use serde_json::json;
 

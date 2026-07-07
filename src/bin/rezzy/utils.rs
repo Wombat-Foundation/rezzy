@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::network::fetch_room_state;
 use crate::Args;
+use crate::network::fetch_room_state;
 use rezzy::{LeanEvent, StateResVersion};
 use std::collections::HashMap;
 use std::fs::File;
@@ -206,7 +206,9 @@ pub fn parse_and_extract_heads(
         } else if obj.contains_key("event_id") || obj.contains_key("type") {
             (vec![input_val.clone()], Vec::new())
         } else {
-            anyhow::bail!("Unrecognized JSON object structure. Top-level object must either contain 'events' or represent a single event with 'event_id' or 'type'.");
+            anyhow::bail!(
+                "Unrecognized JSON object structure. Top-level object must either contain 'events' or represent a single event with 'event_id' or 'type'."
+            );
         }
     } else if let Some(arr) = input_val.as_array() {
         (arr.clone(), Vec::new())

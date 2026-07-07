@@ -9,7 +9,7 @@
 //! the conflicted set, then calls `resolve_iterative_sort` with `StateResVersion::V2_1`.
 mod utils;
 
-use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
+use rezzy::{LeanEvent, StateResVersion, resolve_iterative_sort};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::File;

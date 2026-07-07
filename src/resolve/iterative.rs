@@ -27,9 +27,9 @@
 
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::{
-    resolve::sorting::{build_mainline, lean_kahn_sort, mainline_sort},
-    state::at::{compute_local_auth, iterative_auth_ok, LocalAuthCache},
     HashMap,
+    resolve::sorting::{build_mainline, lean_kahn_sort, mainline_sort},
+    state::at::{LocalAuthCache, compute_local_auth, iterative_auth_ok},
 };
 use alloc::{string::String, vec::Vec};
 

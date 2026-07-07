@@ -1242,7 +1242,7 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
             #[cfg(feature = "hashing")]
             {
                 use crate::basespec::event_types::{FIELD_SIGNATURES, FIELD_UNSIGNED};
-                use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+                use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
                 use sha2::{Digest, Sha256};
 
                 let mut hash_value = value.clone();

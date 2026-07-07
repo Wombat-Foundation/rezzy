@@ -1,6 +1,6 @@
 #![allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
 mod utils;
-use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
+use rezzy::{LeanEvent, StateResVersion, resolve_iterative_sort};
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -266,8 +266,7 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
     // The resolved state should contain the ban, not the join
     let member_key = ("m.room.member".to_string(), "@bob:example.com".to_string());
     assert_eq!(
-        &resolved[&member_key],
-        "$alice_ban",
+        &resolved[&member_key], "$alice_ban",
         "Alice's ban should win against Bob's concurrent join because her higher PL forces it to pop first, setting the auth rules."
     );
 }
@@ -559,8 +558,7 @@ fn test_v2_1_1_fixes_invite_lock() {
     );
 
     assert_eq!(
-        &resolved_v211[&member_key],
-        "$hist_join",
+        &resolved_v211[&member_key], "$hist_join",
         "SUCCESS: V2.1.1 completely bypassed the Invite Lock! The historical user's join survived the resolution!"
     );
 }

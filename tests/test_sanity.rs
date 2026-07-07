@@ -36,7 +36,7 @@ fn test_heap_order() {
 
 #[test]
 fn test_compute_state_at_correctness_and_performance() {
-    use rezzy::{compute_state_at, LeanEvent, StateResVersion};
+    use rezzy::{LeanEvent, StateResVersion, compute_state_at};
     use std::collections::HashMap;
     use std::time::Instant;
 
@@ -139,7 +139,7 @@ fn test_compute_state_at_correctness_and_performance() {
 
 #[test]
 fn test_compute_state_at_batch() {
-    use rezzy::{compute_state_at, compute_state_at_batch, LeanEvent, StateResVersion};
+    use rezzy::{LeanEvent, StateResVersion, compute_state_at, compute_state_at_batch};
     use std::collections::HashMap;
 
     let mut events_map = HashMap::new();
@@ -462,8 +462,8 @@ fn test_delta_chain_generation_correctness() {
 
 #[test]
 fn test_state_delta_compression_robustness() {
-    use rezzy::state::delta::{compute_state_delta, compute_state_hash};
     use rezzy::LeanEvent;
+    use rezzy::state::delta::{compute_state_delta, compute_state_hash};
     use std::collections::HashMap;
 
     // Construct a micro-history with a merge where some state key gets deleted/overwritten
@@ -586,7 +586,7 @@ mod utils;
 /// Tests: empty extremities, single extremity, two-branch merge, disjoint DAGs.
 #[test]
 fn test_compute_merge_base_diamond() {
-    use rezzy::{compute_merge_base, compute_merge_bases, LeanEvent, MERGE_BASE_MAX_STEPS};
+    use rezzy::{LeanEvent, MERGE_BASE_MAX_STEPS, compute_merge_base, compute_merge_bases};
     use std::collections::HashMap;
 
     let evs = utils::parse_jsonl_events(
@@ -670,7 +670,7 @@ fn test_compute_merge_base_diamond() {
 /// - `$root`     mask=0b111 depth=1 (all three converge)
 #[test]
 fn test_compute_merge_bases_three_way() {
-    use rezzy::{compute_merge_bases, LeanEvent, MERGE_BASE_MAX_STEPS};
+    use rezzy::{LeanEvent, MERGE_BASE_MAX_STEPS, compute_merge_bases};
     use std::collections::HashMap;
 
     let evs = utils::parse_jsonl_events(
@@ -719,7 +719,7 @@ fn test_compute_merge_bases_three_way() {
 /// ```
 #[test]
 fn test_compute_merge_bases_superseding() {
-    use rezzy::{compute_merge_bases, LeanEvent, MERGE_BASE_MAX_STEPS};
+    use rezzy::{LeanEvent, MERGE_BASE_MAX_STEPS, compute_merge_bases};
     use std::collections::HashMap;
 
     let evs = utils::parse_jsonl_events(
@@ -755,7 +755,7 @@ fn test_compute_merge_bases_superseding() {
 /// Coverage: `compute_merge_bases` — `max_steps` hard cap.
 #[test]
 fn test_compute_merge_bases_max_steps() {
-    use rezzy::{compute_merge_bases, LeanEvent};
+    use rezzy::{LeanEvent, compute_merge_bases};
     use std::collections::HashMap;
 
     // Build a deep linear chain: $0 ← $1 ← ... ← $999
@@ -815,7 +815,7 @@ fn test_compute_merge_bases_max_steps() {
 #[test]
 fn test_compute_state_at_prev_events_cycle() {
     use rezzy::state::at::{
-        compute_state_at_streaming, try_compute_state_at_streaming, StateComputationError,
+        StateComputationError, compute_state_at_streaming, try_compute_state_at_streaming,
     };
     use rezzy::{LeanEvent, StateResVersion};
     use std::collections::HashMap;
@@ -900,7 +900,7 @@ fn test_compute_state_at_prev_events_cycle() {
 ///   which are already in `u_visited` → triggers `continue`.
 #[test]
 fn test_auth_chain_diff_interleaving() {
-    use rezzy::{compute_state_at, LeanEvent, StateResVersion};
+    use rezzy::{LeanEvent, StateResVersion, compute_state_at};
     use std::collections::HashMap;
 
     let evs = utils::parse_jsonl_events(

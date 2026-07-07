@@ -13,7 +13,7 @@ extern crate std;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
+use rezzy::{LeanEvent, StateResVersion, resolve_iterative_sort};
 use std::collections::HashMap;
 
 /// Load a JSON fixture file into a Vec<LeanEvent>.
@@ -96,7 +96,7 @@ fn test_benchmark_1k_resolution_determinism() {
 #[test]
 #[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_ruma_bootstrap_auth_chain() {
-    use rezzy::auth::{check_auth_chain, RoomState};
+    use rezzy::auth::{RoomState, check_auth_chain};
 
     let events = load_fixture(&format!("{FIXTURE_DIR}/bootstrap-public-chat.json"));
     let (accepted, rejected) = check_auth_chain(
@@ -233,7 +233,7 @@ fn test_large_room_10k_subgraph_bounded() {
 #[test]
 #[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_large_room_10k_auth_chain() {
-    use rezzy::auth::{check_auth_chain, RoomState};
+    use rezzy::auth::{RoomState, check_auth_chain};
 
     let events = load_large_room();
     let (accepted, _rejected) = check_auth_chain(
@@ -449,7 +449,9 @@ fn parse_jsonl_line(line: &str) -> LeanEvent {
             panic!("Failed to parse 'event' field as LeanEvent: {e}. Line: {line}")
         })
     } else {
-        panic!("JSON line does not contain expected '_source' or 'event' wrappers, and is not a direct LeanEvent. Line: {line}");
+        panic!(
+            "JSON line does not contain expected '_source' or 'event' wrappers, and is not a direct LeanEvent. Line: {line}"
+        );
     }
 }
 

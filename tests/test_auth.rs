@@ -386,13 +386,15 @@ fn test_create_event_no_prev_events() {
         json!({}),
     );
     let state: RoomState = RoomState::new();
-    assert!(check_auth(
-        &create,
-        &state,
-        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
-        None
-    )
-    .is_ok());
+    assert!(
+        check_auth(
+            &create,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
+        )
+        .is_ok()
+    );
 }
 
 #[test]
@@ -453,13 +455,15 @@ fn test_joined_member_can_send() {
             json!({"membership": "join"}),
         ),
     );
-    assert!(check_auth(
-        &msg,
-        &state,
-        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
-        None
-    )
-    .is_ok());
+    assert!(
+        check_auth(
+            &msg,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
+        )
+        .is_ok()
+    );
 }
 
 #[test]
@@ -2716,7 +2720,10 @@ fn test_third_party_invite_override_is_ignored() {
 
     let result = rezzy::auth::check_auth(&tpi_event, &state, rezzy::StateResVersion::V2_1, None);
     assert!(
-        matches!(result, Err(rezzy::auth::AuthError::InsufficientPowerLevel { .. })),
+        matches!(
+            result,
+            Err(rezzy::auth::AuthError::InsufficientPowerLevel { .. })
+        ),
         "m.room.third_party_invite must require the invite level (50) and ignore the event-specific override (0), got: {result:?}"
     );
 }

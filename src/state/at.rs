@@ -26,8 +26,8 @@
 //! - **Batch mode:** computes state at multiple targets in a single topological
 //!   pass, amortizing the graph traversal cost.
 
-use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::HashMap;
+use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::string::String;
@@ -85,11 +85,11 @@ pub(crate) struct OverlayState<'a, Id, C, S1, S2> {
 }
 
 impl<
-        Id: crate::basespec::rezzy_types::EventId,
-        C: crate::basespec::rezzy_types::EventContent,
-        S1: core::hash::BuildHasher,
-        S2: core::hash::BuildHasher,
-    > crate::auth::StateProvider<Id, C> for OverlayState<'_, Id, C, S1, S2>
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+> crate::auth::StateProvider<Id, C> for OverlayState<'_, Id, C, S1, S2>
 {
     fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C>> {
         use crate::basespec::event_types::{M_EMPTY_STATE_KEY, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
@@ -183,11 +183,7 @@ impl<
                         || self.candidate_event_type
                             == crate::basespec::event_types::M_ROOM_JOIN_RULES
                         || self.candidate_event_type == M_ROOM_MEMBER;
-                    if candidate_is_power {
-                        Some(ev)
-                    } else {
-                        None
-                    }
+                    if candidate_is_power { Some(ev) } else { None }
                 }
             } else {
                 Some(ev)
