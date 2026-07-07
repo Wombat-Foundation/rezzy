@@ -211,15 +211,14 @@ fn compute_lattice_coordinatized_winners<
     #[cfg(feature = "std")]
     {
         let num_threads = std::thread::available_parallelism().map_or(4, core::num::NonZero::get);
-        let chunks: Vec<&[&'a LeanEvent<Id, C>]> = v
-            .chunks(
-                (non_power_events
-                    .len()
-                    .saturating_add(num_threads)
-                    .saturating_sub(1))
-                .max(1),
-            )
-            .collect();
+        let chunk_size = (non_power_events
+            .len()
+            .saturating_add(num_threads)
+            .saturating_sub(1))
+        .checked_div(num_threads)
+        .unwrap_or(1)
+        .max(1);
+        let chunks: Vec<&[&'a LeanEvent<Id, C>]> = v.chunks(chunk_size).collect();
 
         let winners = std::sync::Mutex::new(HashMap::new());
         std::thread::scope(|s| {
@@ -306,6 +305,10 @@ pub fn route_power_events<
 /// - The `std` feature is enabled (to benefit from thread parallelism).
 ///
 /// The power phase (Steps 1–2) is shared with `resolve_iterative_sort`.
+///
+/// **Note:** V2.1+ rooms delegate entirely to [`resolve_iterative_sort`](crate::resolve::iterative::resolve_iterative_sort)
+/// because the lattice fold does not support MSC4297's conflicted subgraph. This
+/// changes the parallelism characteristics for V2.1+ callers.
 // jscpd:ignore-start
 #[must_use]
 pub fn resolve_lattice_fold<
@@ -324,6 +327,15 @@ where
     C: crate::basespec::rezzy_types::EventContent + Sync + Send + Clone,
 {
     // jscpd:ignore-end
+    if version.is_v2_1_plus() {
+        return crate::resolve::iterative::resolve_iterative_sort(
+            unconflicted_state,
+            conflicted_events,
+            auth_context,
+            version,
+        );
+    }
+
     let original_conflicted_keys = crate::resolve::iterative::prepare_conflicted_and_keys(
         &mut conflicted_events,
         auth_context,

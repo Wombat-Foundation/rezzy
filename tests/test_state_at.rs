@@ -332,3 +332,80 @@ fn test_compute_topo_positions_ignores_federation_depth() {
     assert!(pos("A") < pos("B"), "A before B despite B.depth=50");
     assert!(pos("B") < pos("D"), "B before D despite B.depth=50");
 }
+
+#[test]
+fn test_resolve_merge_fast_path_hashed_mismatch() {
+    use rezzy::state::at::{resolve_merge_fast_path_hashed, HashedState, LocalAuthCache};
+
+    let creator = "@admin:example.com".to_string();
+
+    let mut hs1 = HashedState::new();
+    hs1.insert(
+        ("m.room.create".into(), String::new()),
+        "create_event".to_string(),
+    );
+    hs1.insert(
+        ("m.room.member".into(), creator.clone()),
+        "join_event_1".to_string(),
+    );
+    // Will be removed (rejected during resolution)
+    hs1.insert(
+        ("m.room.topic".into(), String::new()),
+        "topic_event".to_string(),
+    );
+
+    let mut hs2 = HashedState::new();
+    hs2.insert(
+        ("m.room.create".into(), String::new()),
+        "create_event".to_string(),
+    );
+    hs2.insert(
+        ("m.room.member".into(), creator.clone()),
+        "join_event_2".to_string(),
+    );
+    // Will be added (accepted during resolution)
+    hs2.insert(
+        ("m.room.name".into(), String::new()),
+        "name_event".to_string(),
+    );
+
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"create_event","type":"m.room.create","state_key":"","sender":"@admin:example.com","depth":1,"content":{"room_version":"11"},"prev_events":[],"auth_events":[]}
+{"event_id":"join_event_1","type":"m.room.member","state_key":"@admin:example.com","sender":"@admin:example.com","depth":2,"content":{"membership":"join"},"prev_events":["create_event"],"auth_events":["create_event"],"origin_server_ts":1000}
+{"event_id":"join_event_2","type":"m.room.member","state_key":"@admin:example.com","sender":"@admin:example.com","depth":2,"content":{"membership":"join"},"prev_events":["create_event"],"auth_events":["create_event"],"origin_server_ts":2000}
+{"event_id":"name_event","type":"m.room.name","state_key":"","sender":"@admin:example.com","depth":3,"content":{"name":"Room Name"},"prev_events":["join_event_2"],"auth_events":["create_event","join_event_2"],"origin_server_ts":3000}
+{"event_id":"topic_event","type":"m.room.topic","state_key":"","sender":"@evil:example.com","depth":3,"content":{"topic":"Evil Topic"},"prev_events":["create_event"],"auth_events":["create_event"],"origin_server_ts":3000}
+    "#).into_iter().map(|ev| (ev.event_id.clone(), ev)).collect();
+
+    let mut global_auth_cache = LocalAuthCache::new(StateResVersion::V2_1_1);
+    let prev_states = vec![hs1, hs2];
+
+    let merged = resolve_merge_fast_path_hashed(
+        &prev_states,
+        &events_map,
+        &mut global_auth_cache,
+        StateResVersion::V2_1_1,
+    );
+
+    // Verify member state: join_event_2 wins
+    let val_member = merged
+        .state
+        .get(&("m.room.member".to_string(), creator.clone()));
+    assert_eq!(val_member, Some(&"join_event_2".to_string()));
+
+    // Verify added key ("m.room.name") is present
+    let val_name = merged
+        .state
+        .get(&("m.room.name".to_string(), String::new()));
+    assert_eq!(val_name, Some(&"name_event".to_string()));
+
+    // Verify removed key ("m.room.topic") is NOT present (since it was rejected)
+    let val_topic = merged
+        .state
+        .get(&("m.room.topic".to_string(), String::new()));
+    assert_eq!(val_topic, None);
+
+    // Verify incremental LtHash correctness against fresh LtHash from resolved state
+    let expected_hash = rezzy::state::lthash::LtHash::from_state(&merged.state);
+    assert_eq!(merged.hash, expected_hash);
+}

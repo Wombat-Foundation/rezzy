@@ -103,6 +103,14 @@ impl StateResVersion {
             _ => None,
         }
     }
+
+    /// Returns `true` for V2.1 and above (MSC4297+).
+    ///
+    /// Use this instead of manually matching `V2_1 | V2_1_1 | V2_2`.
+    #[must_use]
+    pub const fn is_v2_1_plus(&self) -> bool {
+        matches!(self, Self::V2_1 | Self::V2_1_1 | Self::V2_2)
+    }
 }
 
 impl serde::Serialize for StateResVersion {

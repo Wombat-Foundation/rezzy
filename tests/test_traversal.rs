@@ -1746,3 +1746,130 @@ fn test_v2_1_1_ban_supplementation_return_path() {
          (ban supplementation at at.rs:134-135)"
     );
 }
+
+/// Verification: V2.1.1 power-phase membership supplementation prevents security bypass.
+///
+/// Under V2.1.1, the engine supplements membership lookups during the power phase,
+/// so if a user is banned during Step 2, subsequent power-level events from that user
+/// are correctly rejected against the progressive consensus state (where they are banned)
+/// rather than their local `auth_events` (where they are still joined).
+#[test]
+fn test_v2_1_1_power_phase_membership_bypass_prevention() {
+    let auth_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:x", "origin_server_ts": 100, "content": {"room_version": "12"}}
+        {"event_id": "$admin_join", "type": "m.room.member",       "state_key": "@admin:x", "sender": "@admin:x", "origin_server_ts": 200, "content": {"membership": "join"}, "auth_events": ["$create"]}
+        {"event_id": "$pl_init",    "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x", "origin_server_ts": 300, "content": {"users": {"@admin:x": 100, "@mallory:x": 100}, "state_default": 50}, "auth_events": ["$create", "$admin_join"]}
+        {"event_id": "$jr",         "type": "m.room.join_rules",   "state_key": "", "sender": "@admin:x", "origin_server_ts": 350, "content": {"join_rule": "public"}, "auth_events": ["$create", "$pl_init", "$admin_join"]}
+        {"event_id": "$mal_join",   "type": "m.room.member",       "state_key": "@mallory:x", "sender": "@mallory:x", "origin_server_ts": 400, "content": {"membership": "join"}, "auth_events": ["$create", "$pl_init", "$jr"]}
+    "#,
+    );
+
+    let conflicted_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$mal_ban",    "type": "m.room.member",       "state_key": "@mallory:x", "sender": "@admin:x",   "origin_server_ts": 500, "content": {"membership": "ban"}, "auth_events": ["$create", "$pl_init", "$admin_join", "$mal_join"]}
+        {"event_id": "$admin_pl",   "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x",   "origin_server_ts": 600, "content": {"users": {"@admin:x": 100, "@mallory:x": 100}, "state_default": 10}, "auth_events": ["$create", "$admin_join", "$pl_init"]}
+        {"event_id": "$mal_pl",     "type": "m.room.power_levels", "state_key": "", "sender": "@mallory:x", "origin_server_ts": 700, "content": {"users": {"@admin:x": 100, "@mallory:x": 100}, "state_default": 20}, "auth_events": ["$create", "$mal_join", "$pl_init"]}
+    "#,
+    );
+
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in auth_evs {
+        auth_context.insert(ev.event_id.clone(), ev);
+    }
+
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in conflicted_evs {
+        conflicted.insert(ev.event_id.clone(), ev);
+    }
+
+    let mut unconflicted = imbl::OrdMap::new();
+    let mut sorted_auth: Vec<_> = auth_context.values().collect();
+    sorted_auth.sort_by_key(|ev| ev.origin_server_ts);
+    for ev in sorted_auth {
+        if let Some(sk) = &ev.state_key {
+            unconflicted.insert((ev.event_type.clone(), sk.clone()), ev.event_id.clone());
+        }
+    }
+
+    let resolved = resolve_iterative_sort(
+        unconflicted,
+        conflicted,
+        &auth_context,
+        StateResVersion::V2_1_1,
+    );
+
+    let pl_key = ("m.room.power_levels".to_string(), String::new());
+
+    // With V2.1.1's membership supplementation fix, Mallory's PL event must be
+    // rejected because she is progressively banned. Admin's PL event must win.
+    // (Stock V2.1 does not supplement membership, so this protection only applies to V2.1.1+.)
+    assert_eq!(
+        resolved.get(&pl_key),
+        Some(&"$admin_pl".to_string()),
+        "V2.1.1 with membership supplementation: Mallory's PL event must be rejected (since she is banned)."
+    );
+}
+
+/// Pin stock V2.1 (MSC4297) behavior: membership is NOT supplemented during the power phase.
+///
+/// This is the *intentional* spec-mandated behavior. Mallory's PL event passes auth because
+/// the engine does not check her progressive ban during the power phase. Federation convergence
+/// requires V2.1 to match other MSC4297 implementations bug-for-bug. Do NOT "fix" this test
+/// by adding membership supplementation to V2.1 — use V2.1.1+ for that.
+#[test]
+fn test_v2_1_stock_does_not_supplement_membership() {
+    let auth_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:x", "origin_server_ts": 100, "content": {"room_version": "12"}}
+        {"event_id": "$admin_join", "type": "m.room.member",       "state_key": "@admin:x", "sender": "@admin:x", "origin_server_ts": 200, "content": {"membership": "join"}, "auth_events": ["$create"]}
+        {"event_id": "$pl_init",    "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x", "origin_server_ts": 300, "content": {"users": {"@admin:x": 100, "@mallory:x": 100}, "state_default": 50}, "auth_events": ["$create", "$admin_join"]}
+        {"event_id": "$jr",         "type": "m.room.join_rules",   "state_key": "", "sender": "@admin:x", "origin_server_ts": 350, "content": {"join_rule": "public"}, "auth_events": ["$create", "$pl_init", "$admin_join"]}
+        {"event_id": "$mal_join",   "type": "m.room.member",       "state_key": "@mallory:x", "sender": "@mallory:x", "origin_server_ts": 400, "content": {"membership": "join"}, "auth_events": ["$create", "$pl_init", "$jr"]}
+    "#,
+    );
+    let conflicted_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$mal_ban",    "type": "m.room.member",       "state_key": "@mallory:x", "sender": "@admin:x",   "origin_server_ts": 500, "content": {"membership": "ban"}, "auth_events": ["$create", "$pl_init", "$admin_join", "$mal_join"]}
+        {"event_id": "$admin_pl",   "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x",   "origin_server_ts": 600, "content": {"users": {"@admin:x": 100, "@mallory:x": 100}, "state_default": 10}, "auth_events": ["$create", "$admin_join", "$pl_init"]}
+        {"event_id": "$mal_pl",     "type": "m.room.power_levels", "state_key": "", "sender": "@mallory:x", "origin_server_ts": 700, "content": {"users": {"@admin:x": 100, "@mallory:x": 100}, "state_default": 20}, "auth_events": ["$create", "$mal_join", "$pl_init"]}
+    "#,
+    );
+
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in auth_evs {
+        auth_context.insert(ev.event_id.clone(), ev);
+    }
+
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in conflicted_evs {
+        conflicted.insert(ev.event_id.clone(), ev);
+    }
+
+    let mut unconflicted = imbl::OrdMap::new();
+    let mut sorted_auth: Vec<_> = auth_context.values().collect();
+    sorted_auth.sort_by_key(|ev| ev.origin_server_ts);
+    for ev in sorted_auth {
+        if let Some(sk) = &ev.state_key {
+            unconflicted.insert((ev.event_type.clone(), sk.clone()), ev.event_id.clone());
+        }
+    }
+
+    let resolved = resolve_iterative_sort(
+        unconflicted,
+        conflicted,
+        &auth_context,
+        StateResVersion::V2_1,
+    );
+
+    let pl_key = ("m.room.power_levels".to_string(), String::new());
+
+    // Under stock V2.1 (MSC4297), Mallory's PL event wins because her membership ban
+    // is not supplemented during the power phase. This is spec-correct behavior —
+    // federation convergence requires matching other MSC4297 implementations.
+    assert_eq!(
+        resolved.get(&pl_key),
+        Some(&"$mal_pl".to_string()),
+        "Stock V2.1 must NOT apply membership supplementation — Mallory's PL wins (spec-mandated)."
+    );
+}

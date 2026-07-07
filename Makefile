@@ -95,6 +95,8 @@ rust/coverage: ##H Run code coverage and generate HTML report
 	$(CARGO) +nightly llvm-cov report \
 		--ignore-filename-regex 'src/bin/.*' \
 		--codecov --output-path .coverage/codecov.json
+	@echo DONE. You may open it with:
+	@echo firefox .coverage/html/index.html
 
 .PHONY: rust/clean
 rust/clean: ##H Remove Rust build artifacts

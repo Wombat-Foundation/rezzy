@@ -81,6 +81,7 @@ pub(crate) struct OverlayState<'a, Id, C, S1, S2> {
     pub(crate) create_ev: Option<&'a LeanEvent<Id, C>>,
     pub(crate) version: StateResVersion,
     pub(crate) is_power_phase: bool,
+    pub(crate) candidate_event_type: &'a str,
 }
 
 impl<
@@ -95,8 +96,9 @@ impl<
 
         let query: &dyn crate::auth::StateKeyDyn = &(event_type, state_key);
 
-        // In V2.1 (Stock MSC4297), we supplement with ONLY m.room.power_levels during Step 2 (power phase).
-        // In Step 4 (remaining events phase), we supplement with all event types.
+        // V2.1 (stock MSC4297): during the power phase, supplement ONLY m.room.power_levels.
+        // In the remaining-events phase, V2.1 supplements all event types.
+        // V2.1.1: restricts supplementation to PL+member in ALL phases (causal domination).
         let should_supplement = match self.version {
             StateResVersion::V2_1 => {
                 if self.is_power_phase {
@@ -105,7 +107,8 @@ impl<
                     true
                 }
             }
-            StateResVersion::V2_1_1 => {
+            // TODO: determine if V2.2 (MSC4242 State DAGs) *does* want this. It may not!
+            StateResVersion::V2_1_1 | StateResVersion::V2_2 => {
                 (event_type == M_ROOM_POWER_LEVELS && state_key == M_EMPTY_STATE_KEY)
                     || (event_type == M_ROOM_MEMBER)
             }
@@ -149,12 +152,13 @@ impl<
             let is_required_type = event_type == M_ROOM_POWER_LEVELS
                 || event_type == crate::basespec::event_types::M_ROOM_JOIN_RULES;
 
-            let is_v2_1_or_above = self.version == StateResVersion::V2_1
-                || self.version == StateResVersion::V2_1_1
-                || self.version == StateResVersion::V2_2;
+            // Gate the power-phase fallback behind V2.1.1+ only.
+            // Stock V2.1 must not fall back to local auth for required types
+            let is_v2_1_1_or_above =
+                self.version == StateResVersion::V2_1_1 || self.version == StateResVersion::V2_2;
 
             if self.is_power_phase
-                && is_v2_1_or_above
+                && is_v2_1_1_or_above
                 && is_required_type
                 && self.sort_set.contains_key(&ev.event_id)
             {
@@ -166,8 +170,25 @@ impl<
                     {
                         return Some(resolved_ev);
                     }
+                    None
+                } else {
+                    // Under V2.1.1+, during the power phase, we fall back to the local auth event
+                    // if NO event of this type has been resolved yet, BUT only if we are currently
+                    // resolving a power/required event itself. This prevents non-power events from
+                    // bypass-authorizing against unresolved/conflicted power events.
+                    // Type-level approximation: a plain join isn't a power event in the spec's
+                    // sense, but only power-phase candidates reach this branch, so the
+                    // content-level ban/kick distinction is unnecessary here.
+                    let candidate_is_power = self.candidate_event_type == M_ROOM_POWER_LEVELS
+                        || self.candidate_event_type
+                            == crate::basespec::event_types::M_ROOM_JOIN_RULES
+                        || self.candidate_event_type == M_ROOM_MEMBER;
+                    if candidate_is_power {
+                        Some(ev)
+                    } else {
+                        None
+                    }
                 }
-                None
             } else {
                 Some(ev)
             }
@@ -215,6 +236,7 @@ pub(crate) fn iterative_auth_ok<
         create_ev: cached_create,
         version,
         is_power_phase,
+        candidate_event_type: &ev.event_type,
     };
 
     crate::auth::check_auth(ev, &overlay, version, None).is_ok()
@@ -756,6 +778,8 @@ where
         steps = steps.saturating_add(1);
 
         let Some(&current_mask) = masks.get(current_id) else {
+            // Invariant: queue entries are only pushed for ids present in `masks`.
+            debug_assert!(false, "current_id in queue must exist in masks");
             continue;
         };
 
@@ -905,6 +929,8 @@ where
 
     while let Some((_, current_id)) = queue.pop() {
         let Some(current_mask) = masks.get(current_id).cloned() else {
+            // Invariant: queue entries are only pushed for ids present in `masks`.
+            debug_assert!(false, "current_id in queue must exist in masks");
             continue;
         };
 
@@ -1001,8 +1027,19 @@ where
         let Some(ev) = events_map.get(*id) else {
             continue;
         };
+        let mut seen = if ev.prev_events.len() > 1 {
+            Some(crate::HashSet::new())
+        } else {
+            None
+        };
         for parent in &ev.prev_events {
             if let Some(&parent_idx) = id_to_index.get(parent) {
+                // Dedup: only count each parent edge once, even if prev_events has duplicates.
+                if let Some(seen_set) = &mut seen {
+                    if !seen_set.insert(parent_idx) {
+                        continue;
+                    }
+                }
                 in_degree[i] = in_degree[i].saturating_add(1);
                 adjacency[parent_idx].push(i);
                 out_degree[parent_idx] = out_degree[parent_idx].saturating_add(1);
@@ -1707,9 +1744,395 @@ where
     violations
 }
 
+/// Represents an optimization-friendly state update yielded during topological streaming.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateUpdate<'b, Id> {
+    /// The state has been newly resolved, or modified by a state-changing event.
+    New {
+        /// The resolved state map at this target.
+        state: SharedState<Id>,
+        /// The incrementally maintained `LtHash` checksum for this state.
+        hash: crate::state::lthash::LtHash,
+    },
+    /// The state at this event is completely unchanged from its parent's state.
+    /// Consumers can reuse the parent's state directly, skipping compression and O(N) traversals.
+    ///
+    /// # Important
+    ///
+    /// The referenced `parent_event_id` may not have been yielded as a target.
+    /// Callers must have the parent's state available from a prior persistence pass
+    /// (e.g., a full-rebuild pipeline). Use [`StateUpdate::into_state`] with a closure
+    /// that can look up any ancestor's state, not just previously-yielded targets.
+    Unchanged {
+        /// The event ID of the single parent event from which this state is inherited.
+        parent_event_id: &'b Id,
+        /// The `LtHash` checksum of the parent state.
+        hash: crate::state::lthash::LtHash,
+    },
+}
+
+impl<Id> StateUpdate<'_, Id>
+where
+    Id: Clone,
+{
+    /// Resolves and yields the full `SharedState<Id>`, either returning the newly resolved state
+    /// or looking up the parent state via a provided closure.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the update is `StateUpdate::Unchanged` and the provided callback fails to
+    /// return the parent event state.
+    pub fn into_state(
+        self,
+        mut get_parent_state: impl FnMut(&Id) -> Option<SharedState<Id>>,
+    ) -> SharedState<Id> {
+        match self {
+            StateUpdate::New { state, .. } => state,
+            StateUpdate::Unchanged {
+                parent_event_id, ..
+            } => get_parent_state(parent_event_id)
+                .expect("StateUpdate::Unchanged requires the parent state to be available"),
+        }
+    }
+}
+
+/// A wrapper that pairs a `SharedState` map with its incrementally maintained `LtHash`.
+#[derive(Clone, Debug)]
+pub struct HashedState<Id> {
+    /// The underlying state map.
+    pub state: SharedState<Id>,
+    /// The incrementally updated cryptographic `LtHash`.
+    pub hash: crate::state::lthash::LtHash,
+}
+
+impl<Id> Default for HashedState<Id> {
+    fn default() -> Self {
+        Self {
+            state: SharedState::new(),
+            hash: crate::state::lthash::LtHash::default(),
+        }
+    }
+}
+
+impl<Id> HashedState<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+{
+    /// Creates a new empty `HashedState`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Incremental insertion of a state entry into both the map and `LtHash`.
+    pub fn insert(&mut self, key: (String, String), event_id: Id) {
+        if let Some(old_id) = self.state.get(&key) {
+            self.hash.remove(&key.0, &key.1, old_id);
+        }
+        self.hash.insert(&key.0, &key.1, &event_id);
+        self.state.insert(key, event_id);
+    }
+}
+
+/// Resolve multiple parent states using LtHash-based fast-path detection.
+///
+/// If all parent states are identical (verified by `LtHash` + `ptr_eq` + full equality),
+/// returns the first state directly. Otherwise falls back to full state resolution.
+///
+/// # Panics
+///
+/// Panics if `prev_states` is empty. At least 2 entries are needed for meaningful merging.
+pub fn resolve_merge_fast_path_hashed<Id, C, S>(
+    prev_states: &[HashedState<Id>],
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    global_auth_cache: &mut LocalAuthCache<Id, C>,
+    version: StateResVersion,
+) -> HashedState<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    S: core::hash::BuildHasher,
+    C: crate::basespec::rezzy_types::EventContent,
+{
+    let first = &prev_states[0];
+
+    // Fast-path comparison design:
+    // - first.hash == state.hash serves as an O(1) negative filter.
+    // - first.state.ptr_eq(...) serves as an O(1) positive proof of identity.
+    // - first.state == state.state serves as the ultimate authority for defense-in-depth,
+    //   protecting against hypothetical full-lattice collisions (requiring a ~2^200 SIS solution).
+    let all_match = prev_states[1..].iter().all(|state| {
+        first.hash == state.hash && (first.state.ptr_eq(&state.state) || first.state == state.state)
+    });
+
+    if all_match {
+        first.clone()
+    } else {
+        let shared_states: Vec<SharedState<Id>> =
+            prev_states.iter().map(|s| s.state.clone()).collect();
+        let resolved =
+            resolve_multiple_prev_states(&shared_states, events_map, global_auth_cache, version);
+
+        // Incremental LtHash update from the first parent state!
+        let mut hash = first.hash;
+        for diff_item in first.state.diff(&resolved) {
+            match diff_item {
+                imbl::ordmap::DiffItem::Add(key, new_id) => {
+                    hash.insert(&key.0, &key.1, new_id);
+                }
+                imbl::ordmap::DiffItem::Remove(key, old_id) => {
+                    hash.remove(&key.0, &key.1, old_id);
+                }
+                imbl::ordmap::DiffItem::Update {
+                    old: (key, old_id),
+                    new: (_, new_id),
+                } => {
+                    hash.remove(&key.0, &key.1, old_id);
+                    hash.insert(&key.0, &key.1, new_id);
+                }
+            }
+        }
+
+        HashedState {
+            state: resolved,
+            hash,
+        }
+    }
+}
+
+fn run_state_pipeline_streaming_optimized<'a, Id, C, S, F, E>(
+    index_to_id: &[&'a Id],
+    id_to_index: &HashMap<&'a Id, usize>,
+    is_target: &[bool],
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    version: StateResVersion,
+    mut on_target: F,
+) -> Result<(), StateComputationError<E>>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    S: core::hash::BuildHasher,
+    C: crate::basespec::rezzy_types::EventContent,
+    F: for<'b> FnMut(usize, StateUpdate<'b, Id>) -> Result<(), E>,
+{
+    let (sorted_ancestors, mut out_degree) =
+        topological_sort_short_ids(index_to_id, id_to_index, events_map);
+
+    if sorted_ancestors.len() != index_to_id.len() {
+        return Err(StateComputationError::CycleDetected);
+    }
+
+    let mut global_auth_cache = LocalAuthCache::new(version);
+
+    let mut state_after_map: Vec<Option<HashedState<Id>>> = core::iter::repeat_with(|| None)
+        .take(index_to_id.len())
+        .collect();
+
+    for idx in sorted_ancestors {
+        let id_val = index_to_id[idx];
+        let ev = events_map.get(id_val).unwrap();
+
+        let mut prev_states = Vec::with_capacity(ev.prev_events.len());
+        let mut seen_parents = if ev.prev_events.len() > 1 {
+            Some(crate::HashSet::new())
+        } else {
+            None
+        };
+        for pe in &ev.prev_events {
+            let Some(&pe_idx) = id_to_index.get(pe) else {
+                continue;
+            };
+            // Dedup: adversarial events may carry duplicate prev_events.
+            // Without this, out_degree is decremented twice for one child,
+            // causing premature take() and wrong merge results.
+            if let Some(seen) = &mut seen_parents {
+                if !seen.insert(pe_idx) {
+                    continue;
+                }
+            }
+            if out_degree[pe_idx] == 0 {
+                continue;
+            }
+            out_degree[pe_idx] = out_degree[pe_idx].saturating_sub(1);
+            if out_degree[pe_idx] == 0 {
+                if let Some(pe_state) = state_after_map[pe_idx].take() {
+                    prev_states.push(pe_state);
+                }
+            } else if let Some(ref pe_state) = state_after_map[pe_idx] {
+                prev_states.push(pe_state.clone());
+            }
+        }
+
+        let is_state = ev.state_key.is_some();
+        let has_single_parent = prev_states.len() == 1;
+
+        let mut state_before: HashedState<Id> = if prev_states.is_empty() {
+            HashedState::new()
+        } else if has_single_parent && !is_state {
+            let parent_state = prev_states.into_iter().next().unwrap();
+            if is_target[idx] {
+                on_target(
+                    idx,
+                    StateUpdate::Unchanged {
+                        parent_event_id: ev
+                            .prev_events
+                            .iter()
+                            .find(|pe| id_to_index.contains_key(*pe))
+                            .expect("has_single_parent implies at least one prev_event is in id_to_index"),
+                        hash: parent_state.hash,
+                    },
+                )
+                .map_err(StateComputationError::Callback)?;
+            }
+            if out_degree[idx] > 0 {
+                state_after_map[idx] = Some(parent_state);
+            }
+            continue;
+        } else if has_single_parent {
+            prev_states.into_iter().next().unwrap()
+        } else {
+            resolve_merge_fast_path_hashed(
+                &prev_states,
+                events_map,
+                &mut global_auth_cache,
+                version,
+            )
+        };
+
+        if is_state {
+            let key = (
+                ev.event_type.clone(),
+                ev.state_key.clone().unwrap_or_default(),
+            );
+            state_before.insert(key, ev.event_id.clone());
+        }
+
+        if is_target[idx] {
+            on_target(
+                idx,
+                StateUpdate::New {
+                    state: state_before.state.clone(),
+                    hash: state_before.hash,
+                },
+            )
+            .map_err(StateComputationError::Callback)?;
+        }
+
+        if out_degree[idx] > 0 {
+            state_after_map[idx] = Some(state_before);
+        }
+    }
+
+    Ok(())
+}
+
+/// A high-performance, fallible variant of [`compute_state_at_streaming`] designed for
+/// massive rebuild pipelines.
+///
+/// Rather than cloning full `SharedState` maps for every target, this function yields
+/// `StateUpdate` events that support zero-clone streaming when states are unchanged
+/// from their parent, and $O(1)$ LtHash-based matching.
+///
+/// # Errors
+/// Returns `StateComputationError::CycleDetected` if a cycle is found in the reachable graph.
+/// Returns `StateComputationError::Callback(e)` if the callback yields an error.
+///
+/// # Behavior
+/// Duplicate target IDs are silently deduplicated, and targets absent from `events_map`
+/// are dropped. The callback count may therefore be less than the input count.
+pub fn try_compute_state_at_streaming_optimized<Id, C, Q, S, F, E>(
+    target_event_ids: &[&Q],
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    version: StateResVersion,
+    mut on_target_resolved: F,
+) -> Result<(), StateComputationError<E>>
+where
+    Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
+    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    S: core::hash::BuildHasher,
+    C: crate::basespec::rezzy_types::EventContent,
+    F: for<'b> FnMut(Id, StateUpdate<'b, Id>) -> Result<(), E>,
+{
+    let mut actual_target_ids = Vec::new();
+    let mut seen = alloc::collections::BTreeSet::new();
+    for &tid in target_event_ids {
+        if let Some((k, _)) = events_map.get_key_value(tid) {
+            if seen.insert(k) {
+                actual_target_ids.push(k.clone());
+            }
+        }
+    }
+
+    if actual_target_ids.is_empty() {
+        return Ok(());
+    }
+
+    let target_refs: Vec<&Id> = actual_target_ids.iter().collect();
+    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&target_refs, events_map);
+
+    let mut is_target = alloc::vec![false; index_to_id.len()];
+    for tid in &actual_target_ids {
+        if let Some(&idx) = id_to_index.get(tid) {
+            is_target[idx] = true;
+        }
+    }
+
+    run_state_pipeline_streaming_optimized(
+        &index_to_id,
+        &id_to_index,
+        &is_target,
+        events_map,
+        version,
+        |idx, update| {
+            let id = index_to_id[idx].clone();
+            on_target_resolved(id, update)
+        },
+    )
+}
+
+/// A high-performance, non-fallible variant of [`compute_state_at_streaming`] designed for
+/// massive rebuild pipelines.
+///
+/// TODO: this swallows `CycleDetected` with an eprintln (silent under `no_std`) and returns
+/// having invoked zero callbacks — callers can't distinguish "cycle" from "no targets found."
+/// Consider returning a bool or steering users to `try_compute_state_at_streaming_optimized`.
+pub fn compute_state_at_streaming_optimized<Id, C, Q, S, F>(
+    target_event_ids: &[&Q],
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    version: StateResVersion,
+    mut on_target_resolved: F,
+) where
+    Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
+    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    S: core::hash::BuildHasher,
+    C: crate::basespec::rezzy_types::EventContent,
+    F: for<'b> FnMut(Id, StateUpdate<'b, Id>),
+{
+    let result = try_compute_state_at_streaming_optimized(
+        target_event_ids,
+        events_map,
+        version,
+        |id, update| -> Result<(), core::convert::Infallible> {
+            on_target_resolved(id, update);
+            Ok(())
+        },
+    );
+
+    match result {
+        Ok(()) => {}
+        Err(StateComputationError::CycleDetected) => {
+            #[cfg(feature = "std")]
+            std::eprintln!(
+                "rezzy::compute_state_at_streaming_optimized: Cycle detected! Reachable subgraph is malformed."
+            );
+        }
+        Err(StateComputationError::Callback(infallible)) => match infallible {},
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::StateProvider;
+    use crate::basespec::event_types::M_ROOM_POWER_LEVELS;
     use alloc::string::ToString;
     use alloc::vec;
     use serde_json::json;
@@ -1869,6 +2292,7 @@ mod tests {
                 create_ev: Some(&create_ev),
                 version: StateResVersion::V2_1_1,
                 is_power_phase: true,
+                candidate_event_type: M_ROOM_MEMBER,
             };
 
             let supplemented = overlay.get_event(M_ROOM_MEMBER, "@target:example.com");
@@ -1892,10 +2316,118 @@ mod tests {
                 create_ev: Some(&create_ev),
                 version: StateResVersion::V2_1_1,
                 is_power_phase: true,
+                candidate_event_type: M_ROOM_MEMBER,
             };
 
             let supplemented = overlay.get_event(M_ROOM_MEMBER, "@target:example.com");
             assert!(supplemented.is_none());
+        }
+    }
+
+    #[test]
+    fn test_overlay_state_coverage_boosters() {
+        let create_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            sender: "@creator:example.com".into(),
+            ..Default::default()
+        };
+
+        let pl_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
+            event_id: "$pl".into(),
+            event_type: "m.room.power_levels".into(),
+            sender: "@creator:example.com".into(),
+            ..Default::default()
+        };
+
+        // 1. Test case: resolved_id is found but the event is missing from both auth_context and sort_set (returns None).
+        {
+            let mut resolved = imbl::OrdMap::new();
+            resolved.insert(
+                (M_ROOM_POWER_LEVELS.to_string(), String::new()),
+                "$pl_missing".to_string(),
+            );
+
+            let auth_context = HashMap::new();
+            let mut sort_set = HashMap::new();
+            sort_set.insert("$pl".to_string(), pl_ev.clone());
+
+            let mut local_auth = BTreeMap::new();
+            local_auth.insert(
+                (M_ROOM_POWER_LEVELS.to_string(), String::new()),
+                pl_ev.clone(),
+            );
+
+            let overlay = OverlayState {
+                resolved: &resolved,
+                auth_context: &auth_context,
+                sort_set: &sort_set,
+                local_auth,
+                create_ev: Some(&create_ev),
+                version: StateResVersion::V2_1_1,
+                is_power_phase: true,
+                candidate_event_type: M_ROOM_POWER_LEVELS,
+            };
+
+            let res = overlay.get_event(M_ROOM_POWER_LEVELS, "");
+            assert!(res.is_none());
+        }
+
+        // 2. Test case: resolved_id is NOT found, and candidate_is_power is true (returns Some(ev)).
+        {
+            let resolved = imbl::OrdMap::new();
+            let auth_context = HashMap::new();
+            let mut sort_set = HashMap::new();
+            sort_set.insert("$pl".to_string(), pl_ev.clone());
+
+            let mut local_auth = BTreeMap::new();
+            local_auth.insert(
+                (M_ROOM_POWER_LEVELS.to_string(), String::new()),
+                pl_ev.clone(),
+            );
+
+            let overlay = OverlayState {
+                resolved: &resolved,
+                auth_context: &auth_context,
+                sort_set: &sort_set,
+                local_auth,
+                create_ev: Some(&create_ev),
+                version: StateResVersion::V2_1_1,
+                is_power_phase: true,
+                candidate_event_type: M_ROOM_POWER_LEVELS,
+            };
+
+            let res = overlay.get_event(M_ROOM_POWER_LEVELS, "");
+            assert!(res.is_some());
+            assert_eq!(res.unwrap().event_id, "$pl");
+        }
+
+        // 3. Test case: resolved_id is NOT found, and candidate_is_power is false (returns None).
+        {
+            let resolved = imbl::OrdMap::new();
+            let auth_context = HashMap::new();
+            let mut sort_set = HashMap::new();
+            sort_set.insert("$pl".to_string(), pl_ev.clone());
+
+            let mut local_auth = BTreeMap::new();
+            local_auth.insert(
+                (M_ROOM_POWER_LEVELS.to_string(), String::new()),
+                pl_ev.clone(),
+            );
+
+            let overlay = OverlayState {
+                resolved: &resolved,
+                auth_context: &auth_context,
+                sort_set: &sort_set,
+                local_auth,
+                create_ev: Some(&create_ev),
+                version: StateResVersion::V2_1_1,
+                is_power_phase: true,
+                candidate_event_type: "m.room.message",
+            };
+
+            let res = overlay.get_event(M_ROOM_POWER_LEVELS, "");
+            assert!(res.is_none());
         }
     }
 
@@ -2344,5 +2876,176 @@ mod tests {
         let state = result.unwrap();
         // create event should be in state
         assert!(state.contains_key(&("m.room.create".into(), String::new())));
+    }
+
+    #[test]
+    fn test_hashed_state_incremental() {
+        let mut hs = HashedState::new();
+        hs.insert(
+            ("m.room.create".into(), String::new()),
+            "create_event".to_string(),
+        );
+        hs.insert(
+            ("m.room.member".into(), "@alice:x".into()),
+            "join_event".to_string(),
+        );
+
+        let expected_hash = crate::state::lthash::LtHash::from_state(&hs.state);
+        assert_eq!(hs.hash, expected_hash);
+
+        // Update an existing key
+        hs.insert(
+            ("m.room.member".into(), "@alice:x".into()),
+            "new_join_event".to_string(),
+        );
+        let updated_hash = crate::state::lthash::LtHash::from_state(&hs.state);
+        assert_eq!(hs.hash, updated_hash);
+    }
+
+    #[test]
+    fn test_compute_state_at_streaming_cycle() {
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert(
+            "A".to_string(),
+            LeanEvent {
+                event_id: "A".to_string(),
+                event_type: "m.room.message".to_string(),
+                prev_events: vec!["B".to_string()],
+                ..Default::default()
+            },
+        );
+        events_map.insert(
+            "B".to_string(),
+            LeanEvent {
+                event_id: "B".to_string(),
+                event_type: "m.room.message".to_string(),
+                prev_events: vec!["A".to_string()],
+                ..Default::default()
+            },
+        );
+
+        let target = ["A"];
+        compute_state_at_streaming_optimized(
+            &target,
+            &events_map,
+            StateResVersion::V2_1_1,
+            |_, _| {},
+        );
+    }
+
+    #[test]
+    fn test_state_update_into_state_unchanged() {
+        let mut parent_state: SharedState<String> = SharedState::new();
+        parent_state.insert(
+            ("m.room.create".into(), String::new()),
+            "create_event".to_string(),
+        );
+
+        let hash = crate::state::lthash::LtHash::from_state(&parent_state);
+        let parent_id = "parent_event".to_string();
+
+        let update = StateUpdate::Unchanged {
+            parent_event_id: &parent_id,
+            hash,
+        };
+
+        let resolved = update.into_state(|id| {
+            if id == "parent_event" {
+                Some(parent_state.clone())
+            } else {
+                None
+            }
+        });
+
+        assert_eq!(resolved, parent_state);
+    }
+
+    #[test]
+    fn test_optimized_streaming_diamond() {
+        let a = LeanEvent {
+            event_id: "A".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@x:x".into(),
+            depth: 1,
+            ..Default::default()
+        };
+        // State-changing event
+        let b = LeanEvent {
+            event_id: "B".into(),
+            event_type: "m.room.topic".into(),
+            state_key: Some(String::new()),
+            sender: "@x:x".into(),
+            depth: 2,
+            prev_events: vec!["A".into()],
+            auth_events: vec!["A".into()],
+            ..Default::default()
+        };
+        // Non-state event inheriting parent state (single parent A)
+        let c = LeanEvent {
+            event_id: "C".into(),
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            depth: 2,
+            prev_events: vec!["A".into()],
+            auth_events: vec!["A".into()],
+            ..Default::default()
+        };
+        // Merge event
+        let d = LeanEvent {
+            event_id: "D".into(),
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            depth: 3,
+            prev_events: vec!["B".into(), "C".into()],
+            auth_events: vec!["A".into()],
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+        events_map.insert("B".into(), b);
+        events_map.insert("C".into(), c);
+        events_map.insert("D".into(), d);
+
+        let mut b_has_new_state = false;
+        let mut c_parent_unchanged_id = None;
+        let mut d_has_new_state = false;
+
+        compute_state_at_streaming_optimized(
+            &["B", "C", "D"],
+            &events_map,
+            crate::StateResVersion::V2,
+            |id, update| match id.as_str() {
+                "B" => {
+                    if matches!(update, StateUpdate::New { .. }) {
+                        b_has_new_state = true;
+                    }
+                }
+                "C" => {
+                    if let StateUpdate::Unchanged {
+                        parent_event_id, ..
+                    } = update
+                    {
+                        c_parent_unchanged_id = Some(parent_event_id.clone());
+                    }
+                }
+                "D" => {
+                    if matches!(update, StateUpdate::New { .. }) {
+                        d_has_new_state = true;
+                    }
+                }
+                _ => {}
+            },
+        );
+
+        // Assert updates are correct
+        assert!(b_has_new_state, "B should have been yielded as New!");
+        assert_eq!(
+            c_parent_unchanged_id.as_deref(),
+            Some("A"),
+            "C should have been yielded as Unchanged with parent A!"
+        );
+        assert!(d_has_new_state, "D should have been yielded as New!");
     }
 }

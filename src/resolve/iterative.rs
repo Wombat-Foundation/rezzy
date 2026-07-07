@@ -208,11 +208,35 @@ pub(crate) fn get_initial_resolved_state<Id>(
 where
     Id: Clone,
 {
-    match version {
-        StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2 => {
-            imbl::OrdMap::new()
+    if version.is_v2_1_plus() {
+        imbl::OrdMap::new()
+    } else {
+        unconflicted_state.clone()
+    }
+}
+
+pub(crate) fn merge_unconflicted_power_events<Id>(
+    version: StateResVersion,
+    unconflicted_state: &crate::state::at::SharedState<Id>,
+    resolved: &mut crate::state::at::SharedState<Id>,
+) where
+    Id: Clone,
+{
+    use crate::basespec::event_types::{M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_POWER_LEVELS};
+
+    // Under V2.1+, progressive state resolution starts empty, meaning unconflicted power
+    // events are missing from `resolved`. We must merge unconflicted power events (like power levels)
+    // into `resolved` before building the mainline, so they are visible to `build_mainline` and sorting.
+    if version.is_v2_1_plus() {
+        for event_type in [M_ROOM_POWER_LEVELS, M_ROOM_JOIN_RULES, M_ROOM_CREATE] {
+            let key = (
+                alloc::string::String::from(event_type),
+                alloc::string::String::new(),
+            );
+            if let Some(v) = unconflicted_state.get(&key) {
+                resolved.entry(key).or_insert_with(|| v.clone());
+            }
         }
-        _ => unconflicted_state.clone(),
     }
 }
 
@@ -438,6 +462,8 @@ pub fn resolve_iterative_sort_with_cache<
 
     let sort_set = &conflicted_events;
 
+    merge_unconflicted_power_events(version, &unconflicted_state, &mut resolved);
+
     // Step 3: Build the power-level mainline for mainline sort
     let mainline = build_mainline(&resolved, &sort_context);
 
@@ -597,6 +623,8 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
     }
 
     // --- Non-power phase (with delta tracking) ---
+
+    merge_unconflicted_power_events(version, &unconflicted_state, &mut resolved);
 
     let mainline = build_mainline(&resolved, &sort_context);
     let mut non_power_list: alloc::vec::Vec<&LeanEvent<Id, C>> =

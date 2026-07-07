@@ -2,6 +2,8 @@
 name = "rezzy"
 version = "0.5.0"
 edition = "2021"
+rust-version = "1.87" # Synapse-compatible version
+resolver = "3"
 autobins = false
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
 description = "Lightweight and formally verified: State Res v1, v2, and v2.1 reference implementations in Rust."
@@ -74,21 +76,32 @@ bincode = { version = "1", optional = true }
 blake2 = { version = "0.10", default-features = false }
 clap = { version = "4.4", optional = true, features = ["derive", "env"] }
 ed25519-consensus = { version = "2", optional = true, default-features = false }
-hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
+hashbrown = { version = "0.15", default-features = false, features = [
+    "default-hasher",
+    "inline-more",
+] }
 imbl = { version = "4", default-features = false, features = ["serde"] }
 insta = { version = "1.47.2", optional = true }
 mimalloc = { version = "0.1.52", optional = true }
-roaring = "0.11.4"
+roaring = "0.10" # compatible with Synapse's rustc 1.87.0
 ruma-common = { version = "0.19.0", optional = true }
 ruma-events = { version = "0.34.0", optional = true }
-ruma-state-res = { version = "0.17.0", optional = true, features = ["__criterion"] }
-serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+ruma-state-res = { version = "0.17.0", optional = true, features = [
+    "__criterion",
+] }
+serde = { version = "1.0", default-features = false, features = [
+    "alloc",
+    "derive",
+] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.11.0", default-features = false }
 sha3 = { version = "0.11.0", default-features = false }
 test-log = { version = "0.2.20", optional = true }
 tracing-subscriber = { version = "0.3.23", optional = true }
-ureq = { version = "2.9", optional = true, default-features = false, features = ["json", "native-tls"] }
+ureq = { version = "2.9", optional = true, default-features = false, features = [
+    "json",
+    "native-tls",
+] }
 
 [dev-dependencies]
 similar = "3.1.0"
@@ -172,7 +185,10 @@ path = "tests/test_lattice.rs"
 
 [lints.rust]
 unsafe_code = "forbid"
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tarpaulin)", "cfg(has_res_submodule)"] }
+unexpected_cfgs = { level = "warn", check-cfg = [
+    "cfg(tarpaulin)",
+    "cfg(has_res_submodule)",
+] }
 
 [lints.clippy]
 pedantic = "warn"

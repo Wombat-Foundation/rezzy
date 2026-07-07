@@ -46,6 +46,10 @@
 ///   remove = `hash - expanded`.
 /// - **Order independence**: addition is commutative + associative.
 /// - **Cryptographic security**: hard to find set collisions (SVP).
+///
+/// TODO: `LtHash` is Copy over [u16; 1024] (2KiB). Each `StateUpdate::New/Unchanged`
+/// copies this. Consider boxing or using references in hot rebuild loops if profiling
+/// shows this as a bottleneck.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LtHash(pub [u16; 1024]);
 
@@ -67,6 +71,25 @@ where
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.hasher.update(s.as_bytes());
         Ok(())
+    }
+}
+
+/// Truncate a string to fit within a `u16` length prefix (65535 bytes).
+///
+/// Valid Matrix events are capped at 64KiB total, so real event types and state keys
+/// can never reach this limit. Truncation only applies to malformed/adversarial input.
+#[inline]
+fn truncate_to_u16_limit(s: &str) -> (&str, u16) {
+    let limit = usize::from(u16::MAX);
+    let s_len = s.len();
+    if s_len > limit {
+        let mut end = limit;
+        while !s.is_char_boundary(end) {
+            end = end.saturating_sub(1);
+        }
+        (&s[..end], u16::try_from(end).unwrap())
+    } else {
+        (s, u16::try_from(s_len).unwrap())
     }
 }
 
@@ -96,12 +119,13 @@ impl LtHash {
         use core::fmt::Write;
         use sha3::digest::{ExtendableOutput, Update};
 
+        let (event_type, type_len) = truncate_to_u16_limit(event_type);
+        let (state_key, sk_len) = truncate_to_u16_limit(state_key);
+
         let mut xof = sha3::Shake256::default();
         xof.update(Self::DST);
-        let type_len = u16::try_from(event_type.len()).expect("event_type exceeds u16::MAX bytes");
         xof.update(&type_len.to_le_bytes());
         xof.update(event_type.as_bytes());
-        let sk_len = u16::try_from(state_key.len()).expect("state_key exceeds u16::MAX bytes");
         xof.update(&sk_len.to_le_bytes());
         xof.update(state_key.as_bytes());
 
@@ -529,17 +553,25 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "event_type exceeds u16::MAX bytes")]
-    fn test_lthash_boundary_exceeded_event_type_panics() {
+    fn test_lthash_boundary_exceeded_event_type_truncates() {
         let over_max = "a".repeat(65536);
-        let _seed = LtHash::seed(&over_max, "", &"$1");
+        let seed_over = LtHash::seed(&over_max, "", &"$1");
+        let seed_exact = LtHash::seed(&"a".repeat(65535), "", &"$1");
+        assert_eq!(
+            seed_over, seed_exact,
+            "over_max should truncate to exact 65535 boundary"
+        );
     }
 
     #[test]
-    #[should_panic(expected = "state_key exceeds u16::MAX bytes")]
-    fn test_lthash_boundary_exceeded_state_key_panics() {
+    fn test_lthash_boundary_exceeded_state_key_truncates() {
         let over_max = "b".repeat(65536);
-        let _seed = LtHash::seed("", &over_max, &"$1");
+        let seed_over = LtHash::seed("", &over_max, &"$1");
+        let seed_exact = LtHash::seed("", &"b".repeat(65535), &"$1");
+        assert_eq!(
+            seed_over, seed_exact,
+            "over_max should truncate to exact 65535 boundary"
+        );
     }
 
     #[test]

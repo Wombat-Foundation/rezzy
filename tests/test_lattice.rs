@@ -222,3 +222,94 @@ fn test_lattice_fold_skips_non_state_events() {
         "message event must not appear in resolved state"
     );
 }
+
+#[test]
+fn test_lattice_fold_unconflicted_power_bootstrap_v2_1() {
+    let events = utils::parse_jsonl_events(FIXTURE);
+    let map = to_event_map(&events);
+
+    // Build unconflicted state (starts with m.room.create)
+    let mut unconflicted = utils::build_unconflicted_state_test_helper(&map);
+    // Manually add unconflicted power levels and join rules to unconflicted input state
+    unconflicted.insert(
+        ("m.room.power_levels".to_string(), String::new()),
+        "$pl".to_string(),
+    );
+    unconflicted.insert(
+        ("m.room.join_rules".to_string(), String::new()),
+        "$jr".to_string(),
+    );
+
+    // Conflicted events: the two topics
+    let mut conflicted = HashMap::new();
+    conflicted.insert("$topic_a".to_string(), map["$topic_a"].clone());
+    conflicted.insert("$topic_b".to_string(), map["$topic_b"].clone());
+
+    // Resolve with V2_1: resolve_lattice_fold delegates to resolve_iterative_sort for V2.1+.
+    // This exercises the iterative fallback path, not the lattice fold's merge logic.
+    let resolved = resolve_lattice_fold(unconflicted, conflicted, &map, StateResVersion::V2_1);
+
+    let topic_key = ("m.room.topic".to_string(), String::new());
+    assert_eq!(
+        resolved.get(&topic_key),
+        Some(&"$topic_b".to_string()),
+        "Lattice fold V2.1 should pick topic_b (later ts)"
+    );
+
+    // Verify unconflicted power levels, join rules, and create events are successfully resolved and present
+    assert_eq!(
+        resolved.get(&("m.room.power_levels".to_string(), String::new())),
+        Some(&"$pl".to_string())
+    );
+    assert_eq!(
+        resolved.get(&("m.room.join_rules".to_string(), String::new())),
+        Some(&"$jr".to_string())
+    );
+    assert_eq!(
+        resolved.get(&("m.room.create".to_string(), String::new())),
+        Some(&"$create".to_string())
+    );
+}
+
+#[test]
+fn test_msc4297_lattice_fold_dependency_v2_1_fallback() {
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@admin:x","depth":0,"origin_server_ts":1000,"content":{"creator":"@admin:x","room_version":"11"},"prev_events":[],"auth_events":[]}
+{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@admin:x","depth":1,"origin_server_ts":1001,"content":{"users":{"@admin:x":100},"events_default":0,"state_default":0,"ban":50,"kick":50,"invite":0},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$jr","type":"m.room.join_rules","state_key":"","sender":"@admin:x","depth":2,"origin_server_ts":1002,"content":{"join_rule":"public"},"prev_events":["$pl"],"auth_events":["$create","$pl"]}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:x","sender":"@alice:x","depth":3,"origin_server_ts":1003,"content":{"membership":"join"},"prev_events":["$jr"],"auth_events":["$create","$pl","$jr"]}
+{"event_id":"$alice_topic","type":"m.room.topic","state_key":"","sender":"@alice:x","depth":4,"origin_server_ts":1004,"content":{"topic":"Alice Topic"},"prev_events":["$alice_join"],"auth_events":["$create","$pl","$alice_join"]}
+"#,
+    );
+
+    let map = to_event_map(&events);
+
+    // Build unconflicted state: has $create, $pl, $jr
+    let mut unconflicted = utils::build_unconflicted_state_test_helper(&map);
+    unconflicted.insert(
+        ("m.room.power_levels".to_string(), String::new()),
+        "$pl".to_string(),
+    );
+    unconflicted.insert(
+        ("m.room.join_rules".to_string(), String::new()),
+        "$jr".to_string(),
+    );
+
+    // Conflicted events: $alice_join and $alice_topic are on one fork
+    let mut conflicted = HashMap::new();
+    conflicted.insert("$alice_join".to_string(), map["$alice_join"].clone());
+    conflicted.insert("$alice_topic".to_string(), map["$alice_topic"].clone());
+
+    // Resolve under V2.1. The fallback automatically redirects to resolve_iterative_sort,
+    // which correctly respects the topological non-power dependency!
+    let resolved = resolve_lattice_fold(unconflicted, conflicted, &map, StateResVersion::V2_1);
+
+    // Verify that the topic is successfully authorized and present!
+    let topic_key = ("m.room.topic".to_string(), String::new());
+    assert_eq!(
+        resolved.get(&topic_key),
+        Some(&"$alice_topic".to_string()),
+        "V2.1 fallback must authorize and resolve Alice's topic change successfully"
+    );
+}
