@@ -1934,6 +1934,8 @@ mod tests {
 
     fn default_test_event(id: &str, pl: i64, ts: u64, auth: Vec<&str>) -> LeanEvent {
         LeanEvent {
+            rejected: false,
+            soft_fail: false,
             event_id: id.into(),
             event_type: "m.room.message".into(), // not power
             state_key: None,

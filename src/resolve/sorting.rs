@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use crate::HashMap;
-use crate::basespec::event_types::MAX_POWER_LEVEL_RUST;
+use crate::basespec::event_types::{M_ROOM_POWER_LEVELS, MAX_POWER_LEVEL_RUST};
 use crate::basespec::rezzy_types::{KahnSortResult, LeanEvent, SortPriority, StateResVersion};
 
 /// Dynamically fetches the sender's power level by inspecting the event's immediate `auth_events`.
@@ -38,11 +38,9 @@ where
     // Spec compliance: only check immediate auth_events.
     for aid in &event.auth_events {
         if let Some(aev) = auth_context.get_event(aid) {
-            if aev.event_type == "m.room.power_levels"
-                && aev.state_key.as_deref() == Some("")
-                && pl_event.is_none()
-            {
-                pl_event = Some(aev.clone());
+            if aev.event_type == M_ROOM_POWER_LEVELS && aev.state_key.as_deref() == Some("") {
+                pl_event = Some(aev);
+                break;
             }
         }
     }

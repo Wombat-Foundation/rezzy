@@ -1268,6 +1268,8 @@ fn test_missing_auth_diff_mainline_distortion() {
         HashMap::new();
 
     let create_ev = LeanEvent {
+        rejected: false,
+        soft_fail: false,
         event_id: "CREATE",
         event_type: "m.room.create".to_string(),
         state_key: Some(String::new()),
@@ -1282,6 +1284,8 @@ fn test_missing_auth_diff_mainline_distortion() {
     events_map.insert("CREATE", create_ev);
 
     let pl0 = LeanEvent {
+        rejected: false,
+        soft_fail: false,
         event_id: "PL0",
         event_type: "m.room.power_levels".to_string(),
         state_key: Some(String::new()),
@@ -1296,6 +1300,8 @@ fn test_missing_auth_diff_mainline_distortion() {
     events_map.insert("PL0", pl0);
 
     let pl1 = LeanEvent {
+        rejected: false,
+        soft_fail: false,
         event_id: "PL1",
         event_type: "m.room.power_levels".to_string(),
         state_key: Some(String::new()),
@@ -1310,6 +1316,8 @@ fn test_missing_auth_diff_mainline_distortion() {
     events_map.insert("PL1", pl1);
 
     let sa1 = LeanEvent {
+        rejected: false,
+        soft_fail: false,
         event_id: "S_A1",
         event_type: "m.room.topic".to_string(),
         state_key: Some(String::new()),
@@ -1324,6 +1332,8 @@ fn test_missing_auth_diff_mainline_distortion() {
     events_map.insert("S_A1", sa1);
 
     let pl2 = LeanEvent {
+        rejected: false,
+        soft_fail: false,
         event_id: "PL2",
         event_type: "m.room.power_levels".to_string(),
         state_key: Some(String::new()),
@@ -1338,6 +1348,8 @@ fn test_missing_auth_diff_mainline_distortion() {
     events_map.insert("PL2", pl2);
 
     let sb1 = LeanEvent {
+        rejected: false,
+        soft_fail: false,
         event_id: "S_B1",
         event_type: "m.room.topic".to_string(),
         state_key: Some(String::new()),
@@ -1352,6 +1364,8 @@ fn test_missing_auth_diff_mainline_distortion() {
     events_map.insert("S_B1", sb1);
 
     let pl_b = LeanEvent {
+        rejected: false,
+        soft_fail: false,
         event_id: "PL_B",
         event_type: "m.room.power_levels".to_string(),
         state_key: Some(String::new()),
@@ -1869,5 +1883,80 @@ fn test_v2_1_stock_does_not_supplement_membership() {
         resolved.get(&pl_key),
         Some(&"$mal_pl".to_string()),
         "Stock V2.1 must NOT apply membership supplementation — Mallory's PL wins (spec-mandated)."
+    );
+}
+
+#[test]
+fn test_process_pulled_event_with_rejected_missing_state() {
+    let auth_events = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@creator:example.com", "origin_server_ts": 100}
+        {"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@creator:example.com", "origin_server_ts": 200, "content": {"users": {"@bob:example.com": 100, "@charlie:example.com": 0}}, "auth_events": ["$create"]}
+        {"event_id": "$jr", "type": "m.room.join_rules", "state_key": "", "sender": "@creator:example.com", "origin_server_ts": 250, "content": {"join_rule": "public"}, "auth_events": ["$create", "$pl"]}
+        {"event_id": "$join", "type": "m.room.member", "state_key": "@charlie:example.com", "sender": "@charlie:example.com", "origin_server_ts": 300, "content": {"membership": "join"}, "auth_events": ["$create", "$pl", "$jr"]}
+        {"event_id": "$kick", "type": "m.room.member", "state_key": "@charlie:example.com", "sender": "@bob:example.com", "origin_server_ts": 400, "content": {"membership": "leave"}, "auth_events": ["$create", "$pl", "$join"], "__rejected": true}
+        "#,
+    );
+
+    let mut auth_context = std::collections::HashMap::new();
+    for ev in auth_events {
+        auth_context.insert(ev.event_id.clone(), ev);
+    }
+
+    let state_maps = vec![
+        imbl::OrdMap::from(vec![
+            (
+                ("m.room.create".to_string(), String::new()),
+                "$create".to_string(),
+            ),
+            (
+                ("m.room.power_levels".to_string(), String::new()),
+                "$pl".to_string(),
+            ),
+            (
+                ("m.room.join_rules".to_string(), String::new()),
+                "$jr".to_string(),
+            ),
+            (
+                (
+                    "m.room.member".to_string(),
+                    "@charlie:example.com".to_string(),
+                ),
+                "$join".to_string(),
+            ),
+        ]),
+        imbl::OrdMap::from(vec![
+            (
+                ("m.room.create".to_string(), String::new()),
+                "$create".to_string(),
+            ),
+            (
+                ("m.room.power_levels".to_string(), String::new()),
+                "$pl".to_string(),
+            ),
+            (
+                ("m.room.join_rules".to_string(), String::new()),
+                "$jr".to_string(),
+            ),
+            (
+                (
+                    "m.room.member".to_string(),
+                    "@charlie:example.com".to_string(),
+                ),
+                "$kick".to_string(),
+            ),
+        ]),
+    ];
+
+    let result = rezzy::resolve_state_maps(&state_maps, &auth_context, StateResVersion::V2_1_1);
+
+    let member_key = (
+        "m.room.member".to_string(),
+        "@charlie:example.com".to_string(),
+    );
+    assert_eq!(
+        result.get(&member_key),
+        Some(&"$join".to_string()),
+        "Rejected event must not be admitted to state!"
     );
 }

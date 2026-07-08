@@ -224,6 +224,10 @@ pub(crate) fn iterative_auth_ok<
     version: StateResVersion,
     is_power_phase: bool,
 ) -> bool {
+    if ev.rejected || ev.soft_fail {
+        return false;
+    }
+
     let overlay = OverlayState {
         resolved,
         auth_context,
@@ -2124,6 +2128,63 @@ pub fn compute_state_at_streaming_optimized<Id, C, Q, S, F>(
     }
 }
 
+/// Computes the true forward extremities (DAG leaves) from a batched set of events.
+/// This uses `RoaringBitmap` set differences (`all_events - all_parents`) to
+/// instantly find the leaves of a DAG, no matter how deep.
+///
+/// # Arguments
+/// - `events`: An iterator yielding tuples of `(event_id, prev_event_ids)`.
+///
+/// # Returns
+/// A `Vec<Id>` of all events that are not referenced as a `prev_event` by any other event in the set.
+///
+/// # Panics
+/// Panics if the number of distinct event IDs exceeds `u32::MAX`.
+pub fn find_forward_extremities_roaring<Id, I, P>(events: I) -> alloc::vec::Vec<Id>
+where
+    Id: core::hash::Hash + Eq + Clone,
+    I: IntoIterator<Item = (Id, P)>,
+    P: IntoIterator<Item = Id>,
+{
+    use roaring::RoaringBitmap;
+    let mut id_map = crate::HashMap::default();
+    let mut reverse_map = alloc::vec::Vec::new();
+
+    let get_or_insert = |id: Id,
+                         id_map: &mut crate::HashMap<Id, u32>,
+                         reverse_map: &mut alloc::vec::Vec<Id>|
+     -> u32 {
+        *id_map.entry(id).or_insert_with_key(|id| {
+            let idx = u32::try_from(reverse_map.len()).expect("event count exceeds u32");
+            reverse_map.push(id.clone());
+            idx
+        })
+    };
+
+    let mut all_events = RoaringBitmap::new();
+    let mut has_children = RoaringBitmap::new();
+
+    for (id, prevs) in events {
+        let idx = get_or_insert(id, &mut id_map, &mut reverse_map);
+        all_events.insert(idx);
+
+        for prev_id in prevs {
+            let prev_idx = get_or_insert(prev_id, &mut id_map, &mut reverse_map);
+            has_children.insert(prev_idx);
+        }
+    }
+
+    let extremities_bitmap = core::ops::Sub::sub(all_events, has_children);
+
+    let mut extremities =
+        alloc::vec::Vec::with_capacity(usize::try_from(extremities_bitmap.len()).unwrap());
+    for idx in extremities_bitmap {
+        extremities.push(reverse_map[idx as usize].clone());
+    }
+
+    extremities
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3044,57 +3105,4 @@ mod tests {
         );
         assert!(d_has_new_state, "D should have been yielded as New!");
     }
-}
-
-/// Computes the true forward extremities (DAG leaves) from a batched set of events.
-/// This uses `RoaringBitmap` set differences (`all_events - all_parents`) to
-/// instantly find the leaves of a DAG, no matter how deep.
-///
-/// # Arguments
-/// - `events`: An iterator yielding tuples of `(event_id, prev_event_ids)`.
-///
-/// # Returns
-/// A `Vec<Id>` of all events that are not referenced as a `prev_event` by any other event in the set.
-pub fn find_forward_extremities_roaring<Id, I, P>(events: I) -> alloc::vec::Vec<Id>
-where
-    Id: core::hash::Hash + Eq + Clone,
-    I: IntoIterator<Item = (Id, P)>,
-    P: IntoIterator<Item = Id>,
-{
-    use roaring::RoaringBitmap;
-    let mut id_map = crate::HashMap::default();
-    let mut reverse_map = alloc::vec::Vec::new();
-
-    let get_or_insert = |id: Id, id_map: &mut crate::HashMap<Id, u32>, reverse_map: &mut alloc::vec::Vec<Id>| -> u32 {
-        if let Some(&idx) = id_map.get(&id) {
-            idx
-        } else {
-            let idx = reverse_map.len() as u32;
-            id_map.insert(id.clone(), idx);
-            reverse_map.push(id);
-            idx
-        }
-    };
-
-    let mut all_events = RoaringBitmap::new();
-    let mut has_children = RoaringBitmap::new();
-
-    for (id, prevs) in events {
-        let idx = get_or_insert(id, &mut id_map, &mut reverse_map);
-        all_events.insert(idx);
-
-        for prev_id in prevs {
-            let prev_idx = get_or_insert(prev_id, &mut id_map, &mut reverse_map);
-            has_children.insert(prev_idx);
-        }
-    }
-
-    let extremities_bitmap = all_events - has_children;
-    
-    let mut extremities = alloc::vec::Vec::with_capacity(extremities_bitmap.len() as usize);
-    for idx in extremities_bitmap {
-        extremities.push(reverse_map[idx as usize].clone());
-    }
-
-    extremities
 }

@@ -74,6 +74,8 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
             .unwrap_or(serde_json::json!({}));
 
         events.push(LeanEvent {
+            rejected: false,
+            soft_fail: false,
             event_id,
             event_type,
             state_key,

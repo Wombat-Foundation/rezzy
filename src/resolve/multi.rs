@@ -240,6 +240,8 @@ where
             (
                 id.clone(),
                 LeanEvent {
+                    rejected: false,
+                    soft_fail: false,
                     event_id: ev.event_id.clone(),
                     event_type: ev.event_type.clone(),
                     state_key: ev.state_key.clone(),
@@ -450,6 +452,8 @@ mod tests {
         depth: u64,
     ) -> LeanEvent {
         LeanEvent {
+            rejected: false,
+            soft_fail: false,
             event_id: id.into(),
             event_type: event_type.into(),
             state_key: Some(state_key.into()),

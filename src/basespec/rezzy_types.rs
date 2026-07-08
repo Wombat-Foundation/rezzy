@@ -630,6 +630,13 @@ pub struct LeanEvent<Id = String, C = Value> {
     pub auth_events: Vec<Id>,
     /// DAG depth (distance from the root). Required for V1 sort ordering.
     pub depth: u64,
+    /// Whether this event was rejected by the homeserver (e.g., due to failing auth).
+    /// Rejected events are ignored during state resolution and will not be admitted to the resolved state.
+    /// TODO: Implement and test edge cases where rejected events might need special handling during outlier fetching or soft-fail resolution.
+    pub rejected: bool,
+    /// Whether this event was soft-failed.
+    /// TODO: Add dedicated test coverage for soft-failed events to ensure they are handled according to spec (especially vs rejected).
+    pub soft_fail: bool,
 }
 
 impl<Id: serde::Serialize, C: serde::Serialize> serde::Serialize for LeanEvent<Id, C> {
@@ -1335,6 +1342,16 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
 
+        let rejected = value
+            .get("__rejected")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+
+        let soft_fail = value
+            .get("__soft_fail")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+
         Ok(LeanEvent {
             event_id,
             event_type,
@@ -1346,6 +1363,8 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
             prev_events,
             auth_events,
             depth,
+            rejected,
+            soft_fail,
         })
     }
 }
