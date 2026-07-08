@@ -57,6 +57,8 @@ pub const FIELD_CONTENT: &str = "content";
 pub const FIELD_PREV_EVENTS: &str = "prev_events";
 pub const FIELD_AUTH_EVENTS: &str = "auth_events";
 pub const FIELD_DEPTH: &str = "depth";
+pub const FIELD_REJECTED: &str = "__rejected";
+pub const FIELD_SOFT_FAIL: &str = "__soft_fail";
 pub const FIELD_UNSIGNED: &str = "unsigned";
 
 // Membership and Join Rule string values

@@ -646,10 +646,11 @@ impl<Id: serde::Serialize, C: serde::Serialize> serde::Serialize for LeanEvent<I
     {
         use crate::basespec::event_types::{
             FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
-            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_STATE_KEY, FIELD_TYPE,
+            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_REJECTED, FIELD_SENDER, FIELD_SOFT_FAIL,
+            FIELD_STATE_KEY, FIELD_TYPE,
         };
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("LeanEvent", 10)?;
+        let mut state = serializer.serialize_struct("LeanEvent", 12)?;
         state.serialize_field(FIELD_EVENT_ID, &self.event_id)?;
         state.serialize_field(FIELD_TYPE, &self.event_type)?;
         if let Some(ref sk) = self.state_key {
@@ -662,6 +663,8 @@ impl<Id: serde::Serialize, C: serde::Serialize> serde::Serialize for LeanEvent<I
         state.serialize_field(FIELD_PREV_EVENTS, &self.prev_events)?;
         state.serialize_field(FIELD_AUTH_EVENTS, &self.auth_events)?;
         state.serialize_field(FIELD_DEPTH, &self.depth)?;
+        state.serialize_field(FIELD_REJECTED, &self.rejected)?;
+        state.serialize_field(FIELD_SOFT_FAIL, &self.soft_fail)?;
         state.end()
     }
 }
@@ -1238,7 +1241,7 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
     {
         use crate::basespec::event_types::{
             FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
-            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_STATE_KEY, FIELD_TYPE,
+            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_REJECTED, FIELD_SOFT_FAIL, FIELD_SENDER, FIELD_STATE_KEY, FIELD_TYPE,
         };
 
         let value = Value::deserialize(deserializer)?;
@@ -1343,12 +1346,12 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
             .unwrap_or(0);
 
         let rejected = value
-            .get("__rejected")
+            .get(FIELD_REJECTED)
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 
         let soft_fail = value
-            .get("__soft_fail")
+            .get(FIELD_SOFT_FAIL)
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 

@@ -3861,13 +3861,15 @@ fn test_lean_event_serialize_roundtrip() {
         event_id: "$test".into(),
         event_type: "m.room.message".into(),
         state_key: Some(String::new()),
+        power_level: 0,
         sender: "@alice:x.com".into(),
         origin_server_ts: 1_234_567_890,
         content: serde_json::json!({"body": "hello"}),
         prev_events: vec!["$prev".into()],
         auth_events: vec!["$auth".into()],
         depth: 5,
-        ..Default::default()
+        rejected: true,
+        soft_fail: true,
     };
     let json = serde_json::to_string(&ev).unwrap();
     let back: LeanEvent<String> = serde_json::from_str(&json).unwrap();
@@ -3881,6 +3883,8 @@ fn test_lean_event_serialize_roundtrip() {
     assert_eq!(ev.content, back.content);
     assert_eq!(ev.prev_events, back.prev_events);
     assert_eq!(ev.auth_events, back.auth_events);
+    assert_eq!(ev.rejected, back.rejected);
+    assert_eq!(ev.soft_fail, back.soft_fail);
 }
 
 #[test]
