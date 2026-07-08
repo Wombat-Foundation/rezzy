@@ -53,6 +53,7 @@ fn resolve_and_get_state(fixture_path: &str, version: StateResVersion) -> HashMa
         map.clone(),
         &map,
         version,
+        &mut std::collections::HashMap::new(),
     );
     resolved
         .into_iter()

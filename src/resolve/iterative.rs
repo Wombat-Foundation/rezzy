@@ -161,6 +161,7 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4>(
     version: StateResVersion,
     local_auth_cache: &mut LocalAuthCache<Id, C>,
     create_ev: Option<&LeanEvent<Id, C>>,
+    pl_cache: &mut HashMap<Id, i64>,
 ) where
     Id: crate::basespec::rezzy_types::EventId,
     S2: core::hash::BuildHasher,
@@ -168,7 +169,7 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4>(
     S4: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
 {
-    let sorted_power_ids = lean_kahn_sort(power_events, sort_context, create_ev, version);
+    let sorted_power_ids = lean_kahn_sort(power_events, sort_context, create_ev, version, pl_cache);
     for id in &sorted_power_ids {
         if let Some(event) = conflicted_events.get(id).or_else(|| auth_context.get(id)) {
             let local_auth = compute_local_auth(
@@ -357,7 +358,7 @@ where
 /// let auth_ctx: HashMap<String, LeanEvent> = /* auth chain for new_events */
 /// # HashMap::new();
 ///
-/// let resolved = resolve_iterative_sort(checkpoint, new_events, &auth_ctx, StateResVersion::V2);
+/// let resolved = resolve_iterative_sort(checkpoint, new_events, &auth_ctx, StateResVersion::V2, &mut std::collections::HashMap::new());
 /// ```
 ///
 /// # Auth Chain Safety
@@ -390,6 +391,7 @@ where
 ///    power-levels chain) and iteratively auth-check them.
 /// 4. Merge winners into the unconflicted base.
 #[must_use]
+#[allow(clippy::implicit_hasher)]
 pub fn resolve_iterative_sort<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + Clone,
@@ -400,6 +402,7 @@ pub fn resolve_iterative_sort<
     conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     version: StateResVersion,
+    pl_cache: &mut HashMap<Id, i64>,
 ) -> crate::state::at::SharedState<Id> {
     resolve_iterative_sort_with_cache::<Id, C, S1, S2>(
         unconflicted_state,
@@ -407,12 +410,14 @@ pub fn resolve_iterative_sort<
         auth_context,
         None,
         version,
+        pl_cache,
     )
 }
 
 /// Like [`resolve_iterative_sort`], but allows passing an external local auth cache to amortize
 /// allocation costs across multiple invocations.
 #[must_use]
+#[allow(clippy::implicit_hasher)]
 pub fn resolve_iterative_sort_with_cache<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + Clone,
@@ -424,6 +429,7 @@ pub fn resolve_iterative_sort_with_cache<
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C>>,
     version: StateResVersion,
+    pl_cache: &mut HashMap<Id, i64>,
 ) -> crate::state::at::SharedState<Id> {
     let original_conflicted_keys =
         prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
@@ -458,6 +464,7 @@ pub fn resolve_iterative_sort_with_cache<
         version,
         local_auth_cache,
         create_ev,
+        pl_cache,
     );
 
     let sort_set = &conflicted_events;
@@ -514,6 +521,7 @@ pub fn resolve_iterative_sort_with_cache<
 /// Same conditions as [`resolve_iterative_sort`].
 #[must_use]
 #[allow(clippy::type_complexity, clippy::too_many_lines)]
+#[allow(clippy::implicit_hasher)]
 pub fn resolve_iterative_sort_with_deltas<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + Clone,
@@ -524,6 +532,7 @@ pub fn resolve_iterative_sort_with_deltas<
     conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     version: StateResVersion,
+    pl_cache: &mut HashMap<Id, i64>,
 ) -> (
     crate::state::at::SharedState<Id>,
     alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id>>,
@@ -534,6 +543,7 @@ pub fn resolve_iterative_sort_with_deltas<
         auth_context,
         None,
         version,
+        pl_cache,
     )
 }
 
@@ -541,6 +551,7 @@ pub fn resolve_iterative_sort_with_deltas<
 /// [`resolve_iterative_sort_with_cache`].
 #[must_use]
 #[allow(clippy::type_complexity, clippy::too_many_lines)]
+#[allow(clippy::implicit_hasher)]
 pub fn resolve_iterative_sort_with_cache_and_deltas<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + Clone,
@@ -552,6 +563,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C>>,
     version: StateResVersion,
+    pl_cache: &mut HashMap<Id, i64>,
 ) -> (
     crate::state::at::SharedState<Id>,
     alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id>>,
@@ -586,7 +598,8 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
 
     let sort_set = &conflicted_events;
 
-    let sorted_power_ids = lean_kahn_sort(&power_events, &sort_context, create_ev, version);
+    let sorted_power_ids =
+        lean_kahn_sort(&power_events, &sort_context, create_ev, version, pl_cache);
     for id in &sorted_power_ids {
         if let Some(event) = sort_set.get(id).or_else(|| auth_context.get(id)) {
             let Some(sk) = &event.state_key else { continue };

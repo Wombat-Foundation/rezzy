@@ -73,6 +73,7 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
         conflicted_events.clone(),
         &auth_context,
         StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
     );
     let ok_v21 = resolved_v21.contains_key(&("m.room.name".to_string(), String::new()));
     assert_eq!(
@@ -85,6 +86,7 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
         conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
     );
     let ok_v211 = resolved_v211.contains_key(&("m.room.name".to_string(), String::new()));
     assert_eq!(
@@ -180,6 +182,7 @@ fn test_v2_1_1_ancient_prev_event_allowed() {
         conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
     );
 
     // State resolution still passes because the auth_events are valid.
@@ -261,6 +264,7 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
         conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
     );
 
     // The resolved state should contain the ban, not the join
@@ -416,6 +420,7 @@ fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
     );
 
     let bob_member_key = ("m.room.member".to_string(), "@bob:example.com".to_string());
@@ -525,6 +530,7 @@ fn test_v2_1_1_fixes_invite_lock() {
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2,
+        &mut std::collections::HashMap::new(),
     );
     let member_key = ("m.room.member".to_string(), "@user:example.com".to_string());
 
@@ -540,6 +546,7 @@ fn test_v2_1_1_fixes_invite_lock() {
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
     );
     assert!(
         !resolved_v21.contains_key(&member_key),
@@ -555,6 +562,7 @@ fn test_v2_1_1_fixes_invite_lock() {
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
     );
 
     assert_eq!(
@@ -650,6 +658,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
     );
     let name_key = ("m.room.name".to_string(), String::new());
     assert!(
@@ -665,6 +674,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
     );
     assert!(
         !resolved_v211.contains_key(&name_key),
@@ -762,6 +772,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
     );
 
     // Alice's ban has PL 100, so Kahn sort evaluates it FIRST. It is added to the resolved state.
@@ -783,6 +794,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
     );
 
     // V2.1.1 REJECTS Bob's concurrent name change!
@@ -841,6 +853,7 @@ fn test_v2_1_strictness_future_v3_should_pass() {
         conflicted_events.clone(),
         &auth_context,
         rezzy::StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
     );
 
     // V2.1 Rightfully Fails: It enforces the 1-hop strictness. Without "$jr" in the auth chain,
@@ -1018,6 +1031,7 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
     );
 
     let nexy_member_key = ("m.room.member".to_string(), "@nexy:example.com".to_string());
@@ -1144,6 +1158,7 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
     );
 
     let spammer_key = (
@@ -1246,6 +1261,7 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
         conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
     );
 
     // Bob's ban must be resolved first in Step 2.
@@ -1396,6 +1412,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         &events_map,
         None,
         StateResVersion::V2,
+        &mut std::collections::HashMap::new(),
     );
 
     // Test the "correct auth diff" scenario (FIXED)
@@ -1412,6 +1429,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         &events_map,
         None,
         StateResVersion::V2,
+        &mut std::collections::HashMap::new(),
     );
 
     // Both scenarios resolve to the same winner because the mainline ordering is
@@ -1561,6 +1579,7 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
         conflicted,
         &auth_context,
         StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
     );
 
     // Mallory's PL event must be rejected (banned sender)
@@ -1617,6 +1636,7 @@ fn test_v2_2_auth_distance_tiebreak() {
         conflicted,
         &auth_context,
         StateResVersion::V2_2,
+        &mut std::collections::HashMap::new(),
     );
 
     // $topic_b wins: both events have equal PL (0), empty mainline (position 0),
@@ -1664,6 +1684,7 @@ fn test_v2_1_1_creator_in_users_map_rejected() {
         conflicted,
         &auth_context,
         StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
     );
 
     let pl_key = ("m.room.power_levels".to_string(), String::new());
@@ -1746,6 +1767,7 @@ fn test_v2_1_1_ban_supplementation_return_path() {
         conflicted,
         &auth_context,
         StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
     );
 
     // Mallory's PL must be rejected (she's banned)
@@ -1809,6 +1831,7 @@ fn test_v2_1_1_power_phase_membership_bypass_prevention() {
         conflicted,
         &auth_context,
         StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
     );
 
     let pl_key = ("m.room.power_levels".to_string(), String::new());
@@ -1872,6 +1895,7 @@ fn test_v2_1_stock_does_not_supplement_membership() {
         conflicted,
         &auth_context,
         StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
     );
 
     let pl_key = ("m.room.power_levels".to_string(), String::new());

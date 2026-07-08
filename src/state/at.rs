@@ -1150,12 +1150,14 @@ where
         }
     }
 
+    let mut pl_cache = HashMap::new();
     crate::resolve::iterative::resolve_iterative_sort_with_cache(
         unconflicted_state,
         conflicted_events,
         events_map,
         Some(global_auth_cache),
         version,
+        &mut pl_cache,
     )
 }
 

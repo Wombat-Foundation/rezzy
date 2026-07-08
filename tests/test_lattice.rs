@@ -149,8 +149,13 @@ fn test_lattice_fold_parity_with_iterative() {
         &map,
         StateResVersion::V2,
     );
-    let iterative =
-        rezzy::resolve_iterative_sort(unconflicted, conflicted, &map, StateResVersion::V2);
+    let iterative = rezzy::resolve_iterative_sort(
+        unconflicted,
+        conflicted,
+        &map,
+        StateResVersion::V2,
+        &mut std::collections::HashMap::new(),
+    );
 
     // Lattice and iterative should agree on the topic winner
     let topic_key = ("m.room.topic".to_string(), String::new());

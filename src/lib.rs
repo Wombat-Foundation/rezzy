@@ -27,6 +27,7 @@
 //!     conflicted_subgraph,
 //!     &auth_context,
 //!     StateResVersion::V2,
+//!     &mut std::collections::HashMap::new(),
 //! );
 //! ```
 //!

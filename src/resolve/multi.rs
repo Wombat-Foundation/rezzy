@@ -205,11 +205,13 @@ where
         }
     }
 
+    let mut pl_cache = HashMap::new();
     crate::resolve::iterative::resolve_iterative_sort(
         unconflicted_state,
         conflicted_events,
         event_context,
         version,
+        &mut pl_cache,
     )
 }
 
@@ -423,11 +425,13 @@ where
         auth_context.entry(id.clone()).or_insert_with(|| ev.clone());
     }
 
+    let mut pl_cache = HashMap::new();
     crate::resolve::iterative::resolve_iterative_sort(
         unconflicted_state,
         conflicted_events,
         &auth_context,
         version,
+        &mut pl_cache,
     )
 }
 

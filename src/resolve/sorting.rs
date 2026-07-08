@@ -148,11 +148,13 @@ where
 ///
 /// Will panic if graph invariants are violated during topological sorting (specifically, if
 /// the in-degree map lacks an entry for a child event during the queue processing phase).
+#[allow(clippy::implicit_hasher)]
 pub fn lean_kahn_sort_with_cycle_diagnostics<Id, C, S1>(
     events: &HashMap<Id, LeanEvent<Id, C>, S1>,
     sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
     create_ev: Option<&LeanEvent<Id, C>>,
     version: StateResVersion,
+    pl_cache: &mut HashMap<Id, i64>,
 ) -> KahnSortResult<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -178,15 +180,14 @@ where
 
     // Pre-compute power levels once per event to avoid redundant auth chain walks
     // inside the hot BinaryHeap push path.
-    let pl_cache: HashMap<Id, i64> = events
-        .iter()
-        .map(|(id, ev)| {
-            (
+    for (id, ev) in events {
+        if !pl_cache.contains_key(id) {
+            pl_cache.insert(
                 id.clone(),
                 get_power_level_from_auth_chain(ev, sort_context, create_ev, version),
-            )
-        })
-        .collect();
+            );
+        }
+    }
 
     let depth_cache: HashMap<Id, u64> = if version == StateResVersion::V2_2 {
         let mut memo = HashMap::new();
@@ -266,11 +267,13 @@ where
 /// in the cycle-breaking list of stuck nodes is missing from the input `events` map).
 // jscpd:ignore-start
 #[must_use]
+#[allow(clippy::implicit_hasher)]
 pub fn lean_kahn_sort<Id, C, S1>(
     events: &HashMap<Id, LeanEvent<Id, C>, S1>,
     sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
     create_ev: Option<&LeanEvent<Id, C>>,
     version: StateResVersion,
+    pl_cache: &mut HashMap<Id, i64>,
 ) -> Vec<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -278,7 +281,8 @@ where
     C: Clone + crate::basespec::rezzy_types::EventContent,
 {
     // jscpd:ignore-end
-    match lean_kahn_sort_with_cycle_diagnostics(events, sort_context, create_ev, version) {
+    match lean_kahn_sort_with_cycle_diagnostics(events, sort_context, create_ev, version, pl_cache)
+    {
         KahnSortResult::Ok(sorted) => sorted,
         KahnSortResult::CycleDetected {
             mut sorted,
