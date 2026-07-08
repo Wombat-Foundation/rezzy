@@ -1241,7 +1241,8 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
     {
         use crate::basespec::event_types::{
             FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
-            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_REJECTED, FIELD_SOFT_FAIL, FIELD_SENDER, FIELD_STATE_KEY, FIELD_TYPE,
+            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_REJECTED, FIELD_SENDER, FIELD_SOFT_FAIL,
+            FIELD_STATE_KEY, FIELD_TYPE,
         };
 
         let value = Value::deserialize(deserializer)?;

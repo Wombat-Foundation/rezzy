@@ -2142,6 +2142,7 @@ pub fn compute_state_at_streaming_optimized<Id, C, Q, S, F>(
 ///
 /// # Panics
 /// Panics if the number of distinct event IDs exceeds `u32::MAX`.
+#[cfg(feature = "std")]
 pub fn find_forward_extremities_roaring<Id, I, P>(events: I) -> alloc::vec::Vec<Id>
 where
     Id: core::hash::Hash + Eq + Clone,
