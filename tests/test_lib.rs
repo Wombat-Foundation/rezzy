@@ -3888,6 +3888,30 @@ fn test_lean_event_serialize_roundtrip() {
 }
 
 #[test]
+fn test_lean_event_deserialize_accepts_legacy_rejection_flags() {
+    let ev: LeanEvent<String> = serde_json::from_str(
+        r#"{
+            "event_id": "$test",
+            "type": "m.room.message",
+            "state_key": "",
+            "power_level": 0,
+            "sender": "@alice:x.com",
+            "origin_server_ts": 1234567890,
+            "content": {"body": "hello"},
+            "prev_events": ["$prev"],
+            "auth_events": ["$auth"],
+            "depth": 5,
+            "rejected": true,
+            "soft_fail": true
+        }"#,
+    )
+    .unwrap();
+
+    assert!(ev.rejected);
+    assert!(ev.soft_fail);
+}
+
+#[test]
 fn test_event_content_blanket_impl_all_methods() {
     use rezzy::basespec::rezzy_types::EventContent;
 

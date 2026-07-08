@@ -1348,11 +1348,13 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
 
         let rejected = value
             .get(FIELD_REJECTED)
+            .or_else(|| value.get("rejected"))
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 
         let soft_fail = value
             .get(FIELD_SOFT_FAIL)
+            .or_else(|| value.get("soft_fail"))
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 

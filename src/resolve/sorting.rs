@@ -161,6 +161,8 @@ where
     S1: core::hash::BuildHasher,
     C: Clone + crate::basespec::rezzy_types::EventContent,
 {
+    pl_cache.clear();
+
     let mut in_degree: HashMap<Id, usize> = HashMap::new();
     let mut adjacency: HashMap<Id, Vec<Id>> = HashMap::new();
 
@@ -806,5 +808,49 @@ mod tests {
         // Second call: hits cache immediately for PL2 → skips BFS
         let ml2 = build_mainline_with_cache(&resolved, &ctx, &mut cache);
         assert_eq!(ml2, ml1, "cached mainline must match original");
+    }
+
+    #[test]
+    fn test_lean_kahn_sort_clears_reused_cache() {
+        let first = LeanEvent::<String> {
+            event_id: "$first".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            origin_server_ts: 1,
+            power_level: 10,
+            ..Default::default()
+        };
+        let second = LeanEvent::<String> {
+            event_id: "$second".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            origin_server_ts: 1,
+            power_level: 0,
+            ..Default::default()
+        };
+
+        let mut events = HashMap::new();
+        events.insert(first.event_id.clone(), first.clone());
+        events.insert(second.event_id.clone(), second.clone());
+
+        let mut cache = HashMap::new();
+
+        let first_sort = lean_kahn_sort(&events, &events, None, StateResVersion::V2, &mut cache);
+        assert_eq!(first_sort[0], "$first");
+
+        let mut mutated_events = events.clone();
+        mutated_events.get_mut("$first").unwrap().power_level = 0;
+        mutated_events.get_mut("$second").unwrap().power_level = 10;
+
+        let second_sort = lean_kahn_sort(
+            &mutated_events,
+            &mutated_events,
+            None,
+            StateResVersion::V2,
+            &mut cache,
+        );
+        assert_eq!(second_sort[0], "$second");
     }
 }
