@@ -2196,6 +2196,7 @@ mod tests {
     use alloc::string::ToString;
     use alloc::vec;
     use serde_json::json;
+    use std::collections::BTreeSet;
 
     #[test]
     fn test_conflicted_auth_event_validation_in_power_phase() {
@@ -2494,6 +2495,43 @@ mod tests {
     /// Coverage: `LocalAuthCache` hit path (at.rs:263-268).
     /// Calls `compute_local_auth` twice for the same event. Second call returns
     /// from cache without re-walking the auth chain.
+    #[test]
+    fn test_find_forward_extremities_roaring_empty() {
+        let extremities = find_forward_extremities_roaring::<String, _, Vec<String>>(Vec::new());
+        assert!(extremities.is_empty());
+    }
+
+    #[test]
+    fn test_find_forward_extremities_roaring_leaf_detection() {
+        let extremities = find_forward_extremities_roaring(vec![
+            ("$a".to_string(), Vec::<String>::new()),
+            ("$b".to_string(), vec!["$a".to_string()]),
+            ("$c".to_string(), vec!["$a".to_string()]),
+            ("$d".to_string(), vec!["$b".to_string(), "$c".to_string()]),
+            ("$e".to_string(), vec!["$c".to_string()]),
+        ]);
+
+        let actual: BTreeSet<String> = extremities.into_iter().collect();
+        let expected: BTreeSet<String> = ["$d".to_string(), "$e".to_string()].into_iter().collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_find_forward_extremities_roaring_disconnected_and_chain() {
+        let extremities = find_forward_extremities_roaring(vec![
+            ("$root".to_string(), Vec::<String>::new()),
+            ("$mid".to_string(), vec!["$root".to_string()]),
+            ("$leaf".to_string(), vec!["$mid".to_string()]),
+            ("$isolated".to_string(), Vec::<String>::new()),
+        ]);
+
+        let actual: BTreeSet<String> = extremities.into_iter().collect();
+        let expected: BTreeSet<String> = ["$leaf".to_string(), "$isolated".to_string()]
+            .into_iter()
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
     #[test]
     fn test_local_auth_cache_hit() {
         let create_ev: LeanEvent = LeanEvent {
