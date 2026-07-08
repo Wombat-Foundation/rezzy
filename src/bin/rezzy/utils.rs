@@ -14,6 +14,10 @@
 
 use crate::Args;
 use crate::network::fetch_room_state;
+use rezzy::basespec::event_types::{
+    FIELD_EVENT_ID, FIELD_ROOM_VERSION, FIELD_STATE_KEY, FIELD_TYPE, FIELD_USERS,
+    FIELD_USERS_DEFAULT, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
+};
 use rezzy::{LeanEvent, StateResVersion};
 use std::collections::HashMap;
 use std::fs::File;
@@ -33,10 +37,10 @@ pub fn detect_version(
     debug: bool,
 ) -> anyhow::Result<StateResVersion> {
     for ev in events {
-        if ev.get("type").and_then(|t| t.as_str()) == Some("m.room.create") {
+        if ev.get("type").and_then(|t| t.as_str()) == Some(M_ROOM_CREATE) {
             if let Some(ver) = ev
                 .get("content")
-                .and_then(|c| c.get("room_version"))
+                .and_then(|c| c.get(FIELD_ROOM_VERSION))
                 .and_then(|v| v.as_str())
             {
                 if debug {
@@ -203,7 +207,7 @@ pub fn parse_and_extract_heads(
                 }
             }
             (evs, hds)
-        } else if obj.contains_key("event_id") || obj.contains_key("type") {
+        } else if obj.contains_key(FIELD_EVENT_ID) || obj.contains_key(FIELD_TYPE) {
             (vec![input_val.clone()], Vec::new())
         } else {
             anyhow::bail!(
@@ -242,11 +246,11 @@ fn build_state_map(
     sorted_events: Vec<&LeanEvent>,
     raw_map: &HashMap<String, serde_json::Value>,
 ) -> HashMap<(String, String), String> {
-    let mut state_map = std::collections::HashMap::new();
+    let mut state_map = HashMap::new();
     for ev in sorted_events {
         if raw_map
             .get(&ev.event_id)
-            .is_some_and(|r| r.get("state_key").is_some())
+            .is_some_and(|r| r.get(FIELD_STATE_KEY).is_some())
         {
             let key = (ev.event_type.clone(), ev.state_key.clone().unwrap());
             state_map.insert(key, ev.event_id.clone());
@@ -376,8 +380,14 @@ pub fn partition_and_resolve_state(
         }
     }
 
-    let final_state_map =
-        rezzy::resolve_iterative_sort(unconflicted_state, conflicted_events, events_map, version);
+    let mut pl_cache = HashMap::new();
+    let final_state_map = rezzy::resolve_iterative_sort(
+        unconflicted_state,
+        conflicted_events,
+        events_map,
+        version,
+        &mut pl_cache,
+    );
 
     let duration = start.elapsed();
     (final_state_map, duration)
@@ -390,16 +400,16 @@ pub fn apply_global_power_levels(
 ) {
     let mut power_events = HashMap::new();
     let power_event_types = [
-        "m.room.create",
-        "m.room.power_levels",
-        "m.room.join_rules",
-        "m.room.member",
+        M_ROOM_CREATE,
+        M_ROOM_POWER_LEVELS,
+        M_ROOM_JOIN_RULES,
+        M_ROOM_MEMBER,
     ];
     for ev in events_map.values() {
         if power_event_types.contains(&ev.event_type.as_str()) {
             let mut power_ev = ev.clone();
             if (!creator_user_id.is_empty() && ev.sender == creator_user_id)
-                || ev.event_type == "m.room.create"
+                || ev.event_type == M_ROOM_CREATE
             {
                 power_ev.power_level = 100;
             } else {
@@ -411,8 +421,10 @@ pub fn apply_global_power_levels(
 
     let create_ev = events_map
         .values()
-        .find(|ev| ev.event_type == "m.room.create");
-    let sorted_power_ids = rezzy::lean_kahn_sort(&power_events, events_map, create_ev, version);
+        .find(|ev| ev.event_type == M_ROOM_CREATE);
+    let mut pl_cache = HashMap::new();
+    let sorted_power_ids =
+        rezzy::lean_kahn_sort(&power_events, events_map, create_ev, version, &mut pl_cache);
     let mut resolved_power_state = imbl::OrdMap::new();
     for id in sorted_power_ids {
         if let Some(ev) = power_events.get(&id) {
@@ -422,10 +434,9 @@ pub fn apply_global_power_levels(
 
     let mut user_power_levels = HashMap::new();
     let mut default_power_level = 0;
-    if let Some(id) = resolved_power_state.get(&("m.room.power_levels".to_string(), String::new()))
-    {
+    if let Some(id) = resolved_power_state.get(&(M_ROOM_POWER_LEVELS.to_string(), String::new())) {
         if let Some(ev) = events_map.get(id) {
-            if let Some(users) = ev.content.get("users").and_then(|u| u.as_object()) {
+            if let Some(users) = ev.content.get(FIELD_USERS).and_then(|u| u.as_object()) {
                 for (user_id, pl) in users {
                     if let Some(pl_val) = pl.as_i64() {
                         user_power_levels.insert(user_id.clone(), pl_val);
@@ -434,7 +445,7 @@ pub fn apply_global_power_levels(
             }
             if let Some(pl_val) = ev
                 .content
-                .get("users_default")
+                .get(FIELD_USERS_DEFAULT)
                 .and_then(serde_json::Value::as_i64)
             {
                 default_power_level = pl_val;
