@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! # Rezzy — Matrix State Resolution Engine
 //!
 //! A high-performance, spec-compliant implementation of [Matrix](https://spec.matrix.org/)

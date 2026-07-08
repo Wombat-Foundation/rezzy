@@ -137,6 +137,7 @@ pub fn compute_state_diff<Id: EventId>(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

@@ -512,6 +512,7 @@ pub fn mainline_sort<Id, C>(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use alloc::{string::String, vec::Vec};

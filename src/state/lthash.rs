@@ -237,6 +237,7 @@ pub fn compute_state_hash<Id: crate::basespec::rezzy_types::EventId>(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use alloc::string::String;

@@ -15,7 +15,7 @@
 use crate::Args;
 use crate::network::fetch_room_state;
 use rezzy::basespec::event_types::{
-    FIELD_EVENT_ID, FIELD_ROOM_VERSION, FIELD_STATE_KEY, FIELD_TYPE, FIELD_USERS,
+    FIELD_CONTENT, FIELD_EVENT_ID, FIELD_ROOM_VERSION, FIELD_STATE_KEY, FIELD_TYPE, FIELD_USERS,
     FIELD_USERS_DEFAULT, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
 };
 use rezzy::{LeanEvent, StateResVersion};
@@ -37,9 +37,9 @@ pub fn detect_version(
     debug: bool,
 ) -> anyhow::Result<StateResVersion> {
     for ev in events {
-        if ev.get("type").and_then(|t| t.as_str()) == Some(M_ROOM_CREATE) {
+        if ev.get(FIELD_TYPE).and_then(|t| t.as_str()) == Some(M_ROOM_CREATE) {
             if let Some(ver) = ev
-                .get("content")
+                .get(FIELD_CONTENT)
                 .and_then(|c| c.get(FIELD_ROOM_VERSION))
                 .and_then(|v| v.as_str())
             {

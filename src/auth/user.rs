@@ -128,6 +128,7 @@ pub fn user_can_redact<Id, C: EventContent>(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::basespec::rezzy_types::LeanEvent;

@@ -436,6 +436,7 @@ where
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     #![allow(
         clippy::manual_string_new,
