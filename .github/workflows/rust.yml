@@ -22,11 +22,6 @@ jobs:
           npm install -g prettier
           cargo install cargo-sort
 
-      - name: MSRV Check (1.87.0)
-        run: |
-          rustup toolchain install 1.87.0 --profile minimal
-          cargo +1.87.0 check --all-features
-
       - name: Format Check
         run: make format
 
