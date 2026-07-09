@@ -4628,13 +4628,46 @@ impl rezzy::RawEvent for TestRawEvent {
     fn raw_origin_server_ts(&self) -> u64 {
         self.origin_server_ts
     }
+    // raw_power_level uses the default impl (returns 0) — exercises line 463-465
+}
+
+struct TestFlaggedRawEvent(TestRawEvent);
+
+impl rezzy::RawEvent for TestFlaggedRawEvent {
+    type Id = String;
+    fn raw_event_id(&self) -> &String {
+        self.0.raw_event_id()
+    }
+    fn raw_event_type(&self) -> std::borrow::Cow<'_, str> {
+        self.0.raw_event_type()
+    }
+    fn raw_sender(&self) -> &str {
+        self.0.raw_sender()
+    }
+    fn raw_state_key(&self) -> Option<&str> {
+        self.0.raw_state_key()
+    }
+    fn raw_content_json(&self) -> &str {
+        self.0.raw_content_json()
+    }
+    fn raw_prev_events(&self) -> &[String] {
+        self.0.raw_prev_events()
+    }
+    fn raw_auth_events(&self) -> &[String] {
+        self.0.raw_auth_events()
+    }
+    fn raw_depth(&self) -> u64 {
+        self.0.raw_depth()
+    }
+    fn raw_origin_server_ts(&self) -> u64 {
+        self.0.raw_origin_server_ts()
+    }
     fn raw_rejected(&self) -> bool {
-        self.rejected
+        self.0.rejected
     }
     fn raw_soft_fail(&self) -> bool {
-        self.soft_fail
+        self.0.soft_fail
     }
-    // raw_power_level uses the default impl (returns 0) — exercises line 463-465
 }
 
 /// Exercises `ParsedEvent::new`, `try_new`, all `DagNode` + `EventLike`
@@ -4643,7 +4676,7 @@ impl rezzy::RawEvent for TestRawEvent {
 fn test_parsed_event_full_coverage() {
     use rezzy::basespec::rezzy_types::{DagNode, EventLike};
 
-    let _raw = TestRawEvent {
+    let raw = TestRawEvent {
         id: "$test1".into(),
         event_type: "m.room.member".into(),
         sender: "@alice:x".into(),
@@ -4656,6 +4689,9 @@ fn test_parsed_event_full_coverage() {
         rejected: false,
         soft_fail: false,
     };
+    let parsed_default_flags = rezzy::ParsedEvent::new(&raw);
+    assert!(!parsed_default_flags.rejected());
+    assert!(!parsed_default_flags.soft_fail());
 
     // ParsedEvent::new (line 502-508)
     // Use a PL-like event so we can test all EventLike default methods
@@ -4683,7 +4719,8 @@ fn test_parsed_event_full_coverage() {
         rejected: true,
         soft_fail: true,
     };
-    let parsed = rezzy::ParsedEvent::new(&raw_pl);
+    let flagged_raw = TestFlaggedRawEvent(raw_pl);
+    let parsed = rezzy::ParsedEvent::new(&flagged_raw);
 
     // DagNode impl (lines 514-528)
     assert_eq!(parsed.event_id(), "$pl");
@@ -4944,6 +4981,66 @@ fn test_lean_event_borrowed_view_accessors() {
     assert_eq!(view.power_level(), event.power_level);
     assert_eq!(view.origin_server_ts(), event.origin_server_ts);
     assert_eq!(view.content(), &event.content);
+    assert_eq!(view.rejected(), event.rejected);
+    assert_eq!(view.soft_fail(), event.soft_fail);
+}
+
+#[test]
+fn test_event_like_default_rejection_flags() {
+    use rezzy::basespec::rezzy_types::{DagNode, EventLike};
+
+    struct MinimalEventLike {
+        id: String,
+        content: serde_json::Value,
+    }
+
+    impl DagNode for MinimalEventLike {
+        type Id = String;
+
+        fn event_id(&self) -> &String {
+            &self.id
+        }
+        fn depth(&self) -> u64 {
+            0
+        }
+        fn prev_events(&self) -> &[String] {
+            &[]
+        }
+        fn auth_events(&self) -> &[String] {
+            &[]
+        }
+    }
+
+    impl EventLike for MinimalEventLike {
+        type Content = serde_json::Value;
+
+        fn event_type(&self) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed("m.room.message")
+        }
+        fn sender(&self) -> &'static str {
+            "@alice:x"
+        }
+        fn state_key(&self) -> Option<&str> {
+            None
+        }
+        fn power_level(&self) -> i64 {
+            0
+        }
+        fn origin_server_ts(&self) -> u64 {
+            0
+        }
+        fn content(&self) -> &serde_json::Value {
+            &self.content
+        }
+    }
+
+    let event = MinimalEventLike {
+        id: "$default-flags".into(),
+        content: serde_json::json!({}),
+    };
+
+    assert!(!event.rejected());
+    assert!(!event.soft_fail());
 }
 
 // ── Coverage: EventLike default methods + LeanEvent pl/ts ───────────
