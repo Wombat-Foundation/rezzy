@@ -224,6 +224,10 @@ pub(crate) fn iterative_auth_ok<
     version: StateResVersion,
     is_power_phase: bool,
 ) -> bool {
+    if ev.rejected || ev.soft_fail {
+        return false;
+    }
+
     let overlay = OverlayState {
         resolved,
         auth_context,
@@ -1146,12 +1150,14 @@ where
         }
     }
 
+    let mut pl_cache = HashMap::new();
     crate::resolve::iterative::resolve_iterative_sort_with_cache(
         unconflicted_state,
         conflicted_events,
         events_map,
         Some(global_auth_cache),
         version,
+        &mut pl_cache,
     )
 }
 
@@ -2124,7 +2130,66 @@ pub fn compute_state_at_streaming_optimized<Id, C, Q, S, F>(
     }
 }
 
+/// Computes the true forward extremities (DAG leaves) from a batched set of events.
+/// This uses `RoaringBitmap` set differences (`all_events - all_parents`) to
+/// instantly find the leaves of a DAG, no matter how deep.
+///
+/// # Arguments
+/// - `events`: An iterator yielding tuples of `(event_id, prev_event_ids)`.
+///
+/// # Returns
+/// A `Vec<Id>` of all events that are not referenced as a `prev_event` by any other event in the set.
+///
+/// # Panics
+/// Panics if the number of distinct event IDs exceeds `u32::MAX`.
+#[cfg(feature = "std")]
+pub fn find_forward_extremities_roaring<Id, I, P>(events: I) -> alloc::vec::Vec<Id>
+where
+    Id: core::hash::Hash + Eq + Clone,
+    I: IntoIterator<Item = (Id, P)>,
+    P: IntoIterator<Item = Id>,
+{
+    use roaring::RoaringBitmap;
+    let mut id_map = crate::HashMap::default();
+    let mut reverse_map = alloc::vec::Vec::new();
+
+    let get_or_insert = |id: Id,
+                         id_map: &mut crate::HashMap<Id, u32>,
+                         reverse_map: &mut alloc::vec::Vec<Id>|
+     -> u32 {
+        *id_map.entry(id).or_insert_with_key(|id| {
+            let idx = u32::try_from(reverse_map.len()).expect("event count exceeds u32");
+            reverse_map.push(id.clone());
+            idx
+        })
+    };
+
+    let mut all_events = RoaringBitmap::new();
+    let mut has_children = RoaringBitmap::new();
+
+    for (id, prevs) in events {
+        let idx = get_or_insert(id, &mut id_map, &mut reverse_map);
+        all_events.insert(idx);
+
+        for prev_id in prevs {
+            let prev_idx = get_or_insert(prev_id, &mut id_map, &mut reverse_map);
+            has_children.insert(prev_idx);
+        }
+    }
+
+    let extremities_bitmap = core::ops::Sub::sub(all_events, has_children);
+
+    let mut extremities =
+        alloc::vec::Vec::with_capacity(usize::try_from(extremities_bitmap.len()).unwrap());
+    for idx in extremities_bitmap {
+        extremities.push(reverse_map[idx as usize].clone());
+    }
+
+    extremities
+}
+
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::auth::StateProvider;
@@ -2132,6 +2197,7 @@ mod tests {
     use alloc::string::ToString;
     use alloc::vec;
     use serde_json::json;
+    use std::collections::BTreeSet;
 
     #[test]
     fn test_conflicted_auth_event_validation_in_power_phase() {
@@ -2430,6 +2496,43 @@ mod tests {
     /// Coverage: `LocalAuthCache` hit path (at.rs:263-268).
     /// Calls `compute_local_auth` twice for the same event. Second call returns
     /// from cache without re-walking the auth chain.
+    #[test]
+    fn test_find_forward_extremities_roaring_empty() {
+        let extremities = find_forward_extremities_roaring::<String, _, Vec<String>>(Vec::new());
+        assert!(extremities.is_empty());
+    }
+
+    #[test]
+    fn test_find_forward_extremities_roaring_leaf_detection() {
+        let extremities = find_forward_extremities_roaring(vec![
+            ("$a".to_string(), Vec::<String>::new()),
+            ("$b".to_string(), vec!["$a".to_string()]),
+            ("$c".to_string(), vec!["$a".to_string()]),
+            ("$d".to_string(), vec!["$b".to_string(), "$c".to_string()]),
+            ("$e".to_string(), vec!["$c".to_string()]),
+        ]);
+
+        let actual: BTreeSet<String> = extremities.into_iter().collect();
+        let expected: BTreeSet<String> = ["$d".to_string(), "$e".to_string()].into_iter().collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_find_forward_extremities_roaring_disconnected_and_chain() {
+        let extremities = find_forward_extremities_roaring(vec![
+            ("$root".to_string(), Vec::<String>::new()),
+            ("$mid".to_string(), vec!["$root".to_string()]),
+            ("$leaf".to_string(), vec!["$mid".to_string()]),
+            ("$isolated".to_string(), Vec::<String>::new()),
+        ]);
+
+        let actual: BTreeSet<String> = extremities.into_iter().collect();
+        let expected: BTreeSet<String> = ["$leaf".to_string(), "$isolated".to_string()]
+            .into_iter()
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
     #[test]
     fn test_local_auth_cache_hit() {
         let create_ev: LeanEvent = LeanEvent {

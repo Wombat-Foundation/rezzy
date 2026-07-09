@@ -18,31 +18,32 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use crate::HashMap;
-use crate::basespec::event_types::MAX_POWER_LEVEL_RUST;
-use crate::basespec::rezzy_types::{KahnSortResult, LeanEvent, SortPriority, StateResVersion};
+use crate::basespec::event_types::{M_ROOM_POWER_LEVELS, MAX_POWER_LEVEL_RUST};
+#[cfg(test)]
+use crate::basespec::rezzy_types::LeanEvent;
+use crate::basespec::rezzy_types::{EventLike, KahnSortResult, SortPriority, StateResVersion};
 
 /// Dynamically fetches the sender's power level by inspecting the event's immediate `auth_events`.
 /// Recursive traversal of the auth chain is avoided to prevent bypassing immediate restrictions.
-pub(crate) fn get_power_level_from_auth_chain<Id, C>(
-    event: &LeanEvent<Id, C>,
-    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
-    create_ev: Option<&LeanEvent<Id, C>>,
+pub(crate) fn get_power_level_from_auth_chain<Id, C, E>(
+    event: &E,
+    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    create_ev: Option<&E>,
     version: StateResVersion,
 ) -> i64
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
 {
     let mut pl_event = None;
 
     // Spec compliance: only check immediate auth_events.
-    for aid in &event.auth_events {
+    for aid in event.auth_events() {
         if let Some(aev) = auth_context.get_event(aid) {
-            if aev.event_type == "m.room.power_levels"
-                && aev.state_key.as_deref() == Some("")
-                && pl_event.is_none()
-            {
-                pl_event = Some(aev.clone());
+            if aev.event_type().as_ref() == M_ROOM_POWER_LEVELS && aev.state_key() == Some("") {
+                pl_event = Some(aev);
+                break;
             }
         }
     }
@@ -53,7 +54,7 @@ where
         StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
     ) {
         let is_creator = create_ev.is_some_and(|ev| {
-            ev.sender == event.sender || ev.content.has_additional_creator(&event.sender)
+            ev.sender() == event.sender() || ev.content().has_additional_creator(event.sender())
         });
         if is_creator {
             return MAX_POWER_LEVEL_RUST;
@@ -61,7 +62,7 @@ where
     }
 
     if let Some(pl_ev) = pl_event {
-        if let Some(pl) = pl_ev.get_user_power_level(&event.sender) {
+        if let Some(pl) = pl_ev.get_user_power_level(event.sender()) {
             return pl;
         }
 
@@ -74,20 +75,21 @@ where
     // No PL event in the auth chain — fall back to the pre-computed
     // power_level field. This handles the bootstrap PL event (which only
     // auths against $create) and simple unit-test events.
-    event.power_level
+    event.power_level()
 }
 
 /// Computes the shortest distance from the event to the m.room.create event via `auth_events`.
 /// Safely avoids stack overflow on deep DAGs using an iterative post-order traversal with memoization.
-pub(crate) fn compute_auth_distance_iterative<'a, Id, C>(
+pub(crate) fn compute_auth_distance_iterative<'a, Id, C, E>(
     curr_id: &'a Id,
-    auth_context: &'a impl crate::basespec::rezzy_types::EventProvider<Id, C>,
+    auth_context: &'a impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
     create_id: Option<&'a Id>,
     memo: &mut HashMap<&'a Id, u64>,
 ) -> u64
 where
     Id: crate::basespec::rezzy_types::EventId + 'a,
     C: 'a,
+    E: EventLike<Id = Id, Content = C> + 'a,
 {
     if Some(curr_id) == create_id {
         return 0;
@@ -115,8 +117,8 @@ where
         let mut min_dist = u64::MAX;
 
         if let Some(ev) = auth_context.get_event(top) {
-            if !ev.auth_events.is_empty() {
-                for aid in &ev.auth_events {
+            if !ev.auth_events().is_empty() {
+                for aid in ev.auth_events() {
                     if Some(aid) == create_id {
                         min_dist = min_dist.min(1);
                     } else if let Some(&c_dist) = memo.get(aid) {
@@ -150,23 +152,28 @@ where
 ///
 /// Will panic if graph invariants are violated during topological sorting (specifically, if
 /// the in-degree map lacks an entry for a child event during the queue processing phase).
-pub fn lean_kahn_sort_with_cycle_diagnostics<Id, C, S1>(
-    events: &HashMap<Id, LeanEvent<Id, C>, S1>,
-    sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
-    create_ev: Option<&LeanEvent<Id, C>>,
+#[allow(clippy::implicit_hasher)]
+pub fn lean_kahn_sort_with_cycle_diagnostics<Id, C, E, S1>(
+    events: &HashMap<Id, E, S1>,
+    sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    create_ev: Option<&E>,
     version: StateResVersion,
+    pl_cache: &mut HashMap<Id, i64>,
 ) -> KahnSortResult<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
     S1: core::hash::BuildHasher,
     C: Clone + crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
 {
+    pl_cache.clear();
+
     let mut in_degree: HashMap<Id, usize> = HashMap::new();
     let mut adjacency: HashMap<Id, Vec<Id>> = HashMap::new();
 
     for (id, event) in events {
         in_degree.entry(id.clone()).or_insert(0);
-        for auth in &event.auth_events {
+        for auth in event.auth_events() {
             if events.contains_key(auth) {
                 // Topological sort: ancestors come BEFORE descendants.
                 // But we want a REVERSE topological sort: descendants BEFORE ancestors.
@@ -180,19 +187,18 @@ where
 
     // Pre-compute power levels once per event to avoid redundant auth chain walks
     // inside the hot BinaryHeap push path.
-    let pl_cache: HashMap<Id, i64> = events
-        .iter()
-        .map(|(id, ev)| {
-            (
+    for (id, ev) in events {
+        if !pl_cache.contains_key(id) {
+            pl_cache.insert(
                 id.clone(),
                 get_power_level_from_auth_chain(ev, sort_context, create_ev, version),
-            )
-        })
-        .collect();
+            );
+        }
+    }
 
     let depth_cache: HashMap<Id, u64> = if version == StateResVersion::V2_2 {
         let mut memo = HashMap::new();
-        let create_id = create_ev.map(|e| &e.event_id);
+        let create_id = create_ev.map(super::super::basespec::rezzy_types::DagNode::event_id);
         events
             .keys()
             .map(|id| {
@@ -206,7 +212,7 @@ where
         HashMap::new()
     };
 
-    let mut queue: BinaryHeap<SortPriority<'_, Id, C>> = BinaryHeap::new();
+    let mut queue: BinaryHeap<SortPriority<'_, E>> = BinaryHeap::new();
     for (id, &degree) in &in_degree {
         if degree == 0 {
             if let Some(event) = events.get(id) {
@@ -224,8 +230,8 @@ where
     while let Some(priority) = queue.pop() {
         let event = priority.event;
 
-        result.push(event.event_id.clone());
-        if let Some(neighbors) = adjacency.get(&event.event_id) {
+        result.push(event.event_id().clone());
+        if let Some(neighbors) = adjacency.get(event.event_id()) {
             for next_id in neighbors {
                 let degree = in_degree.get_mut(next_id).unwrap();
                 *degree = degree.saturating_sub(1);
@@ -268,19 +274,23 @@ where
 /// in the cycle-breaking list of stuck nodes is missing from the input `events` map).
 // jscpd:ignore-start
 #[must_use]
-pub fn lean_kahn_sort<Id, C, S1>(
-    events: &HashMap<Id, LeanEvent<Id, C>, S1>,
-    sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
-    create_ev: Option<&LeanEvent<Id, C>>,
+#[allow(clippy::implicit_hasher)]
+pub fn lean_kahn_sort<Id, C, E, S1>(
+    events: &HashMap<Id, E, S1>,
+    sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    create_ev: Option<&E>,
     version: StateResVersion,
+    pl_cache: &mut HashMap<Id, i64>,
 ) -> Vec<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
     S1: core::hash::BuildHasher,
     C: Clone + crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
 {
     // jscpd:ignore-end
-    match lean_kahn_sort_with_cycle_diagnostics(events, sort_context, create_ev, version) {
+    match lean_kahn_sort_with_cycle_diagnostics(events, sort_context, create_ev, version, pl_cache)
+    {
         KahnSortResult::Ok(sorted) => sorted,
         KahnSortResult::CycleDetected {
             mut sorted,
@@ -292,8 +302,8 @@ where
                 let ev_a = events.get(a).unwrap();
                 let ev_b = events.get(b).unwrap();
                 // Standard tie-breaking fallback (origin_server_ts ascending, then event_id ascending)
-                ev_a.origin_server_ts
-                    .cmp(&ev_b.origin_server_ts)
+                ev_a.origin_server_ts()
+                    .cmp(&ev_b.origin_server_ts())
                     .then_with(|| a.cmp(b))
             });
             sorted.append(&mut stuck);
@@ -302,13 +312,14 @@ where
     }
 }
 
-pub(crate) fn build_mainline<Id, C>(
+pub(crate) fn build_mainline<Id, C, E>(
     resolved: &crate::state::at::SharedState<Id>,
-    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
+    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
 ) -> Vec<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
 {
     // TODO: Thread a persistent cache through callers that invoke build_mainline
     // repeatedly (e.g., the delta loop in compute_state_at, lattice fold checkpoints).
@@ -323,14 +334,15 @@ where
 /// Subsequent calls sharing the same cache skip BFS entirely for events
 /// already resolved, turning the mainline walk from `O(M × B)` (M = mainline
 /// length, B = auth chain breadth) to `O(M)` on cache hits.
-pub(crate) fn build_mainline_with_cache<Id, C>(
+pub(crate) fn build_mainline_with_cache<Id, C, E>(
     resolved: &crate::state::at::SharedState<Id>,
-    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
+    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
     pl_parent_cache: &mut HashMap<Id, Option<Id>>,
 ) -> Vec<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
 {
     use crate::basespec::event_types::{M_EMPTY_STATE_KEY, M_ROOM_POWER_LEVELS};
 
@@ -364,7 +376,7 @@ where
         let mut found = None;
         if let Some(ev) = auth_context.get_event(&eid) {
             let mut queue = VecDeque::new();
-            for auth_id in &ev.auth_events {
+            for auth_id in ev.auth_events() {
                 queue.push_back(auth_id.clone());
             }
             let mut visited = hashbrown::HashSet::new();
@@ -373,11 +385,11 @@ where
                     continue;
                 }
                 if let Some(auth_ev) = auth_context.get_event(&q_id) {
-                    if auth_ev.event_type == M_ROOM_POWER_LEVELS {
+                    if auth_ev.event_type().as_ref() == M_ROOM_POWER_LEVELS {
                         found = Some(q_id);
                         break;
                     }
-                    for aid in &auth_ev.auth_events {
+                    for aid in auth_ev.auth_events() {
                         queue.push_back(aid.clone());
                     }
                 }
@@ -396,14 +408,15 @@ where
 ///
 /// This entirely avoids `O(N)` cloning of the DAG, and prevents stack overflow
 /// by using an explicit stack to simulate recursion while memoizing distances.
-pub(crate) fn compute_closest_mainline_positions<Id, C>(
-    events: &mut [&LeanEvent<Id, C>],
+pub(crate) fn compute_closest_mainline_positions<Id, C, E>(
+    events: &mut [&E],
     mainline: &[Id],
-    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
+    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
 ) -> HashMap<Id, usize>
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
 {
     let mut memo = HashMap::new();
 
@@ -415,7 +428,7 @@ where
     let mut stack = Vec::new();
 
     for ev in events.iter() {
-        stack.push(&ev.event_id);
+        stack.push(ev.event_id());
 
         while let Some(&top) = stack.last() {
             if let Some(&val) = memo.get(top) {
@@ -431,7 +444,7 @@ where
             let mut min_pos = usize::MAX;
 
             if let Some(node) = auth_context.get_event(top) {
-                for aid in &node.auth_events {
+                for aid in node.auth_events() {
                     if let Some(&child_pos) = memo.get(aid) {
                         if child_pos != usize::MAX - 1 {
                             min_pos = min_pos.min(child_pos);
@@ -472,13 +485,14 @@ where
 ///
 /// Events closer to the current power-levels event are applied **last**
 /// and therefore win for same-key conflicts (last-write-wins).
-pub fn mainline_sort<Id, C>(
-    events: &mut [&LeanEvent<Id, C>],
+pub fn mainline_sort<Id, C, E>(
+    events: &mut [&E],
     mainline: &[Id],
-    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
+    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
 ) where
     Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
 {
     #[cfg(all(debug_assertions, not(test)))]
     std::eprintln!(
@@ -491,16 +505,16 @@ pub fn mainline_sort<Id, C>(
 
     events.sort_by(|a, b| {
         // Hopefully safe to unwrap. DFS guarantees all events are in `dist`.
-        let pos_a = dist[&a.event_id];
-        let pos_b = dist[&b.event_id];
+        let pos_a = dist[a.event_id()];
+        let pos_b = dist[b.event_id()];
 
         // Larger mainline position = farther from current PL = worse = comes first
         // (so it gets overwritten by closer events via last-write-wins)
         match pos_b.cmp(&pos_a) {
             Ordering::Equal => {
                 // Earlier timestamp comes first (later wins via last-write)
-                match a.origin_server_ts.cmp(&b.origin_server_ts) {
-                    Ordering::Equal => a.event_id.cmp(&b.event_id),
+                match a.origin_server_ts().cmp(&b.origin_server_ts()) {
+                    Ordering::Equal => a.event_id().cmp(b.event_id()),
                     ord => ord,
                 }
             }
@@ -510,6 +524,7 @@ pub fn mainline_sort<Id, C>(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use alloc::{string::String, vec::Vec};
@@ -674,6 +689,7 @@ mod tests {
         let sort_ctx = SortContext {
             primary: &primary,
             secondary: &secondary,
+            _marker: core::marker::PhantomData,
         };
 
         let mainline = alloc::vec!["pl0".into()];
@@ -724,6 +740,7 @@ mod tests {
         let sort_ctx = SortContext {
             primary: &primary,
             secondary: &secondary,
+            _marker: core::marker::PhantomData,
         };
 
         let mut memo = HashMap::new();
@@ -803,5 +820,93 @@ mod tests {
         // Second call: hits cache immediately for PL2 → skips BFS
         let ml2 = build_mainline_with_cache(&resolved, &ctx, &mut cache);
         assert_eq!(ml2, ml1, "cached mainline must match original");
+    }
+
+    #[test]
+    fn test_lean_kahn_sort_clears_reused_cache() {
+        let first = LeanEvent::<String> {
+            event_id: "$first".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            origin_server_ts: 1,
+            power_level: 10,
+            ..Default::default()
+        };
+        let second = LeanEvent::<String> {
+            event_id: "$second".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            origin_server_ts: 1,
+            power_level: 0,
+            ..Default::default()
+        };
+
+        let mut events = HashMap::new();
+        events.insert(first.event_id.clone(), first.clone());
+        events.insert(second.event_id.clone(), second.clone());
+
+        let mut cache = HashMap::new();
+
+        let first_sort = lean_kahn_sort(&events, &events, None, StateResVersion::V2, &mut cache);
+        assert_eq!(first_sort[0], "$first");
+
+        let mut mutated_events = events.clone();
+        mutated_events.get_mut("$first").unwrap().power_level = 0;
+        mutated_events.get_mut("$second").unwrap().power_level = 10;
+
+        let second_sort = lean_kahn_sort(
+            &mutated_events,
+            &mutated_events,
+            None,
+            StateResVersion::V2,
+            &mut cache,
+        );
+        assert_eq!(second_sort[0], "$second");
+    }
+
+    #[test]
+    fn test_lean_kahn_sort_accepts_borrowed_event_views() {
+        use crate::basespec::rezzy_types::LeanEventRef;
+
+        let pl = LeanEvent::<String> {
+            event_id: "$pl".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            power_level: 10,
+            ..Default::default()
+        };
+        let msg = LeanEvent::<String> {
+            event_id: "$msg".into(),
+            event_type: "m.room.message".into(),
+            sender: "@alice:x".into(),
+            auth_events: alloc::vec!["$pl".into()],
+            ..Default::default()
+        };
+
+        let pl_ref: LeanEventRef<'_, String> = pl.as_ref();
+        let msg_ref: LeanEventRef<'_, String> = msg.as_ref();
+
+        let mut events = HashMap::new();
+        events.insert(pl.event_id.clone(), pl_ref);
+        events.insert(msg.event_id.clone(), msg_ref);
+
+        let sorted = lean_kahn_sort(
+            &events,
+            &events,
+            None::<&LeanEventRef<'_, String>>,
+            StateResVersion::V2,
+            &mut HashMap::new(),
+        );
+
+        assert_eq!(
+            sorted,
+            alloc::vec![
+                alloc::string::String::from("$pl"),
+                alloc::string::String::from("$msg")
+            ]
+        );
     }
 }

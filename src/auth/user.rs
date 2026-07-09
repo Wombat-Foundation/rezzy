@@ -15,15 +15,15 @@ use super::StateProvider;
 use crate::basespec::event_types::{
     DEFAULT_PL_USER, M_ROOM_CREATE, M_ROOM_POWER_LEVELS, MAX_POWER_LEVEL_RUST,
 };
-use crate::basespec::rezzy_types::{EventContent, StateResVersion};
+use crate::basespec::rezzy_types::{EventContent, EventLike, StateResVersion};
 
 /// Get the effective power level of a user from the current room state.
 ///
 /// Handles V12+ implicit creator PL (`i64::MAX`) and falls back through
 /// the `users` map → `users_default` → `0`.
-pub fn get_sender_power_level<Id, C: EventContent>(
+pub fn get_sender_power_level<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
     sender: &str,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
 ) -> i64 {
     // V12+ (MSC4289): creators have spec-mandated infinite power level,
@@ -34,7 +34,7 @@ pub fn get_sender_power_level<Id, C: EventContent>(
     ) {
         if let Some(create_event) = state.get_event(M_ROOM_CREATE, "") {
             let is_creator =
-                create_event.sender == sender || create_event.has_additional_creator(sender);
+                create_event.sender() == sender || create_event.has_additional_creator(sender);
 
             if is_creator {
                 // Use i64::MAX (not 2^53-1) so the creator always wins power
@@ -65,9 +65,7 @@ pub fn get_sender_power_level<Id, C: EventContent>(
         // V1–V10 define the creator via `content.creator`; V11 deprecated that
         // field in favor of `sender`.  Falls back to `sender` if absent.
         // V12+ creators get `i64::MAX` via the path above and never reach here.
-        let creator = create_event
-            .get_creator()
-            .unwrap_or(create_event.sender.as_str());
+        let creator = create_event.get_creator().unwrap_or(create_event.sender());
         if creator == sender {
             return 100;
         }
@@ -80,9 +78,9 @@ pub fn get_sender_power_level<Id, C: EventContent>(
 /// **Threshold-only** — does not check target membership, sender≠target, or
 /// 3PI rules. Use [`check_auth`](super::check_auth) for full authorization.
 #[must_use]
-pub fn user_can_invite<Id, C: EventContent>(
+pub fn user_can_invite<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
     user: &str,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
 ) -> bool {
     get_sender_power_level(user, state, version) >= super::get_invite_power_level(state)
@@ -93,9 +91,9 @@ pub fn user_can_invite<Id, C: EventContent>(
 /// **Threshold-only** — does not check `sender_pl > target_pl`.
 /// Use [`check_auth`](super::check_auth) for full authorization.
 #[must_use]
-pub fn user_can_ban<Id, C: EventContent>(
+pub fn user_can_ban<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
     user: &str,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
 ) -> bool {
     get_sender_power_level(user, state, version) >= super::get_ban_power_level(state)
@@ -106,9 +104,9 @@ pub fn user_can_ban<Id, C: EventContent>(
 /// **Threshold-only** — does not check `sender_pl > target_pl`.
 /// Use [`check_auth`](super::check_auth) for full authorization.
 #[must_use]
-pub fn user_can_kick<Id, C: EventContent>(
+pub fn user_can_kick<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
     user: &str,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
 ) -> bool {
     get_sender_power_level(user, state, version) >= super::get_kick_power_level(state)
@@ -119,15 +117,16 @@ pub fn user_can_kick<Id, C: EventContent>(
 /// **Threshold-only** — does not check room version redaction rules or
 /// creator status. Use [`check_auth`](super::check_auth) for full authorization.
 #[must_use]
-pub fn user_can_redact<Id, C: EventContent>(
+pub fn user_can_redact<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
     user: &str,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
 ) -> bool {
     get_sender_power_level(user, state, version) >= super::get_redact_power_level(state)
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::basespec::rezzy_types::LeanEvent;

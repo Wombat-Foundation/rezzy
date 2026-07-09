@@ -62,6 +62,8 @@ fn test_compute_state_at_correctness_and_performance() {
 
         let u_i = u64::try_from(i).unwrap();
         let ev = LeanEvent {
+            rejected: false,
+            soft_fail: false,
             event_id: event_id.clone(),
             event_type,
             state_key,
@@ -162,6 +164,8 @@ fn test_compute_state_at_batch() {
 
         let u_i = u64::try_from(i).unwrap();
         let ev = LeanEvent {
+            rejected: false,
+            soft_fail: false,
             event_id: event_id.clone(),
             event_type,
             state_key,
@@ -245,6 +249,8 @@ fn test_streaming_correctness_with_branched_dag() {
         events_map.insert(
             format!("${i}"),
             LeanEvent {
+                rejected: false,
+                soft_fail: false,
                 event_id: format!("${i}"),
                 event_type,
                 state_key,
@@ -269,6 +275,8 @@ fn test_streaming_correctness_with_branched_dag() {
         events_map.insert(
             format!("${i}a"),
             LeanEvent {
+                rejected: false,
+                soft_fail: false,
                 event_id: format!("${i}a"),
                 event_type: "m.room.message".to_string(),
                 state_key: None,
@@ -293,6 +301,8 @@ fn test_streaming_correctness_with_branched_dag() {
         events_map.insert(
             format!("${i}b"),
             LeanEvent {
+                rejected: false,
+                soft_fail: false,
                 event_id: format!("${i}b"),
                 event_type: if i == 45 {
                     "m.room.member".to_string()
@@ -319,6 +329,8 @@ fn test_streaming_correctness_with_branched_dag() {
     events_map.insert(
         "$50".to_string(),
         LeanEvent {
+            rejected: false,
+            soft_fail: false,
             event_id: "$50".to_string(),
             event_type: "m.room.member".to_string(),
             state_key: Some("user_50".to_string()),

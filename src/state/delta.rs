@@ -482,6 +482,7 @@ pub fn reconstruct_state_batch<Id: crate::basespec::rezzy_types::EventId>(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     type StateMap = crate::state::at::SharedState<String>;

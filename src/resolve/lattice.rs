@@ -327,12 +327,15 @@ where
     C: crate::basespec::rezzy_types::EventContent + Sync + Send + Clone,
 {
     // jscpd:ignore-end
+    let mut pl_cache = HashMap::new();
+
     if version.is_v2_1_plus() {
         return crate::resolve::iterative::resolve_iterative_sort(
             unconflicted_state,
             conflicted_events,
             auth_context,
             version,
+            &mut pl_cache,
         );
     }
 
@@ -366,6 +369,7 @@ where
         version,
         &mut local_auth_cache,
         create_ev,
+        &mut pl_cache,
     );
 
     let sort_set = &conflicted_events;

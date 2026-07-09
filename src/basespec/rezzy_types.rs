@@ -72,7 +72,7 @@ impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Disp
 ///
 /// **Key invariant:** `users` in `m.room.power_levels` is preserved on redaction
 /// in ALL versions. Redaction alone cannot cause the PL wipeout vulnerability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 #[allow(non_camel_case_types)]
 pub enum StateResVersion {
@@ -240,7 +240,7 @@ impl<Id: EventId, C> DagNode for LeanEvent<Id, C> {
 /// # For downstream homeservers
 ///
 /// The recommended path is [`RawEvent`] + [`ParsedEvent`], which gives you
-/// `DagNode + EventLike` for free with ~9 one-liner field accessors.
+/// `DagNode + EventLike` for free with a small set of one-liner field accessors.
 ///
 /// If you need full control (e.g. typed content without JSON parsing),
 /// implement `EventLike` directly with a [`Content`](Self::Content) type
@@ -283,6 +283,16 @@ pub trait EventLike: DagNode {
 
     /// Access the event content (parsed or stored).
     fn content(&self) -> &Self::Content;
+
+    /// Whether this event was rejected by the homeserver.
+    fn rejected(&self) -> bool {
+        false
+    }
+
+    /// Whether this event was soft-failed by the homeserver.
+    fn soft_fail(&self) -> bool {
+        false
+    }
 
     // === Content accessors — default impls delegate to self.content() ===
 
@@ -403,6 +413,14 @@ impl<Id: EventId, C: EventContent> EventLike for LeanEvent<Id, C> {
     fn content(&self) -> &C {
         &self.content
     }
+
+    fn rejected(&self) -> bool {
+        self.rejected
+    }
+
+    fn soft_fail(&self) -> bool {
+        self.soft_fail
+    }
 }
 
 // ── RawEvent + ParsedEvent: zero-boilerplate adapter ────────────────
@@ -441,6 +459,8 @@ impl<Id: EventId, C: EventContent> EventLike for LeanEvent<Id, C> {
 ///     fn raw_auth_events(&self) -> &[OwnedEventId] { &self.auth_events }
 ///     fn raw_depth(&self) -> u64 { self.depth.into() }
 ///     fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts.into() }
+///     fn raw_rejected(&self) -> bool { self.rejected }
+///     fn raw_soft_fail(&self) -> bool { self.soft_fail }
 /// }
 ///
 /// // Usage — zero boilerplate, one JSON parse:
@@ -483,6 +503,12 @@ pub trait RawEvent {
     fn raw_power_level(&self) -> i64 {
         0
     }
+
+    /// Whether this event was rejected by the homeserver.
+    fn raw_rejected(&self) -> bool;
+
+    /// Whether this event was soft-failed by the homeserver.
+    fn raw_soft_fail(&self) -> bool;
 }
 
 /// Wraps a `&T` (where `T: RawEvent`) with a cached parsed
@@ -574,6 +600,14 @@ impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
     fn content(&self) -> &serde_json::Value {
         &self.content
     }
+
+    fn rejected(&self) -> bool {
+        self.raw.raw_rejected()
+    }
+
+    fn soft_fail(&self) -> bool {
+        self.raw.raw_soft_fail()
+    }
 }
 
 /// A lightweight Matrix event representation optimized for state resolution.
@@ -630,6 +664,128 @@ pub struct LeanEvent<Id = String, C = Value> {
     pub auth_events: Vec<Id>,
     /// DAG depth (distance from the root). Required for V1 sort ordering.
     pub depth: u64,
+    /// Whether this event was rejected by the homeserver (e.g., due to failing auth).
+    /// Rejected events are ignored during state resolution and will not be admitted to the resolved state.
+    /// TODO: Implement and test edge cases where rejected events might need special handling during outlier fetching or soft-fail resolution.
+    pub rejected: bool,
+    /// Whether this event was soft-failed.
+    /// TODO: Add dedicated test coverage for soft-failed events to ensure they are handled according to spec (especially vs rejected).
+    pub soft_fail: bool,
+}
+
+/// Borrowed view over a [`LeanEvent`] that avoids cloning event envelopes.
+///
+/// This is useful for host adapters that already own native event storage and
+/// want to expose event data to rezzy without materializing a fresh owned
+/// `LeanEvent` up front.
+#[derive(Debug, Clone, Copy)]
+pub struct LeanEventRef<'a, Id = String, C = Value> {
+    pub event_id: &'a Id,
+    pub event_type: &'a str,
+    pub state_key: Option<&'a str>,
+    pub power_level: i64,
+    pub origin_server_ts: u64,
+    pub sender: &'a str,
+    pub content: &'a C,
+    pub prev_events: &'a [Id],
+    pub auth_events: &'a [Id],
+    pub depth: u64,
+    pub rejected: bool,
+    pub soft_fail: bool,
+}
+
+impl<Id: EventId, C> LeanEventRef<'_, Id, C> {
+    /// Materializes an owned [`LeanEvent`] from this borrowed view.
+    #[must_use]
+    pub fn to_owned(&self) -> LeanEvent<Id, C>
+    where
+        Id: Clone,
+        C: Clone,
+    {
+        LeanEvent {
+            event_id: self.event_id.clone(),
+            event_type: String::from(self.event_type),
+            state_key: self.state_key.map(String::from),
+            power_level: self.power_level,
+            origin_server_ts: self.origin_server_ts,
+            sender: String::from(self.sender),
+            content: self.content.clone(),
+            prev_events: self.prev_events.to_vec(),
+            auth_events: self.auth_events.to_vec(),
+            depth: self.depth,
+            rejected: self.rejected,
+            soft_fail: self.soft_fail,
+        }
+    }
+}
+
+impl<Id, C> LeanEvent<Id, C> {
+    /// Returns a borrowed view of this event without cloning.
+    #[must_use]
+    pub fn as_ref(&self) -> LeanEventRef<'_, Id, C> {
+        LeanEventRef {
+            event_id: &self.event_id,
+            event_type: &self.event_type,
+            state_key: self.state_key.as_deref(),
+            power_level: self.power_level,
+            origin_server_ts: self.origin_server_ts,
+            sender: &self.sender,
+            content: &self.content,
+            prev_events: &self.prev_events,
+            auth_events: &self.auth_events,
+            depth: self.depth,
+            rejected: self.rejected,
+            soft_fail: self.soft_fail,
+        }
+    }
+}
+
+impl<Id: EventId, C: EventContent> DagNode for LeanEventRef<'_, Id, C> {
+    type Id = Id;
+
+    fn event_id(&self) -> &Id {
+        self.event_id
+    }
+    fn depth(&self) -> u64 {
+        self.depth
+    }
+    fn prev_events(&self) -> &[Id] {
+        self.prev_events
+    }
+    fn auth_events(&self) -> &[Id] {
+        self.auth_events
+    }
+}
+
+impl<Id: EventId, C: EventContent> EventLike for LeanEventRef<'_, Id, C> {
+    type Content = C;
+
+    fn event_type(&self) -> alloc::borrow::Cow<'_, str> {
+        alloc::borrow::Cow::Borrowed(self.event_type)
+    }
+    fn sender(&self) -> &str {
+        self.sender
+    }
+    fn state_key(&self) -> Option<&str> {
+        self.state_key
+    }
+    fn power_level(&self) -> i64 {
+        self.power_level
+    }
+    fn origin_server_ts(&self) -> u64 {
+        self.origin_server_ts
+    }
+    fn content(&self) -> &C {
+        self.content
+    }
+
+    fn rejected(&self) -> bool {
+        self.rejected
+    }
+
+    fn soft_fail(&self) -> bool {
+        self.soft_fail
+    }
 }
 
 impl<Id: serde::Serialize, C: serde::Serialize> serde::Serialize for LeanEvent<Id, C> {
@@ -639,10 +795,11 @@ impl<Id: serde::Serialize, C: serde::Serialize> serde::Serialize for LeanEvent<I
     {
         use crate::basespec::event_types::{
             FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
-            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_STATE_KEY, FIELD_TYPE,
+            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_REJECTED, FIELD_SENDER, FIELD_SOFT_FAIL,
+            FIELD_STATE_KEY, FIELD_TYPE,
         };
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("LeanEvent", 10)?;
+        let mut state = serializer.serialize_struct("LeanEvent", 12)?;
         state.serialize_field(FIELD_EVENT_ID, &self.event_id)?;
         state.serialize_field(FIELD_TYPE, &self.event_type)?;
         if let Some(ref sk) = self.state_key {
@@ -655,6 +812,8 @@ impl<Id: serde::Serialize, C: serde::Serialize> serde::Serialize for LeanEvent<I
         state.serialize_field(FIELD_PREV_EVENTS, &self.prev_events)?;
         state.serialize_field(FIELD_AUTH_EVENTS, &self.auth_events)?;
         state.serialize_field(FIELD_DEPTH, &self.depth)?;
+        state.serialize_field(FIELD_REJECTED, &self.rejected)?;
+        state.serialize_field(FIELD_SOFT_FAIL, &self.soft_fail)?;
         state.end()
     }
 }
@@ -1231,7 +1390,8 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
     {
         use crate::basespec::event_types::{
             FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
-            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_STATE_KEY, FIELD_TYPE,
+            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_REJECTED, FIELD_SENDER, FIELD_SOFT_FAIL,
+            FIELD_STATE_KEY, FIELD_TYPE,
         };
 
         let value = Value::deserialize(deserializer)?;
@@ -1335,6 +1495,18 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
 
+        let rejected = value
+            .get(FIELD_REJECTED)
+            .or_else(|| value.get("rejected"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+
+        let soft_fail = value
+            .get(FIELD_SOFT_FAIL)
+            .or_else(|| value.get("soft_fail"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+
         Ok(LeanEvent {
             event_id,
             event_type,
@@ -1346,6 +1518,8 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
             prev_events,
             auth_events,
             depth,
+            rejected,
+            soft_fail,
         })
     }
 }
@@ -1489,9 +1663,9 @@ impl<Id: Ord, C> LeanEvent<Id, C> {
 ///
 /// See the [`Ord`] implementation for the full tie-breaking cascade.
 #[derive(Debug)]
-pub struct SortPriority<'a, Id = String, C = Value> {
+pub struct SortPriority<'a, E = LeanEvent<String, Value>> {
     /// Reference to the event being sorted.
-    pub event: &'a LeanEvent<Id, C>,
+    pub event: &'a E,
     /// The sender's power level, derived from the auth chain (not `event.power_level`).
     pub power_level: i64,
     /// Shortest auth-chain distance to the `m.room.create` event (V2.2 only).
@@ -1500,26 +1674,28 @@ pub struct SortPriority<'a, Id = String, C = Value> {
     pub version: StateResVersion,
 }
 
-impl<Id, C> Clone for SortPriority<'_, Id, C> {
+impl<E> Clone for SortPriority<'_, E> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<Id, C> Copy for SortPriority<'_, Id, C> {}
+impl<E> Copy for SortPriority<'_, E> {}
 
-impl<Id: Eq, C> PartialEq for SortPriority<'_, Id, C> {
+impl<E: EventLike> PartialEq for SortPriority<'_, E> {
     fn eq(&self, other: &Self) -> bool {
-        self.power_level == other.power_level
-            && self.event.origin_server_ts == other.event.origin_server_ts
-            && self.event.event_id == other.event.event_id
+        self.cmp(other) == Ordering::Equal
     }
 }
 
-impl<Id: Eq, C> Eq for SortPriority<'_, Id, C> {}
+impl<E: EventLike> Eq for SortPriority<'_, E> {}
 
-impl<Id: Ord, C> Ord for SortPriority<'_, Id, C> {
+impl<E: EventLike> Ord for SortPriority<'_, E> {
     fn cmp(&self, other: &Self) -> Ordering {
+        if self.version != other.version {
+            return self.version.cmp(&other.version);
+        }
+
         match self.version {
             StateResVersion::V1 => {
                 // Matrix Spec - State Resolution v1:
@@ -1530,8 +1706,8 @@ impl<Id: Ord, C> Ord for SortPriority<'_, Id, C> {
                 // In Rust's Max-Heap BinaryHeap, "greater" elements are popped first.
                 // We want deeper events to pop FIRST, so they must be "greater".
                 // NOTE: This is a defense-in-depth vulnerability, which V2 fixes.
-                match self.event.depth.cmp(&other.event.depth) {
-                    Ordering::Equal => self.event.event_id.cmp(&other.event.event_id),
+                match self.event.depth().cmp(&other.event.depth()) {
+                    Ordering::Equal => self.event.event_id().cmp(other.event.event_id()),
                     ord => ord,
                 }
             }
@@ -1570,10 +1746,10 @@ impl<Id: Ord, C> Ord for SortPriority<'_, Id, C> {
 
                         match other
                             .event
-                            .origin_server_ts
-                            .cmp(&self.event.origin_server_ts)
+                            .origin_server_ts()
+                            .cmp(&self.event.origin_server_ts())
                         {
-                            Ordering::Equal => other.event.event_id.cmp(&self.event.event_id),
+                            Ordering::Equal => other.event.event_id().cmp(self.event.event_id()),
                             ord => ord,
                         }
                     }
@@ -1584,7 +1760,7 @@ impl<Id: Ord, C> Ord for SortPriority<'_, Id, C> {
     }
 }
 
-impl<Id: Ord, C> PartialOrd for SortPriority<'_, Id, C> {
+impl<E: EventLike> PartialOrd for SortPriority<'_, E> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
@@ -1617,36 +1793,42 @@ pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
 }
 
 /// Lookup trait for retrieving events by ID during sorting and auth checks.
-pub trait EventProvider<Id, C> {
-    fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>>;
+pub trait EventProvider<Id, C, E = LeanEvent<Id, C>> {
+    fn get_event(&self, id: &Id) -> Option<&E>;
 }
 
-impl<Id: core::hash::Hash + Eq, C, S: core::hash::BuildHasher> EventProvider<Id, C>
-    for crate::HashMap<Id, LeanEvent<Id, C>, S>
+impl<Id: core::hash::Hash + Eq, C, E: EventLike<Id = Id, Content = C>, S: core::hash::BuildHasher>
+    EventProvider<Id, C, E> for crate::HashMap<Id, E, S>
 {
-    fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>> {
+    fn get_event(&self, id: &Id) -> Option<&E> {
         self.get(id)
     }
 }
 
-impl<Id: core::hash::Hash + Eq + Ord, C> EventProvider<Id, C>
-    for alloc::collections::BTreeMap<Id, LeanEvent<Id, C>>
+impl<Id: core::hash::Hash + Eq + Ord, C, E: EventLike<Id = Id, Content = C>> EventProvider<Id, C, E>
+    for alloc::collections::BTreeMap<Id, E>
 {
-    fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>> {
+    fn get_event(&self, id: &Id) -> Option<&E> {
         self.get(id)
     }
 }
 
 /// Merged event lookup across the conflicted set and auth context.
-pub struct SortContext<'a, Id, C, S1, S2> {
-    pub primary: &'a crate::HashMap<Id, LeanEvent<Id, C>, S1>,
-    pub secondary: &'a crate::HashMap<Id, LeanEvent<Id, C>, S2>,
+pub struct SortContext<'a, Id, C, S1, S2, E = LeanEvent<Id, C>> {
+    pub primary: &'a crate::HashMap<Id, E, S1>,
+    pub secondary: &'a crate::HashMap<Id, E, S2>,
+    pub _marker: core::marker::PhantomData<C>,
 }
 
-impl<Id: core::hash::Hash + Eq, C, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>
-    EventProvider<Id, C> for SortContext<'_, Id, C, S1, S2>
+impl<
+    Id: core::hash::Hash + Eq,
+    C,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+    E: EventLike<Id = Id, Content = C>,
+> EventProvider<Id, C, E> for SortContext<'_, Id, C, S1, S2, E>
 {
-    fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>> {
+    fn get_event(&self, id: &Id) -> Option<&E> {
         self.primary.get(id).or_else(|| self.secondary.get(id))
     }
 }

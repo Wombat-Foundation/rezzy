@@ -47,12 +47,14 @@ fn test_pathology_duplicate_auth_poisoning() {
             conflicted_events.clone(),
             &auth_context,
             StateResVersion::V2_1,
+            &mut std::collections::HashMap::new(),
         );
         let _ = resolve_iterative_sort(
             utils::build_unconflicted_state_test_helper(&auth_context),
             conflicted_events.clone(),
             &auth_context,
             StateResVersion::V2_1_1,
+            &mut std::collections::HashMap::new(),
         );
     }
 
@@ -65,6 +67,7 @@ fn test_pathology_duplicate_auth_poisoning() {
             conflicted_events.clone(),
             &auth_context,
             StateResVersion::V2_1,
+            &mut std::collections::HashMap::new(),
         );
         let dur = start.elapsed();
         if dur < min_v21 {
@@ -81,6 +84,7 @@ fn test_pathology_duplicate_auth_poisoning() {
             conflicted_events.clone(),
             &auth_context,
             StateResVersion::V2_1_1,
+            &mut std::collections::HashMap::new(),
         );
         let dur = start.elapsed();
         if dur < min_v211 {
@@ -118,6 +122,7 @@ fn test_pathology_invite_lock() {
         conflicted_events.clone(),
         &auth_context,
         StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
     );
     let user_key = ("m.room.member".to_string(), "@user:B".to_string());
     assert!(
@@ -131,6 +136,7 @@ fn test_pathology_invite_lock() {
         conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
     );
     // In this specific DAG, V2.1.1 also drops the user because there's NO valid alternate path.
     // The test proves V2.1.1 strictly respects auth and doesn't hallucinate missing joins.

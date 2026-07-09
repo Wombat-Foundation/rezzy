@@ -366,6 +366,32 @@ mod tests {
         assert_eq!(p.cmp(&p2), Ordering::Equal);
     }
 
+    #[test]
+    fn test_sort_priority_cross_version_ordering_is_symmetric() {
+        let event: LeanEvent = LeanEvent {
+            event_id: "$a".into(),
+            depth: 1,
+            origin_server_ts: 1,
+            ..Default::default()
+        };
+        let p_v1 = SortPriority {
+            power_level: 0,
+            event: &event,
+            auth_chain_distance: 0,
+            version: rezzy::StateResVersion::V1,
+        };
+        let p_v2 = SortPriority {
+            power_level: 0,
+            event: &event,
+            auth_chain_distance: 0,
+            version: rezzy::StateResVersion::V2,
+        };
+
+        assert_ne!(p_v1, p_v2);
+        assert_eq!(p_v1.eq(&p_v2), p_v2.eq(&p_v1));
+        assert_eq!(p_v1.cmp(&p_v2), p_v2.cmp(&p_v1).reverse());
+    }
+
     /// `cmp_by_depth`: depth ascending, then `event_id` ascending.
     #[test]
     fn test_cmp_by_depth() {
@@ -420,6 +446,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V1,
+            &mut std::collections::HashMap::new(),
         );
         assert_eq!(sorted, vec!["A", "B"]);
     }
@@ -469,6 +496,7 @@ mod tests {
             conflicted.clone(),
             &conflicted,
             rezzy::StateResVersion::V2_1,
+            &mut std::collections::HashMap::new(),
         );
         assert_eq!(
             resolved.get(&("m.room.member".into(), "@alice:example.com".into())),
@@ -512,6 +540,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V1,
+            &mut std::collections::HashMap::new(),
         );
         assert_eq!(sorted, vec!["B", "A"]);
     }
@@ -570,8 +599,13 @@ mod tests {
         auth.insert("A".into(), ev_a);
         auth.insert("B".into(), ev_b);
 
-        let sorted =
-            rezzy::lean_kahn_sort(&events, &auth, Some(&create_ev), rezzy::StateResVersion::V2);
+        let sorted = rezzy::lean_kahn_sort(
+            &events,
+            &auth,
+            Some(&create_ev),
+            rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
+        );
         // B (lower PL=50) pops first (worst event first). A pops last, wins.
         assert_eq!(sorted, vec!["B", "A"]);
     }
@@ -612,6 +646,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
         );
         // Best (B, larger ID) comes LAST.
         assert_eq!(sorted, vec!["A", "B"]);
@@ -671,15 +706,26 @@ mod tests {
         auth.insert("A".into(), ev_a);
         auth.insert("B".into(), ev_b);
 
-        let sorted_v1 =
-            rezzy::lean_kahn_sort(&events, &auth, Some(&create_ev), rezzy::StateResVersion::V1);
-        let sorted_v2 =
-            rezzy::lean_kahn_sort(&events, &auth, Some(&create_ev), rezzy::StateResVersion::V2);
+        let sorted_v1 = rezzy::lean_kahn_sort(
+            &events,
+            &auth,
+            Some(&create_ev),
+            rezzy::StateResVersion::V1,
+            &mut std::collections::HashMap::new(),
+        );
+        let sorted_v2 = rezzy::lean_kahn_sort(
+            &events,
+            &auth,
+            Some(&create_ev),
+            rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
+        );
         let sorted_v2_1 = rezzy::lean_kahn_sort(
             &events,
             &auth,
             Some(&create_ev),
             rezzy::StateResVersion::V2_1,
+            &mut std::collections::HashMap::new(),
         );
         assert_eq!(sorted_v1, vec!["B", "A"]);
         // A (lower power level) pops FIRST in V2 and V2.1 — applied first, loses for same key.
@@ -723,6 +769,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
         );
         assert!(!sorted.is_empty());
         assert_eq!(sorted, vec!["A", "B"]);
@@ -872,6 +919,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
         );
         // 1 pops first (only one with in-degree 0).
         // Then 2 and 3 are in queue. 3 has earlier TS (15, worse) so it pops FIRST.
@@ -902,6 +950,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
         );
         assert_eq!(sorted, vec!["A"]);
     }
@@ -916,6 +965,7 @@ mod tests {
             conflicted.clone(),
             &conflicted,
             rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
         );
         assert_eq!(resolved, unconflicted);
     }
@@ -1060,6 +1110,7 @@ mod tests {
             conflicted,
             &auth_context,
             rezzy::StateResVersion::V2_1,
+            &mut std::collections::HashMap::new(),
         );
 
         assert_eq!(
@@ -1099,6 +1150,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             version,
+            &mut std::collections::HashMap::new(),
         );
         assert_eq!(
             result,
@@ -1159,6 +1211,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
         );
         let mut resolved_state = imbl::OrdMap::new();
         for id in sorted {
@@ -1261,6 +1314,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V1,
+            &mut std::collections::HashMap::new(),
         );
         assert_eq!(sorted, vec!["B", "A"]);
     }
@@ -1287,6 +1341,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
         );
         assert_eq!(sorted, vec!["1"]);
     }
@@ -1313,6 +1368,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2_1,
+            &mut std::collections::HashMap::new(),
         );
         assert_eq!(sorted, vec!["A"]);
     }
@@ -1353,6 +1409,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2_1,
+            &mut std::collections::HashMap::new(),
         );
         assert_eq!(sorted, vec!["$early", "$late"]);
 
@@ -1362,6 +1419,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
         );
         assert_eq!(sorted_v2, vec!["$early", "$late"]);
     }
@@ -1401,6 +1459,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
         );
         assert_eq!(sorted_v2, vec!["$ban_a", "$ban_b"]);
 
@@ -1409,6 +1468,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2_1,
+            &mut std::collections::HashMap::new(),
         );
         assert_eq!(sorted_v2_1, vec!["$ban_a", "$ban_b"]);
     }
@@ -1577,6 +1637,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
         );
         match result {
             KahnSortResult::CycleDetected { sorted, stuck } => {
@@ -1629,6 +1690,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
         );
         match result {
             KahnSortResult::CycleDetected { sorted, stuck } => {
@@ -1691,6 +1753,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
         );
         assert!(
             !sorted.is_empty(),
@@ -1757,6 +1820,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
         );
         assert_eq!(sorted.len(), 1000);
         // First element must be ev_0 (in-degree 0)
@@ -1934,6 +1998,8 @@ mod tests {
 
     fn default_test_event(id: &str, pl: i64, ts: u64, auth: Vec<&str>) -> LeanEvent {
         LeanEvent {
+            rejected: false,
+            soft_fail: false,
             event_id: id.into(),
             event_type: "m.room.message".into(), // not power
             state_key: None,
@@ -2020,6 +2086,7 @@ mod tests {
             &events,
             events.values().find(|ev| ev.event_type == "m.room.create"),
             rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
         );
         // All events have same PL=0 and ts=0, so tie-break is by event_id.
         // Smaller id pops first (loses). Sorted: $o (root), then $l < $n < $p in id order,
@@ -2593,8 +2660,13 @@ mod tests {
             "INITIAL_PL".into(),
         );
         // This will run kahn sort on power_events, detect a cycle, and print/handle it safely.
-        let resolved =
-            resolve_iterative_sort(unconflicted, conflicted, &auth, rezzy::StateResVersion::V2);
+        let resolved = resolve_iterative_sort(
+            unconflicted,
+            conflicted,
+            &auth,
+            rezzy::StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
+        );
         assert!(!resolved.is_empty());
         assert_eq!(
             &resolved[&("m.room.power_levels".into(), String::new())],
@@ -2762,6 +2834,7 @@ mod tests {
             conflicted_events,
             &auth_context,
             rezzy::StateResVersion::V2_1,
+            &mut std::collections::HashMap::new(),
         );
 
         // Assert that a power levels event is resolved, showing the ancestral PL event was correctly processed
@@ -3285,6 +3358,7 @@ fn test_sorting_coverage() {
         &auth,
         Some(&create_ev),
         rezzy::StateResVersion::V2_2,
+        &mut std::collections::HashMap::new(),
     );
 }
 
@@ -3321,8 +3395,13 @@ fn test_msc4289_sorting_v2_creator_gets_pl_100() {
     events.insert("bob_msg".into(), bob_ev);
 
     // Sort with V2 — creator gets PL 100
-    let result =
-        rezzy::lean_kahn_sort(&events, &auth, Some(&create_ev), rezzy::StateResVersion::V2);
+    let result = rezzy::lean_kahn_sort(
+        &events,
+        &auth,
+        Some(&create_ev),
+        rezzy::StateResVersion::V2,
+        &mut std::collections::HashMap::new(),
+    );
     // Creator alice should sort with higher power than bob (PL 0), meaning she comes LAST in the sorted list (since sorting is ascending)
     assert!(result.len() >= 2);
     let alice_pos = result.iter().position(|id| id == "alice_msg").unwrap();
@@ -3454,6 +3533,7 @@ fn test_resolve_iterative_sort_with_deltas_parity() {
         conflicted.clone(),
         &auth_context,
         StateResVersion::V2,
+        &mut std::collections::HashMap::new(),
     );
 
     // resolve_iterative_sort_with_deltas
@@ -3462,6 +3542,7 @@ fn test_resolve_iterative_sort_with_deltas_parity() {
         conflicted,
         &auth_context,
         StateResVersion::V2,
+        &mut std::collections::HashMap::new(),
     );
 
     // The resolved state must be identical
@@ -3556,6 +3637,7 @@ fn test_resolve_iterative_sort_with_deltas_no_duplicate_power_events() {
         conflicted,
         &auth_context,
         StateResVersion::V2,
+        &mut std::collections::HashMap::new(),
     );
 
     let power_deltas: Vec<_> = deltas
@@ -3620,6 +3702,7 @@ fn test_deltas_supplemental_power_event_from_auth_context() {
         conflicted,
         &auth_context,
         StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
     );
 
     // The PL slot must be resolved to one of the two conflicting PLs
@@ -3804,25 +3887,54 @@ fn test_lean_event_serialize_roundtrip() {
         event_id: "$test".into(),
         event_type: "m.room.message".into(),
         state_key: Some(String::new()),
+        power_level: 0,
         sender: "@alice:x.com".into(),
         origin_server_ts: 1_234_567_890,
         content: serde_json::json!({"body": "hello"}),
         prev_events: vec!["$prev".into()],
         auth_events: vec!["$auth".into()],
         depth: 5,
-        ..Default::default()
+        rejected: true,
+        soft_fail: true,
     };
     let json = serde_json::to_string(&ev).unwrap();
     let back: LeanEvent<String> = serde_json::from_str(&json).unwrap();
     assert_eq!(ev.event_id, back.event_id);
     assert_eq!(ev.event_type, back.event_type);
     assert_eq!(ev.state_key, back.state_key);
+    assert_eq!(ev.power_level, back.power_level);
     assert_eq!(ev.sender, back.sender);
     assert_eq!(ev.origin_server_ts, back.origin_server_ts);
     assert_eq!(ev.depth, back.depth);
     assert_eq!(ev.content, back.content);
     assert_eq!(ev.prev_events, back.prev_events);
     assert_eq!(ev.auth_events, back.auth_events);
+    assert_eq!(ev.rejected, back.rejected);
+    assert_eq!(ev.soft_fail, back.soft_fail);
+}
+
+#[test]
+fn test_lean_event_deserialize_accepts_legacy_rejection_flags() {
+    let ev: LeanEvent<String> = serde_json::from_str(
+        r#"{
+            "event_id": "$test",
+            "type": "m.room.message",
+            "state_key": "",
+            "power_level": 0,
+            "sender": "@alice:x.com",
+            "origin_server_ts": 1234567890,
+            "content": {"body": "hello"},
+            "prev_events": ["$prev"],
+            "auth_events": ["$auth"],
+            "depth": 5,
+            "rejected": true,
+            "soft_fail": true
+        }"#,
+    )
+    .unwrap();
+
+    assert!(ev.rejected);
+    assert!(ev.soft_fail);
 }
 
 #[test]
@@ -4023,6 +4135,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
         conflicted.clone(),
         &auth_context,
         StateResVersion::V2,
+        &mut std::collections::HashMap::new(),
     );
 
     // Resolve with V2.1
@@ -4031,6 +4144,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
         conflicted,
         &auth_context,
         StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
     );
 
     // V2: unconflicted alice=leave → alice's $jr_invite fails auth → $jr_public wins
@@ -4289,6 +4403,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         HashMap::<String, LeanEvent<String>>::new(),
         &HashMap::<String, LeanEvent<String>>::new(),
         StateResVersion::V1,
+        &mut std::collections::HashMap::new(),
     );
     assert_eq!(v1_resolved.len(), 1);
 
@@ -4392,6 +4507,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         conflicted.clone(),
         &auth,
         StateResVersion::V2,
+        &mut std::collections::HashMap::new(),
     );
 
     assert!(!resolved.contains_key(&("m.room.power_levels".into(), String::new())));
@@ -4461,6 +4577,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         &HashMap::new(),
         None,
         StateResVersion::V2,
+        &mut std::collections::HashMap::new(),
     );
     assert_eq!(sorted_cyclic.len(), 2);
 }
@@ -4478,6 +4595,8 @@ struct TestRawEvent {
     auth_events: Vec<String>,
     depth: u64,
     origin_server_ts: u64,
+    rejected: bool,
+    soft_fail: bool,
 }
 
 impl rezzy::RawEvent for TestRawEvent {
@@ -4509,6 +4628,12 @@ impl rezzy::RawEvent for TestRawEvent {
     fn raw_origin_server_ts(&self) -> u64 {
         self.origin_server_ts
     }
+    fn raw_rejected(&self) -> bool {
+        self.rejected
+    }
+    fn raw_soft_fail(&self) -> bool {
+        self.soft_fail
+    }
     // raw_power_level uses the default impl (returns 0) — exercises line 463-465
 }
 
@@ -4518,7 +4643,7 @@ impl rezzy::RawEvent for TestRawEvent {
 fn test_parsed_event_full_coverage() {
     use rezzy::basespec::rezzy_types::{DagNode, EventLike};
 
-    let _raw = TestRawEvent {
+    let raw = TestRawEvent {
         id: "$test1".into(),
         event_type: "m.room.member".into(),
         sender: "@alice:x".into(),
@@ -4528,7 +4653,12 @@ fn test_parsed_event_full_coverage() {
         auth_events: vec!["$auth1".into(), "$auth2".into()],
         depth: 42,
         origin_server_ts: 1_700_000_000,
+        rejected: false,
+        soft_fail: false,
     };
+    let parsed_default_flags = rezzy::ParsedEvent::new(&raw);
+    assert!(!parsed_default_flags.rejected());
+    assert!(!parsed_default_flags.soft_fail());
 
     // ParsedEvent::new (line 502-508)
     // Use a PL-like event so we can test all EventLike default methods
@@ -4553,6 +4683,8 @@ fn test_parsed_event_full_coverage() {
         auth_events: vec!["$auth1".into(), "$auth2".into()],
         depth: 42,
         origin_server_ts: 1_700_000_000,
+        rejected: true,
+        soft_fail: true,
     };
     let parsed = rezzy::ParsedEvent::new(&raw_pl);
 
@@ -4568,6 +4700,8 @@ fn test_parsed_event_full_coverage() {
     assert_eq!(parsed.state_key(), Some(""));
     assert_eq!(parsed.power_level(), 0); // raw_power_level default
     assert_eq!(parsed.origin_server_ts(), 1_700_000_000);
+    assert!(parsed.rejected());
+    assert!(parsed.soft_fail());
 
     // EventLike DEFAULT methods (lines 279-337) — no inherent shadowing on ParsedEvent
     assert_eq!(parsed.get_membership(), Some("join"));
@@ -4606,6 +4740,8 @@ fn test_parsed_event_try_new() {
         auth_events: vec![],
         depth: 1,
         origin_server_ts: 0,
+        rejected: false,
+        soft_fail: false,
     };
     assert!(rezzy::ParsedEvent::try_new(&valid).is_ok());
 
@@ -4619,6 +4755,8 @@ fn test_parsed_event_try_new() {
         auth_events: vec![],
         depth: 1,
         origin_server_ts: 0,
+        rejected: false,
+        soft_fail: false,
     };
     assert!(rezzy::ParsedEvent::try_new(&invalid).is_err());
 }
@@ -4731,6 +4869,144 @@ fn test_lean_event_get_join_authorised_via_users_server() {
         ..event.clone()
     };
     assert_eq!(without.get_join_authorised_via_users_server(), None);
+}
+
+#[test]
+fn test_lean_event_borrowed_view_roundtrip() {
+    let event = LeanEvent::<String> {
+        event_id: "$test".into(),
+        event_type: "m.room.message".into(),
+        state_key: Some(String::new()),
+        power_level: 42,
+        origin_server_ts: 1_234_567_890,
+        sender: "@alice:x.com".into(),
+        content: serde_json::json!({"body": "hello"}),
+        prev_events: vec!["$prev".into()],
+        auth_events: vec!["$auth".into()],
+        depth: 5,
+        rejected: true,
+        soft_fail: false,
+    };
+
+    let view = event.as_ref();
+    assert_eq!(view.event_id, &event.event_id);
+    assert_eq!(view.event_type, event.event_type);
+    assert_eq!(view.state_key, event.state_key.as_deref());
+    assert_eq!(view.power_level, event.power_level);
+    assert_eq!(view.origin_server_ts, event.origin_server_ts);
+    assert_eq!(view.sender, event.sender);
+    assert_eq!(view.content, &event.content);
+    assert_eq!(view.prev_events, event.prev_events.as_slice());
+    assert_eq!(view.auth_events, event.auth_events.as_slice());
+    assert_eq!(view.depth, event.depth);
+    assert_eq!(view.rejected, event.rejected);
+    assert_eq!(view.soft_fail, event.soft_fail);
+
+    let owned = view.to_owned();
+    assert_eq!(owned.event_id, event.event_id);
+    assert_eq!(owned.event_type, event.event_type);
+    assert_eq!(owned.state_key, event.state_key);
+    assert_eq!(owned.power_level, event.power_level);
+    assert_eq!(owned.origin_server_ts, event.origin_server_ts);
+    assert_eq!(owned.sender, event.sender);
+    assert_eq!(owned.content, event.content);
+    assert_eq!(owned.prev_events, event.prev_events);
+    assert_eq!(owned.auth_events, event.auth_events);
+    assert_eq!(owned.depth, event.depth);
+    assert_eq!(owned.rejected, event.rejected);
+    assert_eq!(owned.soft_fail, event.soft_fail);
+}
+
+#[test]
+fn test_lean_event_borrowed_view_accessors() {
+    use rezzy::basespec::rezzy_types::{DagNode, EventLike};
+
+    let event = LeanEvent::<String> {
+        event_id: "$test".into(),
+        event_type: "m.room.message".into(),
+        state_key: Some(String::new()),
+        power_level: 7,
+        origin_server_ts: 1_234_567_890,
+        sender: "@alice:x.com".into(),
+        content: serde_json::json!({"body": "hello"}),
+        prev_events: vec!["$prev".into()],
+        auth_events: vec!["$auth".into()],
+        depth: 5,
+        rejected: true,
+        soft_fail: false,
+    };
+
+    let view = event.as_ref();
+    assert_eq!(view.event_id(), &event.event_id);
+    assert_eq!(view.depth(), event.depth);
+    assert_eq!(view.prev_events(), event.prev_events.as_slice());
+    assert_eq!(view.auth_events(), event.auth_events.as_slice());
+    assert_eq!(view.event_type().as_ref(), event.event_type);
+    assert_eq!(view.sender(), event.sender);
+    assert_eq!(view.state_key(), event.state_key.as_deref());
+    assert_eq!(view.power_level(), event.power_level);
+    assert_eq!(view.origin_server_ts(), event.origin_server_ts);
+    assert_eq!(view.content(), &event.content);
+    assert_eq!(view.rejected(), event.rejected);
+    assert_eq!(view.soft_fail(), event.soft_fail);
+}
+
+#[test]
+fn test_event_like_default_rejection_flags() {
+    use rezzy::basespec::rezzy_types::{DagNode, EventLike};
+
+    struct MinimalEventLike {
+        id: String,
+        content: serde_json::Value,
+    }
+
+    impl DagNode for MinimalEventLike {
+        type Id = String;
+
+        fn event_id(&self) -> &String {
+            &self.id
+        }
+        fn depth(&self) -> u64 {
+            0
+        }
+        fn prev_events(&self) -> &[String] {
+            &[]
+        }
+        fn auth_events(&self) -> &[String] {
+            &[]
+        }
+    }
+
+    impl EventLike for MinimalEventLike {
+        type Content = serde_json::Value;
+
+        fn event_type(&self) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed("m.room.message")
+        }
+        fn sender(&self) -> &'static str {
+            "@alice:x"
+        }
+        fn state_key(&self) -> Option<&str> {
+            None
+        }
+        fn power_level(&self) -> i64 {
+            0
+        }
+        fn origin_server_ts(&self) -> u64 {
+            0
+        }
+        fn content(&self) -> &serde_json::Value {
+            &self.content
+        }
+    }
+
+    let event = MinimalEventLike {
+        id: "$default-flags".into(),
+        content: serde_json::json!({}),
+    };
+
+    assert!(!event.rejected());
+    assert!(!event.soft_fail());
 }
 
 // ── Coverage: EventLike default methods + LeanEvent pl/ts ───────────
@@ -4876,6 +5152,7 @@ fn test_local_auth_cache_version_invalidation() {
         &auth_context,
         Some(&mut cache),
         StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
     );
     assert_eq!(cache.version, StateResVersion::V2_1);
     assert!(!cache.map.contains_key("stale_key"));
@@ -4893,6 +5170,7 @@ fn test_local_auth_cache_version_invalidation() {
         &auth_context,
         Some(&mut cache2),
         StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
     );
     assert_eq!(cache2.version, StateResVersion::V2_1);
     assert!(!cache2.map.contains_key("stale2"));
@@ -5268,6 +5546,7 @@ fn test_msc4297_problem_b_resolve_state_maps_parity() {
         conflicted_events,
         &events_map,
         rezzy::StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
     );
 
     // The decisive assertion: both paths must produce identical results
@@ -5580,6 +5859,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
         conflicted_events.clone(),
         &events_map,
         rezzy::StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
     );
     assert_eq!(
         resolved_v2_1, resolved_manual,
@@ -5591,6 +5871,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
         conflicted_events,
         &events_map,
         rezzy::StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
     );
     assert_eq!(
         resolved_v2_1_1, resolved_manual_v2_1_1,

@@ -162,16 +162,16 @@ impl Ord for dyn StateKeyDyn + '_ {
 /// The built-in implementation is [`RoomState`] (a `BTreeMap`), but the
 /// resolution engine uses a more complex `OverlayState` internally
 /// that layers resolved state, local auth context, and the create event.
-pub trait StateProvider<Id = String, C = serde_json::Value> {
+pub trait StateProvider<Id = String, C = serde_json::Value, E = LeanEvent<Id, C>> {
     /// Look up a state event by its type and state key.
-    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C>>;
+    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&E>;
 }
 
 /// The room state at a specific point in the DAG (keyed by (type, `state_key`) -> event).
 pub type RoomState<Id = String, C = serde_json::Value> =
     alloc::collections::BTreeMap<(String, String), LeanEvent<Id, C>>;
 
-impl<Id, C> StateProvider<Id, C> for RoomState<Id, C> {
+impl<Id, C> StateProvider<Id, C, LeanEvent<Id, C>> for RoomState<Id, C> {
     fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C>> {
         let query: &dyn StateKeyDyn = &(event_type, state_key);
         self.get(query)
@@ -187,11 +187,12 @@ impl<Id, C> StateProvider<Id, C> for RoomState<Id, C> {
 /// Returns [`AuthError::MissingCreate`] if the `m.room.create` event is not
 /// present in the provided state. This can happen during state resolution
 /// when walking DAG forks.
-fn get_room_version_num<Id, C, S>(state: &S) -> Result<u32, AuthError<Id>>
+fn get_room_version_num<Id, C, E, S>(state: &S) -> Result<u32, AuthError<Id>>
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    S: StateProvider<Id, C>,
+    E: EventLike<Id = Id, Content = C>,
+    S: StateProvider<Id, C, E>,
 {
     let Some(create) = state.get_event(M_ROOM_CREATE, "") else {
         return Err(AuthError::MissingCreate);
@@ -201,6 +202,71 @@ where
         .get_room_version()
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(1)) // V1 rooms didn't have a room_version field
+}
+
+fn reject_if_flagged_auth_state<
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    state: &impl StateProvider<Id, C, E>,
+    event_type: &str,
+    state_key: &str,
+) -> Result<(), AuthError<Id>> {
+    if state
+        .get_event(event_type, state_key)
+        .is_some_and(|ev| ev.rejected() || ev.soft_fail())
+    {
+        return Err(AuthError::InvalidSyntax(alloc::format!(
+            "rejected or soft-failed auth state event {event_type}/{state_key} must not be used"
+        )));
+    }
+    Ok(())
+}
+
+fn reject_flagged_auth_state<
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    event: &E,
+    state: &impl StateProvider<Id, C, E>,
+) -> Result<(), AuthError<Id>> {
+    reject_if_flagged_auth_state(state, M_ROOM_CREATE, "")?;
+    reject_if_flagged_auth_state(state, M_ROOM_POWER_LEVELS, "")?;
+    reject_if_flagged_auth_state(state, M_ROOM_MEMBER, event.sender())?;
+
+    if let Some(target_user) = event
+        .state_key()
+        .filter(|_| event.event_type() == M_ROOM_MEMBER)
+    {
+        reject_if_flagged_auth_state(state, M_ROOM_MEMBER, target_user)?;
+    }
+    let event_type = event.event_type();
+    let membership = event.get_membership();
+
+    if event_type == M_ROOM_MEMBER && matches!(membership, Some(MEM_JOIN | MEM_INVITE | MEM_KNOCK))
+    {
+        reject_if_flagged_auth_state(state, M_ROOM_JOIN_RULES, "")?;
+    }
+    if event_type == M_ROOM_MEMBER
+        && membership == Some(MEM_JOIN)
+        && let Some(authorising_user) = event.get_join_authorised_via_users_server()
+    {
+        reject_if_flagged_auth_state(state, M_ROOM_MEMBER, authorising_user)?;
+    }
+    if event_type == M_ROOM_MEMBER
+        && membership == Some(MEM_INVITE)
+        && let Some(token) = event.get_third_party_invite_token()
+    {
+        reject_if_flagged_auth_state(
+            state,
+            crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE,
+            token,
+        )?;
+    }
+
+    Ok(())
 }
 
 /// The result of validating a new forward extremity event.
@@ -228,8 +294,8 @@ pub fn validate_forward_extremity<
     E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    auth_events_state: &impl StateProvider<Id, C>,
-    current_room_state: &impl StateProvider<Id, C>,
+    auth_events_state: &impl StateProvider<Id, C, E>,
+    current_room_state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
     verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
 ) -> ForwardExtremityResult<Id> {
@@ -263,7 +329,7 @@ pub fn check_auth<
     E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
     verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
 ) -> Result<(), AuthError<Id>> {
@@ -289,6 +355,13 @@ pub fn check_auth<
             "event_type cannot be empty".into(),
         ));
     }
+
+    if event.rejected() || event.soft_fail() {
+        return Err(AuthError::InvalidSyntax(
+            "rejected or soft-failed events must not be auth-checked".into(),
+        ));
+    }
+    reject_flagged_auth_state(event, state)?;
 
     // Optional verification pipeline (steps 1-3).
     // Callers pass None during state resolution; Some during PDU receipt.
@@ -669,8 +742,12 @@ fn check_scalar_pl<Id>(
 pub use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_POWER_LEVEL_RUST};
 
 /// Get the redact power level from room state.
-pub(crate) fn get_redact_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
-    state: &impl StateProvider<Id, C>,
+pub(crate) fn get_redact_power_level<
+    Id,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    state: &impl StateProvider<Id, C, E>,
 ) -> i64 {
     // TODO: call chain nested statement. define FIELD_EMPTY_STRING
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
@@ -685,10 +762,11 @@ pub(crate) fn get_redact_power_level<Id, C: crate::basespec::rezzy_types::EventC
 fn get_required_power_level<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event_type: &str,
     state_key: Option<&str>,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         // Spec Rule 7: m.room.third_party_invite events require the invite level
@@ -720,10 +798,10 @@ fn get_required_power_level<
 fn check_leave_rules<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     target_user: &str,
     current_membership: &str,
     version: StateResVersion,
@@ -765,10 +843,10 @@ fn check_leave_rules<
 fn check_ban_rules<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     // Banning requires the ban power level
@@ -788,10 +866,10 @@ fn check_ban_rules<
 fn check_invite_rules<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     target_user: &str,
     current_membership: &str,
     version: StateResVersion,
@@ -909,10 +987,10 @@ fn check_invite_rules<
 fn check_membership_pl_hierarchies<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     target_user: &str,
     new_membership: &str,
     version: StateResVersion,
@@ -943,10 +1021,10 @@ fn check_membership_pl_hierarchies<
 fn check_membership_rules<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
     verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
 ) -> Result<(), AuthError<Id>> {
@@ -1003,10 +1081,10 @@ fn check_membership_rules<
 fn check_join_rules<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     target_user: &str,
     version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
@@ -1083,10 +1161,10 @@ fn check_join_rules<
 fn check_authorising_user<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     authorising_user: &str,
     version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
@@ -1119,10 +1197,10 @@ fn check_authorising_user<
 fn check_knock_rules<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     target_user: &str,
 ) -> Result<(), AuthError<Id>> {
     // A user can only knock as themselves.
@@ -1171,8 +1249,12 @@ fn check_knock_rules<
 }
 
 /// Get the kick power level from room state.
-pub(crate) fn get_kick_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
-    state: &impl StateProvider<Id, C>,
+pub(crate) fn get_kick_power_level<
+    Id,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    state: &impl StateProvider<Id, C, E>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         if let Some(kick) = pl_event.get_kick() {
@@ -1183,8 +1265,12 @@ pub(crate) fn get_kick_power_level<Id, C: crate::basespec::rezzy_types::EventCon
 }
 
 /// Get the ban power level from room state.
-pub(crate) fn get_invite_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
-    state: &impl StateProvider<Id, C>,
+pub(crate) fn get_invite_power_level<
+    Id,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    state: &impl StateProvider<Id, C, E>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         if let Some(invite) = pl_event.get_invite() {
@@ -1194,8 +1280,12 @@ pub(crate) fn get_invite_power_level<Id, C: crate::basespec::rezzy_types::EventC
     DEFAULT_PL_INVITE // Default invite power level per Matrix spec
 }
 
-pub(crate) fn get_ban_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
-    state: &impl StateProvider<Id, C>,
+pub(crate) fn get_ban_power_level<
+    Id,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    state: &impl StateProvider<Id, C, E>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         if let Some(ban) = pl_event.get_ban() {
@@ -1357,6 +1447,7 @@ pub fn auth_types_for_event(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -1503,6 +1594,65 @@ mod tests {
         assert!(
             matches!(result, Err(AuthError::BannedUser { .. })),
             "Must reject join from banned user: {result:?}"
+        );
+    }
+
+    /// Coverage: `reject_flagged_auth_state` - invite must reject flagged `m.room.join_rules`.
+    #[test]
+    fn test_invite_rejects_flagged_join_rules() {
+        let invite_event: LeanEvent<String> = LeanEvent {
+            event_id: "$invite".into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some("@target:x".into()),
+            sender: "@sender:x".into(),
+            content: json!({"membership": "invite"}),
+            ..Default::default()
+        };
+
+        let mut state = RoomState::new();
+        state.insert(
+            (M_ROOM_CREATE.into(), String::new()),
+            make_test_event("$create", M_ROOM_CREATE, "@creator:x", json!({})),
+        );
+        state.insert(
+            (M_ROOM_POWER_LEVELS.into(), String::new()),
+            make_test_event("$pl", M_ROOM_POWER_LEVELS, "@creator:x", json!({})),
+        );
+        state.insert(
+            (M_ROOM_MEMBER.into(), "@sender:x".into()),
+            make_test_event(
+                "$sender_join",
+                M_ROOM_MEMBER,
+                "@sender:x",
+                json!({"membership": "join"}),
+            ),
+        );
+        state.insert(
+            (M_ROOM_MEMBER.into(), "@target:x".into()),
+            make_test_event(
+                "$target_leave",
+                M_ROOM_MEMBER,
+                "@target:x",
+                json!({"membership": "leave"}),
+            ),
+        );
+        state.insert(
+            (M_ROOM_JOIN_RULES.into(), String::new()),
+            LeanEvent {
+                event_id: "$jr".into(),
+                event_type: M_ROOM_JOIN_RULES.into(),
+                sender: "@creator:x".into(),
+                content: json!({"join_rule": "invite"}),
+                rejected: false,
+                soft_fail: true,
+                ..Default::default()
+            },
+        );
+
+        let result = reject_flagged_auth_state(&invite_event, &state);
+        assert!(
+            matches!(result, Err(AuthError::InvalidSyntax(_))),
+            "Invite must reject flagged join_rules auth state: {result:?}"
         );
     }
 }

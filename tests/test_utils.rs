@@ -27,6 +27,19 @@ fn test_jsonl_parser_utility() {
 }
 
 #[test]
+fn test_jsonl_parser_preserves_rejection_flags() {
+    let events = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$msg", "type": "m.room.message", "sender": "@bob:matrix.org", "rejected": true, "soft_fail": true}
+    "#,
+    );
+
+    assert_eq!(events.len(), 1);
+    assert!(events[0].rejected);
+    assert!(events[0].soft_fail);
+}
+
+#[test]
 fn test_jsonl_asserters() {
     let state = utils::parse_jsonl_state(
         r#"

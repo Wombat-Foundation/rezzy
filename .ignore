@@ -1,1 +1,6 @@
 res/
+target/
+.tmp/
+.coverage/
+tests/resolve/
+tests/critique_data/

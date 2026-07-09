@@ -64,6 +64,154 @@ fn test_self_ban_rejected() {
 }
 
 #[test]
+fn test_flagged_events_are_not_auth_checked() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$create",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:example.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@alice:example.com".into()),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@alice:example.com"),
+            "@alice:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let mut rejected = make_event(
+        "$rejected",
+        "m.room.message",
+        None,
+        "@alice:example.com",
+        json!({"body": "hello"}),
+    );
+    rejected.rejected = true;
+
+    let mut soft_fail = make_event(
+        "$soft_fail",
+        "m.room.message",
+        None,
+        "@alice:example.com",
+        json!({"body": "hello"}),
+    );
+    soft_fail.soft_fail = true;
+
+    for event in [&rejected, &soft_fail] {
+        assert!(
+            matches!(
+                check_auth(event, &state, StateResVersion::V2_1, None),
+                Err(AuthError::InvalidSyntax(reason)) if reason.contains("rejected or soft-failed")
+            ),
+            "flagged events must not be auth-checked"
+        );
+    }
+}
+
+#[test]
+fn test_flagged_auth_state_is_not_used() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$create",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:example.com",
+            json!({}),
+        ),
+    );
+
+    let mut flagged_join = make_event(
+        "$join",
+        "m.room.member",
+        Some("@alice:example.com"),
+        "@alice:example.com",
+        json!({"membership": "join"}),
+    );
+    flagged_join.rejected = true;
+    state.insert(
+        ("m.room.member".into(), "@alice:example.com".into()),
+        flagged_join,
+    );
+
+    let event = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:example.com",
+        json!({"body": "hello"}),
+    );
+
+    assert!(
+        matches!(
+            check_auth(&event, &state, StateResVersion::V2_1, None),
+            Err(AuthError::InvalidSyntax(reason)) if reason.contains("auth state event")
+        ),
+        "flagged auth state must not authorize later events"
+    );
+}
+
+#[test]
+fn test_flagged_join_rules_do_not_block_unrelated_events() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$create",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:example.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@alice:example.com".into()),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@alice:example.com"),
+            "@alice:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let mut flagged_join_rules = make_event(
+        "$join_rules",
+        "m.room.join_rules",
+        Some(""),
+        "@alice:example.com",
+        json!({"join_rule": "invite"}),
+    );
+    flagged_join_rules.rejected = true;
+    state.insert(
+        ("m.room.join_rules".into(), String::new()),
+        flagged_join_rules,
+    );
+
+    let event = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:example.com",
+        json!({"body": "hello"}),
+    );
+
+    assert!(
+        check_auth(&event, &state, StateResVersion::V2_1, None).is_ok(),
+        "unrelated events must not fail just because unused join_rules state is flagged"
+    );
+}
+
+#[test]
 fn test_invite_banned_user_rejected() {
     let mut state = RoomState::new();
     state.insert(

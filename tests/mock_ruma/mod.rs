@@ -36,6 +36,8 @@ fn ruma_to_lean_event<E: Event>(ev: &E) -> LeanEvent {
             .map(alloc::string::ToString::to_string)
             .collect(),
         depth: 0,
+        rejected: false,
+        soft_fail: false,
     }
 }
 
@@ -250,6 +252,7 @@ where
     }
 
     // Attempt to dynamically select V2 vs V2.1 if the inputs match the MSC4297 test scenario.
+    let mut pl_cache = std::collections::HashMap::new();
     let resolved = rezzy::resolve_iterative_sort(
         unconflicted_state,
         conflicted_events,
@@ -259,6 +262,7 @@ where
         } else {
             rezzy::StateResVersion::V2
         },
+        &mut pl_cache,
     );
 
     let mut result = StateMap::new();

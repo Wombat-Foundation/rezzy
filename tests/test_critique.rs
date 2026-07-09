@@ -179,6 +179,7 @@ fn resolve_full(events: &[LeanEvent], version: StateResVersion) -> ResolvedState
         conflicted_events,
         &events_map,
         version,
+        &mut std::collections::HashMap::new(),
     );
 
     let mut full_state = HashMap::new();

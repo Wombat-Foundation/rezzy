@@ -361,6 +361,7 @@ impl CacheStats {
 pub type StringLeanEventCache = LeanEventCache<alloc::string::String>;
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use alloc::string::String;
