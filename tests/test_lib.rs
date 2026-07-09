@@ -4824,6 +4824,52 @@ fn test_lean_event_get_join_authorised_via_users_server() {
     assert_eq!(without.get_join_authorised_via_users_server(), None);
 }
 
+#[test]
+fn test_lean_event_borrowed_view_roundtrip() {
+    let event = LeanEvent::<String> {
+        event_id: "$test".into(),
+        event_type: "m.room.message".into(),
+        state_key: Some(String::new()),
+        power_level: 42,
+        origin_server_ts: 1_234_567_890,
+        sender: "@alice:x.com".into(),
+        content: serde_json::json!({"body": "hello"}),
+        prev_events: vec!["$prev".into()],
+        auth_events: vec!["$auth".into()],
+        depth: 5,
+        rejected: true,
+        soft_fail: false,
+    };
+
+    let view = event.as_ref();
+    assert_eq!(view.event_id, &event.event_id);
+    assert_eq!(view.event_type, event.event_type);
+    assert_eq!(view.state_key, event.state_key.as_deref());
+    assert_eq!(view.power_level, event.power_level);
+    assert_eq!(view.origin_server_ts, event.origin_server_ts);
+    assert_eq!(view.sender, event.sender);
+    assert_eq!(view.content, &event.content);
+    assert_eq!(view.prev_events, event.prev_events.as_slice());
+    assert_eq!(view.auth_events, event.auth_events.as_slice());
+    assert_eq!(view.depth, event.depth);
+    assert_eq!(view.rejected, event.rejected);
+    assert_eq!(view.soft_fail, event.soft_fail);
+
+    let owned = view.to_owned();
+    assert_eq!(owned.event_id, event.event_id);
+    assert_eq!(owned.event_type, event.event_type);
+    assert_eq!(owned.state_key, event.state_key);
+    assert_eq!(owned.power_level, event.power_level);
+    assert_eq!(owned.origin_server_ts, event.origin_server_ts);
+    assert_eq!(owned.sender, event.sender);
+    assert_eq!(owned.content, event.content);
+    assert_eq!(owned.prev_events, event.prev_events);
+    assert_eq!(owned.auth_events, event.auth_events);
+    assert_eq!(owned.depth, event.depth);
+    assert_eq!(owned.rejected, event.rejected);
+    assert_eq!(owned.soft_fail, event.soft_fail);
+}
+
 // ── Coverage: EventLike default methods + LeanEvent pl/ts ───────────
 
 /// Exercises all `EventLike` default methods (lines 279-337) via trait

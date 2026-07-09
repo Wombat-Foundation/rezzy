@@ -639,6 +639,113 @@ pub struct LeanEvent<Id = String, C = Value> {
     pub soft_fail: bool,
 }
 
+/// Borrowed view over a [`LeanEvent`] that avoids cloning event envelopes.
+///
+/// This is useful for host adapters that already own native event storage and
+/// want to expose event data to rezzy without materializing a fresh owned
+/// `LeanEvent` up front.
+#[derive(Debug, Clone, Copy)]
+pub struct LeanEventRef<'a, Id = String, C = Value> {
+    pub event_id: &'a Id,
+    pub event_type: &'a str,
+    pub state_key: Option<&'a str>,
+    pub power_level: i64,
+    pub origin_server_ts: u64,
+    pub sender: &'a str,
+    pub content: &'a C,
+    pub prev_events: &'a [Id],
+    pub auth_events: &'a [Id],
+    pub depth: u64,
+    pub rejected: bool,
+    pub soft_fail: bool,
+}
+
+impl<Id: EventId, C> LeanEventRef<'_, Id, C> {
+    /// Materializes an owned [`LeanEvent`] from this borrowed view.
+    #[must_use]
+    pub fn to_owned(&self) -> LeanEvent<Id, C>
+    where
+        Id: Clone,
+        C: Clone,
+    {
+        LeanEvent {
+            event_id: self.event_id.clone(),
+            event_type: String::from(self.event_type),
+            state_key: self.state_key.map(String::from),
+            power_level: self.power_level,
+            origin_server_ts: self.origin_server_ts,
+            sender: String::from(self.sender),
+            content: self.content.clone(),
+            prev_events: self.prev_events.to_vec(),
+            auth_events: self.auth_events.to_vec(),
+            depth: self.depth,
+            rejected: self.rejected,
+            soft_fail: self.soft_fail,
+        }
+    }
+}
+
+impl<Id, C> LeanEvent<Id, C> {
+    /// Returns a borrowed view of this event without cloning.
+    #[must_use]
+    pub fn as_ref(&self) -> LeanEventRef<'_, Id, C> {
+        LeanEventRef {
+            event_id: &self.event_id,
+            event_type: &self.event_type,
+            state_key: self.state_key.as_deref(),
+            power_level: self.power_level,
+            origin_server_ts: self.origin_server_ts,
+            sender: &self.sender,
+            content: &self.content,
+            prev_events: &self.prev_events,
+            auth_events: &self.auth_events,
+            depth: self.depth,
+            rejected: self.rejected,
+            soft_fail: self.soft_fail,
+        }
+    }
+}
+
+impl<Id: EventId, C: EventContent> DagNode for LeanEventRef<'_, Id, C> {
+    type Id = Id;
+
+    fn event_id(&self) -> &Id {
+        self.event_id
+    }
+    fn depth(&self) -> u64 {
+        self.depth
+    }
+    fn prev_events(&self) -> &[Id] {
+        self.prev_events
+    }
+    fn auth_events(&self) -> &[Id] {
+        self.auth_events
+    }
+}
+
+impl<Id: EventId, C: EventContent> EventLike for LeanEventRef<'_, Id, C> {
+    type Content = C;
+
+    fn event_type(&self) -> alloc::borrow::Cow<'_, str> {
+        alloc::borrow::Cow::Borrowed(self.event_type)
+    }
+    fn sender(&self) -> &str {
+        self.sender
+    }
+    fn state_key(&self) -> Option<&str> {
+        self.state_key
+    }
+    fn power_level(&self) -> i64 {
+        self.power_level
+    }
+    fn origin_server_ts(&self) -> u64 {
+        self.origin_server_ts
+    }
+    fn content(&self) -> &C {
+        self.content
+    }
+}
+
 impl<Id: serde::Serialize, C: serde::Serialize> serde::Serialize for LeanEvent<Id, C> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1637,7 +1744,7 @@ pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
         })
         .or_else(|| pl.as_str().and_then(|s| s.parse::<i64>().ok()));
     // Matrix Spec (Client-Server API) — m.room.power_levels:
-    // "The power level ... must be an integer between -2^53 + 1 and 2^53 - 1."
+    // "The power level ... must be an integer between -2^53s + 1 and 2^53 - 1."
     val.map(|v| v.clamp(-MAX_POWER_LEVEL_JSON, MAX_POWER_LEVEL_JSON))
 }
 
