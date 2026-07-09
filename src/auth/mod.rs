@@ -291,6 +291,12 @@ pub fn check_auth<
         ));
     }
 
+    if event.rejected() || event.soft_fail() {
+        return Err(AuthError::InvalidSyntax(
+            "rejected or soft-failed events must not be auth-checked".into(),
+        ));
+    }
+
     // Optional verification pipeline (steps 1-3).
     // Callers pass None during state resolution; Some during PDU receipt.
     // TODO: different room versions use different hashing algorithms for event IDs:

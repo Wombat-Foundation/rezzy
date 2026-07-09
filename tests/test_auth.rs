@@ -64,6 +64,59 @@ fn test_self_ban_rejected() {
 }
 
 #[test]
+fn test_flagged_events_are_not_auth_checked() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$create",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:example.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@alice:example.com".into()),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@alice:example.com"),
+            "@alice:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let mut rejected = make_event(
+        "$rejected",
+        "m.room.message",
+        None,
+        "@alice:example.com",
+        json!({"body": "hello"}),
+    );
+    rejected.rejected = true;
+
+    let mut soft_fail = make_event(
+        "$soft_fail",
+        "m.room.message",
+        None,
+        "@alice:example.com",
+        json!({"body": "hello"}),
+    );
+    soft_fail.soft_fail = true;
+
+    for event in [&rejected, &soft_fail] {
+        assert!(
+            matches!(
+                check_auth(event, &state, rezzy::basespec::rezzy_types::StateResVersion::V2_1, None),
+                Err(AuthError::InvalidSyntax(reason)) if reason.contains("rejected or soft-failed")
+            ),
+            "flagged events must not be auth-checked"
+        );
+    }
+}
+
+#[test]
 fn test_invite_banned_user_rejected() {
     let mut state = RoomState::new();
     state.insert(

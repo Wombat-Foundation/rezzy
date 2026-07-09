@@ -284,6 +284,16 @@ pub trait EventLike: DagNode {
     /// Access the event content (parsed or stored).
     fn content(&self) -> &Self::Content;
 
+    /// Whether this event was rejected by the homeserver.
+    fn rejected(&self) -> bool {
+        false
+    }
+
+    /// Whether this event was soft-failed by the homeserver.
+    fn soft_fail(&self) -> bool {
+        false
+    }
+
     // === Content accessors — default impls delegate to self.content() ===
 
     /// Returns the `membership` field from event content.
@@ -402,6 +412,14 @@ impl<Id: EventId, C: EventContent> EventLike for LeanEvent<Id, C> {
     }
     fn content(&self) -> &C {
         &self.content
+    }
+
+    fn rejected(&self) -> bool {
+        self.rejected
+    }
+
+    fn soft_fail(&self) -> bool {
+        self.soft_fail
     }
 }
 
@@ -743,6 +761,14 @@ impl<Id: EventId, C: EventContent> EventLike for LeanEventRef<'_, Id, C> {
     }
     fn content(&self) -> &C {
         self.content
+    }
+
+    fn rejected(&self) -> bool {
+        self.rejected
+    }
+
+    fn soft_fail(&self) -> bool {
+        self.soft_fail
     }
 }
 
