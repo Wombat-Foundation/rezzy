@@ -74,13 +74,13 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
             .unwrap_or(serde_json::json!({}));
 
         let rejected = value
-            .get("rejected")
-            .or_else(|| value.get("__rejected"))
+            .get("__rejected")
+            .or_else(|| value.get("rejected"))
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
         let soft_fail = value
-            .get("soft_fail")
-            .or_else(|| value.get("__soft_fail"))
+            .get("__soft_fail")
+            .or_else(|| value.get("soft_fail"))
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 

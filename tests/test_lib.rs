@@ -4870,6 +4870,38 @@ fn test_lean_event_borrowed_view_roundtrip() {
     assert_eq!(owned.soft_fail, event.soft_fail);
 }
 
+#[test]
+fn test_lean_event_borrowed_view_accessors() {
+    use rezzy::basespec::rezzy_types::{DagNode, EventLike};
+
+    let event = LeanEvent::<String> {
+        event_id: "$test".into(),
+        event_type: "m.room.message".into(),
+        state_key: Some(String::new()),
+        power_level: 7,
+        origin_server_ts: 1_234_567_890,
+        sender: "@alice:x.com".into(),
+        content: serde_json::json!({"body": "hello"}),
+        prev_events: vec!["$prev".into()],
+        auth_events: vec!["$auth".into()],
+        depth: 5,
+        rejected: true,
+        soft_fail: false,
+    };
+
+    let view = event.as_ref();
+    assert_eq!(view.event_id(), &event.event_id);
+    assert_eq!(view.depth(), event.depth);
+    assert_eq!(view.prev_events(), event.prev_events.as_slice());
+    assert_eq!(view.auth_events(), event.auth_events.as_slice());
+    assert_eq!(view.event_type().as_ref(), event.event_type);
+    assert_eq!(view.sender(), event.sender);
+    assert_eq!(view.state_key(), event.state_key.as_deref());
+    assert_eq!(view.power_level(), event.power_level);
+    assert_eq!(view.origin_server_ts(), event.origin_server_ts);
+    assert_eq!(view.content(), &event.content);
+}
+
 // ── Coverage: EventLike default methods + LeanEvent pl/ts ───────────
 
 /// Exercises all `EventLike` default methods (lines 279-337) via trait
