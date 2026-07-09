@@ -204,6 +204,59 @@ where
         .unwrap_or(1)) // V1 rooms didn't have a room_version field
 }
 
+fn reject_if_flagged_auth_state<
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    state: &impl StateProvider<Id, C, E>,
+    event_type: &str,
+    state_key: &str,
+) -> Result<(), AuthError<Id>> {
+    if state
+        .get_event(event_type, state_key)
+        .is_some_and(|ev| ev.rejected() || ev.soft_fail())
+    {
+        return Err(AuthError::InvalidSyntax(alloc::format!(
+            "rejected or soft-failed auth state event {event_type}/{state_key} must not be used"
+        )));
+    }
+    Ok(())
+}
+
+fn reject_flagged_auth_state<
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    event: &E,
+    state: &impl StateProvider<Id, C, E>,
+) -> Result<(), AuthError<Id>> {
+    reject_if_flagged_auth_state(state, M_ROOM_CREATE, "")?;
+    reject_if_flagged_auth_state(state, M_ROOM_POWER_LEVELS, "")?;
+    reject_if_flagged_auth_state(state, M_ROOM_MEMBER, event.sender())?;
+    reject_if_flagged_auth_state(state, M_ROOM_JOIN_RULES, "")?;
+
+    if let Some(target_user) = event
+        .state_key()
+        .filter(|_| event.event_type() == M_ROOM_MEMBER)
+    {
+        reject_if_flagged_auth_state(state, M_ROOM_MEMBER, target_user)?;
+    }
+    if let Some(authorising_user) = event.get_join_authorised_via_users_server() {
+        reject_if_flagged_auth_state(state, M_ROOM_MEMBER, authorising_user)?;
+    }
+    if let Some(token) = event.get_third_party_invite_token() {
+        reject_if_flagged_auth_state(
+            state,
+            crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE,
+            token,
+        )?;
+    }
+
+    Ok(())
+}
+
 /// The result of validating a new forward extremity event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForwardExtremityResult<Id = String> {
@@ -296,6 +349,7 @@ pub fn check_auth<
             "rejected or soft-failed events must not be auth-checked".into(),
         ));
     }
+    reject_flagged_auth_state(event, state)?;
 
     // Optional verification pipeline (steps 1-3).
     // Callers pass None during state resolution; Some during PDU receipt.

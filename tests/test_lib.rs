@@ -366,6 +366,32 @@ mod tests {
         assert_eq!(p.cmp(&p2), Ordering::Equal);
     }
 
+    #[test]
+    fn test_sort_priority_cross_version_ordering_is_symmetric() {
+        let event: LeanEvent = LeanEvent {
+            event_id: "$a".into(),
+            depth: 1,
+            origin_server_ts: 1,
+            ..Default::default()
+        };
+        let p_v1 = SortPriority {
+            power_level: 0,
+            event: &event,
+            auth_chain_distance: 0,
+            version: rezzy::StateResVersion::V1,
+        };
+        let p_v2 = SortPriority {
+            power_level: 0,
+            event: &event,
+            auth_chain_distance: 0,
+            version: rezzy::StateResVersion::V2,
+        };
+
+        assert_ne!(p_v1, p_v2);
+        assert_eq!(p_v1.eq(&p_v2), p_v2.eq(&p_v1));
+        assert_eq!(p_v1.cmp(&p_v2), p_v2.cmp(&p_v1).reverse());
+    }
+
     /// `cmp_by_depth`: depth ascending, then `event_id` ascending.
     #[test]
     fn test_cmp_by_depth() {
@@ -4569,6 +4595,8 @@ struct TestRawEvent {
     auth_events: Vec<String>,
     depth: u64,
     origin_server_ts: u64,
+    rejected: bool,
+    soft_fail: bool,
 }
 
 impl rezzy::RawEvent for TestRawEvent {
@@ -4600,6 +4628,12 @@ impl rezzy::RawEvent for TestRawEvent {
     fn raw_origin_server_ts(&self) -> u64 {
         self.origin_server_ts
     }
+    fn raw_rejected(&self) -> bool {
+        self.rejected
+    }
+    fn raw_soft_fail(&self) -> bool {
+        self.soft_fail
+    }
     // raw_power_level uses the default impl (returns 0) — exercises line 463-465
 }
 
@@ -4619,6 +4653,8 @@ fn test_parsed_event_full_coverage() {
         auth_events: vec!["$auth1".into(), "$auth2".into()],
         depth: 42,
         origin_server_ts: 1_700_000_000,
+        rejected: false,
+        soft_fail: false,
     };
 
     // ParsedEvent::new (line 502-508)
@@ -4644,6 +4680,8 @@ fn test_parsed_event_full_coverage() {
         auth_events: vec!["$auth1".into(), "$auth2".into()],
         depth: 42,
         origin_server_ts: 1_700_000_000,
+        rejected: true,
+        soft_fail: true,
     };
     let parsed = rezzy::ParsedEvent::new(&raw_pl);
 
@@ -4659,6 +4697,8 @@ fn test_parsed_event_full_coverage() {
     assert_eq!(parsed.state_key(), Some(""));
     assert_eq!(parsed.power_level(), 0); // raw_power_level default
     assert_eq!(parsed.origin_server_ts(), 1_700_000_000);
+    assert!(parsed.rejected());
+    assert!(parsed.soft_fail());
 
     // EventLike DEFAULT methods (lines 279-337) — no inherent shadowing on ParsedEvent
     assert_eq!(parsed.get_membership(), Some("join"));
@@ -4697,6 +4737,8 @@ fn test_parsed_event_try_new() {
         auth_events: vec![],
         depth: 1,
         origin_server_ts: 0,
+        rejected: false,
+        soft_fail: false,
     };
     assert!(rezzy::ParsedEvent::try_new(&valid).is_ok());
 
@@ -4710,6 +4752,8 @@ fn test_parsed_event_try_new() {
         auth_events: vec![],
         depth: 1,
         origin_server_ts: 0,
+        rejected: false,
+        soft_fail: false,
     };
     assert!(rezzy::ParsedEvent::try_new(&invalid).is_err());
 }

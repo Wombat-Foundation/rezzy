@@ -108,12 +108,56 @@ fn test_flagged_events_are_not_auth_checked() {
     for event in [&rejected, &soft_fail] {
         assert!(
             matches!(
-                check_auth(event, &state, rezzy::basespec::rezzy_types::StateResVersion::V2_1, None),
+                check_auth(event, &state, StateResVersion::V2_1, None),
                 Err(AuthError::InvalidSyntax(reason)) if reason.contains("rejected or soft-failed")
             ),
             "flagged events must not be auth-checked"
         );
     }
+}
+
+#[test]
+fn test_flagged_auth_state_is_not_used() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$create",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:example.com",
+            json!({}),
+        ),
+    );
+
+    let mut flagged_join = make_event(
+        "$join",
+        "m.room.member",
+        Some("@alice:example.com"),
+        "@alice:example.com",
+        json!({"membership": "join"}),
+    );
+    flagged_join.rejected = true;
+    state.insert(
+        ("m.room.member".into(), "@alice:example.com".into()),
+        flagged_join,
+    );
+
+    let event = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:example.com",
+        json!({"body": "hello"}),
+    );
+
+    assert!(
+        matches!(
+            check_auth(&event, &state, StateResVersion::V2_1, None),
+            Err(AuthError::InvalidSyntax(reason)) if reason.contains("auth state event")
+        ),
+        "flagged auth state must not authorize later events"
+    );
 }
 
 #[test]

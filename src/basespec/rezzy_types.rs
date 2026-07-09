@@ -72,7 +72,7 @@ impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Disp
 ///
 /// **Key invariant:** `users` in `m.room.power_levels` is preserved on redaction
 /// in ALL versions. Redaction alone cannot cause the PL wipeout vulnerability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 #[allow(non_camel_case_types)]
 pub enum StateResVersion {
@@ -501,6 +501,16 @@ pub trait RawEvent {
     fn raw_power_level(&self) -> i64 {
         0
     }
+
+    /// Whether this event was rejected by the homeserver.
+    fn raw_rejected(&self) -> bool {
+        false
+    }
+
+    /// Whether this event was soft-failed by the homeserver.
+    fn raw_soft_fail(&self) -> bool {
+        false
+    }
 }
 
 /// Wraps a `&T` (where `T: RawEvent`) with a cached parsed
@@ -591,6 +601,14 @@ impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
 
     fn content(&self) -> &serde_json::Value {
         &self.content
+    }
+
+    fn rejected(&self) -> bool {
+        self.raw.raw_rejected()
+    }
+
+    fn soft_fail(&self) -> bool {
+        self.raw.raw_soft_fail()
     }
 }
 
@@ -1676,6 +1694,10 @@ impl<E: EventLike> Eq for SortPriority<'_, E> {}
 
 impl<E: EventLike> Ord for SortPriority<'_, E> {
     fn cmp(&self, other: &Self) -> Ordering {
+        if self.version != other.version {
+            return self.version.cmp(&other.version);
+        }
+
         match self.version {
             StateResVersion::V1 => {
                 // Matrix Spec - State Resolution v1:
