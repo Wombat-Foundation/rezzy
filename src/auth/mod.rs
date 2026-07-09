@@ -235,7 +235,6 @@ fn reject_flagged_auth_state<
     reject_if_flagged_auth_state(state, M_ROOM_CREATE, "")?;
     reject_if_flagged_auth_state(state, M_ROOM_POWER_LEVELS, "")?;
     reject_if_flagged_auth_state(state, M_ROOM_MEMBER, event.sender())?;
-    reject_if_flagged_auth_state(state, M_ROOM_JOIN_RULES, "")?;
 
     if let Some(target_user) = event
         .state_key()
@@ -243,10 +242,22 @@ fn reject_flagged_auth_state<
     {
         reject_if_flagged_auth_state(state, M_ROOM_MEMBER, target_user)?;
     }
-    if let Some(authorising_user) = event.get_join_authorised_via_users_server() {
+    let event_type = event.event_type();
+    let membership = event.get_membership();
+
+    if event_type == M_ROOM_MEMBER && matches!(membership, Some(MEM_JOIN | MEM_KNOCK)) {
+        reject_if_flagged_auth_state(state, M_ROOM_JOIN_RULES, "")?;
+    }
+    if event_type == M_ROOM_MEMBER
+        && membership == Some(MEM_JOIN)
+        && let Some(authorising_user) = event.get_join_authorised_via_users_server()
+    {
         reject_if_flagged_auth_state(state, M_ROOM_MEMBER, authorising_user)?;
     }
-    if let Some(token) = event.get_third_party_invite_token() {
+    if event_type == M_ROOM_MEMBER
+        && membership == Some(MEM_INVITE)
+        && let Some(token) = event.get_third_party_invite_token()
+    {
         reject_if_flagged_auth_state(
             state,
             crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE,

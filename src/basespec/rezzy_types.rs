@@ -240,7 +240,7 @@ impl<Id: EventId, C> DagNode for LeanEvent<Id, C> {
 /// # For downstream homeservers
 ///
 /// The recommended path is [`RawEvent`] + [`ParsedEvent`], which gives you
-/// `DagNode + EventLike` for free with ~9 one-liner field accessors.
+/// `DagNode + EventLike` for free with a small set of one-liner field accessors.
 ///
 /// If you need full control (e.g. typed content without JSON parsing),
 /// implement `EventLike` directly with a [`Content`](Self::Content) type
@@ -459,6 +459,8 @@ impl<Id: EventId, C: EventContent> EventLike for LeanEvent<Id, C> {
 ///     fn raw_auth_events(&self) -> &[OwnedEventId] { &self.auth_events }
 ///     fn raw_depth(&self) -> u64 { self.depth.into() }
 ///     fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts.into() }
+///     fn raw_rejected(&self) -> bool { self.rejected }
+///     fn raw_soft_fail(&self) -> bool { self.soft_fail }
 /// }
 ///
 /// // Usage — zero boilerplate, one JSON parse:
@@ -503,14 +505,10 @@ pub trait RawEvent {
     }
 
     /// Whether this event was rejected by the homeserver.
-    fn raw_rejected(&self) -> bool {
-        false
-    }
+    fn raw_rejected(&self) -> bool;
 
     /// Whether this event was soft-failed by the homeserver.
-    fn raw_soft_fail(&self) -> bool {
-        false
-    }
+    fn raw_soft_fail(&self) -> bool;
 }
 
 /// Wraps a `&T` (where `T: RawEvent`) with a cached parsed

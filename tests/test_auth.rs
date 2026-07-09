@@ -161,6 +161,57 @@ fn test_flagged_auth_state_is_not_used() {
 }
 
 #[test]
+fn test_flagged_join_rules_do_not_block_unrelated_events() {
+    let mut state = RoomState::new();
+    state.insert(
+        (M_ROOM_CREATE.into(), String::new()),
+        make_event(
+            "$create",
+            M_ROOM_CREATE,
+            Some(""),
+            "@alice:example.com",
+            json!({}),
+        ),
+    );
+    state.insert(
+        ("m.room.member".into(), "@alice:example.com".into()),
+        make_event(
+            "$join",
+            "m.room.member",
+            Some("@alice:example.com"),
+            "@alice:example.com",
+            json!({"membership": "join"}),
+        ),
+    );
+
+    let mut flagged_join_rules = make_event(
+        "$join_rules",
+        "m.room.join_rules",
+        Some(""),
+        "@alice:example.com",
+        json!({"join_rule": "invite"}),
+    );
+    flagged_join_rules.rejected = true;
+    state.insert(
+        ("m.room.join_rules".into(), String::new()),
+        flagged_join_rules,
+    );
+
+    let event = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:example.com",
+        json!({"body": "hello"}),
+    );
+
+    assert!(
+        check_auth(&event, &state, StateResVersion::V2_1, None).is_ok(),
+        "unrelated events must not fail just because unused join_rules state is flagged"
+    );
+}
+
+#[test]
 fn test_invite_banned_user_rejected() {
     let mut state = RoomState::new();
     state.insert(

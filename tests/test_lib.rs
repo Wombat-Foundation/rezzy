@@ -4628,46 +4628,13 @@ impl rezzy::RawEvent for TestRawEvent {
     fn raw_origin_server_ts(&self) -> u64 {
         self.origin_server_ts
     }
-    // raw_power_level uses the default impl (returns 0) — exercises line 463-465
-}
-
-struct TestFlaggedRawEvent(TestRawEvent);
-
-impl rezzy::RawEvent for TestFlaggedRawEvent {
-    type Id = String;
-    fn raw_event_id(&self) -> &String {
-        self.0.raw_event_id()
-    }
-    fn raw_event_type(&self) -> std::borrow::Cow<'_, str> {
-        self.0.raw_event_type()
-    }
-    fn raw_sender(&self) -> &str {
-        self.0.raw_sender()
-    }
-    fn raw_state_key(&self) -> Option<&str> {
-        self.0.raw_state_key()
-    }
-    fn raw_content_json(&self) -> &str {
-        self.0.raw_content_json()
-    }
-    fn raw_prev_events(&self) -> &[String] {
-        self.0.raw_prev_events()
-    }
-    fn raw_auth_events(&self) -> &[String] {
-        self.0.raw_auth_events()
-    }
-    fn raw_depth(&self) -> u64 {
-        self.0.raw_depth()
-    }
-    fn raw_origin_server_ts(&self) -> u64 {
-        self.0.raw_origin_server_ts()
-    }
     fn raw_rejected(&self) -> bool {
-        self.0.rejected
+        self.rejected
     }
     fn raw_soft_fail(&self) -> bool {
-        self.0.soft_fail
+        self.soft_fail
     }
+    // raw_power_level uses the default impl (returns 0) — exercises line 463-465
 }
 
 /// Exercises `ParsedEvent::new`, `try_new`, all `DagNode` + `EventLike`
@@ -4719,8 +4686,7 @@ fn test_parsed_event_full_coverage() {
         rejected: true,
         soft_fail: true,
     };
-    let flagged_raw = TestFlaggedRawEvent(raw_pl);
-    let parsed = rezzy::ParsedEvent::new(&flagged_raw);
+    let parsed = rezzy::ParsedEvent::new(&raw_pl);
 
     // DagNode impl (lines 514-528)
     assert_eq!(parsed.event_id(), "$pl");
