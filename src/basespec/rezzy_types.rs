@@ -1642,9 +1642,7 @@ impl<E> Copy for SortPriority<'_, E> {}
 
 impl<E: EventLike> PartialEq for SortPriority<'_, E> {
     fn eq(&self, other: &Self) -> bool {
-        self.power_level == other.power_level
-            && self.event.origin_server_ts() == other.event.origin_server_ts()
-            && self.event.event_id() == other.event.event_id()
+        self.cmp(other) == Ordering::Equal
     }
 }
 
