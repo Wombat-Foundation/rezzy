@@ -245,7 +245,8 @@ fn reject_flagged_auth_state<
     let event_type = event.event_type();
     let membership = event.get_membership();
 
-    if event_type == M_ROOM_MEMBER && matches!(membership, Some(MEM_JOIN | MEM_KNOCK)) {
+    if event_type == M_ROOM_MEMBER && matches!(membership, Some(MEM_JOIN | MEM_INVITE | MEM_KNOCK))
+    {
         reject_if_flagged_auth_state(state, M_ROOM_JOIN_RULES, "")?;
     }
     if event_type == M_ROOM_MEMBER
@@ -1593,6 +1594,65 @@ mod tests {
         assert!(
             matches!(result, Err(AuthError::BannedUser { .. })),
             "Must reject join from banned user: {result:?}"
+        );
+    }
+
+    /// Coverage: `reject_flagged_auth_state` - invite must reject flagged `m.room.join_rules`.
+    #[test]
+    fn test_invite_rejects_flagged_join_rules() {
+        let invite_event: LeanEvent<String> = LeanEvent {
+            event_id: "$invite".into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some("@target:x".into()),
+            sender: "@sender:x".into(),
+            content: json!({"membership": "invite"}),
+            ..Default::default()
+        };
+
+        let mut state = RoomState::new();
+        state.insert(
+            (M_ROOM_CREATE.into(), String::new()),
+            make_test_event("$create", M_ROOM_CREATE, "@creator:x", json!({})),
+        );
+        state.insert(
+            (M_ROOM_POWER_LEVELS.into(), String::new()),
+            make_test_event("$pl", M_ROOM_POWER_LEVELS, "@creator:x", json!({})),
+        );
+        state.insert(
+            (M_ROOM_MEMBER.into(), "@sender:x".into()),
+            make_test_event(
+                "$sender_join",
+                M_ROOM_MEMBER,
+                "@sender:x",
+                json!({"membership": "join"}),
+            ),
+        );
+        state.insert(
+            (M_ROOM_MEMBER.into(), "@target:x".into()),
+            make_test_event(
+                "$target_leave",
+                M_ROOM_MEMBER,
+                "@target:x",
+                json!({"membership": "leave"}),
+            ),
+        );
+        state.insert(
+            (M_ROOM_JOIN_RULES.into(), String::new()),
+            LeanEvent {
+                event_id: "$jr".into(),
+                event_type: M_ROOM_JOIN_RULES.into(),
+                sender: "@creator:x".into(),
+                content: json!({"join_rule": "invite"}),
+                rejected: false,
+                soft_fail: true,
+                ..Default::default()
+            },
+        );
+
+        let result = reject_flagged_auth_state(&invite_event, &state);
+        assert!(
+            matches!(result, Err(AuthError::InvalidSyntax(_))),
+            "Invite must reject flagged join_rules auth state: {result:?}"
         );
     }
 }
