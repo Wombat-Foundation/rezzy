@@ -1621,9 +1621,9 @@ impl<Id: Ord, C> LeanEvent<Id, C> {
 ///
 /// See the [`Ord`] implementation for the full tie-breaking cascade.
 #[derive(Debug)]
-pub struct SortPriority<'a, Id = String, C = Value> {
+pub struct SortPriority<'a, E = LeanEvent<String, Value>> {
     /// Reference to the event being sorted.
-    pub event: &'a LeanEvent<Id, C>,
+    pub event: &'a E,
     /// The sender's power level, derived from the auth chain (not `event.power_level`).
     pub power_level: i64,
     /// Shortest auth-chain distance to the `m.room.create` event (V2.2 only).
@@ -1632,25 +1632,25 @@ pub struct SortPriority<'a, Id = String, C = Value> {
     pub version: StateResVersion,
 }
 
-impl<Id, C> Clone for SortPriority<'_, Id, C> {
+impl<E> Clone for SortPriority<'_, E> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<Id, C> Copy for SortPriority<'_, Id, C> {}
+impl<E> Copy for SortPriority<'_, E> {}
 
-impl<Id: Eq, C> PartialEq for SortPriority<'_, Id, C> {
+impl<E: EventLike> PartialEq for SortPriority<'_, E> {
     fn eq(&self, other: &Self) -> bool {
         self.power_level == other.power_level
-            && self.event.origin_server_ts == other.event.origin_server_ts
-            && self.event.event_id == other.event.event_id
+            && self.event.origin_server_ts() == other.event.origin_server_ts()
+            && self.event.event_id() == other.event.event_id()
     }
 }
 
-impl<Id: Eq, C> Eq for SortPriority<'_, Id, C> {}
+impl<E: EventLike> Eq for SortPriority<'_, E> {}
 
-impl<Id: Ord, C> Ord for SortPriority<'_, Id, C> {
+impl<E: EventLike> Ord for SortPriority<'_, E> {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.version {
             StateResVersion::V1 => {
@@ -1662,8 +1662,8 @@ impl<Id: Ord, C> Ord for SortPriority<'_, Id, C> {
                 // In Rust's Max-Heap BinaryHeap, "greater" elements are popped first.
                 // We want deeper events to pop FIRST, so they must be "greater".
                 // NOTE: This is a defense-in-depth vulnerability, which V2 fixes.
-                match self.event.depth.cmp(&other.event.depth) {
-                    Ordering::Equal => self.event.event_id.cmp(&other.event.event_id),
+                match self.event.depth().cmp(&other.event.depth()) {
+                    Ordering::Equal => self.event.event_id().cmp(other.event.event_id()),
                     ord => ord,
                 }
             }
@@ -1702,10 +1702,10 @@ impl<Id: Ord, C> Ord for SortPriority<'_, Id, C> {
 
                         match other
                             .event
-                            .origin_server_ts
-                            .cmp(&self.event.origin_server_ts)
+                            .origin_server_ts()
+                            .cmp(&self.event.origin_server_ts())
                         {
-                            Ordering::Equal => other.event.event_id.cmp(&self.event.event_id),
+                            Ordering::Equal => other.event.event_id().cmp(self.event.event_id()),
                             ord => ord,
                         }
                     }
@@ -1716,7 +1716,7 @@ impl<Id: Ord, C> Ord for SortPriority<'_, Id, C> {
     }
 }
 
-impl<Id: Ord, C> PartialOrd for SortPriority<'_, Id, C> {
+impl<E: EventLike> PartialOrd for SortPriority<'_, E> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
@@ -1744,41 +1744,47 @@ pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
         })
         .or_else(|| pl.as_str().and_then(|s| s.parse::<i64>().ok()));
     // Matrix Spec (Client-Server API) — m.room.power_levels:
-    // "The power level ... must be an integer between -2^53s + 1 and 2^53 - 1."
+    // "The power level ... must be an integer between -2^53 + 1 and 2^53 - 1."
     val.map(|v| v.clamp(-MAX_POWER_LEVEL_JSON, MAX_POWER_LEVEL_JSON))
 }
 
 /// Lookup trait for retrieving events by ID during sorting and auth checks.
-pub trait EventProvider<Id, C> {
-    fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>>;
+pub trait EventProvider<Id, C, E = LeanEvent<Id, C>> {
+    fn get_event(&self, id: &Id) -> Option<&E>;
 }
 
-impl<Id: core::hash::Hash + Eq, C, S: core::hash::BuildHasher> EventProvider<Id, C>
-    for crate::HashMap<Id, LeanEvent<Id, C>, S>
+impl<Id: core::hash::Hash + Eq, C, E: EventLike<Id = Id, Content = C>, S: core::hash::BuildHasher>
+    EventProvider<Id, C, E> for crate::HashMap<Id, E, S>
 {
-    fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>> {
+    fn get_event(&self, id: &Id) -> Option<&E> {
         self.get(id)
     }
 }
 
-impl<Id: core::hash::Hash + Eq + Ord, C> EventProvider<Id, C>
-    for alloc::collections::BTreeMap<Id, LeanEvent<Id, C>>
+impl<Id: core::hash::Hash + Eq + Ord, C, E: EventLike<Id = Id, Content = C>> EventProvider<Id, C, E>
+    for alloc::collections::BTreeMap<Id, E>
 {
-    fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>> {
+    fn get_event(&self, id: &Id) -> Option<&E> {
         self.get(id)
     }
 }
 
 /// Merged event lookup across the conflicted set and auth context.
-pub struct SortContext<'a, Id, C, S1, S2> {
-    pub primary: &'a crate::HashMap<Id, LeanEvent<Id, C>, S1>,
-    pub secondary: &'a crate::HashMap<Id, LeanEvent<Id, C>, S2>,
+pub struct SortContext<'a, Id, C, S1, S2, E = LeanEvent<Id, C>> {
+    pub primary: &'a crate::HashMap<Id, E, S1>,
+    pub secondary: &'a crate::HashMap<Id, E, S2>,
+    pub _marker: core::marker::PhantomData<C>,
 }
 
-impl<Id: core::hash::Hash + Eq, C, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher>
-    EventProvider<Id, C> for SortContext<'_, Id, C, S1, S2>
+impl<
+    Id: core::hash::Hash + Eq,
+    C,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+    E: EventLike<Id = Id, Content = C>,
+> EventProvider<Id, C, E> for SortContext<'_, Id, C, S1, S2, E>
 {
-    fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>> {
+    fn get_event(&self, id: &Id) -> Option<&E> {
         self.primary.get(id).or_else(|| self.secondary.get(id))
     }
 }

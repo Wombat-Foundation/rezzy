@@ -268,6 +268,7 @@ where
     let sort_context = crate::basespec::rezzy_types::SortContext {
         primary: conflicted_events,
         secondary: auth_context,
+        _marker: core::marker::PhantomData,
     };
 
     let mut power_events = HashMap::new();

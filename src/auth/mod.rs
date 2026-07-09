@@ -162,16 +162,16 @@ impl Ord for dyn StateKeyDyn + '_ {
 /// The built-in implementation is [`RoomState`] (a `BTreeMap`), but the
 /// resolution engine uses a more complex `OverlayState` internally
 /// that layers resolved state, local auth context, and the create event.
-pub trait StateProvider<Id = String, C = serde_json::Value> {
+pub trait StateProvider<Id = String, C = serde_json::Value, E = LeanEvent<Id, C>> {
     /// Look up a state event by its type and state key.
-    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C>>;
+    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&E>;
 }
 
 /// The room state at a specific point in the DAG (keyed by (type, `state_key`) -> event).
 pub type RoomState<Id = String, C = serde_json::Value> =
     alloc::collections::BTreeMap<(String, String), LeanEvent<Id, C>>;
 
-impl<Id, C> StateProvider<Id, C> for RoomState<Id, C> {
+impl<Id, C> StateProvider<Id, C, LeanEvent<Id, C>> for RoomState<Id, C> {
     fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C>> {
         let query: &dyn StateKeyDyn = &(event_type, state_key);
         self.get(query)
@@ -187,11 +187,12 @@ impl<Id, C> StateProvider<Id, C> for RoomState<Id, C> {
 /// Returns [`AuthError::MissingCreate`] if the `m.room.create` event is not
 /// present in the provided state. This can happen during state resolution
 /// when walking DAG forks.
-fn get_room_version_num<Id, C, S>(state: &S) -> Result<u32, AuthError<Id>>
+fn get_room_version_num<Id, C, E, S>(state: &S) -> Result<u32, AuthError<Id>>
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    S: StateProvider<Id, C>,
+    E: EventLike<Id = Id, Content = C>,
+    S: StateProvider<Id, C, E>,
 {
     let Some(create) = state.get_event(M_ROOM_CREATE, "") else {
         return Err(AuthError::MissingCreate);
@@ -228,8 +229,8 @@ pub fn validate_forward_extremity<
     E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    auth_events_state: &impl StateProvider<Id, C>,
-    current_room_state: &impl StateProvider<Id, C>,
+    auth_events_state: &impl StateProvider<Id, C, E>,
+    current_room_state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
     verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
 ) -> ForwardExtremityResult<Id> {
@@ -263,7 +264,7 @@ pub fn check_auth<
     E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
     verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
 ) -> Result<(), AuthError<Id>> {
@@ -669,8 +670,12 @@ fn check_scalar_pl<Id>(
 pub use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_POWER_LEVEL_RUST};
 
 /// Get the redact power level from room state.
-pub(crate) fn get_redact_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
-    state: &impl StateProvider<Id, C>,
+pub(crate) fn get_redact_power_level<
+    Id,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    state: &impl StateProvider<Id, C, E>,
 ) -> i64 {
     // TODO: call chain nested statement. define FIELD_EMPTY_STRING
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
@@ -685,10 +690,11 @@ pub(crate) fn get_redact_power_level<Id, C: crate::basespec::rezzy_types::EventC
 fn get_required_power_level<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event_type: &str,
     state_key: Option<&str>,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         // Spec Rule 7: m.room.third_party_invite events require the invite level
@@ -720,10 +726,10 @@ fn get_required_power_level<
 fn check_leave_rules<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     target_user: &str,
     current_membership: &str,
     version: StateResVersion,
@@ -765,10 +771,10 @@ fn check_leave_rules<
 fn check_ban_rules<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     // Banning requires the ban power level
@@ -788,10 +794,10 @@ fn check_ban_rules<
 fn check_invite_rules<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     target_user: &str,
     current_membership: &str,
     version: StateResVersion,
@@ -909,10 +915,10 @@ fn check_invite_rules<
 fn check_membership_pl_hierarchies<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     target_user: &str,
     new_membership: &str,
     version: StateResVersion,
@@ -943,10 +949,10 @@ fn check_membership_pl_hierarchies<
 fn check_membership_rules<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
     verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
 ) -> Result<(), AuthError<Id>> {
@@ -1003,10 +1009,10 @@ fn check_membership_rules<
 fn check_join_rules<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     target_user: &str,
     version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
@@ -1083,10 +1089,10 @@ fn check_join_rules<
 fn check_authorising_user<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     authorising_user: &str,
     version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
@@ -1119,10 +1125,10 @@ fn check_authorising_user<
 fn check_knock_rules<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id>,
+    E: EventLike<Id = Id, Content = C>,
 >(
     event: &E,
-    state: &impl StateProvider<Id, C>,
+    state: &impl StateProvider<Id, C, E>,
     target_user: &str,
 ) -> Result<(), AuthError<Id>> {
     // A user can only knock as themselves.
@@ -1171,8 +1177,12 @@ fn check_knock_rules<
 }
 
 /// Get the kick power level from room state.
-pub(crate) fn get_kick_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
-    state: &impl StateProvider<Id, C>,
+pub(crate) fn get_kick_power_level<
+    Id,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    state: &impl StateProvider<Id, C, E>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         if let Some(kick) = pl_event.get_kick() {
@@ -1183,8 +1193,12 @@ pub(crate) fn get_kick_power_level<Id, C: crate::basespec::rezzy_types::EventCon
 }
 
 /// Get the ban power level from room state.
-pub(crate) fn get_invite_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
-    state: &impl StateProvider<Id, C>,
+pub(crate) fn get_invite_power_level<
+    Id,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    state: &impl StateProvider<Id, C, E>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         if let Some(invite) = pl_event.get_invite() {
@@ -1194,8 +1208,12 @@ pub(crate) fn get_invite_power_level<Id, C: crate::basespec::rezzy_types::EventC
     DEFAULT_PL_INVITE // Default invite power level per Matrix spec
 }
 
-pub(crate) fn get_ban_power_level<Id, C: crate::basespec::rezzy_types::EventContent>(
-    state: &impl StateProvider<Id, C>,
+pub(crate) fn get_ban_power_level<
+    Id,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    state: &impl StateProvider<Id, C, E>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
         if let Some(ban) = pl_event.get_ban() {
