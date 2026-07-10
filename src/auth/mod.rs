@@ -249,21 +249,19 @@ fn reject_flagged_auth_state<
     {
         reject_if_flagged_auth_state(state, M_ROOM_JOIN_RULES, "")?;
     }
-    if event_type == M_ROOM_MEMBER
-        && membership == Some(MEM_JOIN)
-        && let Some(authorising_user) = event.get_join_authorised_via_users_server()
-    {
-        reject_if_flagged_auth_state(state, M_ROOM_MEMBER, authorising_user)?;
+    if event_type == M_ROOM_MEMBER && membership == Some(MEM_JOIN) {
+        if let Some(authorising_user) = event.get_join_authorised_via_users_server() {
+            reject_if_flagged_auth_state(state, M_ROOM_MEMBER, authorising_user)?;
+        }
     }
-    if event_type == M_ROOM_MEMBER
-        && membership == Some(MEM_INVITE)
-        && let Some(token) = event.get_third_party_invite_token()
-    {
-        reject_if_flagged_auth_state(
-            state,
-            crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE,
-            token,
-        )?;
+    if event_type == M_ROOM_MEMBER && membership == Some(MEM_INVITE) {
+        if let Some(token) = event.get_third_party_invite_token() {
+            reject_if_flagged_auth_state(
+                state,
+                crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE,
+                token,
+            )?;
+        }
     }
 
     Ok(())
