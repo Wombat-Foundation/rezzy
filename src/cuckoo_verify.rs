@@ -256,7 +256,10 @@ fn validate_solution_shape(edges: &[u64]) -> Result<(), VerifyError> {
 }
 
 fn next_same_partition_index(index: usize, len: usize) -> usize {
-    index.checked_add(2).filter(|next| *next < len).unwrap_or(0)
+    index
+        .checked_add(2)
+        .filter(|next| *next < len)
+        .unwrap_or(index & 1)
 }
 
 fn keccak256(input: &[u8]) -> [u8; 32] {
