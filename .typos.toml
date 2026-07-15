@@ -2,6 +2,7 @@
 cna = "cna"
 ket = "ket"
 NAX = "NAX"
+fo = "fo"
 
 [files]
 extend-exclude = ["tests/critique_data/**", "tests/fixtures/**"]
