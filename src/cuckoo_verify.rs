@@ -198,6 +198,10 @@ fn verify_edges(edges: &[u64], keys: SipHashKeys) -> Result<(), VerifyError> {
         return Err(VerifyError::NonMatchingEndpoints);
     }
 
+    verify_cycle_uvs(&uvs)
+}
+
+fn verify_cycle_uvs(uvs: &[u64; 2 * PROOF_SIZE]) -> Result<(), VerifyError> {
     let mut n = 0_usize;
     let mut i = 0_usize;
     loop {
@@ -416,6 +420,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn verify_error_messages_cover_all_variants() {
+        assert_eq!(VerifyError::WrongAlgorithm.message(), "wrong algorithm");
+        assert_eq!(
+            VerifyError::WrongProofSize { len: 3 }.message(),
+            "wrong proof size"
+        );
+        assert_eq!(VerifyError::EdgeTooBig.message(), "edge too big");
+        assert_eq!(
+            VerifyError::EdgesNotAscending.message(),
+            "edges not ascending"
+        );
+        assert_eq!(
+            VerifyError::NonMatchingEndpoints.message(),
+            "endpoints don't match up"
+        );
+        assert_eq!(VerifyError::Branch.message(), "branch in cycle");
+        assert_eq!(VerifyError::DeadEnd.message(), "cycle dead ends");
+        assert_eq!(VerifyError::ShortCycle.message(), "cycle too short");
+        assert_eq!(
+            VerifyError::ShortKeyIdMismatch.message(),
+            "short key id mismatch"
+        );
+    }
+
+    #[test]
     fn rejects_wrong_proof_size() {
         let verifier = CuckooVerifier::new("", "example.com", 0);
         assert_eq!(
@@ -462,8 +491,26 @@ mod tests {
     }
 
     #[test]
-    fn verifies_00e4_minting_vector() {
-        let public_key = "CTYtwUD318oD9bK6+eH+j3ZvomWtDoPMrQaXnEaIVrM34JJMfArWxtemeoeMNwbuIw4lnix6sKAjW5CW0BMD4Z8cs+vGznqWyH5i2krbetj5ClOFH2TllrXgAPuLcQp4qtMCANwaE/KSMomw3LOyyxo29djzPFu7VRRaAAvWGC66dAYiT9KH1JyxgwVjcChe+glZVEQIvjBiaklVjGdTqOZWpNiSNnQSYJsAIsCwpWAuWQ1S0UaYP4WKEQlsX5L6O8PChppEBl07OJnZv1QA1FvC1Uwxv0s13EUfSr4ojhtREZ2u+AGIS2reZLCc2ucGUQ9ZHI73aZSYulsGrgJZoKbOEjZvvM2WJkSHuNLGO14ll2t2XoLJ3BxTuFBFcsKXHAKi9VFk14BOMKFvboMfPS/glIlXbbUbQkTc3z2YdApSavhQxuIXDmctTx5ioj8eprWsHmrT3vwZSAkRW+bfNHRVWzjS0FvOYsfqxuxvJiM2iwLSHqgs8wPskLTOQwJoWjYBPjWDGlfLHXGJ5e8qXCQOAVQ+LthGTtrYHmCjlMyKi1BpIiHAm2tNI2yUmSaDJ9xhnt6Ve/QI2VRJfocZzRlZyaOHkEBpSKjjxm7GjXV2QmO7UROVVd7IKIZVeCTiG9jhfJ2VTbaXaYqVZRS3yFsKTtwyF5yW5FssQRV7JORKvecHGIMuPcSS+e0TSC+IMTHWK2hC1o+GMdwjpp0NNQCCL144tpVsb2a00kVSdkfcBeCKcXUPHrwYXki7ywd7GYgwVmj6HCo0ZrDAhnmsFse+I3VAhBikzCgZkzWaAFwA1nlwtrK42j2PaPLGS8r6qJSMFQ5R6kZNv8fnZT8F8ccCZuihpT43+SivwCQBMCKgQBinynrX/eGvVmTREv4BtLboWYbnwK9dLteR9y9GiPBHtGqsLzUAZ7KHmjRiEMtFJgXZlC2ygZov80SIZqJ/b8d8DKMGa25RrSzo1EMdoKGe8/NEiqKBdsM7aCjrrEC9SnuNtUre7QugoD5bcsXFSY+HaBqGse4fQbTdHnipZPwPLS2zLZyuoIivJKjBfaQZV0DfGlSHzR705QT3Ivh6F41Lpa7hsnDci6mfwIbnMMxcDLrsxkFhMWik6AjLYyuATVxBYiFrJhFRMx/FPh36SDXEDr9OrOM2jsIdYfKu2yVQAFxC1Ijez5iQfGqTUMVn";
+    fn rejects_wrong_algorithm_in_public_apis() {
+        let edges: [u64; PROOF_SIZE] = core::array::from_fn(|n| n as u64);
+        let pow = MintingPow {
+            algorithm: "wrong",
+            nonce: 84,
+            solution: &edges,
+        };
+
+        assert_eq!(
+            minting_key_id("nutra.tk", "abc", pow),
+            Err(VerifyError::WrongAlgorithm)
+        );
+        assert_eq!(
+            verify_minting_pow("nutra.tk", "abc", "whatever", pow),
+            Err(VerifyError::WrongAlgorithm)
+        );
+    }
+
+    #[test]
+    fn rejects_short_key_id_mismatch() {
         let solution = [
             15_721_871,
             27_250_623,
@@ -514,7 +561,124 @@ mod tests {
             solution: &solution,
         };
 
-        let key_id = verify_minting_pow("nutra.tk", public_key, "BjDCRkH5l3MJzj-Xu1yq", pow)
+        assert_eq!(
+            verify_minting_pow("nutra.tk", TEST_PUBLIC_KEY, "wrong-short-key-id", pow),
+            Err(VerifyError::ShortKeyIdMismatch)
+        );
+    }
+
+    #[test]
+    fn verify_cycle_uvs_rejects_non_matching_branch_dead_end_and_short_cycle() {
+        let mut non_matching = [0_u64; 2 * PROOF_SIZE];
+        for (n, pair) in non_matching.chunks_exact_mut(2).enumerate() {
+            pair[0] = n as u64;
+            pair[1] = n as u64;
+        }
+        let mut xor0 = 0_u64;
+        let mut xor1 = 0_u64;
+        for pair in non_matching.chunks_exact(2) {
+            xor0 ^= pair[0];
+            xor1 ^= pair[1];
+        }
+        assert_ne!(xor0 | xor1, 0);
+
+        let verifier = CuckooVerifier::from_graph_seed([0_u8; 32]);
+        let edges: [u64; PROOF_SIZE] = core::array::from_fn(|n| (n as u64) + 1);
+        assert_eq!(
+            verifier.verify(&edges),
+            Err(VerifyError::NonMatchingEndpoints)
+        );
+
+        let mut branch = [0_u64; 2 * PROOF_SIZE];
+        branch[0] = 7;
+        branch[2] = 7;
+        branch[4] = 7;
+        assert_eq!(verify_cycle_uvs(&branch), Err(VerifyError::Branch));
+
+        let mut dead_end = [0_u64; 2 * PROOF_SIZE];
+        for (n, pair) in dead_end.chunks_exact_mut(2).enumerate() {
+            pair[0] = n as u64;
+            pair[1] = n as u64;
+        }
+        dead_end[2] = 99;
+        assert_eq!(verify_cycle_uvs(&dead_end), Err(VerifyError::DeadEnd));
+
+        let mut short_cycle = [0_u64; 2 * PROOF_SIZE];
+        short_cycle[0] = 11;
+        short_cycle[1] = 22;
+        short_cycle[2] = 11;
+        short_cycle[3] = 22;
+        assert_eq!(verify_cycle_uvs(&short_cycle), Err(VerifyError::ShortCycle));
+    }
+
+    #[test]
+    fn push_json_string_escapes_special_characters() {
+        let mut out = String::new();
+        push_json_string(&mut out, "\"\\\u{08}\u{0c}\n\r\t\u{001f}plain");
+        assert_eq!(out, "\"\\\"\\\\\\b\\f\\n\\r\\t\\u001fplain\"");
+    }
+
+    #[test]
+    fn base64url_no_pad_covers_remainder_cases() {
+        assert_eq!(base64url_no_pad(&[]), "");
+        assert_eq!(base64url_no_pad(b"f"), "Zg");
+        assert_eq!(base64url_no_pad(b"fo"), "Zm8");
+        assert_eq!(base64url_no_pad(b"foo"), "Zm9v");
+    }
+
+    #[test]
+    fn verifies_00e4_minting_vector() {
+        let solution = [
+            15_721_871,
+            27_250_623,
+            40_834_937,
+            43_089_700,
+            49_725_675,
+            94_429_136,
+            100_270_530,
+            101_621_147,
+            119_359_847,
+            129_180_026,
+            130_819_554,
+            132_047_606,
+            133_673_049,
+            140_712_204,
+            162_316_408,
+            191_597_252,
+            200_891_275,
+            237_223_519,
+            238_025_377,
+            239_844_395,
+            243_515_852,
+            280_600_236,
+            287_522_429,
+            288_472_108,
+            307_373_788,
+            335_402_039,
+            350_999_160,
+            361_015_004,
+            376_986_040,
+            377_645_573,
+            380_999_152,
+            381_251_514,
+            384_445_789,
+            400_545_618,
+            405_885_023,
+            407_988_043,
+            454_991_081,
+            456_836_508,
+            460_439_916,
+            488_639_123,
+            505_128_561,
+            517_987_691,
+        ];
+        let pow = MintingPow {
+            algorithm: ALGORITHM,
+            nonce: 84,
+            solution: &solution,
+        };
+
+        let key_id = verify_minting_pow("nutra.tk", TEST_PUBLIC_KEY, "BjDCRkH5l3MJzj-Xu1yq", pow)
             .expect("minting proof should verify");
 
         assert_eq!(
@@ -522,4 +686,6 @@ mod tests {
             "BjDCRkH5l3MJzj-Xu1yq_SXCGhvaK9ZnQjqilaV8EHU"
         );
     }
+
+    const TEST_PUBLIC_KEY: &str = "CTYtwUD318oD9bK6+eH+j3ZvomWtDoPMrQaXnEaIVrM34JJMfArWxtemeoeMNwbuIw4lnix6sKAjW5CW0BMD4Z8cs+vGznqWyH5i2krbetj5ClOFH2TllrXgAPuLcQp4qtMCANwaE/KSMomw3LOyyxo29djzPFu7VRRaAAvWGC66dAYiT9KH1JyxgwVjcChe+glZVEQIvjBiaklVjGdTqOZWpNiSNnQSYJsAIsCwpWAuWQ1S0UaYP4WKEQlsX5L6O8PChppEBl07OJnZv1QA1FvC1Uwxv0s13EUfSr4ojhtREZ2u+AGIS2reZLCc2ucGUQ9ZHI73aZSYulsGrgJZoKbOEjZvvM2WJkSHuNLGO14ll2t2XoLJ3BxTuFBFcsKXHAKi9VFk14BOMKFvboMfPS/glIlXbbUbQkTc3z2YdApSavhQxuIXDmctTx5ioj8eprWsHmrT3vwZSAkRW+bfNHRVWzjS0FvOYsfqxuxvJiM2iwLSHqgs8wPskLTOQwJoWjYBPjWDGlfLHXGJ5e8qXCQOAVQ+LthGTtrYHmCjlMyKi1BpIiHAm2tNI2yUmSaDJ9xhnt6Ve/QI2VRJfocZzRlZyaOHkEBpSKjjxm7GjXV2QmO7UROVVd7IKIZVeCTiG9jhfJ2VTbaXaYqVZRS3yFsKTtwyF5yW5FssQRV7JORKvecHGIMuPcSS+e0TSC+IMTHWK2hC1o+GMdwjpp0NNQCCL144tpVsb2a00kVSdkfcBeCKcXUPHrwYXki7ywd7GYgwVmj6HCo0ZrDAhnmsFse+I3VAhBikzCgZkzWaAFwA1nlwtrK42j2PaPLGS8r6qJSMFQ5R6kZNv8fnZT8F8ccCZuihpT43+SivwCQBMCKgQBinynrX/eGvVmTREv4BtLboWYbnwK9dLteR9y9GiPBHtGqsLzUAZ7KHmjRiEMtFJgXZlC2ygZov80SIZqJ/b8d8DKMGa25RrSzo1EMdoKGe8/NEiqKBdsM7aCjrrEC9SnuNtUre7QugoD5bcsXFSY+HaBqGse4fQbTdHnipZPwPLS2zLZyuoIivJKjBfaQZV0DfGlSHzR705QT3Ivh6F41Lpa7hsnDci6mfwIbnMMxcDLrsxkFhMWik6AjLYyuATVxBYiFrJhFRMx/FPh36SDXEDr9OrOM2jsIdYfKu2yVQAFxC1Ijez5iQfGqTUMVn";
 }
