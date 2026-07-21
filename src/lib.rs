@@ -76,6 +76,7 @@ extern crate alloc;
 pub mod auth;
 pub mod basespec;
 pub mod cuckoo_verify;
+pub mod merkle;
 pub mod resolve;
 pub mod state;
 

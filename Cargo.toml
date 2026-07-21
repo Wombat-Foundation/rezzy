@@ -120,6 +120,10 @@ name = "test_hashing"
 path = "tests/test_hashing.rs"
 
 [[test]]
+name = "test_merkle"
+path = "tests/test_merkle.rs"
+
+[[test]]
 name = "test_traversal"
 path = "tests/test_traversal.rs"
 
