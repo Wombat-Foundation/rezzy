@@ -20,6 +20,7 @@ const MIN_CANONICAL_INT: i64 = -MAX_CANONICAL_INT;
 const LEAF_DST: &[u8] = b"msc4511:leaf:v1";
 const NODE_DST: &[u8] = b"msc4511:node:v1";
 const ROOT_DST: &[u8] = b"msc4511:root:v1";
+const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
 /// A SHA3-256 digest.
 pub type Hash = [u8; HASH_SIZE];
@@ -360,7 +361,11 @@ fn append_string(out: &mut Vec<u8>, string: &str) {
             '\t' => out.extend_from_slice(br"\t"),
             '\u{00}'..='\u{1f}' => {
                 let code = ch as u32;
-                out.extend_from_slice(format!("\\u{code:04x}").as_bytes());
+                out.extend_from_slice(b"\\u");
+                for shift in [12_u32, 8, 4, 0] {
+                    let nibble = ((code >> shift) & 0xF) as u8;
+                    out.push(HEX_LOWER[usize::from(nibble)]);
+                }
             }
             _ => {
                 let mut buf = [0; 4];

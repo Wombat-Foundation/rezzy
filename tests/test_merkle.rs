@@ -45,13 +45,14 @@ fn canonical_json_string_escaping_matches_matrix_rules() {
         "html": "<>&",
         "line": "a\nb",
         "nul": "\u{0}",
+        "unit_separator": "\u{1f}",
         "special": "\"\\\u{08}\u{0c}\r\t",
     }))
     .unwrap();
 
     assert_eq!(
         String::from_utf8(got).unwrap(),
-        r#"{"html":"<>&","line":"a\nb","nul":"\u0000","special":"\"\\\b\f\r\t"}"#
+        r#"{"html":"<>&","line":"a\nb","nul":"\u0000","special":"\"\\\b\f\r\t","unit_separator":"\u001f"}"#
     );
 }
 
