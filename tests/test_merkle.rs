@@ -86,6 +86,27 @@ fn canonical_json_accepts_small_u64_number() {
         "7"
     );
 }
+
+#[test]
+fn canonical_json_encodes_top_level_null_and_false() {
+    assert_eq!(
+        String::from_utf8(merkle::canonical_json(&Value::Null).unwrap()).unwrap(),
+        "null"
+    );
+    assert_eq!(
+        String::from_utf8(merkle::canonical_json(&Value::Bool(false)).unwrap()).unwrap(),
+        "false"
+    );
+}
+
+#[test]
+fn canonical_json_rejects_invalid_array_element() {
+    assert_eq!(
+        merkle::canonical_json(&json!([1.5])).unwrap_err(),
+        MerkleError::UnsupportedNumber
+    );
+}
+
 #[test]
 fn root_is_order_independent() {
     let mut fields = sample_fields();
