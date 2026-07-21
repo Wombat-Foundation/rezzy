@@ -79,6 +79,14 @@ fn canonical_json_covers_unsigned_number_branch() {
 }
 
 #[test]
+fn canonical_json_accepts_small_u64_number() {
+    let in_range = serde_json::Number::from(7_u64);
+    assert_eq!(
+        String::from_utf8(merkle::canonical_json(&Value::Number(in_range)).unwrap()).unwrap(),
+        "7"
+    );
+}
+#[test]
 fn root_is_order_independent() {
     let mut fields = sample_fields();
     let root1 = merkle::root(&fields).unwrap();

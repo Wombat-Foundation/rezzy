@@ -342,9 +342,11 @@ fn append_number(out: &mut Vec<u8>, number: &serde_json::Number) -> Result<(), M
         out.extend_from_slice(n.to_string().as_bytes());
         return Ok(());
     }
+
     if number.as_u64().is_some() {
         return Err(MerkleError::IntegerRange);
     }
+
     Err(MerkleError::UnsupportedNumber)
 }
 
