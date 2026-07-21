@@ -82,53 +82,23 @@ pub struct Header {
 
 /// Typed wrapper for the `prev_events` component hash in [`event_root`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PrevEventsHash(Hash);
-
-impl From<Hash> for PrevEventsHash {
-    fn from(hash: Hash) -> Self {
-        Self(hash)
-    }
-}
+pub struct PrevEventsHash(pub Hash);
 
 /// Typed wrapper for the `auth_events` component hash in [`event_root`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AuthEventsHash(Hash);
-
-impl From<Hash> for AuthEventsHash {
-    fn from(hash: Hash) -> Self {
-        Self(hash)
-    }
-}
+pub struct AuthEventsHash(pub Hash);
 
 /// Typed wrapper for the event header root component in [`event_root`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EventHeaderRoot(Hash);
-
-impl From<Hash> for EventHeaderRoot {
-    fn from(hash: Hash) -> Self {
-        Self(hash)
-    }
-}
+pub struct EventHeaderRoot(pub Hash);
 
 /// Typed wrapper for the `content` component hash in [`event_root`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ContentHash(Hash);
-
-impl From<Hash> for ContentHash {
-    fn from(hash: Hash) -> Self {
-        Self(hash)
-    }
-}
+pub struct ContentHash(pub Hash);
 
 /// Typed wrapper for the `other_signed_fields` component hash in [`event_root`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OtherSignedFieldsHash(Hash);
-
-impl From<Hash> for OtherSignedFieldsHash {
-    fn from(hash: Hash) -> Self {
-        Self(hash)
-    }
-}
+pub struct OtherSignedFieldsHash(pub Hash);
 
 #[derive(Debug, Clone)]
 struct Leaf {

@@ -137,11 +137,11 @@ fn event_root_and_id_stable_vector() {
         merkle::component_hash("other_signed_fields", &json!({"origin": "example.org"})).unwrap();
 
     let root = merkle::event_root(
-        PrevEventsHash::from(prev),
-        AuthEventsHash::from(auth),
-        EventHeaderRoot::from(header),
-        ContentHash::from(content),
-        OtherSignedFieldsHash::from(other),
+        PrevEventsHash(prev),
+        AuthEventsHash(auth),
+        EventHeaderRoot(header),
+        ContentHash(content),
+        OtherSignedFieldsHash(other),
     );
 
     assert_eq!(
@@ -171,6 +171,22 @@ fn empty_root_rejected() {
 fn empty_field_name_rejected() {
     assert_eq!(
         merkle::root(&[Field::new("", Value::Null)]).unwrap_err(),
+        MerkleError::EmptyFieldName
+    );
+}
+
+#[test]
+fn empty_str_leaf_hash_field_name_rejected() {
+    assert_eq!(
+        merkle::leaf_hash("", b"null").unwrap_err(),
+        MerkleError::EmptyFieldName
+    );
+}
+
+#[test]
+fn empty_bytes_leaf_hash_field_name_rejected() {
+    assert_eq!(
+        merkle::leaf_hash_bytes(b"", b"null").unwrap_err(),
         MerkleError::EmptyFieldName
     );
 }
