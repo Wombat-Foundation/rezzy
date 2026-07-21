@@ -108,12 +108,7 @@ pub fn leaf_hash(field_name: &str, canonical_value: &[u8]) -> Result<Hash, Merkl
     if field_name.is_empty() {
         return Err(MerkleError::EmptyFieldName);
     }
-    Ok(hash_parts(&[
-        LEAF_DST,
-        field_name.as_bytes(),
-        &[0],
-        canonical_value,
-    ]))
+    Ok(leaf_hash_unchecked(field_name.as_bytes(), canonical_value))
 }
 
 /// Computes the MSC4511 leaf hash for a field name supplied as raw UTF-8 bytes.
@@ -127,7 +122,7 @@ pub fn leaf_hash(field_name: &str, canonical_value: &[u8]) -> Result<Hash, Merkl
 /// [`MerkleError::InvalidFieldName`] when it is not valid UTF-8.
 pub fn leaf_hash_bytes(field_name: &[u8], canonical_value: &[u8]) -> Result<Hash, MerkleError> {
     validate_field_name_bytes(field_name)?;
-    Ok(hash_parts(&[LEAF_DST, field_name, &[0], canonical_value]))
+    Ok(leaf_hash_unchecked(field_name, canonical_value))
 }
 
 /// Computes one top-level event-root component with the standard leaf construction.
@@ -139,7 +134,7 @@ pub fn leaf_hash_bytes(field_name: &[u8], canonical_value: &[u8]) -> Result<Hash
 pub fn component_hash(field_name: &str, value: &Value) -> Result<Hash, MerkleError> {
     validate_field_name(field_name)?;
     let canonical = canonical_json(value)?;
-    leaf_hash(field_name, &canonical)
+    Ok(leaf_hash_unchecked(field_name.as_bytes(), &canonical))
 }
 
 /// Computes the RFC6962-shaped Merkle root over sorted MSC4511 field leaves.
@@ -276,6 +271,10 @@ fn validate_field_name_bytes(field_name: &[u8]) -> Result<(), MerkleError> {
         return Err(MerkleError::InvalidFieldName);
     }
     Ok(())
+}
+
+fn leaf_hash_unchecked(field_name: &[u8], canonical_value: &[u8]) -> Hash {
+    hash_parts(&[LEAF_DST, field_name, &[0], canonical_value])
 }
 
 fn append_canonical_value(out: &mut Vec<u8>, value: &Value) -> Result<(), MerkleError> {
