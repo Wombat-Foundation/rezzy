@@ -209,6 +209,18 @@ fn invalid_field_name_bytes_rejected() {
 }
 
 #[test]
+fn nul_in_field_name_rejected() {
+    assert_eq!(
+        merkle::leaf_hash("a\u{0}b", b"null").unwrap_err(),
+        MerkleError::InvalidFieldName
+    );
+    assert_eq!(
+        merkle::leaf_hash_bytes(b"a\0b", b"null").unwrap_err(),
+        MerkleError::InvalidFieldName
+    );
+}
+
+#[test]
 fn valid_field_name_bytes_match_str_leaf_hash() {
     let canonical = br#"{"body":"hello"}"#;
 

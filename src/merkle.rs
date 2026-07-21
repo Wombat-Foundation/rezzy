@@ -125,11 +125,10 @@ pub fn canonical_json(value: &Value) -> Result<Vec<u8>, MerkleError> {
 ///
 /// # Errors
 ///
-/// Returns [`MerkleError::EmptyFieldName`] if `field_name` is empty.
+/// Returns [`MerkleError::EmptyFieldName`] if `field_name` is empty, or
+/// [`MerkleError::InvalidFieldName`] if it contains invalid bytes (for example a NUL byte).
 pub fn leaf_hash(field_name: &str, canonical_value: &[u8]) -> Result<Hash, MerkleError> {
-    if field_name.is_empty() {
-        return Err(MerkleError::EmptyFieldName);
-    }
+    validate_field_name(field_name)?;
     Ok(leaf_hash_unchecked(field_name.as_bytes(), canonical_value))
 }
 
@@ -282,12 +281,18 @@ fn validate_field_name(field_name: &str) -> Result<(), MerkleError> {
     if field_name.is_empty() {
         return Err(MerkleError::EmptyFieldName);
     }
+    if field_name.as_bytes().contains(&0) {
+        return Err(MerkleError::InvalidFieldName);
+    }
     Ok(())
 }
 
 fn validate_field_name_bytes(field_name: &[u8]) -> Result<(), MerkleError> {
     if field_name.is_empty() {
         return Err(MerkleError::EmptyFieldName);
+    }
+    if field_name.contains(&0) {
+        return Err(MerkleError::InvalidFieldName);
     }
     if core::str::from_utf8(field_name).is_err() {
         return Err(MerkleError::InvalidFieldName);
