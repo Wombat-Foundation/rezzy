@@ -80,6 +80,56 @@ pub struct Header {
     pub origin_server_ts: i64,
 }
 
+/// Typed wrapper for the `prev_events` component hash in [`event_root`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrevEventsHash(Hash);
+
+impl From<Hash> for PrevEventsHash {
+    fn from(hash: Hash) -> Self {
+        Self(hash)
+    }
+}
+
+/// Typed wrapper for the `auth_events` component hash in [`event_root`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthEventsHash(Hash);
+
+impl From<Hash> for AuthEventsHash {
+    fn from(hash: Hash) -> Self {
+        Self(hash)
+    }
+}
+
+/// Typed wrapper for the event header root component in [`event_root`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventHeaderRoot(Hash);
+
+impl From<Hash> for EventHeaderRoot {
+    fn from(hash: Hash) -> Self {
+        Self(hash)
+    }
+}
+
+/// Typed wrapper for the `content` component hash in [`event_root`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContentHash(Hash);
+
+impl From<Hash> for ContentHash {
+    fn from(hash: Hash) -> Self {
+        Self(hash)
+    }
+}
+
+/// Typed wrapper for the `other_signed_fields` component hash in [`event_root`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OtherSignedFieldsHash(Hash);
+
+impl From<Hash> for OtherSignedFieldsHash {
+    fn from(hash: Hash) -> Self {
+        Self(hash)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Leaf {
     name: String,
@@ -180,19 +230,19 @@ pub fn header_root(header: &Header) -> Result<Hash, MerkleError> {
 /// `other_signed_fields_hash`).
 #[must_use]
 pub fn event_root(
-    prev_events_hash: Hash,
-    auth_events_hash: Hash,
-    event_header_root: Hash,
-    content_hash: Hash,
-    other_signed_fields_hash: Hash,
+    prev_events_hash: PrevEventsHash,
+    auth_events_hash: AuthEventsHash,
+    event_header_root: EventHeaderRoot,
+    content_hash: ContentHash,
+    other_signed_fields_hash: OtherSignedFieldsHash,
 ) -> Hash {
     hash_parts(&[
         ROOT_DST,
-        &prev_events_hash,
-        &auth_events_hash,
-        &event_header_root,
-        &content_hash,
-        &other_signed_fields_hash,
+        &prev_events_hash.0,
+        &auth_events_hash.0,
+        &event_header_root.0,
+        &content_hash.0,
+        &other_signed_fields_hash.0,
     ])
 }
 

@@ -1,4 +1,7 @@
-use rezzy::merkle::{self, Field, Header, MerkleError};
+use rezzy::merkle::{
+    self, AuthEventsHash, ContentHash, EventHeaderRoot, Field, Header, MerkleError,
+    OtherSignedFieldsHash, PrevEventsHash,
+};
 use serde_json::{Value, json};
 use std::fmt::Write;
 
@@ -133,7 +136,13 @@ fn event_root_and_id_stable_vector() {
     let other =
         merkle::component_hash("other_signed_fields", &json!({"origin": "example.org"})).unwrap();
 
-    let root = merkle::event_root(prev, auth, header, content, other);
+    let root = merkle::event_root(
+        PrevEventsHash::from(prev),
+        AuthEventsHash::from(auth),
+        EventHeaderRoot::from(header),
+        ContentHash::from(content),
+        OtherSignedFieldsHash::from(other),
+    );
 
     assert_eq!(
         hex(root),
@@ -171,6 +180,16 @@ fn invalid_field_name_bytes_rejected() {
     assert_eq!(
         merkle::leaf_hash_bytes(&[0xff], b"null").unwrap_err(),
         MerkleError::InvalidFieldName
+    );
+}
+
+#[test]
+fn valid_field_name_bytes_match_str_leaf_hash() {
+    let canonical = br#"{"body":"hello"}"#;
+
+    assert_eq!(
+        merkle::leaf_hash_bytes(b"content", canonical).unwrap(),
+        merkle::leaf_hash("content", canonical).unwrap()
     );
 }
 
