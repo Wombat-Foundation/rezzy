@@ -367,12 +367,10 @@ fn append_string(out: &mut Vec<u8>, string: &str) {
             '\r' => out.extend_from_slice(br"\r"),
             '\t' => out.extend_from_slice(br"\t"),
             '\u{00}'..='\u{1f}' => {
-                let code = ch as u32;
-                out.extend_from_slice(b"\\u");
-                for shift in [12_u32, 8, 4, 0] {
-                    let nibble = ((code >> shift) & 0xF) as u8;
-                    out.push(HEX_LOWER[usize::from(nibble)]);
-                }
+                let code = ch as usize;
+                out.extend_from_slice(b"\\u00");
+                out.push(HEX_LOWER[(code >> 4) & 0x0f]);
+                out.push(HEX_LOWER[code & 0x0f]);
             }
             _ => {
                 let mut buf = [0; 4];
