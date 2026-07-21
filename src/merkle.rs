@@ -67,7 +67,7 @@ impl Field {
     }
 }
 
-/// Fields committed by `event_header_root`.
+/// Fields committed by [`header_root`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub room_id: String,
@@ -137,7 +137,9 @@ pub fn leaf_hash_bytes(field_name: &[u8], canonical_value: &[u8]) -> Result<Hash
 /// Returns a [`MerkleError`] if the field name is invalid or `value` cannot be
 /// encoded as Matrix Canonical JSON.
 pub fn component_hash(field_name: &str, value: &Value) -> Result<Hash, MerkleError> {
-    Ok(field_leaf(&Field::new(field_name, value.clone()))?.hash)
+    validate_field_name(field_name)?;
+    let canonical = canonical_json(value)?;
+    leaf_hash(field_name, &canonical)
 }
 
 /// Computes the RFC6962-shaped Merkle root over sorted MSC4511 field leaves.
@@ -151,7 +153,7 @@ pub fn root(fields: &[Field]) -> Result<Hash, MerkleError> {
     root_from_leaves(&leaves)
 }
 
-/// Computes `event_header_root` over `room_id`, `sender`, `type`, `state_key`,
+/// Computes `header_root` over `room_id`, `sender`, `type`, `state_key`,
 /// `redacts`, `depth`, and `origin_server_ts`. Missing optional fields are
 /// encoded as `null`.
 ///
