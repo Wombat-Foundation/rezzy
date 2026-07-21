@@ -7,6 +7,7 @@ use alloc::{
 };
 use core::fmt;
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::Value;
 use sha3::{Digest, Sha3_256};
 
@@ -198,7 +199,7 @@ pub fn event_root(
 /// Derives "$" || unpadded base64url(`event_root`).
 #[must_use]
 pub fn event_id(event_root: Hash) -> String {
-    format!("${}", base64_url_no_pad(&event_root))
+    format!("${}", URL_SAFE_NO_PAD.encode(event_root))
 }
 
 fn leaves(fields: &[Field]) -> Result<Vec<Leaf>, MerkleError> {
@@ -226,20 +227,20 @@ fn field_leaf(field: &Field) -> Result<Leaf, MerkleError> {
 }
 
 fn root_from_leaves(leaves: &[Leaf]) -> Result<Hash, MerkleError> {
-    if leaves.is_empty() {
-        return Err(MerkleError::NoLeaves);
-    }
     let hashes = leaves.iter().map(|leaf| leaf.hash).collect::<Vec<_>>();
-    Ok(merkle_root(&hashes))
+    merkle_root(&hashes).ok_or(MerkleError::NoLeaves)
 }
 
-fn merkle_root(hashes: &[Hash]) -> Hash {
+fn merkle_root(hashes: &[Hash]) -> Option<Hash> {
     match hashes.len() {
-        1 => hashes[0],
-        2 => inner_hash(hashes[0], hashes[1]),
+        0 => None,
+        1 => Some(hashes[0]),
+        2 => Some(inner_hash(hashes[0], hashes[1])),
         len => {
             let k = largest_power_of_two_less_than(len);
-            inner_hash(merkle_root(&hashes[..k]), merkle_root(&hashes[k..]))
+            let left = merkle_root(&hashes[..k])?;
+            let right = merkle_root(&hashes[k..])?;
+            Some(inner_hash(left, right))
         }
     }
 }
@@ -356,44 +357,4 @@ fn hash_parts(parts: &[&[u8]]) -> Hash {
         hasher.update(part);
     }
     hasher.finalize().into()
-}
-
-fn base64_url_no_pad(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::new();
-    let mut chunks = bytes.chunks_exact(3);
-    for chunk in &mut chunks {
-        let n = (u32::from(chunk[0]) << 16) | (u32::from(chunk[1]) << 8) | u32::from(chunk[2]);
-        out.push(char::from(ALPHABET[((n >> 18) & 0x3f) as usize]));
-        out.push(char::from(ALPHABET[((n >> 12) & 0x3f) as usize]));
-        out.push(char::from(ALPHABET[((n >> 6) & 0x3f) as usize]));
-        out.push(char::from(ALPHABET[(n & 0x3f) as usize]));
-    }
-
-    let rem = chunks.remainder();
-    if rem.len() == 1 {
-        let n = u32::from(rem[0]) << 16;
-        out.push(char::from(ALPHABET[((n >> 18) & 0x3f) as usize]));
-        out.push(char::from(ALPHABET[((n >> 12) & 0x3f) as usize]));
-    } else if rem.len() == 2 {
-        let n = (u32::from(rem[0]) << 16) | (u32::from(rem[1]) << 8);
-        out.push(char::from(ALPHABET[((n >> 18) & 0x3f) as usize]));
-        out.push(char::from(ALPHABET[((n >> 12) & 0x3f) as usize]));
-        out.push(char::from(ALPHABET[((n >> 6) & 0x3f) as usize]));
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::base64_url_no_pad;
-
-    #[test]
-    fn base64_url_no_pad_covers_remainder_cases() {
-        assert_eq!(base64_url_no_pad(&[]), "");
-        assert_eq!(base64_url_no_pad(b"f"), "Zg");
-        assert_eq!(base64_url_no_pad(b"fo"), "Zm8");
-        assert_eq!(base64_url_no_pad(b"foo"), "Zm9v");
-        assert_eq!(base64_url_no_pad(b"foob"), "Zm9vYg");
-    }
 }
