@@ -534,15 +534,13 @@ fn test_create_event_no_prev_events() {
         json!({}),
     );
     let state: RoomState = RoomState::new();
-    assert!(
-        check_auth(
-            &create,
-            &state,
-            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
-            None
-        )
-        .is_ok()
-    );
+    assert!(check_auth(
+        &create,
+        &state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+        None
+    )
+    .is_ok());
 }
 
 #[test]
@@ -603,15 +601,13 @@ fn test_joined_member_can_send() {
             json!({"membership": "join"}),
         ),
     );
-    assert!(
-        check_auth(
-            &msg,
-            &state,
-            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
-            None
-        )
-        .is_ok()
-    );
+    assert!(check_auth(
+        &msg,
+        &state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+        None
+    )
+    .is_ok());
 }
 
 #[test]

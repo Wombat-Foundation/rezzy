@@ -7,7 +7,7 @@ use alloc::{
 };
 use core::fmt;
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::Value;
 use sha3::{Digest, Sha3_256};
 

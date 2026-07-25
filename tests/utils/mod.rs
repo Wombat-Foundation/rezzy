@@ -160,7 +160,7 @@ pub fn parse_jsonl_state(input: &str) -> RoomState {
 #[cfg(feature = "hashing")]
 #[allow(dead_code)]
 pub fn print_canonical_hash(json_str: &str) {
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use sha2::{Digest, Sha256};
 
     fn sort_keys(value: &mut serde_json::Value) {

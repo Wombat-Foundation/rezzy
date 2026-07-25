@@ -13,7 +13,7 @@
 
 use super::StateProvider;
 use crate::basespec::event_types::{
-    DEFAULT_PL_USER, M_ROOM_CREATE, M_ROOM_POWER_LEVELS, MAX_POWER_LEVEL_RUST,
+    DEFAULT_PL_USER, MAX_POWER_LEVEL_RUST, M_ROOM_CREATE, M_ROOM_POWER_LEVELS,
 };
 use crate::basespec::rezzy_types::{EventContent, EventLike, StateResVersion};
 

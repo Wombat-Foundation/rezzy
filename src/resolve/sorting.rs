@@ -17,11 +17,11 @@ use alloc::collections::{BinaryHeap, VecDeque};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use crate::HashMap;
-use crate::basespec::event_types::{M_ROOM_POWER_LEVELS, MAX_POWER_LEVEL_RUST};
+use crate::basespec::event_types::{MAX_POWER_LEVEL_RUST, M_ROOM_POWER_LEVELS};
 #[cfg(test)]
 use crate::basespec::rezzy_types::LeanEvent;
 use crate::basespec::rezzy_types::{EventLike, KahnSortResult, SortPriority, StateResVersion};
+use crate::HashMap;
 
 /// Dynamically fetches the sender's power level by inspecting the event's immediate `auth_events`.
 /// Recursive traversal of the auth chain is avoided to prevent bypassing immediate restrictions.
@@ -344,7 +344,7 @@ where
     C: Clone + crate::basespec::rezzy_types::EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
-    use crate::basespec::event_types::{M_EMPTY_STATE_KEY, M_ROOM_POWER_LEVELS};
+    use crate::basespec::event_types::M_EMPTY_STATE_KEY;
 
     let mut mainline = Vec::new();
     let mut seen_in_mainline = hashbrown::HashSet::new();
@@ -364,11 +364,8 @@ where
 
         // Check cache first
         if let Some(cached) = pl_parent_cache.get(&eid) {
-            #[allow(clippy::assigning_clones)]
-            // `current` was consumed by while-let, no alloc to reuse
-            {
-                current = cached.clone();
-            }
+            current = None;
+            current.clone_from(cached);
             continue;
         }
 
@@ -494,7 +491,7 @@ pub fn mainline_sort<Id, C, E>(
     C: Clone + crate::basespec::rezzy_types::EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
-    #[cfg(all(debug_assertions, not(test)))]
+    #[cfg(all(feature = "std", debug_assertions, not(test)))]
     std::eprintln!(
         "[DEBUG] mainline_sort: sorting {} non-power events against mainline of length {}",
         events.len(),

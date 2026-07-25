@@ -10,7 +10,7 @@
 //! Run: `cargo test --features std --test snapshots`
 mod utils;
 
-use rezzy::{LeanEvent, StateResVersion, resolve_iterative_sort};
+use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use serde_json::Value;
 use std::collections::HashMap;
 

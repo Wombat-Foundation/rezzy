@@ -1,0 +1,113 @@
+7/25/2026
+
+  Here is the status of the repository and the current branch (feat/msc45xx-pdu-set-reconciliation-via-pinsketch).
+  ──────
+  ### 1. Current Branch: feat/msc45xx-pdu-set-reconciliation-via-pinsketch
+
+  The implementation of MSC0501 / MSC45xx PDU Set Reconciliation via PinSketch is feature-complete in terms of logic, tests, and benchmarks.
+
+  #### What was done:
+
+  • Syndrome Decoding & GF(2⁶⁴) Math: Implemented pinsketch polynomial root factorization over GF (2⁶⁴), 128-bit integrity accumulators, and wire serialization (algebraic.rs, gf64.rs).
+  • Client & Server Protocol Pipelines: Built client.rs and server.rs for bucket summary sketches and pre-round gating.
+  • Triage & Resident Storage: Strata-based resident storage (resident.rs) and bucket triage decoding (triage.rs).
+  • Verification & Lints: 100% test pass rate (cargo test) and zero Clippy warnings (cargo clippy --all-targets --all-features).
+
+  #### What's left on this branch:
+
+  1. Commit Cleanup: There are two un-squashed fixup! commits on HEAD (c3f557e & cb4c7ca targeting acfdce7) that should be squashed via git rebase -i --autosquash before final merge into master / dev.
+  2. Homeserver HTTP Handler Integration: rezzy provides the synchronous pure-CPU core routines (ReconciliationClient, build_bucket_sketches, decode_bucket_sketches). Homeserver integrations (e.g., Conduwuit/Synapse) need to
+  map these to Matrix federation HTTP routes (/_matrix/federation/v1/reconcile/...).
+  ──────
+  ### 2. General Codebase TODOs & Open Items
+
+  A codebase search reveals a few pending technical debt items / TODOs in other modules:
+
+  • State Resolution / Graph Traversal (at.rs):
+      • Evaluate V2.2 (MSC4242 State DAGs) requirements for merge base selection.
+      • Handle CycleDetected errors more explicitly instead of falling back on log outputs.
+  • LtHash Allocation (lthash.rs):
+      • LtHash allocates a 2KiB stack frame ([u16; 1024]); consider optimizing state updates.
+  • Spec Invariants & Redaction (rezzy_types.rs):
+      • Enforce PDU structural syntax validation ($ prefix rules for event IDs).
+      • Expand test coverage for soft-failed vs. rejected events.
+      • Complete full redaction rules matrix across legacy room versions.
+
+  ──────
+  ### 3. Other Active / Parallel Branches in Repository
+
+  • fix/anomaly-17-synthetic-fixture: Replaces a heavy 4,503-line DAG test file with a lightweight 14-event synthetic fixture.
+  • chore/benchmark-profiling: Benchmarking branch comparing iterative sorting against lattice folding.
+  • origin/feat/power-level-spec-compliance: Fixes version awareness during auth checks for 3rd-party invites.
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+7/15/2026
+
+› should we define a new folder like biz or etc or lib or something to represent not state rez related stuff, but still outofband related?
+
+
+• Yes. I would not put this under state, resolve, or auth; it is not state resolution logic.
+
+  I’d use a domain name, not a generic bucket:
+
+  src/out_of_band/
+    mod.rs
+    cuckoo_verify.rs
+    server_keys.rs   // later, if needed
+    minting.rs       // later, if this grows
+
+  Then in src/lib.rs:
+
+  pub mod out_of_band;
+
+  And callers use:
+
+  rezzy::out_of_band::cuckoo_verify::verify_minting_pow(...)
+
+  I’d avoid names like biz, etc, misc, or lib. They become junk drawers quickly. out_of_band is explicit enough: this is adjacent Matrix machinery, but not state resolution.
+
+  If you expect more PQ/server-key work, another defensible option is:
+
+  src/federation/
+    mod.rs
+    server_keys/
+      mod.rs
+      cuckoo_verify.rs
+
+  But for this repo, out_of_band is probably the better boundary because it says “not core state res” without overcommitting to a full federation stack.
+
+
+› does this belong in its own micro-service backend?
+
+
+• Probably yes, if this is intended for real key minting.
+
+  For verification only, keeping it as a library is fine. Verification is cheap, deterministic, and useful inside homeservers/notaries.
+
+  For minting/solving, I’d separate it:
+
+  rezzy crate:
+    verify embedded PoW
+    derive key_id / short_key_id
+    validate key object shape
+
+  minting service:
+    generate FN-DSA keypair
+    search Cuckoo nonce/solution
+    emit server key object
+    manage CPU/GPU workers
+
+  Reasons to split minting:
+
+  - It is expensive and operationally different from request handling.
+  - It may need GPU/large-memory workers or native solver binaries.
+  - It has different failure modes, queues, progress reporting, cancellation, and rate controls.
+  - It touches private key generation/signing, which benefits from tighter isolation.
+  - Homeservers and notaries need verification, but usually do not need to mint often.
+
+  I would not make verification a microservice. That adds latency and another dependency to a hot path. Keep verification as an in-process Rust library.
+
+  So the clean split is: library verifier in rezzy or a small shared crate; separate minting backend/service for creating keys and PoW stamps.

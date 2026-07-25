@@ -46,11 +46,11 @@
 //! );
 //! ```
 
-use crate::HashMap;
 use crate::basespec::rezzy_types::{
     EventContent, EventId, EventProvider, LeanEvent, StateResVersion,
 };
 use crate::state::at::SharedState;
+use crate::HashMap;
 use alloc::vec::Vec;
 
 /// Partitions N state maps into unconflicted state (agreed by all) and a set

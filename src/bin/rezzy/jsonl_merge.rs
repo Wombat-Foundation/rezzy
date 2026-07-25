@@ -93,7 +93,6 @@ pub fn merge_event_sets(
     quiet: bool,
 ) -> Result<Vec<serde_json::Value>, anyhow::Error> {
     extern crate anyhow;
-    use std::borrow::ToOwned;
     use std::collections::HashSet;
 
     let num_files = file_sets.len();

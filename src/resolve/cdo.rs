@@ -30,8 +30,8 @@
 //! bitmask sweeps over a topologically-sorted event array. The chunk size is
 //! auto-selected at compile time: 512 bits on AVX-512, 256 bits otherwise.
 
-use crate::HashMap;
 use crate::basespec::rezzy_types::LeanEvent;
+use crate::HashMap;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::cmp::Ordering;

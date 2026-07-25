@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::utils::{SharedStateMap, compute_state_hash, epoch_days_to_ymd, resolve_parent_states};
+use crate::utils::{compute_state_hash, epoch_days_to_ymd, resolve_parent_states, SharedStateMap};
 use crate::{Args, OutputFormat};
 use rezzy::{LeanEvent, StateResVersion};
 use std::collections::HashMap;
@@ -259,7 +259,7 @@ pub fn format_summary_output(ctx: &FormattingContext) -> serde_json::Value {
     for status in &membership_order {
         if let Some(list) = members.get(*status) {
             membership_obj.insert(
-                status.to_string(),
+                (*status).to_string(),
                 serde_json::json!({
                     "count": list.len(),
                     "users": list

@@ -2,7 +2,7 @@ use rezzy::merkle::{
     self, AuthEventsHash, ContentHash, EventHeaderRoot, Field, Header, MerkleError,
     OtherSignedFieldsHash, PrevEventsHash,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::fmt::Write;
 
 fn sample_fields() -> Vec<Field> {

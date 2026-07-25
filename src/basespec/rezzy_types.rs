@@ -1402,7 +1402,7 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
             #[cfg(feature = "hashing")]
             {
                 use crate::basespec::event_types::{FIELD_SIGNATURES, FIELD_UNSIGNED};
-                use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+                use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
                 use sha2::{Digest, Sha256};
 
                 let mut hash_value = value.clone();
@@ -1797,8 +1797,12 @@ pub trait EventProvider<Id, C, E = LeanEvent<Id, C>> {
     fn get_event(&self, id: &Id) -> Option<&E>;
 }
 
-impl<Id: core::hash::Hash + Eq, C, E: EventLike<Id = Id, Content = C>, S: core::hash::BuildHasher>
-    EventProvider<Id, C, E> for crate::HashMap<Id, E, S>
+impl<
+        Id: core::hash::Hash + Eq,
+        C,
+        E: EventLike<Id = Id, Content = C>,
+        S: core::hash::BuildHasher,
+    > EventProvider<Id, C, E> for crate::HashMap<Id, E, S>
 {
     fn get_event(&self, id: &Id) -> Option<&E> {
         self.get(id)
@@ -1821,12 +1825,12 @@ pub struct SortContext<'a, Id, C, S1, S2, E = LeanEvent<Id, C>> {
 }
 
 impl<
-    Id: core::hash::Hash + Eq,
-    C,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
-    E: EventLike<Id = Id, Content = C>,
-> EventProvider<Id, C, E> for SortContext<'_, Id, C, S1, S2, E>
+        Id: core::hash::Hash + Eq,
+        C,
+        S1: core::hash::BuildHasher,
+        S2: core::hash::BuildHasher,
+        E: EventLike<Id = Id, Content = C>,
+    > EventProvider<Id, C, E> for SortContext<'_, Id, C, S1, S2, E>
 {
     fn get_event(&self, id: &Id) -> Option<&E> {
         self.primary.get(id).or_else(|| self.secondary.get(id))

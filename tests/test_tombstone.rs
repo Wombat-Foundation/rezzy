@@ -1,5 +1,5 @@
 // Quick scratch test - run from ruma-lean root
-use rezzy::auth::{RoomState, check_auth};
+use rezzy::auth::{check_auth, RoomState};
 use rezzy::{LeanEvent, StateResVersion};
 use serde_json::json;
 

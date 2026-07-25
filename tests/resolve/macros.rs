@@ -1,7 +1,5 @@
 #![allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
-use std::{
-    cmp::Ordering, collections::BTreeSet, error::Error, fs, ops::Deref, path::Path, sync::LazyLock,
-};
+use std::{cmp::Ordering, collections::BTreeSet, error::Error, fs, ops::Deref, path::Path};
 
 use ruma_common::{
     EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
@@ -23,8 +21,7 @@ use serde_json::{
 };
 use similar::{Algorithm, udiff::unified_diff};
 
-static FIXTURES_PATH: LazyLock<&'static Path> =
-    LazyLock::new(|| Path::new("tests/resolve/fixtures"));
+const FIXTURES_PATH: &str = "tests/resolve/fixtures";
 
 /// Create a snapshot test attempting the state resolution of several batches of PDUs.
 ///
@@ -261,7 +258,7 @@ fn load_pdus_and_room_version_rules(
         .iter()
         .map(|x| {
             from_json_str(
-                &fs::read_to_string(FIXTURES_PATH.join(x))
+                &fs::read_to_string(Path::new(FIXTURES_PATH).join(x))
                     .expect("should be able to read JSON file of PDUs"),
             )
             .expect("should be able to deserialize JSON file of PDUs")
@@ -307,7 +304,7 @@ fn load_state_maps(
         .iter()
         .map(|path| {
             from_json_str::<Vec<OwnedEventId>>(
-                &fs::read_to_string(FIXTURES_PATH.join(path))
+                &fs::read_to_string(Path::new(FIXTURES_PATH).join(path))
                     .expect("should be able to read JSON file of event IDs"),
             )
             .expect("should be able to deserialize JSON file of event IDs")

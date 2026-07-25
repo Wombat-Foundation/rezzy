@@ -77,10 +77,12 @@ pub mod auth;
 pub mod basespec;
 pub mod cuckoo_verify;
 pub mod merkle;
+pub mod reconcile;
 pub mod resolve;
 pub mod state;
 
 pub use basespec::rezzy_types::*;
+pub use reconcile::*;
 pub use resolve::*;
 pub use state::*;
 

@@ -46,9 +46,9 @@
 
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::{
-    HashMap,
     resolve::sorting::{build_mainline, compute_closest_mainline_positions},
     state::at::{compute_local_auth, iterative_auth_ok},
+    HashMap,
 };
 use alloc::{string::String, vec::Vec};
 
@@ -210,7 +210,8 @@ fn compute_lattice_coordinatized_winners<
 
     #[cfg(feature = "std")]
     {
-        let num_threads = std::thread::available_parallelism().map_or(4, core::num::NonZero::get);
+        let num_threads =
+            std::thread::available_parallelism().map_or(4, core::num::NonZeroUsize::get);
         let chunk_size = (non_power_events
             .len()
             .saturating_add(num_threads)

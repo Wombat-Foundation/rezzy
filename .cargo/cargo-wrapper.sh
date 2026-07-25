@@ -6,7 +6,8 @@ shift
 
 CMD=("$RUSTC")
 
-if [[ -z "$NO_SCCACHE" ]] && command -v sccache >/dev/null 2>&1; then
+# Codex's sandbox cannot connect to the host sccache daemon.
+if [[ -z "$NO_SCCACHE" && -z "$CODEX_THREAD_ID" ]] && command -v sccache >/dev/null 2>&1; then
 	CMD=(sccache "$RUSTC")
 fi
 

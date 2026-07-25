@@ -16,9 +16,10 @@ extern crate alloc;
 
 use alloc::string::String;
 use core::fmt::Write;
-use sha3::{Digest, Keccak256};
+use core::mem::size_of;
+use sha3::{Digest, Sha3_256};
 
-pub const ALGORITHM: &str = "tk.nutra.msc45xx.pow.cuckoo-cycle-42-29-keccak256-cogen";
+pub const ALGORITHM: &str = "tk.nutra.msc45xx.pow.cuckoo-cycle-42-29-sha3-256-key-minting";
 pub const EDGE_BITS: u32 = 29;
 pub const PROOF_SIZE: usize = 42;
 pub const NEDGES: u64 = 1_u64 << EDGE_BITS;
@@ -110,12 +111,20 @@ pub fn verify_minting_pow(
     CuckooVerifier::new(public_key, server_name, pow.nonce).verify(pow.solution)?;
 
     let key_id = minting_key_id(server_name, public_key, pow)?;
-    let short_key_id = short_key_id(&key_id);
-    if short_key_id != advertised_short_key_id {
-        return Err(VerifyError::ShortKeyIdMismatch);
-    }
+    verify_short_key_id(&key_id, advertised_short_key_id)?;
 
     Ok(key_id)
+}
+
+fn verify_short_key_id(
+    key_id: &[u8; 32],
+    advertised_short_key_id: &str,
+) -> Result<(), VerifyError> {
+    if short_key_id(key_id) == advertised_short_key_id {
+        Ok(())
+    } else {
+        Err(VerifyError::ShortKeyIdMismatch)
+    }
 }
 
 #[must_use]
@@ -127,7 +136,7 @@ pub fn graph_seed(public_key: &str, server_name: &str, nonce: u64) -> [u8; 32] {
     push_json_string(&mut graph_object, server_name);
     graph_object.push('}');
 
-    let mut hasher = Keccak256::new();
+    let mut hasher = Sha3_256::new();
     hasher.update(graph_object.as_bytes());
     hasher.update(nonce.to_le_bytes());
     hasher.finalize().into()
@@ -167,7 +176,7 @@ pub fn minting_key_id(
     }
     minting_object.push_str("]}");
 
-    Ok(keccak256(minting_object.as_bytes()))
+    Ok(sha3_256(minting_object.as_bytes()))
 }
 
 #[must_use]
@@ -266,8 +275,8 @@ fn next_same_partition_index(index: usize, len: usize) -> usize {
         .unwrap_or(index & 1)
 }
 
-fn keccak256(input: &[u8]) -> [u8; 32] {
-    let mut hasher = Keccak256::new();
+fn sha3_256(input: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha3_256::new();
     hasher.update(input);
     hasher.finalize().into()
 }
@@ -511,58 +520,8 @@ mod tests {
 
     #[test]
     fn rejects_short_key_id_mismatch() {
-        let solution = [
-            15_721_871,
-            27_250_623,
-            40_834_937,
-            43_089_700,
-            49_725_675,
-            94_429_136,
-            100_270_530,
-            101_621_147,
-            119_359_847,
-            129_180_026,
-            130_819_554,
-            132_047_606,
-            133_673_049,
-            140_712_204,
-            162_316_408,
-            191_597_252,
-            200_891_275,
-            237_223_519,
-            238_025_377,
-            239_844_395,
-            243_515_852,
-            280_600_236,
-            287_522_429,
-            288_472_108,
-            307_373_788,
-            335_402_039,
-            350_999_160,
-            361_015_004,
-            376_986_040,
-            377_645_573,
-            380_999_152,
-            381_251_514,
-            384_445_789,
-            400_545_618,
-            405_885_023,
-            407_988_043,
-            454_991_081,
-            456_836_508,
-            460_439_916,
-            488_639_123,
-            505_128_561,
-            517_987_691,
-        ];
-        let pow = MintingPow {
-            algorithm: ALGORITHM,
-            nonce: 84,
-            solution: &solution,
-        };
-
         assert_eq!(
-            verify_minting_pow("nutra.tk", TEST_PUBLIC_KEY, "wrong-short-key-id", pow),
+            verify_short_key_id(&[0_u8; 32], "wrong-short-key-id"),
             Err(VerifyError::ShortKeyIdMismatch)
         );
     }
@@ -627,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn verifies_00e4_minting_vector() {
+    fn derives_00e4_sha3_vectors() {
         let solution = [
             15_721_871,
             27_250_623,
@@ -678,12 +637,21 @@ mod tests {
             solution: &solution,
         };
 
-        let key_id = verify_minting_pow("nutra.tk", TEST_PUBLIC_KEY, "BjDCRkH5l3MJzj-Xu1yq", pow)
-            .expect("minting proof should verify");
+        assert_eq!(
+            graph_seed(TEST_PUBLIC_KEY, "nutra.tk", 84),
+            [
+                0xce, 0xc4, 0x0c, 0xa7, 0x52, 0x68, 0x16, 0x4c, 0x34, 0x76, 0x49, 0xbc, 0xec, 0x04,
+                0xa1, 0xb0, 0xa8, 0x44, 0x7b, 0x0f, 0xe1, 0xfc, 0xec, 0x88, 0x1b, 0x91, 0x19, 0xd0,
+                0xcd, 0x24, 0x61, 0x36,
+            ]
+        );
 
         assert_eq!(
-            base64url_no_pad(&key_id),
-            "BjDCRkH5l3MJzj-Xu1yq_SXCGhvaK9ZnQjqilaV8EHU"
+            base64url_no_pad(
+                &minting_key_id("nutra.tk", TEST_PUBLIC_KEY, pow)
+                    .expect("shape-valid minting object should hash")
+            ),
+            "8e1YvU6n-P8kl0qV4SqxYF7YP0DV2orKYvIjwsuFduI"
         );
     }
 

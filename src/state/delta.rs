@@ -21,7 +21,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-pub use super::lthash::{LtHash, compute_state_hash};
+pub use super::lthash::{compute_state_hash, LtHash};
 
 /// Which phase of state resolution produced a delta.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

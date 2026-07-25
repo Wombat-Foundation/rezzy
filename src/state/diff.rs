@@ -191,7 +191,7 @@ mod tests {
         new.insert(("m.room.create".into(), String::new()), "$c".into()); // same
         new.insert(("m.room.topic".into(), String::new()), "$t2".into()); // changed
         new.insert(("m.room.avatar".into(), String::new()), "$a".into()); // added
-        // name: intentionally not inserted → shows as Removed
+                                                                          // name: intentionally not inserted → shows as Removed
 
         let diff = compute_state_diff(&old, &new);
         assert_eq!(diff.len(), 3);

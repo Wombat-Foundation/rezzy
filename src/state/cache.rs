@@ -51,8 +51,8 @@
 //! assert_eq!(cached.sender, "@alice:x");
 //! ```
 
-use crate::HashMap;
 use crate::basespec::rezzy_types::{EventContent, EventId, LeanEvent};
+use crate::HashMap;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::cell::{Cell, RefCell};

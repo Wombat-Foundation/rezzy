@@ -1,9 +1,9 @@
 [package]
 name = "rezzy"
 version = "0.5.2"
-edition = "2024"
-rust-version = "1.87" # Synapse-compatible version
-resolver = "3"
+edition = "2021"
+rust-version = "1.75"
+resolver = "2"
 autobins = false
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
 description = "Lightweight and formally verified: State Res v1, v2, and v2.1 reference implementations in Rust."
@@ -40,6 +40,16 @@ exclude = [
     "Makefile",
 ]
 
+[package.metadata.cargo-machete]
+ignored = [
+    # Direct optional anchors for transitive CLI dependency versions that still
+    # parse and build on the Rust 1.75 MSRV.
+    "idna_adapter",
+    "native-tls",
+    "openssl",
+    "openssl-sys",
+]
+
 [[bin]]
 name = "rezzy"
 path = "src/bin/rezzy/main.rs"
@@ -50,21 +60,34 @@ name = "regen_oracles"
 path = "tests/regen_oracles.rs"
 required-features = ["regen"]
 
+[[bin]]
+name = "bench_files"
+path = "scripts/bench_files.rs"
+
 [features]
-default = ["std"]
+default = ["std", "hashing"]
 std = ["alloc", "serde_json/std", "serde/std"]
 alloc = []
-cli = ["std", "dep:clap", "dep:anyhow", "dep:ureq", "mimalloc"]
+cli = [
+    "std",
+    "dep:clap",
+    "dep:anyhow",
+    "dep:ureq",
+    "dep:idna_adapter",
+    "dep:native-tls",
+    "dep:openssl",
+    "dep:openssl-sys",
+    "mimalloc",
+]
 regen = ["std"]
 hashing = []
-signing = ["dep:ed25519-consensus"]
+signing = []
 mock-ruma = [
     "dep:insta",
     "dep:ruma-common",
     "dep:ruma-events",
     "dep:ruma-state-res",
     "dep:test-log",
-    "dep:tracing-subscriber",
 ]
 stress = ["dep:bincode"]
 mimalloc = ["dep:mimalloc"]
@@ -74,16 +97,19 @@ anyhow = { version = "1.0", optional = true }
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 bincode = { version = "1", optional = true }
 blake2 = { version = "0.10", default-features = false }
-clap = { version = "4.4", optional = true, features = ["derive", "env"] }
-ed25519-consensus = { version = "2", optional = true, default-features = false }
+clap = { version = "=4.5.48", optional = true, features = ["derive", "env"] }
 hashbrown = { version = "0.15", default-features = false, features = [
     "default-hasher",
     "inline-more",
 ] }
-imbl = { version = "4", default-features = false, features = ["serde"] }
+idna_adapter = { version = ">=1.0, <1.2", optional = true, default-features = false }
+imbl = { version = "3", default-features = false, features = ["serde"] }
 insta = { version = "1.47.2", optional = true }
 mimalloc = { version = "0.1.52", optional = true }
-roaring = "0.10" # compatible with Synapse's rustc 1.87.0
+native-tls = { version = ">=0.2.11, <0.2.14", optional = true, default-features = false }
+openssl = { version = ">=0.10.64, <0.10.71", optional = true, default-features = false }
+openssl-sys = { version = ">=0.9.101, <0.9.107", optional = true, default-features = false }
+roaring = "0.10" # compatible with the Rust 1.75 MSRV
 ruma-common = { version = "0.19.0", optional = true }
 ruma-events = { version = "0.34.0", optional = true }
 ruma-state-res = { version = "0.17.0", optional = true, features = [
@@ -94,17 +120,20 @@ serde = { version = "1.0", default-features = false, features = [
     "derive",
 ] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
-sha2 = { version = "0.11.0", default-features = false }
-sha3 = { version = "0.11.0", default-features = false }
+sha2 = { version = "0.10.8", default-features = false }
+sha3 = { version = "0.10.8", default-features = false }
 test-log = { version = "0.2.20", optional = true }
-tracing-subscriber = { version = "0.3.23", optional = true }
 ureq = { version = "2.9", optional = true, default-features = false, features = [
     "json",
     "native-tls",
 ] }
 
 [dev-dependencies]
-similar = "3.1.0"
+similar = "2.7.0"
+
+[[bench]]
+name = "reconcile"
+harness = false
 
 [[test]]
 name = "test_snapshots"
@@ -122,6 +151,10 @@ path = "tests/test_hashing.rs"
 [[test]]
 name = "test_merkle"
 path = "tests/test_merkle.rs"
+
+[[test]]
+name = "test_reconcile_algebraic"
+path = "tests/test_reconcile_algebraic.rs"
 
 [[test]]
 name = "test_traversal"
@@ -188,7 +221,7 @@ name = "test_lattice"
 path = "tests/test_lattice.rs"
 
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 unexpected_cfgs = { level = "warn", check-cfg = [
     "cfg(coverage)",
     "cfg(coverage_nightly)",
@@ -197,12 +230,14 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [lints.clippy]
-pedantic = "warn"
-perf = "warn"
-complexity = "warn"
-style = "warn"
-correctness = "warn"
-suspicious = "warn"
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+similar_names = "allow"
 
 # High-Value Security & Robustness restrictions
 arithmetic_side_effects = "warn"

@@ -1918,11 +1918,9 @@ mod tests {
             &["X".to_string(), "MISSING_1".to_string()],
             None,
         );
-        assert!(
-            result
-                .missing_auth_events
-                .contains(&"MISSING_1".to_string())
-        );
+        assert!(result
+            .missing_auth_events
+            .contains(&"MISSING_1".to_string()));
         assert!(!result.subgraph.contains_key("MISSING_1"));
     }
 
@@ -2320,7 +2318,7 @@ mod tests {
 
     #[test]
     fn test_coverage_booster_auth_cases() {
-        use rezzy::auth::{AuthError, RoomState, check_auth, check_auth_chain};
+        use rezzy::auth::{check_auth, check_auth_chain, AuthError, RoomState};
         use serde_json::json;
 
         // 1. Format every single variant of AuthError to ensure 100% Display coverage
@@ -2425,15 +2423,13 @@ mod tests {
             sender: "@alice:example.com".into(),
             ..Default::default()
         };
-        assert!(
-            check_auth(
-                &creator_name_change,
-                &state,
-                rezzy::basespec::rezzy_types::StateResVersion::V2_1,
-                None
-            )
-            .is_ok()
-        );
+        assert!(check_auth(
+            &creator_name_change,
+            &state,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
+        )
+        .is_ok());
 
         // Banned user membership transition
         let mut state2 = RoomState::new();
@@ -2482,15 +2478,13 @@ mod tests {
             content: json!({ "membership": "invite" }),
             ..Default::default()
         };
-        assert!(
-            check_auth(
-                &self_invite,
-                &state2,
-                rezzy::basespec::rezzy_types::StateResVersion::V2_1,
-                None
-            )
-            .is_err()
-        );
+        assert!(check_auth(
+            &self_invite,
+            &state2,
+            rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+            None
+        )
+        .is_err());
 
         // Invalid transition target user != sender for join
         let bad_join: LeanEvent = LeanEvent {
@@ -2892,7 +2886,7 @@ mod tests {
         assert_eq!(clamped_neg, None);
     }
 }
-use rezzy::{KahnSortResult, LeanEvent, StateResVersion, compute_state_at};
+use rezzy::{compute_state_at, KahnSortResult, LeanEvent, StateResVersion};
 
 #[test]
 fn test_types_kahn_sort_result_methods() {
@@ -3418,7 +3412,7 @@ fn test_msc4289_sorting_v2_creator_gets_pl_100() {
 fn test_resolve_iterative_sort_with_deltas_parity() {
     use rezzy::state::delta::ResolvePhase;
     use rezzy::{
-        LeanEvent, StateResVersion, resolve_iterative_sort, resolve_iterative_sort_with_deltas,
+        resolve_iterative_sort, resolve_iterative_sort_with_deltas, LeanEvent, StateResVersion,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -3590,7 +3584,7 @@ fn test_resolve_iterative_sort_with_deltas_parity() {
 
 #[test]
 fn test_resolve_iterative_sort_with_deltas_no_duplicate_power_events() {
-    use rezzy::{LeanEvent, StateResVersion, resolve_iterative_sort_with_deltas};
+    use rezzy::{resolve_iterative_sort_with_deltas, LeanEvent, StateResVersion};
     use std::collections::HashMap;
 
     let mut unconflicted = imbl::OrdMap::new();
@@ -3658,7 +3652,7 @@ fn test_resolve_iterative_sort_with_deltas_no_duplicate_power_events() {
 /// It's NOT in `conflicted_events`, so `sort_set.get(id)` misses and the fallback fires.
 #[test]
 fn test_deltas_supplemental_power_event_from_auth_context() {
-    use rezzy::{LeanEvent, StateResVersion, resolve_iterative_sort_with_deltas};
+    use rezzy::{resolve_iterative_sort_with_deltas, LeanEvent, StateResVersion};
 
     // Two conflicting PLs (alice vs bob), both auth-chained through an ancestor PL
     // that lives only in auth_context. MSC4297 supplementation pulls $pl_ancestor
@@ -4006,7 +4000,7 @@ fn test_msc4289_additional_creators_version_gating() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn test_compute_state_at_v2_vs_v2_1_divergence() {
-    use rezzy::{LeanEvent, StateResVersion, resolve_iterative_sort};
+    use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
     use std::collections::HashMap;
 
     // === Auth context: all events available for auth chain lookups ===
@@ -4360,8 +4354,8 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     use rezzy::resolve::cdo::is_ancestor;
     use rezzy::resolve::lattice::resolve_lattice_fold;
     use rezzy::state::at::StateComputationError;
-    use rezzy::state::delta::{CompactedCheckpoint, reconstruct_state_batch};
-    use rezzy::{LeanEvent, StateResVersion, resolve_iterative_sort_with_deltas};
+    use rezzy::state::delta::{reconstruct_state_batch, CompactedCheckpoint};
+    use rezzy::{resolve_iterative_sort_with_deltas, LeanEvent, StateResVersion};
     use std::collections::{BTreeMap, HashMap};
 
     // Cover StateComputationError Display
@@ -4512,16 +4506,12 @@ fn test_coverage_sweeper_for_unreachable_edges() {
 
     assert!(!resolved.contains_key(&("m.room.power_levels".into(), String::new())));
     assert!(!resolved.contains_key(&("m.room.topic".into(), String::new())));
-    assert!(
-        deltas
-            .iter()
-            .any(|d| d.event_id == "$bogus_pl" && !d.accepted)
-    );
-    assert!(
-        deltas
-            .iter()
-            .any(|d| d.event_id == "$bogus_topic" && !d.accepted)
-    );
+    assert!(deltas
+        .iter()
+        .any(|d| d.event_id == "$bogus_pl" && !d.accepted));
+    assert!(deltas
+        .iter()
+        .any(|d| d.event_id == "$bogus_topic" && !d.accepted));
 
     // Cover BTreeMap EventProvider (types.rs)
     let btree_provider: BTreeMap<String, LeanEvent<String, serde_json::Value>> = BTreeMap::new();

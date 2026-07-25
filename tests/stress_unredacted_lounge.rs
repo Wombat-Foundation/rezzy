@@ -9,7 +9,7 @@
 //! the conflicted set, then calls `resolve_iterative_sort` with `StateResVersion::V2_1`.
 mod utils;
 
-use rezzy::{LeanEvent, StateResVersion, resolve_iterative_sort};
+use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::File;
@@ -159,13 +159,14 @@ fn test_unredacted_lounge_mismatch_subgraph() {
         "$Hk-xXbs52DhNQI_Ca1E2DkyNMazBITKkepo8IuqC7EI",
     ];
 
-    let resolved_eids: std::collections::HashSet<&String> = resolved.values().collect();
+    let resolved_eids: std::collections::HashSet<&str> =
+        resolved.values().map(String::as_str).collect();
 
     let mut mismatches = 0u32;
 
     println!("\n=== Checking expected PRESENT ===");
     for id in &expected_present {
-        if resolved_eids.contains(&id.to_string()) {
+        if resolved_eids.contains(id) {
             println!("  OK: {id}");
         } else {
             // Find what actually won in that slot
@@ -202,7 +203,7 @@ fn test_unredacted_lounge_mismatch_subgraph() {
 
     println!("\n=== Checking expected ABSENT ===");
     for id in &expected_absent {
-        if resolved_eids.contains(&id.to_string()) {
+        if resolved_eids.contains(id) {
             println!("MISMATCH: expected ABSENT but PRESENT: {id}");
             mismatches += 1;
         } else {
@@ -335,7 +336,7 @@ fn test_checkpoint_partial_join_resolution() {
             let should_insert = match checkpoint_state.get(&key) {
                 Some(existing_id) => {
                     let existing_ev = bootstrap_events.iter().find(|e| e.event_id == *existing_id);
-                    existing_ev.is_none_or(|e| ev.depth > e.depth)
+                    existing_ev.map_or(true, |e| ev.depth > e.depth)
                 }
                 None => true,
             };

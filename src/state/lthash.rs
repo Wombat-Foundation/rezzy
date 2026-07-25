@@ -98,7 +98,7 @@ impl LtHash {
     pub const ZERO: Self = Self([0u16; 1024]);
 
     /// Domain separation tag per MSC4500.
-    const DST: &[u8] = b"msc4500_lthash16\x00";
+    const DST: &'static [u8] = b"msc4500_lthash16\x00";
 
     /// Compute the 2048-byte SHAKE256 expansion for a single state entry.
     ///

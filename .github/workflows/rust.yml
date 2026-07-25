@@ -11,10 +11,100 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  checks:
+  toolchain-checks:
+    name: Rust ${{ matrix.rust }} MSRV features
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ["1.75.0", "1.82.0", "1.85.0"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: rust-${{ matrix.rust }}
+
+      - name: Toolchain Versions
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Lint
+        run: CARGO_FEATURE_ARGS="--locked --features cli" make lint
+
+      - name: Test
+        run: CARGO_FEATURE_ARGS="--locked --features cli" make rust/test
+
+      - name: Build CLI
+        run: make build
+
+  all-features:
+    name: Rust ${{ matrix.rust }} all features
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ["1.92.0", "stable", "beta", "nightly"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: rust-${{ matrix.rust }}-all-features
+
+      - name: Toolchain Versions
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Lint
+        run: CARGO_FEATURE_ARGS="--locked --all-features" make lint
+
+      - name: Test
+        run: CARGO_FEATURE_ARGS="--locked --all-features" make rust/test
+
+  checks:
+    name: Format, Coverage, and Summary
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: rust-stable-summary
 
       - name: Install dependencies
         run: |
@@ -26,7 +116,7 @@ jobs:
         run: make format
 
       - name: Lint (Clippy)
-        run: cargo clippy --all-targets --features hashing,cli -- -D warnings -D clippy::perf -D clippy::pedantic
+        run: CARGO_FEATURE_ARGS="--locked --all-features" make lint
 
       - name: Install nightly toolchain (for llvm-cov)
         run: rustup toolchain install nightly --profile minimal
@@ -35,7 +125,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Test Suite
-        run: set -o pipefail; make rust/test 2>&1 | tee test-results.txt
+        run: set -o pipefail; CARGO_FEATURE_ARGS="--locked --all-features" make rust/test 2>&1 | tee test-results.txt
 
       - name: Code Coverage
         run: make rust/coverage
@@ -68,7 +158,7 @@ jobs:
           fail_ci_if_error: false
 
   publish-badge:
-    needs: checks
+    needs: [checks, toolchain-checks, all-features]
     if: always() && github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     permissions:
