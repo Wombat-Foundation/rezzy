@@ -16,6 +16,7 @@ LINT_LOCS_SH = $$(git ls-files '*.sh')
 .PHONY: format
 format: ##H Format codebase (Rust + Lean + scripts)
 	-prettier -w .
+	-markdownlint $$(git ls-files '*.md')
 	-pre-commit run --all-files
 	-black $(LINT_LOCS_PY)
 	-isort $(LINT_LOCS_PY)
@@ -75,7 +76,7 @@ lint: ##H Run all linters
 
 .PHONY: rust/build
 rust/build: ##H Compile Rust binary (release)
-	$(CARGO) build --release --timings --features cli
+	$(CARGO) build --locked --release --timings --features cli
 
 .PHONY: rust/doc
 rust/doc: ##H Generate rustdoc API documentation

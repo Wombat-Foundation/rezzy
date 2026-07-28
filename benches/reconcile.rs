@@ -1,10 +1,11 @@
-use std::collections::HashSet;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
+use rayon::prelude::*;
 use rezzy::{
-    build_bucket_sketches, decode_bucket_sketches, estimate_delta, gf64_mul, BucketRequest,
-    ClientAction, ElementHash, ReconciliationClient, RemoteDigest, ResidentKernel, SyndromeSketch,
+    build_bucket_sketches, decode_bucket_sketches, estimate_delta, gf64_mul, BucketDecodeBatch,
+    BucketDecodeSuccess, BucketRequest, ElementHash, ReconciliationClient, RemoteDigest,
+    ResidentKernel, SyndromeSketch,
 };
 
 fn hash(index: u64) -> ElementHash {
@@ -60,60 +61,141 @@ fn report(name: &str, iterations: u32, elapsed: Duration) {
     println!("{name}: {millis:.6} ms/op ({iterations} iterations)");
 }
 
-fn benchmark_scale_workload(
+fn report_split(name: &str, setup: Duration, algo: Duration) {
+    println!(
+        "{name}: (setup: {:.6} ms, algo: {:.6} ms)",
+        setup.as_secs_f64() * 1e3,
+        algo.as_secs_f64() * 1e3
+    );
+}
+
+fn benchmark_pinsketch_toggle(capacity: usize, element_count: usize) {
+    let mut generator = Xorshift128::new(0x7f4a_7c15_9e37_79b9);
+    let values: Vec<u64> = (0..element_count).map(|_| generator.next() | 1).collect();
+    let elapsed = measure(10, || {
+        let mut sketch = SyndromeSketch::new(capacity).expect("benchmark capacity is valid");
+        for value in &values {
+            sketch
+                .toggle(*value)
+                .expect("benchmark identifiers are valid");
+        }
+        black_box(sketch);
+    });
+    report(
+        &format!("algebraic/toggle/{capacity}x{element_count}"),
+        10,
+        elapsed,
+    );
+}
+
+fn benchmark_pinsketch_subtract(capacity: usize, element_count: usize) {
+    let mut generator = Xorshift128::new(0x1357_9bdf_2468_ace0);
+    let left_values: Vec<u64> = (0..element_count).map(|_| generator.next() | 1).collect();
+    let right_values: Vec<u64> = (0..element_count).map(|_| generator.next() | 1).collect();
+    let mut left = SyndromeSketch::new(capacity).expect("benchmark capacity is valid");
+    let mut right = SyndromeSketch::new(capacity).expect("benchmark capacity is valid");
+    for value in &left_values {
+        left.toggle(*value)
+            .expect("benchmark identifiers are valid");
+    }
+    for value in &right_values {
+        right
+            .toggle(*value)
+            .expect("benchmark identifiers are valid");
+    }
+    let elapsed = measure(100, || {
+        let residual = left.subtract(&right).expect("benchmark capacities match");
+        black_box(residual);
+    });
+    report(
+        &format!("algebraic/subtract/{capacity}x{element_count}"),
+        100,
+        elapsed,
+    );
+}
+
+fn benchmark_pinsketch_decode(capacity: usize, element_count: usize) {
+    let mut generator = Xorshift128::new(0x0ddc_0ffe_e15e_d00d);
+    let mut sketch = SyndromeSketch::new(capacity).expect("benchmark capacity is valid");
+    for _ in 0..element_count {
+        sketch
+            .toggle(generator.next() | 1)
+            .expect("benchmark identifiers are valid");
+    }
+    let encoded = sketch.encode();
+    let elapsed = measure(100, || {
+        let decoded =
+            SyndromeSketch::decode(capacity, &encoded).expect("benchmark decode is valid");
+        let _ = black_box(decoded.decode_elements(element_count.min(capacity)));
+    });
+    report(
+        &format!("algebraic/decode/{capacity}x{element_count}"),
+        100,
+        elapsed,
+    );
+}
+
+struct HashPool {
+    base: Vec<ElementHash>,
+    local_extra: Vec<ElementHash>,
+    remote_extra: Vec<ElementHash>,
+}
+
+impl HashPool {
+    fn new(max_base: usize, max_local_extra: usize, max_remote_extra: usize) -> Self {
+        let mut generator = Xorshift128::new(0x243f_6a88_85a3_08d3);
+        let base = (0..max_base).map(|_| generator.hash()).collect();
+        let local_extra = (0..max_local_extra).map(|_| generator.hash()).collect();
+        let remote_extra = (0..max_remote_extra).map(|_| generator.hash()).collect();
+        Self {
+            base,
+            local_extra,
+            remote_extra,
+        }
+    }
+}
+
+fn benchmark_scale_from_pool(
+    pool: &HashPool,
     base_count: usize,
     local_extra_count: usize,
     remote_extra_count: usize,
-) {
-    let mut generator = Xorshift128::new(0x243f_6a88_85a3_08d3);
-    let base: Vec<_> = (0..base_count).map(|_| generator.hash()).collect();
-    let local_extra: Vec<_> = (0..local_extra_count).map(|_| generator.hash()).collect();
-    let remote_extra: Vec<_> = (0..remote_extra_count).map(|_| generator.hash()).collect();
-    let mut identities = HashSet::with_capacity(
-        base_count
-            .saturating_add(local_extra_count)
-            .saturating_add(remote_extra_count),
-    );
-    for event in base.iter().chain(&local_extra).chain(&remote_extra) {
-        assert!(identities.insert((event.h128, event.h64)));
-    }
+) -> (Duration, Duration) {
+    let setup_start = Instant::now();
+    let base_slice = &pool.base[..base_count];
+    let local_extra_slice = &pool.local_extra[..local_extra_count];
+    let remote_extra_slice = &pool.remote_extra[..remote_extra_count];
+
     let mut local = ResidentKernel::new();
     let mut remote = ResidentKernel::new();
-    for event in &base {
+    for event in base_slice {
         local.insert(*event).expect("benchmark hashes are valid");
         remote.insert(*event).expect("benchmark hashes are valid");
     }
-    for event in &local_extra {
+    for event in local_extra_slice {
         local.insert(*event).expect("benchmark hashes are valid");
     }
-    for event in &remote_extra {
+    for event in remote_extra_slice {
         remote.insert(*event).expect("benchmark hashes are valid");
     }
-    assert_eq!(
-        local.accumulator().known_event_count(),
-        u64::try_from(base_count.saturating_add(local_extra_count)).unwrap()
-    );
-    assert_eq!(
-        remote.accumulator().known_event_count(),
-        u64::try_from(base_count.saturating_add(remote_extra_count)).unwrap()
-    );
-    assert_eq!(
-        local
-            .accumulator()
-            .known_event_count()
-            .checked_sub(remote.accumulator().known_event_count())
-            .expect("local fixture is larger"),
-        local_extra_count.checked_sub(remote_extra_count).unwrap() as u64
-    );
-    let expected_residual = local_extra
-        .iter()
-        .chain(&remote_extra)
-        .fold(0, |residual, event| residual ^ event.h128);
-    assert_eq!(
-        local.accumulator().residual(remote.accumulator()),
-        expected_residual
-    );
-    black_box((local, remote));
+
+    let setup_elapsed = setup_start.elapsed();
+
+    let client = ReconciliationClient::default().allow_unlimited_delta();
+    let remote_digest = RemoteDigest {
+        digest: remote.accumulator().digest(),
+        known_event_count: remote.accumulator().known_event_count(),
+        strata: *remote.strata(),
+        frame_matches: true,
+        has_unknown_extremity: false,
+    };
+
+    let algo_start = Instant::now();
+    let action = client.select_action(&local, remote_digest, 0);
+    black_box(action);
+    let algo_elapsed = algo_start.elapsed();
+
+    (setup_elapsed, algo_elapsed)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -125,6 +207,18 @@ fn main() {
         ));
     });
     report("gf64 multiply", 1_000_000, elapsed);
+
+    benchmark_pinsketch_toggle(8, 4);
+    benchmark_pinsketch_toggle(32, 16);
+    benchmark_pinsketch_toggle(64, 32);
+
+    benchmark_pinsketch_subtract(8, 4);
+    benchmark_pinsketch_subtract(32, 16);
+    benchmark_pinsketch_subtract(64, 32);
+
+    benchmark_pinsketch_decode(8, 4);
+    benchmark_pinsketch_decode(32, 16);
+    benchmark_pinsketch_decode(64, 32);
 
     for count in [100, 1_000, 10_000] {
         let elapsed = measure(10, || {
@@ -188,17 +282,74 @@ fn main() {
     });
     report("triage/parse bucket sketch", 1_000, elapsed);
 
+    let batch = BucketDecodeBatch {
+        successful_buckets: vec![BucketDecodeSuccess {
+            depth: 8,
+            prefix: 0,
+            roots: vec![101, 102],
+        }],
+        failed_buckets: vec![(8, 1)],
+    };
+    let previous = [
+        BucketRequest {
+            depth: 8,
+            prefix: 0,
+            capacity: 8,
+        },
+        BucketRequest {
+            depth: 8,
+            prefix: 1,
+            capacity: 64,
+        },
+    ];
+    let mut batches = vec![batch; 10_000];
+    let elapsed = measure(10_000, || {
+        let _ = black_box(ReconciliationClient::transition_bucket_batch(
+            black_box(batches.pop().unwrap()),
+            black_box(&previous),
+            black_box(vec![]),
+            black_box(Some(100)),
+            black_box(4096),
+        ));
+    });
+    report("triage/transition_bucket_batch split", 10_000, elapsed);
+
+    println!("\n--- scale workload triage (plucking from pre-generated HashPool) ---");
+    let pool = HashPool::new(10_000_000, 5_000_000, 5_000_000);
+
     // Test 1: Medium Sized Room
-    let elapsed = measure(1, || benchmark_scale_workload(50_000, 2_100, 1_900));
-    report("scale/50000 +2100/-1900", 1, elapsed);
+    let (setup_elapsed, algo_elapsed) = benchmark_scale_from_pool(&pool, 50_000, 2_100, 1_900);
+    report_split("scale/50000 +2100/-1900", setup_elapsed, algo_elapsed);
 
     // Test 2: Large Room
-    let elapsed = measure(1, || benchmark_scale_workload(100_000, 5_000, 4_000));
-    report("scale/100000 +5000/-4000", 1, elapsed);
+    let (setup_elapsed, algo_elapsed) = benchmark_scale_from_pool(&pool, 100_000, 5_000, 4_000);
+    report_split("scale/100000 +5000/-4000", setup_elapsed, algo_elapsed);
 
-    // Test 3: Huge Room
-    let elapsed = measure(1, || benchmark_scale_workload(10_000_000, 500_000, 400_000));
-    report("scale/10000000 +500000/-400000", 1, elapsed);
+    // Test 3: Huge Rooms
+    let (setup_elapsed, algo_elapsed) = benchmark_scale_from_pool(&pool, 1_000_000, 10_000, 9_000);
+    report_split("scale/1000000 +10000/-9000", setup_elapsed, algo_elapsed);
+    let (setup_elapsed, algo_elapsed) =
+        benchmark_scale_from_pool(&pool, 10_000_000, 500_000, 400_000);
+    report_split(
+        "scale/10000000 +500000/-400000",
+        setup_elapsed,
+        algo_elapsed,
+    );
+
+    // Test 4: Near-total disagreement (high desync) on 1M and 10M element sets
+    let (setup_elapsed, algo_elapsed) = benchmark_scale_from_pool(&pool, 10_000, 500_000, 490_000);
+    report_split(
+        "scale/1000000 near-total desync (+500000/-490000)",
+        setup_elapsed,
+        algo_elapsed,
+    );
+    let (setup_elapsed, algo_elapsed) =
+        benchmark_scale_from_pool(&pool, 100_000, 5_000_000, 4_900_000);
+    report_split(
+        "scale/10000000 near-total desync (+5000000/-4900000)",
+        setup_elapsed,
+        algo_elapsed,
+    );
 
     // -------------------------------------------------------------------------
     // Extraction sweep: confirms O(log N + Δ) scaling of build_bucket_sketches.
@@ -208,7 +359,7 @@ fn main() {
     // given prefix on average (10M / 2^24), so each bucket extract touches
     // ~BUCKET_CAP planted elements — isolating cost to Δ, not N.
     //
-    // Capacities are capped at 64 per bucket (MAX_BUCKET_SKETCH_CAPACITY).
+    // Capacities are capped at 32 per bucket (MAX_BUCKET_SKETCH_CAPACITY).
     // Multiple buckets are used for larger Δ to stay within the limit.
     // -------------------------------------------------------------------------
     println!("\n--- build_bucket_sketches extraction sweep (N=10M, varying Δ) ---");
@@ -218,16 +369,16 @@ fn main() {
         const HIGH_SHIFT: u32 = 40_u32;
         // Bottom HIGH_SHIFT bits mask — avoids `(1_u64 << 40) - 1` form.
         const LOW_MASK: u64 = u64::MAX >> 24_u32;
-        const BUCKET_CAP: usize = 64; // MAX_BUCKET_SKETCH_CAPACITY per bucket
+        const BUCKET_CAP: usize = 32; // MAX_BUCKET_SKETCH_CAPACITY per bucket
         const BASE_PREFIX: u32 = 0x00_10_00; // arbitrary 24-bit starting prefix
 
         let n: usize = 10_000_000;
 
         let mut gen = Xorshift128::new(0xdead_beef_cafe_babe);
 
-        // 1, 8, 64 buckets → Δ ≈ 64, 512, 4096 extracted elements.
-        // Aggregate capacity: n_buckets × 64 ≤ 4096 = MAX_BUCKETED_SKETCH_CAPACITY.
-        for n_buckets in [1_usize, 8, 64] {
+        // 2, 16, 128 buckets → Δ ≈ 64, 512, 4096 extracted elements.
+        // Aggregate capacity: n_buckets × 32 ≤ 4096 = MAX_BUCKETED_SKETCH_CAPACITY.
+        for n_buckets in [2_usize, 16, 128] {
             let delta = n_buckets.saturating_mul(BUCKET_CAP);
             // Consecutive depth-24 prefixes: each covers a disjoint h64 range.
             let prefixes: Vec<u32> = (0..n_buckets)
@@ -278,81 +429,110 @@ fn main() {
     // the strata-estimation cost already benchmarked above.
     // -------------------------------------------------------------------------
     println!("\n--- extract + decode (triage pre-computed, N varies) ---");
-    for (n, delta) in [
-        (10_000_usize, 100_usize),
-        (100_000, 1_000),
-        (1_000_000, 10_000),
-        (10_000_000, 100_000),
-    ] {
-        let mut gen = Xorshift128::new(0x1234_5678_abcd_ef00 ^ delta as u64);
-        let base: Vec<ElementHash> = (0..n).map(|_| gen.hash()).collect();
-        let remote_extra: Vec<ElementHash> = (0..delta).map(|_| gen.hash()).collect();
+    // -------------------------------------------------------------------------
+    // Extraction + decode (triage pre-computed, populated bucket measurement).
+    //
+    // Measures build_bucket_sketches + XOR + SyndromeSketch::decode_elements
+    // over populated prefix buckets (isolating extraction and decode scaling).
+    // -------------------------------------------------------------------------
+    println!("\n--- extract + decode (populated buckets, N varies) ---");
+    {
+        const DEPTH: u8 = 24;
+        const HIGH_SHIFT: u32 = 40_u32;
+        const LOW_MASK: u64 = u64::MAX >> 24_u32;
+        const BUCKET_CAP: usize = 32;
+        const BASE_PREFIX: u32 = 0x00_10_00;
 
-        let mut local_kernel = ResidentKernel::new();
-        let mut remote_kernel = ResidentKernel::new();
-        for h in &base {
-            local_kernel.insert(*h).unwrap();
-            remote_kernel.insert(*h).unwrap();
-        }
-        for h in &remote_extra {
-            remote_kernel.insert(*h).unwrap();
-        }
+        for (n, n_buckets) in [
+            (10_000_usize, 2_usize),
+            (100_000, 16),
+            (1_000_000, 128),
+            (10_000_000, 128),
+            (10_000_000, 3124),
+        ] {
+            let delta = n_buckets.saturating_mul(BUCKET_CAP);
+            let mut gen = Xorshift128::new(0x1234_5678_abcd_ef00 ^ delta as u64);
 
-        // Pre-sort both sides' h64 indices (in production this is maintained)
-        let mut local_sorted: Vec<u64> = base.iter().map(|h| h.h64).collect();
-        local_sorted.sort_unstable();
-        let mut remote_sorted: Vec<u64> = base.iter().chain(&remote_extra).map(|h| h.h64).collect();
-        remote_sorted.sort_unstable();
+            let prefixes: Vec<u32> = (0..n_buckets)
+                .map(|i| BASE_PREFIX.saturating_add(u32::try_from(i).unwrap()))
+                .collect();
 
-        let remote_digest = RemoteDigest {
-            digest: remote_kernel.accumulator().digest(),
-            known_event_count: remote_kernel.accumulator().known_event_count(),
-            strata: *remote_kernel.strata(),
-            frame_matches: true,
-            has_unknown_extremity: false,
-        };
+            let mut local_sorted: Vec<u64> = Vec::with_capacity(n);
+            let mut remote_sorted: Vec<u64> = Vec::with_capacity(n.saturating_add(delta));
 
-        // Triage runs once outside the timed loop — cost not included.
-        let client = ReconciliationClient::default();
-        let action = client.select_action(&local_kernel, remote_digest, 0);
-        let ClientAction::BucketSketches { requests, .. } = action else {
-            // Δ exceeds gate_threshold (MAX_RECONCILIATION_ROUNDS × MAX_BUCKETED_SKETCH_CAPACITY
-            // = 20 × 4096 = 81920): select_action returns ExtremityDiff, not BucketSketches.
-            println!("extract+decode/N={n} Δ={delta}: gated to ExtremityDiff (Δ > 81920)");
-            continue;
-        };
-
-        let total_cap: usize = requests.iter().map(|r| r.capacity).sum();
-        println!(
-            "  [triage] N={n} Δ={delta}: {} requests, aggregate_cap={total_cap}",
-            requests.len(),
-        );
-
-        // Scale iterations down for expensive cases so total bench time stays reasonable.
-        // Target: ~3-5 seconds per (N, Δ) pair.
-        let iterations: u32 = match n {
-            0..=10_000 => 30,
-            10_001..=100_000 => 10,
-            100_001..=1_000_000 => 3,
-            _ => 1,
-        };
-
-        let elapsed = measure(iterations, || {
-            let remote_sk = build_bucket_sketches(black_box(&remote_sorted), &requests).unwrap();
-            let local_sk = build_bucket_sketches(black_box(&local_sorted), &requests).unwrap();
-            let mut recovered = 0usize;
-            for (mut rs, ls) in remote_sk.into_iter().zip(local_sk) {
-                rs.xor(&ls).unwrap();
-                if let Ok(roots) = rs.decode_elements(rs.capacity()) {
-                    recovered = recovered.saturating_add(roots.len());
+            // Plant BUCKET_CAP elements per bucket in remote index (local gets background)
+            for (&prefix, bucket_i) in prefixes.iter().zip(0_u64..) {
+                for j in 0_u64..BUCKET_CAP as u64 {
+                    let suffix = (gen.next() ^ (bucket_i << 16) ^ j) & LOW_MASK;
+                    let val = (u64::from(prefix) << HIGH_SHIFT) | suffix | 1;
+                    local_sorted.push(val);
+                    // Remote has extra elements in each bucket to create delta
+                    remote_sorted.push(val);
+                    let diff_suffix =
+                        (gen.next() ^ (bucket_i << 16) ^ j.saturating_add(100)) & LOW_MASK;
+                    remote_sorted.push((u64::from(prefix) << HIGH_SHIFT) | diff_suffix | 1);
                 }
             }
-            black_box(recovered);
-        });
-        report(
-            &format!("extract+decode/N={n} Δ={delta}"),
-            iterations,
-            elapsed,
-        );
+
+            for _ in delta..n {
+                let val = gen.next() | 1;
+                local_sorted.push(val);
+                remote_sorted.push(val);
+            }
+
+            local_sorted.sort_unstable();
+            remote_sorted.sort_unstable();
+
+            let requests: Vec<BucketRequest> = prefixes
+                .iter()
+                .map(|&prefix| BucketRequest {
+                    depth: DEPTH,
+                    prefix,
+                    capacity: BUCKET_CAP,
+                })
+                .collect();
+
+            let total_cap: usize = requests.iter().map(|r| r.capacity).sum();
+            println!(
+                "  [populated] N={n} Δ≈{delta}: {} requests, aggregate_cap={total_cap}",
+                requests.len(),
+            );
+
+            let iterations: u32 = match n_buckets {
+                1..=8 => 30,
+                9..=64 => 3,
+                _ => 1,
+            };
+
+            let elapsed = measure(iterations, || {
+                let mut all_remote_sk = Vec::with_capacity(requests.len());
+                let mut all_local_sk = Vec::with_capacity(requests.len());
+
+                for chunk in requests.chunks(64) {
+                    all_remote_sk
+                        .extend(build_bucket_sketches(black_box(&remote_sorted), chunk).unwrap());
+                    all_local_sk
+                        .extend(build_bucket_sketches(black_box(&local_sorted), chunk).unwrap());
+                }
+
+                let recovered: usize = all_remote_sk
+                    .into_par_iter()
+                    .zip(all_local_sk.into_par_iter())
+                    .map(|(mut rs, ls)| {
+                        rs.xor(&ls).unwrap();
+                        match rs.decode_elements(rs.capacity()) {
+                            Ok(roots) => roots.len(),
+                            Err(_) => 0,
+                        }
+                    })
+                    .sum();
+                black_box(recovered);
+            });
+            report(
+                &format!("extract+decode/N={n} Δ≈{delta}"),
+                iterations,
+                elapsed,
+            );
+        }
     }
 }

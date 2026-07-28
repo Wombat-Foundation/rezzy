@@ -14,7 +14,7 @@
 
 use crate::utils::{compute_state_hash, epoch_days_to_ymd, resolve_parent_states, SharedStateMap};
 use crate::{Args, OutputFormat};
-use rezzy::{LeanEvent, StateResVersion};
+use rezzy::{resolved_state_entries, LeanEvent, StateResVersion};
 use std::collections::HashMap;
 
 pub struct FormattingContext<'a> {
@@ -311,6 +311,25 @@ pub fn format_summary_output(ctx: &FormattingContext) -> serde_json::Value {
     })
 }
 
+fn format_resolve_state_output(ctx: &FormattingContext) -> serde_json::Value {
+    let resolved_state: Vec<serde_json::Value> = resolved_state_entries(ctx.final_state_map)
+        .into_iter()
+        .map(|entry| {
+            serde_json::json!({
+                "type": entry.event_type,
+                "state_key": entry.state_key,
+                "event_id": entry.event_id,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "status": "success",
+        "format": "resolve_state",
+        "resolved_state": resolved_state,
+    })
+}
+
 pub fn get_user_displayname(user_id: &str, displaynames: &HashMap<String, String>) -> String {
     displaynames.get(user_id).cloned().unwrap_or_else(|| {
         user_id
@@ -494,6 +513,7 @@ pub fn format_cli_output(ctx: &FormattingContext) -> serde_json::Value {
     match ctx.args.format {
         OutputFormat::Deltas => format_deltas_output(ctx),
         OutputFormat::Summary => format_summary_output(ctx),
+        OutputFormat::ResolveState => format_resolve_state_output(ctx),
         OutputFormat::Timeline => format_timeline_output(ctx),
         OutputFormat::Events => {
             let mut state_events: Vec<&serde_json::Value> = ctx
@@ -548,5 +568,68 @@ pub fn format_cli_output(ctx: &FormattingContext) -> serde_json::Value {
             "auth_chain_size": ctx.auth_chain_ids.len(),
             "state_event_ids": ctx.resolved_state_list
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rezzy::StateResVersion;
+
+    #[test]
+    fn resolve_state_output_exposes_the_resolved_state_entries() {
+        let args = Args {
+            input: Vec::new(),
+            room: None,
+            homeserver: None,
+            token: None,
+            output: None,
+            state_res: None,
+            format: OutputFormat::ResolveState,
+            debug: false,
+            quiet: false,
+            origin: "matrix.org".to_string(),
+        };
+
+        let events_map = HashMap::new();
+        let raw_map = HashMap::new();
+        let heads = Vec::new();
+        let mut final_state_map = imbl::OrdMap::new();
+        final_state_map.insert(("m.room.create".into(), String::new()), "$create".into());
+        final_state_map.insert(("m.room.member".into(), "@alice:x".into()), "$join".into());
+        let resolved_state_list = vec!["$create".to_string(), "$join".to_string()];
+        let auth_chain_ids = Vec::new();
+
+        let ctx = FormattingContext {
+            args: &args,
+            events_map: &events_map,
+            raw_map: &raw_map,
+            heads: &heads,
+            final_state_map: &final_state_map,
+            resolved_state_list: &resolved_state_list,
+            auth_chain_ids: &auth_chain_ids,
+            version: StateResVersion::V2,
+            duration: std::time::Duration::from_millis(0),
+            event_count: 2,
+        };
+
+        let output = format_cli_output(&ctx);
+        assert_eq!(output["status"], "success");
+        assert_eq!(output["format"], "resolve_state");
+        assert_eq!(
+            output["resolved_state"],
+            serde_json::json!([
+                {
+                    "type": "m.room.create",
+                    "state_key": "",
+                    "event_id": "$create",
+                },
+                {
+                    "type": "m.room.member",
+                    "state_key": "@alice:x",
+                    "event_id": "$join",
+                }
+            ])
+        );
     }
 }

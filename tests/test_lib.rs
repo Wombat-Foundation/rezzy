@@ -794,6 +794,19 @@ mod tests {
     }
 
     #[test]
+    fn test_redacts_top_level_is_promoted_into_content() {
+        let event_json = r#"{
+            "event_id": "$redact",
+            "type": "m.room.redaction",
+            "sender": "@alice:example.com",
+            "content": {},
+            "redacts": "$target:example.com"
+        }"#;
+        let event: LeanEvent = serde_json::from_str(event_json).unwrap();
+        assert_eq!(event.get_redacts(), Some("$target:example.com"));
+    }
+
+    #[test]
     fn test_partial_ord_implementations() {
         let e1: LeanEvent = LeanEvent {
             event_id: "a".into(),
@@ -2903,25 +2916,338 @@ fn test_types_kahn_sort_result_methods() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn test_types_validate_syntactic() {
     let mut ev: LeanEvent = LeanEvent {
+        event_id: "$valid_event_id:example.com".to_string(),
         event_type: "m.room.message".to_string(),
+        sender: "@alice:example.com".to_string(),
         ..Default::default()
     };
-    assert!(ev.validate_syntactic().is_ok());
+    assert!(ev.validate_syntactic("11").is_ok());
 
     // Custom/unknown event types are allowed
     // (spec doesn't whitelist types for auth)
     ev.event_type = "org.custom.whatever".to_string();
-    assert!(ev.validate_syntactic().is_ok());
+    assert!(ev.validate_syntactic("11").is_ok());
 
     ev.event_type = "m.room.message".to_string();
-    ev.prev_events = vec!["a".to_string(); 21];
-    assert!(ev.validate_syntactic().is_err());
+    ev.prev_events = vec!["$a".to_string(); 21];
+    assert!(ev.validate_syntactic("11").is_err());
 
     ev.prev_events = vec![];
-    ev.auth_events = vec!["a".to_string(); 11];
-    assert!(ev.validate_syntactic().is_err());
+    ev.auth_events = vec!["$a".to_string(); 11];
+    assert!(ev.validate_syntactic("11").is_err());
+
+    // Test event_id format validation (must start with '$' if non-empty)
+    ev.auth_events = vec![];
+    ev.event_id = "invalid_no_dollar".to_string();
+    assert_eq!(
+        ev.validate_syntactic("11"),
+        Err("event_id must start with '$'")
+    );
+    ev.event_id = String::new();
+    assert_eq!(
+        ev.validate_syntactic("11"),
+        Err("event_id must start with '$'")
+    );
+    ev.event_id = "$valid_event_id:example.com".to_string();
+    assert!(ev.validate_syntactic("11").is_ok());
+
+    // Test sender format validation (must start with '@' and contain ':')
+    ev.sender = "user_without_at:example.com".to_string();
+    assert!(ev.validate_syntactic("11").is_err());
+    ev.sender = "@user_without_colon".to_string();
+    assert!(ev.validate_syntactic("11").is_err());
+    ev.sender = String::new();
+    assert!(
+        ev.validate_syntactic("11").is_err(),
+        "empty sender must be rejected, not silently skipped"
+    );
+    ev.sender = "@alice:".to_string();
+    assert!(
+        ev.validate_syntactic("11").is_err(),
+        "sender with an empty domain must be rejected"
+    );
+    ev.sender = "@alice:example.com".to_string();
+    assert!(ev.validate_syntactic("11").is_ok());
+
+    // Test sender localpart charset (only a-z, 0-9, '.', '_', '=', '-', '/', '+')
+    ev.sender = "@Alice:example.com".to_string();
+    assert!(
+        ev.validate_syntactic("11").is_err(),
+        "uppercase is not a valid localpart character"
+    );
+    ev.sender = "@:example.com".to_string();
+    assert!(
+        ev.validate_syntactic("11").is_err(),
+        "empty localpart is invalid"
+    );
+    ev.sender = "@alice.1_2=3-4/5+6:example.com".to_string();
+    assert!(
+        ev.validate_syntactic("11").is_ok(),
+        "all allowed localpart characters"
+    );
+    ev.sender = "@alice:example.com".to_string();
+
+    // Test depth bounds check (<= 2^53 - 1, the canonical-JSON safe integer bound)
+    ev.depth = (1u64 << 53) - 1;
+    assert!(
+        ev.validate_syntactic("11").is_ok(),
+        "2^53 - 1 is the inclusive upper bound and must be accepted"
+    );
+    ev.depth = 1u64 << 53;
+    assert_eq!(
+        ev.validate_syntactic("11"),
+        Err("depth exceeds maximum allowed value")
+    );
+    ev.depth = 100;
+    assert!(ev.validate_syntactic("11").is_ok());
+
+    // Test 255-byte length limit on event_id, hard-enforced only for v11+
+    // (Synapse's `strict_event_byte_limits_room_versions`, false for v1-v10).
+    ev.event_id = format!("${}", "a".repeat(255));
+    assert_eq!(
+        ev.validate_syntactic("11"),
+        Err("event_id exceeds maximum allowed length of 255 bytes")
+    );
+    assert!(
+        ev.validate_syntactic("10").is_ok(),
+        "pre-v11 rooms only warn on oversized event_id, never hard-fail"
+    );
+    assert_eq!(
+        ev.validate_syntactic("12"),
+        Err("event_id exceeds maximum allowed length of 255 bytes")
+    );
+    assert_eq!(
+        ev.validate_syntactic("12.1"),
+        Err("event_id exceeds maximum allowed length of 255 bytes")
+    );
+    assert_eq!(
+        ev.validate_syntactic("not-a-version"),
+        Err("unsupported room_version")
+    );
+    ev.event_id = "$valid_event_id:example.com".to_string();
+    assert!(ev.validate_syntactic("11").is_ok());
+
+    // Test 255-byte length limit on state_key (same v11+ gating as the other fields)
+    ev.state_key = Some("a".repeat(256));
+    assert_eq!(
+        ev.validate_syntactic("11"),
+        Err("state_key exceeds maximum allowed length of 255 bytes")
+    );
+    assert!(
+        ev.validate_syntactic("10").is_ok(),
+        "pre-v11 rooms only warn on oversized state_key, never hard-fail"
+    );
+    ev.state_key = Some("@alice:example.com".to_string());
+    assert!(ev.validate_syntactic("11").is_ok());
+}
+
+#[test]
+fn test_types_validate_syntactic_create_rules() {
+    let mut ev: LeanEvent = LeanEvent {
+        event_id: "$valid_event_id:example.com".to_string(),
+        event_type: "m.room.create".to_string(),
+        sender: "@alice:example.com".to_string(),
+        ..Default::default()
+    };
+
+    // Rule 1.3: m.room.create must not declare an unrecognised content.room_version.
+    ev.content = serde_json::json!({ "room_version": "999", "creator": "@alice:example.com" });
+    assert_eq!(
+        ev.validate_syntactic("11"),
+        Err("m.room.create content.room_version is not a recognised room version")
+    );
+    ev.content = serde_json::json!({ "room_version": "11", "creator": "@alice:example.com" });
+    assert!(ev.validate_syntactic("11").is_ok());
+    ev.content = serde_json::json!({ "creator": "@alice:example.com" });
+    assert!(
+        ev.validate_syntactic("11").is_ok(),
+        "absent room_version defaults to \"1\" per spec, not rejected"
+    );
+
+    // Rule 1.4 (pre-v12): m.room.create must have a `creator` property.
+    ev.content = serde_json::json!({});
+    assert_eq!(
+        ev.validate_syntactic("11"),
+        Err("m.room.create content must have a 'creator' property")
+    );
+    ev.content = serde_json::json!({ "creator": "not-a-mxid" });
+    assert_eq!(
+        ev.validate_syntactic("11"),
+        Err("m.room.create content.creator must be a valid MXID string")
+    );
+    ev.content = serde_json::json!({ "creator": "@alice:example.com" });
+    assert!(ev.validate_syntactic("11").is_ok());
+
+    // Rule 1.4 (v12+): `creator` is no longer required, but any
+    // `additional_creators` entries must pass the same MXID grammar as `sender`.
+    ev.content = serde_json::json!({});
+    assert!(
+        ev.validate_syntactic("12").is_ok(),
+        "v12+ derives creators from sender/additional_creators, not the creator field"
+    );
+    ev.content = serde_json::json!({ "additional_creators": ["@bob:example.com", "not-a-mxid"] });
+    assert_eq!(
+        ev.validate_syntactic("12"),
+        Err("m.room.create content.additional_creators must be an array of valid MXID strings")
+    );
+    ev.content = serde_json::json!({ "additional_creators": ["@bob:example.com"] });
+    assert!(ev.validate_syntactic("12").is_ok());
+}
+
+#[test]
+fn test_soft_fail_vs_rejected_events_behavior() {
+    use rezzy::EventLike;
+
+    let normal_ev: LeanEvent = LeanEvent {
+        event_id: "$normal".to_string(),
+        event_type: "m.room.message".to_string(),
+        sender: "@alice:example.com".to_string(),
+        rejected: false,
+        soft_fail: false,
+        ..Default::default()
+    };
+    let mut soft_fail_ev = normal_ev.clone();
+    soft_fail_ev.event_id = "$soft_failed".to_string();
+    soft_fail_ev.soft_fail = true;
+
+    let mut rejected_ev = normal_ev.clone();
+    rejected_ev.event_id = "$rejected".to_string();
+    rejected_ev.rejected = true;
+
+    // Both soft-failed and rejected events are recognized as invalid for state resolution
+    assert!(!normal_ev.rejected && !normal_ev.soft_fail);
+    assert!(soft_fail_ev.soft_fail && !soft_fail_ev.rejected);
+    assert!(rejected_ev.rejected && !rejected_ev.soft_fail);
+
+    // Verify soft_fail trait getter
+    assert!(!normal_ev.soft_fail());
+    assert!(soft_fail_ev.soft_fail());
+}
+
+#[test]
+fn test_redaction_preserved_keys_matrix() {
+    use rezzy::basespec::rezzy_types::{redaction_preserved_keys, RedactionRule};
+
+    // Room version 1 (v1 baseline)
+    assert_eq!(
+        redaction_preserved_keys("m.room.create", "1"),
+        RedactionRule::Keys(&["creator"])
+    );
+    assert_eq!(
+        redaction_preserved_keys("m.room.member", "1"),
+        RedactionRule::Keys(&["membership"])
+    );
+    assert_eq!(
+        redaction_preserved_keys("m.room.join_rules", "1"),
+        RedactionRule::Keys(&["join_rule"])
+    );
+
+    // Room version 9 (adds join_authorised_via_users_server & allow)
+    assert_eq!(
+        redaction_preserved_keys("m.room.member", "9"),
+        RedactionRule::Keys(&["membership", "join_authorised_via_users_server"])
+    );
+    assert_eq!(
+        redaction_preserved_keys("m.room.join_rules", "9"),
+        RedactionRule::Keys(&["join_rule", "allow"])
+    );
+
+    // Room version 11: m.room.create preserves ALL content, distinct from "no keys"
+    assert_eq!(
+        redaction_preserved_keys("m.room.create", "11"),
+        RedactionRule::All
+    );
+    assert_eq!(
+        redaction_preserved_keys("m.room.member", "11"),
+        RedactionRule::Keys(&[
+            "membership",
+            "join_authorised_via_users_server",
+            "third_party_invite.signed"
+        ])
+    );
+    assert!(matches!(
+        redaction_preserved_keys("m.room.power_levels", "11"),
+        RedactionRule::Keys(keys) if keys.contains(&"invite")
+    ));
+
+    // Room version 12 inherits v11's redaction rules verbatim (v12.txt includes
+    // the v11-redactions spec fragment rather than defining its own).
+    assert_eq!(
+        redaction_preserved_keys("m.room.create", "12"),
+        RedactionRule::All
+    );
+    assert_eq!(
+        redaction_preserved_keys("m.room.member", "12"),
+        redaction_preserved_keys("m.room.member", "11")
+    );
+    assert_eq!(
+        redaction_preserved_keys("m.room.power_levels", "12"),
+        redaction_preserved_keys("m.room.power_levels", "11")
+    );
+
+    // Pre-v11 power_levels omits invite (only added in v11)
+    assert_eq!(
+        redaction_preserved_keys("m.room.power_levels", "1"),
+        RedactionRule::Keys(&[
+            "ban",
+            "events",
+            "events_default",
+            "kick",
+            "redact",
+            "state_default",
+            "users",
+            "users_default",
+        ])
+    );
+
+    // history_visibility and redaction are version-independent / version-gated
+    assert_eq!(
+        redaction_preserved_keys("m.room.history_visibility", "1"),
+        RedactionRule::Keys(&["history_visibility"])
+    );
+    // `redacts` only moved into `content` in v11+; earlier versions preserve nothing.
+    assert_eq!(
+        redaction_preserved_keys("m.room.redaction", "1"),
+        RedactionRule::None
+    );
+    assert_eq!(
+        redaction_preserved_keys("m.room.redaction", "11"),
+        RedactionRule::Keys(&["redacts"])
+    );
+
+    // m.room.aliases preserves `aliases` in v1-5, removed from v6 onward.
+    assert_eq!(
+        redaction_preserved_keys("m.room.aliases", "1"),
+        RedactionRule::Keys(&["aliases"])
+    );
+    assert_eq!(
+        redaction_preserved_keys("m.room.aliases", "5"),
+        RedactionRule::Keys(&["aliases"])
+    );
+    assert_eq!(
+        redaction_preserved_keys("m.room.aliases", "6"),
+        RedactionRule::None
+    );
+
+    // Unknown event type falls through to the default arm
+    assert_eq!(
+        redaction_preserved_keys("m.room.unknown", "1"),
+        RedactionRule::None
+    );
+
+    // Unsupported/malformed room versions must fail closed (preserve nothing),
+    // never silently fall back to permissive v1 rules.
+    assert_eq!(
+        redaction_preserved_keys("m.room.power_levels", "not-a-version"),
+        RedactionRule::None
+    );
+    assert_eq!(
+        redaction_preserved_keys("m.room.power_levels", "999"),
+        RedactionRule::None
+    );
 }
 
 #[test]
@@ -2947,6 +3273,45 @@ fn test_types_deserialize_power_level_variants() {
     );
     let ev4: LeanEvent = serde_json::from_str(&json_large).unwrap();
     assert_eq!(ev4.power_level, rezzy::auth::MAX_POWER_LEVEL_JSON);
+}
+
+#[test]
+fn test_types_deserialize_depth_and_redaction_validation() {
+    let json_negative_depth =
+        r#"{"event_id":"$1","type":"m.room.message","origin_server_ts":1,"depth":-1}"#;
+    assert!(serde_json::from_str::<LeanEvent>(json_negative_depth).is_err());
+
+    let json_fractional_depth =
+        r#"{"event_id":"$1","type":"m.room.message","origin_server_ts":1,"depth":1.5}"#;
+    assert!(serde_json::from_str::<LeanEvent>(json_fractional_depth).is_err());
+
+    let json_redaction_mismatch = r#"{
+        "event_id": "$redact",
+        "type": "m.room.redaction",
+        "sender": "@alice:example.com",
+        "content": {"redacts": "$different:example.com"},
+        "redacts": "$target:example.com"
+    }"#;
+    assert!(serde_json::from_str::<LeanEvent>(json_redaction_mismatch).is_err());
+
+    let json_redaction_null_content = r#"{
+        "event_id": "$redact",
+        "type": "m.room.redaction",
+        "sender": "@alice:example.com",
+        "content": null,
+        "redacts": "$target:example.com"
+    }"#;
+    let ev: LeanEvent = serde_json::from_str(json_redaction_null_content).unwrap();
+    assert_eq!(ev.get_redacts(), Some("$target:example.com"));
+
+    let json_redaction_non_object_content = r#"{
+        "event_id": "$redact",
+        "type": "m.room.redaction",
+        "sender": "@alice:example.com",
+        "content": "invalid",
+        "redacts": "$target:example.com"
+    }"#;
+    assert!(serde_json::from_str::<LeanEvent>(json_redaction_non_object_content).is_err());
 }
 
 #[test]
@@ -4272,6 +4637,10 @@ fn test_event_content_default_trait_methods() {
     assert!(!c.has_non_integer_users_pl(true));
     assert!(!c.has_non_integer_users_pl(false));
     assert!(!c.has_user_in_users("@someone:x"));
+    assert!(
+        c.additional_creators_are_valid(),
+        "default impl is permissive for content types that don't expose the raw array"
+    );
 }
 
 /// Coverage: default `EventVerifier::verify_third_party_invite` (line 369-375).
@@ -4751,7 +5120,7 @@ fn test_parsed_event_try_new() {
     assert!(rezzy::ParsedEvent::try_new(&invalid).is_err());
 }
 
-// ── Coverage: EventContent::get_room_version (line 811-814) ─────────
+// ── Coverage: EventContent default accessors ────────────────────────
 
 #[test]
 fn test_event_content_get_room_version() {
@@ -4819,6 +5188,16 @@ fn test_event_content_get_room_version() {
 
     // Verify the default trait implementation returns None
     assert_eq!(CustomContent.get_room_version(), None);
+    assert_eq!(CustomContent.get_redacts(), None);
+
+    let lean = LeanEvent::<String, CustomContent> {
+        event_id: "$c".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@a:x".into(),
+        content: CustomContent,
+        ..Default::default()
+    };
+    assert_eq!(lean.get_redacts(), None);
 }
 
 // ── Coverage: LeanEvent inherent methods ────────────────────────────
@@ -5897,4 +6276,52 @@ fn test_performance_and_correctness_dense_bifurcations() {
             "V2 and V2.1.1 must agree on bootstrap member {user}"
         );
     }
+}
+
+#[test]
+fn test_lean_event_serialize_propagates_write_error() {
+    // Accumulates everything written so far and searches the whole buffer on
+    // every call, rather than assuming `state_key` arrives in a single
+    // `write()` call. serde_json's chunking of a `write_all`/formatter call
+    // into individual `write()` calls is an implementation detail that can
+    // change across versions, so the match must be robust to the needle
+    // landing on either side of a call boundary.
+    struct FailingWriter {
+        buffered: Vec<u8>,
+    }
+    impl std::io::Write for FailingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.buffered.extend_from_slice(buf);
+            if self.buffered.windows(9).any(|w| w == b"state_key") {
+                return Err(std::io::Error::other("simulated I/O failure"));
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let ev = LeanEvent::<String> {
+        event_id: "$test".into(),
+        event_type: "m.room.message".into(),
+        state_key: Some("x".into()),
+        power_level: 0,
+        sender: "@alice:x.com".into(),
+        origin_server_ts: 1,
+        content: serde_json::json!({}),
+        prev_events: vec![],
+        auth_events: vec![],
+        depth: 1,
+        rejected: false,
+        soft_fail: false,
+    };
+
+    let result = serde_json::to_writer(
+        FailingWriter {
+            buffered: Vec::new(),
+        },
+        &ev,
+    );
+    assert!(result.is_err());
 }

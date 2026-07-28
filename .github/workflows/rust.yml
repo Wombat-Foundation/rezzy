@@ -12,14 +12,22 @@ env:
 
 jobs:
   toolchain-checks:
-    name: Rust ${{ matrix.rust }} MSRV features
+    name: Rust ${{ matrix.rust }} ${{ matrix.label }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        rust: ["1.75.0", "1.82.0", "1.85.0"]
+        include:
+          - rust: "1.75.0"
+            label: "MSRV (default features)"
+          - rust: "1.80.0"
+            label: "cli feature (MSRV floor)"
+          - rust: "1.82.0"
+            label: "cli feature"
+          - rust: "1.85.0"
+            label: "cli feature"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,13 +49,26 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Lint
+      # rustc 1.75.0 is the library's MSRV; `cli` now pulls in openssl >=0.10.79,
+      # which requires rustc 1.80+, so the 1.75.0 job checks default features only.
+      - name: Lint (default features)
+        if: matrix.rust == '1.75.0'
+        run: CARGO_FEATURE_ARGS="--locked" make lint
+
+      - name: Test (default features)
+        if: matrix.rust == '1.75.0'
+        run: CARGO_FEATURE_ARGS="--locked" make rust/test
+
+      - name: Lint (cli feature)
+        if: matrix.rust != '1.75.0'
         run: CARGO_FEATURE_ARGS="--locked --features cli" make lint
 
-      - name: Test
+      - name: Test (cli feature)
+        if: matrix.rust != '1.75.0'
         run: CARGO_FEATURE_ARGS="--locked --features cli" make rust/test
 
       - name: Build CLI
+        if: matrix.rust != '1.75.0'
         run: make build
 
   all-features:
@@ -109,7 +130,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install pre-commit
-          npm install -g prettier
+          npm install -g prettier@3.6.2 markdownlint-cli@0.43.0
           cargo install cargo-sort
 
       - name: Format Check

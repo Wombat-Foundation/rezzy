@@ -20,7 +20,6 @@ use base64::{
     Engine as _,
 };
 use sha2::{Digest as Sha2Digest, Sha256};
-use sha3::Sha3_256;
 
 pub use super::gf64::mul as gf64_mul;
 
@@ -120,7 +119,7 @@ impl ElementHash {
             return Err(AlgebraicError::InvalidBase64);
         }
         let digest = match format {
-            EventIdFormat::Legacy => Sha3_256::digest(event_id.as_bytes()).to_vec(),
+            EventIdFormat::Legacy => Sha256::digest(event_id.as_bytes()).to_vec(),
             EventIdFormat::V3 => STANDARD_NO_PAD
                 .decode(encoded)
                 .map_err(|_| AlgebraicError::InvalidBase64)?,
@@ -196,6 +195,9 @@ impl RoomAccumulator {
     ///
     /// # Errors
     /// Returns an error for invalid base64 or any decoded length other than 16 bytes.
+    ///
+    /// # Panics
+    /// Panics only if the prior length check is violated internally.
     pub fn decode_digest(encoded: &str) -> Result<u128, AlgebraicError> {
         if encoded.len() != 22 {
             return Err(AlgebraicError::InvalidDigestLength);
@@ -204,8 +206,9 @@ impl RoomAccumulator {
             .decode(encoded)
             .map_err(|_| AlgebraicError::InvalidBase64)?;
         let bytes: [u8; 16] = bytes
+            .as_slice()
             .try_into()
-            .map_err(|_| AlgebraicError::InvalidDigestLength)?;
+            .expect("digest length is validated before decode");
         Ok(u128::from_be_bytes(bytes))
     }
 
@@ -251,6 +254,10 @@ pub struct SyndromeSketch {
 
 impl SyndromeSketch {
     pub(crate) fn from_coordinates(coordinates: Vec<u64>) -> Result<Self, AlgebraicError> {
+        Self::from_coordinates_checked(coordinates)
+    }
+
+    fn from_coordinates_checked(coordinates: Vec<u64>) -> Result<Self, AlgebraicError> {
         if coordinates.is_empty() || coordinates.len() > MAX_SKETCH_CAPACITY {
             return Err(AlgebraicError::InvalidSketchCapacity);
         }
@@ -325,12 +332,18 @@ impl SyndromeSketch {
             return Err(AlgebraicError::InvalidSketchCapacity);
         }
         let decoded = super::pinsketch::decode(&self.coordinates[..max_elements], max_elements)?;
+        self.validate_decoded_elements(decoded)
+    }
+
+    fn validate_decoded_elements(&self, decoded: Vec<u64>) -> Result<Vec<u64>, AlgebraicError> {
         if decoded.contains(&0) {
             return Err(AlgebraicError::DecodeFailure);
         }
         let mut check = Self::new(self.capacity())?;
         for element in &decoded {
-            check.toggle(*element)?;
+            check
+                .toggle(*element)
+                .expect("decoded elements are validated to be nonzero");
         }
         (check == *self)
             .then_some(decoded)
@@ -384,6 +397,13 @@ impl SyndromeSketch {
         let bytes = URL_SAFE_NO_PAD
             .decode(encoded)
             .map_err(|_| AlgebraicError::InvalidBase64)?;
+        Self::from_encoded_bytes(capacity, &bytes)
+    }
+
+    fn from_encoded_bytes(capacity: usize, bytes: &[u8]) -> Result<Self, AlgebraicError> {
+        let expected_len = capacity
+            .checked_mul(8)
+            .ok_or(AlgebraicError::InvalidSketchLength)?;
         if bytes.len() != expected_len {
             return Err(AlgebraicError::InvalidSketchLength);
         }
@@ -400,7 +420,10 @@ impl SyndromeSketch {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use alloc::vec;
+
     use super::*;
 
     fn hash(seed: u8) -> ElementHash {
@@ -471,6 +494,18 @@ mod tests {
     }
 
     #[test]
+    fn sketch_construction_rejects_invalid_capacities() {
+        assert_eq!(
+            SyndromeSketch::from_coordinates(Vec::new()),
+            Err(AlgebraicError::InvalidSketchCapacity)
+        );
+        assert_eq!(
+            SyndromeSketch::from_coordinates(vec![0; MAX_SKETCH_CAPACITY + 1]),
+            Err(AlgebraicError::InvalidSketchCapacity)
+        );
+    }
+
+    #[test]
     fn sketch_xor_modifies_in_place() {
         let mut left = SyndromeSketch::new(4).unwrap();
         left.toggle(1).unwrap();
@@ -487,5 +522,45 @@ mod tests {
         expected.toggle(3).unwrap();
 
         assert_eq!(left, expected);
+    }
+
+    #[test]
+    fn sketch_xor_rejects_capacity_mismatch() {
+        let mut left = SyndromeSketch::new(4).unwrap();
+        let right = SyndromeSketch::new(3).unwrap();
+
+        assert_eq!(left.xor(&right), Err(AlgebraicError::InvalidSketchLength));
+    }
+
+    #[test]
+    fn sketch_decode_elements_rejects_zero_root() {
+        let sketch = SyndromeSketch::new(1).unwrap();
+
+        assert_eq!(
+            sketch.validate_decoded_elements(vec![0]),
+            Err(AlgebraicError::DecodeFailure)
+        );
+    }
+
+    #[test]
+    fn sketch_decode_rejects_invalid_capacity() {
+        assert_eq!(
+            SyndromeSketch::decode(0, ""),
+            Err(AlgebraicError::InvalidSketchCapacity)
+        );
+        assert_eq!(
+            SyndromeSketch::decode(MAX_SKETCH_CAPACITY + 1, ""),
+            Err(AlgebraicError::InvalidSketchCapacity)
+        );
+    }
+
+    #[test]
+    fn sketch_from_encoded_bytes_rejects_length_mismatch() {
+        let bytes = vec![0; 7];
+
+        assert_eq!(
+            SyndromeSketch::from_encoded_bytes(1, &bytes),
+            Err(AlgebraicError::InvalidSketchLength)
+        );
     }
 }

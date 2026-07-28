@@ -53,21 +53,26 @@ impl ResidentKernel {
     /// Adds an element to the reconciled population.
     ///
     /// # Errors
-    /// Returns an error only if the event's hash is completely zero.
+    /// Returns an error if the hash is zero, or if the accumulator rejects the
+    /// update due to its own capacity and count limits.
     pub fn insert(&mut self, hash: ElementHash) -> Result<(), AlgebraicError> {
         if hash.h64 == 0 {
+            // Defensive guard: normal construction should never yield a zero short id.
             return Err(AlgebraicError::ZeroShortIdentifier);
         }
         self.accumulator.insert(hash)?;
         toggle_stratum(&mut self.strata, hash.h64);
         Ok(())
     }
+
     /// Removes an element from the reconciled population.
     ///
     /// # Errors
-    /// Returns an error only if the global event count is already zero.
+    /// Returns an error if the hash is zero, or if the accumulator rejects the
+    /// update because the population is already empty.
     pub fn remove(&mut self, hash: ElementHash) -> Result<(), AlgebraicError> {
         if hash.h64 == 0 {
+            // Defensive guard: normal construction should never yield a zero short id.
             return Err(AlgebraicError::ZeroShortIdentifier);
         }
         self.accumulator.remove(hash)?;
@@ -77,7 +82,7 @@ impl ResidentKernel {
 }
 
 fn toggle_stratum(strata: &mut [[u64; STRATUM_CAPACITY]; STRATA_COUNT], value: u64) {
-    let trailing_zeros = usize::try_from(value.trailing_zeros()).unwrap_or(STRATA_COUNT - 1);
+    let trailing_zeros = usize::try_from(value.trailing_zeros()).unwrap();
     let index = trailing_zeros.min(STRATA_COUNT - 1);
     let squared = gf64::mul(value, value);
     let mut odd_power = value;
@@ -122,5 +127,27 @@ mod tests {
             assert_eq!(*syndrome, expected);
             expected = gf64::mul(expected, squared);
         }
+    }
+
+    #[test]
+    fn rejects_zero_short_identifier_on_insert() {
+        let mut resident = ResidentKernel::new();
+
+        assert_eq!(
+            resident.insert(hash(1, 0)),
+            Err(AlgebraicError::ZeroShortIdentifier)
+        );
+        assert_eq!(resident, ResidentKernel::new());
+    }
+
+    #[test]
+    fn rejects_zero_short_identifier_on_remove() {
+        let mut resident = ResidentKernel::new();
+
+        assert_eq!(
+            resident.remove(hash(1, 0)),
+            Err(AlgebraicError::ZeroShortIdentifier)
+        );
+        assert_eq!(resident, ResidentKernel::new());
     }
 }

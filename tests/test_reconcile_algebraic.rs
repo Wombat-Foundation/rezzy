@@ -44,14 +44,15 @@ fn matrix_hash_derived_event_ids_use_decoded_digest32() {
 }
 
 #[test]
-fn legacy_ids_are_sha3_256_derived_and_stable() {
-    let first =
+fn legacy_ids_use_the_full_sha256_digest() {
+    let digest = [
+        0xa2, 0xd4, 0x1f, 0x14, 0x4e, 0x8e, 0xcf, 0x9f, 0xf5, 0x00, 0x4f, 0xe8, 0xcb, 0xc6, 0x01,
+        0xb4, 0x39, 0xe4, 0x51, 0x7c, 0x1a, 0x05, 0xf0, 0x8f, 0x47, 0x17, 0x54, 0xd4, 0x63, 0x0d,
+        0x70, 0xc8,
+    ];
+    let hash =
         ElementHash::from_matrix_event_id("$opaque:example.org", EventIdFormat::Legacy).unwrap();
-    let second =
-        ElementHash::from_matrix_event_id("$opaque:example.org", EventIdFormat::Legacy).unwrap();
-    assert_eq!(first, second);
-    assert_eq!(first.h128, 0x87d1_a07d_c174_b89c_e6b0_2374_d7fb_b274);
-    assert_eq!(first.h64, 0x87d1_a07d_c174_b89c);
+    assert_eq!(hash, ElementHash::from_digest32(digest));
 }
 
 #[test]
@@ -218,4 +219,77 @@ fn accumulator_residual_is_the_digest_xor() {
     left.insert(first).unwrap();
     right.insert(second).unwrap();
     assert_eq!(left.residual(right), first.h128 ^ second.h128);
+}
+
+#[test]
+fn multi_round_bucket_transition_flow() {
+    use rezzy::{
+        BucketDecodeBatch, BucketDecodeSuccess, BucketRequest, ClientAction, ReconciliationClient,
+    };
+
+    // Round 1: depth 0 bucket at capacity 64 fails because delta is larger than 64.
+    let r1_batch = BucketDecodeBatch {
+        successful_buckets: vec![],
+        failed_buckets: vec![(0, 0)],
+    };
+    let r1_previous = vec![BucketRequest {
+        depth: 0,
+        prefix: 0,
+        capacity: 64,
+    }];
+
+    // Transitioning Round 1 bisects (0,0) into depth 1 prefixes: (1, 0) and (1, 1)
+    let action = ReconciliationClient::transition_bucket_batch(
+        r1_batch,
+        &r1_previous,
+        vec![],
+        Some(100),
+        4096,
+    );
+
+    let ClientAction::BucketSketches {
+        requests: r2_requests,
+        accumulated_roots: r2_roots,
+    } = action
+    else {
+        panic!("Expected BucketSketches action for Round 2");
+    };
+
+    assert_eq!(r2_requests.len(), 2);
+    assert_eq!(r2_requests[0].depth, 1);
+    assert_eq!(r2_requests[0].prefix, 0);
+    assert_eq!(r2_requests[1].depth, 1);
+    assert_eq!(r2_requests[1].prefix, 1);
+
+    // Round 2: both child buckets succeed and decode their respective roots.
+    let r2_batch = BucketDecodeBatch {
+        successful_buckets: vec![
+            BucketDecodeSuccess {
+                depth: 1,
+                prefix: 0,
+                roots: vec![10, 20],
+            },
+            BucketDecodeSuccess {
+                depth: 1,
+                prefix: 1,
+                roots: vec![30, 40],
+            },
+        ],
+        failed_buckets: vec![],
+    };
+
+    let final_action = ReconciliationClient::transition_bucket_batch(
+        r2_batch,
+        &r2_requests,
+        r2_roots,
+        Some(100),
+        4096,
+    );
+
+    assert_eq!(
+        final_action,
+        ClientAction::ResolveRoots {
+            roots: vec![10, 20, 30, 40],
+        }
+    );
 }

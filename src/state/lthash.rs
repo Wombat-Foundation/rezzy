@@ -47,9 +47,9 @@
 /// - **Order independence**: addition is commutative + associative.
 /// - **Cryptographic security**: hard to find set collisions (SVP).
 ///
-/// TODO: `LtHash` is Copy over [u16; 1024] (2KiB). Each `StateUpdate::New/Unchanged`
-/// copies this. Consider boxing or using references in hot rebuild loops if profiling
-/// shows this as a bottleneck.
+/// TODO: `LtHash` is `Copy` over `[u16; 1024]` (2 KiB), so `StateUpdate::New/Unchanged`
+/// copies the full value. If profiling shows this is hot, consider boxing or
+/// using references in rebuild loops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LtHash(pub [u16; 1024]);
 
@@ -143,16 +143,34 @@ impl LtHash {
     }
 
     /// Add a seed into the hash (insert).
+    #[inline]
     fn add_seed(&mut self, seed: &Self) {
-        for (a, b) in self.0.iter_mut().zip(seed.0.iter()) {
-            *a = a.wrapping_add(*b);
+        // Process in 8-lane chunks to assist SIMD auto-vectorization
+        for (a, b) in self.0.chunks_exact_mut(8).zip(seed.0.chunks_exact(8)) {
+            a[0] = a[0].wrapping_add(b[0]);
+            a[1] = a[1].wrapping_add(b[1]);
+            a[2] = a[2].wrapping_add(b[2]);
+            a[3] = a[3].wrapping_add(b[3]);
+            a[4] = a[4].wrapping_add(b[4]);
+            a[5] = a[5].wrapping_add(b[5]);
+            a[6] = a[6].wrapping_add(b[6]);
+            a[7] = a[7].wrapping_add(b[7]);
         }
     }
 
     /// Subtract a seed from the hash (remove).
+    #[inline]
     fn sub_seed(&mut self, seed: &Self) {
-        for (a, b) in self.0.iter_mut().zip(seed.0.iter()) {
-            *a = a.wrapping_sub(*b);
+        // Process in 8-lane chunks to assist SIMD auto-vectorization
+        for (a, b) in self.0.chunks_exact_mut(8).zip(seed.0.chunks_exact(8)) {
+            a[0] = a[0].wrapping_sub(b[0]);
+            a[1] = a[1].wrapping_sub(b[1]);
+            a[2] = a[2].wrapping_sub(b[2]);
+            a[3] = a[3].wrapping_sub(b[3]);
+            a[4] = a[4].wrapping_sub(b[4]);
+            a[5] = a[5].wrapping_sub(b[5]);
+            a[6] = a[6].wrapping_sub(b[6]);
+            a[7] = a[7].wrapping_sub(b[7]);
         }
     }
 
@@ -213,9 +231,14 @@ impl LtHash {
         use blake2::digest::consts::U32;
         use blake2::{Blake2b, Digest};
         let mut hasher = Blake2b::<U32>::new();
-        for val in &self.0 {
-            hasher.update(val.to_le_bytes());
+        let mut bytes = [0u8; 2048];
+        for (i, val) in self.0.iter().enumerate() {
+            let le = val.to_le_bytes();
+            let idx = i.wrapping_mul(2);
+            bytes[idx] = le[0];
+            bytes[idx.wrapping_add(1)] = le[1];
         }
+        hasher.update(&bytes[..]);
         hasher.finalize().into()
     }
 }
@@ -572,6 +595,19 @@ mod tests {
         assert_eq!(
             seed_over, seed_exact,
             "over_max should truncate to exact 65535 boundary"
+        );
+    }
+
+    #[test]
+    fn test_lthash_boundary_multibyte_truncation_rounds_back_to_char_boundary() {
+        // Force the truncation point to land inside a 4-byte UTF-8 character so
+        // the loop has to back up more than once before it reaches a boundary.
+        let over_max = alloc::format!("{}🚀", "a".repeat(65533));
+        let seed_over = LtHash::seed(&over_max, "", &"$1");
+        let seed_exact = LtHash::seed(&"a".repeat(65533), "", &"$1");
+        assert_eq!(
+            seed_over, seed_exact,
+            "truncate_to_u16_limit should back up to the previous char boundary"
         );
     }
 

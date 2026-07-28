@@ -19,6 +19,7 @@ pub const M_ROOM_MESSAGE: &str = "m.room.message";
 pub const M_ROOM_REDACTION: &str = "m.room.redaction";
 pub const M_SPACE_CHILD: &str = "m.space.child";
 pub const M_SPACE_PARENT: &str = "m.space.parent";
+pub const M_ROOM_ALIASES: &str = "m.room.aliases";
 
 pub const M_EMPTY_STATE_KEY: &str = "";
 
@@ -36,6 +37,7 @@ pub const FIELD_REDACT: &str = "redact";
 pub const FIELD_JOIN_RULE: &str = "join_rule";
 pub const FIELD_CREATOR: &str = "creator";
 pub const FIELD_ROOM_VERSION: &str = "room_version";
+pub const FIELD_REDACTS: &str = "redacts";
 pub const FIELD_ADDITIONAL_CREATORS: &str = "additional_creators";
 pub const FIELD_THIRD_PARTY_INVITE: &str = "third_party_invite";
 pub const FIELD_SIGNED: &str = "signed";
@@ -91,6 +93,10 @@ pub const DEFAULT_PL_CREATOR_V11: i64 = 100;
 /// servers in the ecosystem use JSON numbers, which are IEEE 754 doubles.
 /// Values above this lose integer precision.
 pub const MAX_POWER_LEVEL_JSON: i64 = 9_007_199_254_740_991; // 2^53 - 1
+
+/// Maximum safe JSON integer, as a `u64`. Same bound as [`MAX_POWER_LEVEL_JSON`],
+/// just typed for unsigned fields (e.g. `depth`) instead of power levels.
+pub const MAX_SAFE_JSON_INTEGER: u64 = MAX_POWER_LEVEL_JSON as u64;
 
 /// Maximum safe INTERNAL power level value (`i64::MAX`).
 ///

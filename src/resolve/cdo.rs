@@ -30,6 +30,7 @@
 //! bitmask sweeps over a topologically-sorted event array. The chunk size is
 //! auto-selected at compile time: 512 bits on AVX-512, 256 bits otherwise.
 
+use crate::basespec::event_types::{M_ROOM_JOIN_RULES, M_ROOM_POWER_LEVELS};
 use crate::basespec::rezzy_types::LeanEvent;
 use crate::HashMap;
 use alloc::collections::BTreeSet;
@@ -156,9 +157,8 @@ fn sort_cdo_events<'a, Id: Ord + Clone, C: Clone>(
     let mut sorted = events.to_vec();
     sorted.sort_by(|a, b| {
         let type_priority = |t: &str| match t {
-            // TODO: replace hard-coded strings
-            "m.room.power_levels" => 0,
-            "m.room.join_rules" => 1,
+            M_ROOM_POWER_LEVELS => 0,
+            M_ROOM_JOIN_RULES => 1,
             _ => 2,
         };
 

@@ -11,13 +11,19 @@ use super::triage::{
 };
 use super::{AlgebraicError, ElementHash, SyndromeSketch, MAX_LOCAL_SKETCH_DECODE_CAPACITY};
 
-/// Maximum number of rounds allowed for a single reconciliation exchange.
+/// Baseline policy limit for maximum reconciliation rounds in a single exchange.
+///
+/// Paired with [`MAX_BUCKETED_SKETCH_CAPACITY`], the default 20-round limit yields a
+/// default operating point of ~82,000 differing elements before falling back to
+/// extremity-based frame diffing under default client policy.
 pub const MAX_RECONCILIATION_ROUNDS: usize = 20;
 
 /// Requester policy for one MSC0501 reconciliation exchange.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReconciliationClient {
     max_sketch_capacity: usize,
+    max_rounds: usize,
+    gate_threshold: Option<u64>,
 }
 
 /// Information learned from the responder's room digest.
@@ -53,6 +59,11 @@ impl Default for ReconciliationClient {
     fn default() -> Self {
         Self {
             max_sketch_capacity: MAX_LOCAL_SKETCH_DECODE_CAPACITY,
+            max_rounds: MAX_RECONCILIATION_ROUNDS,
+            gate_threshold: u64::try_from(
+                MAX_RECONCILIATION_ROUNDS.saturating_mul(MAX_BUCKETED_SKETCH_CAPACITY),
+            )
+            .ok(),
         }
     }
 }
@@ -69,7 +80,50 @@ impl ReconciliationClient {
         }
         Ok(Self {
             max_sketch_capacity,
+            max_rounds: MAX_RECONCILIATION_ROUNDS,
+            gate_threshold: u64::try_from(
+                MAX_RECONCILIATION_ROUNDS.saturating_mul(MAX_BUCKETED_SKETCH_CAPACITY),
+            )
+            .ok(),
         })
+    }
+
+    /// Sets a custom maximum round count for the reconciliation client,
+    /// adjusting the gate threshold accordingly.
+    #[must_use]
+    pub fn with_max_rounds(mut self, max_rounds: usize) -> Self {
+        self.max_rounds = max_rounds;
+        self.gate_threshold =
+            u64::try_from(max_rounds.saturating_mul(MAX_BUCKETED_SKETCH_CAPACITY)).ok();
+        self
+    }
+
+    /// Sets an explicit gate threshold on the maximum estimated delta.
+    /// Pass `None` to disable delta gating entirely for large syncs.
+    #[must_use]
+    pub fn with_gate_threshold(mut self, threshold: Option<u64>) -> Self {
+        self.gate_threshold = threshold;
+        self
+    }
+
+    /// Disables the delta gate threshold entirely, allowing set reconciliation to proceed
+    /// for arbitrarily large set differences.
+    #[must_use]
+    pub fn allow_unlimited_delta(mut self) -> Self {
+        self.gate_threshold = None;
+        self
+    }
+
+    /// Returns the maximum allowed rounds.
+    #[must_use]
+    pub fn max_rounds(self) -> usize {
+        self.max_rounds
+    }
+
+    /// Returns the gate threshold, if active.
+    #[must_use]
+    pub fn gate_threshold(self) -> Option<u64> {
+        self.gate_threshold
     }
 
     /// Selects the next protocol action from local and remote level-0 state.
@@ -105,11 +159,10 @@ impl ReconciliationClient {
                 Err(_) => return ClientAction::ExtremityDiff,
             };
 
-        let gate_threshold =
-            u64::try_from(MAX_RECONCILIATION_ROUNDS * MAX_BUCKETED_SKETCH_CAPACITY)
-                .unwrap_or(u64::MAX);
-        if estimated_delta > gate_threshold {
-            return ClientAction::ExtremityDiff;
+        if let Some(threshold) = self.gate_threshold {
+            if estimated_delta > threshold {
+                return ClientAction::ExtremityDiff;
+            }
         }
 
         let provisioned = u64::try_from(concurrency_headroom)
@@ -121,16 +174,39 @@ impl ReconciliationClient {
                     .and_then(|capacity| capacity.checked_add(4))
                     .and_then(|capacity| capacity.checked_add(headroom))
             });
-        let capacity = provisioned
+        let target_capacity = provisioned
             .and_then(|value| usize::try_from(value).ok())
             .unwrap_or(usize::MAX);
 
+        let mut depth = 0_u8;
+        let mut buckets = 1_usize;
+
+        while buckets.saturating_mul(32) < target_capacity && depth < 6 {
+            depth = depth.saturating_add(1);
+            buckets = buckets.saturating_mul(2);
+        }
+
+        let per_bucket = target_capacity
+            .div_ceil(buckets)
+            .clamp(4, MAX_BUCKET_SKETCH_CAPACITY);
+        let total_capacity = buckets.saturating_mul(per_bucket);
+
+        if buckets > 64 || total_capacity > crate::reconcile::triage::MAX_BUCKETED_SKETCH_CAPACITY {
+            return ClientAction::ExtremityDiff;
+        }
+
+        let mut requests = alloc::vec::Vec::with_capacity(buckets);
+        let max_prefix = u32::try_from(buckets).unwrap_or(0);
+        for prefix in 0..max_prefix {
+            requests.push(BucketRequest {
+                depth,
+                prefix,
+                capacity: per_bucket,
+            });
+        }
+
         ClientAction::BucketSketches {
-            requests: alloc::vec![BucketRequest {
-                depth: 0,
-                prefix: 0,
-                capacity: capacity.clamp(4, MAX_BUCKET_SKETCH_CAPACITY),
-            }],
+            requests,
             accumulated_roots: alloc::vec![],
         }
     }
@@ -310,6 +386,18 @@ mod tests {
     }
 
     #[test]
+    fn tests_client_builder_methods_and_accessors() {
+        let client = ReconciliationClient::default()
+            .with_max_rounds(42)
+            .with_gate_threshold(Some(999));
+        assert_eq!(client.max_rounds(), 42);
+        assert_eq!(client.gate_threshold(), Some(999));
+
+        let client = client.allow_unlimited_delta();
+        assert_eq!(client.gate_threshold(), None);
+    }
+
+    #[test]
     fn selects_short_circuit_extremity_and_sketch_paths() {
         let local = accumulator(&[hash(1, 1), hash(2, 2)]);
         let client = ReconciliationClient::default();
@@ -360,6 +448,13 @@ mod tests {
     fn caps_large_and_two_sided_differences_for_localization() {
         let client = ReconciliationClient::new(16).unwrap();
         let local = accumulator(&[hash(1, 1)]);
+        let expected_requests = (0..64)
+            .map(|prefix| BucketRequest {
+                depth: 6,
+                prefix,
+                capacity: 24,
+            })
+            .collect();
         assert_eq!(
             client.select_action(
                 &local,
@@ -373,11 +468,7 @@ mod tests {
                 0,
             ),
             ClientAction::BucketSketches {
-                requests: vec![BucketRequest {
-                    depth: 0,
-                    prefix: 0,
-                    capacity: 64,
-                }],
+                requests: expected_requests,
                 accumulated_roots: vec![],
             }
         );

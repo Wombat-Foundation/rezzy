@@ -20,7 +20,7 @@ use core::cmp::Ordering;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::basespec::event_types::MAX_POWER_LEVEL_JSON;
+use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER};
 
 /// Trait alias for types that can serve as event identifiers.
 ///
@@ -110,6 +110,122 @@ impl StateResVersion {
     #[must_use]
     pub const fn is_v2_1_plus(&self) -> bool {
         matches!(self, Self::V2_1 | Self::V2_1_1 | Self::V2_2)
+    }
+}
+
+/// The set of `content` keys preserved for an event type upon redaction.
+///
+/// A flat key list cannot distinguish "preserve everything" from "preserve
+/// nothing" (both would otherwise be represented as an empty slice), so this
+/// is an explicit tri-state. Keys may use a dotted path (e.g.
+/// `"third_party_invite.signed"`) to denote a nested field that survives
+/// redaction even though its parent object does not survive verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedactionRule {
+    /// No keys in `content` survive redaction.
+    None,
+    /// All of `content` survives redaction untouched (e.g. `m.room.create` in v11+).
+    All,
+    /// Only the listed keys (or dotted nested paths) survive redaction.
+    Keys(&'static [&'static str]),
+}
+
+/// Returns the redaction rule for an event type according to the specified
+/// Matrix room version (v1 through v12; v12 inherits v11's rules).
+/// Unknown/malformed versions fail closed.
+#[must_use]
+pub fn redaction_preserved_keys(event_type: &str, room_version: &str) -> RedactionRule {
+    // Explicitly recognized room versions only: an unsupported or malformed
+    // version ID must NOT silently fall back to v1 rules. Failing closed
+    // (preserving nothing) is safer than guessing a permissive rule set.
+    let ver_num: u32 = match room_version {
+        "1" => 1,
+        "2" => 2,
+        "3" => 3,
+        "4" => 4,
+        "5" => 5,
+        "6" => 6,
+        "7" => 7,
+        "8" => 8,
+        "9" => 9,
+        "10" => 10,
+        // v12 inherits v11's redaction rules verbatim (v12.txt includes the
+        // v11-redactions spec fragment rather than defining its own).
+        "11" | "12" | "12.1" => 11,
+        _ => return RedactionRule::None,
+    };
+    match event_type {
+        crate::basespec::event_types::M_ROOM_CREATE => {
+            if ver_num >= 11 {
+                RedactionRule::All
+            } else {
+                RedactionRule::Keys(&["creator"])
+            }
+        }
+        crate::basespec::event_types::M_ROOM_MEMBER => {
+            if ver_num >= 11 {
+                RedactionRule::Keys(&[
+                    "membership",
+                    "join_authorised_via_users_server",
+                    "third_party_invite.signed",
+                ])
+            } else if ver_num >= 9 {
+                RedactionRule::Keys(&["membership", "join_authorised_via_users_server"])
+            } else {
+                RedactionRule::Keys(&["membership"])
+            }
+        }
+        crate::basespec::event_types::M_ROOM_POWER_LEVELS => {
+            if ver_num >= 11 {
+                RedactionRule::Keys(&[
+                    "ban",
+                    "events",
+                    "events_default",
+                    "invite",
+                    "kick",
+                    "redact",
+                    "state_default",
+                    "users",
+                    "users_default",
+                ])
+            } else {
+                RedactionRule::Keys(&[
+                    "ban",
+                    "events",
+                    "events_default",
+                    "kick",
+                    "redact",
+                    "state_default",
+                    "users",
+                    "users_default",
+                ])
+            }
+        }
+        crate::basespec::event_types::M_ROOM_JOIN_RULES => {
+            if ver_num >= 9 {
+                RedactionRule::Keys(&["join_rule", "allow"])
+            } else {
+                RedactionRule::Keys(&["join_rule"])
+            }
+        }
+        crate::basespec::event_types::M_ROOM_HISTORY_VISIBILITY => {
+            RedactionRule::Keys(&["history_visibility"])
+        }
+        crate::basespec::event_types::M_ROOM_ALIASES => {
+            if ver_num <= 5 {
+                RedactionRule::Keys(&["aliases"])
+            } else {
+                RedactionRule::None // removed starting with v6-redactions.txt
+            }
+        }
+        crate::basespec::event_types::M_ROOM_REDACTION => {
+            if ver_num >= 11 {
+                RedactionRule::Keys(&["redacts"]) // `redacts` only moved into `content` in v11+
+            } else {
+                RedactionRule::None
+            }
+        }
+        _ => RedactionRule::None,
     }
 }
 
@@ -359,6 +475,12 @@ pub trait EventLike: DagNode {
     /// Returns the `room_version` field from `m.room.create` content.
     fn get_room_version(&self) -> Option<&str> {
         self.content().get_room_version()
+    }
+
+    /// Returns the `redacts` field (event ID being redacted) for
+    /// `m.room.redaction` events.
+    fn get_redacts(&self) -> Option<&str> {
+        self.content().get_redacts()
     }
 
     /// Returns true if `sender` is listed in the V12+ `additional_creators` array.
@@ -839,8 +961,26 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     fn get_room_version(&self) -> Option<&str> {
         None
     }
+    /// Returns the `m.federate` field from `m.room.create` content, if present.
+    fn get_m_federate(&self) -> Option<bool> {
+        None
+    }
+    /// Returns the event ID of the event being redacted (the `redacts`
+    /// field), for `m.room.redaction` events. Moved into `content` in v11+;
+    /// pre-v11 callers are expected to surface it the same way since
+    /// `LeanEvent` has no dedicated top-level `redacts` field.
+    fn get_redacts(&self) -> Option<&str> {
+        None
+    }
     /// Specific to V12+ rooms.
     fn has_additional_creator(&self, sender: &str) -> bool;
+    /// Returns `true` if `additional_creators` is absent, or present as an
+    /// array of strings each passing the same MXID grammar as `sender`
+    /// (rule 1.4, V12+). Defaults to permissive (`true`) for content types
+    /// that don't expose the raw array.
+    fn additional_creators_are_valid(&self) -> bool {
+        true
+    }
     /// Returns the `join_authorised_via_users_server` field, if present.
     /// Used for `restricted`/`knock_restricted` join rules (room version 8+).
     fn get_join_authorised_via_users_server(&self) -> Option<&str>;
@@ -1046,10 +1186,29 @@ impl EventContent for Value {
             .as_str()
     }
 
+    fn get_m_federate(&self) -> Option<bool> {
+        self.get("m.federate")?.as_bool()
+    }
+
+    fn get_redacts(&self) -> Option<&str> {
+        self.get(crate::basespec::event_types::FIELD_REDACTS)?
+            .as_str()
+    }
+
     fn has_additional_creator(&self, sender: &str) -> bool {
         self.get(crate::basespec::event_types::FIELD_ADDITIONAL_CREATORS)
             .and_then(|v| v.as_array())
             .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(sender)))
+    }
+
+    fn additional_creators_are_valid(&self) -> bool {
+        match self.get(crate::basespec::event_types::FIELD_ADDITIONAL_CREATORS) {
+            None => true,
+            Some(v) => v.as_array().is_some_and(|arr| {
+                arr.iter()
+                    .all(|entry| entry.as_str().is_some_and(is_valid_mxid))
+            }),
+        }
     }
 
     fn get_join_authorised_via_users_server(&self) -> Option<&str> {
@@ -1212,32 +1371,97 @@ impl EventContent for Value {
     }
 }
 
+/// Returns `true` if `room_version`'s major version is 11 or later.
+///
+/// Mirrors Synapse's `strict_event_byte_limits_room_versions` flag
+/// (`rust/src/room_versions.rs`): versions 1-10 inherit `false`, only v11
+/// (and everything derived from it, e.g. v12) sets it `true`. Handles
+/// dotted identifiers like `"12.1"` by comparing the leading major version.
+/// Malformed/unparseable input is treated as pre-v11 (i.e. not strict) for
+/// this byte-limit decision, but callers may still reject an unsupported
+/// `room_version` before reaching this helper.
+fn room_version_is_v11_or_later(room_version: &str) -> bool {
+    room_version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 11)
+}
+
+/// Returns `true` if `id` is a syntactically valid Matrix user ID: `@` prefix,
+/// a `:` separating localpart from domain, a non-empty localpart drawn from
+/// the restricted charset (`a-z`, `0-9`, `.`, `_`, `=`, `-`, `/`, `+`), and a
+/// non-empty domain.
+///
+/// Shared by the `sender` check and, for V12+ rooms, `additional_creators`
+/// entries — both are held to the same grammar per MSC4289.
+pub(crate) fn is_valid_mxid(id: &str) -> bool {
+    let Some((localpart, domain)) = id.strip_prefix('@').and_then(|rest| rest.split_once(':'))
+    else {
+        return false;
+    };
+    !localpart.is_empty()
+        && !domain.is_empty()
+        && localpart.bytes().all(|b| {
+            b.is_ascii_lowercase()
+                || b.is_ascii_digit()
+                || matches!(b, b'.' | b'_' | b'=' | b'-' | b'/' | b'+')
+        })
+}
+
+/// Extracts the domain (server name) portion of a Matrix identifier (e.g. `@user:example.com` -> `example.com`,
+/// `!room:example.com:8448` -> `example.com:8448`).
+///
+/// Returns `None` if there is no `:` in the identifier.
+#[must_use]
+pub fn extract_domain(id: &str) -> Option<&str> {
+    id.split_once(':').map(|(_, domain)| domain)
+}
+
+/// Returns `true` if `id1` and `id2` have matching domains (ASCII case-insensitive match).
+///
+/// If a string lacks a `:` prefix (e.g. `"example.com"` as in `m.room.aliases` state keys),
+/// it is treated directly as the domain.
+#[must_use]
+pub fn domain_matches(id1: &str, id2: &str) -> bool {
+    let d1 = extract_domain(id1).unwrap_or(id1);
+    let d2 = extract_domain(id2).unwrap_or(id2);
+    !d1.is_empty() && !d2.is_empty() && d1.eq_ignore_ascii_case(d2)
+}
+
 impl<Id, C> LeanEvent<Id, C> {
     /// Validates basic syntactic limits (`prev_events`, `auth_events` array sizes).
     ///
     /// NOTE: Event types are NOT whitelisted — the spec does not restrict types at the auth level.
     /// Any event type is valid as long as the sender has sufficient PL.
     ///
-    /// # Errors
-    ///
-    /// Returns static string error if structural limits are exceeded.
+    /// Per Synapse parity, the 255-byte length limits on `event_id`/`sender`/
+    /// `event_type`/`state_key` are only hard-enforced for room version 11+
+    /// (`strict_event_byte_limits_room_versions`); for earlier versions a
+    /// violation is logged (via `eprintln!`, `std` feature only) rather than
+    /// rejected, to avoid breaking pre-existing rooms with legacy oversized
+    /// fields.
     ///
     /// # TODO(compliance): PDU structural invariants not yet enforced
     ///
     /// - `content` is required (must be present, even if `{}`)
     /// - `hashes` is required (sha256 content hash)
     /// - `signatures` is required
-    /// - `room_id` is version-dependent (present in v1-v11, omitted from create in v12+)
-    /// - `sender` must be a valid MXID
-    /// - `depth` must be < 2^53 - 1
+    /// - `room_id` is version-dependent (present in v1-v11, omitted from create in v12+);
+    ///   `LeanEvent` has no `room_id` field, so its length limit isn't checked here
     ///
     /// These should be validated and tested per room version.
     ///
     /// # Errors
     /// Returns an error if the event violates spec invariants (e.g. >20 `prev_events`).
-    pub fn validate_syntactic(&self) -> Result<(), &'static str> {
-        // TODO: Are there any other invariants?
-        // TODO: Validate event_id format/prefix syntax (e.g., starts with '$') once standard room version rules are fully integrated.
+    pub fn validate_syntactic(&self, room_version: &str) -> Result<(), &'static str>
+    where
+        Id: core::fmt::Display,
+        C: EventContent,
+    {
+        if StateResVersion::from_room_version(room_version).is_none() {
+            return Err("unsupported room_version");
+        }
         if self.prev_events.len() > 20 {
             return Err("prev_events exceeds maximum allowed length of 20");
         }
@@ -1246,6 +1470,78 @@ impl<Id, C> LeanEvent<Id, C> {
         }
         if self.event_type.is_empty() {
             return Err("event_type cannot be empty");
+        }
+        // Rule 1.3: an `m.room.create` event must not declare an unrecognised
+        // `content.room_version`. Absent room_version defaults to "1" per spec,
+        // so only a *present but unrecognised* value is rejected here.
+        if self.event_type == crate::basespec::event_types::M_ROOM_CREATE {
+            if let Some(v) = self.content.get_room_version() {
+                if StateResVersion::from_room_version(v).is_none() {
+                    return Err(
+                        "m.room.create content.room_version is not a recognised room version",
+                    );
+                }
+            }
+        }
+        let id_str = alloc::format!("{}", self.event_id);
+        if id_str.is_empty() || !id_str.starts_with('$') {
+            return Err("event_id must start with '$'");
+        }
+        if !is_valid_mxid(&self.sender) {
+            return Err(
+                "sender must be a valid MXID: '@' prefix, ':' separator, non-empty domain, and a localpart of only a-z, 0-9, '.', '_', '=', '-', '/', '+'",
+            );
+        }
+        // Rule 1.4: pre-v12 m.room.create must declare a `creator`; v12+
+        // instead derives creators from `sender` + `additional_creators`,
+        // and validates any `additional_creators` entries against the same
+        // MXID grammar as `sender`.
+        if self.event_type == crate::basespec::event_types::M_ROOM_CREATE {
+            let is_v12_plus =
+                StateResVersion::from_room_version(room_version).is_some_and(|v| v.is_v2_1_plus());
+            if is_v12_plus {
+                if !self.content.additional_creators_are_valid() {
+                    return Err(
+                        "m.room.create content.additional_creators must be an array of valid MXID strings",
+                    );
+                }
+            } else {
+                let Some(creator) = self.content.get_creator() else {
+                    return Err("m.room.create content must have a 'creator' property");
+                };
+                if !is_valid_mxid(creator) {
+                    return Err("m.room.create content.creator must be a valid MXID string");
+                }
+            }
+        }
+        if self.depth > MAX_SAFE_JSON_INTEGER {
+            return Err("depth exceeds maximum allowed value");
+        }
+
+        let strict_length_limits = room_version_is_v11_or_later(room_version);
+        macro_rules! check_length {
+            ($field:expr, $name:literal) => {
+                if $field.len() > 255 {
+                    if strict_length_limits {
+                        return Err(concat!($name, " exceeds maximum allowed length of 255 bytes"));
+                    }
+                    #[cfg(feature = "std")]
+                    std::eprintln!(
+                        "rezzy::validate_syntactic: {} exceeds 255 bytes in pre-v11 room version {:?}; allowed for backwards compatibility",
+                        $name,
+                        room_version
+                    );
+                }
+            };
+        }
+        check_length!(id_str, "event_id");
+        check_length!(self.sender, "sender");
+        check_length!(self.event_type, "event_type");
+        // NOTE: For Synapse parity, v11+ hard-enforces this the same as the other
+        // fields above; state_key is optional (only present on state events), so
+        // this branch is skipped entirely for non-state events.
+        if let Some(ref state_key) = self.state_key {
+            check_length!(state_key, "state_key");
         }
 
         Ok(())
@@ -1351,6 +1647,13 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_room_version()
     }
 
+    pub fn get_redacts(&self) -> Option<&str>
+    where
+        C: EventContent,
+    {
+        self.content.get_redacts()
+    }
+
     pub fn has_additional_creator(&self, sender: &str) -> bool
     where
         C: EventContent,
@@ -1390,8 +1693,8 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
     {
         use crate::basespec::event_types::{
             FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
-            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_REJECTED, FIELD_SENDER, FIELD_SOFT_FAIL,
-            FIELD_STATE_KEY, FIELD_TYPE,
+            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_REDACTS, FIELD_REJECTED, FIELD_SENDER,
+            FIELD_SOFT_FAIL, FIELD_STATE_KEY, FIELD_TYPE, M_ROOM_REDACTION,
         };
 
         let value = Value::deserialize(deserializer)?;
@@ -1474,7 +1777,55 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .into();
-        let content = value.get(FIELD_CONTENT).cloned().unwrap_or(Value::Null);
+        let mut content = value.get(FIELD_CONTENT).cloned().unwrap_or(Value::Null);
+
+        if event_type == M_ROOM_REDACTION {
+            let top_level_redacts = match value.get(FIELD_REDACTS) {
+                Some(redacts) => Some(redacts.as_str().ok_or_else(|| {
+                    serde::de::Error::custom("m.room.redaction redacts must be a string")
+                })?),
+                None => None,
+            };
+
+            match &mut content {
+                Value::Object(obj) => {
+                    if let Some(existing_redacts) = obj.get(FIELD_REDACTS) {
+                        let existing_redacts = existing_redacts.as_str().ok_or_else(|| {
+                            serde::de::Error::custom(
+                                "m.room.redaction content.redacts must be a string",
+                            )
+                        })?;
+                        if let Some(top_level_redacts) = top_level_redacts {
+                            if existing_redacts != top_level_redacts {
+                                return Err(serde::de::Error::custom(
+                                    "m.room.redaction redacts mismatch between top-level field and content",
+                                ));
+                            }
+                        }
+                    } else if let Some(top_level_redacts) = top_level_redacts {
+                        obj.insert(
+                            String::from(FIELD_REDACTS),
+                            Value::String(String::from(top_level_redacts)),
+                        );
+                    }
+                }
+                Value::Null => {
+                    if let Some(top_level_redacts) = top_level_redacts {
+                        let mut obj = serde_json::Map::new();
+                        obj.insert(
+                            String::from(FIELD_REDACTS),
+                            Value::String(String::from(top_level_redacts)),
+                        );
+                        content = Value::Object(obj);
+                    }
+                }
+                _ => {
+                    return Err(serde::de::Error::custom(
+                        "m.room.redaction content must be an object or null",
+                    ));
+                }
+            }
+        }
 
         let parse_string_array = |key: &str| -> Vec<String> {
             value
@@ -1490,10 +1841,12 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
 
         let prev_events = parse_string_array(FIELD_PREV_EVENTS);
         let auth_events = parse_string_array(FIELD_AUTH_EVENTS);
-        let depth = value
-            .get(FIELD_DEPTH)
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
+        let depth = match value.get(FIELD_DEPTH) {
+            Some(depth) => depth
+                .as_u64()
+                .ok_or_else(|| serde::de::Error::custom("invalid depth value"))?,
+            None => 0,
+        };
 
         let rejected = value
             .get(FIELD_REJECTED)

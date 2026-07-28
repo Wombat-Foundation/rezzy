@@ -73,6 +73,10 @@ extern crate std;
 
 extern crate alloc;
 
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
+
 pub mod auth;
 pub mod basespec;
 pub mod cuckoo_verify;
@@ -86,6 +90,54 @@ pub use reconcile::*;
 pub use resolve::*;
 pub use state::*;
 
+/// Selects the presentation shape for resolved room data.
+///
+/// This is a library-level input so downstream callers can choose between
+/// timeline-oriented output and the raw resolved-state view without depending
+/// on the CLI binary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
+pub enum OutputFormat {
+    #[default]
+    Events,
+    Default,
+    Deltas,
+    Federation,
+    Summary,
+    Timeline,
+    #[cfg_attr(feature = "cli", value(alias = "resolve_state"))]
+    ResolveState,
+}
+
+/// One resolved-state entry in `(type, state_key, event_id)` form.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ResolvedStateEntry {
+    pub event_type: String,
+    pub state_key: String,
+    pub event_id: String,
+}
+
+/// Converts a resolved state map into a stable, sorted list of entries.
+#[must_use]
+pub fn resolved_state_entries<Id: basespec::rezzy_types::EventId>(
+    final_state_map: &crate::state::at::SharedState<Id>,
+) -> Vec<ResolvedStateEntry> {
+    let mut entries = final_state_map
+        .iter()
+        .map(|((event_type, state_key), event_id)| ResolvedStateEntry {
+            event_type: event_type.clone(),
+            state_key: state_key.clone(),
+            event_id: event_id.to_string(),
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| {
+        a.event_type
+            .cmp(&b.event_type)
+            .then_with(|| a.state_key.cmp(&b.state_key))
+    });
+    entries
+}
+
 /// Re-exported hashmap and hashset — uses `std::collections` when `std` is
 /// enabled, falls back to `hashbrown` for `no_std` targets.
 ///
@@ -97,3 +149,39 @@ pub use std::collections::{HashMap, HashSet};
 /// See the `std` variant's documentation.
 #[cfg(not(feature = "std"))]
 pub use hashbrown::{HashMap, HashSet};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn resolved_state_entries_orders_by_type_then_state_key() {
+        let mut state: state::at::SharedState<String> = state::at::SharedState::new();
+        state.insert(("m.room.member".into(), "@bob:x".into()), "$b".into());
+        state.insert(("m.room.create".into(), String::new()), "$c".into());
+        state.insert(("m.room.member".into(), "@alice:x".into()), "$a".into());
+
+        let entries = resolved_state_entries(&state);
+        assert_eq!(
+            entries,
+            vec![
+                ResolvedStateEntry {
+                    event_type: "m.room.create".into(),
+                    state_key: String::new(),
+                    event_id: "$c".into(),
+                },
+                ResolvedStateEntry {
+                    event_type: "m.room.member".into(),
+                    state_key: "@alice:x".into(),
+                    event_id: "$a".into(),
+                },
+                ResolvedStateEntry {
+                    event_type: "m.room.member".into(),
+                    state_key: "@bob:x".into(),
+                    event_id: "$b".into(),
+                },
+            ]
+        );
+    }
+}

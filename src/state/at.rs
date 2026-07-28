@@ -107,7 +107,8 @@ impl<
                     true
                 }
             }
-            // TODO: determine if V2.2 (MSC4242 State DAGs) *does* want this. It may not!
+            // TODO: verify whether V2.2 should keep the same transitive supplementation
+            // rule as V2.1.1 for state DAGs.
             StateResVersion::V2_1_1 | StateResVersion::V2_2 => {
                 (event_type == M_ROOM_POWER_LEVELS && state_key == M_EMPTY_STATE_KEY)
                     || (event_type == M_ROOM_MEMBER)
@@ -350,8 +351,7 @@ where
         {
             update_local_auth(&mut local_auth, aev, current_depth);
 
-            // NOTE: V2.1.1 (Proposed) replaces unbounded DFS with a pure memoized BFS traversal.
-            // Therefore, both V2.1.1 and V2.2 natively gather transitive auth context!
+            // TODO: confirm the V2.2 auth traversal rule remains aligned with V2.1.1.
             // For V2.1 and below, we only check the immediate auth_events.
             if matches!(version, StateResVersion::V2_1_1 | StateResVersion::V2_2) {
                 for parent_id in &aev.auth_events {
@@ -2097,15 +2097,16 @@ where
 /// A high-performance, non-fallible variant of [`compute_state_at_streaming`] designed for
 /// massive rebuild pipelines.
 ///
-/// TODO: this swallows `CycleDetected` with an eprintln (silent under `no_std`) and returns
-/// having invoked zero callbacks — callers can't distinguish "cycle" from "no targets found."
-/// Consider returning a bool or steering users to `try_compute_state_at_streaming_optimized`.
+/// Returns `true` if the graph traversal completed successfully, or `false` if a cycle
+/// was detected in the reachable subgraph.
+#[must_use = "a `false` return means a cycle was detected and results are incomplete; silently discarding it defeats the purpose of cycle detection"]
 pub fn compute_state_at_streaming_optimized<Id, C, Q, S, F>(
     target_event_ids: &[&Q],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
-) where
+) -> bool
+where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
@@ -2123,13 +2124,8 @@ pub fn compute_state_at_streaming_optimized<Id, C, Q, S, F>(
     );
 
     match result {
-        Ok(()) => {}
-        Err(StateComputationError::CycleDetected) => {
-            #[cfg(feature = "std")]
-            std::eprintln!(
-                "rezzy::compute_state_at_streaming_optimized: Cycle detected! Reachable subgraph is malformed."
-            );
-        }
+        Ok(()) => true,
+        Err(StateComputationError::CycleDetected) => false,
         Err(StateComputationError::Callback(infallible)) => match infallible {},
     }
 }
@@ -3028,11 +3024,15 @@ mod tests {
         );
 
         let target = ["A"];
-        compute_state_at_streaming_optimized(
+        let completed = compute_state_at_streaming_optimized(
             &target,
             &events_map,
             StateResVersion::V2_1_1,
             |_, _| {},
+        );
+        assert!(
+            !completed,
+            "cycle A <-> B must be reported, not silently ignored"
         );
     }
 
@@ -3115,7 +3115,7 @@ mod tests {
         let mut c_parent_unchanged_id = None;
         let mut d_has_new_state = false;
 
-        compute_state_at_streaming_optimized(
+        let completed = compute_state_at_streaming_optimized(
             &["B", "C", "D"],
             &events_map,
             crate::StateResVersion::V2,
@@ -3143,6 +3143,7 @@ mod tests {
         );
 
         // Assert updates are correct
+        assert!(completed, "acyclic diamond graph must not report a cycle");
         assert!(b_has_new_state, "B should have been yielded as New!");
         assert_eq!(
             c_parent_unchanged_id.as_deref(),

@@ -237,7 +237,7 @@ fn verify_cycle_uvs(uvs: &[u64; 2 * PROOF_SIZE]) -> Result<(), VerifyError> {
         n = n
             .checked_add(1)
             .expect("cycle length cannot exceed proof size");
-        if i == 0 {
+        if n > PROOF_SIZE || i == 0 {
             break;
         }
     }
@@ -326,8 +326,7 @@ fn base64url_no_pad(bytes: &[u8]) -> String {
             out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
             out.push(ALPHABET[((n >> 6) & 0x3f) as usize] as char);
         }
-        [] => {}
-        _ => unreachable!("chunks_exact remainder length is less than 3"),
+        _ => {}
     }
 
     out
@@ -412,7 +411,7 @@ impl SipHashState {
 }
 
 fn sipnode(keys: SipHashKeys, edge: u64, uorv: u64) -> u64 {
-    keys.siphash24(edge.wrapping_mul(2).wrapping_add(uorv)) & EDGE_MASK
+    keys.siphash24(edge.wrapping_mul(2).wrapping_add(uorv)) & ((1_u64 << (EDGE_BITS - 1)) - 1)
 }
 
 fn next_u64_le(chunks: &mut core::slice::ChunksExact<'_, u8>) -> u64 {
@@ -425,6 +424,7 @@ fn next_u64_le(chunks: &mut core::slice::ChunksExact<'_, u8>) -> u64 {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -653,6 +653,156 @@ mod tests {
             ),
             "8e1YvU6n-P8kl0qV4SqxYF7YP0DV2orKYvIjwsuFduI"
         );
+    }
+
+    #[test]
+    fn verify_short_key_id_matches() {
+        let key_id = [42_u8; 32];
+        let advertised = short_key_id(&key_id);
+        assert_eq!(verify_short_key_id(&key_id, &advertised), Ok(()));
+    }
+
+    #[test]
+    fn rejects_empty_invalid_and_dead_end_minting_pow() {
+        let pow_empty = MintingPow {
+            algorithm: ALGORITHM,
+            nonce: 84,
+            solution: &[],
+        };
+        assert_eq!(
+            verify_minting_pow("nutra.tk", TEST_PUBLIC_KEY, "whatever", pow_empty),
+            Err(VerifyError::WrongProofSize { len: 0 })
+        );
+
+        let edges: [u64; PROOF_SIZE] = core::array::from_fn(|n| n as u64);
+        let pow_invalid = MintingPow {
+            algorithm: ALGORITHM,
+            nonce: 84,
+            solution: &edges,
+        };
+        assert_eq!(
+            verify_minting_pow("nutra.tk", TEST_PUBLIC_KEY, "whatever", pow_invalid),
+            Err(VerifyError::NonMatchingEndpoints)
+        );
+
+        let valid_matching_edges = [
+            0, 1, 2, 5, 7, 8, 9, 12, 15, 20, 21, 22, 23, 24, 25, 26, 27, 29, 31, 33, 34, 35, 37,
+            39, 41, 42, 43, 46, 47, 49, 50, 51, 52, 53, 54, 56, 57, 58, 59, 60, 61, 62,
+        ];
+        let pow_matching = MintingPow {
+            algorithm: ALGORITHM,
+            nonce: 84,
+            solution: &valid_matching_edges,
+        };
+        assert_eq!(
+            verify_minting_pow("nutra.tk", TEST_PUBLIC_KEY, "whatever", pow_matching),
+            Err(VerifyError::DeadEnd)
+        );
+    }
+
+    #[test]
+    fn verify_minting_pow_returns_key_id_on_success() {
+        // Genuine 42-cycle mined offline for (TEST_PUBLIC_KEY, "nutra.tk", nonce 3).
+        let solution: [u64; PROOF_SIZE] = [
+            721_297,
+            9_513_298,
+            27_540_167,
+            29_552_787,
+            35_452_767,
+            44_271_093,
+            49_305_956,
+            53_087_052,
+            54_202_483,
+            56_178_377,
+            58_042_779,
+            60_432_276,
+            64_973_509,
+            66_003_936,
+            67_900_759,
+            73_919_907,
+            76_802_455,
+            86_858_463,
+            101_376_335,
+            106_888_118,
+            109_124_655,
+            109_681_439,
+            110_954_208,
+            128_693_198,
+            130_012_434,
+            147_508_739,
+            156_825_434,
+            175_013_018,
+            184_113_046,
+            197_116_101,
+            197_550_463,
+            213_286_076,
+            218_210_692,
+            222_739_466,
+            225_422_231,
+            225_577_405,
+            230_201_870,
+            247_481_907,
+            253_448_206,
+            262_629_872,
+            266_080_043,
+            266_673_992,
+        ];
+        let pow = MintingPow {
+            algorithm: ALGORITHM,
+            nonce: 3,
+            solution: &solution,
+        };
+
+        let key_id = minting_key_id("nutra.tk", TEST_PUBLIC_KEY, pow).unwrap();
+        let short = short_key_id(&key_id);
+
+        assert_eq!(
+            verify_minting_pow("nutra.tk", TEST_PUBLIC_KEY, &short, pow),
+            Ok(key_id)
+        );
+        assert_eq!(
+            verify_minting_pow("nutra.tk", TEST_PUBLIC_KEY, "wrong-short-key-id", pow),
+            Err(VerifyError::ShortKeyIdMismatch)
+        );
+    }
+
+    #[test]
+    fn test_verify_cycle_uvs_valid_cycle() {
+        let mut uvs = [0_u64; 2 * PROOF_SIZE];
+        for k in 0..PROOF_SIZE {
+            if k % 2 == 0 {
+                uvs[2 * k] = k as u64;
+                uvs[2 * k + 1] = (k as u64) + 1;
+            } else {
+                uvs[2 * k] = (k as u64) + 1;
+                uvs[2 * k + 1] = k as u64;
+            }
+        }
+        uvs[2 * (PROOF_SIZE - 1)] = 0;
+        uvs[2 * (PROOF_SIZE - 1) + 1] = (PROOF_SIZE as u64) - 1;
+
+        assert_eq!(verify_cycle_uvs(&uvs), Ok(()));
+    }
+
+    #[test]
+    fn verify_cycle_uvs_rejects_short_cycle() {
+        let mut uvs = [0_u64; 2 * PROOF_SIZE];
+        // 4-edge cycle: (10,20) -> (30,20) -> (30,40) -> (10,40) -> (10,20)
+        uvs[0] = 10;
+        uvs[1] = 20;
+        uvs[2] = 30;
+        uvs[3] = 20;
+        uvs[4] = 30;
+        uvs[5] = 40;
+        uvs[6] = 10;
+        uvs[7] = 40;
+
+        for k in 4..PROOF_SIZE {
+            uvs[2 * k] = (100 + k) as u64;
+            uvs[2 * k + 1] = (200 + k) as u64;
+        }
+
+        assert_eq!(verify_cycle_uvs(&uvs), Err(VerifyError::ShortCycle));
     }
 
     const TEST_PUBLIC_KEY: &str = "CTYtwUD318oD9bK6+eH+j3ZvomWtDoPMrQaXnEaIVrM34JJMfArWxtemeoeMNwbuIw4lnix6sKAjW5CW0BMD4Z8cs+vGznqWyH5i2krbetj5ClOFH2TllrXgAPuLcQp4qtMCANwaE/KSMomw3LOyyxo29djzPFu7VRRaAAvWGC66dAYiT9KH1JyxgwVjcChe+glZVEQIvjBiaklVjGdTqOZWpNiSNnQSYJsAIsCwpWAuWQ1S0UaYP4WKEQlsX5L6O8PChppEBl07OJnZv1QA1FvC1Uwxv0s13EUfSr4ojhtREZ2u+AGIS2reZLCc2ucGUQ9ZHI73aZSYulsGrgJZoKbOEjZvvM2WJkSHuNLGO14ll2t2XoLJ3BxTuFBFcsKXHAKi9VFk14BOMKFvboMfPS/glIlXbbUbQkTc3z2YdApSavhQxuIXDmctTx5ioj8eprWsHmrT3vwZSAkRW+bfNHRVWzjS0FvOYsfqxuxvJiM2iwLSHqgs8wPskLTOQwJoWjYBPjWDGlfLHXGJ5e8qXCQOAVQ+LthGTtrYHmCjlMyKi1BpIiHAm2tNI2yUmSaDJ9xhnt6Ve/QI2VRJfocZzRlZyaOHkEBpSKjjxm7GjXV2QmO7UROVVd7IKIZVeCTiG9jhfJ2VTbaXaYqVZRS3yFsKTtwyF5yW5FssQRV7JORKvecHGIMuPcSS+e0TSC+IMTHWK2hC1o+GMdwjpp0NNQCCL144tpVsb2a00kVSdkfcBeCKcXUPHrwYXki7ywd7GYgwVmj6HCo0ZrDAhnmsFse+I3VAhBikzCgZkzWaAFwA1nlwtrK42j2PaPLGS8r6qJSMFQ5R6kZNv8fnZT8F8ccCZuihpT43+SivwCQBMCKgQBinynrX/eGvVmTREv4BtLboWYbnwK9dLteR9y9GiPBHtGqsLzUAZ7KHmjRiEMtFJgXZlC2ygZov80SIZqJ/b8d8DKMGa25RrSzo1EMdoKGe8/NEiqKBdsM7aCjrrEC9SnuNtUre7QugoD5bcsXFSY+HaBqGse4fQbTdHnipZPwPLS2zLZyuoIivJKjBfaQZV0DfGlSHzR705QT3Ivh6F41Lpa7hsnDci6mfwIbnMMxcDLrsxkFhMWik6AjLYyuATVxBYiFrJhFRMx/FPh36SDXEDr9OrOM2jsIdYfKu2yVQAFxC1Ijez5iQfGqTUMVn";

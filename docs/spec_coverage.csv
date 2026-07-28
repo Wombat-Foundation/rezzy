@@ -2,9 +2,9 @@ spec_id,title,type,status,room_versions,rezzy_support,notes
 MSC1693,State Resolution Reloaded (v2),MSC,merged,V2-V11,full,"Core v2 algorithm: reverse topological power ordering, mainline sort, iterative auth"
 MSC2403,Add knock feature,MSC,merged,V7+,full,"check_knock_rules: sender==state_key, reject ban/invite/join, gate on knock/knock_restricted join rule"
 MSC4297,State Resolution v2.1,MSC,merged,V12+,full,"Empty initial state, conflicted subgraph extraction, CDO filtering, ancestral power event routing, missing auth event tolerance"
-MSC3757,Restricting who can overwrite a state event,MSC,unstable,org.matrix.msc3757[.10],none,"Future: suffix matching + admin PL override for owned state. Not yet implemented."
+MSC3757,Restricting who can overwrite a state event,MSC,unstable,org.matrix.msc3757[.10],none,Future: suffix matching + admin PL override for owned state. Not yet implemented.
 MSC4242,State DAGs (v2.2),MSC,proposed,org.matrix.msc4242.12,experimental,State DAGs (with possible lattice fold parallel resolution). Reserved for future room versions
-MSC4289,Explicitly privilege room creators,MSC,merged,V12+,full,"Creator gets i64::MAX power; additional_creators array; creators excluded from PL users map"
+MSC4289,Explicitly privilege room creators,MSC,merged,V12+,full,Creator gets i64::MAX power; additional_creators array; creators excluded from PL users map
 spec/v1.13§11.1,Room Version 1,spec,stable,V1,full,State Resolution v1
 spec/v1.13§11.2,Room Version 2,spec,stable,V2,full,State Resolution v2 (MSC1693)
 spec/v1.13§11.3,Room Version 3,spec,stable,V3,full,Event ID format changed to URL-safe base64 SHA-256
@@ -16,14 +16,17 @@ spec/v1.13§11.8,Room Version 8,spec,stable,V8,full,Restricted join rule (join_a
 spec/v1.13§11.9,Room Version 9,spec,stable,V9,full,Updated restricted join rule handling
 spec/v1.13§11.10,Room Version 10,spec,stable,V10,full,knock_restricted join rule; whole-event auth for redactions
 spec/v1.13§11.11,Room Version 11,spec,stable,V11,full,Clarified redaction algorithm
-spec/v1.13§11.12,Room Version 12,spec,proposed,V12,full,State Res v2.1 (MSC4297); creator has i64::MAX power; additional_creators; m.room.create no longer in auth events
+spec/v1.13§11.12,Room Version 12,spec,stable,V12,full,State Res v2.1 (MSC4297); creator has i64::MAX power; additional_creators; m.room.create no longer in auth events
 spec/v1.13§3,Server-Server API: State Resolution,spec,stable,all,full,State resolution algorithms v1 and v2
 spec/v1.13§3.3,Authorization Rules,spec,stable,all,full,"check_auth: membership rules, power levels, join rules, ban/kick/invite validation"
 spec/v1.13§3.3,Restricted Join Rules,spec,stable,V8+,full,restricted and knock_restricted join rules with join_authorised_via_users_server
 spec/v1.13§3.3,Knock Rules,spec,stable,V7+,full,"Knock membership validation (MSC2403 §f): reject if banned, invited, joined, or wrong join rule"
 spec/v1.13§3.3,Auth Chain,spec,stable,all,full,Roaring bitmap-based auth chain computation and diff
-spec/v1.13§3.3,Invite Rules,spec,stable,all,full,"Reject invite if target is already joined or banned; sender != target; sender has invite PL"
+spec/v1.13§3.3,Invite Rules,spec,stable,all,full,Reject invite if target is already joined or banned; sender != target; sender has invite PL
 spec/v1.13§rule9,Owned State Key,spec,stable,all,full,"If state_key starts with '@' and != sender, reject (auth rule 9, all room versions)"
-spec/v1.13§3.3,Third-Party Invite Rules,spec,stable,all,full,"Strict 3PI token validation (rule 5.4.1) and invite PL check (rule 7)"
-spec/v1.13§3.3,Self-Leave Rules,spec,stable,all,full,"Strict self-leave enforcement (rule 5.5.1)"
+spec/v1.13§3.3,Third-Party Invite Rules,spec,stable,all,full,Strict 3PI token validation (rule 5.4.1) and invite PL check (rule 7)
+spec/v1.13§3.3,Self-Leave Rules,spec,stable,all,full,Strict self-leave enforcement (rule 5.5.1)
 spec/v1.13§rule10,Power Levels Validation,spec,stable,all,full,"Rules 10.1 (scalar integer checks, V10+), 10.2 (events/notifications map integer checks, V10+), 10.3 (users key + integer validation, all versions), 10.4 (creator/additional_creators forbidden in users, V12+), 10.5 (first PL), 10.6–10.10 (escalation prevention)."
+MSC0501,Efficient gossip-based room federation missed PDU reconciliation,MSC,proposed,all,full,"PinSketch GF(2^64) syndrome decoding, homomorphic bucket digests, ReconciliationClient state machine, strata-based resident storage, (d,k) probe triage. Pure-CPU core only; homeserver HTTP route wiring is out of scope (src/reconcile/)"
+spec/v1.13§redactions,Redaction Algorithm (redaction_preserved_keys matrix),spec,stable,V1-V11+,full,"Per-event-type, per-version key preservation matrix (create/member/power_levels/join_rules/history_visibility/aliases/redaction); fails closed (RedactionRule::None) on unrecognized room_version"
+spec/v1.13§PDU,PDU Syntactic Invariants (validate_syntactic),spec,stable,all,partial,"$-prefixed event_id format, MXID sender localpart charset, depth bounds via MAX_SAFE_JSON_INTEGER, version-gated (v11+) 255-byte hard limits on event_id/sender/event_type/state_key (warn-only pre-v11), m.room.create content.room_version recognition (rule 1.3), creator presence pre-v12 and additional_creators MXID grammar v12+ (rule 1.4). Does not yet check room_id/domain match (rule 1.2)"

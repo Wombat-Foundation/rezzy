@@ -27,11 +27,11 @@ use core::fmt;
 use crate::basespec::event_types::{
     DEFAULT_PL_BAN, DEFAULT_PL_INVITE, DEFAULT_PL_KICK, DEFAULT_PL_REDACT, FIELD_MEMBERSHIP,
     FIELD_SIGNED, FIELD_THIRD_PARTY_INVITE, FIELD_TOKEN, MEM_BAN, MEM_INVITE, MEM_JOIN, MEM_KNOCK,
-    MEM_LEAVE, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
-    M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK, RULE_KNOCK_RESTRICTED, RULE_PUBLIC,
-    RULE_RESTRICTED,
+    MEM_LEAVE, M_EMPTY_STATE_KEY, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER,
+    M_ROOM_POWER_LEVELS, M_ROOM_REDACTION, M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK,
+    RULE_KNOCK_RESTRICTED, RULE_PUBLIC, RULE_RESTRICTED,
 };
-use crate::basespec::rezzy_types::{EventLike, LeanEvent, StateResVersion};
+use crate::basespec::rezzy_types::{is_valid_mxid, EventLike, LeanEvent, StateResVersion};
 
 /// An error indicating why an event failed authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,7 +320,6 @@ pub fn validate_forward_extremity<
 /// # Errors
 ///
 /// Returns an `AuthError` if the event fails authorization validation.
-#[allow(clippy::too_many_lines)]
 pub fn check_auth<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
@@ -330,6 +329,28 @@ pub fn check_auth<
     state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
     verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
+) -> Result<(), AuthError<Id>> {
+    check_auth_with_context(event, state, version, verifier, None)
+}
+
+/// Check whether `event` is authorized given the room state at its `prev_events`,
+/// additionally validating `auth_events` rules (2.1–2.4) against an optional
+/// [`crate::basespec::rezzy_types::EventProvider`].
+///
+/// # Errors
+///
+/// Returns an `AuthError` if the event fails authorization validation.
+#[allow(clippy::too_many_lines)]
+pub fn check_auth_with_context<
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    event: &E,
+    state: &impl StateProvider<Id, C, E>,
+    version: StateResVersion,
+    verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
+    auth_context: Option<&dyn crate::basespec::rezzy_types::EventProvider<Id, C, E>>,
 ) -> Result<(), AuthError<Id>> {
     // Rule 0: Basic syntactic validation
     if event.prev_events().len() > 20 {
@@ -363,12 +384,10 @@ pub fn check_auth<
 
     // Optional verification pipeline (steps 1-3).
     // Callers pass None during state resolution; Some during PDU receipt.
-    // TODO: different room versions use different hashing algorithms for event IDs:
-    //   - v1-v3: event IDs are opaque (assigned by origin server, no hash verification)
-    //   - v4:    SHA256 reference hash (URL-safe unpadded base64)
-    //   - v5+:   SHA256 reference hash (URL-safe unpadded base64, but with different
-    //            redaction rules affecting which fields are stripped before hashing)
-    //   Pass `version` to the verifier once per-version hashing is supported.
+    // TODO: make the verifier version-aware once per-room-version hash
+    // verification is implemented across the call sites.
+    // Room-version-specific event ID hashing is delegated to the verifier
+    // implementation; this layer only sequences the checks.
     if let Some(v) = verifier {
         v.verify_event_id_hash(event.event_id())
             .map_err(AuthError::InvalidSyntax)?;
@@ -383,8 +402,147 @@ pub fn check_auth<
         if !event.prev_events().is_empty() {
             return Err(AuthError::CreateWithPrevEvents);
         }
+        // Rule 1.2: Check sender MXID validity for m.room.create
+        if !is_valid_mxid(event.sender()) {
+            return Err(AuthError::InvalidSyntax(
+                "m.room.create sender must be a valid MXID".into(),
+            ));
+        }
         // Create events are always authorized if they're first
         return Ok(());
+    }
+
+    // Rule 3: m.federate check
+    if let Some(create_ev) = state.get_event(M_ROOM_CREATE, "") {
+        if create_ev.content().get_m_federate() == Some(false)
+            && !crate::basespec::rezzy_types::domain_matches(event.sender(), create_ev.sender())
+        {
+            return Err(AuthError::InvalidSyntax(alloc::format!(
+                "cross-domain event from sender {} rejected: room has m.federate=false",
+                event.sender()
+            )));
+        }
+    }
+
+    // Rule 4 (V1–V5): m.room.aliases domain mismatch check. Removed starting
+    // v6 (v6.txt: "Rule 4 ... is removed"). This must be read from the
+    // m.room.create event's actual `content.room_version` (defaulting to "1"
+    // per spec when absent), not the collapsed `StateResVersion` enum:
+    // `StateResVersion::V2` covers real room versions 2-11 uniformly, so
+    // gating on `version == StateResVersion::V1` would only ever match real
+    // room version "1" and silently skip versions 2-5.
+    if event_type == crate::basespec::event_types::M_ROOM_ALIASES {
+        let room_version = state
+            .get_event(M_ROOM_CREATE, "")
+            .and_then(|create_ev| create_ev.content().get_room_version())
+            .unwrap_or("1");
+        if matches!(room_version, "1" | "2" | "3" | "4" | "5") {
+            let Some(state_key) = event.state_key() else {
+                return Err(AuthError::InvalidSyntax(
+                    "m.room.aliases event must have a state_key".into(),
+                ));
+            };
+            if !crate::basespec::rezzy_types::domain_matches(state_key, event.sender()) {
+                return Err(AuthError::InvalidSyntax(
+                    "m.room.aliases state_key domain must match sender domain".into(),
+                ));
+            }
+        }
+    }
+
+    // Rule 11 (V1–V2): m.room.redaction — allow if sender PL >= redact
+    // level, or if the redaction event and the event it redacts share a
+    // domain; otherwise reject. Removed starting v3 (v3-auth-rules.txt has
+    // no equivalent rule; spec_audit.md notes this as "removes
+    // m.room.redaction auth rule"). Room version is read the same way as
+    // Rule 4 above, from the m.room.create event's content, not the
+    // collapsed `StateResVersion` enum.
+    if event_type == M_ROOM_REDACTION {
+        let room_version = state
+            .get_event(M_ROOM_CREATE, "")
+            .and_then(|create_ev| create_ev.content().get_room_version())
+            .unwrap_or("1");
+        if matches!(room_version, "1" | "2") {
+            let sender_pl = user::get_sender_power_level(event.sender(), state, version);
+            let redact_pl = get_redact_power_level(state);
+            let same_domain = event.get_redacts().is_some_and(|target| {
+                crate::basespec::rezzy_types::domain_matches(
+                    target,
+                    &alloc::format!("{}", event.event_id()),
+                )
+            });
+            if sender_pl < redact_pl && !same_domain {
+                return Err(AuthError::InvalidSyntax(
+                    "m.room.redaction requires sender PL >= redact level, or same domain as the redacted event".into(),
+                ));
+            }
+        }
+    }
+
+    // Rules 2.1, 2.2, 2.3, 2.4 checks via auth_context
+    if let Some(provider) = auth_context {
+        const VALID_AUTH_TYPES: &[&str] = &[
+            M_ROOM_CREATE,
+            M_ROOM_MEMBER,
+            M_ROOM_POWER_LEVELS,
+            M_ROOM_JOIN_RULES,
+            M_ROOM_THIRD_PARTY_INVITE,
+        ];
+
+        // Rule 2.4 (V1–V11): auth_events must contain m.room.create
+        if !version.is_v2_1_plus() {
+            let Some(create_ev) = state.get_event(M_ROOM_CREATE, "") else {
+                return Err(AuthError::InvalidSyntax(
+                    "missing m.room.create in room state (cannot validate auth_events for v1-v11)"
+                        .into(),
+                ));
+            };
+            if !event
+                .auth_events()
+                .iter()
+                .any(|id| id == create_ev.event_id())
+            {
+                return Err(AuthError::InvalidSyntax(
+                    "auth_events must contain m.room.create in room versions 1-11".into(),
+                ));
+            }
+        }
+
+        let mut seen_tuples = crate::HashSet::new();
+
+        for auth_id in event.auth_events() {
+            let Some(auth_ev) = provider.get_event(auth_id) else {
+                return Err(AuthError::MissingAuthEvent(auth_id.clone()));
+            };
+
+            if auth_ev.rejected() {
+                return Err(AuthError::InvalidSyntax(alloc::format!(
+                    "auth event {auth_id:?} was previously rejected"
+                )));
+            }
+
+            let auth_type = auth_ev.event_type();
+
+            if version.is_v2_1_plus() && auth_type == M_ROOM_CREATE {
+                return Err(AuthError::InvalidSyntax(
+                    "referencing m.room.create in auth_events is forbidden in room v12+".into(),
+                ));
+            }
+
+            if !VALID_AUTH_TYPES.contains(&auth_type.as_ref()) {
+                return Err(AuthError::InvalidSyntax(alloc::format!(
+                    "unexpected event type in auth_events: {auth_type}"
+                )));
+            }
+
+            let sk = auth_ev.state_key().unwrap_or("");
+            let key = (auth_type.into_owned(), alloc::string::String::from(sk));
+            if !seen_tuples.insert(key) {
+                return Err(AuthError::InvalidSyntax(
+                    "auth_events contains duplicate (type, state_key) pair".into(),
+                ));
+            }
+        }
     }
 
     // Rule 2: Check sender is not banned, and Rule 3: Sender must be joined
@@ -747,8 +905,8 @@ pub(crate) fn get_redact_power_level<
 >(
     state: &impl StateProvider<Id, C, E>,
 ) -> i64 {
-    // TODO: call chain nested statement. define FIELD_EMPTY_STRING
-    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
+    // The redact level is stored on the room power-level event at the empty state key.
+    if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, M_EMPTY_STATE_KEY) {
         if let Some(redact) = pl_event.get_redact() {
             return redact;
         }
@@ -1309,8 +1467,28 @@ pub fn check_auth_chain<
     let mut accepted = Vec::new();
     let mut rejected = Vec::new();
 
+    let event_map: crate::HashMap<Id, LeanEvent<Id, C>> = sorted_events
+        .iter()
+        .map(|ev| (ev.event_id.clone(), ev.clone()))
+        .collect();
+
+    let mut rejected_ids = crate::HashSet::new();
+
     for event in sorted_events {
-        match check_auth(event, &state, version, None) {
+        // Rule 2.3: Check if any auth event was previously rejected
+        let has_rejected_auth_event = event
+            .auth_events
+            .iter()
+            .any(|auth_id| rejected_ids.contains(auth_id));
+
+        if has_rejected_auth_event {
+            let err = AuthError::InvalidSyntax("auth_event was previously rejected".into());
+            rejected.push((event.event_id.clone(), err));
+            rejected_ids.insert(event.event_id.clone());
+            continue;
+        }
+
+        match check_auth_with_context(event, &state, version, None, Some(&event_map)) {
             Ok(()) => {
                 // Apply event to state if it's a state event
                 if let Some(state_key) = &event.state_key {
@@ -1322,6 +1500,7 @@ pub fn check_auth_chain<
                 accepted.push(event.event_id.clone());
             }
             Err(e) => {
+                rejected_ids.insert(event.event_id.clone());
                 rejected.push((event.event_id.clone(), e));
             }
         }

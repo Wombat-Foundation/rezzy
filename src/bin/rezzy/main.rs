@@ -21,8 +21,9 @@ mod utils;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use format::{format_cli_output, FormattingContext};
+pub use rezzy::OutputFormat;
 use rezzy::{LeanEvent, StateResVersion};
 use std::collections::HashMap;
 use std::fs::File;
@@ -66,17 +67,6 @@ pub struct Args {
 
     #[arg(long, default_value = "matrix.org")]
     pub origin: String,
-}
-
-#[derive(ValueEnum, Clone, Debug, PartialEq, Eq, Default)]
-pub enum OutputFormat {
-    #[default]
-    Events,
-    Default,
-    Deltas,
-    Federation,
-    Summary,
-    Timeline,
 }
 
 fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
