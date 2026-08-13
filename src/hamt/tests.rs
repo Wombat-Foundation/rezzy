@@ -612,11 +612,12 @@ fn test_hamt_visit_entries_resolves_lazy_child() {
 }
 
 #[test]
-fn test_hamt_visit_entries_propagates_resolver_error() {
+fn test_hamt_visit_entries_propagates_visitor_error() {
     let key = b"dummy_server_key";
+    let child_datamap = (1_u32 << 7) | (1_u32 << 9);
     let child_hash = HamtNode::<u64, u64>::compute_structural_hash(
         key,
-        1_u32 << 7,
+        child_datamap,
         0,
         &[(1_u64, 10_u64), (2_u64, 20_u64)],
         &[],
@@ -640,7 +641,7 @@ fn test_hamt_visit_entries_propagates_resolver_error() {
     let mut resolver = |_hash: &StructuralHash| {
         resolver_calls = resolver_calls.wrapping_add(1);
         Ok::<_, &str>(Arc::new(HamtNode {
-            datamap: 1_u32 << 7,
+            datamap: child_datamap,
             nodemap: 0,
             leaves: vec![(1_u64, 10_u64), (2_u64, 20_u64)],
             children: vec![],
@@ -655,6 +656,42 @@ fn test_hamt_visit_entries_propagates_resolver_error() {
     assert_eq!(root.visit_entries(&mut resolver, &mut visitor), Err("nope"));
     assert_eq!(resolver_calls, 1);
     assert_eq!(visitor_calls, 1);
+}
+
+#[test]
+fn test_hamt_visit_entries_propagates_resolver_error() {
+    let key = b"dummy_server_key";
+    let child_datamap = (1_u32 << 7) | (1_u32 << 9);
+    let child_hash = HamtNode::<u64, u64>::compute_structural_hash(
+        key,
+        child_datamap,
+        0,
+        &[(1_u64, 10_u64), (2_u64, 20_u64)],
+        &[],
+    );
+    let root = HamtNode {
+        datamap: 0,
+        nodemap: 1_u32 << 3,
+        leaves: vec![],
+        children: vec![NodeRef::<u64, u64>::Lazy(child_hash)],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1_u32 << 3,
+            &[],
+            &[NodeRef::<u64, u64>::Lazy(child_hash)],
+        ),
+    };
+
+    let mut visitor_calls = 0_usize;
+    let mut resolver = |_hash: &StructuralHash| Err::<Arc<HamtNode<u64, u64>>, _>("boom");
+    let mut visitor = |_k: &u64, _v: &u64| -> Result<(), &str> {
+        visitor_calls = visitor_calls.wrapping_add(1);
+        Err("unreachable")
+    };
+
+    assert_eq!(root.visit_entries(&mut resolver, &mut visitor), Err("boom"));
+    assert_eq!(visitor_calls, 0);
 }
 
 fn find_key_with_path_slots(key: &[u8], root_slot: usize, child_slot: usize) -> u64 {
