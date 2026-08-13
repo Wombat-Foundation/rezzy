@@ -156,6 +156,55 @@ fn test_lthash_equal_does_not_mask_different_roots() {
 }
 
 #[test]
+fn test_isolate_delta_resolves_lazy_child() {
+    let key = b"dummy_server_key";
+    let leaf = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1, 100)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
+    });
+    let root_a = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 1,
+        leaves: vec![],
+        children: vec![NodeRef::<u64, u64>::Lazy(leaf.structural_hash)],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1,
+            &[],
+            &[NodeRef::<u64, u64>::Lazy(leaf.structural_hash)],
+        ),
+    });
+    let root_b = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 0,
+        leaves: vec![],
+        children: vec![],
+        structural_hash: HamtNode::<u64, u64>::compute_structural_hash(key, 0, 0, &[], &[]),
+    });
+
+    let mut resolver = |hash: &StructuralHash| {
+        assert_eq!(hash, &leaf.structural_hash);
+        Ok::<_, ()>(leaf.clone())
+    };
+
+    let (added, removed) = isolate_delta(
+        &root_a,
+        &LtHash::default(),
+        &root_b,
+        &LtHash([1u16; 1024]),
+        &mut resolver,
+    )
+    .expect("delta should resolve lazy child");
+
+    assert!(added.is_empty());
+    assert_eq!(removed, vec![(1, 100)]);
+}
+
+#[test]
 fn test_persisted_internal_node_round_trip() {
     let node = PersistedInternalNode {
         datamap: 0b11,
@@ -345,6 +394,49 @@ fn test_hamt_get_resolved_lookup() {
 }
 
 #[test]
+fn test_hamt_get_mismatched_leaf_returns_none() {
+    let key = b"dummy_server_key";
+    let stored_key = find_key_with_root_slot(key, 4);
+    let query_key = find_different_key_with_root_slot(key, 4, stored_key);
+    let root = HamtNode {
+        datamap: 1_u32 << 4,
+        nodemap: 0,
+        leaves: vec![(stored_key, 10_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            1_u32 << 4,
+            0,
+            &[(stored_key, 10_u64)],
+            &[],
+        ),
+    };
+
+    assert_eq!(root.get(key, &query_key), None);
+}
+
+#[test]
+fn test_hamt_get_returns_none_for_lazy_child() {
+    let key = b"dummy_server_key";
+    let query_key = find_key_with_path_slots(key, 3, 7);
+    let root = HamtNode {
+        datamap: 0,
+        nodemap: 1_u32 << 3,
+        leaves: vec![],
+        children: vec![NodeRef::<u64, u64>::Lazy([0xaa; 16])],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1_u32 << 3,
+            &[],
+            &[NodeRef::<u64, u64>::Lazy([0xaa; 16])],
+        ),
+    };
+
+    assert_eq!(root.get(key, &query_key), None);
+}
+
+#[test]
 fn test_hamt_search_resolves_lazy_child() {
     let key = b"dummy_server_key";
     let query = find_key_with_path_slots(key, 3, 7);
@@ -382,6 +474,29 @@ fn test_hamt_search_resolves_lazy_child() {
         .expect("search should succeed");
     assert_eq!(found, Some(42_u64));
     assert_eq!(calls, 1);
+}
+
+#[test]
+fn test_hamt_search_propagates_resolver_error() {
+    let key = b"dummy_server_key";
+    let query = find_key_with_path_slots(key, 3, 7);
+    let root = HamtNode {
+        datamap: 0,
+        nodemap: 1_u32 << 3,
+        leaves: vec![],
+        children: vec![NodeRef::<u64, u64>::Lazy([0xbb; 16])],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1_u32 << 3,
+            &[],
+            &[NodeRef::<u64, u64>::Lazy([0xbb; 16])],
+        ),
+    };
+
+    let mut resolver = |_hash: &StructuralHash| Err::<Arc<HamtNode<u64, u64>>, _>("boom");
+
+    assert_eq!(root.search(key, &query, &mut resolver), Err("boom"));
 }
 
 #[test]
@@ -425,6 +540,29 @@ fn test_hamt_visit_entries_resolves_lazy_child() {
     assert_eq!(entries, vec![(query, 42_u64)]);
 }
 
+#[test]
+fn test_hamt_visit_entries_propagates_resolver_error() {
+    let key = b"dummy_server_key";
+    let root = HamtNode {
+        datamap: 0,
+        nodemap: 1_u32 << 3,
+        leaves: vec![],
+        children: vec![NodeRef::<u64, u64>::Lazy([0xcc; 16])],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1_u32 << 3,
+            &[],
+            &[NodeRef::<u64, u64>::Lazy([0xcc; 16])],
+        ),
+    };
+
+    let mut resolver = |_hash: &StructuralHash| Err::<Arc<HamtNode<u64, u64>>, _>("nope");
+    let mut visitor = |_k: &u64, _v: &u64| -> Result<(), &str> { Ok(()) };
+
+    assert_eq!(root.visit_entries(&mut resolver, &mut visitor), Err("nope"));
+}
+
 fn find_key_with_path_slots(key: &[u8], root_slot: usize, child_slot: usize) -> u64 {
     for candidate in 0_u64..1_000_000 {
         let hash = leaf_hash_for_key(key, candidate);
@@ -437,6 +575,29 @@ fn find_key_with_path_slots(key: &[u8], root_slot: usize, child_slot: usize) -> 
 
 fn leaf_hash_for_key(key: &[u8], value: u64) -> StructuralHash {
     key_path_hash(key, &value)
+}
+
+fn find_key_with_root_slot(key: &[u8], root_slot: usize) -> u64 {
+    for candidate in 0_u64..1_000_000 {
+        let hash = leaf_hash_for_key(key, candidate);
+        if bucket_index(&hash, 0) == root_slot {
+            return candidate;
+        }
+    }
+    panic!("no key found for requested root slot");
+}
+
+fn find_different_key_with_root_slot(key: &[u8], root_slot: usize, excluded: u64) -> u64 {
+    for candidate in 0_u64..1_000_000 {
+        if candidate == excluded {
+            continue;
+        }
+        let hash = leaf_hash_for_key(key, candidate);
+        if bucket_index(&hash, 0) == root_slot {
+            return candidate;
+        }
+    }
+    panic!("no alternate key found for requested root slot");
 }
 
 #[test]
