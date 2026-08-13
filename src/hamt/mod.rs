@@ -206,34 +206,39 @@ impl<K, V> HamtNode<K, V> {
         Ok(())
     }
 
+    /// Resolves which slot `path_hash` routes to at `depth` and returns what
+    /// occupies it, if anything.
+    ///
+    /// This is the single shared CHAMP descent step: it computes the slot,
+    /// tests it against `datamap`/`nodemap`, and resolves the compressed
+    /// index. Both [`get_by_path_hash`](Self::get_by_path_hash) and
+    /// [`search_by_path_hash`](Self::search_by_path_hash) build on it and
+    /// only differ in how they terminate at a leaf or follow a child.
+    fn slot_at(&self, path_hash: &StructuralHash, depth: usize) -> Slot<'_, K, V> {
+        let slot = bucket_index(path_hash, depth);
+        let bit = 1_u32 << slot;
+
+        if (self.datamap & bit) != 0 {
+            Slot::Leaf(&self.leaves[map_index(self.datamap, slot)])
+        } else if (self.nodemap & bit) != 0 {
+            Slot::Child(&self.children[map_index(self.nodemap, slot)])
+        } else {
+            Slot::Empty
+        }
+    }
+
     fn get_by_path_hash<Q>(&self, key: &Q, path_hash: &StructuralHash, depth: usize) -> Option<&V>
     where
         K: Eq + Borrow<Q>,
         Q: Eq + ?Sized,
     {
-        let slot = bucket_index(path_hash, depth);
-        let bit = 1_u32 << slot;
-
-        if (self.datamap & bit) != 0 {
-            let idx = map_index(self.datamap, slot);
-            let (stored_key, value) = &self.leaves[idx];
-            if stored_key.borrow() == key {
-                return Some(value);
+        match self.slot_at(path_hash, depth) {
+            Slot::Leaf((stored_key, value)) => (stored_key.borrow() == key).then_some(value),
+            Slot::Child(NodeRef::Resolved(child)) => {
+                child.get_by_path_hash(key, path_hash, depth.saturating_add(1))
             }
-            return None;
+            Slot::Child(NodeRef::Lazy(_)) | Slot::Empty => None,
         }
-
-        if (self.nodemap & bit) != 0 {
-            let idx = map_index(self.nodemap, slot);
-            match &self.children[idx] {
-                NodeRef::Resolved(child) => {
-                    return child.get_by_path_hash(key, path_hash, depth.saturating_add(1));
-                }
-                NodeRef::Lazy(_) => return None,
-            }
-        }
-
-        None
     }
 
     fn search_by_path_hash<Q, F, E>(
@@ -249,29 +254,27 @@ impl<K, V> HamtNode<K, V> {
         Q: Eq + ?Sized,
         F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
     {
-        let slot = bucket_index(path_hash, depth);
-        let bit = 1_u32 << slot;
-
-        if (self.datamap & bit) != 0 {
-            let idx = map_index(self.datamap, slot);
-            let (stored_key, value) = &self.leaves[idx];
-            if stored_key.borrow() == key {
-                return Ok(Some(value.clone()));
+        match self.slot_at(path_hash, depth) {
+            Slot::Leaf((stored_key, value)) => {
+                Ok((stored_key.borrow() == key).then(|| value.clone()))
             }
-            return Ok(None);
+            Slot::Child(NodeRef::Resolved(child)) => {
+                child.search_by_path_hash(key, path_hash, depth.saturating_add(1), resolver)
+            }
+            Slot::Child(NodeRef::Lazy(hash)) => {
+                let child = resolver(hash)?;
+                child.search_by_path_hash(key, path_hash, depth.saturating_add(1), resolver)
+            }
+            Slot::Empty => Ok(None),
         }
-
-        if (self.nodemap & bit) != 0 {
-            let idx = map_index(self.nodemap, slot);
-            let child = match &self.children[idx] {
-                NodeRef::Resolved(child) => child.clone(),
-                NodeRef::Lazy(hash) => resolver(hash)?,
-            };
-            return child.search_by_path_hash(key, path_hash, depth.saturating_add(1), resolver);
-        }
-
-        Ok(None)
     }
+}
+
+/// What occupies a single CHAMP slot: a leaf entry, a child node, or nothing.
+enum Slot<'a, K, V> {
+    Leaf(&'a (K, V)),
+    Child(&'a NodeRef<K, V>),
+    Empty,
 }
 
 /// Errors that can occur while building a HAMT from an entry iterator.

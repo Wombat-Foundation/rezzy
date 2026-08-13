@@ -469,13 +469,8 @@ fn test_hamt_get_returns_none_for_lazy_child() {
 fn test_hamt_search_resolves_lazy_child() {
     let key = b"dummy_server_key";
     let query = find_key_with_path_slots(key, 3, 7);
-    let child_hash = HamtNode::<u64, u64>::compute_structural_hash(
-        key,
-        1_u32 << 7,
-        0,
-        &[(query, 42_u64)],
-        &[],
-    );
+    let child_hash =
+        HamtNode::<u64, u64>::compute_structural_hash(key, 1_u32 << 7, 0, &[(query, 42_u64)], &[]);
     let child = Arc::new(HamtNode {
         datamap: 1_u32 << 7,
         nodemap: 0,
@@ -522,19 +517,21 @@ fn test_hamt_lookup_with_custom_key_hash() {
         hash[0] = 4;
         hash
     };
-    let root = crate::hamt::build_hamt_with_key_hash(
-        key,
-        vec![(NonCloneKey(query), 70_u64)],
-        |_| custom_hash,
-    )
-    .expect("build with custom hash should work");
+    let root =
+        crate::hamt::build_hamt_with_key_hash(key, vec![(NonCloneKey(query), 70_u64)], |_| {
+            custom_hash
+        })
+        .expect("build with custom hash should work");
 
     let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<NonCloneKey, u64>>, ()> {
         unreachable!("single-leaf tree should not resolve lazily");
     };
 
     assert_eq!(root.get(key, &query), None);
-    assert_eq!(root.get_with_key_hash(&query, |_| custom_hash), Some(&70_u64));
+    assert_eq!(
+        root.get_with_key_hash(&query, |_| custom_hash),
+        Some(&70_u64)
+    );
     assert_eq!(root.search(key, &query, &mut resolver), Ok(None));
     assert_eq!(
         root.search_with_key_hash(&query, |_| custom_hash, &mut resolver),
@@ -546,13 +543,8 @@ fn test_hamt_lookup_with_custom_key_hash() {
 fn test_hamt_search_propagates_resolver_error() {
     let key = b"dummy_server_key";
     let query = find_key_with_path_slots(key, 3, 7);
-    let child_hash = HamtNode::<u64, u64>::compute_structural_hash(
-        key,
-        1_u32 << 7,
-        0,
-        &[(query, 42_u64)],
-        &[],
-    );
+    let child_hash =
+        HamtNode::<u64, u64>::compute_structural_hash(key, 1_u32 << 7, 0, &[(query, 42_u64)], &[]);
     let root = HamtNode {
         datamap: 0,
         nodemap: 1_u32 << 3,
@@ -581,13 +573,8 @@ fn test_hamt_search_propagates_resolver_error() {
 fn test_hamt_visit_entries_resolves_lazy_child() {
     let key = b"dummy_server_key";
     let query = find_key_with_path_slots(key, 3, 7);
-    let child_hash = HamtNode::<u64, u64>::compute_structural_hash(
-        key,
-        1_u32 << 7,
-        0,
-        &[(query, 42_u64)],
-        &[],
-    );
+    let child_hash =
+        HamtNode::<u64, u64>::compute_structural_hash(key, 1_u32 << 7, 0, &[(query, 42_u64)], &[]);
     let child = Arc::new(HamtNode {
         datamap: 1_u32 << 7,
         nodemap: 0,
