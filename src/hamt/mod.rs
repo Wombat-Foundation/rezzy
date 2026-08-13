@@ -111,6 +111,22 @@ impl<K, V> HamtNode<K, V> {
         self.get_by_path_hash(key, &path_hash, 0)
     }
 
+    /// Looks up a key using a caller-provided path-hash function.
+    ///
+    /// This matches [`build_hamt_with_key_hash`] and is required when the tree
+    /// was built with a custom routing function instead of the default keyed
+    /// structural hash.
+    #[must_use]
+    pub fn get_with_key_hash<Q, F>(&self, key: &Q, mut key_hash: F) -> Option<&V>
+    where
+        K: Eq + Borrow<Q>,
+        Q: Eq + ?Sized,
+        F: FnMut(&Q) -> StructuralHash,
+    {
+        let path_hash = key_hash(key);
+        self.get_by_path_hash(key, &path_hash, 0)
+    }
+
     /// Looks up a key in a HAMT that may contain lazy children.
     ///
     /// Lazy children are resolved through `resolver` as needed. The returned
@@ -126,12 +142,36 @@ impl<K, V> HamtNode<K, V> {
         resolver: &mut F,
     ) -> Result<Option<V>, E>
     where
-        K: Hash + Eq + Clone + Borrow<Q>,
+        K: Hash + Eq + Borrow<Q>,
         V: Clone,
         Q: Hash + Eq + ?Sized,
         F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
     {
         let path_hash = key_path_hash(structural_key, key);
+        self.search_by_path_hash(key, &path_hash, 0, resolver)
+    }
+
+    /// Looks up a key using a caller-provided path-hash function.
+    ///
+    /// This is the search equivalent of [`get_with_key_hash`] for HAMTs built
+    /// with [`build_hamt_with_key_hash`].
+    ///
+    /// # Errors
+    /// Returns the error from `resolver` if a lazy child cannot be loaded.
+    pub fn search_with_key_hash<Q, KeyHash, F, E>(
+        &self,
+        key: &Q,
+        mut key_hash: KeyHash,
+        resolver: &mut F,
+    ) -> Result<Option<V>, E>
+    where
+        K: Eq + Borrow<Q>,
+        V: Clone,
+        Q: Eq + ?Sized,
+        KeyHash: FnMut(&Q) -> StructuralHash,
+        F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    {
+        let path_hash = key_hash(key);
         self.search_by_path_hash(key, &path_hash, 0, resolver)
     }
 
@@ -204,7 +244,7 @@ impl<K, V> HamtNode<K, V> {
         resolver: &mut F,
     ) -> Result<Option<V>, E>
     where
-        K: Eq + Clone + Borrow<Q>,
+        K: Eq + Borrow<Q>,
         V: Clone,
         Q: Eq + ?Sized,
         F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
