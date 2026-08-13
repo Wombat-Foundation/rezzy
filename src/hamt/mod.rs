@@ -6,7 +6,7 @@
 //! - `delta`: subtree differencing for set isolation
 //! - `tests`: regression coverage for the generic HAMT core
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
     borrow::Borrow,
     hash::{Hash, Hasher},
@@ -521,6 +521,14 @@ impl<E> From<HamtBuildError> for HamtMutateError<E> {
     }
 }
 
+/// Result of an [`insert`]/`insert_node` mutation: the new root and the
+/// value that previously occupied the key, if any.
+type MutateResult<K, V, E> = Result<(Arc<HamtNode<K, V>>, Option<V>), HamtMutateError<E>>;
+
+/// Result of a `remove_node` step: what remains of the subtree, and the
+/// value that was removed, if the key was present.
+type RemoveStepResult<K, V, E> = Result<(RemoveOutcome<K, V>, Option<V>), HamtMutateError<E>>;
+
 fn rebuild_node<K, V>(
     structural_key: &[u8],
     datamap: u32,
@@ -551,7 +559,7 @@ fn insert_node<K, V, F, E>(
     path_hash: &StructuralHash,
     depth: usize,
     resolver: &mut F,
-) -> Result<(Arc<HamtNode<K, V>>, Option<V>), HamtMutateError<E>>
+) -> MutateResult<K, V, E>
 where
     K: Hash + Eq + Clone,
     V: Hash + Clone,
@@ -593,17 +601,18 @@ where
 
         let (existing_key, existing_value) = node.leaves[idx].clone();
         let existing_path_hash = key_path_hash(structural_key, &existing_key);
-        let mut split_entries = Vec::with_capacity(2);
-        split_entries.push(BuildEntry {
-            key: existing_key,
-            value: existing_value,
-            path_hash: existing_path_hash,
-        });
-        split_entries.push(BuildEntry {
-            key,
-            value,
-            path_hash: *path_hash,
-        });
+        let split_entries = vec![
+            BuildEntry {
+                key: existing_key,
+                value: existing_value,
+                path_hash: existing_path_hash,
+            },
+            BuildEntry {
+                key,
+                value,
+                path_hash: *path_hash,
+            },
+        ];
         let child = build_node(structural_key, split_entries, next_depth)?;
 
         let mut leaves = node.leaves.clone();
@@ -683,7 +692,7 @@ pub fn insert<K, V, F, E>(
     key: K,
     value: V,
     resolver: &mut F,
-) -> Result<(Arc<HamtNode<K, V>>, Option<V>), HamtMutateError<E>>
+) -> MutateResult<K, V, E>
 where
     K: Hash + Eq + Clone,
     V: Hash + Clone,
@@ -748,7 +757,7 @@ fn remove_node<K, V, Q, F, E>(
     path_hash: &StructuralHash,
     depth: usize,
     resolver: &mut F,
-) -> Result<(RemoveOutcome<K, V>, Option<V>), HamtMutateError<E>>
+) -> RemoveStepResult<K, V, E>
 where
     K: Hash + Eq + Borrow<Q> + Clone,
     V: Hash + Clone,
@@ -855,7 +864,7 @@ pub fn remove<K, V, Q, F, E>(
     structural_key: &[u8],
     key: &Q,
     resolver: &mut F,
-) -> Result<(Arc<HamtNode<K, V>>, Option<V>), HamtMutateError<E>>
+) -> MutateResult<K, V, E>
 where
     K: Hash + Eq + Borrow<Q> + Clone,
     V: Hash + Clone,
@@ -869,8 +878,7 @@ where
         RemoveOutcome::Leaf(leaf_key, leaf_value) => {
             let leaf_path_hash = key_path_hash(structural_key, &leaf_key);
             let root_slot = bucket_index(&leaf_path_hash, 0);
-            let mut leaves = Vec::with_capacity(1);
-            leaves.push((leaf_key, leaf_value));
+            let leaves = vec![(leaf_key, leaf_value)];
             rebuild_node(structural_key, 1_u32 << root_slot, 0, leaves, Vec::new())
         }
         RemoveOutcome::Node(new_root) => new_root,

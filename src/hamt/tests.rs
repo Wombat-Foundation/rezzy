@@ -969,6 +969,199 @@ fn test_hamt_remove_propagates_resolver_error() {
     ));
 }
 
+/// `build_hamt` must refuse to build past `HAMT_MAX_DEPTH`, and `insert`
+/// must surface that same failure (via `HamtMutateError`'s `From<HamtBuildError>`
+/// conversion) when a leaf-vs-leaf split it triggers can't be resolved within
+/// the remaining depth. A key type whose `Hash` impl ignores its own value
+/// forces every instance to route to the same slot at every depth, which is
+/// the only practical way to manufacture a real exhausted-depth collision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CollidingKey(u64);
+
+impl Hash for CollidingKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write(b"always the same bytes");
+    }
+}
+
+#[test]
+fn test_build_hamt_with_key_hash_reports_max_depth_exhaustion() {
+    let key = b"dummy_server_key";
+    let result = crate::hamt::build_hamt_with_key_hash(
+        key,
+        vec![(CollidingKey(1), 10_u64), (CollidingKey(2), 20_u64)],
+        |_| [0u8; 16],
+    );
+
+    assert!(matches!(result, Err(HamtBuildError::HashCollision { .. })));
+}
+
+#[test]
+fn test_hamt_insert_propagates_build_hash_collision() {
+    let key = b"dummy_server_key";
+    let root = build_hamt(key, vec![(CollidingKey(1), 10_u64)]).expect("build should work");
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<CollidingKey, u64>>, ()> {
+        unreachable!("no lazy children in a freshly built tree")
+    };
+
+    // CollidingKey's Hash impl makes every instance route to the exact same
+    // slot at every depth, so inserting a second, different CollidingKey
+    // forces the leaf-split path all the way to HAMT_MAX_DEPTH.
+    let result = crate::hamt::insert(&root, key, CollidingKey(2), 20_u64, &mut resolver);
+
+    assert!(matches!(result, Err(HamtMutateError::HashCollision { .. })));
+}
+
+fn find_key_with_slot_at_depth(key: &[u8], depth: usize, slot: usize) -> u64 {
+    for candidate in 0_u64..1_000_000 {
+        let hash = leaf_hash_for_key(key, candidate);
+        if bucket_index(&hash, depth) == slot {
+            return candidate;
+        }
+    }
+    panic!("no key found for requested depth/slot");
+}
+
+fn find_different_key_with_slot_at_depth(
+    key: &[u8],
+    depth: usize,
+    slot: usize,
+    excluded: u64,
+) -> u64 {
+    for candidate in 0_u64..1_000_000 {
+        if candidate == excluded {
+            continue;
+        }
+        let hash = leaf_hash_for_key(key, candidate);
+        if bucket_index(&hash, depth) == slot {
+            return candidate;
+        }
+    }
+    panic!("no alternate key found for requested depth/slot");
+}
+
+/// White-box test exercising `insert_node`'s own max-depth guard directly:
+/// a leaf-vs-leaf collision discovered one level below `HAMT_MAX_DEPTH - 1`
+/// can't be resolved with a single more level of splitting, so it must
+/// error instead of building a corrupt tree. Real trees never reach
+/// `HAMT_MAX_DEPTH - 1` through ordinary hashing, so this constructs the
+/// node directly rather than building up to it through `insert`.
+#[test]
+fn test_insert_node_errors_at_max_depth_boundary() {
+    let key = b"dummy_server_key";
+    let depth = HAMT_MAX_DEPTH - 1;
+    let slot = 5;
+    let existing = find_key_with_slot_at_depth(key, depth, slot);
+    let new_key = find_different_key_with_slot_at_depth(key, depth, slot, existing);
+
+    let node = Arc::new(HamtNode {
+        datamap: 1_u32 << slot,
+        nodemap: 0,
+        leaves: vec![(existing, 1_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            1_u32 << slot,
+            0,
+            &[(existing, 1_u64)],
+            &[],
+        ),
+    });
+    let new_path_hash = leaf_hash_for_key(key, new_key);
+    let mut resolver =
+        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+
+    let result = insert_node(
+        &node,
+        key,
+        new_key,
+        2_u64,
+        &new_path_hash,
+        depth,
+        &mut resolver,
+    );
+
+    assert!(matches!(
+        result,
+        Err(HamtMutateError::HashCollision { depth: d, bucket_size: 2 }) if d == depth
+    ));
+}
+
+#[test]
+fn test_hamt_remove_empties_root() {
+    let key = b"dummy_server_key";
+    let only = find_key_with_root_slot(key, 4);
+    let root = build_hamt(key, vec![(only, 42_u64)]).expect("build should work");
+
+    let mut resolver =
+        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+    let (new_root, displaced) =
+        crate::hamt::remove(&root, key, &only, &mut resolver).expect("remove should work");
+
+    assert_eq!(displaced, Some(42_u64));
+    assert_eq!(new_root.datamap, 0);
+    assert_eq!(new_root.nodemap, 0);
+    assert!(new_root.leaves.is_empty());
+    assert!(new_root.children.is_empty());
+}
+
+/// A `NodeRef::Resolved` child holding exactly one leaf can't arise from
+/// `build_hamt` (single-entry buckets are always inlined as leaves), but
+/// `HamtNode`'s fields are public, so a caller assembling a tree from
+/// persisted/foreign data could still hand `remove` one. When removing that
+/// child's only entry empties it out, the parent must drop the child slot
+/// entirely — exercising `remove_node`'s nodemap-branch `RemoveOutcome::Empty`
+/// cascade — while any of the parent's own unrelated leaves survive intact.
+#[test]
+fn test_hamt_remove_drops_child_that_becomes_fully_empty() {
+    let key = b"dummy_server_key";
+    let leaf_b = find_key_with_root_slot(key, 1);
+    let leaf_d = find_different_key_with_root_slot(key, 2, leaf_b);
+    let child_key = find_key_with_path_slots(key, 3, 7);
+
+    let child = Arc::new(HamtNode {
+        datamap: 1_u32 << 7,
+        nodemap: 0,
+        leaves: vec![(child_key, 30_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            1_u32 << 7,
+            0,
+            &[(child_key, 30_u64)],
+            &[],
+        ),
+    });
+    let root_leaves = vec![(leaf_b, 10_u64), (leaf_d, 20_u64)];
+    let root_children = vec![NodeRef::Resolved(child)];
+    let root = Arc::new(HamtNode {
+        datamap: (1_u32 << 1) | (1_u32 << 2),
+        nodemap: 1_u32 << 3,
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            (1_u32 << 1) | (1_u32 << 2),
+            1_u32 << 3,
+            &root_leaves,
+            &root_children,
+        ),
+        leaves: root_leaves,
+        children: root_children,
+    });
+
+    let mut resolver =
+        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+    let (new_root, displaced) =
+        crate::hamt::remove(&root, key, &child_key, &mut resolver).expect("remove should work");
+
+    assert_eq!(displaced, Some(30_u64));
+    assert_eq!(new_root.nodemap, 0);
+    assert!(new_root.children.is_empty());
+    assert_eq!(new_root.get(key, &leaf_b), Some(&10_u64));
+    assert_eq!(new_root.get(key, &leaf_d), Some(&20_u64));
+    assert_eq!(new_root.get(key, &child_key), None);
+}
+
 fn find_key_with_path_slots(key: &[u8], root_slot: usize, child_slot: usize) -> u64 {
     for candidate in 0_u64..1_000_000 {
         let hash = leaf_hash_for_key(key, candidate);
