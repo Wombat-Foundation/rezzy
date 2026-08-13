@@ -619,6 +619,49 @@ fn test_hamt_mutation_with_custom_key_hash() {
 }
 
 #[test]
+fn test_hamt_remove_with_custom_key_hash_collapses_to_leaf() {
+    let key = b"dummy_server_key";
+    let mut resolver =
+        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+
+    let root =
+        crate::hamt::build_hamt_with_key_hash(key, vec![(1_u64, 10_u64), (2_u64, 20_u64)], |key| {
+            custom_routing_hash(*key)
+        })
+        .expect("build with custom hash should work");
+
+    let (root, removed) = crate::hamt::remove_with_key_hash(
+        &root,
+        key,
+        &1_u64,
+        |key: &u64| custom_routing_hash(*key),
+        &mut resolver,
+    )
+    .expect("custom remove should work");
+
+    assert_eq!(removed, Some(10_u64));
+    assert_eq!(root.datamap.count_ones(), 1);
+    assert_eq!(root.nodemap, 0);
+    assert_eq!(
+        root.get_with_key_hash(&2_u64, |key| custom_routing_hash(*key)),
+        Some(&20_u64)
+    );
+    assert_eq!(
+        root.get_with_key_hash(&1_u64, |key| custom_routing_hash(*key)),
+        None
+    );
+
+    let expected = crate::hamt::build_hamt_with_key_hash(key, vec![(2_u64, 20_u64)], |key| {
+        custom_routing_hash(*key)
+    })
+    .expect("single-entry rebuild should work");
+
+    assert_eq!(root.structural_hash, expected.structural_hash);
+    assert_eq!(root.datamap, expected.datamap);
+    assert_eq!(root.nodemap, expected.nodemap);
+}
+
+#[test]
 fn test_hamt_search_propagates_resolver_error() {
     let key = b"dummy_server_key";
     let query = find_key_with_path_slots(key, 3, 7);

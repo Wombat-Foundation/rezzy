@@ -1044,16 +1044,9 @@ where
     let path_hash = key_path_hash(structural_key, key);
     let (outcome, old_value) =
         remove_node_with_ctx(node, structural_key, key, &path_hash, 0, resolver)?;
-    let new_root = match outcome {
-        RemoveOutcome::Empty => rebuild_node(structural_key, 0, 0, Vec::new(), Vec::new()),
-        RemoveOutcome::Leaf(leaf_key, leaf_value) => {
-            let leaf_path_hash = key_path_hash(structural_key, &leaf_key);
-            let root_slot = bucket_index(&leaf_path_hash, 0);
-            let leaves = vec![(leaf_key, leaf_value)];
-            rebuild_node(structural_key, 1_u32 << root_slot, 0, leaves, Vec::new())
-        }
-        RemoveOutcome::Node(new_root) => new_root,
-    };
+    let new_root = finalize_remove_root(structural_key, outcome, |leaf_key| {
+        bucket_index(&key_path_hash(structural_key, leaf_key), 0)
+    });
     Ok((new_root, old_value))
 }
 
@@ -1160,6 +1153,27 @@ where
     }
 }
 
+fn finalize_remove_root<K, V, F>(
+    structural_key: &[u8],
+    outcome: RemoveOutcome<K, V>,
+    mut root_slot_for_leaf: F,
+) -> Arc<HamtNode<K, V>>
+where
+    K: Hash + Clone,
+    V: Hash + Clone,
+    F: FnMut(&K) -> usize,
+{
+    match outcome {
+        RemoveOutcome::Empty => rebuild_node(structural_key, 0, 0, Vec::new(), Vec::new()),
+        RemoveOutcome::Leaf(leaf_key, leaf_value) => {
+            let root_slot = root_slot_for_leaf(&leaf_key);
+            let leaves = vec![(leaf_key, leaf_value)];
+            rebuild_node(structural_key, 1_u32 << root_slot, 0, leaves, Vec::new())
+        }
+        RemoveOutcome::Node(new_root) => new_root,
+    }
+}
+
 /// Removes a key from a HAMT using a caller-provided routing hash for every
 /// key involved in the mutation.
 ///
@@ -1193,15 +1207,8 @@ where
     let path_hash = key_hash(key);
     let (outcome, old_value) =
         remove_node_with_ctx(node, structural_key, key, &path_hash, 0, resolver)?;
-    let new_root = match outcome {
-        RemoveOutcome::Empty => rebuild_node(structural_key, 0, 0, Vec::new(), Vec::new()),
-        RemoveOutcome::Leaf(leaf_key, leaf_value) => {
-            let leaf_path_hash = key_hash(&leaf_key);
-            let root_slot = bucket_index(&leaf_path_hash, 0);
-            let leaves = vec![(leaf_key, leaf_value)];
-            rebuild_node(structural_key, 1_u32 << root_slot, 0, leaves, Vec::new())
-        }
-        RemoveOutcome::Node(new_root) => new_root,
-    };
+    let new_root = finalize_remove_root(structural_key, outcome, |leaf_key| {
+        bucket_index(&key_hash(leaf_key), 0)
+    });
     Ok((new_root, old_value))
 }
