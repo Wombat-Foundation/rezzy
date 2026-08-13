@@ -336,6 +336,110 @@ fn test_build_hamt_root_handle_tracks_root_identity() {
 }
 
 #[test]
+fn test_hamt_get_resolved_lookup() {
+    let key = b"dummy_server_key";
+    let root = build_hamt(key, vec![(1_u64, 10_u64)]).expect("build should work");
+
+    assert_eq!(root.get(key, &1_u64), Some(&10_u64));
+    assert_eq!(root.get(key, &2_u64), None);
+}
+
+#[test]
+fn test_hamt_search_resolves_lazy_child() {
+    let key = b"dummy_server_key";
+    let query = find_key_with_path_slots(key, 3, 7);
+    let child_hash = leaf_hash_for_key(key, query);
+    let child = Arc::new(HamtNode {
+        datamap: 1_u32 << 7,
+        nodemap: 0,
+        leaves: vec![(query, 42_u64)],
+        children: vec![],
+        structural_hash: child_hash,
+    });
+    let root = HamtNode {
+        datamap: 0,
+        nodemap: 1_u32 << 3,
+        leaves: vec![],
+        children: vec![NodeRef::<u64, u64>::Lazy(child.structural_hash)],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1_u32 << 3,
+            &[],
+            &[NodeRef::<u64, u64>::Lazy(child.structural_hash)],
+        ),
+    };
+
+    let mut calls = 0_usize;
+    let mut resolver = |hash: &StructuralHash| {
+        calls = calls.wrapping_add(1);
+        assert_eq!(hash, &child.structural_hash);
+        Ok::<_, ()>(child.clone())
+    };
+
+    let found = root
+        .search(key, &query, &mut resolver)
+        .expect("search should succeed");
+    assert_eq!(found, Some(42_u64));
+    assert_eq!(calls, 1);
+}
+
+#[test]
+fn test_hamt_visit_entries_resolves_lazy_child() {
+    let key = b"dummy_server_key";
+    let query = find_key_with_path_slots(key, 3, 7);
+    let child_hash = leaf_hash_for_key(key, query);
+    let child = Arc::new(HamtNode {
+        datamap: 1_u32 << 7,
+        nodemap: 0,
+        leaves: vec![(query, 42_u64)],
+        children: vec![],
+        structural_hash: child_hash,
+    });
+    let root = HamtNode {
+        datamap: 0,
+        nodemap: 1_u32 << 3,
+        leaves: vec![],
+        children: vec![NodeRef::<u64, u64>::Lazy(child.structural_hash)],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1_u32 << 3,
+            &[],
+            &[NodeRef::<u64, u64>::Lazy(child.structural_hash)],
+        ),
+    };
+
+    let mut resolver = |hash: &StructuralHash| {
+        assert_eq!(hash, &child.structural_hash);
+        Ok::<_, ()>(child.clone())
+    };
+    let mut entries = Vec::new();
+
+    root.visit_entries(&mut resolver, &mut |k, v| {
+        entries.push((*k, *v));
+        Ok::<_, ()>(())
+    })
+    .expect("walk should succeed");
+
+    assert_eq!(entries, vec![(query, 42_u64)]);
+}
+
+fn find_key_with_path_slots(key: &[u8], root_slot: usize, child_slot: usize) -> u64 {
+    for candidate in 0_u64..1_000_000 {
+        let hash = leaf_hash_for_key(key, candidate);
+        if bucket_index(&hash, 0) == root_slot && bucket_index(&hash, 1) == child_slot {
+            return candidate;
+        }
+    }
+    panic!("no key found for requested path slots");
+}
+
+fn leaf_hash_for_key(key: &[u8], value: u64) -> StructuralHash {
+    key_path_hash(key, &value)
+}
+
+#[test]
 fn test_build_hamt_reports_hash_collisions() {
     let key = b"dummy_server_key";
     let result =

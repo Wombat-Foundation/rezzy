@@ -172,8 +172,8 @@ where
         collection.push((k.clone(), v.clone()));
     }
     for child in &node.children {
-        let resolved = resolve_node(child, resolver)?;
-        collect_all_leaves(&resolved, collection, resolver)?;
+        let child_node = resolve_node(child, resolver)?;
+        collect_all_leaves(&child_node, collection, resolver)?;
     }
     Ok(())
 }

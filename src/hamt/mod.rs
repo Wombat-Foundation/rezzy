@@ -7,7 +7,10 @@
 //! - `tests`: regression coverage for the generic HAMT core
 
 use alloc::{sync::Arc, vec::Vec};
-use core::hash::{Hash, Hasher};
+use core::{
+    borrow::Borrow,
+    hash::{Hash, Hasher},
+};
 
 pub mod codec;
 pub mod delta;
@@ -93,6 +96,142 @@ impl<K, V> HamtNode<K, V> {
         }
         mac.finish()
     }
+
+    /// Looks up a key in a fully materialized HAMT.
+    ///
+    /// This is the cheapest read path and should be used when the tree is
+    /// already fully resolved in memory.
+    #[must_use]
+    pub fn get<Q>(&self, structural_key: &[u8], key: &Q) -> Option<&V>
+    where
+        K: Hash + Eq + Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let path_hash = key_path_hash(structural_key, key);
+        self.get_by_path_hash(key, &path_hash, 0)
+    }
+
+    /// Looks up a key in a HAMT that may contain lazy children.
+    ///
+    /// Lazy children are resolved through `resolver` as needed. The returned
+    /// value is cloned so the lookup does not need to hold references into
+    /// transient resolved child allocations.
+    ///
+    /// # Errors
+    /// Returns the error from `resolver` if a lazy child cannot be loaded.
+    pub fn search<Q, F, E>(
+        &self,
+        structural_key: &[u8],
+        key: &Q,
+        resolver: &mut F,
+    ) -> Result<Option<V>, E>
+    where
+        K: Hash + Eq + Clone + Borrow<Q>,
+        V: Clone,
+        Q: Hash + Eq + ?Sized,
+        F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    {
+        let path_hash = key_path_hash(structural_key, key);
+        self.search_by_path_hash(key, &path_hash, 0, resolver)
+    }
+
+    /// Visits every key/value pair in the HAMT, resolving lazy children as
+    /// needed.
+    ///
+    /// This is the reusable traversal primitive for callers that need to
+    /// stream or collect the full contents of a subtree.
+    ///
+    /// # Errors
+    /// Returns the error from either `resolver` or `visitor`.
+    pub fn visit_entries<F, E>(
+        &self,
+        resolver: &mut F,
+        visitor: &mut impl FnMut(&K, &V) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    {
+        for (key, value) in &self.leaves {
+            visitor(key, value)?;
+        }
+
+        for child in &self.children {
+            let child_node = match child {
+                NodeRef::Resolved(node) => node.clone(),
+                NodeRef::Lazy(hash) => resolver(hash)?,
+            };
+            child_node.visit_entries(resolver, visitor)?;
+        }
+
+        Ok(())
+    }
+
+    fn get_by_path_hash<Q>(&self, key: &Q, path_hash: &StructuralHash, depth: usize) -> Option<&V>
+    where
+        K: Eq + Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        let slot = bucket_index(path_hash, depth);
+        let bit = 1_u32 << slot;
+
+        if (self.datamap & bit) != 0 {
+            let idx = map_index(self.datamap, slot);
+            let (stored_key, value) = &self.leaves[idx];
+            if stored_key.borrow() == key {
+                return Some(value);
+            }
+            return None;
+        }
+
+        if (self.nodemap & bit) != 0 {
+            let idx = map_index(self.nodemap, slot);
+            match &self.children[idx] {
+                NodeRef::Resolved(child) => {
+                    return child.get_by_path_hash(key, path_hash, depth.saturating_add(1));
+                }
+                NodeRef::Lazy(_) => return None,
+            }
+        }
+
+        None
+    }
+
+    fn search_by_path_hash<Q, F, E>(
+        &self,
+        key: &Q,
+        path_hash: &StructuralHash,
+        depth: usize,
+        resolver: &mut F,
+    ) -> Result<Option<V>, E>
+    where
+        K: Eq + Clone + Borrow<Q>,
+        V: Clone,
+        Q: Eq + ?Sized,
+        F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    {
+        let slot = bucket_index(path_hash, depth);
+        let bit = 1_u32 << slot;
+
+        if (self.datamap & bit) != 0 {
+            let idx = map_index(self.datamap, slot);
+            let (stored_key, value) = &self.leaves[idx];
+            if stored_key.borrow() == key {
+                return Ok(Some(value.clone()));
+            }
+            return Ok(None);
+        }
+
+        if (self.nodemap & bit) != 0 {
+            let idx = map_index(self.nodemap, slot);
+            let child = match &self.children[idx] {
+                NodeRef::Resolved(child) => child.clone(),
+                NodeRef::Lazy(hash) => resolver(hash)?,
+            };
+            return child.search_by_path_hash(key, path_hash, depth.saturating_add(1), resolver);
+        }
+
+        Ok(None)
+    }
 }
 
 /// Errors that can occur while building a HAMT from an entry iterator.
@@ -103,10 +242,54 @@ pub enum HamtBuildError {
     HashCollision { depth: usize, bucket_size: usize },
 }
 
-fn key_path_hash<K: Hash>(structural_key: &[u8], key: &K) -> StructuralHash {
+fn key_path_hash<K: Hash + ?Sized>(structural_key: &[u8], key: &K) -> StructuralHash {
     let mut hasher = StructuralHashBuilder::new(structural_key);
     key.hash(&mut hasher);
     hasher.finish()
+}
+
+fn map_index(bitmap: u32, slot: usize) -> usize {
+    let mask = lower_slot_mask(slot);
+    (bitmap & mask).count_ones() as usize
+}
+
+const LOWER_SLOT_MASKS: [u32; 32] = [
+    0x0000_0000,
+    0x0000_0001,
+    0x0000_0003,
+    0x0000_0007,
+    0x0000_000f,
+    0x0000_001f,
+    0x0000_003f,
+    0x0000_007f,
+    0x0000_00ff,
+    0x0000_01ff,
+    0x0000_03ff,
+    0x0000_07ff,
+    0x0000_0fff,
+    0x0000_1fff,
+    0x0000_3fff,
+    0x0000_7fff,
+    0x0000_ffff,
+    0x0001_ffff,
+    0x0003_ffff,
+    0x0007_ffff,
+    0x000f_ffff,
+    0x001f_ffff,
+    0x003f_ffff,
+    0x007f_ffff,
+    0x00ff_ffff,
+    0x01ff_ffff,
+    0x03ff_ffff,
+    0x07ff_ffff,
+    0x0fff_ffff,
+    0x1fff_ffff,
+    0x3fff_ffff,
+    0x7fff_ffff,
+];
+
+fn lower_slot_mask(slot: usize) -> u32 {
+    LOWER_SLOT_MASKS.get(slot).copied().unwrap_or(u32::MAX)
 }
 
 fn bucket_index(hash: &StructuralHash, depth: usize) -> usize {

@@ -370,6 +370,9 @@ where
 
 /// An O(1) cloneable, persistent state map. Note that `state_key: ""`
 /// is _never_ `null` or `None`.
+///
+/// TODO: replace this `imbl::OrdMap` with the HAMT-backed state map once the
+/// incremental state pipeline is wired to `crate::hamt`.
 pub type SharedState<Id = String> = imbl::OrdMap<(String, String), Id>;
 
 /// Computes the resolved room state *after* a given event.
@@ -413,6 +416,8 @@ where
 /// This is the batch variant of [`compute_state_at`]. It shares the topological
 /// sort and ancestor traversal across all targets, which is significantly faster
 /// than calling `compute_state_at` in a loop when the targets share ancestors.
+/// TODO: once the incremental state pipeline uses `crate::hamt`, this should
+/// be able to reuse more structure between forked states.
 ///
 /// Returns a map from each found target event ID to its resolved state.
 /// Target IDs not found in `events_map` are silently skipped.
@@ -485,6 +490,8 @@ impl<E: core::fmt::Debug + core::fmt::Display> std::error::Error for StateComput
 /// immediately compress and store the state (e.g. directly into a `RocksDB`
 /// buffer), bounding the peak memory for materialized state maps to the live
 /// frontier/DAG width under strict `O(n_reachable_ancestors)` indexing metadata.
+/// TODO: pair this with the HAMT-backed state map to reduce clone pressure on
+/// large fork-heavy DAGs.
 ///
 /// **NOTE:** Target IDs not found in `events_map` are silently skipped!
 ///
@@ -1978,6 +1985,8 @@ where
 ///
 /// If all parent states are identical (verified by `LtHash` + `ptr_eq` + full equality),
 /// returns the first state directly. Otherwise falls back to full state resolution.
+/// TODO: swap the state payload over to the HAMT-backed structure so this
+/// fast path can reuse more structure across fork-heavy merges.
 ///
 /// # Panics
 ///
