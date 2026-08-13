@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Lattice-coordinatized state resolution tests.
 //!
 //! Tests the LUB comparator, `route_power_events`, and `resolve_lattice_fold`.

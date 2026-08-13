@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Tests for restricted and `knock_restricted` join rule support.
 //!
 //! Previously, rezzy's `check_auth` only handled `public`, `invite`, and `knock`

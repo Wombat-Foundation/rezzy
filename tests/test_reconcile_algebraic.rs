@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 use base64::{
     engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD},
     Engine as _,
@@ -184,6 +185,10 @@ fn algebraic_wire_and_capacity_errors_are_rejected() {
         SyndromeSketch::new(MAX_SKETCH_CAPACITY + 1),
         Err(AlgebraicError::InvalidSketchCapacity)
     );
+    assert_eq!(
+        SyndromeSketch::new(MAX_SKETCH_CAPACITY).unwrap().capacity(),
+        MAX_SKETCH_CAPACITY
+    );
     let sketch = SyndromeSketch::new(2).unwrap();
     assert_eq!(sketch.coordinates(), [0, 0]);
     assert_eq!(
@@ -227,7 +232,7 @@ fn multi_round_bucket_transition_flow() {
         BucketDecodeBatch, BucketDecodeSuccess, BucketRequest, ClientAction, ReconciliationClient,
     };
 
-    // Round 1: depth 0 bucket at capacity 64 fails because delta is larger than 64.
+    // Round 1: depth 0 bucket at capacity 32 fails because delta is larger than 32.
     let r1_batch = BucketDecodeBatch {
         successful_buckets: vec![],
         failed_buckets: vec![(0, 0)],
@@ -235,7 +240,7 @@ fn multi_round_bucket_transition_flow() {
     let r1_previous = vec![BucketRequest {
         depth: 0,
         prefix: 0,
-        capacity: 64,
+        capacity: 32,
     }];
 
     // Transitioning Round 1 bisects (0,0) into depth 1 prefixes: (1, 0) and (1, 1)
@@ -258,8 +263,10 @@ fn multi_round_bucket_transition_flow() {
     assert_eq!(r2_requests.len(), 2);
     assert_eq!(r2_requests[0].depth, 1);
     assert_eq!(r2_requests[0].prefix, 0);
+    assert_eq!(r2_requests[0].capacity, 32);
     assert_eq!(r2_requests[1].depth, 1);
     assert_eq!(r2_requests[1].prefix, 1);
+    assert_eq!(r2_requests[1].capacity, 32);
 
     // Round 2: both child buckets succeed and decode their respective roots.
     let r2_batch = BucketDecodeBatch {

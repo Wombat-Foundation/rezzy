@@ -17,23 +17,37 @@
 pub mod algebraic;
 pub mod client;
 pub mod gf64;
+pub mod gf64_simd;
 mod pinsketch;
 pub mod resident;
 pub mod server;
 pub mod triage;
 
-pub const MAX_DEPTH: u8 = 64;
+/// Internal bit width of the `h64` trie used to materialize bucket ranges.
+///
+/// This is not the protocol request-depth cap; request validation enforces
+/// depth <= 32 in `triage::validate_bucket_requests`.
+pub const H64_TRIE_WIDTH: u8 = 64;
 
 pub use algebraic::{
     gf64_mul, verify_residual, AlgebraicError, ElementHash, EventIdFormat, RoomAccumulator,
     SyndromeSketch, MAX_LOCAL_SKETCH_DECODE_CAPACITY, MAX_SKETCH_CAPACITY,
 };
-pub use client::{ClientAction, ReconciliationClient, RemoteDigest};
+pub use client::{
+    BucketExchange, ClientAction, ReconciliationClient, RemoteDigest, MAX_BUCKETS_PER_ROUND,
+    MAX_RECONCILIATION_ROUNDS,
+};
 pub use resident::{ResidentKernel, STRATA_COUNT, STRATUM_CAPACITY};
 pub use server::{
     build_bucket_sketches, compute_frame_digest, ForwardGraph, H64Index, ReconciliationContext,
 };
 pub use triage::{
-    decode_bucket_sketches, estimate_delta, BucketDecodeBatch, BucketDecodeSuccess, BucketRequest,
-    MAX_BUCKETED_SKETCH_CAPACITY,
+    decode_bucket_sketches, estimate_strata, BucketDecodeBatch, BucketDecodeSuccess, BucketRequest,
+    StrataEstimate, MAX_BUCKETED_SKETCH_CAPACITY,
 };
+
+const _: () = assert!(MAX_SKETCH_CAPACITY == 32);
+const _: () = assert!(resident::STRATA_COUNT == 32);
+const _: () = assert!(resident::STRATUM_CAPACITY == 8);
+const _: () = assert!(triage::MAX_BUCKET_SKETCH_CAPACITY == 32);
+const _: () = assert!(triage::MAX_BUCKETED_SKETCH_CAPACITY == 4_096);

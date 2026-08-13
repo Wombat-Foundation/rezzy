@@ -781,11 +781,13 @@ where
         }
         steps = steps.saturating_add(1);
 
-        let Some(&current_mask) = masks.get(current_id) else {
-            // Invariant: queue entries are only pushed for ids present in `masks`.
-            debug_assert!(false, "current_id in queue must exist in masks");
-            continue;
-        };
+        // Every id ever pushed onto `queue` was inserted into `masks` first
+        // (initial extremity seeding above, or `masks.entry(pk)` before the
+        // parent push below); `masks` entries are never removed. So this
+        // lookup cannot miss.
+        let &current_mask = masks
+            .get(current_id)
+            .expect("queue entries are only pushed for ids already present in `masks`");
 
         let popcount = current_mask.count_ones();
 
@@ -892,6 +894,7 @@ where
 /// ```
 #[must_use]
 /// Computes the merge base (common ancestors) of a set of target events in the DAG.
+#[cfg(feature = "std")]
 pub fn compute_merge_base<'a, Id, Q, S, Node>(
     extremities: &[&Q],
     events_map: &'a HashMap<Id, Node, S>,
@@ -932,11 +935,13 @@ where
     }
 
     while let Some((_, current_id)) = queue.pop() {
-        let Some(current_mask) = masks.get(current_id).cloned() else {
-            // Invariant: queue entries are only pushed for ids present in `masks`.
-            debug_assert!(false, "current_id in queue must exist in masks");
-            continue;
-        };
+        // Same invariant as `compute_merge_bases`: every id pushed onto
+        // `queue` was inserted into `masks` first, and entries are never
+        // removed, so this lookup cannot miss.
+        let current_mask = masks
+            .get(current_id)
+            .cloned()
+            .expect("queue entries are only pushed for ids already present in `masks`");
 
         // If reachable by ALL extremities, this is the merge base.
         if current_mask.len() == target_count {
@@ -1586,6 +1591,135 @@ where
         result.insert(id.clone(), depths[i]);
     }
     result
+}
+
+// ─── Gap-fill depth hardening ─────────────────────────────────────────
+
+/// A `prev_events` edge whose two endpoints' wire-supplied `depth` values
+/// are not consistent with the DAG structure: the child's claimed `depth`
+/// does not exceed its parent's.
+///
+/// Both `depth` and `prev_events` are covered by an event's content hash
+/// (and therefore its signature), so a signature proves the sender *said*
+/// `depth: N` — it doesn't prove `N` is a truthful function of the parents
+/// it also signed. `prev_events` is checkable against the DAG the local
+/// server already holds; `depth` is not independently checkable at all
+/// except by comparing it back against that same DAG. That comparison is
+/// what this type reports: a byzantine or buggy peer can attach any
+/// `depth` it likes, and this flags claims that are structurally
+/// impossible given the parent it also claims.
+///
+/// This only checks *relative* monotonicity across a single edge, not
+/// absolute depth-from-room-creation — an edge check works on a partial
+/// view (e.g. a backfill gap-fill batch, where ancestors above the gap
+/// aren't in `events_map`), whereas an absolute check would require the
+/// full DAG back to `m.room.create` and would flag every legitimate
+/// partial batch as a false positive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepthDivergence<Id> {
+    /// The parent event (referenced via `prev_events`).
+    pub parent: Id,
+    /// The child event (the one whose `prev_events` includes `parent`).
+    pub child: Id,
+    /// The parent's claimed wire `depth`.
+    pub parent_depth: u64,
+    /// The child's claimed wire `depth`.
+    pub child_depth: u64,
+}
+
+/// Scans a set of events and reports every `prev_events` edge whose
+/// endpoints' wire `depth` values violate DAG monotonicity — i.e. a child
+/// whose claimed `depth` does not exceed its parent's claimed `depth`.
+/// Only edges where **both** endpoints are present in `events_map` are
+/// checked; an edge to a parent outside the map (a genuine gap) is
+/// silently skipped rather than treated as a violation.
+///
+/// This is a pure detector — it doesn't decide what to do about a
+/// divergence, only surfaces it. A homeserver can use this to log or alert
+/// on peers sending events with implausible depths, independent of whether
+/// it also chooses to use [`resolve_gap_fill_order`] to sidestep the
+/// untrusted value entirely when merging a gap-fill batch.
+///
+/// # Complexity
+///
+/// `O(Σ |prev_events|)` — linear in the total number of parent references.
+#[must_use]
+pub fn find_depth_divergences<Id, C, S>(
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+) -> Vec<DepthDivergence<Id>>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    S: core::hash::BuildHasher,
+    C: Clone,
+{
+    let mut divergences = Vec::new();
+    let mut seen_edges = BTreeSet::new();
+
+    for child in events_map.values() {
+        for parent_id in &child.prev_events {
+            let Some(parent) = events_map.get(parent_id) else {
+                continue; // parent outside the map — a gap, not a violation
+            };
+            if !seen_edges.insert((parent_id.clone(), child.event_id.clone())) {
+                continue;
+            }
+            if parent.depth == u64::MAX && child.depth == u64::MAX {
+                continue; // saturated clamp: both endpoints reached the cap
+            }
+            if child.depth <= parent.depth {
+                divergences.push(DepthDivergence {
+                    parent: parent_id.clone(),
+                    child: child.event_id.clone(),
+                    parent_depth: parent.depth,
+                    child_depth: child.depth,
+                });
+            }
+        }
+    }
+
+    // `events_map` iteration order is hash-map-arbitrary; sort for a
+    // deterministic, reproducible report.
+    divergences.sort_by(|a, b| (&a.parent, &a.child).cmp(&(&b.parent, &b.child)));
+    divergences
+}
+
+/// Re-derives the ordering of a backfill gap-fill batch directly from
+/// `prev_events` DAG edges, ignoring every event's wire-supplied `depth`
+/// field entirely.
+///
+/// This is not new logic — it's [`compute_topo_positions`] under a name
+/// that documents the intended call site: the point where a homeserver
+/// merges a `/backfill` response into its timeline index, where trusting
+/// wire `depth` for ordering would otherwise be tempting because the value
+/// is "right there" on each PDU. `compute_topo_positions` already ignores
+/// `depth` and derives order purely from `prev_events`, which is why it's
+/// safe to reuse as-is rather than needing new derivation logic; only the
+/// entry point is new.
+///
+/// Works correctly on a partial batch: the derived order is a valid
+/// topological order of the subgraph you pass in, which is what a gap-fill
+/// merge needs, even though it says nothing about where that subgraph
+/// slots into the full room DAG above the gap.
+///
+/// Pair with [`find_depth_divergences`] if you also want to log/alert on
+/// peers whose claimed depths are structurally inconsistent with this
+/// derived order, rather than silently overriding them.
+///
+/// # Complexity
+///
+/// Identical to [`compute_topo_positions`]: `O(V log V + E)`.
+#[must_use]
+pub fn resolve_gap_fill_order<Id, C, S, F>(
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    tiebreak: F,
+) -> Vec<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    S: core::hash::BuildHasher,
+    C: Clone,
+    F: Fn(&Id, &Id) -> core::cmp::Ordering,
+{
+    compute_topo_positions(events_map, tiebreak)
 }
 
 /// Returns events reachable from `tip` in **reverse topological order**
@@ -2762,6 +2896,164 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    /// `find_depth_divergences` must stay silent when every child's wire
+    /// `depth` exceeds its parent's, even on a full-DAG view.
+    #[test]
+    fn test_find_depth_divergences_no_divergence() {
+        let a = LeanEvent {
+            event_id: "A".into(),
+            prev_events: vec![],
+            depth: 1,
+            ..Default::default()
+        };
+        let b = LeanEvent {
+            event_id: "B".into(),
+            prev_events: vec!["A".into()],
+            depth: 2,
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+        events_map.insert("B".into(), b);
+
+        let divergences = find_depth_divergences(&events_map);
+        assert!(
+            divergences.is_empty(),
+            "expected no divergences, got: {divergences:?}"
+        );
+    }
+
+    /// `find_depth_divergences` must NOT flag a partial view (the shape of
+    /// a real backfill gap-fill batch) just because it doesn't reach back
+    /// to `m.room.create` — a genuinely legitimate pair of consecutive
+    /// wire depths (e.g. 26/27) whose parent above the gap isn't loaded
+    /// must not be reported as a divergence.
+    #[test]
+    fn test_find_depth_divergences_ignores_edges_outside_the_batch() {
+        // "A" (parent of B) deliberately NOT inserted — it's above the gap.
+        let b = LeanEvent {
+            event_id: "B".into(),
+            prev_events: vec!["A".into()],
+            depth: 26,
+            ..Default::default()
+        };
+        let c = LeanEvent {
+            event_id: "C".into(),
+            prev_events: vec!["B".into()],
+            depth: 27,
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("B".into(), b);
+        events_map.insert("C".into(), c);
+
+        let divergences = find_depth_divergences(&events_map);
+        assert!(
+            divergences.is_empty(),
+            "edges to a parent outside the batch must not be flagged, got: {divergences:?}"
+        );
+    }
+
+    /// `find_depth_divergences` must flag an edge whose child's claimed
+    /// `depth` doesn't exceed its parent's — simulating a byzantine/buggy
+    /// peer attaching a `depth` that's structurally impossible given the
+    /// parent it also claims.
+    #[test]
+    fn test_find_depth_divergences_detects_non_monotonic_edge() {
+        let a = LeanEvent {
+            event_id: "A".into(),
+            prev_events: vec![],
+            depth: 5,
+            ..Default::default()
+        };
+        // B claims to be a child of A but claims a *lower* depth than A.
+        let b = LeanEvent {
+            event_id: "B".into(),
+            prev_events: vec!["A".into()],
+            depth: 3,
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+        events_map.insert("B".into(), b);
+
+        let divergences = find_depth_divergences(&events_map);
+        assert_eq!(divergences.len(), 1);
+        assert_eq!(divergences[0].parent, "A");
+        assert_eq!(divergences[0].child, "B");
+        assert_eq!(divergences[0].parent_depth, 5);
+        assert_eq!(divergences[0].child_depth, 3);
+    }
+
+    /// `find_depth_divergences` must not flag an edge whose parent sits at
+    /// saturated depth (`u64::MAX`): a correct sender clamps at the
+    /// maximum rather than incrementing past it, so `child.depth <=
+    /// parent.depth` at saturation is expected, not a violation.
+    #[test]
+    fn test_find_depth_divergences_ignores_saturated_parent() {
+        let a = LeanEvent {
+            event_id: "A".into(),
+            prev_events: vec![],
+            depth: u64::MAX,
+            ..Default::default()
+        };
+        let b = LeanEvent {
+            event_id: "B".into(),
+            prev_events: vec!["A".into()],
+            depth: u64::MAX, // correctly clamped, not incremented
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+        events_map.insert("B".into(), b);
+
+        let divergences = find_depth_divergences(&events_map);
+        assert!(
+            divergences.is_empty(),
+            "saturated parent depth must not be flagged, got: {divergences:?}"
+        );
+    }
+
+    /// `resolve_gap_fill_order` must recover the correct total order from
+    /// `prev_events` edges even when wire `depth` is wildly wrong — the
+    /// wrong `depth` value must not influence the derived order at all.
+    #[test]
+    fn test_resolve_gap_fill_order_ignores_wire_depth() {
+        let a = LeanEvent {
+            event_id: "A".into(),
+            prev_events: vec![],
+            depth: 9999, // implausible wire depth, should be ignored entirely
+            ..Default::default()
+        };
+        let b = LeanEvent {
+            event_id: "B".into(),
+            prev_events: vec!["A".into()],
+            depth: 1, // claims to be *before* its own parent
+            ..Default::default()
+        };
+        let c = LeanEvent {
+            event_id: "C".into(),
+            prev_events: vec!["B".into()],
+            depth: 2,
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+        events_map.insert("B".into(), b);
+        events_map.insert("C".into(), c);
+
+        let order = resolve_gap_fill_order(&events_map, core::cmp::Ord::cmp);
+        assert_eq!(
+            order,
+            vec!["A".to_string(), "B".to_string(), "C".to_string()]
+        );
+    }
+
     /// Coverage: `reverse_topological_order` with missing tip (line 1576).
     #[test]
     fn test_reverse_topological_order_missing_tip() {
@@ -3151,5 +3443,249 @@ mod tests {
             "C should have been yielded as Unchanged with parent A!"
         );
         assert!(d_has_new_state, "D should have been yielded as New!");
+    }
+
+    /// Coverage: `run_state_pipeline_streaming`'s `out_degree[pe_idx] == 0`
+    /// continue, and `topological_sort_short_ids`'s parent-edge dedup
+    /// continue. Both fire for the same scenario: an event that lists the
+    /// same `prev_events` parent twice (a duplicate a byzantine/buggy peer
+    /// could send). `topological_sort_short_ids` dedupes the duplicate when
+    /// computing `out_degree`, so `out_degree[parent]` reflects one distinct
+    /// child — the second occurrence in `D`'s own `prev_events` list then
+    /// finds `out_degree` already driven to zero by the first occurrence.
+    #[test]
+    fn test_compute_state_at_duplicate_prev_events() {
+        let a = LeanEvent {
+            event_id: "A".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@x:x".into(),
+            content: json!({"room_version": "10", "creator": "@x:x"}),
+            depth: 1,
+            ..Default::default()
+        };
+        let b = LeanEvent {
+            event_id: "B".into(),
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            depth: 2,
+            prev_events: vec!["A".into()],
+            ..Default::default()
+        };
+        // D lists B twice as a parent.
+        let d = LeanEvent {
+            event_id: "D".into(),
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            depth: 3,
+            prev_events: vec!["B".into(), "B".into()],
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+        events_map.insert("B".into(), b);
+        events_map.insert("D".into(), d);
+
+        // Must not panic (e.g. double-take on B's state) and must resolve.
+        let result = compute_state_at(&"D".to_string(), &events_map, crate::StateResVersion::V2);
+        assert!(result.is_some());
+    }
+
+    /// Coverage: the `?`-propagated callback error path in
+    /// `run_state_pipeline_streaming` (reached via `try_compute_state_at_streaming`).
+    #[test]
+    fn test_try_compute_state_at_streaming_propagates_callback_error() {
+        let a = LeanEvent {
+            event_id: "A".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@x:x".into(),
+            content: json!({"room_version": "10", "creator": "@x:x"}),
+            depth: 1,
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+
+        let result: Result<(), StateComputationError<&'static str>> =
+            try_compute_state_at_streaming(
+                &["A"],
+                &events_map,
+                crate::StateResVersion::V2,
+                |_, _| Err("callback aborted"),
+            );
+
+        assert_eq!(
+            result,
+            Err(StateComputationError::Callback("callback aborted"))
+        );
+    }
+
+    /// Coverage: `try_compute_state_at_streaming` early-returns when all
+    /// requested targets are absent from `events_map` (line 537).
+    #[test]
+    fn test_try_compute_state_at_streaming_with_no_resolvable_targets() {
+        let events_map: HashMap<String, LeanEvent> = HashMap::new();
+        let mut callback_called = false;
+
+        let result = try_compute_state_at_streaming(
+            &["ghost"],
+            &events_map,
+            crate::StateResVersion::V2,
+            |_, _| {
+                callback_called = true;
+                Ok::<(), &'static str>(())
+            },
+        );
+
+        assert_eq!(result, Ok(()));
+        assert!(
+            !callback_called,
+            "callback must not run with no actual targets"
+        );
+    }
+
+    /// Coverage: `collect_ancestor_short_ids_batch` (missing target, line 967)
+    /// and `topological_sort_short_ids` (missing event, line 1002). Every
+    /// current public call site pre-filters targets to ones present in
+    /// `events_map`, so these guards are only reachable by calling the
+    /// private helpers directly with an unfiltered target — which is exactly
+    /// what these functions tolerate rather than assume away.
+    #[test]
+    fn test_collect_ancestor_and_topo_sort_tolerate_missing_target() {
+        let a = LeanEvent {
+            event_id: "A".into(),
+            prev_events: vec![],
+            depth: 1,
+            ..Default::default()
+        };
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+
+        // "ghost" is never inserted into events_map.
+        let ghost = "ghost".to_string();
+        let targets: Vec<&String> = alloc::vec![&ghost];
+
+        let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&targets, &events_map);
+        assert_eq!(
+            index_to_id.len(),
+            1,
+            "the unresolvable target still gets a short id"
+        );
+        assert!(id_to_index.contains_key(&ghost));
+
+        // Must not panic when the topological sort walks an id absent from events_map.
+        let (sorted, out_degree) =
+            topological_sort_short_ids(&index_to_id, &id_to_index, &events_map);
+        assert_eq!(sorted.len(), 1);
+        assert_eq!(out_degree.len(), 1);
+    }
+
+    /// Coverage: `StateUpdate::into_state`'s `New` arm (the `Unchanged` arm
+    /// is covered by `test_state_update_into_state_unchanged`).
+    #[test]
+    fn test_state_update_into_state_new() {
+        let mut state: SharedState<String> = SharedState::new();
+        state.insert(
+            ("m.room.create".into(), String::new()),
+            "create_event".into(),
+        );
+        let hash = crate::state::lthash::LtHash::from_state(&state);
+
+        let update = StateUpdate::New {
+            state: state.clone(),
+            hash,
+        };
+
+        // The callback must never be invoked for the `New` arm.
+        let resolved = update.into_state(|_| panic!("New must not consult the parent lookup"));
+        assert_eq!(resolved, state);
+    }
+
+    /// Coverage: `resolve_merge_fast_path_hashed`'s defense-in-depth full
+    /// equality check — two independently built states with identical
+    /// content (same `LtHash`, same entries) but distinct allocations
+    /// (`ptr_eq` false), simulating two DAG branches that converge on the
+    /// same room state through different edit histories.
+    #[test]
+    fn test_resolve_merge_fast_path_hashed_full_equality_fallback() {
+        let mut state_a: SharedState<String> = SharedState::new();
+        state_a.insert(("m.room.topic".into(), String::new()), "final".into());
+        let hash_a = crate::state::lthash::LtHash::from_state(&state_a);
+
+        let mut state_b: SharedState<String> = SharedState::new();
+        state_b.insert(("m.room.topic".into(), String::new()), "final".into());
+        let hash_b = crate::state::lthash::LtHash::from_state(&state_b);
+
+        assert_eq!(hash_a, hash_b, "identical content must hash identically");
+        assert!(
+            !state_a.ptr_eq(&state_b),
+            "must be distinct allocations to exercise the full-equality fallback, \
+             not just the ptr_eq fast path"
+        );
+
+        let prev_states = alloc::vec![
+            HashedState {
+                state: state_a.clone(),
+                hash: hash_a,
+            },
+            HashedState {
+                state: state_b,
+                hash: hash_b,
+            },
+        ];
+
+        let events_map: HashMap<String, LeanEvent> = HashMap::new();
+        let mut cache = LocalAuthCache::new(crate::StateResVersion::V2);
+        let result = resolve_merge_fast_path_hashed(
+            &prev_states,
+            &events_map,
+            &mut cache,
+            crate::StateResVersion::V2,
+        );
+
+        assert_eq!(
+            result.state, state_a,
+            "matching content must take the fast path rather than re-resolving"
+        );
+    }
+
+    /// Coverage: the deterministic sort comparator in `find_depth_divergences`
+    /// only runs when there are 2+ divergences to order.
+    #[test]
+    fn test_find_depth_divergences_sorts_multiple_results() {
+        let a = LeanEvent {
+            event_id: "A".into(),
+            prev_events: vec![],
+            depth: 10,
+            ..Default::default()
+        };
+        // Two independent non-monotonic children of A, inserted in an order
+        // that requires the comparator to actually reorder them.
+        let z = LeanEvent {
+            event_id: "Z".into(),
+            prev_events: vec!["A".into()],
+            depth: 1,
+            ..Default::default()
+        };
+        let b = LeanEvent {
+            event_id: "B".into(),
+            prev_events: vec!["A".into()],
+            depth: 2,
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+        events_map.insert("Z".into(), z);
+        events_map.insert("B".into(), b);
+
+        let divergences = find_depth_divergences(&events_map);
+        assert_eq!(divergences.len(), 2);
+        // Sorted by (parent, child): both share parent "A", so child order breaks the tie.
+        assert_eq!(divergences[0].child, "B");
+        assert_eq!(divergences[1].child, "Z");
     }
 }

@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;

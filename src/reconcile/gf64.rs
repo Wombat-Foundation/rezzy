@@ -3,7 +3,7 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 
-//! Arithmetic for the MSC0500 minisketch-compatible binary field.
+//! Arithmetic for the MSC4521 minisketch-compatible binary field.
 
 /// Reduction polynomial without its implicit `x^64` term.
 const REDUCTION: u64 = 0x1b;
@@ -24,7 +24,7 @@ pub fn mul_bitwise(mut left: u64, mut right: u64) -> u64 {
     product
 }
 
-/// Multiplies two elements of the MSC0500 64-bit binary field.
+/// Multiplies two elements of the MSC4521 64-bit binary field.
 ///
 /// Uses the portable fallback unless a target-specific accelerated implementation is enabled.
 #[must_use]
@@ -97,6 +97,7 @@ unsafe fn mul_pclmul(left: u64, right: u64) -> u64 {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

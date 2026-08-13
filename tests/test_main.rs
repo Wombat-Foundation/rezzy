@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 use serde_json::json;
 
 fn ev(id: &str, depth: u64) -> serde_json::Value {

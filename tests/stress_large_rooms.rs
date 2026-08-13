@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 // Copyright 2026 Shane Jaroch
 //
 // Ruma Upstream E2E Tests

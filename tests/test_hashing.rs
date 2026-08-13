@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 use rezzy::LeanEvent;
 use serde_json::json;
 

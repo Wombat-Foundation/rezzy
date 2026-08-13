@@ -3,7 +3,7 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 
-//! Incrementally maintained MSC0500 reconciliation state.
+//! Incrementally maintained MSC4521 reconciliation state.
 
 use super::{
     algebraic::{AlgebraicError, ElementHash, RoomAccumulator},
@@ -93,6 +93,7 @@ fn toggle_stratum(strata: &mut [[u64; STRATUM_CAPACITY]; STRATA_COUNT], value: u
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

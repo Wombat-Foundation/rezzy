@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 mod utils;
 
 use rezzy::{verify_pagination, LeanEvent, PaginationViolation, StateResVersion};

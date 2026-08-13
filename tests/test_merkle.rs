@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 use rezzy::merkle::{
     self, AuthEventsHash, ContentHash, EventHeaderRoot, Field, Header, MerkleError,
     OtherSignedFieldsHash, PrevEventsHash,

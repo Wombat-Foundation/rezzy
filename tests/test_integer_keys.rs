@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Tests for integer-keyed (`LeanEvent<u32>`) support across rezzy's public API.
 //!
 //! These tests verify that `SubgraphResult`, `compute_v2_1_conflicted_subgraph`,

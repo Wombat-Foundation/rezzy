@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};

@@ -572,6 +572,7 @@ pub fn format_cli_output(ctx: &FormattingContext) -> serde_json::Value {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use rezzy::StateResVersion;

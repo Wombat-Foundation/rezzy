@@ -1,3 +1,43 @@
+##############################
+07/30/2026
+##############################
+
+› did we have any work remaining on reachability optimizations
+
+
+• Yes, but only follow-on optimization work, not a missing core feature.
+
+  What’s already done:
+
+  - Per-query mode selection is in place.
+  - plain, range, and jump paths all exist.
+  - The benchmark reports which path was actually chosen.
+  - The last bench run showed the selector behaving as intended:
+      - branchy => plain
+      - layered selective => range
+      - interleaved chain-like => jump
+
+  What still looked open from the benchmark work:
+
+  - Reusable traversal scratch, so we stop reallocating Vec<bool>, VecDeque, and candidate-position maps on every query.
+  - A denser candidate index for the range-pruned path, if we want to cut the BTreeSet overhead on broad queries.
+  - Optional memory cleanup so singleton-heavy graphs don’t retain segment metadata they never use.
+  - Threshold tuning for when to prefer plain vs range vs jump on real workloads.
+  - More production-like benchmarks, especially with numeric adjacency only, so we can measure the selector without the string-based BFS baseline.
+
+  So the short version is:
+
+  - No obvious correctness work remains in reachability.
+  - There is still optimization headroom if you want to keep pushing latency or memory down.
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+##############################
+Early to Mid July, 2026
+##############################
+
 Open items (see docs/spec_audit.md for full compliance matrix)
 
 MSC0501 (PinSketch gossip reconciliation):

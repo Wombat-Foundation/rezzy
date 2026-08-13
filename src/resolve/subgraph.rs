@@ -8,6 +8,7 @@
 //! considered, preventing unrelated auth chain history from influencing
 //! the outcome.
 
+use super::RangePrefilterReachability;
 use crate::basespec::rezzy_types::LeanEvent;
 use crate::HashMap;
 use alloc::collections::BTreeSet;
@@ -97,27 +98,12 @@ where
         }
     }
 
-    // Build Reverse Adjacency for Forwards Search
-    let mut children_map: HashMap<Id, Vec<Id>> = HashMap::new();
-    for (id, event) in auth_graph {
-        for prev in &event.auth_events {
-            children_map
-                .entry(prev.clone())
-                .or_default()
-                .push(id.clone());
-        }
-    }
-
-    // Calculate Forwards Reachable (Descendants down the auth chain)
-    let mut f_stack: Vec<Id> = conflicted_set.to_vec();
-    while let Some(node) = f_stack.pop() {
-        if forwards_reachable.insert(node.clone()) {
-            if let Some(children) = children_map.get(&node) {
-                for child in children {
-                    f_stack.push(child.clone());
-                }
-            }
-        }
+    // Forward-reachability fast path: build a compact exact accelerator once,
+    // then enumerate the forward-reachable set directly (no candidate-list
+    // indirection — every node in auth_graph is a candidate here anyway).
+    let reachability = RangePrefilterReachability::build(auth_graph);
+    for id in reachability.forward_reachable_ids(conflicted_set.iter()) {
+        forwards_reachable.insert(id.clone());
     }
 
     // Intersect and build the final Conflicted Subgraph

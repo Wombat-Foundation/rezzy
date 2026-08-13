@@ -19,8 +19,11 @@ use super::{
     RoomAccumulator,
 };
 
-/// The maximum depth for a bucket request in the H64 trie.
-use super::MAX_DEPTH;
+/// Internal width for the H64 trie/index used to map requests to ranges.
+///
+/// The protocol request-depth cap is enforced separately at depth <= 32 by
+/// `triage::validate_bucket_requests`.
+use super::H64_TRIE_WIDTH;
 
 /// Read-only helper over a pre-sorted `h64` index.
 ///
@@ -40,7 +43,7 @@ impl<'a> H64Index<'a> {
 
     fn bounds_unchecked(request: &BucketRequest) -> core::ops::Range<u128> {
         let depth = u32::from(request.depth);
-        let shift = u32::from(MAX_DEPTH).saturating_sub(depth);
+        let shift = u32::from(H64_TRIE_WIDTH).saturating_sub(depth);
 
         // A u128 safely handles (1 << 64) - 1, which cleanly downcasts to u64::MAX
         let prefix_mask = u64::try_from((1_u128 << depth).saturating_sub(1)).unwrap_or(u64::MAX);
@@ -48,8 +51,8 @@ impl<'a> H64Index<'a> {
 
         let start = u128::from(prefix) << shift;
 
-        // If depth == 64, shift == 0, and (1_u128 << 0) == 1.
-        // The math naturally collapses without a branch!
+        // When depth reaches the internal trie width, the shift collapses to 0.
+        // Request validation still caps protocol depth at 32.
         let end = start.saturating_add(1_u128 << shift);
 
         start..end
@@ -306,7 +309,7 @@ pub enum SketchResult {
     FallbackToRangeSync,
 }
 
-/// A builder that iteratively evaluates capacity limits before paying the O(S) cost to build sketches.
+/// A responder-side materializer that validates requested slices before paying the O(S) cost to build sketches.
 pub struct SketchBuilder<'a> {
     index: &'a H64Index<'a>,
     policy: SketchPolicy,
@@ -318,24 +321,8 @@ impl<'a> SketchBuilder<'a> {
         Self { index, policy }
     }
 
-    /// Takes an *existing* slice and instantly bisects it without rescanning the full index.
-    /// Returns the Left and Right sub-ranges relative to the slice provided.
-    #[must_use]
-    pub fn split_range(
-        entries: &[u64],
-        depth: u8,
-    ) -> Option<(core::ops::Range<usize>, core::ops::Range<usize>)> {
-        if depth >= MAX_DEPTH {
-            return None;
-        }
-        // Isolate the exact bit at `depth` that determines the split
-        let bit_idx = u32::from(MAX_DEPTH - 1).saturating_sub(u32::from(depth));
-        let mid = entries.partition_point(|&h| ((h >> bit_idx) & 1) == 0);
-        Some((0..mid, mid..entries.len()))
-    }
-
-    /// Processes incoming requests, iteratively splitting oversized buckets
-    /// while enforcing total work budgets.
+    /// Processes incoming requests, rejecting oversized slices rather than
+    /// splitting them server-side, while enforcing total work budgets.
     ///
     /// # Errors
     /// Returns an error if sketch creation fails algebraically.
@@ -343,66 +330,29 @@ impl<'a> SketchBuilder<'a> {
         &self,
         initial_requests: &[BucketRequest],
     ) -> Result<SketchResult, AlgebraicError> {
-        let mut sketches = Vec::new();
         let mut total_work: usize = 0;
 
-        // Stack stores: (depth, prefix, capacity, absolute_range)
-        let mut stack = Vec::with_capacity(initial_requests.len());
-
-        // 1. Initial O(log N) localization for incoming requests
+        crate::reconcile::triage::validate_bucket_requests(initial_requests)?;
         for req in initial_requests {
-            if req.depth > MAX_DEPTH {
-                return Err(AlgebraicError::InvalidBucketIndex);
-            }
             let range = self.index.bucket_range_unchecked(req);
-            stack.push((req.depth, req.prefix, req.capacity, range));
-        }
-
-        // 2. Iterative execution and splitting
-        while let Some((depth, prefix, capacity, range)) = stack.pop() {
             let slice_len = range.len();
 
-            // Hard protocol check: Fallback if we hit absurd structural divergence.
             if slice_len > self.policy.hard_fallback_threshold {
                 return Ok(SketchResult::FallbackToRangeSync);
             }
 
-            // Split if the slice overflows capacity and can still be routed.
-            // Note: capacity here is the number of elements the sketch can hold.
-            if slice_len > capacity && depth < MAX_DEPTH {
-                let slice = &self.index.sorted_h64[range.clone()];
-
-                if let Some((left_sub, right_sub)) = Self::split_range(slice, depth) {
-                    // Translate the localized 0..mid bounds back to absolute index bounds.
-                    let left_abs = (range.start.saturating_add(left_sub.start))
-                        ..(range.start.saturating_add(left_sub.end));
-                    let right_abs = (range.start.saturating_add(right_sub.start))
-                        ..(range.start.saturating_add(right_sub.end));
-
-                    // Calculate child prefixes based on MSB routing.
-                    let left_prefix = prefix << 1;
-                    let right_prefix = (prefix << 1) | 1;
-
-                    // Push children to stack (right first, so left pops first)
-                    stack.push((depth.saturating_add(1), right_prefix, capacity, right_abs));
-                    stack.push((depth.saturating_add(1), left_prefix, capacity, left_abs));
-                    continue;
-                }
-            }
-
-            // Terminal Node Execution: Pay the O(S) cost to build the sketch.
-            // Cumulative budget guard is evaluated here so we don't double-spend on split nodes.
             total_work = total_work.saturating_add(slice_len);
             if total_work > self.policy.max_aggregate_work {
                 return Ok(SketchResult::FallbackToRangeSync);
             }
+        }
 
-            let mut sketch = SyndromeSketch::new(capacity)?;
-            for &h64 in &self.index.sorted_h64[range] {
+        let mut sketches = Vec::with_capacity(initial_requests.len());
+        for req in initial_requests {
+            let mut sketch = SyndromeSketch::new(req.capacity)?;
+            for &h64 in self.index.bucket_slice_unchecked(req) {
                 sketch.toggle(h64)?;
             }
-            // For now, we discard the bucket index metadata and just return sketches,
-            // as build_bucket_sketches normally returns Vec<SyndromeSketch>.
             sketches.push(sketch);
         }
 
@@ -411,6 +361,7 @@ impl<'a> SketchBuilder<'a> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use alloc::collections::BTreeMap;
@@ -747,8 +698,8 @@ mod tests {
         let h1 = ElementHash::from_matrix_event_id("$1", EventIdFormat::Legacy).unwrap();
         let h2 = ElementHash::from_matrix_event_id("$2", EventIdFormat::Legacy).unwrap();
 
-        let depth = 16;
-        let shift = 64 - depth;
+        let depth: u8 = 16;
+        let shift = u32::from(H64_TRIE_WIDTH) - u32::from(depth);
         let prefix = u32::try_from(h1.h64 >> shift).unwrap();
 
         let requests = [BucketRequest {
@@ -814,27 +765,6 @@ mod tests {
     }
 
     #[test]
-    fn test_sketch_builder_split_range() {
-        // Elements sorted by h64
-        // bit 63 is the highest bit (MAX_DEPTH = 64)
-        // For depth 0, we split on bit 63.
-        let entries = [
-            0x0000_0000_0000_0000,
-            0x7FFF_FFFF_FFFF_FFFF,
-            0x8000_0000_0000_0000,
-            0xFFFF_FFFF_FFFF_FFFF,
-        ];
-
-        // Depth 0 -> splits on bit 63 (the MSB)
-        let (left, right) = SketchBuilder::split_range(&entries, 0).unwrap();
-        assert_eq!(left, 0..2);
-        assert_eq!(right, 2..4);
-
-        // Depth 64 -> returns None (exceeds MAX_DEPTH)
-        assert_eq!(SketchBuilder::split_range(&entries, 64), None);
-    }
-
-    #[test]
     fn test_sketch_builder_build_success_no_split() {
         use crate::reconcile::triage::BucketRequest;
         let sorted_h64 = vec![0x1000_0000_0000_0000, 0x2000_0000_0000_0000];
@@ -861,10 +791,8 @@ mod tests {
     }
 
     #[test]
-    fn test_sketch_builder_build_success_with_split() {
+    fn test_sketch_builder_build_materializes_large_slice_at_small_capacity() {
         use crate::reconcile::triage::BucketRequest;
-        // Two elements, capacity 1. This should trigger a split.
-        // Elements differ on the highest bit (bit 63)
         let sorted_h64 = vec![0x0000_0000_0000_0001, 0x8000_0000_0000_0002];
         let index = H64Index::new(&sorted_h64);
 
@@ -881,12 +809,7 @@ mod tests {
         }];
 
         let result = builder.build(&requests).unwrap();
-        if let SketchResult::Success(sketches) = result {
-            // It splits into two buckets, both fit under capacity 1
-            assert_eq!(sketches.len(), 2);
-        } else {
-            panic!("Expected Success, got Fallback");
-        }
+        assert!(matches!(result, SketchResult::Success(sketches) if sketches.len() == 1));
     }
 
     #[test]
@@ -934,5 +857,86 @@ mod tests {
 
         let result = builder.build(&requests).unwrap();
         assert!(matches!(result, SketchResult::FallbackToRangeSync));
+    }
+
+    #[test]
+    fn test_sketch_builder_build_falls_back_on_aggregate_work_limit() {
+        use crate::reconcile::triage::BucketRequest;
+
+        let sorted_h64 = vec![0x1000_0000_0000_0000, 0x9000_0000_0000_0000];
+        let index = H64Index::new(&sorted_h64);
+
+        let policy = SketchPolicy {
+            max_aggregate_work: 1,
+            hard_fallback_threshold: 1000,
+        };
+
+        let builder = SketchBuilder::new(&index, policy);
+        let requests = [
+            BucketRequest {
+                depth: 1,
+                prefix: 0,
+                capacity: 1,
+            },
+            BucketRequest {
+                depth: 1,
+                prefix: 1,
+                capacity: 1,
+            },
+        ];
+
+        let result = builder.build(&requests).unwrap();
+        assert!(matches!(result, SketchResult::FallbackToRangeSync));
+    }
+
+    #[test]
+    fn test_sketch_builder_build_propagates_bucket_materialization_errors() {
+        use crate::reconcile::triage::BucketRequest;
+
+        let sorted_h64 = vec![0, 0x1000_0000_0000_0000];
+        let index = H64Index::new(&sorted_h64);
+
+        let policy = SketchPolicy {
+            max_aggregate_work: 1000,
+            hard_fallback_threshold: 1000,
+        };
+
+        let builder = SketchBuilder::new(&index, policy);
+        let requests = [BucketRequest {
+            depth: 0,
+            prefix: 0,
+            capacity: 2,
+        }];
+
+        assert!(matches!(
+            builder.build(&requests),
+            Err(AlgebraicError::ZeroShortIdentifier)
+        ));
+    }
+
+    #[test]
+    fn test_sketch_builder_build_rejects_malformed_request_before_localization() {
+        use crate::reconcile::triage::BucketRequest;
+        let sorted_h64 = vec![0x1000_0000_0000_0000, 0x2000_0000_0000_0000];
+        let index = H64Index::new(&sorted_h64);
+
+        let policy = SketchPolicy {
+            max_aggregate_work: 1000,
+            hard_fallback_threshold: 1000,
+        };
+
+        let builder = SketchBuilder::new(&index, policy);
+        // Zero capacity is rejected by `validate_bucket_requests` before any
+        // range localization is attempted.
+        let requests = [BucketRequest {
+            depth: 0,
+            prefix: 0,
+            capacity: 0,
+        }];
+
+        assert!(matches!(
+            builder.build(&requests),
+            Err(AlgebraicError::InvalidSketchCapacity)
+        ));
     }
 }

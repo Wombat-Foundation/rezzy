@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! State resolution integration tests.
 
 mod mock_ruma;

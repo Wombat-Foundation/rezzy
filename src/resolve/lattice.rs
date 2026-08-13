@@ -16,8 +16,9 @@
 //!
 //! This module provides [`resolve_lattice_fold`], an alternative to
 //! [`crate::resolve::iterative::resolve_iterative_sort`] that replaces the sequential mainline sort
-//! with a parallel, `O(1)` causal coordinatization projection and commutative
-//! join-semilattice fold.
+//! with a parallel causal coordinatization projection and commutative
+//! join-semilattice fold. Note that this is currently an exploratory hypothesis
+//! that approximates iterative auth-checks using a fixed terminal snapshot.
 //!
 //! ## How it works
 //!
@@ -28,6 +29,11 @@
 //!    Upper Bound** (LUB) operator — the event with the best coordinate wins.
 //! 4. The fold is embarrassingly parallel and runs on `std::thread::scope`
 //!    when the `std` feature is enabled.
+//!
+//! # Panics
+//!
+//! Panics if the resolved mainline does not begin with the resolved
+//! `m.room.power_levels` event.
 //!
 //! Also contains [`route_power_events`], which classifies events into
 //! power vs. non-power buckets.
@@ -293,10 +299,10 @@ pub fn route_power_events<
     }
 }
 
-/// Resolves conflicted state using `O(1)` causal coordinatization projection
+/// Resolves conflicted state using causal coordinatization projection
 /// and commutative join-semilattice folding.
 ///
-/// This is functionally equivalent to [`crate::resolve::iterative::resolve_iterative_sort`] but
+/// This is an exploratory hypothesis that approximates [`crate::resolve::iterative::resolve_iterative_sort`] but
 /// replaces the sequential mainline sort + iterative auth-check loop with a
 /// parallel per-key fold. Each non-power event competes for its `(type, state_key)`
 /// slot via the [`is_lattice_winner_better`] LUB operator.
@@ -310,6 +316,11 @@ pub fn route_power_events<
 /// **Note:** V2.1+ rooms delegate entirely to [`resolve_iterative_sort`](crate::resolve::iterative::resolve_iterative_sort)
 /// because the lattice fold does not support MSC4297's conflicted subgraph. This
 /// changes the parallelism characteristics for V2.1+ callers.
+///
+/// # Panics
+///
+/// Panics if the resolved mainline does not begin with the resolved
+/// `m.room.power_levels` event.
 // jscpd:ignore-start
 #[must_use]
 pub fn resolve_lattice_fold<

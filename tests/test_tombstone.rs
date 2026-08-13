@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 // Quick scratch test - run from ruma-lean root
 use rezzy::auth::{check_auth, RoomState};
 use rezzy::{LeanEvent, StateResVersion};

@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Bootstrap of the continuwuity `test_unredacted_lounge_dag_resolution` test.
 //!
 //! This loads a minimal 51-event subgraph extracted from the full 81K-event

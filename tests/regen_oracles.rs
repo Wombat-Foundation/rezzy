@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Oracle regeneration test script.
 //!
 //! Overwrites `res/expected/oracle_*.json` with the current `resolve_iterative_sort` output.

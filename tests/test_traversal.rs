@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
 mod utils;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};

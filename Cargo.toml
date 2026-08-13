@@ -45,9 +45,6 @@ ignored = [
     # Direct optional anchors for transitive CLI dependency versions that still
     # parse and build on the Rust 1.75 MSRV.
     "idna_adapter",
-    "native-tls",
-    "openssl",
-    "openssl-sys",
 ]
 
 [[bin]]
@@ -66,7 +63,7 @@ path = "scripts/bench_files.rs"
 
 [features]
 default = ["std", "hashing"]
-std = ["alloc", "serde_json/std", "serde/std"]
+std = ["alloc", "serde_json/std", "serde/std", "dep:roaring"]
 alloc = []
 cli = [
     "std",
@@ -74,10 +71,9 @@ cli = [
     "dep:anyhow",
     "dep:ureq",
     "dep:idna_adapter",
-    "dep:native-tls",
-    "dep:openssl",
-    "dep:openssl-sys",
     "mimalloc",
+    "ureq/tls",
+    "dep:zeroize",
 ]
 regen = ["std"]
 hashing = []
@@ -106,15 +102,8 @@ idna_adapter = { version = ">=1.0, <1.2", optional = true, default-features = fa
 imbl = { version = "3.0", default-features = false, features = ["serde"] }
 insta = { version = "1.47.2", optional = true }
 mimalloc = { version = "0.1.52", optional = true }
-# Note: pulled in only by the `cli` feature (not part of `default`), so this
-# does not affect the library's rust-version = "1.75" MSRV. openssl >=0.10.79
-# requires rustc 1.80+, so building with `--features cli` needs rustc 1.80+.
-# Bound to the current semver-major/minor lines to avoid unexpected breaking
-# releases or MSRV bumps for downstream `cli` consumers.
-native-tls = { version = ">=0.2.11, <0.3", optional = true, default-features = false }
-openssl = { version = ">=0.10.64, <0.11", optional = true, default-features = false }
-openssl-sys = { version = ">=0.9.101, <0.10", optional = true, default-features = false }
-roaring = "0.10" # compatible with the Rust 1.75 MSRV
+
+roaring = { version = "0.10", optional = true } # compatible with the Rust 1.75 MSRV
 ruma-common = { version = "0.19.0", optional = true }
 ruma-events = { version = "0.34.0", optional = true }
 ruma-state-res = { version = "0.17.0", optional = true, features = [
@@ -130,8 +119,8 @@ sha3 = { version = "0.10", default-features = false }
 test-log = { version = "0.2.20", optional = true }
 ureq = { version = "2.9", optional = true, default-features = false, features = [
     "json",
-    "native-tls",
 ] }
+zeroize = { version = "=1.8.2", optional = true, default-features = false }
 
 [dev-dependencies]
 rayon = "1.10.0"
@@ -139,6 +128,11 @@ similar = "2.7.0"
 
 [[bench]]
 name = "reconcile"
+harness = false
+
+[[bench]]
+name = "resolve"
+path = "benches/resolve.rs"
 harness = false
 
 [[test]]

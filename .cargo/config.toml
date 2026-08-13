@@ -3,3 +3,7 @@ rustc-wrapper = ".cargo/cargo-wrapper.sh"
 
 [env]
 # RUSTC_WRAPPER = { value = "sccache", force = false }
+
+# `make install` / `make build` already pass `--features cli`; use those
+# rather than a bare `cargo install`/`cargo build`, which will build a
+# `rezzy` binary without any CLI/TLS wiring in place (see network.rs).

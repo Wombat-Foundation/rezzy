@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 mod utils;
 use rezzy::auth::*;
 use rezzy::basespec::event_types::M_ROOM_CREATE;

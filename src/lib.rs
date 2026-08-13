@@ -80,6 +80,7 @@ use alloc::vec::Vec;
 pub mod auth;
 pub mod basespec;
 pub mod cuckoo_verify;
+pub mod hamt;
 pub mod merkle;
 pub mod reconcile;
 pub mod resolve;
@@ -151,6 +152,7 @@ pub use std::collections::{HashMap, HashSet};
 pub use hashbrown::{HashMap, HashSet};
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use alloc::vec;
