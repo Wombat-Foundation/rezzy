@@ -103,8 +103,8 @@ impl<K, V> HamtNode<K, V> {
     /// This is the cheapest read path and should be used when the tree is
     /// already fully resolved in memory.
     ///
-    /// This variant uses [`key_path_hash`] internally, so it is only correct
-    /// for trees built with [`build_hamt`]. If the tree was built with
+    /// This variant hashes the key with the same keyed structural hash used
+    /// for trees built by [`build_hamt`]. If the tree was built with
     /// [`build_hamt_with_key_hash`], use [`Self::get_with_key_hash`] or
     /// [`Self::get_by_path_hash`] with the exact routing hash used when the
     /// tree was constructed.
@@ -157,8 +157,8 @@ impl<K, V> HamtNode<K, V> {
     /// # Errors
     /// Returns the error from `resolver` if a lazy child cannot be loaded.
     ///
-    /// This variant uses [`key_path_hash`] internally, so it is only correct
-    /// for trees built with [`build_hamt`]. If the tree was built with
+    /// This variant hashes the key with the same keyed structural hash used
+    /// for trees built by [`build_hamt`]. If the tree was built with
     /// [`build_hamt_with_key_hash`], use [`Self::search_with_key_hash`] or
     /// [`Self::search_by_path_hash`] with the exact routing hash used when the
     /// tree was constructed.
@@ -180,7 +180,7 @@ impl<K, V> HamtNode<K, V> {
 
     /// Looks up a key using a caller-provided path-hash function.
     ///
-    /// This is the search equivalent of [`get_with_key_hash`] for HAMTs built
+    /// This is the search equivalent of [`Self::get_with_key_hash`] for HAMTs built
     /// with [`build_hamt_with_key_hash`].
     ///
     /// # Errors
@@ -516,14 +516,15 @@ where
 /// lookup and mutation APIs:
 /// - [`HamtNode::get_with_key_hash`]
 /// - [`HamtNode::search_with_key_hash`]
-/// - [`insert_with_key_hash`](insert_with_key_hash)
-/// - [`remove_with_key_hash`](remove_with_key_hash)
+/// - [`insert_with_key_hash`]
+/// - [`remove_with_key_hash`]
 /// - [`HamtNode::get_by_path_hash`]
 /// - [`HamtNode::search_by_path_hash`]
 ///
 /// The default [`HamtNode::get`], [`HamtNode::search`], [`insert`], and
-/// [`remove`] helpers derive their own routing hash with [`key_path_hash`] and
-/// are only correct for trees built by [`build_hamt`].
+/// [`remove`] helpers derive their own routing hash using the same keyed
+/// structural hash used by [`build_hamt`], and are only correct for trees
+/// built by [`build_hamt`].
 ///
 /// This is the most general builder entry point and is useful when a caller
 /// already has a pre-hashed key stream.
@@ -892,7 +893,7 @@ where
 ///
 /// This helper is only correct for trees built with [`build_hamt`]. If the
 /// tree was built with [`build_hamt_with_key_hash`], use
-/// [`Self::insert_with_key_hash`] with the same routing function instead.
+/// [`insert_with_key_hash`] with the same routing function instead.
 ///
 /// # Errors
 /// Returns [`HamtMutateError::HashCollision`] if the input exhausts the
@@ -1011,7 +1012,52 @@ where
     ))
 }
 
-fn remove_node<K, V, Q, F, E>(
+/// Removes a key from a HAMT via `O(log S)` path-copying, without
+/// rebuilding the whole tree.
+///
+/// Collapses any subtree that drops to a single leaf back into its
+/// parent's `datamap`, cascading as needed, so the resulting tree's
+/// `structural_hash` always matches what [`build_hamt`] would have
+/// produced from the same final key set.
+///
+/// Returns the new root and the removed value, if `key` was present.
+///
+/// This helper is only correct for trees built with [`build_hamt`]. If the
+/// tree was built with [`build_hamt_with_key_hash`], use
+/// [`remove_with_key_hash`] with the same routing function instead.
+///
+/// # Errors
+/// Returns [`HamtMutateError::Resolve`] if `resolver` fails to load a lazy
+/// child on the path to `key`.
+pub fn remove<K, V, Q, F, E>(
+    node: &Arc<HamtNode<K, V>>,
+    structural_key: &[u8],
+    key: &Q,
+    resolver: &mut F,
+) -> MutateResult<K, V, E>
+where
+    K: Hash + Eq + Borrow<Q> + Clone,
+    V: Hash + Clone,
+    Q: Hash + Eq + ?Sized,
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    let path_hash = key_path_hash(structural_key, key);
+    let (outcome, old_value) =
+        remove_node_with_ctx(node, structural_key, key, &path_hash, 0, resolver)?;
+    let new_root = match outcome {
+        RemoveOutcome::Empty => rebuild_node(structural_key, 0, 0, Vec::new(), Vec::new()),
+        RemoveOutcome::Leaf(leaf_key, leaf_value) => {
+            let leaf_path_hash = key_path_hash(structural_key, &leaf_key);
+            let root_slot = bucket_index(&leaf_path_hash, 0);
+            let leaves = vec![(leaf_key, leaf_value)];
+            rebuild_node(structural_key, 1_u32 << root_slot, 0, leaves, Vec::new())
+        }
+        RemoveOutcome::Node(new_root) => new_root,
+    };
+    Ok((new_root, old_value))
+}
+
+fn remove_node_with_ctx<K, V, Q, F, E>(
     node: &Arc<HamtNode<K, V>>,
     structural_key: &[u8],
     key: &Q,
@@ -1068,153 +1114,7 @@ where
         return Ok((RemoveOutcome::Node(node.clone()), None));
     }
     let (child_outcome, old_value) =
-        remove_node(&child, structural_key, key, path_hash, next_depth, resolver)?;
-    if old_value.is_none() {
-        return Ok((RemoveOutcome::Node(node.clone()), None));
-    }
-
-    match child_outcome {
-        RemoveOutcome::Empty => {
-            let mut children = node.children.clone();
-            children.remove(idx);
-            let new_nodemap = node.nodemap & !bit;
-            let outcome = finalize_after_removal(
-                structural_key,
-                node.datamap,
-                new_nodemap,
-                node.leaves.clone(),
-                children,
-            );
-            Ok((outcome, old_value))
-        }
-        RemoveOutcome::Leaf(leaf_key, leaf_value) => {
-            let mut children = node.children.clone();
-            children.remove(idx);
-            let new_nodemap = node.nodemap & !bit;
-            let new_datamap = node.datamap | bit;
-            let leaf_idx = map_index(node.datamap, slot);
-            let mut leaves = node.leaves.clone();
-            leaves.insert(leaf_idx, (leaf_key, leaf_value));
-            let outcome =
-                finalize_after_removal(structural_key, new_datamap, new_nodemap, leaves, children);
-            Ok((outcome, old_value))
-        }
-        RemoveOutcome::Node(new_child) => {
-            let mut children = node.children.clone();
-            children[idx] = NodeRef::Resolved(new_child);
-            let new_node = rebuild_node(
-                structural_key,
-                node.datamap,
-                node.nodemap,
-                node.leaves.clone(),
-                children,
-            );
-            Ok((RemoveOutcome::Node(new_node), old_value))
-        }
-    }
-}
-
-/// Removes a key from a HAMT via `O(log S)` path-copying, without
-/// rebuilding the whole tree.
-///
-/// Collapses any subtree that drops to a single leaf back into its
-/// parent's `datamap`, cascading as needed, so the resulting tree's
-/// `structural_hash` always matches what [`build_hamt`] would have
-/// produced from the same final key set.
-///
-/// Returns the new root and the removed value, if `key` was present.
-///
-/// This helper is only correct for trees built with [`build_hamt`]. If the
-/// tree was built with [`build_hamt_with_key_hash`], use
-/// [`Self::remove_with_key_hash`] with the same routing function instead.
-///
-/// # Errors
-/// Returns [`HamtMutateError::Resolve`] if `resolver` fails to load a lazy
-/// child on the path to `key`.
-pub fn remove<K, V, Q, F, E>(
-    node: &Arc<HamtNode<K, V>>,
-    structural_key: &[u8],
-    key: &Q,
-    resolver: &mut F,
-) -> MutateResult<K, V, E>
-where
-    K: Hash + Eq + Borrow<Q> + Clone,
-    V: Hash + Clone,
-    Q: Hash + Eq + ?Sized,
-    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
-{
-    let path_hash = key_path_hash(structural_key, key);
-    let (outcome, old_value) = remove_node(node, structural_key, key, &path_hash, 0, resolver)?;
-    let new_root = match outcome {
-        RemoveOutcome::Empty => rebuild_node(structural_key, 0, 0, Vec::new(), Vec::new()),
-        RemoveOutcome::Leaf(leaf_key, leaf_value) => {
-            let leaf_path_hash = key_path_hash(structural_key, &leaf_key);
-            let root_slot = bucket_index(&leaf_path_hash, 0);
-            let leaves = vec![(leaf_key, leaf_value)];
-            rebuild_node(structural_key, 1_u32 << root_slot, 0, leaves, Vec::new())
-        }
-        RemoveOutcome::Node(new_root) => new_root,
-    };
-    Ok((new_root, old_value))
-}
-
-fn remove_node_with_key_hash<K, V, F, E>(
-    node: &Arc<HamtNode<K, V>>,
-    structural_key: &[u8],
-    key: &K,
-    path_hash: &StructuralHash,
-    depth: usize,
-    resolver: &mut F,
-) -> RemoveStepResult<K, V, E>
-where
-    K: Hash + Eq + Clone,
-    V: Hash + Clone,
-    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
-{
-    if depth >= HAMT_MAX_DEPTH {
-        return Ok((RemoveOutcome::Node(node.clone()), None));
-    }
-
-    let slot = bucket_index(path_hash, depth);
-    let bit = 1_u32 << slot;
-
-    if (node.datamap & bit) != 0 {
-        let idx = map_index(node.datamap, slot);
-        if node.leaves[idx].0 != *key {
-            return Ok((RemoveOutcome::Node(node.clone()), None));
-        }
-
-        let old_value = node.leaves[idx].1.clone();
-        let mut leaves = node.leaves.clone();
-        leaves.remove(idx);
-        let new_datamap = node.datamap & !bit;
-        let outcome = finalize_after_removal(
-            structural_key,
-            new_datamap,
-            node.nodemap,
-            leaves,
-            node.children.clone(),
-        );
-        return Ok((outcome, Some(old_value)));
-    }
-
-    if (node.nodemap & bit) == 0 {
-        return Ok((RemoveOutcome::Node(node.clone()), None));
-    }
-
-    let idx = map_index(node.nodemap, slot);
-    let child = match &node.children[idx] {
-        NodeRef::Resolved(child) => child.clone(),
-        NodeRef::Lazy(hash) => resolver(hash).map_err(HamtMutateError::Resolve)?,
-    };
-    let Some(next_depth) = depth.checked_add(1) else {
-        return Ok((RemoveOutcome::Node(node.clone()), None));
-    };
-    if next_depth >= HAMT_MAX_DEPTH {
-        return Ok((RemoveOutcome::Node(node.clone()), None));
-    }
-    let (child_outcome, old_value) =
-        remove_node_with_key_hash(&child, structural_key, key, path_hash, next_depth, resolver)?;
+        remove_node_with_ctx(&child, structural_key, key, path_hash, next_depth, resolver)?;
     if old_value.is_none() {
         return Ok((RemoveOutcome::Node(node.clone()), None));
     }
@@ -1268,8 +1168,9 @@ where
 ///
 /// Collapses any subtree that drops to a single leaf back into its
 /// parent's `datamap`, cascading as needed, so the resulting tree's
-/// `structural_hash` always matches what [`build_hamt`] would have
-/// produced from the same final key set.
+/// `structural_hash` always matches what [`build_hamt_with_key_hash`]
+/// would have produced from the same final key set when using the same
+/// routing function.
 ///
 /// Returns the new root and the removed value, if `key` was present.
 ///
@@ -1291,7 +1192,7 @@ where
 {
     let path_hash = key_hash(key);
     let (outcome, old_value) =
-        remove_node_with_key_hash(node, structural_key, key, &path_hash, 0, resolver)?;
+        remove_node_with_ctx(node, structural_key, key, &path_hash, 0, resolver)?;
     let new_root = match outcome {
         RemoveOutcome::Empty => rebuild_node(structural_key, 0, 0, Vec::new(), Vec::new()),
         RemoveOutcome::Leaf(leaf_key, leaf_value) => {
