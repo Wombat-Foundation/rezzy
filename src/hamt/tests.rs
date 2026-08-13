@@ -545,6 +545,55 @@ fn test_hamt_lookup_with_custom_key_hash() {
 }
 
 #[test]
+fn test_hamt_mutation_with_custom_key_hash() {
+    let key = b"dummy_server_key";
+    let mut resolver =
+        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+
+    let root = crate::hamt::build_hamt_with_key_hash(key, vec![(1_u64, 10_u64)], |key| {
+        custom_routing_hash(*key)
+    })
+    .expect("build with custom hash should work");
+
+    let (root, displaced) = crate::hamt::insert_with_key_hash(
+        &root,
+        key,
+        2_u64,
+        20_u64,
+        |key| custom_routing_hash(*key),
+        &mut resolver,
+    )
+    .expect("custom insert should work");
+    assert_eq!(displaced, None);
+    assert_eq!(
+        root.get_with_key_hash(&1_u64, |key| custom_routing_hash(*key)),
+        Some(&10_u64)
+    );
+    assert_eq!(
+        root.get_with_key_hash(&2_u64, |key| custom_routing_hash(*key)),
+        Some(&20_u64)
+    );
+
+    let (root, removed) = crate::hamt::remove_with_key_hash(
+        &root,
+        key,
+        &1_u64,
+        |key: &u64| custom_routing_hash(*key),
+        &mut resolver,
+    )
+    .expect("custom remove should work");
+    assert_eq!(removed, Some(10_u64));
+    assert_eq!(
+        root.get_with_key_hash(&1_u64, |key| custom_routing_hash(*key)),
+        None
+    );
+    assert_eq!(
+        root.get_with_key_hash(&2_u64, |key| custom_routing_hash(*key)),
+        Some(&20_u64)
+    );
+}
+
+#[test]
 fn test_hamt_search_propagates_resolver_error() {
     let key = b"dummy_server_key";
     let query = find_key_with_path_slots(key, 3, 7);
@@ -1056,7 +1105,9 @@ fn find_different_key_with_slot_at_depth(
 fn test_insert_node_errors_at_max_depth_boundary() {
     let key = b"dummy_server_key";
     let depth = HAMT_MAX_DEPTH - 1;
-    let slot = 5;
+    let residual_bits =
+        (core::mem::size_of::<StructuralHash>() * 8).saturating_sub(depth * HAMT_BRANCH_BITS);
+    let slot = 1_usize << residual_bits.saturating_sub(1);
     let existing = find_key_with_slot_at_depth(key, depth, slot);
     let new_key = find_different_key_with_slot_at_depth(key, depth, slot, existing);
 
@@ -1179,6 +1230,16 @@ fn find_key_with_path_slots(key: &[u8], root_slot: usize, child_slot: usize) -> 
 
 fn leaf_hash_for_key(key: &[u8], value: u64) -> StructuralHash {
     key_path_hash(key, &value)
+}
+
+fn custom_routing_hash(key: u64) -> StructuralHash {
+    let mut hash = [0_u8; 16];
+    match key {
+        1 => hash[0] = 0b0010_0011,
+        2 => hash[0] = 0b1010_0011,
+        _ => unreachable!("unexpected test key"),
+    }
+    hash
 }
 
 fn find_key_with_root_slot(key: &[u8], root_slot: usize) -> u64 {
