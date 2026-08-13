@@ -532,9 +532,14 @@ fn test_hamt_lookup_with_custom_key_hash() {
         root.get_with_key_hash(&query, |_| custom_hash),
         Some(&70_u64)
     );
+    assert_eq!(root.get_by_path_hash(&query, &custom_hash), Some(&70_u64));
     assert_eq!(root.search(key, &query, &mut resolver), Ok(None));
     assert_eq!(
         root.search_with_key_hash(&query, |_| custom_hash, &mut resolver),
+        Ok(Some(70_u64))
+    );
+    assert_eq!(
+        root.search_by_path_hash(&query, &custom_hash, &mut resolver),
         Ok(Some(70_u64))
     );
 }

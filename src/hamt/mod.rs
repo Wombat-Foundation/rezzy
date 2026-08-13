@@ -101,6 +101,12 @@ impl<K, V> HamtNode<K, V> {
     ///
     /// This is the cheapest read path and should be used when the tree is
     /// already fully resolved in memory.
+    ///
+    /// This variant uses [`key_path_hash`] internally, so it is only correct
+    /// for trees built with [`build_hamt`]. If the tree was built with
+    /// [`build_hamt_with_key_hash`], use [`Self::get_with_key_hash`] or
+    /// [`Self::get_by_path_hash`] with the exact routing hash used when the
+    /// tree was constructed.
     #[must_use]
     pub fn get<Q>(&self, structural_key: &[u8], key: &Q) -> Option<&V>
     where
@@ -108,7 +114,7 @@ impl<K, V> HamtNode<K, V> {
         Q: Hash + Eq + ?Sized,
     {
         let path_hash = key_path_hash(structural_key, key);
-        self.get_by_path_hash(key, &path_hash, 0)
+        self.get_by_path_hash(key, &path_hash)
     }
 
     /// Looks up a key using a caller-provided path-hash function.
@@ -124,7 +130,21 @@ impl<K, V> HamtNode<K, V> {
         F: FnMut(&Q) -> StructuralHash,
     {
         let path_hash = key_hash(key);
-        self.get_by_path_hash(key, &path_hash, 0)
+        self.get_by_path_hash(key, &path_hash)
+    }
+
+    /// Looks up a key using a caller-provided routing hash.
+    ///
+    /// This is the most general lookup entry point. Use it when the caller
+    /// already knows the exact path hash that was used to build or mutate the
+    /// tree.
+    #[must_use]
+    pub fn get_by_path_hash<Q>(&self, key: &Q, path_hash: &StructuralHash) -> Option<&V>
+    where
+        K: Eq + Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        self.get_by_path_hash_inner(key, path_hash, 0)
     }
 
     /// Looks up a key in a HAMT that may contain lazy children.
@@ -135,6 +155,12 @@ impl<K, V> HamtNode<K, V> {
     ///
     /// # Errors
     /// Returns the error from `resolver` if a lazy child cannot be loaded.
+    ///
+    /// This variant uses [`key_path_hash`] internally, so it is only correct
+    /// for trees built with [`build_hamt`]. If the tree was built with
+    /// [`build_hamt_with_key_hash`], use [`Self::search_with_key_hash`] or
+    /// [`Self::search_by_path_hash`] with the exact routing hash used when the
+    /// tree was constructed.
     pub fn search<Q, F, E>(
         &self,
         structural_key: &[u8],
@@ -148,7 +174,7 @@ impl<K, V> HamtNode<K, V> {
         F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
     {
         let path_hash = key_path_hash(structural_key, key);
-        self.search_by_path_hash(key, &path_hash, 0, resolver)
+        self.search_by_path_hash(key, &path_hash, resolver)
     }
 
     /// Looks up a key using a caller-provided path-hash function.
@@ -172,7 +198,30 @@ impl<K, V> HamtNode<K, V> {
         F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
     {
         let path_hash = key_hash(key);
-        self.search_by_path_hash(key, &path_hash, 0, resolver)
+        self.search_by_path_hash(key, &path_hash, resolver)
+    }
+
+    /// Looks up a key using a caller-provided routing hash.
+    ///
+    /// This is the most general lookup entry point. Use it when the caller
+    /// already knows the exact path hash that was used to build or mutate the
+    /// tree.
+    ///
+    /// # Errors
+    /// Returns the error from `resolver` if a lazy child cannot be loaded.
+    pub fn search_by_path_hash<Q, F, E>(
+        &self,
+        key: &Q,
+        path_hash: &StructuralHash,
+        resolver: &mut F,
+    ) -> Result<Option<V>, E>
+    where
+        K: Eq + Borrow<Q>,
+        V: Clone,
+        Q: Eq + ?Sized,
+        F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    {
+        self.search_by_path_hash_inner(key, path_hash, 0, resolver)
     }
 
     /// Visits every key/value pair in the HAMT, resolving lazy children as
@@ -227,7 +276,12 @@ impl<K, V> HamtNode<K, V> {
         }
     }
 
-    fn get_by_path_hash<Q>(&self, key: &Q, path_hash: &StructuralHash, depth: usize) -> Option<&V>
+    fn get_by_path_hash_inner<Q>(
+        &self,
+        key: &Q,
+        path_hash: &StructuralHash,
+        depth: usize,
+    ) -> Option<&V>
     where
         K: Eq + Borrow<Q>,
         Q: Eq + ?Sized,
@@ -235,13 +289,13 @@ impl<K, V> HamtNode<K, V> {
         match self.slot_at(path_hash, depth) {
             Slot::Leaf((stored_key, value)) => (stored_key.borrow() == key).then_some(value),
             Slot::Child(NodeRef::Resolved(child)) => {
-                child.get_by_path_hash(key, path_hash, depth.saturating_add(1))
+                child.get_by_path_hash_inner(key, path_hash, depth.saturating_add(1))
             }
             Slot::Child(NodeRef::Lazy(_)) | Slot::Empty => None,
         }
     }
 
-    fn search_by_path_hash<Q, F, E>(
+    fn search_by_path_hash_inner<Q, F, E>(
         &self,
         key: &Q,
         path_hash: &StructuralHash,
@@ -259,11 +313,11 @@ impl<K, V> HamtNode<K, V> {
                 Ok((stored_key.borrow() == key).then(|| value.clone()))
             }
             Slot::Child(NodeRef::Resolved(child)) => {
-                child.search_by_path_hash(key, path_hash, depth.saturating_add(1), resolver)
+                child.search_by_path_hash_inner(key, path_hash, depth.saturating_add(1), resolver)
             }
             Slot::Child(NodeRef::Lazy(hash)) => {
                 let child = resolver(hash)?;
-                child.search_by_path_hash(key, path_hash, depth.saturating_add(1), resolver)
+                child.search_by_path_hash_inner(key, path_hash, depth.saturating_add(1), resolver)
             }
             Slot::Empty => Ok(None),
         }
@@ -446,6 +500,17 @@ where
 
 /// Builds a full HAMT from an iterator of key/value entries using a custom
 /// per-key path hash function.
+///
+/// Callers that build a tree with this function must use the matching custom
+/// lookup APIs:
+/// - [`HamtNode::get_with_key_hash`]
+/// - [`HamtNode::search_with_key_hash`]
+/// - [`HamtNode::get_by_path_hash`]
+/// - [`HamtNode::search_by_path_hash`]
+///
+/// The default [`HamtNode::get`] and [`HamtNode::search`] helpers derive their
+/// own routing hash with [`key_path_hash`] and are only correct for trees
+/// built by [`build_hamt`].
 ///
 /// This is the most general builder entry point and is useful when a caller
 /// already has a pre-hashed key stream.
