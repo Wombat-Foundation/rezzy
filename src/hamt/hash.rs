@@ -15,7 +15,7 @@ pub type StateGroupId = [u8; 32];
 
 /// A resolved root handle carrying both the local structural hash and the
 /// global state-group identifier.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RootHandle {
     pub structural_hash: StructuralHash,
     pub state_group_id: StateGroupId,
