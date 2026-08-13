@@ -6,6 +6,10 @@ use crate::state::LtHash;
 use alloc::vec;
 use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
+#[cfg(feature = "std")]
+use std::error::Error as _;
+#[cfg(feature = "std")]
+use std::format;
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,6 +117,27 @@ fn test_structural_hash_separates_variable_length_leaf_fields() {
     );
 
     assert_ne!(left, right);
+}
+
+#[test]
+#[cfg(feature = "std")]
+fn test_hamt_mutate_error_display_and_source() {
+    let collision = HamtMutateError::<std::io::Error>::HashCollision {
+        depth: 7,
+        bucket_size: 3,
+    };
+    assert_eq!(
+        format!("{collision}"),
+        "hamt mutation hash collision at depth 7 with bucket size 3"
+    );
+    assert!(collision.source().is_none());
+
+    let resolve = HamtMutateError::Resolve(std::io::Error::other("boom"));
+    assert_eq!(format!("{resolve}"), "hamt mutation resolver failed: boom");
+    let source = resolve
+        .source()
+        .expect("resolve variant should expose source");
+    assert_eq!(format!("{source}"), "boom");
 }
 
 #[test]
