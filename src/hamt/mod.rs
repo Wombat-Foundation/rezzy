@@ -678,8 +678,6 @@ where
         key_hash: &mut key_hash,
         resolver,
     };
-    let slot = bucket_index(path_hash, depth);
-    let bit = 1_u32 << slot;
     insert_node_with_ctx(
         node,
         InsertInput {
@@ -687,8 +685,6 @@ where
             value,
             path_hash: *path_hash,
             depth,
-            slot,
-            bit,
         },
         &mut ctx,
     )
@@ -705,8 +701,6 @@ struct InsertInput<K, V> {
     value: V,
     path_hash: StructuralHash,
     depth: usize,
-    slot: usize,
-    bit: u32,
 }
 
 fn insert_node_with_ctx<K, V, KeyHash, F, E>(
@@ -722,15 +716,39 @@ where
 {
     let structural_key = ctx.structural_key;
     let key_hash = &mut *ctx.key_hash;
-    let slot = input.slot;
-    let bit = input.bit;
+    let slot = bucket_index(&input.path_hash, input.depth);
+    let bit = 1_u32 << slot;
 
     if (node.datamap & bit) != 0 {
-        return insert_into_leaf_slot(node, structural_key, input, key_hash);
+        let Some(next_depth) = input.depth.checked_add(1) else {
+            return Err(HamtMutateError::HashCollision {
+                depth: input.depth,
+                bucket_size: 2,
+            });
+        };
+        if next_depth >= HAMT_MAX_DEPTH {
+            return Err(HamtMutateError::HashCollision {
+                depth: input.depth,
+                bucket_size: 2,
+            });
+        }
+        return insert_into_leaf_slot(node, structural_key, input, key_hash, slot, bit);
     }
 
     if (node.nodemap & bit) != 0 {
-        return insert_into_child_slot(node, structural_key, input, ctx);
+        let Some(next_depth) = input.depth.checked_add(1) else {
+            return Err(HamtMutateError::HashCollision {
+                depth: input.depth,
+                bucket_size: node.leaves.len().saturating_add(1),
+            });
+        };
+        if next_depth >= HAMT_MAX_DEPTH {
+            return Err(HamtMutateError::HashCollision {
+                depth: input.depth,
+                bucket_size: node.leaves.len().saturating_add(1),
+            });
+        }
+        return insert_into_child_slot(node, structural_key, input, ctx, slot);
     }
 
     // Empty slot: insert directly as a new leaf.
@@ -753,6 +771,8 @@ fn insert_into_leaf_slot<K, V, KeyHash, E>(
     structural_key: &[u8],
     input: InsertInput<K, V>,
     key_hash: &mut KeyHash,
+    slot: usize,
+    bit: u32,
 ) -> MutateResult<K, V, E>
 where
     K: Hash + Eq + Clone,
@@ -764,8 +784,6 @@ where
         value,
         path_hash,
         depth,
-        slot,
-        bit,
     } = input;
     let idx = map_index(node.datamap, slot);
 
@@ -788,12 +806,6 @@ where
             bucket_size: 2,
         });
     };
-    if next_depth >= HAMT_MAX_DEPTH {
-        return Err(HamtMutateError::HashCollision {
-            depth,
-            bucket_size: 2,
-        });
-    }
 
     let (existing_key, existing_value) = node.leaves[idx].clone();
     let existing_path_hash = key_hash(&existing_key);
@@ -827,6 +839,7 @@ fn insert_into_child_slot<K, V, KeyHash, F, E>(
     structural_key: &[u8],
     input: InsertInput<K, V>,
     ctx: &mut InsertCtx<'_, KeyHash, F>,
+    slot: usize,
 ) -> MutateResult<K, V, E>
 where
     K: Hash + Eq + Clone,
@@ -839,7 +852,6 @@ where
         value,
         path_hash,
         depth,
-        slot,
         ..
     } = input;
     let idx = map_index(node.nodemap, slot);
@@ -850,15 +862,9 @@ where
     let Some(next_depth) = depth.checked_add(1) else {
         return Err(HamtMutateError::HashCollision {
             depth,
-            bucket_size: child.leaves.len().saturating_add(1),
+            bucket_size: node.leaves.len().saturating_add(1),
         });
     };
-    if next_depth >= HAMT_MAX_DEPTH {
-        return Err(HamtMutateError::HashCollision {
-            depth,
-            bucket_size: child.leaves.len().saturating_add(1),
-        });
-    }
     let (new_child, old_value) = insert_node_with_ctx(
         &child,
         InsertInput {
@@ -866,8 +872,6 @@ where
             value,
             path_hash,
             depth: next_depth,
-            slot: bucket_index(&path_hash, next_depth),
-            bit: 1_u32 << bucket_index(&path_hash, next_depth),
         },
         ctx,
     )?;
@@ -957,8 +961,6 @@ where
             value,
             path_hash,
             depth: 0,
-            slot: bucket_index(&path_hash, 0),
-            bit: 1_u32 << bucket_index(&path_hash, 0),
         },
         &mut ctx,
     )
