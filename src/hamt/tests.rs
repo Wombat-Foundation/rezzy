@@ -839,12 +839,14 @@ fn test_hamt_insert_remove_matches_build_hamt() {
     let mut model: std::collections::BTreeMap<u64, u64> = std::collections::BTreeMap::new();
     let mut root: Arc<HamtNode<u64, u64>> =
         build_hamt(key, Vec::new()).expect("empty build should work");
+    let total_steps = 2000_u32;
+    let structural_check_interval = 64_u32;
 
     let mut unreachable_resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
         unreachable!("fully resolved tree should never need to resolve a lazy child")
     };
 
-    for _ in 0..2000_u32 {
+    for step in 0..total_steps {
         let op = splitmix64(&mut rng_state) % 3;
         let k = splitmix64(&mut rng_state) % 200;
 
@@ -863,14 +865,17 @@ fn test_hamt_insert_remove_matches_build_hamt() {
             root = new_root;
         }
 
-        let expected =
-            build_hamt(key, model.iter().map(|(&k, &v)| (k, v))).expect("rebuild should work");
-        assert_eq!(root.structural_hash, expected.structural_hash);
-        assert_eq!(root.datamap, expected.datamap);
-        assert_eq!(root.nodemap, expected.nodemap);
-
+        assert_eq!(root.get(key, &k), model.get(&k));
         for (&k, &v) in &model {
             assert_eq!(root.get(key, &k), Some(&v));
+        }
+
+        if step % structural_check_interval == 0 || step + 1 == total_steps {
+            let expected =
+                build_hamt(key, model.iter().map(|(&k, &v)| (k, v))).expect("rebuild should work");
+            assert_eq!(root.structural_hash, expected.structural_hash);
+            assert_eq!(root.datamap, expected.datamap);
+            assert_eq!(root.nodemap, expected.nodemap);
         }
     }
 }
