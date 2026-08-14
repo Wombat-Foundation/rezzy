@@ -678,16 +678,7 @@ where
         key_hash: &mut key_hash,
         resolver,
     };
-    insert_node_with_ctx(
-        node,
-        InsertInput {
-            key,
-            value,
-            path_hash: *path_hash,
-            depth,
-        },
-        &mut ctx,
-    )
+    insert_node_with_ctx(node, key, value, *path_hash, depth, &mut ctx)
 }
 
 struct InsertCtx<'a, KeyHash, F> {
@@ -696,16 +687,20 @@ struct InsertCtx<'a, KeyHash, F> {
     resolver: &'a mut F,
 }
 
-struct InsertInput<K, V> {
+struct InsertStep<K, V> {
     key: K,
     value: V,
     path_hash: StructuralHash,
-    depth: usize,
+    slot: usize,
+    bit: u32,
 }
 
 fn insert_node_with_ctx<K, V, KeyHash, F, E>(
     node: &Arc<HamtNode<K, V>>,
-    input: InsertInput<K, V>,
+    key: K,
+    value: V,
+    path_hash: StructuralHash,
+    depth: usize,
     ctx: &mut InsertCtx<'_, KeyHash, F>,
 ) -> MutateResult<K, V, E>
 where
@@ -716,34 +711,67 @@ where
 {
     let structural_key = ctx.structural_key;
     let key_hash = &mut *ctx.key_hash;
-    let slot = bucket_index(&input.path_hash, input.depth);
+    let slot = bucket_index(&path_hash, depth);
     let bit = 1_u32 << slot;
+    let step = InsertStep {
+        key,
+        value,
+        path_hash,
+        slot,
+        bit,
+    };
 
     if (node.datamap & bit) != 0 {
-        return insert_into_leaf_slot(node, structural_key, input, key_hash, slot, bit);
+        let idx = map_index(node.datamap, slot);
+        if node.leaves[idx].0 == step.key {
+            let mut leaves = node.leaves.clone();
+            let old_value = core::mem::replace(&mut leaves[idx].1, step.value);
+            let new_node = rebuild_node(
+                structural_key,
+                node.datamap,
+                node.nodemap,
+                leaves,
+                node.children.clone(),
+            );
+            return Ok((new_node, Some(old_value)));
+        }
+
+        let Some(next_depth) = depth.checked_add(1) else {
+            return Err(HamtMutateError::HashCollision {
+                depth,
+                bucket_size: 2,
+            });
+        };
+        if next_depth >= HAMT_MAX_DEPTH {
+            return Err(HamtMutateError::HashCollision {
+                depth,
+                bucket_size: 2,
+            });
+        }
+        return insert_into_leaf_slot(node, structural_key, step, next_depth, key_hash);
     }
 
     if (node.nodemap & bit) != 0 {
-        let Some(next_depth) = input.depth.checked_add(1) else {
+        let Some(next_depth) = depth.checked_add(1) else {
             return Err(HamtMutateError::HashCollision {
-                depth: input.depth,
+                depth,
                 bucket_size: node.leaves.len().saturating_add(1),
             });
         };
         if next_depth >= HAMT_MAX_DEPTH {
             return Err(HamtMutateError::HashCollision {
-                depth: input.depth,
+                depth,
                 bucket_size: node.leaves.len().saturating_add(1),
             });
         }
-        return insert_into_child_slot(node, structural_key, input, ctx, slot);
+        return insert_into_child_slot(node, structural_key, step, next_depth, ctx);
     }
 
     // Empty slot: insert directly as a new leaf.
     let mut leaves = node.leaves.clone();
-    let idx = map_index(node.datamap, slot);
-    leaves.insert(idx, (input.key, input.value));
-    let new_datamap = node.datamap | bit;
+    let idx = map_index(node.datamap, step.slot);
+    leaves.insert(idx, (step.key, step.value));
+    let new_datamap = node.datamap | step.bit;
     let new_node = rebuild_node(
         structural_key,
         new_datamap,
@@ -757,22 +785,23 @@ where
 fn insert_into_leaf_slot<K, V, KeyHash, E>(
     node: &Arc<HamtNode<K, V>>,
     structural_key: &[u8],
-    input: InsertInput<K, V>,
+    step: InsertStep<K, V>,
+    next_depth: usize,
     key_hash: &mut KeyHash,
-    slot: usize,
-    bit: u32,
 ) -> MutateResult<K, V, E>
 where
     K: Hash + Eq + Clone,
     V: Hash + Clone,
     KeyHash: FnMut(&K) -> StructuralHash,
 {
-    let InsertInput {
+    let InsertStep {
         key,
         value,
         path_hash,
-        depth,
-    } = input;
+        slot,
+        bit,
+        ..
+    } = step;
     let idx = map_index(node.datamap, slot);
 
     if node.leaves[idx].0 == key {
@@ -786,19 +815,6 @@ where
             node.children.clone(),
         );
         return Ok((new_node, Some(old_value)));
-    }
-
-    let Some(next_depth) = depth.checked_add(1) else {
-        return Err(HamtMutateError::HashCollision {
-            depth,
-            bucket_size: 2,
-        });
-    };
-    if next_depth >= HAMT_MAX_DEPTH {
-        return Err(HamtMutateError::HashCollision {
-            depth,
-            bucket_size: 2,
-        });
     }
 
     let (existing_key, existing_value) = node.leaves[idx].clone();
@@ -831,9 +847,9 @@ where
 fn insert_into_child_slot<K, V, KeyHash, F, E>(
     node: &Arc<HamtNode<K, V>>,
     structural_key: &[u8],
-    input: InsertInput<K, V>,
+    step: InsertStep<K, V>,
+    next_depth: usize,
     ctx: &mut InsertCtx<'_, KeyHash, F>,
-    slot: usize,
 ) -> MutateResult<K, V, E>
 where
     K: Hash + Eq + Clone,
@@ -841,34 +857,20 @@ where
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
-    let InsertInput {
+    let InsertStep {
         key,
         value,
         path_hash,
-        depth,
+        slot,
         ..
-    } = input;
+    } = step;
     let idx = map_index(node.nodemap, slot);
     let child = match &node.children[idx] {
         NodeRef::Resolved(child) => child.clone(),
         NodeRef::Lazy(hash) => (ctx.resolver)(hash).map_err(HamtMutateError::Resolve)?,
     };
-    let Some(next_depth) = depth.checked_add(1) else {
-        return Err(HamtMutateError::HashCollision {
-            depth,
-            bucket_size: node.leaves.len().saturating_add(1),
-        });
-    };
-    let (new_child, old_value) = insert_node_with_ctx(
-        &child,
-        InsertInput {
-            key,
-            value,
-            path_hash,
-            depth: next_depth,
-        },
-        ctx,
-    )?;
+    let (new_child, old_value) =
+        insert_node_with_ctx(&child, key, value, path_hash, next_depth, ctx)?;
     let mut children = node.children.clone();
     children[idx] = NodeRef::Resolved(new_child);
     let new_node = rebuild_node(
@@ -948,16 +950,7 @@ where
         key_hash: &mut key_hash,
         resolver,
     };
-    insert_node_with_ctx(
-        node,
-        InsertInput {
-            key,
-            value,
-            path_hash,
-            depth: 0,
-        },
-        &mut ctx,
-    )
+    insert_node_with_ctx(node, key, value, path_hash, 0, &mut ctx)
 }
 
 /// What remains of a subtree after a leaf was removed from it.

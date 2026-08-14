@@ -864,13 +864,16 @@ fn test_hamt_insert_remove_matches_build_hamt() {
         // Fast path: validate the key touched by this mutation on every step.
         assert_eq!(root.get(key, &k), model.get(&k));
 
-        // Rebuild, compare structure, and run the full semantic sweep only once at the end.
-        if step + 1 == total_steps {
+        // Rebuild and compare canonical shape periodically, plus one final full sweep.
+        if (step + 1) % 64 == 0 || step + 1 == total_steps {
             let expected =
                 build_hamt(key, model.iter().map(|(&k, &v)| (k, v))).expect("rebuild should work");
             assert_eq!(root.structural_hash, expected.structural_hash);
             assert_eq!(root.datamap, expected.datamap);
             assert_eq!(root.nodemap, expected.nodemap);
+        }
+
+        if step + 1 == total_steps {
             for (&k, &v) in &model {
                 assert_eq!(root.get(key, &k), Some(&v));
             }
