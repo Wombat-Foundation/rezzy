@@ -210,6 +210,31 @@ impl LtHash {
         self.add_seed(&new);
     }
 
+    /// Record a replacement that is required to stay on the same `(event_type, state_key)`.
+    ///
+    /// This is a defensive wrapper for callers that want an explicit invariant check before
+    /// performing the remove/add pair.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `old_event_type != new_event_type` or `old_state_key != new_state_key`.
+    pub fn replace_checked(
+        &mut self,
+        old_event_type: &str,
+        old_state_key: &str,
+        old_event_id: &(impl core::fmt::Display + ?Sized),
+        new_event_type: &str,
+        new_state_key: &str,
+        new_event_id: &(impl core::fmt::Display + ?Sized),
+    ) {
+        assert!(
+            old_event_type == new_event_type && old_state_key == new_state_key,
+            "mismatched state-key replacement should panic: ({old_event_type}, {old_state_key}) -> ({new_event_type}, {new_state_key})",
+        );
+        self.sub_seed(&Self::seed(old_event_type, old_state_key, &old_event_id));
+        self.add_seed(&Self::seed(new_event_type, new_state_key, &new_event_id));
+    }
+
     /// Compute the full hash from a state map (non-incremental).
     #[must_use]
     pub fn from_state<Id>(state: &crate::state::at::SharedState<Id>) -> Self
@@ -371,6 +396,40 @@ mod tests {
         expected.insert("m.room.topic", "", "$t2");
 
         assert_eq!(h, expected);
+    }
+
+    #[test]
+    fn test_lthash_mismatched_replace_panics() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut h = LtHash::ZERO;
+            h.replace_checked(
+                "m.room.member",
+                "@alice:example.com",
+                "$old",
+                "m.room.member",
+                "@bob:example.com",
+                "$new",
+            );
+        }));
+
+        assert!(
+            result.is_err(),
+            "mismatched state-key replacement should panic"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "mismatched state-key replacement should panic")]
+    fn test_lthash_mismatched_replace_panics_should_panic() {
+        let mut h = LtHash::ZERO;
+        h.replace_checked(
+            "m.room.member",
+            "@alice:example.com",
+            "$old",
+            "m.room.member",
+            "@bob:example.com",
+            "$new",
+        );
     }
 
     /// Validate against the official MSC4500 test vectors.
