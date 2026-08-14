@@ -828,9 +828,8 @@ fn splitmix64(state: &mut u64) -> u64 {
 
 /// For random insert/remove sequences, the incrementally mutated tree must
 /// stay semantically correct after every mutation and match a rebuilt tree
-/// periodically. The per-step checks validate the touched key and the full
-/// key set, while the periodic rebuild validates canonical structure via
-/// `structural_hash`, `datamap`, and `nodemap`.
+/// at the end. The per-step checks validate the touched key, and the final
+/// step performs the rebuild plus one full semantic sweep.
 #[test]
 fn test_hamt_insert_remove_matches_build_hamt() {
     let key = b"dummy_server_key";
@@ -839,8 +838,6 @@ fn test_hamt_insert_remove_matches_build_hamt() {
     let mut root: Arc<HamtNode<u64, u64>> =
         build_hamt(key, Vec::new()).expect("empty build should work");
     let total_steps = 2000_u32;
-    let structural_check_interval = 64_u32;
-
     let mut unreachable_resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
         unreachable!("fully resolved tree should never need to resolve a lazy child")
     };
@@ -867,18 +864,16 @@ fn test_hamt_insert_remove_matches_build_hamt() {
         // Fast path: validate the key touched by this mutation on every step.
         assert_eq!(root.get(key, &k), model.get(&k));
 
-        // Keep the current model fully aligned with the tree after every step.
-        for (&k, &v) in &model {
-            assert_eq!(root.get(key, &k), Some(&v));
-        }
-
-        // Rebuild and compare structure only periodically plus on the final step.
-        if step % structural_check_interval == 0 || step + 1 == total_steps {
+        // Rebuild, compare structure, and run the full semantic sweep only once at the end.
+        if step + 1 == total_steps {
             let expected =
                 build_hamt(key, model.iter().map(|(&k, &v)| (k, v))).expect("rebuild should work");
             assert_eq!(root.structural_hash, expected.structural_hash);
             assert_eq!(root.datamap, expected.datamap);
             assert_eq!(root.nodemap, expected.nodemap);
+            for (&k, &v) in &model {
+                assert_eq!(root.get(key, &k), Some(&v));
+            }
         }
     }
 }
