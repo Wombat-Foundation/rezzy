@@ -720,18 +720,6 @@ where
     let bit = 1_u32 << slot;
 
     if (node.datamap & bit) != 0 {
-        let Some(next_depth) = input.depth.checked_add(1) else {
-            return Err(HamtMutateError::HashCollision {
-                depth: input.depth,
-                bucket_size: 2,
-            });
-        };
-        if next_depth >= HAMT_MAX_DEPTH {
-            return Err(HamtMutateError::HashCollision {
-                depth: input.depth,
-                bucket_size: 2,
-            });
-        }
         return insert_into_leaf_slot(node, structural_key, input, key_hash, slot, bit);
     }
 
@@ -806,6 +794,12 @@ where
             bucket_size: 2,
         });
     };
+    if next_depth >= HAMT_MAX_DEPTH {
+        return Err(HamtMutateError::HashCollision {
+            depth,
+            bucket_size: 2,
+        });
+    }
 
     let (existing_key, existing_value) = node.leaves[idx].clone();
     let existing_path_hash = key_hash(&existing_key);

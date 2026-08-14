@@ -1212,6 +1212,51 @@ fn test_insert_node_errors_at_max_depth_boundary() {
     ));
 }
 
+/// A leaf legitimately placed at `HAMT_MAX_DEPTH - 1` (a singleton bucket,
+/// which `build_node` permits) must still be updatable in place: matching
+/// the existing key is a value replacement, not a split, so it must not hit
+/// the max-depth collision guard.
+#[test]
+fn test_insert_node_updates_existing_leaf_at_max_depth_boundary() {
+    let key = b"dummy_server_key";
+    let depth = HAMT_MAX_DEPTH - 1;
+    let residual_bits =
+        (core::mem::size_of::<StructuralHash>() * 8).saturating_sub(depth * HAMT_BRANCH_BITS);
+    let slot = 1_usize << residual_bits.saturating_sub(1);
+    let existing = find_key_with_slot_at_depth(key, depth, slot);
+
+    let node = Arc::new(HamtNode {
+        datamap: 1_u32 << slot,
+        nodemap: 0,
+        leaves: vec![(existing, 1_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            1_u32 << slot,
+            0,
+            &[(existing, 1_u64)],
+            &[],
+        ),
+    });
+    let existing_path_hash = leaf_hash_for_key(key, existing);
+    let mut resolver =
+        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+
+    let (new_node, old_value) = insert_node(
+        &node,
+        key,
+        existing,
+        2_u64,
+        &existing_path_hash,
+        depth,
+        &mut resolver,
+    )
+    .expect("updating an existing max-depth leaf must succeed");
+
+    assert_eq!(old_value, Some(1_u64));
+    assert_eq!(new_node.leaves, vec![(existing, 2_u64)]);
+}
+
 #[test]
 fn test_hamt_remove_empties_root() {
     let key = b"dummy_server_key";
