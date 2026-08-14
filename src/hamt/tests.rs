@@ -826,12 +826,11 @@ fn splitmix64(state: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// For random sequences of insert/remove, the incrementally mutated tree
-/// must stay bit-for-bit equivalent (`structural_hash`, and every key
-/// lookup) to a tree rebuilt from scratch via `build_hamt` over the same
-/// final key set. This is what actually proves the `O(log S)` mutation
-/// path preserves the tree's canonical shape, including cascading
-/// single-leaf collapse on remove.
+/// For random insert/remove sequences, the incrementally mutated tree must
+/// stay semantically correct after every mutation and match a rebuilt tree
+/// periodically. The per-step checks validate the touched key and the full
+/// key set, while the periodic rebuild validates canonical structure via
+/// `structural_hash`, `datamap`, and `nodemap`.
 #[test]
 fn test_hamt_insert_remove_matches_build_hamt() {
     let key = b"dummy_server_key";
@@ -865,11 +864,15 @@ fn test_hamt_insert_remove_matches_build_hamt() {
             root = new_root;
         }
 
+        // Fast path: validate the key touched by this mutation on every step.
         assert_eq!(root.get(key, &k), model.get(&k));
+
+        // Keep the current model fully aligned with the tree after every step.
         for (&k, &v) in &model {
             assert_eq!(root.get(key, &k), Some(&v));
         }
 
+        // Rebuild and compare structure only periodically plus on the final step.
         if step % structural_check_interval == 0 || step + 1 == total_steps {
             let expected =
                 build_hamt(key, model.iter().map(|(&k, &v)| (k, v))).expect("rebuild should work");
