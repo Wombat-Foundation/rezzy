@@ -145,6 +145,11 @@ name = "mainline_cache"
 path = "benches/mainline_cache.rs"
 harness = false
 
+[patch.crates-io]
+# TODO: remove this override once rayon releases a rustc 1.75-compatible
+# rayon-core again. This keeps `cargo update` from floating to 1.13.x.
+rayon-core = { git = "https://github.com/rayon-rs/rayon", rev = "7df6d5b8493a5fdb257565cab26dacdfe08ec8aa", package = "rayon-core" }
+
 [[test]]
 name = "test_snapshots"
 path = "tests/test_snapshots.rs"
