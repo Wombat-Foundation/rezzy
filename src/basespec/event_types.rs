@@ -1,5 +1,9 @@
 //! Matrix Event Type Constants
 
+use alloc::boxed::Box;
+use alloc::string::String;
+use core::fmt;
+
 pub const M_ROOM_MEMBER: &str = "m.room.member";
 pub const M_ROOM_POWER_LEVELS: &str = "m.room.power_levels";
 pub const M_ROOM_JOIN_RULES: &str = "m.room.join_rules";
@@ -22,6 +26,131 @@ pub const M_SPACE_PARENT: &str = "m.space.parent";
 pub const M_ROOM_ALIASES: &str = "m.room.aliases";
 
 pub const M_EMPTY_STATE_KEY: &str = "";
+
+/// An interned representation of a Matrix event `type`.
+///
+/// The well-known types above (and below) are collapsed into `Copy`-free,
+/// integer-tag enum variants, so equality and ordering on them are plain
+/// discriminant comparisons instead of byte-by-byte string comparisons. This
+/// is the dominant type held in [`crate::state::at::SharedState`] keys, so
+/// avoiding a `String` allocation + hash/compare per well-known entry matters
+/// on the state-resolution hot path.
+///
+/// Matrix event types are open-ended (custom/vendor types like
+/// `org.matrix.msc...` are valid and appear in real rooms), so this is not a
+/// closed enum: anything outside the known set falls back to `Custom`, which
+/// still round-trips exactly via [`Display`](fmt::Display)/[`EventType::as_str`].
+///
+/// `Custom` stores a `Box<str>` rather than `String` — event types are
+/// immutable once interned, so the extra `capacity` field a `String` carries
+/// is dead weight here.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EventType {
+    RoomCreate,
+    RoomMember,
+    RoomPowerLevels,
+    RoomJoinRules,
+    RoomThirdPartyInvite,
+    RoomName,
+    RoomTopic,
+    RoomAvatar,
+    RoomCanonicalAlias,
+    RoomHistoryVisibility,
+    RoomGuestAccess,
+    RoomServerAcl,
+    RoomTombstone,
+    RoomEncryption,
+    RoomPinnedEvents,
+    RoomMessage,
+    RoomRedaction,
+    RoomAliases,
+    SpaceChild,
+    SpaceParent,
+    /// Any event type outside the well-known set above, preserved verbatim.
+    Custom(Box<str>),
+}
+
+impl EventType {
+    /// Returns the canonical wire-format string for this event type.
+    #[inline]
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::RoomCreate => M_ROOM_CREATE,
+            Self::RoomMember => M_ROOM_MEMBER,
+            Self::RoomPowerLevels => M_ROOM_POWER_LEVELS,
+            Self::RoomJoinRules => M_ROOM_JOIN_RULES,
+            Self::RoomThirdPartyInvite => M_ROOM_THIRD_PARTY_INVITE,
+            Self::RoomName => M_ROOM_NAME,
+            Self::RoomTopic => M_ROOM_TOPIC,
+            Self::RoomAvatar => M_ROOM_AVATAR,
+            Self::RoomCanonicalAlias => M_ROOM_CANONICAL_ALIAS,
+            Self::RoomHistoryVisibility => M_ROOM_HISTORY_VISIBILITY,
+            Self::RoomGuestAccess => M_ROOM_GUEST_ACCESS,
+            Self::RoomServerAcl => M_ROOM_SERVER_ACL,
+            Self::RoomTombstone => M_ROOM_TOMBSTONE,
+            Self::RoomEncryption => M_ROOM_ENCRYPTION,
+            Self::RoomPinnedEvents => M_ROOM_PINNED_EVENTS,
+            Self::RoomMessage => M_ROOM_MESSAGE,
+            Self::RoomRedaction => M_ROOM_REDACTION,
+            Self::RoomAliases => M_ROOM_ALIASES,
+            Self::SpaceChild => M_SPACE_CHILD,
+            Self::SpaceParent => M_SPACE_PARENT,
+            Self::Custom(s) => s,
+        }
+    }
+}
+
+impl From<&str> for EventType {
+    fn from(s: &str) -> Self {
+        match s {
+            M_ROOM_CREATE => Self::RoomCreate,
+            M_ROOM_MEMBER => Self::RoomMember,
+            M_ROOM_POWER_LEVELS => Self::RoomPowerLevels,
+            M_ROOM_JOIN_RULES => Self::RoomJoinRules,
+            M_ROOM_THIRD_PARTY_INVITE => Self::RoomThirdPartyInvite,
+            M_ROOM_NAME => Self::RoomName,
+            M_ROOM_TOPIC => Self::RoomTopic,
+            M_ROOM_AVATAR => Self::RoomAvatar,
+            M_ROOM_CANONICAL_ALIAS => Self::RoomCanonicalAlias,
+            M_ROOM_HISTORY_VISIBILITY => Self::RoomHistoryVisibility,
+            M_ROOM_GUEST_ACCESS => Self::RoomGuestAccess,
+            M_ROOM_SERVER_ACL => Self::RoomServerAcl,
+            M_ROOM_TOMBSTONE => Self::RoomTombstone,
+            M_ROOM_ENCRYPTION => Self::RoomEncryption,
+            M_ROOM_PINNED_EVENTS => Self::RoomPinnedEvents,
+            M_ROOM_MESSAGE => Self::RoomMessage,
+            M_ROOM_REDACTION => Self::RoomRedaction,
+            M_ROOM_ALIASES => Self::RoomAliases,
+            M_SPACE_CHILD => Self::SpaceChild,
+            M_SPACE_PARENT => Self::SpaceParent,
+            other => Self::Custom(Box::from(other)),
+        }
+    }
+}
+
+impl From<String> for EventType {
+    fn from(s: String) -> Self {
+        match Self::from(s.as_str()) {
+            // Re-derive from the owned string instead of double-allocating
+            // through the `&str` path's `Box::from(other)`.
+            Self::Custom(_) => Self::Custom(s.into_boxed_str()),
+            known => known,
+        }
+    }
+}
+
+impl fmt::Display for EventType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl AsRef<str> for EventType {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
 
 // JSON field keys
 pub const FIELD_MEMBERSHIP: &str = "membership";
