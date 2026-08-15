@@ -48,38 +48,66 @@ const PL_AUTH_HOPS: usize = 8;
 
 fn insert_pl_auth_chain(
     events: &mut HashMap<String, LeanEvent>,
-    prev_pl: &str,
     pl_index: usize,
     ts: &mut u64,
     depth: u64,
 ) -> String {
-    let mut next_auth = prev_pl.to_string();
-    for hop in (0..PL_AUTH_HOPS).rev() {
+    let root_id = format!("$pl_auth_root_{pl_index}");
+    events.insert(
+        root_id.clone(),
+        LeanEvent {
+            event_id: root_id.clone(),
+            event_type: "m.room.join_rules".to_string(),
+            state_key: Some(String::new()),
+            power_level: 100,
+            origin_server_ts: {
+                *ts += 1;
+                *ts
+            },
+            sender: "@creator:example.org".to_string(),
+            content: serde_json::json!({ "join_rule": "public" }),
+            prev_events: Vec::new(),
+            auth_events: Vec::new(),
+            depth,
+            rejected: false,
+            soft_fail: false,
+        },
+    );
+
+    let mut prev_auth = root_id.clone();
+    let mut last_id = root_id.clone();
+    for hop in 0..PL_AUTH_HOPS {
         let helper_id = format!("$pl_auth_{pl_index}_{hop}");
+        let helper_user = format!("@pl_auth_{pl_index}_{hop}:example.org");
         events.insert(
             helper_id.clone(),
             LeanEvent {
                 event_id: helper_id.clone(),
-                event_type: "m.room.message".to_string(),
-                state_key: None,
-                power_level: 0,
+                event_type: "m.room.member".to_string(),
+                state_key: Some(helper_user.clone()),
+                power_level: 100,
                 origin_server_ts: {
                     *ts += 1;
                     *ts
                 },
-                sender: "@creator:example.org".to_string(),
-                content: serde_json::json!({ "body": "auth-hop" }),
+                sender: helper_user,
+                content: serde_json::json!({ "membership": "join" }),
                 prev_events: Vec::new(),
-                auth_events: vec![next_auth.clone()],
+                auth_events: if hop == 0 {
+                    vec![root_id.clone()]
+                } else {
+                    vec![prev_auth.clone(), root_id.clone()]
+                },
                 depth: depth + hop as u64 + 1,
                 rejected: false,
                 soft_fail: false,
             },
         );
-        next_auth = helper_id;
+        prev_auth.clone_from(&helper_id);
+        last_id = helper_id;
     }
 
-    next_auth
+    last_id
 }
 
 /// Builds a DAG: `create -> pl_0 -> pl_1 -> ... -> pl_{L-1}`, then `fork_count`
@@ -115,7 +143,8 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
     let mut depth: u64 = 1;
     for i in 0..pl_chain_len {
         let id = format!("$pl_{i}");
-        let pl_auth_root = insert_pl_auth_chain(&mut events, &prev_pl, i, &mut ts, depth);
+        let pl_auth_root = insert_pl_auth_chain(&mut events, i, &mut ts, depth);
+        let pl_depth = depth + PL_AUTH_HOPS as u64 + 1;
         events.insert(
             id.clone(),
             LeanEvent {
@@ -130,14 +159,18 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                 sender: "@creator:example.org".to_string(),
                 content: pl_content(50 + (i as i64 % 10)),
                 prev_events: vec![prev_pl.clone()],
-                auth_events: vec![pl_auth_root, create_id.clone()],
-                depth,
+                auth_events: if i == 0 {
+                    vec![pl_auth_root]
+                } else {
+                    vec![pl_auth_root, prev_pl.clone()]
+                },
+                depth: pl_depth,
                 rejected: false,
                 soft_fail: false,
             },
         );
         prev_pl = id;
-        depth += 1;
+        depth += PL_AUTH_HOPS as u64 + 2;
     }
     let top_pl = prev_pl;
 
@@ -146,23 +179,24 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
         let a_id = format!("$member_a_{g}");
         let b_id = format!("$member_b_{g}");
         let merge_id = format!("$merge_{g}");
+        let shared_member = format!("@member{g}:example.org");
 
         events.insert(
             a_id.clone(),
             LeanEvent {
                 event_id: a_id.clone(),
                 event_type: "m.room.member".to_string(),
-                state_key: Some(format!("@a{g}:example.org")),
+                state_key: Some(shared_member.clone()),
                 power_level: 0,
                 origin_server_ts: {
                     ts += 1;
                     ts
                 },
-                sender: format!("@a{g}:example.org"),
+                sender: shared_member.clone(),
                 content: serde_json::json!({ "membership": "join" }),
                 prev_events: vec![top_pl.clone()],
-                auth_events: vec![top_pl.clone(), create_id.clone()],
-                depth: depth + 1,
+                auth_events: vec![top_pl.clone()],
+                depth,
                 rejected: false,
                 soft_fail: false,
             },
@@ -172,17 +206,17 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
             LeanEvent {
                 event_id: b_id.clone(),
                 event_type: "m.room.member".to_string(),
-                state_key: Some(format!("@b{g}:example.org")),
+                state_key: Some(shared_member.clone()),
                 power_level: 0,
                 origin_server_ts: {
                     ts += 1;
                     ts
                 },
-                sender: format!("@b{g}:example.org"),
+                sender: shared_member.clone(),
                 content: serde_json::json!({ "membership": "join" }),
                 prev_events: vec![top_pl.clone()],
-                auth_events: vec![top_pl.clone(), create_id.clone()],
-                depth: depth + 1,
+                auth_events: vec![top_pl.clone()],
+                depth,
                 rejected: false,
                 soft_fail: false,
             },
@@ -198,11 +232,11 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                     ts += 1;
                     ts
                 },
-                sender: "@a0:example.org".to_string(),
+                sender: shared_member,
                 content: serde_json::json!({ "body": "merge" }),
                 prev_events: vec![a_id, b_id],
-                auth_events: vec![top_pl.clone(), create_id.clone()],
-                depth: depth + 2,
+                auth_events: vec![top_pl.clone()],
+                depth: depth + 1,
                 rejected: false,
                 soft_fail: false,
             },
@@ -241,13 +275,13 @@ fn main() {
             || {
                 let mut total_states = 0usize;
                 for &target in &target_refs {
-                    if let Some(state) = compute_state_at::<String, serde_json::Value, str, _>(
+                    let state = compute_state_at::<String, serde_json::Value, str, _>(
                         target,
                         &events,
                         StateResVersion::V2_1,
-                    ) {
-                        total_states += state.len();
-                    }
+                    )
+                    .expect("every benchmark target must resolve");
+                    total_states += state.len();
                 }
                 std::hint::black_box(total_states);
             },
