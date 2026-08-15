@@ -1,12 +1,13 @@
 //! Compares `imbl::OrdMap` against the HAMT (`rezzy::hamt`) as a backend for
 //! `SharedState`, i.e. `Map<(EventType, String), Id>`.
 //!
-//! `SharedState` currently aliases to `imbl::OrdMap` (see the `TODO` at
-//! `src/state/at.rs`). This benchmark exists to answer, with real numbers,
-//! whether the HAMT built out over the last several commits actually beats
-//! `OrdMap` for the access pattern state resolution uses: small-to-medium
-//! room state maps, lots of persistent point insert/remove during
-//! resolution, and cheap clone-and-diverge across conflict branches.
+//! `SharedState` currently aliases to `imbl::OrdMap` (see the fork/diverge
+//! benchmark note in `src/state/at.rs`). This benchmark exists to answer,
+//! with real numbers, whether the HAMT built out over the last several
+//! commits actually beats `OrdMap` for the access pattern state resolution
+//! uses: small-to-medium room state maps, lots of persistent point
+//! insert/remove during resolution, and cheap clone-and-diverge across
+//! conflict branches.
 //!
 //! Run with: `cargo bench --bench state_backend`
 #![allow(
@@ -53,9 +54,8 @@ impl Xorshift128 {
     }
 }
 
-const KNOWN_TYPES: &[EventType] = &[
+const KNOWN_SINGLETON_TYPES: &[EventType] = &[
     EventType::RoomCreate,
-    EventType::RoomMember,
     EventType::RoomPowerLevels,
     EventType::RoomJoinRules,
     EventType::RoomThirdPartyInvite,
@@ -90,11 +90,13 @@ fn make_entries(n: usize, seed: u64) -> Vec<(Key, Value)> {
             (EventType::RoomMember, format!("@user{uid}:example.org"))
         } else if roll % 10 < 9 {
             // 20%: one of the other well-known singleton event types.
-            let idx = (rng.next_u64() as usize) % KNOWN_TYPES.len();
-            (KNOWN_TYPES[idx].clone(), String::new())
+            let idx = (rng.next_u64() as usize) % KNOWN_SINGLETON_TYPES.len();
+            (KNOWN_SINGLETON_TYPES[idx].clone(), String::new())
         } else {
             // 10%: custom event type, e.g. a third-party MSC.
-            let idx = rng.next_u64() % 500;
+            // Scale the key space with the fixture size so the custom tail
+            // stays stable even for the largest benchmarks.
+            let idx = rng.next_u64() % ((n.max(1) as u64) * 10);
             (
                 EventType::from(format!("org.example.msc{idx}")),
                 format!("key{idx}"),
