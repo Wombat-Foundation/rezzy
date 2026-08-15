@@ -28,7 +28,7 @@
 
 use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
-use crate::HashMap;
+use crate::{FastMap, HashMap};
 use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::string::String;
@@ -606,7 +606,7 @@ where
 /// and yields the target states as they are completed.
 fn run_state_pipeline_streaming<'a, Id, C, S, F, E>(
     index_to_id: &[&'a Id],
-    id_to_index: &HashMap<&'a Id, usize>,
+    id_to_index: &FastMap<&'a Id, usize>,
     is_target: &[bool],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     version: StateResVersion,
@@ -626,7 +626,7 @@ where
     }
 
     let mut global_auth_cache = LocalAuthCache::new(version);
-    let mut mainline_cache: HashMap<Id, Option<Id>> = HashMap::new();
+    let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
 
     let mut state_after_map: Vec<Option<SharedState<Id>>> = core::iter::repeat_with(|| None)
         .take(index_to_id.len())
@@ -997,13 +997,13 @@ where
 fn collect_ancestor_short_ids_batch<'a, Id, C, S>(
     target_event_ids: &[&'a Id],
     events_map: &'a HashMap<Id, LeanEvent<Id, C>, S>,
-) -> (HashMap<&'a Id, usize>, Vec<&'a Id>)
+) -> (FastMap<&'a Id, usize>, Vec<&'a Id>)
 where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: Clone,
 {
-    let mut id_to_index: HashMap<&Id, usize> = HashMap::new();
+    let mut id_to_index: FastMap<&Id, usize> = FastMap::default();
     let mut index_to_id: Vec<&Id> = Vec::new();
     let mut queue = Vec::new();
 
@@ -1042,7 +1042,7 @@ where
 /// Returns the events sorted such that parents always appear before their children.
 fn topological_sort_short_ids<Id, C, S>(
     index_to_id: &[&Id],
-    id_to_index: &HashMap<&Id, usize>,
+    id_to_index: &FastMap<&Id, usize>,
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
 ) -> (Vec<usize>, Vec<usize>)
 where
@@ -1060,7 +1060,7 @@ where
             continue;
         };
         let mut seen = if ev.prev_events.len() > 1 {
-            Some(crate::HashSet::new())
+            Some(crate::FastSet::default())
         } else {
             None
         };
@@ -1106,7 +1106,7 @@ fn resolve_merge_fast_path<Id, C, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C>,
-    mainline_cache: &mut HashMap<Id, Option<Id>>,
+    mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
 ) -> SharedState<Id>
 where
@@ -1139,7 +1139,7 @@ fn resolve_multiple_prev_states<Id, C, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C>,
-    mainline_cache: &mut HashMap<Id, Option<Id>>,
+    mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
 ) -> SharedState<Id>
 where
@@ -1147,7 +1147,7 @@ where
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
 {
-    let mut conflicted_keys = crate::HashSet::new();
+    let mut conflicted_keys = crate::FastSet::default();
     let mut conflicted_state_set = crate::HashSet::new();
     let base = &prev_states[0];
 
@@ -1250,7 +1250,7 @@ where
     S2: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
 {
-    let mut u_visited = crate::HashSet::new();
+    let mut u_visited = crate::FastSet::default();
     let mut u_heap_elements = Vec::with_capacity(unconflicted_state.len());
     for id in unconflicted_state.values() {
         if u_visited.insert(id.clone()) {
@@ -1261,7 +1261,7 @@ where
     }
     let mut u_heap = alloc::collections::BinaryHeap::from(u_heap_elements);
 
-    let mut c_visited = crate::HashSet::new();
+    let mut c_visited = crate::FastSet::default();
     let mut c_heap = alloc::collections::BinaryHeap::new();
     for id in conflicted_state_set {
         if u_visited.contains(id) {
@@ -2031,7 +2031,7 @@ where
         prev_states,
         events_map,
         global_auth_cache,
-        &mut HashMap::new(),
+        &mut FastMap::default(),
         version,
     )
 }
@@ -2045,7 +2045,7 @@ fn resolve_merge_fast_path_hashed_with_cache<Id, C, S>(
     prev_states: &[HashedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C>,
-    mainline_cache: &mut HashMap<Id, Option<Id>>,
+    mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
 ) -> HashedState<Id>
 where
@@ -2106,7 +2106,7 @@ where
 
 fn run_state_pipeline_streaming_optimized<'a, Id, C, S, F, E>(
     index_to_id: &[&'a Id],
-    id_to_index: &HashMap<&'a Id, usize>,
+    id_to_index: &FastMap<&'a Id, usize>,
     is_target: &[bool],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     version: StateResVersion,
@@ -2126,7 +2126,7 @@ where
     }
 
     let mut global_auth_cache = LocalAuthCache::new(version);
-    let mut mainline_cache: HashMap<Id, Option<Id>> = HashMap::new();
+    let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
 
     let mut state_after_map: Vec<Option<HashedState<Id>>> = core::iter::repeat_with(|| None)
         .take(index_to_id.len())
@@ -2138,7 +2138,7 @@ where
 
         let mut prev_states = Vec::with_capacity(ev.prev_events.len());
         let mut seen_parents = if ev.prev_events.len() > 1 {
-            Some(crate::HashSet::new())
+            Some(crate::FastSet::default())
         } else {
             None
         };

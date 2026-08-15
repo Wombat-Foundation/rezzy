@@ -30,7 +30,7 @@ use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::{
     resolve::sorting::{build_mainline, build_mainline_with_cache, lean_kahn_sort, mainline_sort},
     state::at::{compute_local_auth, iterative_auth_ok, LocalAuthCache},
-    HashMap,
+    FastMap, HashMap,
 };
 use alloc::{
     string::{String, ToString},
@@ -441,7 +441,7 @@ pub fn resolve_iterative_sort_with_cache<
         external_auth_cache,
         version,
         pl_cache,
-        &mut HashMap::new(),
+        &mut FastMap::default(),
     )
 }
 
@@ -464,7 +464,7 @@ pub(crate) fn resolve_iterative_sort_with_all_caches<
     external_auth_cache: Option<&mut LocalAuthCache<Id, C>>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64>,
-    mainline_cache: &mut HashMap<Id, Option<Id>>,
+    mainline_cache: &mut FastMap<Id, Option<Id>>,
 ) -> crate::state::at::SharedState<Id> {
     let original_conflicted_keys =
         prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
