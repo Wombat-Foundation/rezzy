@@ -137,7 +137,10 @@ fn test_topo_functions_ignore_federation_depth() {
         .expect("D must be reachable");
     // The create event from A must be in the resolved state at D
     assert_eq!(
-        state.get(&("m.room.create".into(), String::new())),
+        state.get(&(
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new()
+        )),
         Some(&"A".into()),
         "state at D must include the create event from A"
     );
@@ -342,31 +345,49 @@ fn test_resolve_merge_fast_path_hashed_mismatch() {
 
     let mut hs1 = HashedState::new();
     hs1.insert(
-        ("m.room.create".into(), String::new()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
         "create_event".to_string(),
     );
     hs1.insert(
-        ("m.room.member".into(), creator.clone()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            creator.clone(),
+        ),
         "join_event_1".to_string(),
     );
     // Will be removed (rejected during resolution)
     hs1.insert(
-        ("m.room.topic".into(), String::new()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.topic"),
+            String::new(),
+        ),
         "topic_event".to_string(),
     );
 
     let mut hs2 = HashedState::new();
     hs2.insert(
-        ("m.room.create".into(), String::new()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
         "create_event".to_string(),
     );
     hs2.insert(
-        ("m.room.member".into(), creator.clone()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            creator.clone(),
+        ),
         "join_event_2".to_string(),
     );
     // Will be added (accepted during resolution)
     hs2.insert(
-        ("m.room.name".into(), String::new()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.name"),
+            String::new(),
+        ),
         "name_event".to_string(),
     );
 
@@ -389,21 +410,24 @@ fn test_resolve_merge_fast_path_hashed_mismatch() {
     );
 
     // Verify member state: join_event_2 wins
-    let val_member = merged
-        .state
-        .get(&("m.room.member".to_string(), creator.clone()));
+    let val_member = merged.state.get(&(
+        rezzy::basespec::event_types::EventType::from("m.room.member"),
+        creator.clone(),
+    ));
     assert_eq!(val_member, Some(&"join_event_2".to_string()));
 
     // Verify added key ("m.room.name") is present
-    let val_name = merged
-        .state
-        .get(&("m.room.name".to_string(), String::new()));
+    let val_name = merged.state.get(&(
+        rezzy::basespec::event_types::EventType::from("m.room.name"),
+        String::new(),
+    ));
     assert_eq!(val_name, Some(&"name_event".to_string()));
 
     // Verify removed key ("m.room.topic") is NOT present (since it was rejected)
-    let val_topic = merged
-        .state
-        .get(&("m.room.topic".to_string(), String::new()));
+    let val_topic = merged.state.get(&(
+        rezzy::basespec::event_types::EventType::from("m.room.topic"),
+        String::new(),
+    ));
     assert_eq!(val_topic, None);
 
     // Verify incremental LtHash correctness against fresh LtHash from resolved state

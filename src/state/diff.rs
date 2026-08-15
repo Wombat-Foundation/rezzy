@@ -15,6 +15,7 @@
 //! State snapshot diffing — compute what changed between
 //! two resolved states.
 
+use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::EventId;
 use crate::state::at::SharedState;
 use alloc::string::String;
@@ -24,12 +25,18 @@ use alloc::vec::Vec;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateDiffEntry<Id> {
     /// Key exists in `new` but not in `old`.
-    Added { key: (String, String), event_id: Id },
+    Added {
+        key: (EventType, String),
+        event_id: Id,
+    },
     /// Key exists in `old` but not in `new`.
-    Removed { key: (String, String), event_id: Id },
+    Removed {
+        key: (EventType, String),
+        event_id: Id,
+    },
     /// Key exists in both but maps to different events.
     Changed {
-        key: (String, String),
+        key: (EventType, String),
         old_event_id: Id,
         new_event_id: Id,
     },

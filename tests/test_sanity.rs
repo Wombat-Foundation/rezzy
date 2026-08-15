@@ -102,7 +102,10 @@ fn test_compute_state_at_correctness_and_performance() {
     assert_eq!(tip_state.len(), 100);
 
     // Verify a specific key exists at mid and tip, but not early
-    let test_key = ("m.room.member".to_string(), "user_400".to_string());
+    let test_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.member"),
+        "user_400".to_string(),
+    );
     assert!(!early_state.contains_key(&test_key));
     assert_eq!(mid_state.get(&test_key), Some(&"$400".to_string()));
     assert_eq!(tip_state.get(&test_key), Some(&"$400".to_string()));
@@ -349,7 +352,10 @@ fn test_streaming_correctness_with_branched_dag() {
     let mut expected_at_40 = imbl::OrdMap::new();
     for i in [10, 20, 30, 40] {
         expected_at_40.insert(
-            ("m.room.member".to_string(), format!("user_{i}")),
+            (
+                rezzy::basespec::event_types::EventType::from("m.room.member"),
+                format!("user_{i}"),
+            ),
             format!("${i}"),
         );
     }
@@ -360,7 +366,10 @@ fn test_streaming_correctness_with_branched_dag() {
     // correctly rejected by state resolution!
     let mut expected_at_50 = expected_at_40.clone();
     expected_at_50.insert(
-        ("m.room.member".to_string(), "user_50".to_string()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "user_50".to_string(),
+        ),
         "$50".to_string(),
     );
 
@@ -414,8 +423,10 @@ fn test_delta_chain_generation_correctness() {
     let events = make_chronological_test_events();
 
     // Perform delta-chain sequential processing using library functions
-    let mut state_after_map: HashMap<String, imbl::OrdMap<(String, String), String>> =
-        HashMap::new();
+    let mut state_after_map: HashMap<
+        String,
+        imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+    > = HashMap::new();
     let mut state_hash_map: HashMap<String, [u8; 32]> = HashMap::new();
     let mut checkpoints = Vec::new();
 
@@ -434,7 +445,10 @@ fn test_delta_chain_generation_correctness() {
         let mut state_after = state_before.clone();
         if ev.state_key.is_some() {
             state_after.insert(
-                (ev.event_type.clone(), ev.state_key.clone().unwrap()),
+                (
+                    rezzy::basespec::event_types::EventType::from(ev.event_type.as_str()),
+                    ev.state_key.clone().unwrap(),
+                ),
                 ev.event_id.clone(),
             );
         }
@@ -519,8 +533,10 @@ fn test_state_delta_compression_robustness() {
         ..Default::default()
     };
 
-    let mut state_after_map: HashMap<String, imbl::OrdMap<(String, String), String>> =
-        HashMap::new();
+    let mut state_after_map: HashMap<
+        String,
+        imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+    > = HashMap::new();
     let mut state_hash_map: HashMap<String, [u8; 32]> = HashMap::new();
     let mut checkpoints = Vec::new();
 
@@ -541,7 +557,10 @@ fn test_state_delta_compression_robustness() {
         let mut state_after = state_before.clone();
         if ev.state_key.is_some() {
             state_after.insert(
-                (ev.event_type.clone(), ev.state_key.clone().unwrap()),
+                (
+                    rezzy::basespec::event_types::EventType::from(ev.event_type.as_str()),
+                    ev.state_key.clone().unwrap(),
+                ),
                 ev.event_id.clone(),
             );
         }
@@ -938,11 +957,17 @@ fn test_auth_chain_diff_interleaving() {
     let state = compute_state_at("$merge", &events_map, StateResVersion::V2).unwrap();
 
     assert!(
-        state.contains_key(&("m.room.create".to_string(), String::new())),
+        state.contains_key(&(
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new()
+        )),
         "Must have create event"
     );
     assert!(
-        state.contains_key(&("m.room.topic".to_string(), String::new())),
+        state.contains_key(&(
+            rezzy::basespec::event_types::EventType::from("m.room.topic"),
+            String::new()
+        )),
         "Must have resolved topic"
     );
 }

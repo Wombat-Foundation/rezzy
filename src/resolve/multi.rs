@@ -46,6 +46,7 @@
 //! );
 //! ```
 
+use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::{
     EventContent, EventId, EventProvider, LeanEvent, StateResVersion,
 };
@@ -85,13 +86,11 @@ pub fn partition_state_maps<'a, Id, I, Iter>(
 where
     Id: EventId,
     I: IntoIterator<Item = Iter>,
-    Iter: IntoIterator<Item = (&'a (alloc::string::String, alloc::string::String), &'a Id)>,
+    Iter: IntoIterator<Item = (&'a (EventType, alloc::string::String), &'a Id)>,
     Id: 'a,
 {
-    let mut occurrences: HashMap<
-        (alloc::string::String, alloc::string::String),
-        HashMap<Id, usize>,
-    > = HashMap::new();
+    let mut occurrences: HashMap<(EventType, alloc::string::String), HashMap<Id, usize>> =
+        HashMap::new();
     for map in state_maps {
         for (key, id) in map {
             let val = occurrences

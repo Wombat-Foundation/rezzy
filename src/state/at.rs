@@ -26,6 +26,7 @@
 //! - **Batch mode:** computes state at multiple targets in a single topological
 //!   pass, amortizing the graph traversal cost.
 
+use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::HashMap;
 use alloc::collections::BTreeMap;
@@ -371,9 +372,13 @@ where
 /// An O(1) cloneable, persistent state map. Note that `state_key: ""`
 /// is _never_ `null` or `None`.
 ///
+/// The `event_type` half of the key is interned via [`EventType`] so that
+/// well-known types compare/hash as plain discriminants instead of
+/// byte-by-byte strings on the diff/insert hot path.
+///
 /// TODO: replace this `imbl::OrdMap` with the HAMT-backed state map once the
 /// incremental state pipeline is wired to `crate::hamt`.
-pub type SharedState<Id = String> = imbl::OrdMap<(String, String), Id>;
+pub type SharedState<Id = String> = imbl::OrdMap<(EventType, String), Id>;
 
 /// Computes the resolved room state *after* a given event.
 ///
@@ -393,7 +398,7 @@ pub fn compute_state_at<Id, C, Q, S>(
     target_event_id: &Q,
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     version: StateResVersion,
-) -> Option<BTreeMap<(String, String), Id>>
+) -> Option<BTreeMap<(EventType, String), Id>>
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + Ord + core::hash::Hash,
@@ -442,7 +447,7 @@ pub fn compute_state_at_batch<Id, C, Q, S>(
     target_event_ids: &[&Q],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     version: StateResVersion,
-) -> HashMap<Id, BTreeMap<(String, String), Id>>
+) -> HashMap<Id, BTreeMap<(EventType, String), Id>>
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
@@ -655,7 +660,7 @@ where
         if ev.state_key.is_some() {
             state_before.insert(
                 (
-                    ev.event_type.clone(),
+                    EventType::from(ev.event_type.as_str()),
                     ev.state_key.clone().unwrap_or_default(),
                 ),
                 ev.event_id.clone(),
@@ -1972,11 +1977,11 @@ where
     }
 
     /// Incremental insertion of a state entry into both the map and `LtHash`.
-    pub fn insert(&mut self, key: (String, String), event_id: Id) {
+    pub fn insert(&mut self, key: (EventType, String), event_id: Id) {
         if let Some(old_id) = self.state.get(&key) {
-            self.hash.remove(&key.0, &key.1, old_id);
+            self.hash.remove(key.0.as_str(), &key.1, old_id);
         }
-        self.hash.insert(&key.0, &key.1, &event_id);
+        self.hash.insert(key.0.as_str(), &key.1, &event_id);
         self.state.insert(key, event_id);
     }
 }
@@ -2026,17 +2031,17 @@ where
         for diff_item in first.state.diff(&resolved) {
             match diff_item {
                 imbl::ordmap::DiffItem::Add(key, new_id) => {
-                    hash.insert(&key.0, &key.1, new_id);
+                    hash.insert(key.0.as_str(), &key.1, new_id);
                 }
                 imbl::ordmap::DiffItem::Remove(key, old_id) => {
-                    hash.remove(&key.0, &key.1, old_id);
+                    hash.remove(key.0.as_str(), &key.1, old_id);
                 }
                 imbl::ordmap::DiffItem::Update {
                     old: (key, old_id),
                     new: (_, new_id),
                 } => {
-                    hash.remove(&key.0, &key.1, old_id);
-                    hash.insert(&key.0, &key.1, new_id);
+                    hash.remove(key.0.as_str(), &key.1, old_id);
+                    hash.insert(key.0.as_str(), &key.1, new_id);
                 }
             }
         }
@@ -2148,7 +2153,7 @@ where
 
         if is_state {
             let key = (
-                ev.event_type.clone(),
+                EventType::from(ev.event_type.as_str()),
                 ev.state_key.clone().unwrap_or_default(),
             );
             state_before.insert(key, ev.event_id.clone());
@@ -2476,7 +2481,10 @@ mod tests {
         // Resolved map pointing to the event
         let mut resolved = imbl::OrdMap::new();
         resolved.insert(
-            (M_ROOM_MEMBER.to_string(), "@target:example.com".to_string()),
+            (
+                EventType::from(M_ROOM_MEMBER),
+                "@target:example.com".to_string(),
+            ),
             "$kick".to_string(),
         );
 
@@ -2509,7 +2517,10 @@ mod tests {
         {
             let mut resolved_leave = imbl::OrdMap::new();
             resolved_leave.insert(
-                (M_ROOM_MEMBER.to_string(), "@target:example.com".to_string()),
+                (
+                    EventType::from(M_ROOM_MEMBER),
+                    "@target:example.com".to_string(),
+                ),
                 "$leave".to_string(),
             );
 
@@ -2549,7 +2560,7 @@ mod tests {
         {
             let mut resolved = imbl::OrdMap::new();
             resolved.insert(
-                (M_ROOM_POWER_LEVELS.to_string(), String::new()),
+                (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
                 "$pl_missing".to_string(),
             );
 

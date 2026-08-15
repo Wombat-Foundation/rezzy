@@ -175,8 +175,24 @@ fn resolve_full(events: &[LeanEvent], version: StateResVersion) -> ResolvedState
         }
     }
 
+    let unconflicted_state_typed: imbl::OrdMap<
+        (rezzy::basespec::event_types::EventType, String),
+        String,
+    > = unconflicted_state
+        .iter()
+        .map(|(k, v)| {
+            (
+                (
+                    rezzy::basespec::event_types::EventType::from(k.0.as_str()),
+                    k.1.clone(),
+                ),
+                v.clone(),
+            )
+        })
+        .collect();
+
     let resolved = resolve_iterative_sort(
-        unconflicted_state.clone(),
+        unconflicted_state_typed,
         conflicted_events,
         &events_map,
         version,
@@ -188,7 +204,7 @@ fn resolve_full(events: &[LeanEvent], version: StateResVersion) -> ResolvedState
         full_state.insert(k, v);
     }
     for (k, v) in resolved {
-        full_state.insert(k, v);
+        full_state.insert((k.0.to_string(), k.1), v);
     }
     full_state
 }

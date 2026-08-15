@@ -25,13 +25,17 @@
 //! For the lattice-coordinatized variant (parallel, `O(1)` projection), see
 //! [`crate::resolve::lattice::resolve_lattice_fold`].
 
+use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::{
     resolve::sorting::{build_mainline, lean_kahn_sort, mainline_sort},
     state::at::{compute_local_auth, iterative_auth_ok, LocalAuthCache},
     HashMap,
 };
-use alloc::{string::String, vec::Vec};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 
 /// Prepares the conflicted events map and tracks original conflicted keys before CDO pre-filtering.
 pub(crate) fn prepare_conflicted_and_keys<
@@ -191,7 +195,7 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4>(
             ) {
                 if let Some(sk) = &event.state_key {
                     resolved.insert(
-                        (event.event_type.clone(), sk.clone()),
+                        (EventType::from(event.event_type.as_str()), sk.clone()),
                         event.event_id.clone(),
                     );
                 }
@@ -230,10 +234,7 @@ pub(crate) fn merge_unconflicted_power_events<Id>(
     // into `resolved` before building the mainline, so they are visible to `build_mainline` and sorting.
     if version.is_v2_1_plus() {
         for event_type in [M_ROOM_POWER_LEVELS, M_ROOM_JOIN_RULES, M_ROOM_CREATE] {
-            let key = (
-                alloc::string::String::from(event_type),
-                alloc::string::String::new(),
-            );
+            let key = (EventType::from(event_type), alloc::string::String::new());
             if let Some(v) = unconflicted_state.get(&key) {
                 resolved.entry(key).or_insert_with(|| v.clone());
             }
@@ -296,7 +297,7 @@ where
     );
 
     let create_key = (
-        String::from(crate::basespec::event_types::M_ROOM_CREATE),
+        EventType::from(crate::basespec::event_types::M_ROOM_CREATE),
         String::new(),
     );
 
@@ -492,7 +493,10 @@ pub fn resolve_iterative_sort_with_cache<
             false,
         ) {
             if let Some(sk) = &ev.state_key {
-                resolved.insert((ev.event_type.clone(), sk.clone()), ev.event_id.clone());
+                resolved.insert(
+                    (EventType::from(ev.event_type.as_str()), sk.clone()),
+                    ev.event_id.clone(),
+                );
             }
         }
     }
@@ -604,7 +608,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
     for id in &sorted_power_ids {
         if let Some(event) = sort_set.get(id).or_else(|| auth_context.get(id)) {
             let Some(sk) = &event.state_key else { continue };
-            let key = (event.event_type.clone(), sk.clone());
+            let key = (EventType::from(event.event_type.as_str()), sk.clone());
             let local_auth =
                 compute_local_auth(event, auth_context, sort_set, local_auth_cache, version);
             let accepted = iterative_auth_ok(
@@ -628,7 +632,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
                 deltas.push(ResolutionDelta {
                     event_id: event.event_id.clone(),
                     accepted,
-                    key,
+                    key: (key.0.to_string(), key.1),
                     replaced,
                     phase: ResolvePhase::Power,
                 });
@@ -647,7 +651,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
 
     for ev in non_power_list {
         let Some(sk) = &ev.state_key else { continue };
-        let key = (ev.event_type.clone(), sk.clone());
+        let key = (EventType::from(ev.event_type.as_str()), sk.clone());
         let local_auth = compute_local_auth(ev, auth_context, sort_set, local_auth_cache, version);
         let accepted = iterative_auth_ok(
             ev,
@@ -669,7 +673,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
         deltas.push(ResolutionDelta {
             event_id: ev.event_id.clone(),
             accepted,
-            key,
+            key: (key.0.to_string(), key.1),
             replaced,
             phase: ResolvePhase::NonPower,
         });

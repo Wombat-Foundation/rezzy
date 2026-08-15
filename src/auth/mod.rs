@@ -135,6 +135,24 @@ impl<'a> Borrow<dyn StateKeyDyn + 'a> for (String, String) {
     }
 }
 
+impl StateKeyDyn for (crate::basespec::event_types::EventType, String) {
+    fn ev_type(&self) -> &str {
+        self.0.as_str()
+    }
+    fn state_key(&self) -> &str {
+        &self.1
+    }
+}
+
+// Sound only because `EventType`'s `Ord`/`Eq`/`Hash` are defined against
+// `as_str()` (see its doc comment) and therefore agree with `dyn
+// StateKeyDyn`'s lexicographic string ordering used below.
+impl<'a> Borrow<dyn StateKeyDyn + 'a> for (crate::basespec::event_types::EventType, String) {
+    fn borrow(&self) -> &(dyn StateKeyDyn + 'a) {
+        self
+    }
+}
+
 impl PartialEq for dyn StateKeyDyn + '_ {
     fn eq(&self, other: &Self) -> bool {
         self.ev_type() == other.ev_type() && self.state_key() == other.state_key()

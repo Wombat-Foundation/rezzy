@@ -126,7 +126,7 @@ pub fn resolved_state_entries<Id: basespec::rezzy_types::EventId>(
     let mut entries = final_state_map
         .iter()
         .map(|((event_type, state_key), event_id)| ResolvedStateEntry {
-            event_type: event_type.clone(),
+            event_type: event_type.to_string(),
             state_key: state_key.clone(),
             event_id: event_id.to_string(),
         })

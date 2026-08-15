@@ -208,8 +208,14 @@ fn test_large_room_10k_v2_vs_v2_1_divergence() {
     assert!(!v2_1.is_empty(), "V2.1 must produce resolved state");
     // Both must agree on m.room.create
     assert_eq!(
-        v2.get(&("m.room.create".into(), String::new())),
-        v2_1.get(&("m.room.create".into(), String::new())),
+        v2.get(&(
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new()
+        )),
+        v2_1.get(&(
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new()
+        )),
         "V2 and V2.1 must agree on the create event"
     );
 }
@@ -646,10 +652,22 @@ fn verify_spam_storm_results(
         std::time::Duration,
     ),
 ) {
-    let power_levels_v20 = resolved_v2.get(&("m.room.power_levels".into(), String::new()));
-    let power_levels_v21 = resolved_v21.get(&("m.room.power_levels".into(), String::new()));
-    let power_levels_v211 = resolved_v211.get(&("m.room.power_levels".into(), String::new()));
-    let power_levels_lattice = resolved_lattice.get(&("m.room.power_levels".into(), String::new()));
+    let power_levels_v20 = resolved_v2.get(&(
+        rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+        String::new(),
+    ));
+    let power_levels_v21 = resolved_v21.get(&(
+        rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+        String::new(),
+    ));
+    let power_levels_v211 = resolved_v211.get(&(
+        rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+        String::new(),
+    ));
+    let power_levels_lattice = resolved_lattice.get(&(
+        rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+        String::new(),
+    ));
 
     if power_levels_v20 == power_levels_v211 {
         println!("V2 and V2.1.1 produced identical power levels.");

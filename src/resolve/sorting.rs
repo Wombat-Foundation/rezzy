@@ -349,7 +349,7 @@ where
     let mut mainline = Vec::new();
     let mut seen_in_mainline = hashbrown::HashSet::new();
     let pl_key = (
-        alloc::string::String::from(M_ROOM_POWER_LEVELS),
+        crate::basespec::event_types::EventType::from(M_ROOM_POWER_LEVELS),
         alloc::string::String::from(M_EMPTY_STATE_KEY),
     );
     let mut current = resolved.get(&pl_key).cloned();
@@ -550,7 +550,7 @@ mod tests {
         let mut resolved = imbl::OrdMap::new();
         resolved.insert(
             (
-                alloc::string::String::from("m.room.power_levels"),
+                crate::basespec::event_types::EventType::from("m.room.power_levels"),
                 alloc::string::String::new(),
             ),
             alloc::string::String::from("A"),

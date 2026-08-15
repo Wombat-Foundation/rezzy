@@ -44,7 +44,16 @@ pub const M_EMPTY_STATE_KEY: &str = "";
 /// `Custom` stores a `Box<str>` rather than `String` — event types are
 /// immutable once interned, so the extra `capacity` field a `String` carries
 /// is dead weight here.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// `Eq`/`Ord`/`Hash` are hand-written against [`Self::as_str`] rather than
+/// derived. A derived `Ord` would order by variant declaration position, not
+/// string content — that would silently break the `Borrow<dyn StateKeyDyn>`
+/// bridge in [`crate::auth`], which compares keys lexicographically as
+/// strings to support zero-copy `&str` lookups into `SharedState`. Matching
+/// `Ord` to `Display`/`as_str` also keeps `SharedState` iteration order
+/// identical to the old plain-`String` key, so nothing downstream that
+/// depends on sorted-by-type-string order shifts.
+#[derive(Clone, Debug)]
 pub enum EventType {
     RoomCreate,
     RoomMember,
@@ -149,6 +158,44 @@ impl fmt::Display for EventType {
 impl AsRef<str> for EventType {
     fn as_ref(&self) -> &str {
         self.as_str()
+    }
+}
+
+impl PartialEq for EventType {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for EventType {}
+
+impl PartialOrd for EventType {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for EventType {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl core::hash::Hash for EventType {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl serde::Serialize for EventType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for EventType {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self::from)
     }
 }
 
