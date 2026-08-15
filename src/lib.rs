@@ -157,15 +157,16 @@ pub use hashbrown::{HashMap, HashSet};
 /// `std::collections`'s `SipHash13`.
 ///
 /// State keys and event IDs handled by resolution originate from federation
-/// input an attacker can choose, so this still needs to be HashDoS-resistant
-/// — `foldhash` seeds a random key per instance like `SipHash` does, it's
-/// just much faster, since it isn't also trying to be cryptographically
-/// strong. Not part of the public API: swapping the hasher on a
-/// caller-visible `HashMap<K, V, S>` parameter would silently break every
-/// external caller that passes a `std::collections::HashMap` there, since
-/// `S: BuildHasher` genericity only covers the hasher, not the underlying
-/// map type. See `benches/state_backend.rs` and the perf investigation this
-/// followed for how that was found out the hard way.
+/// input an attacker can choose, so these maps still benefit from a randomized
+/// hasher. `foldhash` gives us a fast, minimally DoS-resistant, non-cryptographic
+/// default; that is appropriate here because the maps are internal-only, but we
+/// do not treat it as a security boundary. Not part of the public API:
+/// swapping the hasher on a caller-visible `HashMap<K, V, S>` parameter would
+/// silently break every external caller that passes a
+/// `std::collections::HashMap` there, since `S: BuildHasher` genericity only
+/// covers the hasher, not the underlying map type. See `benches/state_backend.rs`
+/// and the perf investigation this followed for how that was found out the hard
+/// way.
 pub(crate) type FastMap<K, V> = hashbrown::HashMap<K, V, hashbrown::DefaultHashBuilder>;
 
 /// See [`FastMap`]'s documentation.

@@ -16,15 +16,16 @@
 //! change (see `resolve::sorting::build_mainline_with_cache` and
 //! `state::at::run_state_pipeline_streaming[_optimized]`).
 //!
-//! Builds one synthetic DAG with a long `m.room.power_levels` auth chain of
+//! Builds one synthetic DAG with a long `m.room.power_levels` chain of
 //! length `PL_CHAIN_LEN` and `FORK_COUNT` independent two-way member-state
-//! forks, each merging back into a single non-state event. Every merge
-//! forces a real state resolution (the two branches disagree on state), so
-//! `compute_state_at_batch` walks the fork-merge loop `FORK_COUNT` times in
-//! one topological pass — exactly the access pattern the persistent
-//! `mainline_cache` targets: before the fix each merge re-walks the whole PL
-//! chain from scratch; after the fix, only the first merge pays that cost
-//! and the rest are `O(1)` cache hits.
+//! forks, each merging back into a single non-state event. Each power-level
+//! event reaches its parent through a short transitive auth chain, so the
+//! first mainline build pays real BFS work and later merges can hit the
+//! persistent `mainline_cache`.
+//!
+//! The benchmark reports both the batched path and a cache-free serial control
+//! (`compute_state_at` per target) so the cache effect is visible instead of
+//! being inferred from the fixture alone.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -37,10 +38,48 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use rezzy::{compute_state_at_batch, LeanEvent, StateResVersion};
+use rezzy::{compute_state_at, compute_state_at_batch, LeanEvent, StateResVersion};
 
 fn pl_content(level: i64) -> serde_json::Value {
     serde_json::json!({ "users_default": level })
+}
+
+const PL_AUTH_HOPS: usize = 8;
+
+fn insert_pl_auth_chain(
+    events: &mut HashMap<String, LeanEvent>,
+    prev_pl: &str,
+    pl_index: usize,
+    ts: &mut u64,
+    depth: u64,
+) -> String {
+    let mut next_auth = prev_pl.to_string();
+    for hop in (0..PL_AUTH_HOPS).rev() {
+        let helper_id = format!("$pl_auth_{pl_index}_{hop}");
+        events.insert(
+            helper_id.clone(),
+            LeanEvent {
+                event_id: helper_id.clone(),
+                event_type: "m.room.message".to_string(),
+                state_key: None,
+                power_level: 0,
+                origin_server_ts: {
+                    *ts += 1;
+                    *ts
+                },
+                sender: "@creator:example.org".to_string(),
+                content: serde_json::json!({ "body": "auth-hop" }),
+                prev_events: Vec::new(),
+                auth_events: vec![next_auth.clone()],
+                depth: depth + hop as u64 + 1,
+                rejected: false,
+                soft_fail: false,
+            },
+        );
+        next_auth = helper_id;
+    }
+
+    next_auth
 }
 
 /// Builds a DAG: `create -> pl_0 -> pl_1 -> ... -> pl_{L-1}`, then `fork_count`
@@ -76,6 +115,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
     let mut depth: u64 = 1;
     for i in 0..pl_chain_len {
         let id = format!("$pl_{i}");
+        let pl_auth_root = insert_pl_auth_chain(&mut events, &prev_pl, i, &mut ts, depth);
         events.insert(
             id.clone(),
             LeanEvent {
@@ -90,7 +130,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                 sender: "@creator:example.org".to_string(),
                 content: pl_content(50 + (i as i64 % 10)),
                 prev_events: vec![prev_pl.clone()],
-                auth_events: vec![prev_pl.clone(), create_id.clone()],
+                auth_events: vec![pl_auth_root, create_id.clone()],
                 depth,
                 rejected: false,
                 soft_fail: false,
@@ -193,6 +233,25 @@ fn main() {
                 let result = compute_state_at_batch(&target_refs, &events, StateResVersion::V2_1);
                 assert_eq!(result.len(), target_refs.len(), "all targets must resolve");
                 std::hint::black_box(&result);
+            },
+        );
+
+        measure(
+            &format!("compute_state_at (serial, cache-free; L={pl_chain_len}, M={fork_count})"),
+            || {
+                let mut total_states = 0usize;
+                for &target in &target_refs {
+                    if let Some(state) = compute_state_at::<
+                        String,
+                        serde_json::Value,
+                        str,
+                        _,
+                    >(target, &events, StateResVersion::V2_1)
+                    {
+                        total_states += state.len();
+                    }
+                }
+                std::hint::black_box(total_states);
             },
         );
     }
