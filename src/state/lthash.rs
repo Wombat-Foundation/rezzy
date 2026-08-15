@@ -426,8 +426,8 @@ mod tests {
             "m.room.member",
             "@alice:example.com",
             "$old",
-            "m.room.member",
-            "@bob:example.com",
+            "m.room.power_levels",
+            "@alice:example.com",
             "$new",
         );
     }
