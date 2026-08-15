@@ -626,6 +626,7 @@ where
     }
 
     let mut global_auth_cache = LocalAuthCache::new(version);
+    let mut mainline_cache: HashMap<Id, Option<Id>> = HashMap::new();
 
     let mut state_after_map: Vec<Option<SharedState<Id>>> = core::iter::repeat_with(|| None)
         .take(index_to_id.len())
@@ -658,7 +659,13 @@ where
         } else if prev_states.len() == 1 {
             prev_states.into_iter().next().unwrap()
         } else {
-            resolve_merge_fast_path(&prev_states, events_map, &mut global_auth_cache, version)
+            resolve_merge_fast_path(
+                &prev_states,
+                events_map,
+                &mut global_auth_cache,
+                &mut mainline_cache,
+                version,
+            )
         };
 
         if ev.state_key.is_some() {
@@ -1099,6 +1106,7 @@ fn resolve_merge_fast_path<Id, C, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C>,
+    mainline_cache: &mut HashMap<Id, Option<Id>>,
     version: StateResVersion,
 ) -> SharedState<Id>
 where
@@ -1112,9 +1120,15 @@ where
     if all_match {
         first.clone()
     } else {
-        resolve_multiple_prev_states(prev_states, events_map, global_auth_cache, version)
-            .into_iter()
-            .collect()
+        resolve_multiple_prev_states(
+            prev_states,
+            events_map,
+            global_auth_cache,
+            mainline_cache,
+            version,
+        )
+        .into_iter()
+        .collect()
     }
 }
 
@@ -1125,6 +1139,7 @@ fn resolve_multiple_prev_states<Id, C, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C>,
+    mainline_cache: &mut HashMap<Id, Option<Id>>,
     version: StateResVersion,
 ) -> SharedState<Id>
 where
@@ -1176,13 +1191,14 @@ where
     }
 
     let mut pl_cache = HashMap::new();
-    crate::resolve::iterative::resolve_iterative_sort_with_cache(
+    crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
         unconflicted_state,
         conflicted_events,
         events_map,
         Some(global_auth_cache),
         version,
         &mut pl_cache,
+        mainline_cache,
     )
 }
 
@@ -2011,6 +2027,32 @@ where
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
 {
+    resolve_merge_fast_path_hashed_with_cache(
+        prev_states,
+        events_map,
+        global_auth_cache,
+        &mut HashMap::new(),
+        version,
+    )
+}
+
+/// Like [`resolve_merge_fast_path_hashed`], but additionally accepts a
+/// `mainline_cache` that callers invoking this repeatedly against the same DAG
+/// (e.g. [`run_state_pipeline_streaming_optimized`]'s fork-merge loop) can
+/// thread across calls, so `build_mainline`'s BFS-per-call turns into an
+/// `O(M)` cache-hit walk instead of restarting from scratch every time.
+fn resolve_merge_fast_path_hashed_with_cache<Id, C, S>(
+    prev_states: &[HashedState<Id>],
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    global_auth_cache: &mut LocalAuthCache<Id, C>,
+    mainline_cache: &mut HashMap<Id, Option<Id>>,
+    version: StateResVersion,
+) -> HashedState<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    S: core::hash::BuildHasher,
+    C: crate::basespec::rezzy_types::EventContent,
+{
     let first = &prev_states[0];
 
     // Fast-path comparison design:
@@ -2027,8 +2069,13 @@ where
     } else {
         let shared_states: Vec<SharedState<Id>> =
             prev_states.iter().map(|s| s.state.clone()).collect();
-        let resolved =
-            resolve_multiple_prev_states(&shared_states, events_map, global_auth_cache, version);
+        let resolved = resolve_multiple_prev_states(
+            &shared_states,
+            events_map,
+            global_auth_cache,
+            mainline_cache,
+            version,
+        );
 
         // Incremental LtHash update from the first parent state!
         let mut hash = first.hash;
@@ -2079,6 +2126,7 @@ where
     }
 
     let mut global_auth_cache = LocalAuthCache::new(version);
+    let mut mainline_cache: HashMap<Id, Option<Id>> = HashMap::new();
 
     let mut state_after_map: Vec<Option<HashedState<Id>>> = core::iter::repeat_with(|| None)
         .take(index_to_id.len())
@@ -2147,10 +2195,11 @@ where
         } else if has_single_parent {
             prev_states.into_iter().next().unwrap()
         } else {
-            resolve_merge_fast_path_hashed(
+            resolve_merge_fast_path_hashed_with_cache(
                 &prev_states,
                 events_map,
                 &mut global_auth_cache,
+                &mut mainline_cache,
                 version,
             )
         };

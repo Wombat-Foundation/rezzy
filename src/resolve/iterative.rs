@@ -28,7 +28,7 @@
 use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::{
-    resolve::sorting::{build_mainline, lean_kahn_sort, mainline_sort},
+    resolve::sorting::{build_mainline, build_mainline_with_cache, lean_kahn_sort, mainline_sort},
     state::at::{compute_local_auth, iterative_auth_ok, LocalAuthCache},
     HashMap,
 };
@@ -428,11 +428,43 @@ pub fn resolve_iterative_sort_with_cache<
     S2: core::hash::BuildHasher,
 >(
     unconflicted_state: crate::state::at::SharedState<Id>,
+    conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    external_auth_cache: Option<&mut LocalAuthCache<Id, C>>,
+    version: StateResVersion,
+    pl_cache: &mut HashMap<Id, i64>,
+) -> crate::state::at::SharedState<Id> {
+    resolve_iterative_sort_with_all_caches::<Id, C, S1, S2>(
+        unconflicted_state,
+        conflicted_events,
+        auth_context,
+        external_auth_cache,
+        version,
+        pl_cache,
+        &mut HashMap::new(),
+    )
+}
+
+/// Like [`resolve_iterative_sort_with_cache`], but additionally accepts a
+/// `mainline_cache` (nearest `m.room.power_levels` ancestor per event ID) that
+/// callers invoking this repeatedly against the same DAG (e.g. the fork-merge
+/// loop in [`crate::state::at::run_state_pipeline_streaming`]) can thread
+/// across calls, so `build_mainline`'s BFS-per-call turns into an `O(M)`
+/// cache-hit walk instead of restarting from scratch every time.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_iterative_sort_with_all_caches<
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent + Clone,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+>(
+    unconflicted_state: crate::state::at::SharedState<Id>,
     mut conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C>>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64>,
+    mainline_cache: &mut HashMap<Id, Option<Id>>,
 ) -> crate::state::at::SharedState<Id> {
     let original_conflicted_keys =
         prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
@@ -475,7 +507,7 @@ pub fn resolve_iterative_sort_with_cache<
     merge_unconflicted_power_events(version, &unconflicted_state, &mut resolved);
 
     // Step 3: Build the power-level mainline for mainline sort
-    let mainline = build_mainline(&resolved, &sort_context);
+    let mainline = build_mainline_with_cache(&resolved, &sort_context, mainline_cache);
 
     // Step 4: Sort non-power events by mainline ordering + iterative auth check
     let mut non_power_list: Vec<&LeanEvent<Id, C>> = non_power_events.values().collect();

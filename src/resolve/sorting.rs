@@ -321,10 +321,10 @@ where
     C: Clone + crate::basespec::rezzy_types::EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
-    // TODO: Thread a persistent cache through callers that invoke build_mainline
-    // repeatedly (e.g., the delta loop in compute_state_at, lattice fold checkpoints).
-    // Currently each call starts with a fresh cache, so the memoization never hits
-    // in production — only the unit test exercises the cache-hit path.
+    // The hot path (compute_state_at's fork-merge loop) now threads a persistent
+    // cache through `resolve_iterative_sort_with_all_caches`, so this fresh-cache
+    // fallback only matters for one-shot callers (e.g. resolve_lattice_fold's V2
+    // path, which calls build_mainline exactly once per resolution).
     build_mainline_with_cache(resolved, auth_context, &mut HashMap::new())
 }
 
