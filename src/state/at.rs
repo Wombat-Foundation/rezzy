@@ -373,8 +373,8 @@ where
 /// is _never_ `null` or `None`.
 ///
 /// The `event_type` half of the key is interned via [`EventType`] so that
-/// well-known types compare/hash as plain discriminants instead of
-/// byte-by-byte strings on the diff/insert hot path.
+/// well-known types use compact enum representations, avoiding per-entry type-string
+/// allocations in state keys on the diff/insert hot path.
 ///
 /// A HAMT-backed state map was benchmarked as a replacement
 /// (`benches/state_backend.rs`) and lost on the access pattern that
