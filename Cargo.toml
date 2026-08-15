@@ -140,6 +140,11 @@ name = "state_backend"
 path = "benches/state_backend.rs"
 harness = false
 
+[[bench]]
+name = "mainline_cache"
+path = "benches/mainline_cache.rs"
+harness = false
+
 [[test]]
 name = "test_snapshots"
 path = "tests/test_snapshots.rs"
