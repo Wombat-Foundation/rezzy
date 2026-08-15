@@ -180,7 +180,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
         let b_id = format!("$member_b_{g}");
         let merge_id = format!("$merge_{g}");
         let shared_member = format!("@member{g}:example.org");
-        let pl_auth_root = format!("$pl_auth_root_{g}");
+        let pl_auth_root = format!("$pl_auth_root_{}", pl_chain_len - 1);
 
         events.insert(
             a_id.clone(),
