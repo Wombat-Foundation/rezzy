@@ -241,13 +241,11 @@ fn main() {
             || {
                 let mut total_states = 0usize;
                 for &target in &target_refs {
-                    if let Some(state) = compute_state_at::<
-                        String,
-                        serde_json::Value,
-                        str,
-                        _,
-                    >(target, &events, StateResVersion::V2_1)
-                    {
+                    if let Some(state) = compute_state_at::<String, serde_json::Value, str, _>(
+                        target,
+                        &events,
+                        StateResVersion::V2_1,
+                    ) {
                         total_states += state.len();
                     }
                 }
