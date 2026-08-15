@@ -5980,6 +5980,7 @@ fn test_mainline_position_beats_timestamp_on_divergent_auth_chains() {
 /// the full `events_map` as `event_context` implicitly satisfies the subgraph
 /// requirement via auth-chain expansion inside `resolve_iterative_sort`.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn test_msc4297_problem_b_resolve_state_maps_parity() {
     // MSC4297 Problem B events (from fixtures/MSC4297-problem-B/pdus-v12.json)
     let all_evs = utils::parse_jsonl_events(

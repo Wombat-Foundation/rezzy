@@ -280,3 +280,173 @@ pub const MAX_SAFE_JSON_INTEGER: u64 = MAX_POWER_LEVEL_JSON as u64;
 /// win PL comparisons. Incoming wire values are clamped to [`MAX_POWER_LEVEL_JSON`]
 /// on deserialization, so this is strictly unreachable by any wire value.
 pub const MAX_POWER_LEVEL_RUST: i64 = i64::MAX;
+
+#[cfg(test)]
+mod event_type_tests {
+    use super::*;
+    use alloc::format;
+    use alloc::vec::Vec;
+
+    /// Every well-known constant paired with the `EventType` variant it maps to.
+    fn known_pairs() -> Vec<(&'static str, EventType)> {
+        alloc::vec![
+            (M_ROOM_CREATE, EventType::RoomCreate),
+            (M_ROOM_MEMBER, EventType::RoomMember),
+            (M_ROOM_POWER_LEVELS, EventType::RoomPowerLevels),
+            (M_ROOM_JOIN_RULES, EventType::RoomJoinRules),
+            (M_ROOM_THIRD_PARTY_INVITE, EventType::RoomThirdPartyInvite),
+            (M_ROOM_NAME, EventType::RoomName),
+            (M_ROOM_TOPIC, EventType::RoomTopic),
+            (M_ROOM_AVATAR, EventType::RoomAvatar),
+            (M_ROOM_CANONICAL_ALIAS, EventType::RoomCanonicalAlias),
+            (M_ROOM_HISTORY_VISIBILITY, EventType::RoomHistoryVisibility),
+            (M_ROOM_GUEST_ACCESS, EventType::RoomGuestAccess),
+            (M_ROOM_SERVER_ACL, EventType::RoomServerAcl),
+            (M_ROOM_TOMBSTONE, EventType::RoomTombstone),
+            (M_ROOM_ENCRYPTION, EventType::RoomEncryption),
+            (M_ROOM_PINNED_EVENTS, EventType::RoomPinnedEvents),
+            (M_ROOM_MESSAGE, EventType::RoomMessage),
+            (M_ROOM_REDACTION, EventType::RoomRedaction),
+            (M_ROOM_ALIASES, EventType::RoomAliases),
+            (M_SPACE_CHILD, EventType::SpaceChild),
+            (M_SPACE_PARENT, EventType::SpaceParent),
+        ]
+    }
+
+    #[test]
+    fn as_str_round_trips_every_known_variant() {
+        for (s, variant) in known_pairs() {
+            assert_eq!(variant.as_str(), s);
+            assert_eq!(EventType::from(s).as_str(), s);
+            assert_eq!(EventType::from(s), variant);
+        }
+    }
+
+    #[test]
+    fn from_string_round_trips_every_known_variant() {
+        for (s, variant) in known_pairs() {
+            assert_eq!(EventType::from(String::from(s)), variant);
+        }
+    }
+
+    #[test]
+    fn custom_from_str_falls_back_and_round_trips() {
+        let custom = EventType::from("org.matrix.msc9999.custom");
+        assert_eq!(custom.as_str(), "org.matrix.msc9999.custom");
+        assert!(matches!(custom, EventType::Custom(_)));
+    }
+
+    #[test]
+    fn custom_from_owned_string_avoids_reparsing_mismatch() {
+        let owned = String::from("org.matrix.msc9999.custom");
+        let custom = EventType::from(owned.clone());
+        assert_eq!(custom.as_str(), owned.as_str());
+        assert!(matches!(custom, EventType::Custom(_)));
+    }
+
+    #[test]
+    fn display_matches_as_str() {
+        assert_eq!(format!("{}", EventType::RoomMember), M_ROOM_MEMBER);
+        let custom = EventType::from("org.example.foo");
+        assert_eq!(format!("{custom}"), "org.example.foo");
+    }
+
+    #[test]
+    fn as_ref_matches_as_str() {
+        let ev = EventType::RoomTopic;
+        let r: &str = ev.as_ref();
+        assert_eq!(r, ev.as_str());
+    }
+
+    #[test]
+    fn equality_is_content_based_not_variant_based() {
+        assert_eq!(EventType::RoomMember, EventType::from(M_ROOM_MEMBER));
+        assert_eq!(
+            EventType::from("org.example.foo"),
+            EventType::from(String::from("org.example.foo"))
+        );
+        assert_ne!(EventType::RoomMember, EventType::RoomCreate);
+    }
+
+    #[test]
+    fn ord_matches_lexicographic_string_order() {
+        // `m.room.create` < `m.room.member` lexicographically, and Custom
+        // types sort by their literal string too — this must agree with
+        // `dyn StateKeyDyn`'s string-based ordering (see the type's doc
+        // comment) or `SharedState`'s OrdMap lookups become unsound.
+        assert!(EventType::RoomCreate < EventType::RoomMember);
+        assert_eq!(
+            EventType::RoomCreate.partial_cmp(&EventType::RoomMember),
+            Some(core::cmp::Ordering::Less)
+        );
+
+        let mut values = alloc::vec![
+            EventType::RoomMessage,
+            EventType::from("a.custom.type"),
+            EventType::RoomCreate,
+            EventType::from("z.custom.type"),
+        ];
+        values.sort();
+        let strs: Vec<&str> = values.iter().map(EventType::as_str).collect();
+        let mut expected = strs.clone();
+        expected.sort_unstable();
+        assert_eq!(strs, expected);
+    }
+
+    #[test]
+    fn hash_matches_between_equal_values_built_different_ways() {
+        use core::hash::BuildHasher;
+        use hashbrown::DefaultHashBuilder;
+
+        // Use a single builder so both hashes are computed with the same
+        // seed — `DefaultHashBuilder::default()` is randomized per
+        // instance, so two separate builders would legitimately disagree
+        // even for equal inputs.
+        fn hash_of(builder: DefaultHashBuilder, ev: &EventType) -> u64 {
+            builder.hash_one(ev)
+        }
+
+        let builder = DefaultHashBuilder::default();
+
+        let a = EventType::from(M_ROOM_MEMBER);
+        let b = EventType::RoomMember;
+        assert_eq!(hash_of(builder, &a), hash_of(builder, &b));
+
+        let c = EventType::from("org.example.foo");
+        let d = EventType::from(String::from("org.example.foo"));
+        assert_eq!(hash_of(builder, &c), hash_of(builder, &d));
+    }
+
+    #[test]
+    fn serde_round_trips_known_and_custom_variants() {
+        let known = EventType::RoomPowerLevels;
+        let json = serde_json::to_string(&known).unwrap();
+        assert_eq!(json, "\"m.room.power_levels\"");
+        let back: EventType = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, known);
+
+        let custom = EventType::from("org.example.custom");
+        let json = serde_json::to_string(&custom).unwrap();
+        assert_eq!(json, "\"org.example.custom\"");
+        let back: EventType = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, custom);
+    }
+
+    #[test]
+    fn clone_preserves_value() {
+        let a = EventType::from("org.example.foo");
+        let b = a.clone();
+        assert_eq!(a, b);
+
+        let known = EventType::RoomTombstone;
+        assert_eq!(known.clone(), known);
+    }
+
+    #[test]
+    fn debug_does_not_panic() {
+        // Just exercises the derived `Debug` impl for coverage; no format
+        // assertion since it's not part of the type's public contract.
+        let _ = format!("{:?}", EventType::RoomCreate);
+        let _ = format!("{:?}", EventType::from("org.example.foo"));
+    }
+}
