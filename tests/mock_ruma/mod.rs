@@ -9,6 +9,7 @@ pub use original_ruma::utils::event_id_map::EventIdMap;
 pub use original_ruma::utils::event_id_set::EventIdSet;
 pub use original_ruma::{Error as RumaError, Event, StateMap};
 
+use rezzy::basespec::event_types::EventType;
 use rezzy::LeanEvent;
 
 fn ruma_to_lean_event<E: Event>(ev: &E) -> LeanEvent {
@@ -42,7 +43,7 @@ fn ruma_to_lean_event<E: Event>(ev: &E) -> LeanEvent {
 }
 
 type PartitionedState = (
-    imbl::OrdMap<(String, String), String>,
+    imbl::OrdMap<(EventType, String), String>,
     std::collections::HashSet<(ruma_events::StateEventType, String)>,
 );
 
@@ -70,7 +71,10 @@ where
     for map in state_sets {
         for (key, id) in map {
             if counts.get(&(key, id)).copied().unwrap_or(0) == num_maps {
-                unconflicted_state.insert((key.0.to_string(), key.1.clone()), id.to_string());
+                unconflicted_state.insert(
+                    (EventType::from(key.0.to_string()), key.1.clone()),
+                    id.to_string(),
+                );
             } else {
                 conflicted_keys.insert(key.clone());
             }

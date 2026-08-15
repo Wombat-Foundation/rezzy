@@ -14,6 +14,7 @@
 
 use crate::utils::{compute_state_hash, epoch_days_to_ymd, resolve_parent_states, SharedStateMap};
 use crate::{Args, OutputFormat};
+use rezzy::basespec::event_types::EventType;
 use rezzy::{resolved_state_entries, LeanEvent, StateResVersion};
 use std::collections::HashMap;
 
@@ -22,7 +23,7 @@ pub struct FormattingContext<'a> {
     pub events_map: &'a HashMap<String, LeanEvent>,
     pub raw_map: &'a HashMap<String, serde_json::Value>,
     pub heads: &'a [String],
-    pub final_state_map: &'a imbl::OrdMap<(String, String), String>,
+    pub final_state_map: &'a imbl::OrdMap<(EventType, String), String>,
     pub resolved_state_list: &'a [String],
     pub auth_chain_ids: &'a [String],
     pub version: StateResVersion,
@@ -78,7 +79,10 @@ pub fn format_deltas_output(ctx: &FormattingContext) -> serde_json::Value {
         if ev.state_key.is_some() {
             let mut modified = state_before.as_ref().clone();
             modified.insert(
-                (ev.event_type.clone(), ev.state_key.clone().unwrap()),
+                (
+                    EventType::from(ev.event_type.clone()),
+                    ev.state_key.clone().unwrap(),
+                ),
                 ev.event_id.clone(),
             );
             state_after = std::sync::Arc::new(modified);
@@ -207,7 +211,7 @@ pub fn format_summary_output(ctx: &FormattingContext) -> serde_json::Value {
 
     for ((typ, sk), eid) in ctx.final_state_map {
         let ev = ctx.events_map.get(eid);
-        if typ == "m.room.member" {
+        if typ.as_str() == "m.room.member" {
             let membership = ev
                 .and_then(|e| e.content.get("membership"))
                 .and_then(|m| m.as_str())

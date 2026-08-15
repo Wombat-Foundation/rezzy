@@ -641,10 +641,10 @@ fn test_unredacted_spam_storm_v2_1_1() {
 #[allow(clippy::too_many_lines)]
 fn verify_spam_storm_results(
     events: &[LeanEvent],
-    resolved_v2: &imbl::OrdMap<(String, String), String>,
-    resolved_v21: &imbl::OrdMap<(String, String), String>,
-    resolved_v211: &imbl::OrdMap<(String, String), String>,
-    resolved_lattice: &imbl::OrdMap<(String, String), String>,
+    resolved_v2: &imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+    resolved_v21: &imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+    resolved_v211: &imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+    resolved_lattice: &imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
     durs: (
         std::time::Duration,
         std::time::Duration,

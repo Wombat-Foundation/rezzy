@@ -15,8 +15,9 @@
 use crate::network::fetch_room_state;
 use crate::Args;
 use rezzy::basespec::event_types::{
-    FIELD_CONTENT, FIELD_EVENT_ID, FIELD_ROOM_VERSION, FIELD_STATE_KEY, FIELD_TYPE, FIELD_USERS,
-    FIELD_USERS_DEFAULT, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
+    EventType, FIELD_CONTENT, FIELD_EVENT_ID, FIELD_ROOM_VERSION, FIELD_STATE_KEY, FIELD_TYPE,
+    FIELD_USERS, FIELD_USERS_DEFAULT, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER,
+    M_ROOM_POWER_LEVELS,
 };
 use rezzy::{LeanEvent, StateResVersion};
 use std::collections::HashMap;
@@ -58,10 +59,10 @@ pub fn detect_version(
 }
 
 /// Computes an FNV-1a hash of `StateEntries`.
-pub fn compute_state_hash(state: &imbl::OrdMap<(String, String), String>) -> String {
+pub fn compute_state_hash(state: &imbl::OrdMap<(EventType, String), String>) -> String {
     let mut hash: u64 = 14_695_981_039_346_656_037; // FNV offset basis
     for ((event_type, state_key), event_id) in state {
-        for &byte in event_type.as_bytes() {
+        for &byte in event_type.as_str().as_bytes() {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(1_099_511_628_211); // FNV prime
         }
@@ -245,14 +246,17 @@ fn collect_reachable_events<'a>(
 fn build_state_map(
     sorted_events: Vec<&LeanEvent>,
     raw_map: &HashMap<String, serde_json::Value>,
-) -> HashMap<(String, String), String> {
+) -> HashMap<(EventType, String), String> {
     let mut state_map = HashMap::new();
     for ev in sorted_events {
         if raw_map
             .get(&ev.event_id)
             .is_some_and(|r| r.get(FIELD_STATE_KEY).is_some())
         {
-            let key = (ev.event_type.clone(), ev.state_key.clone().unwrap());
+            let key = (
+                EventType::from(ev.event_type.clone()),
+                ev.state_key.clone().unwrap(),
+            );
             state_map.insert(key, ev.event_id.clone());
         }
     }
@@ -263,7 +267,7 @@ pub fn compute_state_maps(
     heads: &[String],
     events_map: &HashMap<String, LeanEvent>,
     raw_map: &HashMap<String, serde_json::Value>,
-) -> Vec<HashMap<(String, String), String>> {
+) -> Vec<HashMap<(EventType, String), String>> {
     if heads.len() <= 1 {
         let reachable_set: std::collections::HashSet<String> = if heads.len() == 1 {
             collect_reachable_events(&heads[0], events_map)
@@ -292,7 +296,7 @@ pub fn compute_state_maps(
     }
 }
 
-pub type ResolvedState = imbl::OrdMap<(String, String), String>;
+pub type ResolvedState = imbl::OrdMap<(EventType, String), String>;
 
 pub fn resolve_parent_states(
     parent_states: &[SharedStateMap],
@@ -323,7 +327,7 @@ pub fn resolve_parent_states(
 pub fn partition_and_resolve_state(
     heads: &[String],
     events_map: &HashMap<String, LeanEvent>,
-    state_maps: &[HashMap<(String, String), String>],
+    state_maps: &[HashMap<(EventType, String), String>],
     version: StateResVersion,
     auth_graph: &rezzy::auth::roaring::AuthGraph,
 ) -> (ResolvedState, std::time::Duration) {

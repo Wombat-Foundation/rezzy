@@ -351,9 +351,10 @@ where
 ///
 /// ```rust,no_run
 /// # use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion, HashMap};
+/// # use rezzy::basespec::event_types::EventType;
 /// # use imbl::OrdMap;
 /// // State snapshot from /send_join response
-/// let checkpoint: imbl::OrdMap<(String, String), String> = /* ... */
+/// let checkpoint: imbl::OrdMap<(EventType, String), String> = /* ... */
 /// # imbl::OrdMap::new();
 /// let new_events: HashMap<String, LeanEvent> = /* events since join */
 /// # HashMap::new();
