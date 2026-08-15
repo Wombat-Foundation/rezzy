@@ -135,6 +135,11 @@ name = "resolve"
 path = "benches/resolve.rs"
 harness = false
 
+[[bench]]
+name = "state_backend"
+path = "benches/state_backend.rs"
+harness = false
+
 [[test]]
 name = "test_snapshots"
 path = "tests/test_snapshots.rs"

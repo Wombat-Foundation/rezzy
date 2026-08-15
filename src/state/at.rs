@@ -376,8 +376,12 @@ where
 /// well-known types compare/hash as plain discriminants instead of
 /// byte-by-byte strings on the diff/insert hot path.
 ///
-/// TODO: replace this `imbl::OrdMap` with the HAMT-backed state map once the
-/// incremental state pipeline is wired to `crate::hamt`.
+/// A HAMT-backed state map was benchmarked as a replacement
+/// (`benches/state_backend.rs`) and lost on the access pattern that
+/// matters most here: forking a state map into several branches and
+/// diverging each (what conflict resolution does), where it was 6-22x
+/// slower than `OrdMap`'s clone. `imbl::OrdMap`'s RRB-tree is tuned
+/// specifically for cheap-clone/structural-sharing workloads, so it stays.
 pub type SharedState<Id = String> = imbl::OrdMap<(EventType, String), Id>;
 
 /// Computes the resolved room state *after* a given event.
