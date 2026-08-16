@@ -229,7 +229,7 @@ impl LtHash {
     ) {
         assert!(
             old_event_type == new_event_type && old_state_key == new_state_key,
-            "mismatched state-key replacement should panic: ({old_event_type}, {old_state_key}) -> ({new_event_type}, {new_state_key})",
+            "mismatched replacement key: ({old_event_type}, {old_state_key}) -> ({new_event_type}, {new_state_key})",
         );
         self.sub_seed(&Self::seed(old_event_type, old_state_key, &old_event_id));
         self.add_seed(&Self::seed(new_event_type, new_state_key, &new_event_id));
@@ -399,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lthash_mismatched_replace_panics() {
+    fn test_lthash_mismatched_state_key_replace_panics() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut h = LtHash::ZERO;
             h.replace_checked(
@@ -412,15 +412,12 @@ mod tests {
             );
         }));
 
-        assert!(
-            result.is_err(),
-            "mismatched state-key replacement should panic"
-        );
+        assert!(result.is_err(), "mismatched replacement key should panic");
     }
 
     #[test]
-    #[should_panic(expected = "mismatched state-key replacement should panic")]
-    fn test_lthash_mismatched_replace_panics_should_panic() {
+    #[should_panic(expected = "mismatched replacement key")]
+    fn test_lthash_mismatched_event_type_replace_panics() {
         let mut h = LtHash::ZERO;
         h.replace_checked(
             "m.room.member",

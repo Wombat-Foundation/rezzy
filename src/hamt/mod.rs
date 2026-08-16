@@ -350,6 +350,17 @@ pub enum HamtBuildError {
     HashCollision { depth: usize, bucket_size: usize },
 }
 
+impl fmt::Display for HamtBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::HashCollision { depth, bucket_size } => write!(
+                f,
+                "hamt build hash collision at depth {depth} with bucket size {bucket_size}"
+            ),
+        }
+    }
+}
+
 fn key_path_hash<K: Hash + ?Sized>(structural_key: &[u8], key: &K) -> StructuralHash {
     let mut hasher = StructuralHashBuilder::new(structural_key);
     key.hash(&mut hasher);
@@ -401,9 +412,18 @@ fn lower_slot_mask(slot: usize) -> u32 {
 }
 
 fn bucket_index(hash: &StructuralHash, depth: usize) -> usize {
+    debug_assert!(
+        depth < HAMT_MAX_DEPTH,
+        "bucket_index called at or beyond HAMT_MAX_DEPTH ({depth} >= {HAMT_MAX_DEPTH})"
+    );
     let bit_offset = depth.saturating_mul(HAMT_BRANCH_BITS);
     let byte_index = bit_offset / 8;
     let bit_shift = bit_offset % 8;
+    debug_assert!(
+        byte_index < hash.len(),
+        "byte_index out of bounds for StructuralHash ({byte_index} >= {})",
+        hash.len()
+    );
 
     let mut word = u16::from(hash[byte_index]);
     if let Some(next_index) = byte_index.checked_add(1) {
@@ -429,6 +449,13 @@ where
     K: Hash,
     V: Hash,
 {
+    if depth >= HAMT_MAX_DEPTH {
+        return Err(HamtBuildError::HashCollision {
+            depth,
+            bucket_size: entries.len(),
+        });
+    }
+
     let mut buckets: Vec<Vec<BuildEntry<K, V>>> =
         (0..HAMT_BRANCH_FACTOR).map(|_| Vec::new()).collect();
     for entry in entries {
@@ -709,6 +736,13 @@ where
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
+    if depth >= HAMT_MAX_DEPTH {
+        return Err(HamtMutateError::HashCollision {
+            depth,
+            bucket_size: node.leaves.len().saturating_add(1),
+        });
+    }
+
     let structural_key = ctx.structural_key;
     let key_hash = &mut *ctx.key_hash;
     let slot = bucket_index(&path_hash, depth);
@@ -736,35 +770,17 @@ where
             return Ok((new_node, Some(old_value)));
         }
 
-        let Some(next_depth) = depth.checked_add(1) else {
-            return Err(HamtMutateError::HashCollision {
-                depth,
-                bucket_size: 2,
-            });
-        };
-        if next_depth >= HAMT_MAX_DEPTH {
-            return Err(HamtMutateError::HashCollision {
-                depth,
-                bucket_size: 2,
-            });
-        }
-        return insert_into_leaf_slot(node, structural_key, step, next_depth, key_hash);
+        return insert_into_leaf_slot(
+            node,
+            structural_key,
+            step,
+            depth.saturating_add(1),
+            key_hash,
+        );
     }
 
     if (node.nodemap & bit) != 0 {
-        let Some(next_depth) = depth.checked_add(1) else {
-            return Err(HamtMutateError::HashCollision {
-                depth,
-                bucket_size: node.leaves.len().saturating_add(1),
-            });
-        };
-        if next_depth >= HAMT_MAX_DEPTH {
-            return Err(HamtMutateError::HashCollision {
-                depth,
-                bucket_size: node.leaves.len().saturating_add(1),
-            });
-        }
-        return insert_into_child_slot(node, structural_key, step, next_depth, ctx);
+        return insert_into_child_slot(node, structural_key, step, depth.saturating_add(1), ctx);
     }
 
     // Empty slot: insert directly as a new leaf.
@@ -800,7 +816,6 @@ where
         path_hash,
         slot,
         bit,
-        ..
     } = step;
     let idx = map_index(node.datamap, slot);
 

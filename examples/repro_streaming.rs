@@ -203,6 +203,9 @@ fn run_streaming(
                 let mut visited = HashSet::new();
                 loop {
                     if !visited.insert(cur.clone()) {
+                        eprintln!(
+                            "[WARN] Cycle detected at event {cur} during parent walk for {id}"
+                        );
                         break;
                     }
                     if let Some(m) = resolved_state_at.get(&cur) {
@@ -215,6 +218,9 @@ fn run_streaming(
                             continue;
                         }
                     }
+                    eprintln!(
+                        "[WARN] Failed to resolve parent state for event {id} (walk ended at {cur})"
+                    );
                     break;
                 }
             }

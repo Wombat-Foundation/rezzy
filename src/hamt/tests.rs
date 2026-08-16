@@ -1179,9 +1179,9 @@ fn find_different_key_with_slot_at_depth(
 fn test_insert_node_errors_at_max_depth_boundary() {
     let key = b"dummy_server_key";
     let depth = HAMT_MAX_DEPTH - 1;
-    let residual_bits =
-        (core::mem::size_of::<StructuralHash>() * 8).saturating_sub(depth * HAMT_BRANCH_BITS);
-    let slot = 1_usize << residual_bits.saturating_sub(1);
+    // At depth = HAMT_MAX_DEPTH - 1 (depth 25 for a 128-bit hash with 5-bit levels),
+    // 3 bits remain in the hash, so slot 3 is a valid, reachable slot index (< 8).
+    let slot = 3_usize;
     let existing = find_key_with_slot_at_depth(key, depth, slot);
     let new_key = find_different_key_with_slot_at_depth(key, depth, slot, existing);
 
@@ -1214,7 +1214,10 @@ fn test_insert_node_errors_at_max_depth_boundary() {
 
     assert!(matches!(
         result,
-        Err(HamtMutateError::HashCollision { depth: d, bucket_size: 2 }) if d == depth
+        Err(HamtMutateError::HashCollision {
+            depth: d,
+            bucket_size: 2
+        }) if d == HAMT_MAX_DEPTH
     ));
 }
 
