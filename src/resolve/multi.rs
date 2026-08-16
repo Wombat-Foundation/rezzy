@@ -191,6 +191,24 @@ where
         conflicted_events.insert(id.clone(), ev.clone());
     }
 
+    // Genuinely conflicted keys: captured *before* the MSC4297 subgraph
+    // supplement below adds more events to `conflicted_events` purely as
+    // auth-chain context. Threading this narrower set into resolution
+    // prevents a subgraph-context event from clobbering a key every input
+    // state map actually agreed on (see resolve_iterative_sort_with_all_caches).
+    // TODO(perf): duplicates an EventType::from() conversion the power/
+    // non-power phases redo per event — see the identical TODO on
+    // resolve::iterative::derive_all_conflicted_keys.
+    let conflicted_keys: crate::FastSet<(EventType, alloc::string::String)> = conflicted_events
+        .values()
+        .map(|ev| {
+            (
+                EventType::from(ev.event_type.as_str()),
+                ev.state_key.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
+
     // For V2.1+ rooms, compute the conflicted subgraph (MSC4297).
     if matches!(version, StateResVersion::V2_1 | StateResVersion::V2_1_1) {
         let subgraph = compute_v2_1_subgraph(event_context.iter(), &conflicted_ids);
@@ -205,12 +223,15 @@ where
     }
 
     let mut pl_cache = HashMap::new();
-    crate::resolve::iterative::resolve_iterative_sort(
+    crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
         unconflicted_state,
         conflicted_events,
         event_context,
+        None,
         version,
         &mut pl_cache,
+        &mut crate::FastMap::default(),
+        &conflicted_keys,
     )
 }
 
@@ -374,6 +395,19 @@ where
         conflicted_events.insert(id.clone(), ev.clone());
     }
 
+    // Genuinely conflicted keys, captured before the MSC4297 subgraph
+    // supplement below adds more (auth-chain-context-only) events — see
+    // resolve_state_maps's identical comment for why this matters.
+    let conflicted_keys: crate::FastSet<(EventType, alloc::string::String)> = conflicted_events
+        .values()
+        .map(|ev| {
+            (
+                EventType::from(ev.event_type.as_str()),
+                ev.state_key.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
+
     // Lazily BFS auth chains from conflicted events to build minimal auth context
     let mut auth_context: HashMap<Id, LeanEvent<Id, C>> = HashMap::new();
 
@@ -425,12 +459,15 @@ where
     }
 
     let mut pl_cache = HashMap::new();
-    crate::resolve::iterative::resolve_iterative_sort(
+    crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
         unconflicted_state,
         conflicted_events,
         &auth_context,
+        None,
         version,
         &mut pl_cache,
+        &mut crate::FastMap::default(),
+        &conflicted_keys,
     )
 }
 

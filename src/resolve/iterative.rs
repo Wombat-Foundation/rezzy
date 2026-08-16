@@ -59,6 +59,50 @@ pub(crate) fn prepare_conflicted_and_keys<
     original_conflicted_keys
 }
 
+/// Derives a genuine-conflicted-key set by treating every event in
+/// `conflicted_events` as genuinely conflicting (as opposed to being present
+/// only as auth-chain context for a *different* key's genuine conflict).
+///
+/// This is the default used by the public `resolve_iterative_sort*` entry
+/// points, which take a single flat `conflicted_events` map and have no way
+/// to know which of its entries came from a real per-key state-map diff
+/// versus a supplemental auth-diff/MSC4297-subgraph walk — so they preserve
+/// the pre-existing (pre-fix) behavior: nothing in `conflicted_events` is
+/// blocked from deciding its own key. Callers that *do* know the real
+/// distinction (`resolve_multiple_prev_states` in `state::at`, and
+/// `resolve_state_maps`/`resolve_state_maps_lazy_with_diff` in
+/// `resolve::multi`) bypass this default and call
+/// `resolve_iterative_sort_with_all_caches` directly with the narrower,
+/// real set captured *before* their own supplementation step.
+// TODO(perf): this calls `EventType::from(ev.event_type.as_str())` once per
+// conflicted event just to build the gate set, and the power/non-power
+// phase loops below call it *again* on the same event when actually
+// inserting into `resolved`. For well-known types (the common case:
+// create/power_levels/join_rules/member) that's just a few cheap string
+// comparisons, but for `EventType::Custom` it's a duplicate `Box<str>` heap
+// allocation per conflicted event. Fixing this properly means threading the
+// already-interned `EventType` alongside each event through
+// `route_power_events`/`power_events`/`non_power_events` (currently keyed by
+// `Id` only) instead of re-deriving it — a real (if narrow) restructure, not
+// attempted here since it's a constant-factor cost bounded by the conflicted
+// set size, not the full event set.
+fn derive_all_conflicted_keys<Id, C, S>(
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S>,
+) -> crate::FastSet<(EventType, String)>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+{
+    conflicted_events
+        .values()
+        .map(|ev| {
+            (
+                EventType::from(ev.event_type.as_str()),
+                ev.state_key.clone().unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
 /// State Resolution V2+ auth-chain expansion (room versions 2 - 11+, Spec [§State Resolution]).
 ///
 /// After the initial power/non-power classification, this function recursively
@@ -166,6 +210,7 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4>(
     local_auth_cache: &mut LocalAuthCache<Id, C>,
     create_ev: Option<&LeanEvent<Id, C>>,
     pl_cache: &mut HashMap<Id, i64>,
+    conflicted_keys: &crate::FastSet<(EventType, String)>,
 ) where
     Id: crate::basespec::rezzy_types::EventId,
     S2: core::hash::BuildHasher,
@@ -194,10 +239,19 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4>(
                 true,
             ) {
                 if let Some(sk) = &event.state_key {
-                    resolved.insert(
-                        (EventType::from(event.event_type.as_str()), sk.clone()),
-                        event.event_id.clone(),
-                    );
+                    let key = (EventType::from(event.event_type.as_str()), sk.clone());
+                    // Only a genuinely conflicted key may be decided by the
+                    // power phase. `power_events` can also contain events
+                    // pulled in purely as auth-chain context (the
+                    // `auth(C) \ auth(U)` supplement, or the MSC4297
+                    // conflicted subgraph) — those exist so *other*, actually
+                    // conflicting events' auth chains can be validated, not
+                    // so their own (possibly stale, superseded) key can win
+                    // over a value every merge parent already agreed on.
+                    if !conflicted_keys.contains(&key) {
+                        continue;
+                    }
+                    resolved.insert(key, event.event_id.clone());
                 }
             }
         }
@@ -434,6 +488,7 @@ pub fn resolve_iterative_sort_with_cache<
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64>,
 ) -> crate::state::at::SharedState<Id> {
+    let conflicted_keys = derive_all_conflicted_keys(&conflicted_events);
     resolve_iterative_sort_with_all_caches::<Id, C, S1, S2>(
         unconflicted_state,
         conflicted_events,
@@ -442,6 +497,7 @@ pub fn resolve_iterative_sort_with_cache<
         version,
         pl_cache,
         &mut FastMap::default(),
+        &conflicted_keys,
     )
 }
 
@@ -465,6 +521,7 @@ pub(crate) fn resolve_iterative_sort_with_all_caches<
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
+    conflicted_keys: &crate::FastSet<(EventType, String)>,
 ) -> crate::state::at::SharedState<Id> {
     let original_conflicted_keys =
         prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
@@ -500,6 +557,7 @@ pub(crate) fn resolve_iterative_sort_with_all_caches<
         local_auth_cache,
         create_ev,
         pl_cache,
+        conflicted_keys,
     );
 
     let sort_set = &conflicted_events;
@@ -526,18 +584,50 @@ pub(crate) fn resolve_iterative_sort_with_all_caches<
             false,
         ) {
             if let Some(sk) = &ev.state_key {
-                resolved.insert(
-                    (EventType::from(ev.event_type.as_str()), sk.clone()),
-                    ev.event_id.clone(),
-                );
+                let key = (EventType::from(ev.event_type.as_str()), sk.clone());
+                // Same guard as the power phase: only a genuinely conflicted
+                // key may be decided here.
+                if conflicted_keys.contains(&key) {
+                    resolved.insert(key, ev.event_id.clone());
+                }
             }
         }
     }
 
-    let mut final_resolved = unconflicted_state;
-    for (k, v) in resolved {
-        final_resolved.insert(k, v);
-    }
+    // Final step (Matrix v2 spec): "Update the result of step 5 with the
+    // unconflicted state." The correct merge direction depends on what
+    // `resolved` already contains, which differs by version:
+    //
+    // - V1/V2: `get_initial_resolved_state` seeds `resolved` as a *clone* of
+    //   `unconflicted_state`, so every unconflicted value is already present.
+    //   Applying unconflicted last is then a no-op for every legitimately
+    //   resolved key, and only matters where an auth-diff-supplied power
+    //   event (pulled into `conflicted_events` purely to supply auth context
+    //   for a genuinely conflicting *other* key) incorrectly overwrote a key
+    //   that was never actually in conflict — which it must not be allowed
+    //   to do. So unconflicted must win here.
+    // - V2.1+: `resolved` starts *empty*, and `merge_unconflicted_power_events`
+    //   deliberately re-admits only power_levels/join_rules/create (via
+    //   `or_insert_with`, never overwriting). Other keys — notably
+    //   membership — are intentionally left for the power/non-power phases
+    //   to populate from scratch, which is how MSC4297 ban/kick
+    //   supplementation works: a validly-authorized ban pulled in via the
+    //   auth diff must be able to override a stale "unconflicted" join,
+    //   and federation convergence requires matching other MSC4297
+    //   implementations here. So `resolved` must win.
+    let final_resolved = if version.is_v2_1_plus() {
+        let mut f = unconflicted_state;
+        for (k, v) in resolved {
+            f.insert(k, v);
+        }
+        f
+    } else {
+        let mut f = resolved;
+        for (k, v) in unconflicted_state {
+            f.insert(k, v);
+        }
+        f
+    };
     drop(conflicted_events);
     final_resolved
 }
@@ -610,6 +700,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
 
     let original_conflicted_keys =
         prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
+    let conflicted_keys = derive_all_conflicted_keys(&conflicted_events);
 
     let mut resolved = get_initial_resolved_state(&unconflicted_state, version);
     let mut deltas = alloc::vec::Vec::new();
@@ -654,7 +745,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
                 version,
                 true,
             );
-            let replaced = if accepted {
+            let replaced = if accepted && conflicted_keys.contains(&key) {
                 let old = resolved.get(&key).cloned();
                 resolved.insert(key.clone(), event.event_id.clone());
                 old
@@ -696,7 +787,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
             version,
             false,
         );
-        let replaced = if accepted {
+        let replaced = if accepted && conflicted_keys.contains(&key) {
             let old = resolved.get(&key).cloned();
             resolved.insert(key.clone(), ev.event_id.clone());
             old
@@ -712,10 +803,22 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
         });
     }
 
-    let mut final_resolved = unconflicted_state;
-    for (k, v) in resolved {
-        final_resolved.insert(k, v);
-    }
+    // Same version-gated fix as resolve_iterative_sort_with_all_caches: see
+    // the comment there for why V1/V2 and V2.1+ need opposite merge
+    // directions for this final step.
+    let final_resolved = if version.is_v2_1_plus() {
+        let mut f = unconflicted_state;
+        for (k, v) in resolved {
+            f.insert(k, v);
+        }
+        f
+    } else {
+        let mut f = resolved;
+        for (k, v) in unconflicted_state {
+            f.insert(k, v);
+        }
+        f
+    };
     drop(conflicted_events);
     (final_resolved, deltas)
 }

@@ -1200,6 +1200,7 @@ where
         version,
         &mut pl_cache,
         mainline_cache,
+        &conflicted_keys,
     )
 }
 

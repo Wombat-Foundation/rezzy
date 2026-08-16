@@ -2713,12 +2713,19 @@ mod tests {
             &mut std::collections::HashMap::new(),
         );
         assert!(!resolved.is_empty());
+        // INITIAL_PL wins, not the cyclic A/B pair. A and B mutually auth each
+        // other (a malformed/adversarial DAG shape) for the *same* key that
+        // INITIAL_PL already holds unconflicted — real callers never produce
+        // this shape for a genuinely agreed-upon key, so A/B can only be here
+        // as auth-diff context for some other real conflict. A cyclic pair
+        // reaching this state must not be able to hijack an already-settled
+        // key over the legitimate unconflicted value.
         assert_eq!(
             &resolved[&(
                 rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
                 String::new()
             )],
-            "B"
+            "INITIAL_PL"
         );
     }
 

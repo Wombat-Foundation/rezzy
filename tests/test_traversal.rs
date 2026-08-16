@@ -2126,3 +2126,210 @@ fn test_process_pulled_event_with_rejected_missing_state() {
         "Rejected event must not be admitted to state!"
     );
 }
+
+/// Regression test for the auth-diff clobbering bug: an auth-diff-supplied
+/// power event (pulled into `conflicted_events` purely to validate an
+/// unrelated *genuine* conflict) must never overwrite a state key that both
+/// merge parents actually agree on.
+///
+/// DAG shape (all V2, room v11-style):
+///
+/// ```text
+/// $create -> $admin_join -> $pl -> $jr_old("knock") -> $jr_new("public")
+///                                        \                    |
+///                                         \-------(auth)-------+--> $branch1 (member join)
+///                                                              +--> $branch2 (power_levels change,
+///                                                                    auth_events includes $jr_old)
+///                                        $branch1, $branch2 --> $merge (member join)
+/// ```
+///
+/// `$branch2`'s `power_levels` event references the *superseded* `$jr_old` in
+/// its `auth_events` (a realistic shape: an event's auth chain can freeze an
+/// older ancestor snapshot even after a causally-later event supersedes it).
+/// That makes `$jr_old` part of `auth(conflicted) \ auth(unconflicted)` at
+/// the `$merge` fork — real conflict is only on `m.room.power_levels`
+/// (`$pl` vs `$branch2`'s change); `m.room.join_rules` is agreed by both
+/// parents as `$jr_new`. `$jr_old` must never win.
+fn auth_diff_context_event_scenario(version: StateResVersion) -> Option<String> {
+    use rezzy::StateUpdate;
+
+    let create = LeanEvent {
+        event_id: "$create".to_string(),
+        event_type: "m.room.create".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".to_string(),
+        depth: 0,
+        content: json!({"room_version": "11"}),
+        ..Default::default()
+    };
+    let admin_join = LeanEvent {
+        event_id: "$admin_join".to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some("@admin:example.com".to_string()),
+        sender: "@admin:example.com".to_string(),
+        depth: 1,
+        content: json!({"membership": "join"}),
+        prev_events: vec!["$create".to_string()],
+        auth_events: vec!["$create".to_string()],
+        ..Default::default()
+    };
+    let pl = LeanEvent {
+        event_id: "$pl".to_string(),
+        event_type: "m.room.power_levels".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".to_string(),
+        depth: 2,
+        content: json!({"users": {"@admin:example.com": 100}}),
+        prev_events: vec!["$admin_join".to_string()],
+        auth_events: vec!["$create".to_string(), "$admin_join".to_string()],
+        ..Default::default()
+    };
+    let jr_old = LeanEvent {
+        event_id: "$jr_old".to_string(),
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".to_string(),
+        depth: 3,
+        content: json!({"join_rule": "knock"}),
+        prev_events: vec!["$pl".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$admin_join".to_string(),
+        ],
+        ..Default::default()
+    };
+    let jr_new = LeanEvent {
+        event_id: "$jr_new".to_string(),
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".to_string(),
+        depth: 4,
+        content: json!({"join_rule": "public"}),
+        prev_events: vec!["$jr_old".to_string()],
+        // Deliberately does NOT auth against $jr_old — a plain JR change
+        // authed purely by create+pl+membership, same as real DAGs.
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$admin_join".to_string(),
+        ],
+        ..Default::default()
+    };
+    let branch1 = LeanEvent {
+        event_id: "$branch1".to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some("@bob:example.com".to_string()),
+        sender: "@bob:example.com".to_string(),
+        depth: 5,
+        content: json!({"membership": "join"}),
+        prev_events: vec!["$jr_new".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$jr_new".to_string(),
+        ],
+        ..Default::default()
+    };
+    let branch2 = LeanEvent {
+        event_id: "$branch2".to_string(),
+        event_type: "m.room.power_levels".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".to_string(),
+        depth: 5,
+        content: json!({"users": {"@admin:example.com": 100, "@someone:example.com": 50}}),
+        prev_events: vec!["$jr_new".to_string()],
+        // References the superseded $jr_old, pulling it into the auth diff
+        // for this genuine power_levels conflict.
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$admin_join".to_string(),
+            "$jr_old".to_string(),
+        ],
+        ..Default::default()
+    };
+    let merge = LeanEvent {
+        event_id: "$merge".to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some("@carol:example.com".to_string()),
+        sender: "@carol:example.com".to_string(),
+        depth: 6,
+        content: json!({"membership": "join"}),
+        prev_events: vec!["$branch1".to_string(), "$branch2".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$jr_new".to_string(),
+        ],
+        ..Default::default()
+    };
+
+    let mut events: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in [
+        create, admin_join, pl, jr_old, jr_new, branch1, branch2, merge,
+    ] {
+        events.insert(ev.event_id.clone(), ev);
+    }
+
+    let mut final_state: Option<HashMap<(String, String), String>> = None;
+    let completed =
+        rezzy::compute_state_at_streaming_optimized(&["$merge"], &events, version, |id, update| {
+            if id != "$merge" {
+                return;
+            }
+            if let StateUpdate::New { state, .. } = update {
+                final_state = Some(
+                    state
+                        .iter()
+                        .map(|(k, v)| ((k.0.as_str().to_string(), k.1.clone()), v.clone()))
+                        .collect(),
+                );
+            }
+        });
+    assert!(
+        completed,
+        "compute_state_at_streaming_optimized detected a cycle"
+    );
+
+    let final_state = final_state.expect("$merge must resolve to a New state update");
+    let jr_key = ("m.room.join_rules".to_string(), String::new());
+    final_state.get(&jr_key).cloned()
+}
+
+/// Runs the auth-diff clobbering scenario across every resolution version.
+/// All five must resolve `m.room.join_rules` to `$jr_new` (agreed by both
+/// merge parents) rather than the auth-diff-context-only `$jr_old`:
+///
+/// - V1/V2: fixed by making the power/non-power phases only allowed to
+///   write `resolved` for keys in the genuinely-conflicted-key set (computed
+///   from the real per-key state-map diff, *before* the `auth(C) \ auth(U)`
+///   supplement pulls in extra auth-chain-context events).
+/// - V2.1+: same fix. These versions start `resolved` empty and deliberately
+///   let the conflicted-phase win over unconflicted state for *genuinely*
+///   conflicted keys (that's what makes MSC4297 ban/kick supplementation
+///   work — see the `test_v2_1_1_*_supplementation` tests and
+///   `test_v2_1_stock_does_not_supplement_membership` above), but the new
+///   genuinely-conflicted-key gate means an auth-diff-context event's own
+///   key is never inserted into `resolved` at all when nothing actually
+///   conflicts on it — so it's left for `merge_unconflicted_power_events`/
+///   the final merge to supply from `unconflicted_state` instead.
+#[test]
+fn test_auth_diff_context_event_does_not_clobber_agreed_key() {
+    for version in [
+        StateResVersion::V1,
+        StateResVersion::V2,
+        StateResVersion::V2_1,
+        StateResVersion::V2_1_1,
+        StateResVersion::V2_2,
+    ] {
+        assert_eq!(
+            auth_diff_context_event_scenario(version),
+            Some("$jr_new".to_string()),
+            "{version:?}: m.room.join_rules must stay '$jr_new' (agreed by both \
+             merge parents); it must not be clobbered by '$jr_old', which only \
+             appears in conflicted_events as auth context for the genuine \
+             power_levels conflict."
+        );
+    }
+}
