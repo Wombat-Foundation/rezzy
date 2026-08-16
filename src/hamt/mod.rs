@@ -361,6 +361,9 @@ impl fmt::Display for HamtBuildError {
     }
 }
 
+#[cfg(feature = "std")]
+impl std::error::Error for HamtBuildError {}
+
 fn key_path_hash<K: Hash + ?Sized>(structural_key: &[u8], key: &K) -> StructuralHash {
     let mut hasher = StructuralHashBuilder::new(structural_key);
     key.hash(&mut hasher);
