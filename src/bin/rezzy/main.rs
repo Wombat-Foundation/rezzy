@@ -74,6 +74,7 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
     let (raw_events, heads) = parse_and_extract_heads(&input_val)?;
 
     let event_count = raw_events.len();
+    let mut room_version: Option<String> = None;
     let version = match args.state_res {
         Some(v) => v,
         None => detect_version(&raw_events, args.debug)?,
@@ -89,6 +90,11 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
                 // TODO: Invoke ev.validate_syntactic() during CLI ingestion once a robust error recovery / fallback strategy is defined for malformed inputs.
                 if ev.event_type == "m.room.create" {
                     creator_user_id.clone_from(&ev.sender);
+                    room_version = ev
+                        .content
+                        .get("room_version")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned);
                 }
                 raw_map.insert(ev.event_id.clone(), val);
                 events_map.insert(ev.event_id.clone(), ev);
@@ -123,6 +129,14 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
     } else {
         heads
     };
+
+    if !args.quiet {
+        let room_label = args.room.as_deref().unwrap_or("<local-input>");
+        let room_version_label = room_version.as_deref().unwrap_or("<unknown>");
+        eprintln!(
+            "INFO rezzy: room={room_label} room_version={room_version_label} state_res_version={version:?}"
+        );
+    }
 
     let state_maps = compute_state_maps(&heads, &events_map, &raw_map);
 

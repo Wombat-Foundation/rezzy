@@ -668,7 +668,7 @@ fn main() {
 
                 let recovered: usize = all_remote_sk
                     .into_iter()
-                    .zip(all_local_sk.into_iter())
+                    .zip(all_local_sk)
                     .map(|(mut rs, ls)| {
                         rs.xor(&ls).unwrap();
                         match rs.decode_elements(rs.capacity()) {
