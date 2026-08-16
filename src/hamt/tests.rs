@@ -1141,6 +1141,35 @@ fn test_hamt_insert_propagates_build_hash_collision() {
     assert!(matches!(result, Err(HamtMutateError::HashCollision { .. })));
 }
 
+#[test]
+fn test_hamt_error_display_formatting() {
+    use alloc::string::ToString;
+
+    let build_err = HamtBuildError::HashCollision {
+        depth: 26,
+        bucket_size: 2,
+    };
+    assert_eq!(
+        build_err.to_string(),
+        "hamt build hash collision at depth 26 with bucket size 2"
+    );
+
+    let mutate_err_collision: HamtMutateError<&str> = HamtMutateError::HashCollision {
+        depth: 26,
+        bucket_size: 2,
+    };
+    assert_eq!(
+        mutate_err_collision.to_string(),
+        "hamt mutation hash collision at depth 26 with bucket size 2"
+    );
+
+    let mutate_err_resolve: HamtMutateError<&str> = HamtMutateError::Resolve("missing node");
+    assert_eq!(
+        mutate_err_resolve.to_string(),
+        "hamt mutation resolver failed: missing node"
+    );
+}
+
 fn find_key_with_slot_at_depth(key: &[u8], depth: usize, slot: usize) -> u64 {
     for candidate in 0_u64..1_000_000 {
         let hash = leaf_hash_for_key(key, candidate);
