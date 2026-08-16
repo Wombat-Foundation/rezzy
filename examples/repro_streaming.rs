@@ -338,7 +338,12 @@ fn print_tip_state(
 ) {
     for tip in heads {
         let mut cur = tip.clone();
+        let mut visited = HashSet::new();
         loop {
+            if !visited.insert(cur.clone()) {
+                println!("could not resolve state for tip {tip} (cycle at {cur})");
+                break;
+            }
             if let Some(m) = resolved_state_at.get(&cur) {
                 println!("\n=== state at tip {tip} (resolved via {cur}) ===");
                 if let Some(jr) = m.get(&("m.room.join_rules".to_string(), String::new())) {
