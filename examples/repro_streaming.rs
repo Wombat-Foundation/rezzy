@@ -200,7 +200,12 @@ fn run_streaming(
                 // parent itself might ALSO be non-target/inherited, so walk
                 // via lean_events prev chain if needed).
                 let mut cur = parent_event_id.clone();
+                let mut visited = HashSet::new();
                 loop {
+                    if !visited.insert(cur.clone()) {
+                        resolved_state_at.insert(id.clone(), HashMap::new());
+                        break;
+                    }
                     if let Some(m) = resolved_state_at.get(&cur) {
                         resolved_state_at.insert(id.clone(), m.clone());
                         break;
@@ -244,7 +249,11 @@ fn cross_check_merges(
         > = Vec::new();
         for pe in &ev.prev_events {
             let mut cur = pe.clone();
+            let mut visited = HashSet::new();
             let m = loop {
+                if !visited.insert(cur.clone()) {
+                    break None;
+                }
                 if let Some(m) = resolved_state_at.get(&cur) {
                     break Some(m);
                 }
@@ -369,6 +378,11 @@ fn main() {
     eprintln!("loaded {} raw events", raw_events.len());
 
     let (metas, lean_events, room_version) = build_lean_events(&raw_events);
+    let room_version = if room_version.is_empty() {
+        "1".to_string()
+    } else {
+        room_version
+    };
     eprintln!("room_version = {room_version:?}");
     let Some(version) = StateResVersion::from_room_version(&room_version) else {
         eprintln!("unsupported room version: {room_version}");

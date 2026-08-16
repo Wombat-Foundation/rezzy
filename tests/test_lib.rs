@@ -6568,7 +6568,8 @@ fn test_lean_event_serialize_propagates_write_error() {
 
 #[test]
 fn test_conflicted_keys_derived_before_cdo() {
-    use rezzy::{resolve_iterative_sort_with_deltas, LeanEvent, StateResVersion};
+    use rezzy::basespec::event_types::EventType;
+    use rezzy::{cdo, resolve_iterative_sort_with_deltas, LeanEvent, StateResVersion};
     use std::collections::HashMap;
 
     let events = utils::parse_jsonl_events(
@@ -6576,10 +6577,10 @@ fn test_conflicted_keys_derived_before_cdo() {
 {"event_id":"$root","type":"m.room.create","state_key":"","sender":"@alice:example.com","depth":1,"origin_server_ts":1000,"prev_events":[],"auth_events":[],"content":{"room_version":"12.1","creator":"@alice:example.com"}}
 {"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:example.com","sender":"@alice:example.com","depth":2,"origin_server_ts":1100,"prev_events":[],"auth_events":["$root"],"content":{"membership":"join"}}
 {"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:example.com","sender":"@bob:example.com","depth":2,"origin_server_ts":1200,"prev_events":[],"auth_events":["$root"],"content":{"membership":"join"}}
-{"event_id":"$pl_ancestor","type":"m.room.power_levels","state_key":"","sender":"@alice:example.com","power_level":100,"depth":3,"origin_server_ts":1300,"prev_events":[],"auth_events":["$root","$alice_join"],"content":{"users":{"@alice:example.com":100,"@bob:example.com":50},"users_default":0,"events_default":0,"state_default":50,"ban":50}}
-{"event_id":"$alice_bans_bob","type":"m.room.member","state_key":"@bob:example.com","sender":"@alice:example.com","power_level":100,"depth":4,"origin_server_ts":1400,"prev_events":[],"auth_events":["$root","$alice_join","$bob_join","$pl_ancestor"],"content":{"membership":"ban"}}
-{"event_id":"$bob_pl_dominated","type":"m.room.power_levels","state_key":"","sender":"@bob:example.com","power_level":100,"depth":5,"origin_server_ts":1500,"prev_events":[],"auth_events":["$root","$alice_join","$bob_join","$pl_ancestor","$alice_bans_bob"],"content":{"users":{"@alice:example.com":100,"@bob:example.com":100}}}
-{"event_id":"$jr_1","type":"m.room.join_rules","state_key":"","sender":"@alice:example.com","power_level":100,"depth":6,"origin_server_ts":1600,"prev_events":[],"auth_events":["$root","$alice_join","$pl_ancestor"],"content":{"join_rule":"public"}}
+{"event_id":"$pl_ancestor","type":"m.room.power_levels","state_key":"","sender":"@alice:example.com","power_level":100,"depth":3,"origin_server_ts":1300,"prev_events":[],"auth_events":["$root","$alice_join"],"content":{"users":{"@bob:example.com":50},"users_default":0,"events_default":0,"state_default":50,"ban":50}}
+{"event_id":"$alice_bans_bob","type":"m.room.member","state_key":"@bob:example.com","sender":"@alice:example.com","power_level":100,"depth":4,"origin_server_ts":1400,"prev_events":["$pl_ancestor"],"auth_events":["$root","$alice_join","$bob_join","$pl_ancestor"],"content":{"membership":"ban"}}
+{"event_id":"$bob_pl_dominated","type":"m.room.power_levels","state_key":"","sender":"@bob:example.com","power_level":50,"depth":5,"origin_server_ts":1500,"prev_events":["$pl_ancestor"],"auth_events":["$root","$alice_join","$bob_join","$pl_ancestor"],"content":{"users":{"@bob:example.com":50}}}
+{"event_id":"$jr_1","type":"m.room.join_rules","state_key":"","sender":"@alice:example.com","power_level":100,"depth":6,"origin_server_ts":1600,"prev_events":["$pl_ancestor"],"auth_events":["$root","$alice_join","$pl_ancestor"],"content":{"join_rule":"public"}}
 "#,
     );
 
@@ -6589,32 +6590,28 @@ fn test_conflicted_keys_derived_before_cdo() {
         .collect();
 
     let mut auth = HashMap::new();
-    for id in [
-        "$root",
-        "$alice_join",
-        "$bob_join",
-        "$pl_ancestor",
-        "$alice_bans_bob",
-    ] {
+    for id in ["$root", "$alice_join", "$bob_join", "$pl_ancestor"] {
         auth.insert(id.to_string(), by_id[id].clone());
     }
 
     let mut conflicted = HashMap::new();
-    for id in ["$bob_pl_dominated", "$jr_1"] {
+    for id in ["$alice_bans_bob", "$bob_pl_dominated", "$jr_1"] {
         conflicted.insert(id.to_string(), by_id[id].clone());
     }
 
+    // Verify CDO filter actually drops $bob_pl_dominated when $alice_bans_bob is in conflicted set
+    let cdo_filtered = cdo::apply_cdo_filter(&conflicted, &auth);
+    assert!(cdo_filtered.contains_key("$alice_bans_bob"));
+    assert!(!cdo_filtered.contains_key("$bob_pl_dominated"));
+
     let unconflicted = [
         (
-            (
-                rezzy::basespec::event_types::EventType::from("m.room.create"),
-                String::new(),
-            ),
+            (EventType::from("m.room.create"), String::new()),
             "$root".to_string(),
         ),
         (
             (
-                rezzy::basespec::event_types::EventType::from("m.room.member"),
+                EventType::from("m.room.member"),
                 "@alice:example.com".to_string(),
             ),
             "$alice_join".to_string(),
@@ -6631,8 +6628,38 @@ fn test_conflicted_keys_derived_before_cdo() {
         &mut HashMap::new(),
     );
 
-    assert_eq!(resolved.len(), 3); // create, alice_join, jr_1
-    assert!(deltas.iter().any(|d| d.event_id == "$bob_pl_dominated"
-        && !d.accepted
-        && d.key.0.as_str() == "m.room.power_levels"));
+    // Verify resolved state length (create, alice_join, alice_bans_bob, jr_1, pl_ancestor)
+    assert_eq!(resolved.len(), 5);
+
+    // Verify $bob_pl_dominated was dropped by CDO and does not appear in resolved or resolution deltas
+    assert!(!resolved.values().any(|v| v == "$bob_pl_dominated"));
+    assert!(!deltas.iter().any(|d| d.event_id == "$bob_pl_dominated"));
+
+    // Verify deltas for accepted conflicted events
+    assert!(deltas.iter().any(|d| d.event_id == "$alice_bans_bob"
+        && d.accepted
+        && d.key.0.as_str() == "m.room.member"
+        && d.key.1 == "@bob:example.com"));
+    assert!(deltas
+        .iter()
+        .any(|d| d.event_id == "$jr_1" && d.accepted && d.key.0.as_str() == "m.room.join_rules"));
+
+    // Verify $alice_bans_bob won member state for @bob:example.com
+    assert_eq!(
+        resolved.get(&(
+            EventType::from("m.room.member"),
+            "@bob:example.com".to_string()
+        )),
+        Some(&"$alice_bans_bob".to_string())
+    );
+
+    // Critical assertion for regression coverage:
+    // Because conflicted_keys was derived BEFORE CDO dropped $bob_pl_dominated,
+    // (m.room.power_levels, "") was retained in conflicted_keys.
+    // This allows ancestral power level $pl_ancestor (routed by MSC4297) to be decided in resolved state.
+    // If conflicted_keys were derived AFTER CDO, $pl_ancestor would be skipped and power_levels key would be missing.
+    assert_eq!(
+        resolved.get(&(EventType::from("m.room.power_levels"), String::new())),
+        Some(&"$pl_ancestor".to_string())
+    );
 }
