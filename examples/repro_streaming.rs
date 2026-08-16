@@ -203,7 +203,6 @@ fn run_streaming(
                 let mut visited = HashSet::new();
                 loop {
                     if !visited.insert(cur.clone()) {
-                        resolved_state_at.insert(id.clone(), HashMap::new());
                         break;
                     }
                     if let Some(m) = resolved_state_at.get(&cur) {
@@ -216,7 +215,6 @@ fn run_streaming(
                             continue;
                         }
                     }
-                    resolved_state_at.insert(id.clone(), HashMap::new());
                     break;
                 }
             }
