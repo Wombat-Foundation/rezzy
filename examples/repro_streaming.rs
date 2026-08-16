@@ -243,7 +243,20 @@ fn cross_check_merges(
             imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
         > = Vec::new();
         for pe in &ev.prev_events {
-            let Some(m) = resolved_state_at.get(pe) else {
+            let mut cur = pe.clone();
+            let m = loop {
+                if let Some(m) = resolved_state_at.get(&cur) {
+                    break Some(m);
+                }
+                if let Some(pev) = lean_events.get(&cur) {
+                    if pev.prev_events.len() == 1 {
+                        cur = pev.prev_events[0].clone();
+                        continue;
+                    }
+                }
+                break None;
+            };
+            let Some(m) = m else {
                 println!("  parent {pe}: NOT in resolved_state_at (skipping)");
                 continue;
             };
@@ -357,10 +370,9 @@ fn main() {
 
     let (metas, lean_events, room_version) = build_lean_events(&raw_events);
     eprintln!("room_version = {room_version:?}");
-    let version = match room_version.as_str() {
-        "1" => StateResVersion::V1,
-        "12" => StateResVersion::V2_1,
-        _ => StateResVersion::V2,
+    let Some(version) = StateResVersion::from_room_version(&room_version) else {
+        eprintln!("unsupported room version: {room_version}");
+        return;
     };
 
     let heads = forward_extremities(&metas);
@@ -382,6 +394,11 @@ fn main() {
     let (resolved_state_at, completed) =
         run_streaming(&target_refs, &lean_events, version, &check_users, trace);
     eprintln!("compute_state_at_streaming_optimized completed = {completed}");
+
+    if !completed {
+        eprintln!("traversal detected cycle / uncompleted; stopping before derived reporting");
+        return;
+    }
 
     cross_check_merges(
         &check_merges,

@@ -698,9 +698,9 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
 ) {
     use crate::state::delta::{ResolutionDelta, ResolvePhase};
 
+    let conflicted_keys = derive_all_conflicted_keys(&conflicted_events);
     let original_conflicted_keys =
         prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
-    let conflicted_keys = derive_all_conflicted_keys(&conflicted_events);
 
     let mut resolved = get_initial_resolved_state(&unconflicted_state, version);
     let mut deltas = alloc::vec::Vec::new();

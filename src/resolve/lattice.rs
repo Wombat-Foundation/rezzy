@@ -355,6 +355,23 @@ where
         );
     }
 
+    // This exploratory path doesn't add auth-diff/subgraph-context events to
+    // `conflicted_events` beyond what its own caller supplied, so every
+    // entry is treated as genuinely conflicted (matching the pre-existing
+    // behavior of this experimental resolver).
+    let conflicted_keys: crate::FastSet<(
+        crate::basespec::event_types::EventType,
+        alloc::string::String,
+    )> = conflicted_events
+        .values()
+        .map(|ev| {
+            (
+                crate::basespec::event_types::EventType::from(ev.event_type.as_str()),
+                ev.state_key.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
+
     let original_conflicted_keys = crate::resolve::iterative::prepare_conflicted_and_keys(
         &mut conflicted_events,
         auth_context,
@@ -375,23 +392,6 @@ where
 
     // Initialize local auth cache for power-phase checks
     let mut local_auth_cache = crate::state::at::LocalAuthCache::<Id, C>::new(version);
-
-    // This exploratory path doesn't add auth-diff/subgraph-context events to
-    // `conflicted_events` beyond what its own caller supplied, so every
-    // entry is treated as genuinely conflicted (matching the pre-existing
-    // behavior of this experimental resolver).
-    let conflicted_keys: crate::FastSet<(
-        crate::basespec::event_types::EventType,
-        alloc::string::String,
-    )> = conflicted_events
-        .values()
-        .map(|ev| {
-            (
-                crate::basespec::event_types::EventType::from(ev.event_type.as_str()),
-                ev.state_key.clone().unwrap_or_default(),
-            )
-        })
-        .collect();
 
     crate::resolve::iterative::run_power_phase_iterative_checks(
         &mut resolved,

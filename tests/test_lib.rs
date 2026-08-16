@@ -1,6 +1,5 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 mod utils;
-use serde_json::json;
 use std::collections::HashMap;
 extern crate alloc;
 
@@ -3761,45 +3760,27 @@ fn test_cdo_apply_filter_cascading_drops() {
 
 #[test]
 fn test_sorting_coverage() {
-    let mut events: HashMap<String, LeanEvent> = HashMap::new();
-    let mut auth: HashMap<String, LeanEvent> = HashMap::new();
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"create","type":"m.room.create","state_key":"","sender":"alice","content":{"creator":"alice"}}
+{"event_id":"pl","type":"m.room.power_levels","state_key":"","sender":"alice","content":{"users_default":10}}
+{"event_id":"missing_pl","type":"m.room.message","sender":"bob","auth_events":["pl"]}
+{"event_id":"empty_auth","type":"m.room.message","sender":"alice","auth_events":[]}
+"#,
+    );
+    let mut events_map: HashMap<String, LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
 
-    let create_ev: LeanEvent = LeanEvent {
-        event_id: "create".into(),
-        event_type: "m.room.create".into(),
-        state_key: Some(String::new()),
-        sender: "alice".into(),
-        content: json!({ "creator": "alice" }),
-        ..Default::default()
-    };
-    events.insert("create".into(), create_ev.clone());
+    let create_ev = events_map.remove("create").unwrap();
+    let pl_ev = events_map.remove("pl").unwrap();
 
-    let pl_ev: LeanEvent = LeanEvent {
-        event_id: "pl".into(),
-        event_type: "m.room.power_levels".into(),
-        state_key: Some(String::new()),
-        content: json!({ "users_default": 10 }),
-        ..Default::default()
-    };
-    auth.insert("pl".into(), pl_ev.clone());
-
-    let missing_pl_ev: LeanEvent = LeanEvent {
-        event_id: "missing_pl".into(),
-        sender: "bob".into(),
-        auth_events: vec!["pl".into()],
-        ..Default::default()
-    };
-    events.insert("missing_pl".into(), missing_pl_ev);
-
-    let empty_auth_ev: LeanEvent = LeanEvent {
-        event_id: "empty_auth".into(),
-        auth_events: vec![],
-        ..Default::default()
-    };
-    events.insert("empty_auth".into(), empty_auth_ev);
+    let mut auth = HashMap::new();
+    auth.insert("pl".into(), pl_ev);
 
     let _ = rezzy::lean_kahn_sort(
-        &events,
+        &events_map,
         &auth,
         Some(&create_ev),
         rezzy::StateResVersion::V2_2,
@@ -3809,39 +3790,25 @@ fn test_sorting_coverage() {
 
 #[test]
 fn test_msc4289_sorting_v2_creator_gets_pl_100() {
-    let mut events: HashMap<String, LeanEvent> = HashMap::new();
-    let auth: HashMap<String, LeanEvent> = HashMap::new();
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"create","type":"m.room.create","state_key":"","sender":"alice","content":{"creator":"alice","room_version":"10"}}
+{"event_id":"alice_msg","type":"m.room.message","sender":"alice","auth_events":[]}
+{"event_id":"bob_msg","type":"m.room.message","sender":"bob","auth_events":[]}
+"#,
+    );
 
-    let create_ev: LeanEvent = LeanEvent {
-        event_id: "create".into(),
-        event_type: "m.room.create".into(),
-        state_key: Some(String::new()),
-        sender: "alice".into(),
-        content: json!({ "creator": "alice", "room_version": "10" }),
-        ..Default::default()
-    };
-    events.insert("create".into(), create_ev.clone());
+    let mut events_map: HashMap<String, LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
 
-    // alice is the creator — in V2, she should get PL 100 (not MAX)
-    let alice_ev: LeanEvent = LeanEvent {
-        event_id: "alice_msg".into(),
-        sender: "alice".into(),
-        auth_events: vec![],
-        ..Default::default()
-    };
-    events.insert("alice_msg".into(), alice_ev);
-
-    let bob_ev: LeanEvent = LeanEvent {
-        event_id: "bob_msg".into(),
-        sender: "bob".into(),
-        auth_events: vec![],
-        ..Default::default()
-    };
-    events.insert("bob_msg".into(), bob_ev);
+    let create_ev = events_map.remove("create").unwrap();
+    let auth = HashMap::new();
 
     // Sort with V2 — creator gets PL 100
     let result = rezzy::lean_kahn_sort(
-        &events,
+        &events_map,
         &auth,
         Some(&create_ev),
         rezzy::StateResVersion::V2,
@@ -6597,4 +6564,75 @@ fn test_lean_event_serialize_propagates_write_error() {
         &ev,
     );
     assert!(result.is_err());
+}
+
+#[test]
+fn test_conflicted_keys_derived_before_cdo() {
+    use rezzy::{resolve_iterative_sort_with_deltas, LeanEvent, StateResVersion};
+    use std::collections::HashMap;
+
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$root","type":"m.room.create","state_key":"","sender":"@alice:example.com","depth":1,"origin_server_ts":1000,"prev_events":[],"auth_events":[],"content":{"room_version":"12.1","creator":"@alice:example.com"}}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:example.com","sender":"@alice:example.com","depth":2,"origin_server_ts":1100,"prev_events":[],"auth_events":["$root"],"content":{"membership":"join"}}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:example.com","sender":"@bob:example.com","depth":2,"origin_server_ts":1200,"prev_events":[],"auth_events":["$root"],"content":{"membership":"join"}}
+{"event_id":"$pl_ancestor","type":"m.room.power_levels","state_key":"","sender":"@alice:example.com","power_level":100,"depth":3,"origin_server_ts":1300,"prev_events":[],"auth_events":["$root","$alice_join"],"content":{"users":{"@alice:example.com":100,"@bob:example.com":50},"users_default":0,"events_default":0,"state_default":50,"ban":50}}
+{"event_id":"$alice_bans_bob","type":"m.room.member","state_key":"@bob:example.com","sender":"@alice:example.com","power_level":100,"depth":4,"origin_server_ts":1400,"prev_events":[],"auth_events":["$root","$alice_join","$bob_join","$pl_ancestor"],"content":{"membership":"ban"}}
+{"event_id":"$bob_pl_dominated","type":"m.room.power_levels","state_key":"","sender":"@bob:example.com","power_level":100,"depth":5,"origin_server_ts":1500,"prev_events":[],"auth_events":["$root","$alice_join","$bob_join","$pl_ancestor","$alice_bans_bob"],"content":{"users":{"@alice:example.com":100,"@bob:example.com":100}}}
+{"event_id":"$jr_1","type":"m.room.join_rules","state_key":"","sender":"@alice:example.com","power_level":100,"depth":6,"origin_server_ts":1600,"prev_events":[],"auth_events":["$root","$alice_join","$pl_ancestor"],"content":{"join_rule":"public"}}
+"#,
+    );
+
+    let by_id: HashMap<String, LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
+
+    let mut auth = HashMap::new();
+    for id in [
+        "$root",
+        "$alice_join",
+        "$bob_join",
+        "$pl_ancestor",
+        "$alice_bans_bob",
+    ] {
+        auth.insert(id.to_string(), by_id[id].clone());
+    }
+
+    let mut conflicted = HashMap::new();
+    for id in ["$bob_pl_dominated", "$jr_1"] {
+        conflicted.insert(id.to_string(), by_id[id].clone());
+    }
+
+    let unconflicted = [
+        (
+            (
+                rezzy::basespec::event_types::EventType::from("m.room.create"),
+                String::new(),
+            ),
+            "$root".to_string(),
+        ),
+        (
+            (
+                rezzy::basespec::event_types::EventType::from("m.room.member"),
+                "@alice:example.com".to_string(),
+            ),
+            "$alice_join".to_string(),
+        ),
+    ]
+    .into_iter()
+    .collect();
+
+    let (resolved, deltas) = resolve_iterative_sort_with_deltas(
+        unconflicted,
+        conflicted,
+        &auth,
+        StateResVersion::V2_1_1,
+        &mut HashMap::new(),
+    );
+
+    assert_eq!(resolved.len(), 3); // create, alice_join, jr_1
+    assert!(deltas.iter().any(|d| d.event_id == "$bob_pl_dominated"
+        && !d.accepted
+        && d.key.0.as_str() == "m.room.power_levels"));
 }
