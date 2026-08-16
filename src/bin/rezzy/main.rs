@@ -132,7 +132,7 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
 
     if !args.quiet {
         let room_label = args.room.as_deref().unwrap_or("<local-input>");
-        let room_version_label = room_version.as_deref().unwrap_or("<unknown>");
+        let room_version_label = room_version.as_deref().unwrap_or("1");
         eprintln!(
             "INFO rezzy: room={room_label} room_version={room_version_label} state_res_version={version:?}"
         );
