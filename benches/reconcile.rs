@@ -307,7 +307,8 @@ fn benchmark_bucket_exchange_from_pool(
             .zip(current_requests.iter())
         {
             round_capacity = round_capacity.saturating_add(request.capacity);
-            total_slice_len = total_slice_len.saturating_add(local_idx.bucket_slice(request).map_or(0, |s| s.len()));
+            total_slice_len = total_slice_len
+                .saturating_add(local_idx.bucket_slice(request).map_or(0, <[u64]>::len));
 
             remote_sketch.xor(&local_sketch).unwrap();
             match remote_sketch.decode_elements(request.capacity) {
@@ -323,9 +324,25 @@ fn benchmark_bucket_exchange_from_pool(
             }
         }
 
-        let avg_slice = if current_requests.is_empty() { 0 } else { total_slice_len / current_requests.len() };
-        let util_pct = if round_capacity == 0 { 0.0 } else { (round_roots as f64 / round_capacity as f64) * 100.0 };
-        round_stats.push((rounds, current_requests.len(), batch.successful_buckets.len(), round_roots, round_capacity, avg_slice, util_pct));
+        let avg_slice = if current_requests.is_empty() {
+            0
+        } else {
+            total_slice_len / current_requests.len()
+        };
+        let util_pct = if round_capacity == 0 {
+            0.0
+        } else {
+            (round_roots as f64 / round_capacity as f64) * 100.0
+        };
+        round_stats.push((
+            rounds,
+            current_requests.len(),
+            batch.successful_buckets.len(),
+            round_roots,
+            round_capacity,
+            avg_slice,
+            util_pct,
+        ));
 
         match exchange.advance(batch, &current_requests, estimated_delta) {
             ClientAction::BucketSketches {
@@ -347,9 +364,135 @@ fn benchmark_bucket_exchange_from_pool(
 
     if base_count == 100_000 && local_extra_count == 250 {
         eprintln!("\n--- [Instrumentation trace: exchange/100000 Δ=500] ---");
-        eprintln!("Round | Reqs | Decoded | Roots | Provisioned Cap | Avg Slice Len | Capacity Util %");
+        eprintln!(
+            "Round | Reqs | Decoded | Roots | Provisioned Cap | Avg Slice Len | Capacity Util %"
+        );
         for (r, reqs, dec, roots, cap, slice, util) in &round_stats {
-            eprintln!("{r:5} | {reqs:4} | {dec:7} | {roots:5} | {cap:15} | {slice:13} | {util:13.2}%");
+            eprintln!(
+                "{r:5} | {reqs:4} | {dec:7} | {roots:5} | {cap:15} | {slice:13} | {util:13.2}%"
+            );
+        }
+    }
+
+    let algo_elapsed = algo_start.elapsed();
+    black_box((rounds, requests_emitted, resolved_roots));
+    (
+        setup_elapsed,
+        algo_elapsed,
+        rounds,
+        requests_emitted,
+        resolved_roots,
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn benchmark_presplit_antichain_exchange_from_pool(
+    pool: &HashPool,
+    base_count: usize,
+    local_extra_count: usize,
+    remote_extra_count: usize,
+) -> (Duration, Duration, usize, usize, usize) {
+    let setup_start = Instant::now();
+    let base_slice = &pool.base[..base_count];
+    let local_extra_slice = &pool.local_extra[..local_extra_count];
+    let remote_extra_slice = &pool.remote_extra[..remote_extra_count];
+
+    let mut local = ResidentKernel::new();
+    let mut remote = ResidentKernel::new();
+    let local_h64_capacity = base_count.saturating_add(local_extra_count);
+    let remote_h64_capacity = base_count.saturating_add(remote_extra_count);
+    let mut local_h64 = Vec::with_capacity(local_h64_capacity);
+    let mut remote_h64 = Vec::with_capacity(remote_h64_capacity);
+    for event in base_slice {
+        local.insert(*event).expect("benchmark hashes are valid");
+        remote.insert(*event).expect("benchmark hashes are valid");
+        local_h64.push(event.h64);
+        remote_h64.push(event.h64);
+    }
+    for event in local_extra_slice {
+        local.insert(*event).expect("benchmark hashes are valid");
+        local_h64.push(event.h64);
+    }
+    for event in remote_extra_slice {
+        remote.insert(*event).expect("benchmark hashes are valid");
+        remote_h64.push(event.h64);
+    }
+    local_h64.sort_unstable();
+    remote_h64.sort_unstable();
+
+    let setup_elapsed = setup_start.elapsed();
+    let estimated_delta = usize::try_from(
+        estimate_strata(local.strata(), remote.strata())
+            .map_or(500, |est| est.delta.max(1)),
+    )
+    .unwrap_or(500);
+
+    // Pre-split antichain at depth 4 (16 buckets × capacity 32 = 512 capacity)
+    let target_depth: u8 = 4;
+    let num_buckets: usize = 16;
+
+    let mut current_requests: Vec<BucketRequest> = (0..num_buckets)
+        .map(|prefix| BucketRequest {
+            depth: target_depth,
+            prefix: u32::try_from(prefix).unwrap_or(0),
+            capacity: 32,
+        })
+        .collect();
+
+    let mut exchange = BucketExchange::new(
+        Vec::new(),
+        rezzy::client::MAX_RECONCILIATION_ROUNDS,
+        MAX_BUCKETS_PER_ROUND,
+        MAX_BUCKETED_SKETCH_CAPACITY,
+    );
+
+    let algo_start = Instant::now();
+    let mut rounds = 0_usize;
+    let mut requests_emitted = current_requests.len();
+    let mut resolved_roots = 0_usize;
+
+    loop {
+        rounds = rounds.saturating_add(1);
+        let remote_sketches = build_bucket_sketches(&remote_h64, &current_requests).unwrap();
+        let local_sketches = build_bucket_sketches(&local_h64, &current_requests).unwrap();
+        let mut batch = BucketDecodeBatch {
+            successful_buckets: Vec::with_capacity(current_requests.len()),
+            failed_buckets: Vec::new(),
+        };
+
+        for ((mut remote_sketch, local_sketch), request) in remote_sketches
+            .into_iter()
+            .zip(local_sketches)
+            .zip(current_requests.iter())
+        {
+            remote_sketch.xor(&local_sketch).unwrap();
+            match remote_sketch.decode_elements(request.capacity) {
+                Ok(roots) => {
+                    batch.successful_buckets.push(BucketDecodeSuccess {
+                        depth: request.depth,
+                        prefix: request.prefix,
+                        roots,
+                    });
+                }
+                Err(_) => batch.failed_buckets.push((request.depth, request.prefix)),
+            }
+        }
+
+        match exchange.advance(batch, &current_requests, u64::try_from(estimated_delta).ok()) {
+            ClientAction::BucketSketches {
+                requests,
+                accumulated_roots,
+            } => {
+                requests_emitted = requests_emitted.saturating_add(requests.len());
+                resolved_roots = accumulated_roots.len();
+                current_requests = requests;
+            }
+            ClientAction::ResolveRoots { roots } => {
+                resolved_roots = roots.len();
+                black_box(roots);
+                break;
+            }
+            ClientAction::ExtremityDiff | ClientAction::Synchronized => break,
         }
     }
 
@@ -495,7 +638,19 @@ fn main() {
     let (setup_elapsed, algo_elapsed, rounds, requests, roots) =
         benchmark_bucket_exchange_from_pool(&pool, 100_000, 250, 250);
     report_exchange(
-        "exchange/100000 +250/-250 (in-envelope Δ=500)",
+        "exchange/100000 +250/-250 (unguided Δ=500)",
+        setup_elapsed,
+        algo_elapsed,
+        rounds,
+        requests,
+        roots,
+    );
+
+    // Test 2a-2: Strata-Guided Pre-Split Antichain Exchange (Δ = 500)
+    let (setup_elapsed, algo_elapsed, rounds, requests, roots) =
+        benchmark_presplit_antichain_exchange_from_pool(&pool, 100_000, 250, 250);
+    report_exchange(
+        "exchange/100000 +250/-250 (pre-split antichain Δ=500)",
         setup_elapsed,
         algo_elapsed,
         rounds,
