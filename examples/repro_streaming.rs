@@ -299,6 +299,14 @@ fn cross_check_merges(
         if parent_maps.len() < 2 {
             continue;
         }
+        if let Some(missing) = parent_maps
+            .iter()
+            .flat_map(imbl::OrdMap::values)
+            .find(|id| !lean_events.contains_key(*id))
+        {
+            println!("  skipping: parent state references unknown event {missing}");
+            continue;
+        }
         let resolved = rezzy::resolve_state_maps(&parent_maps, lean_events, version);
         let jr = resolved.get(&(
             rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
