@@ -630,16 +630,21 @@ fn main() {
     );
 
     // Test 2c: Pathological Unbudgeted Heavy Exchange (Δ = 9000)
-    let (setup_elapsed, algo_elapsed, rounds, requests, roots) =
-        benchmark_bucket_exchange_from_pool(&pool, 100_000, 5_000, 4_000);
-    report_exchange(
-        "exchange/100000 +5000/-4000 (pathological Δ=9000 unbudgeted)",
-        setup_elapsed,
-        algo_elapsed,
-        rounds,
-        requests,
-        roots,
-    );
+    // This case is unbudgeted and much heavier than the others, so it is kept
+    // out of the default benchmark run. Enable it explicitly with
+    // RZ_BENCH_INCLUDE_PATHOLOGICAL=1.
+    if std::env::var("RZ_BENCH_INCLUDE_PATHOLOGICAL").is_ok_and(|value| value == "1") {
+        let (setup_elapsed, algo_elapsed, rounds, requests, roots) =
+            benchmark_bucket_exchange_from_pool(&pool, 100_000, 5_000, 4_000);
+        report_exchange(
+            "exchange/100000 +5000/-4000 (pathological Δ=9000 unbudgeted)",
+            setup_elapsed,
+            algo_elapsed,
+            rounds,
+            requests,
+            roots,
+        );
+    }
 
     // Test 3: Huge Rooms
     let (setup_elapsed, algo_elapsed) = benchmark_scale_from_pool(&pool, 1_000_000, 10_000, 9_000);
