@@ -324,15 +324,17 @@ fn benchmark_bucket_exchange_from_pool(
             }
         }
 
-        let avg_slice = if current_requests.is_empty() {
-            0
-        } else {
-            total_slice_len / current_requests.len()
-        };
-        let util_pct = if round_capacity == 0 {
+        let avg_slice = current_requests
+            .len()
+            .checked_div(1)
+            .and_then(|_| total_slice_len.checked_div(current_requests.len()))
+            .unwrap_or(0);
+        let round_roots_u32 = u32::try_from(round_roots).unwrap_or(u32::MAX);
+        let round_capacity_u32 = u32::try_from(round_capacity).unwrap_or(u32::MAX);
+        let util_pct = if round_capacity_u32 == 0 {
             0.0
         } else {
-            (round_roots as f64 / round_capacity as f64) * 100.0
+            (f64::from(round_roots_u32) / f64::from(round_capacity_u32)) * 100.0
         };
         round_stats.push((
             rounds,
@@ -422,8 +424,7 @@ fn benchmark_presplit_antichain_exchange_from_pool(
 
     let setup_elapsed = setup_start.elapsed();
     let estimated_delta = usize::try_from(
-        estimate_strata(local.strata(), remote.strata())
-            .map_or(500, |est| est.delta.max(1)),
+        estimate_strata(local.strata(), remote.strata()).map_or(500, |est| est.delta.max(1)),
     )
     .unwrap_or(500);
 
@@ -478,7 +479,11 @@ fn benchmark_presplit_antichain_exchange_from_pool(
             }
         }
 
-        match exchange.advance(batch, &current_requests, u64::try_from(estimated_delta).ok()) {
+        match exchange.advance(
+            batch,
+            &current_requests,
+            u64::try_from(estimated_delta).ok(),
+        ) {
             ClientAction::BucketSketches {
                 requests,
                 accumulated_roots,
