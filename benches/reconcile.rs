@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use rezzy::{
     build_bucket_sketches, decode_bucket_sketches, estimate_strata, gf64_mul, BucketDecodeBatch,
-    BucketDecodeSuccess, BucketExchange, BucketRequest, ClientAction, ElementHash,
+    BucketDecodeSuccess, BucketExchange, BucketRequest, ClientAction, ElementHash, H64Index,
     ReconciliationClient, RemoteDigest, ResidentKernel, SyndromeSketch,
     MAX_BUCKETED_SKETCH_CAPACITY, MAX_BUCKETS_PER_ROUND, MAX_SKETCH_CAPACITY,
 };
@@ -285,6 +285,9 @@ fn benchmark_bucket_exchange_from_pool(
     let mut requests_emitted = current_requests.len();
     let mut resolved_roots = 0_usize;
 
+    let local_idx = H64Index::new(&local_h64);
+    let mut round_stats = Vec::new();
+
     loop {
         rounds = rounds.saturating_add(1);
         let remote_sketches = build_bucket_sketches(&remote_h64, &current_requests).unwrap();
@@ -294,21 +297,35 @@ fn benchmark_bucket_exchange_from_pool(
             failed_buckets: Vec::new(),
         };
 
+        let mut round_roots = 0_usize;
+        let mut round_capacity = 0_usize;
+        let mut total_slice_len = 0_usize;
+
         for ((mut remote_sketch, local_sketch), request) in remote_sketches
             .into_iter()
             .zip(local_sketches)
             .zip(current_requests.iter())
         {
+            round_capacity = round_capacity.saturating_add(request.capacity);
+            total_slice_len = total_slice_len.saturating_add(local_idx.bucket_slice(request).map_or(0, |s| s.len()));
+
             remote_sketch.xor(&local_sketch).unwrap();
             match remote_sketch.decode_elements(request.capacity) {
-                Ok(roots) => batch.successful_buckets.push(BucketDecodeSuccess {
-                    depth: request.depth,
-                    prefix: request.prefix,
-                    roots,
-                }),
+                Ok(roots) => {
+                    round_roots = round_roots.saturating_add(roots.len());
+                    batch.successful_buckets.push(BucketDecodeSuccess {
+                        depth: request.depth,
+                        prefix: request.prefix,
+                        roots,
+                    });
+                }
                 Err(_) => batch.failed_buckets.push((request.depth, request.prefix)),
             }
         }
+
+        let avg_slice = if current_requests.is_empty() { 0 } else { total_slice_len / current_requests.len() };
+        let util_pct = if round_capacity == 0 { 0.0 } else { (round_roots as f64 / round_capacity as f64) * 100.0 };
+        round_stats.push((rounds, current_requests.len(), batch.successful_buckets.len(), round_roots, round_capacity, avg_slice, util_pct));
 
         match exchange.advance(batch, &current_requests, estimated_delta) {
             ClientAction::BucketSketches {
@@ -325,6 +342,14 @@ fn benchmark_bucket_exchange_from_pool(
                 break;
             }
             ClientAction::ExtremityDiff | ClientAction::Synchronized => break,
+        }
+    }
+
+    if base_count == 100_000 && local_extra_count == 250 {
+        eprintln!("\n--- [Instrumentation trace: exchange/100000 Δ=500] ---");
+        eprintln!("Round | Reqs | Decoded | Roots | Provisioned Cap | Avg Slice Len | Capacity Util %");
+        for (r, reqs, dec, roots, cap, slice, util) in &round_stats {
+            eprintln!("{r:5} | {reqs:4} | {dec:7} | {roots:5} | {cap:15} | {slice:13} | {util:13.2}%");
         }
     }
 
