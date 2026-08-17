@@ -465,10 +465,36 @@ fn main() {
     // Test 2: Large Room
     let (setup_elapsed, algo_elapsed) = benchmark_scale_from_pool(&pool, 100_000, 5_000, 4_000);
     report_split("scale/100000 +5000/-4000", setup_elapsed, algo_elapsed);
+
+    // Test 2a: Exchange within PinSketch design envelope (Δ = 500)
+    let (setup_elapsed, algo_elapsed, rounds, requests, roots) =
+        benchmark_bucket_exchange_from_pool(&pool, 100_000, 250, 250);
+    report_exchange(
+        "exchange/100000 +250/-250 (in-envelope Δ=500)",
+        setup_elapsed,
+        algo_elapsed,
+        rounds,
+        requests,
+        roots,
+    );
+
+    // Test 2b: Exchange near max PinSketch budget (Δ = 1000)
+    let (setup_elapsed, algo_elapsed, rounds, requests, roots) =
+        benchmark_bucket_exchange_from_pool(&pool, 100_000, 500, 500);
+    report_exchange(
+        "exchange/100000 +500/-500 (in-envelope Δ=1000)",
+        setup_elapsed,
+        algo_elapsed,
+        rounds,
+        requests,
+        roots,
+    );
+
+    // Test 2c: Pathological Unbudgeted Heavy Exchange (Δ = 9000)
     let (setup_elapsed, algo_elapsed, rounds, requests, roots) =
         benchmark_bucket_exchange_from_pool(&pool, 100_000, 5_000, 4_000);
     report_exchange(
-        "exchange/100000 +5000/-4000",
+        "exchange/100000 +5000/-4000 (pathological Δ=9000 unbudgeted)",
         setup_elapsed,
         algo_elapsed,
         rounds,
