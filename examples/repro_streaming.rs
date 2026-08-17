@@ -272,12 +272,14 @@ fn cross_check_merges(
         let mut parent_maps: Vec<
             imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
         > = Vec::new();
+        let mut parent_failed = false;
         for pe in &ev.prev_events {
             let m = match walk_to_resolved(pe, lean_events, resolved_state_at) {
                 WalkResult::Found(m, _) => m,
                 WalkResult::Cycle(_) | WalkResult::Stuck(_) => {
                     println!("  parent {pe}: NOT in resolved_state_at (skipping)");
-                    continue;
+                    parent_failed = true;
+                    break;
                 }
             };
             let jr = m.get(&("m.room.join_rules".to_string(), String::new()));
@@ -303,7 +305,7 @@ fn cross_check_merges(
                 .collect();
             parent_maps.push(om);
         }
-        if parent_maps.len() < 2 {
+        if parent_failed || parent_maps.len() < 2 {
             continue;
         }
         if let Some(missing) = parent_maps
