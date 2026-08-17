@@ -147,6 +147,36 @@ fn forward_extremities(metas: &[Meta]) -> Vec<String> {
     heads
 }
 
+enum WalkResult<'a> {
+    Found(&'a StateMap, String),
+    Cycle(String),
+    Stuck(String),
+}
+
+fn walk_to_resolved<'a>(
+    start: &str,
+    lean_events: &HashMap<String, LeanEvent>,
+    resolved_state_at: &'a HashMap<String, StateMap>,
+) -> WalkResult<'a> {
+    let mut cur = start.to_string();
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(cur.clone()) {
+            return WalkResult::Cycle(cur);
+        }
+        if let Some(m) = resolved_state_at.get(&cur) {
+            return WalkResult::Found(m, cur);
+        }
+        if let Some(ev) = lean_events.get(&cur) {
+            if ev.prev_events.len() == 1 {
+                cur.clone_from(&ev.prev_events[0]);
+                continue;
+            }
+        }
+        return WalkResult::Stuck(cur);
+    }
+}
+
 fn run_streaming(
     target_refs: &[&String],
     lean_events: &HashMap<String, LeanEvent>,
@@ -199,29 +229,20 @@ fn run_streaming(
                 // to have been resolved first in topological order... but
                 // parent itself might ALSO be non-target/inherited, so walk
                 // via lean_events prev chain if needed).
-                let mut cur = parent_event_id.clone();
-                let mut visited = HashSet::new();
-                loop {
-                    if !visited.insert(cur.clone()) {
+                match walk_to_resolved(parent_event_id, lean_events, &resolved_state_at) {
+                    WalkResult::Found(m, _) => {
+                        resolved_state_at.insert(id.clone(), m.clone());
+                    }
+                    WalkResult::Cycle(cur) => {
                         eprintln!(
                             "[WARN] Cycle detected at event {cur} during parent walk for {id}"
                         );
-                        break;
                     }
-                    if let Some(m) = resolved_state_at.get(&cur) {
-                        resolved_state_at.insert(id.clone(), m.clone());
-                        break;
+                    WalkResult::Stuck(cur) => {
+                        eprintln!(
+                            "[WARN] Failed to resolve parent state for event {id} (walk ended at {cur})"
+                        );
                     }
-                    if let Some(ev) = lean_events.get(&cur) {
-                        if ev.prev_events.len() == 1 {
-                            cur = ev.prev_events[0].clone();
-                            continue;
-                        }
-                    }
-                    eprintln!(
-                        "[WARN] Failed to resolve parent state for event {id} (walk ended at {cur})"
-                    );
-                    break;
                 }
             }
         },
@@ -252,26 +273,12 @@ fn cross_check_merges(
             imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
         > = Vec::new();
         for pe in &ev.prev_events {
-            let mut cur = pe.clone();
-            let mut visited = HashSet::new();
-            let m = loop {
-                if !visited.insert(cur.clone()) {
-                    break None;
+            let m = match walk_to_resolved(pe, lean_events, resolved_state_at) {
+                WalkResult::Found(m, _) => m,
+                WalkResult::Cycle(_) | WalkResult::Stuck(_) => {
+                    println!("  parent {pe}: NOT in resolved_state_at (skipping)");
+                    continue;
                 }
-                if let Some(m) = resolved_state_at.get(&cur) {
-                    break Some(m);
-                }
-                if let Some(pev) = lean_events.get(&cur) {
-                    if pev.prev_events.len() == 1 {
-                        cur = pev.prev_events[0].clone();
-                        continue;
-                    }
-                }
-                break None;
-            };
-            let Some(m) = m else {
-                println!("  parent {pe}: NOT in resolved_state_at (skipping)");
-                continue;
             };
             let jr = m.get(&("m.room.join_rules".to_string(), String::new()));
             println!("  parent {pe}: join_rules -> {jr:?}");
@@ -349,14 +356,14 @@ fn print_tip_state(
     raw_events: &[serde_json::Value],
 ) {
     for tip in heads {
-        let mut cur = tip.clone();
-        let mut visited = HashSet::new();
-        loop {
-            if !visited.insert(cur.clone()) {
+        match walk_to_resolved(tip, lean_events, resolved_state_at) {
+            WalkResult::Cycle(cur) => {
                 println!("could not resolve state for tip {tip} (cycle at {cur})");
-                break;
             }
-            if let Some(m) = resolved_state_at.get(&cur) {
+            WalkResult::Stuck(cur) => {
+                println!("could not resolve state for tip {tip} (stuck at {cur})");
+            }
+            WalkResult::Found(m, cur) => {
                 println!("\n=== state at tip {tip} (resolved via {cur}) ===");
                 if let Some(jr) = m.get(&("m.room.join_rules".to_string(), String::new())) {
                     println!("m.room.join_rules -> {jr}");
@@ -373,16 +380,7 @@ fn print_tip_state(
                         if present { "present" } else { "MISSING" }
                     );
                 }
-                break;
             }
-            if let Some(ev) = lean_events.get(&cur) {
-                if ev.prev_events.len() == 1 {
-                    cur = ev.prev_events[0].clone();
-                    continue;
-                }
-            }
-            println!("could not resolve state for tip {tip} (stuck at {cur})");
-            break;
         }
     }
 }

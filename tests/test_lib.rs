@@ -6628,8 +6628,25 @@ fn test_conflicted_keys_derived_before_cdo() {
         &mut HashMap::new(),
     );
 
-    // Verify resolved state length (create, alice_join, alice_bans_bob, jr_1, pl_ancestor)
-    assert_eq!(resolved.len(), 5);
+    // Expected resolved keys: create, alice_join, bob member (ban), join_rules, power_levels.
+    let mut keys: Vec<(String, String)> = resolved
+        .keys()
+        .map(|k| (k.0.as_str().to_string(), k.1.clone()))
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            ("m.room.create".to_string(), String::new()),
+            ("m.room.join_rules".to_string(), String::new()),
+            (
+                "m.room.member".to_string(),
+                "@alice:example.com".to_string()
+            ),
+            ("m.room.member".to_string(), "@bob:example.com".to_string()),
+            ("m.room.power_levels".to_string(), String::new()),
+        ]
+    );
 
     // Verify $bob_pl_dominated was dropped by CDO and does not appear in resolved or resolution deltas
     assert!(!resolved.values().any(|v| v == "$bob_pl_dominated"));

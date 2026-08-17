@@ -199,15 +199,7 @@ where
     // TODO(perf): duplicates an EventType::from() conversion the power/
     // non-power phases redo per event — see the identical TODO on
     // resolve::iterative::derive_all_conflicted_keys.
-    let conflicted_keys: crate::FastSet<(EventType, alloc::string::String)> = conflicted_events
-        .values()
-        .map(|ev| {
-            (
-                EventType::from(ev.event_type.as_str()),
-                ev.state_key.clone().unwrap_or_default(),
-            )
-        })
-        .collect();
+    let conflicted_keys = crate::resolve::iterative::derive_all_conflicted_keys(&conflicted_events);
 
     // For V2.1+ rooms, compute the conflicted subgraph (MSC4297).
     if matches!(version, StateResVersion::V2_1 | StateResVersion::V2_1_1) {
@@ -398,15 +390,7 @@ where
     // Genuinely conflicted keys, captured before the MSC4297 subgraph
     // supplement below adds more (auth-chain-context-only) events — see
     // resolve_state_maps's identical comment for why this matters.
-    let conflicted_keys: crate::FastSet<(EventType, alloc::string::String)> = conflicted_events
-        .values()
-        .map(|ev| {
-            (
-                EventType::from(ev.event_type.as_str()),
-                ev.state_key.clone().unwrap_or_default(),
-            )
-        })
-        .collect();
+    let conflicted_keys = crate::resolve::iterative::derive_all_conflicted_keys(&conflicted_events);
 
     // Lazily BFS auth chains from conflicted events to build minimal auth context
     let mut auth_context: HashMap<Id, LeanEvent<Id, C>> = HashMap::new();

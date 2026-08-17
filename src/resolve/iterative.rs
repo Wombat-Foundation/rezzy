@@ -86,7 +86,7 @@ pub(crate) fn prepare_conflicted_and_keys<
 // `Id` only) instead of re-deriving it — a real (if narrow) restructure, not
 // attempted here since it's a constant-factor cost bounded by the conflicted
 // set size, not the full event set.
-fn derive_all_conflicted_keys<Id, C, S>(
+pub(crate) fn derive_all_conflicted_keys<Id, C, S>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S>,
 ) -> crate::FastSet<(EventType, String)>
 where
