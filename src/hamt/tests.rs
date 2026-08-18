@@ -2064,7 +2064,10 @@ fn test_diff_node_hashes_propagates_resolver_error() {
 
     let err = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
         .expect_err("resolver failure should propagate");
-    assert_eq!(err, "resolve failed");
+    assert_eq!(
+        err,
+        crate::hamt::HamtTraversalError::Resolve("resolve failed")
+    );
 }
 
 #[test]
@@ -2169,7 +2172,98 @@ fn test_walk_reachable_node_hashes_propagates_resolver_error() {
 
     let err = crate::hamt::walk_reachable_node_hashes(&root, &mut resolver, &mut mark)
         .expect_err("resolver failure should propagate");
-    assert_eq!(err, "resolve failed");
+    assert_eq!(
+        err,
+        crate::hamt::HamtTraversalError::Resolve("resolve failed")
+    );
+}
+
+/// Builds an internal-node chain `depth` levels deep, tagged with `tag` so
+/// two chains built with different tags never share a `structural_hash` at
+/// any level (needed to keep [`diff_node_hashes`](crate::hamt::diff_node_hashes)
+/// from short-circuiting before it ever recurses deep enough to hit a depth
+/// guard). The hashes here are synthetic, not computed via
+/// `compute_structural_hash` — this fixture exists purely to exercise
+/// recursion depth, not routing correctness.
+fn build_deep_chain(depth: usize, tag: u8) -> Arc<HamtNode<u64, u64>> {
+    let mut node = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(0_u64, u64::from(tag))],
+        children: vec![],
+        structural_hash: [tag; 16],
+    });
+    for i in 0..depth {
+        let mut hash = [tag; 16];
+        hash[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+        node = Arc::new(HamtNode {
+            datamap: 0,
+            nodemap: 1,
+            leaves: vec![],
+            children: vec![NodeRef::Resolved(node)],
+            structural_hash: hash,
+        });
+    }
+    node
+}
+
+#[test]
+fn test_reachable_node_hashes_rejects_excessive_depth() {
+    let root = build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xAA);
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("chain is fully resolved, no lazy children")
+    };
+
+    let err = crate::hamt::reachable_node_hashes(&root, &mut resolver)
+        .expect_err("a chain deeper than HAMT_MAX_DEPTH must be rejected, not stack-overflow");
+    assert_eq!(
+        err,
+        crate::hamt::HamtTraversalError::MaxDepthExceeded {
+            depth: HAMT_MAX_DEPTH
+        }
+    );
+}
+
+#[test]
+fn test_walk_reachable_node_hashes_rejects_excessive_depth() {
+    let root = build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xAA);
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("chain is fully resolved, no lazy children")
+    };
+    let mut mark = |_hash: StructuralHash| true;
+
+    let err = crate::hamt::walk_reachable_node_hashes(&root, &mut resolver, &mut mark)
+        .expect_err("a chain deeper than HAMT_MAX_DEPTH must be rejected, not stack-overflow");
+    assert_eq!(
+        err,
+        crate::hamt::HamtTraversalError::MaxDepthExceeded {
+            depth: HAMT_MAX_DEPTH
+        }
+    );
+}
+
+#[test]
+fn test_diff_node_hashes_rejects_excessive_depth() {
+    // Two chains that differ (via distinct tags) at every level, so the
+    // diff can never short-circuit on a matching structural_hash before it
+    // recurses past HAMT_MAX_DEPTH.
+    let root_a = build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xAA);
+    let root_b = build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xBB);
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("chains are fully resolved, no lazy children")
+    };
+
+    let err = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
+        .expect_err("a chain deeper than HAMT_MAX_DEPTH must be rejected, not stack-overflow");
+    assert_eq!(
+        err,
+        crate::hamt::HamtTraversalError::MaxDepthExceeded {
+            depth: HAMT_MAX_DEPTH
+        }
+    );
 }
 
 #[test]

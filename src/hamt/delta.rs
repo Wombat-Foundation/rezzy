@@ -1,8 +1,8 @@
-use std::{hash::Hash, sync::Arc, vec::Vec};
+use std::{fmt, hash::Hash, sync::Arc, vec::Vec};
 
 use crate::state::LtHash;
 
-use super::{HamtNode, NodeRef, StructuralHash};
+use super::{HamtNode, NodeRef, StructuralHash, HAMT_MAX_DEPTH};
 
 pub type Delta<K, V> = Vec<(K, V)>;
 pub type DeltaResult<K, V, E> = Result<(Delta<K, V>, Delta<K, V>), E>;
@@ -185,6 +185,56 @@ where
     }
 }
 
+/// Error returned by the node-hash traversal helpers
+/// ([`diff_node_hashes`], [`reachable_node_hashes`],
+/// [`walk_reachable_node_hashes`]): either the caller-supplied `resolver`
+/// failed, or the walk exceeded the crate's internal max-depth bound — the
+/// deepest a HAMT this crate builds can ever legitimately be.
+///
+/// A resolver reading from a store can be handed corrupted or adversarial
+/// data — a node whose `nodemap` children chain far deeper than any tree
+/// [`build_hamt`](super::build_hamt) could have produced (or, in the limit,
+/// a cycle). Recursing on that without a bound risks exhausting the call
+/// stack and aborting the whole process; `MaxDepthExceeded` turns that into
+/// an ordinary `Result::Err` instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HamtTraversalError<E> {
+    /// The resolver failed to load a lazy child the walk needed to descend
+    /// into.
+    Resolve(E),
+    /// The walk recursed past the deepest depth a legitimately-built HAMT
+    /// can have, which only happens against corrupted or adversarial node
+    /// data.
+    MaxDepthExceeded { depth: usize },
+}
+
+impl<E> fmt::Display for HamtTraversalError<E>
+where
+    E: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Resolve(err) => write!(f, "hamt traversal resolver failed: {err}"),
+            Self::MaxDepthExceeded { depth } => {
+                write!(f, "hamt traversal exceeded max depth at {depth}")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl<E> std::error::Error for HamtTraversalError<E>
+where
+    E: std::error::Error + 'static,
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Resolve(err) => Some(err),
+            Self::MaxDepthExceeded { .. } => None,
+        }
+    }
+}
+
 /// The result of [`diff_node_hashes`]: the node hashes a path-copying
 /// mutation superseded vs. the ones it newly created.
 ///
@@ -243,6 +293,23 @@ pub struct NodeHashDelta {
 /// snapshot, a sibling branch, ...), which is exactly what the refcount is
 /// for.
 ///
+/// # Branching hazard — read before wiring this into retirement
+///
+/// This function is only safe as the *sole* source of what to decrement
+/// when `root_a` is retired if `root_b` is `root_a`'s **one and only** live
+/// successor. If `root_a` has more than one live descendant at retirement
+/// time — a forked resolution branch, a forward-extremity that hasn't
+/// converged yet, anything where two different roots both path-copied out
+/// of `root_a` — diffing against just one of them will report a subtree as
+/// `superseded` even though a *different* still-live descendant still needs
+/// it, and decrementing on that basis can zero out and delete live data.
+/// This isn't a bug fixable in this function: a two-root diff structurally
+/// cannot see a third root. When retirement can't be modeled as a strict
+/// linear chain, use [`walk_reachable_node_hashes`] to mark-sweep across
+/// *every* currently-live root instead of decrementing from a pairwise
+/// diff — it's the only way to know a hash is truly unreachable from
+/// anywhere live.
+///
 /// Runs in `O(|spine|)` when `root_a` and `root_b` are adjacent (one
 /// mutation apart), the same `O(log32 N)` path the mutation itself touched,
 /// since unrelated subtrees short-circuit on the first matching
@@ -251,13 +318,14 @@ pub struct NodeHashDelta {
 /// divergent region — it is not a general-purpose tree diff.
 ///
 /// # Errors
-/// Returns the error from the `resolver` closure if it fails to resolve a
-/// lazy node.
+/// Returns [`HamtTraversalError::Resolve`] if `resolver` fails, or
+/// [`HamtTraversalError::MaxDepthExceeded`] if the walk recurses past the
+/// deepest depth a legitimately-built HAMT can have.
 pub fn diff_node_hashes<K, V, F, E>(
     root_a: &Arc<HamtNode<K, V>>,
     root_b: &Arc<HamtNode<K, V>>,
     resolver: &mut F,
-) -> Result<NodeHashDelta, E>
+) -> Result<NodeHashDelta, HamtTraversalError<E>>
 where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -269,6 +337,7 @@ where
         &mut superseded_node_hashes,
         &mut new_node_hashes,
         resolver,
+        0,
     )?;
     Ok(NodeHashDelta {
         superseded_node_hashes,
@@ -282,7 +351,8 @@ fn diff_node_hashes_rec<K, V, F, E>(
     superseded: &mut Vec<StructuralHash>,
     new: &mut Vec<StructuralHash>,
     resolver: &mut F,
-) -> Result<(), E>
+    depth: usize,
+) -> Result<(), HamtTraversalError<E>>
 where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -296,6 +366,10 @@ where
         return Ok(());
     }
 
+    if depth >= HAMT_MAX_DEPTH {
+        return Err(HamtTraversalError::MaxDepthExceeded { depth });
+    }
+
     superseded.push(node_a.structural_hash);
     new.push(node_b.structural_hash);
 
@@ -304,6 +378,7 @@ where
 
     let mut cidx_a = 0;
     let mut cidx_b = 0;
+    let next_depth = depth.saturating_add(1);
 
     for i in 0..32 {
         let bit = 1 << i;
@@ -316,9 +391,11 @@ where
                 let child_b = &node_b.children[cidx_b];
 
                 if child_a.structural_hash() != child_b.structural_hash() {
-                    let res_a = resolve_node(child_a, resolver)?;
-                    let res_b = resolve_node(child_b, resolver)?;
-                    diff_node_hashes_rec(&res_a, &res_b, superseded, new, resolver)?;
+                    let res_a =
+                        resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
+                    let res_b =
+                        resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
+                    diff_node_hashes_rec(&res_a, &res_b, superseded, new, resolver, next_depth)?;
                 }
 
                 cidx_a = cidx_a.wrapping_add(1);
@@ -326,14 +403,14 @@ where
             }
             (true, false) => {
                 let child_a = &node_a.children[cidx_a];
-                let res_a = resolve_node(child_a, resolver)?;
-                append_reachable_node_hashes(&res_a, superseded, resolver)?;
+                let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
+                append_reachable_node_hashes(&res_a, superseded, resolver, next_depth)?;
                 cidx_a = cidx_a.wrapping_add(1);
             }
             (false, true) => {
                 let child_b = &node_b.children[cidx_b];
-                let res_b = resolve_node(child_b, resolver)?;
-                append_reachable_node_hashes(&res_b, new, resolver)?;
+                let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
+                append_reachable_node_hashes(&res_b, new, resolver, next_depth)?;
                 cidx_b = cidx_b.wrapping_add(1);
             }
             (false, false) => {}
@@ -356,17 +433,18 @@ where
 /// may resolve every lazy child along the way.
 ///
 /// # Errors
-/// Returns the error from the `resolver` closure if it fails to resolve a
-/// lazy node.
+/// Returns [`HamtTraversalError::Resolve`] if `resolver` fails, or
+/// [`HamtTraversalError::MaxDepthExceeded`] if the walk recurses past the
+/// deepest depth a legitimately-built HAMT can have.
 pub fn reachable_node_hashes<K, V, F, E>(
     root: &Arc<HamtNode<K, V>>,
     resolver: &mut F,
-) -> Result<Vec<StructuralHash>, E>
+) -> Result<Vec<StructuralHash>, HamtTraversalError<E>>
 where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     let mut hashes = Vec::new();
-    append_reachable_node_hashes(root, &mut hashes, resolver)?;
+    append_reachable_node_hashes(root, &mut hashes, resolver, 0)?;
     Ok(hashes)
 }
 
@@ -397,13 +475,27 @@ where
 /// walked only once in total.
 ///
 /// # Errors
-/// Returns the error from the `resolver` closure if it fails to resolve a
-/// lazy node.
+/// Returns [`HamtTraversalError::Resolve`] if `resolver` fails, or
+/// [`HamtTraversalError::MaxDepthExceeded`] if the walk recurses past the
+/// deepest depth a legitimately-built HAMT can have.
 pub fn walk_reachable_node_hashes<K, V, F, E, M>(
     root: &Arc<HamtNode<K, V>>,
     resolver: &mut F,
     mark: &mut M,
-) -> Result<(), E>
+) -> Result<(), HamtTraversalError<E>>
+where
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    M: FnMut(StructuralHash) -> bool,
+{
+    walk_reachable_node_hashes_at_depth(root, resolver, mark, 0)
+}
+
+fn walk_reachable_node_hashes_at_depth<K, V, F, E, M>(
+    root: &Arc<HamtNode<K, V>>,
+    resolver: &mut F,
+    mark: &mut M,
+    depth: usize,
+) -> Result<(), HamtTraversalError<E>>
 where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
     M: FnMut(StructuralHash) -> bool,
@@ -411,9 +503,13 @@ where
     if !mark(root.structural_hash) {
         return Ok(());
     }
+    if depth >= HAMT_MAX_DEPTH {
+        return Err(HamtTraversalError::MaxDepthExceeded { depth });
+    }
+    let next_depth = depth.saturating_add(1);
     for child in &root.children {
-        let child_node = resolve_node(child, resolver)?;
-        walk_reachable_node_hashes(&child_node, resolver, mark)?;
+        let child_node = resolve_node(child, resolver).map_err(HamtTraversalError::Resolve)?;
+        walk_reachable_node_hashes_at_depth(&child_node, resolver, mark, next_depth)?;
     }
     Ok(())
 }
@@ -426,14 +522,19 @@ fn append_reachable_node_hashes<K, V, F, E>(
     node: &Arc<HamtNode<K, V>>,
     collection: &mut Vec<StructuralHash>,
     resolver: &mut F,
-) -> Result<(), E>
+    depth: usize,
+) -> Result<(), HamtTraversalError<E>>
 where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     collection.push(node.structural_hash);
+    if depth >= HAMT_MAX_DEPTH {
+        return Err(HamtTraversalError::MaxDepthExceeded { depth });
+    }
+    let next_depth = depth.saturating_add(1);
     for child in &node.children {
-        let child_node = resolve_node(child, resolver)?;
-        append_reachable_node_hashes(&child_node, collection, resolver)?;
+        let child_node = resolve_node(child, resolver).map_err(HamtTraversalError::Resolve)?;
+        append_reachable_node_hashes(&child_node, collection, resolver, next_depth)?;
     }
     Ok(())
 }
