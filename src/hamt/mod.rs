@@ -529,7 +529,7 @@ where
             continue;
         }
 
-        let next_depth = depth + 1;
+        let next_depth = depth.saturating_add(1);
         if next_depth >= HAMT_MAX_DEPTH {
             return Err(HamtBuildError::HashCollision {
                 depth,
