@@ -816,6 +816,87 @@ fn test_hamt_visit_entries_propagates_resolver_error() {
     assert_eq!(visitor_calls, 0);
 }
 
+#[test]
+fn test_hamt_is_empty() {
+    let empty_node = HamtNode::<u64, u64> {
+        datamap: 0,
+        nodemap: 0,
+        leaves: vec![],
+        children: vec![],
+        structural_hash: [0; 16],
+    };
+    assert!(empty_node.is_empty());
+
+    let leaf_node = HamtNode::<u64, u64> {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1, 10)],
+        children: vec![],
+        structural_hash: [1; 16],
+    };
+    assert!(!leaf_node.is_empty());
+}
+
+#[test]
+fn test_hamt_any_entry_short_circuits() {
+    use std::cell::Cell;
+
+    let key = b"dummy_key";
+    let child_datamap = (1_u32 << 7) | (1_u32 << 9);
+    let child_hash = HamtNode::<u64, u64>::compute_structural_hash(
+        key,
+        child_datamap,
+        0,
+        &[(10_u64, 100_u64), (20_u64, 200_u64)],
+        &[],
+    );
+    let child = Arc::new(HamtNode {
+        datamap: child_datamap,
+        nodemap: 0,
+        leaves: vec![(10_u64, 100_u64), (20_u64, 200_u64)],
+        children: vec![],
+        structural_hash: child_hash,
+    });
+
+    let root = HamtNode {
+        datamap: 1_u32 << 1,
+        nodemap: 1_u32 << 3,
+        leaves: vec![(5_u64, 50_u64)],
+        children: vec![NodeRef::Lazy(child_hash)],
+        structural_hash: [0; 16],
+    };
+
+    let resolver_calls = Cell::new(0);
+    let mut resolver = |hash: &StructuralHash| {
+        resolver_calls.set(resolver_calls.get() + 1);
+        if hash == &child_hash {
+            Ok::<_, ()>(child.clone())
+        } else {
+            Err(())
+        }
+    };
+
+    // Root leaf match: should return Ok(true) WITHOUT invoking resolver
+    let has_root_leaf = root
+        .any_entry(&mut resolver, &mut |k, _v| *k == 5)
+        .expect("search should succeed");
+    assert!(has_root_leaf);
+    assert_eq!(resolver_calls.get(), 0);
+
+    // Child leaf match: should invoke resolver and return Ok(true)
+    let has_child_leaf = root
+        .any_entry(&mut resolver, &mut |k, _v| *k == 20)
+        .expect("search should succeed");
+    assert!(has_child_leaf);
+    assert_eq!(resolver_calls.get(), 1);
+
+    // No match: returns Ok(false)
+    let has_missing = root
+        .any_entry(&mut resolver, &mut |k, _v| *k == 999)
+        .expect("search should succeed");
+    assert!(!has_missing);
+}
+
 /// Deterministic PRNG (`splitmix64`) so the property test below is
 /// reproducible without adding a `rand` dependency.
 fn splitmix64(state: &mut u64) -> u64 {

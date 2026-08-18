@@ -256,6 +256,49 @@ impl<K, V> HamtNode<K, V> {
         Ok(())
     }
 
+    /// Returns `true` if this node contains no leaf entries and no child nodes.
+    ///
+    /// This is an O(1) structural check on the node's bitmaps.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.datamap == 0 && self.nodemap == 0
+    }
+
+    /// Checks if any key-value entry in the HAMT satisfies `predicate`.
+    ///
+    /// Traversal proceeds lazily across child nodes, returning `Ok(true)` and
+    /// stopping immediately on the first entry for which `predicate(&key, &value)`
+    /// returns `true`. Returns `Ok(false)` if no matching entry is found.
+    ///
+    /// # Errors
+    /// Returns any error emitted by `resolver`.
+    pub fn any_entry<F, E>(
+        &self,
+        resolver: &mut F,
+        predicate: &mut impl FnMut(&K, &V) -> bool,
+    ) -> Result<bool, E>
+    where
+        F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    {
+        for (key, value) in &self.leaves {
+            if predicate(key, value) {
+                return Ok(true);
+            }
+        }
+
+        for child in &self.children {
+            let child_node = match child {
+                NodeRef::Resolved(node) => node.clone(),
+                NodeRef::Lazy(hash) => resolver(hash)?,
+            };
+            if child_node.any_entry(resolver, predicate)? {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
     /// Resolves which slot `path_hash` routes to at `depth` and returns what
     /// occupies it, if anything.
     ///
