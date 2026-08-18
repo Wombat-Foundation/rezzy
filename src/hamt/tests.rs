@@ -1720,20 +1720,19 @@ fn test_diff_node_hashes_root_only_change() {
         unreachable!("no lazy children in tree")
     };
 
-    let (superseded, new) = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
+    let delta = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
         .expect("diff should succeed");
 
     // Both roots are single, leaf-only nodes: the whole "spine" is just the
     // root itself changing shape.
-    assert_eq!(superseded, vec![root_a.structural_hash]);
-    assert_eq!(new, vec![root_b.structural_hash]);
+    assert_eq!(delta.superseded_node_hashes, vec![root_a.structural_hash]);
+    assert_eq!(delta.new_node_hashes, vec![root_b.structural_hash]);
 
     // Identical roots: nothing superseded, nothing new.
-    let (superseded_same, new_same) =
-        crate::hamt::diff_node_hashes(&root_a, &root_a, &mut resolver)
-            .expect("diff should succeed");
-    assert!(superseded_same.is_empty());
-    assert!(new_same.is_empty());
+    let delta_same = crate::hamt::diff_node_hashes(&root_a, &root_a, &mut resolver)
+        .expect("diff should succeed");
+    assert!(delta_same.superseded_node_hashes.is_empty());
+    assert!(delta_same.new_node_hashes.is_empty());
 }
 
 #[test]
@@ -1754,16 +1753,24 @@ fn test_diff_node_hashes_tracks_insert_and_remove_spine() {
     assert_eq!(displaced, None);
     assert_ne!(root_a.structural_hash, root_b.structural_hash);
 
-    let (superseded, new) = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
+    let delta = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
         .expect("diff should succeed");
 
     // The root itself always changed (it commits to every hash below it).
-    assert!(superseded.contains(&root_a.structural_hash));
-    assert!(new.contains(&root_b.structural_hash));
-    assert!(!superseded.is_empty());
-    assert!(!new.is_empty());
+    assert!(delta
+        .superseded_node_hashes
+        .contains(&root_a.structural_hash));
+    assert!(delta.new_node_hashes.contains(&root_b.structural_hash));
+    assert!(!delta.superseded_node_hashes.is_empty());
+    assert!(!delta.new_node_hashes.is_empty());
 
-    assert_diff_is_gc_safe(&root_a, &root_b, &superseded, &new, &mut resolver);
+    assert_diff_is_gc_safe(
+        &root_a,
+        &root_b,
+        &delta.superseded_node_hashes,
+        &delta.new_node_hashes,
+        &mut resolver,
+    );
 
     // Removing the same key should walk (roughly) the same spine back down,
     // superseding root_b's path nodes and reintroducing root_a's.
@@ -1772,12 +1779,20 @@ fn test_diff_node_hashes_tracks_insert_and_remove_spine() {
     assert_eq!(removed_value, Some(9999_u64));
     assert_eq!(root_c.structural_hash, root_a.structural_hash);
 
-    let (superseded_rm, new_rm) = crate::hamt::diff_node_hashes(&root_b, &root_c, &mut resolver)
+    let delta_rm = crate::hamt::diff_node_hashes(&root_b, &root_c, &mut resolver)
         .expect("diff should succeed");
-    assert!(superseded_rm.contains(&root_b.structural_hash));
-    assert!(new_rm.contains(&root_c.structural_hash));
+    assert!(delta_rm
+        .superseded_node_hashes
+        .contains(&root_b.structural_hash));
+    assert!(delta_rm.new_node_hashes.contains(&root_c.structural_hash));
 
-    assert_diff_is_gc_safe(&root_b, &root_c, &superseded_rm, &new_rm, &mut resolver);
+    assert_diff_is_gc_safe(
+        &root_b,
+        &root_c,
+        &delta_rm.superseded_node_hashes,
+        &delta_rm.new_node_hashes,
+        &mut resolver,
+    );
 }
 
 /// Checks the safety properties a refcount-based GC scheme actually depends
@@ -1857,10 +1872,10 @@ fn test_diff_node_hashes_structural_hash_fast_path_without_ptr_eq() {
         unreachable!("structural-hash equality should short-circuit before any resolve")
     };
 
-    let (superseded, new) = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
+    let delta = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
         .expect("diff should succeed");
-    assert!(superseded.is_empty());
-    assert!(new.is_empty());
+    assert!(delta.superseded_node_hashes.is_empty());
+    assert!(delta.new_node_hashes.is_empty());
 }
 
 #[test]
@@ -1940,8 +1955,10 @@ fn test_diff_node_hashes_resolves_lazy_children() {
         }
     };
 
-    let (superseded, new) = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
+    let delta = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
         .expect("diff should succeed");
+    let superseded = &delta.superseded_node_hashes;
+    let new = &delta.new_node_hashes;
 
     // The shared lazy child must never be resolved: its structural hash is
     // identical on both sides, so the fast path should skip it entirely.

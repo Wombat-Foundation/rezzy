@@ -185,6 +185,25 @@ where
     }
 }
 
+/// The result of [`diff_node_hashes`]: the node hashes a path-copying
+/// mutation superseded vs. the ones it newly created.
+///
+/// A named struct instead of a `(Vec<_>, Vec<_>)` tuple deliberately, since
+/// the two fields hold the same element type in opposite GC roles —
+/// swapping them at a call site would type-check silently while inverting
+/// refcount increments and decrements. See [`diff_node_hashes`] for the
+/// full timing contract these two lists are meant to be used under.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NodeHashDelta {
+    /// Node hashes present in `root_a` but not `root_b`. GC candidates once
+    /// `root_a` is retired — never delete these while `root_a` is still
+    /// live.
+    pub superseded_node_hashes: Vec<StructuralHash>,
+    /// Node hashes present in `root_b` but not `root_a`. Safe to increment
+    /// refcounts for as soon as `root_b` is persisted.
+    pub new_node_hashes: Vec<StructuralHash>,
+}
+
 /// Diffs the internal node hashes between two HAMT roots produced by a
 /// *single* path-copying mutation (e.g. before/after an
 /// [`insert`](super::insert) or [`remove`](super::remove) call), identifying
@@ -238,14 +257,23 @@ pub fn diff_node_hashes<K, V, F, E>(
     root_a: &Arc<HamtNode<K, V>>,
     root_b: &Arc<HamtNode<K, V>>,
     resolver: &mut F,
-) -> Result<(Vec<StructuralHash>, Vec<StructuralHash>), E>
+) -> Result<NodeHashDelta, E>
 where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
-    let mut superseded = Vec::new();
-    let mut new = Vec::new();
-    diff_node_hashes_rec(root_a, root_b, &mut superseded, &mut new, resolver)?;
-    Ok((superseded, new))
+    let mut superseded_node_hashes = Vec::new();
+    let mut new_node_hashes = Vec::new();
+    diff_node_hashes_rec(
+        root_a,
+        root_b,
+        &mut superseded_node_hashes,
+        &mut new_node_hashes,
+        resolver,
+    )?;
+    Ok(NodeHashDelta {
+        superseded_node_hashes,
+        new_node_hashes,
+    })
 }
 
 fn diff_node_hashes_rec<K, V, F, E>(

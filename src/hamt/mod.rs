@@ -23,6 +23,7 @@ mod tests;
 pub use codec::PersistedInternalNode;
 pub use delta::{
     diff_hamt_nodes, diff_node_hashes, isolate_delta, reachable_node_hashes, Delta, DeltaResult,
+    NodeHashDelta,
 };
 pub use hash::{state_group_id_from_lthash, RootHandle, StateGroupId, StructuralHash};
 
