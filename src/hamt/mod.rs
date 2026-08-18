@@ -860,19 +860,6 @@ where
     } = step;
     let idx = map_index(node.datamap, slot);
 
-    if node.leaves[idx].0 == key {
-        let mut leaves = node.leaves.clone();
-        let old_value = core::mem::replace(&mut leaves[idx].1, value);
-        let new_node = rebuild_node(
-            structural_key,
-            node.datamap,
-            node.nodemap,
-            leaves,
-            node.children.clone(),
-        );
-        return Ok((new_node, Some(old_value)));
-    }
-
     let (existing_key, existing_value) = node.leaves[idx].clone();
     let existing_path_hash = key_hash(&existing_key);
     let split_entries = vec![
