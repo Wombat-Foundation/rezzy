@@ -2068,6 +2068,111 @@ fn test_diff_node_hashes_propagates_resolver_error() {
 }
 
 #[test]
+fn test_walk_reachable_node_hashes_shares_subtrees_across_roots() {
+    use std::collections::BTreeSet;
+
+    let key = b"dummy_server_key";
+    // Two independently built trees that share no entries, so the only way
+    // any node hash can coincide between them is genuine structural
+    // sharing/coincidence -- there isn't any here, this is the baseline.
+    let entries_a: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
+    let entries_b: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
+    let root_a = build_hamt(key, entries_a).expect("build A");
+    let root_b = build_hamt(key, entries_b).expect("build B");
+    assert!(!Arc::ptr_eq(&root_a, &root_b));
+    assert_eq!(
+        root_a.structural_hash, root_b.structural_hash,
+        "identical entries must build identical trees, just as different allocations"
+    );
+
+    let mut resolve_calls: usize = 0;
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        resolve_calls = resolve_calls.saturating_add(1);
+        unreachable!("no lazy children in either tree")
+    };
+
+    let mut seen: BTreeSet<StructuralHash> = BTreeSet::new();
+
+    {
+        let mut mark = |hash: StructuralHash| seen.insert(hash);
+        crate::hamt::walk_reachable_node_hashes(&root_a, &mut resolver, &mut mark)
+            .expect("walk over root_a should succeed");
+    }
+    let total_after_a = seen.len();
+    assert!(total_after_a > 1, "a 64-entry tree has more than one node");
+
+    // Walking root_b, which is structurally identical to root_a, must mark
+    // nothing new: every node hash it would visit was already recorded by
+    // the walk over root_a, and the walk must never call `resolver` (no
+    // lazy children exist, but more importantly, it must never even
+    // *attempt* to recurse into an already-marked subtree).
+    {
+        let mut mark = |hash: StructuralHash| seen.insert(hash);
+        crate::hamt::walk_reachable_node_hashes(&root_b, &mut resolver, &mut mark)
+            .expect("walk over root_b should succeed");
+    }
+    assert_eq!(
+        seen.len(),
+        total_after_a,
+        "walking a structurally-identical second root must not grow the seen set"
+    );
+    assert_eq!(
+        resolve_calls, 0,
+        "neither tree has lazy children to resolve"
+    );
+}
+
+#[test]
+fn test_walk_reachable_node_hashes_root_already_seen_short_circuits() {
+    let key = b"dummy_server_key";
+    let entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
+    let root = build_hamt(key, entries).expect("build root");
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("mark rejecting the root must prevent any resolver calls at all")
+    };
+    let mut mark = |_hash: StructuralHash| false;
+
+    crate::hamt::walk_reachable_node_hashes(&root, &mut resolver, &mut mark)
+        .expect("walk should succeed even though nothing gets visited");
+}
+
+#[test]
+fn test_walk_reachable_node_hashes_propagates_resolver_error() {
+    let key = b"dummy_server_key";
+    let leaf = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1_u64, 100_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
+    });
+    let leaf_lazy = NodeRef::<u64, u64>::Lazy(leaf.structural_hash);
+    let root = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 1,
+        leaves: vec![],
+        children: vec![leaf_lazy.clone()],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1,
+            &[],
+            core::slice::from_ref(&leaf_lazy),
+        ),
+    });
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, &'static str> {
+        Err("resolve failed")
+    };
+    let mut mark = |_hash: StructuralHash| true;
+
+    let err = crate::hamt::walk_reachable_node_hashes(&root, &mut resolver, &mut mark)
+        .expect_err("resolver failure should propagate");
+    assert_eq!(err, "resolve failed");
+}
+
+#[test]
 fn test_reachable_node_hashes_matches_manual_walk() {
     let key = b"dummy_server_key";
     let entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();

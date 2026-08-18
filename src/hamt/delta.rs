@@ -370,6 +370,54 @@ where
     Ok(hashes)
 }
 
+/// Walks the internal-node reachability graph of `root`, calling `mark` on
+/// every node hash encountered and skipping recursion into any subtree
+/// whose hash `mark` reports as already seen.
+///
+/// Built for sweeping reachability across *many* roots that share most of
+/// their structure (e.g. every historical root recorded for a room, or
+/// every room's current root): call this once per root against the same
+/// `mark` closure backed by one shared set, and every subtree already
+/// accounted for by an earlier root is skipped in O(1) instead of
+/// re-resolved and re-walked. This is the same content-addressing property
+/// [`diff_node_hashes`] uses to short-circuit its two-root comparison,
+/// generalized from 2 roots to N.
+///
+/// `mark(hash)` must record `hash` as seen in the caller's set and return
+/// `true` if it was newly inserted (not previously present), `false` if it
+/// was already there. Returning `false` stops this call from resolving or
+/// descending into that node's children at all — the caller-owned set,
+/// not this function, is the single source of truth for "already
+/// accounted for," so callers are free to back it with a `BTreeSet`, a
+/// `HashSet`, or anything else that fits their scale.
+///
+/// [`reachable_node_hashes`] covers the single-root case and does not
+/// require a `mark` closure; reach for this one directly once you're
+/// sweeping more than one root and want the shared subtrees between them
+/// walked only once in total.
+///
+/// # Errors
+/// Returns the error from the `resolver` closure if it fails to resolve a
+/// lazy node.
+pub fn walk_reachable_node_hashes<K, V, F, E, M>(
+    root: &Arc<HamtNode<K, V>>,
+    resolver: &mut F,
+    mark: &mut M,
+) -> Result<(), E>
+where
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    M: FnMut(StructuralHash) -> bool,
+{
+    if !mark(root.structural_hash) {
+        return Ok(());
+    }
+    for child in &root.children {
+        let child_node = resolve_node(child, resolver)?;
+        walk_reachable_node_hashes(&child_node, resolver, mark)?;
+    }
+    Ok(())
+}
+
 /// Appends the structural hash of `node` and every internal node reachable
 /// from it, in pre-order. Shared by [`reachable_node_hashes`] and
 /// [`diff_node_hashes`] (to enumerate a whole subtree that only exists on
