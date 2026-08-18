@@ -185,6 +185,183 @@ where
     }
 }
 
+/// Diffs the internal node hashes between two HAMT roots produced by a
+/// *single* path-copying mutation (e.g. before/after an
+/// [`insert`](super::insert) or [`remove`](super::remove) call), identifying
+/// which persisted nodes the mutation superseded and which it newly created.
+///
+/// Because HAMT nodes are content-addressed by [`StructuralHash`], the two
+/// lists are exactly what a storage backend needs to maintain per-hash
+/// refcounts for garbage collection — but the two halves fire at *different
+/// times*, not in the same transaction as the mutation:
+///
+/// - Increment every hash in `new_node_hashes` when the new root is
+///   persisted. This is always safe to do immediately, since `root_a`'s
+///   nodes are already counted from when *it* was persisted.
+/// - Decrement every hash in `superseded_node_hashes` only when `root_a`
+///   itself is retired (e.g. an old state generation aging out of history),
+///   **not** when `root_b` is written — `root_a` is typically still a live,
+///   independently-referenced root at that point (that's the entire reason
+///   path copying returns a new root instead of mutating in place), and
+///   decrementing its spine early will drive still-referenced nodes to a
+///   refcount of zero while other roots still point at them.
+///
+/// A hash reaching a refcount of zero has no live root referencing it and is
+/// safe to delete. If increments and decrements for the same transition
+/// ever do land in one batch, apply the increments first, so a hash that
+/// appears in both lists can't transiently hit zero.
+///
+/// Bootstrapping refcounts for nodes that already exist in a store (or
+/// verifying they haven't drifted) needs a separate, one-time reachability
+/// walk over every currently-live root — see
+/// [`reachable_node_hashes`] — since this
+/// function only reports the delta between two adjacent roots, not absolute
+/// counts.
+///
+/// A `superseded` hash is only a GC *candidate* even after its root is
+/// retired, not certain garbage — structural sharing means the same subtree
+/// can still be reachable from another live root (a different room's
+/// snapshot, a sibling branch, ...), which is exactly what the refcount is
+/// for.
+///
+/// Runs in `O(|spine|)` when `root_a` and `root_b` are adjacent (one
+/// mutation apart), the same `O(log32 N)` path the mutation itself touched,
+/// since unrelated subtrees short-circuit on the first matching
+/// `structural_hash`. For roots that are unrelated or many mutations apart,
+/// this degrades to `O(N)` and may resolve every lazy node in the entire
+/// divergent region — it is not a general-purpose tree diff.
+///
+/// # Errors
+/// Returns the error from the `resolver` closure if it fails to resolve a
+/// lazy node.
+pub fn diff_node_hashes<K, V, F, E>(
+    root_a: &Arc<HamtNode<K, V>>,
+    root_b: &Arc<HamtNode<K, V>>,
+    resolver: &mut F,
+) -> Result<(Vec<StructuralHash>, Vec<StructuralHash>), E>
+where
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    let mut superseded = Vec::new();
+    let mut new = Vec::new();
+    diff_node_hashes_rec(root_a, root_b, &mut superseded, &mut new, resolver)?;
+    Ok((superseded, new))
+}
+
+fn diff_node_hashes_rec<K, V, F, E>(
+    node_a: &Arc<HamtNode<K, V>>,
+    node_b: &Arc<HamtNode<K, V>>,
+    superseded: &mut Vec<StructuralHash>,
+    new: &mut Vec<StructuralHash>,
+    resolver: &mut F,
+) -> Result<(), E>
+where
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    // Pointer equality check (fastest path for structurally shared nodes)
+    if Arc::ptr_eq(node_a, node_b) {
+        return Ok(());
+    }
+
+    // Structural hash check (fast path across process/storage boundaries)
+    if node_a.structural_hash == node_b.structural_hash {
+        return Ok(());
+    }
+
+    superseded.push(node_a.structural_hash);
+    new.push(node_b.structural_hash);
+
+    let n_a = node_a.nodemap;
+    let n_b = node_b.nodemap;
+
+    let mut cidx_a = 0;
+    let mut cidx_b = 0;
+
+    for i in 0..32 {
+        let bit = 1 << i;
+        let in_a = (n_a & bit) != 0;
+        let in_b = (n_b & bit) != 0;
+
+        match (in_a, in_b) {
+            (true, true) => {
+                let child_a = &node_a.children[cidx_a];
+                let child_b = &node_b.children[cidx_b];
+
+                if child_a.structural_hash() != child_b.structural_hash() {
+                    let res_a = resolve_node(child_a, resolver)?;
+                    let res_b = resolve_node(child_b, resolver)?;
+                    diff_node_hashes_rec(&res_a, &res_b, superseded, new, resolver)?;
+                }
+
+                cidx_a = cidx_a.wrapping_add(1);
+                cidx_b = cidx_b.wrapping_add(1);
+            }
+            (true, false) => {
+                let child_a = &node_a.children[cidx_a];
+                let res_a = resolve_node(child_a, resolver)?;
+                append_reachable_node_hashes(&res_a, superseded, resolver)?;
+                cidx_a = cidx_a.wrapping_add(1);
+            }
+            (false, true) => {
+                let child_b = &node_b.children[cidx_b];
+                let res_b = resolve_node(child_b, resolver)?;
+                append_reachable_node_hashes(&res_b, new, resolver)?;
+                cidx_b = cidx_b.wrapping_add(1);
+            }
+            (false, false) => {}
+        }
+    }
+
+    Ok(())
+}
+
+/// Collects the structural hash of `root` and every internal node reachable
+/// from it via `nodemap` children.
+///
+/// This is the bootstrap/verification primitive for refcount-based garbage
+/// collection: a storage backend can sum this over every currently-live root
+/// to compute (or double-check) absolute per-hash reference counts, which
+/// [`diff_node_hashes`] alone cannot provide since it only reports the delta
+/// between two adjacent roots.
+///
+/// Runs in `O(N)` in the number of internal nodes reachable from `root` and
+/// may resolve every lazy child along the way.
+///
+/// # Errors
+/// Returns the error from the `resolver` closure if it fails to resolve a
+/// lazy node.
+pub fn reachable_node_hashes<K, V, F, E>(
+    root: &Arc<HamtNode<K, V>>,
+    resolver: &mut F,
+) -> Result<Vec<StructuralHash>, E>
+where
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    let mut hashes = Vec::new();
+    append_reachable_node_hashes(root, &mut hashes, resolver)?;
+    Ok(hashes)
+}
+
+/// Appends the structural hash of `node` and every internal node reachable
+/// from it, in pre-order. Shared by [`reachable_node_hashes`] and
+/// [`diff_node_hashes`] (to enumerate a whole subtree that only exists on
+/// one side of a diff).
+fn append_reachable_node_hashes<K, V, F, E>(
+    node: &Arc<HamtNode<K, V>>,
+    collection: &mut Vec<StructuralHash>,
+    resolver: &mut F,
+) -> Result<(), E>
+where
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    collection.push(node.structural_hash);
+    for child in &node.children {
+        let child_node = resolve_node(child, resolver)?;
+        append_reachable_node_hashes(&child_node, collection, resolver)?;
+    }
+    Ok(())
+}
+
 fn collect_all_leaves<K, V, F, E>(
     node: &Arc<HamtNode<K, V>>,
     collection: &mut Vec<(K, V)>,
