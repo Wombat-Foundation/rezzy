@@ -41,6 +41,33 @@ where
     Ok((added, removed))
 }
 
+/// Isolates the delta (added/removed items) between two HAMT root nodes directly,
+/// short-circuiting on identical structural hashes without requiring `LtHash` references.
+///
+/// # Errors
+/// Returns the error from the `resolver` closure if it fails to resolve a lazy node.
+pub fn diff_hamt_nodes<K, V, F, E>(
+    root_a: &Arc<HamtNode<K, V>>,
+    root_b: &Arc<HamtNode<K, V>>,
+    resolver: &mut F,
+) -> DeltaResult<K, V, E>
+where
+    K: Hash + Clone + Eq,
+    V: Hash + Clone + Eq,
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    if root_a.structural_hash == root_b.structural_hash {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+
+    diff_nodes(root_a, root_b, &mut added, &mut removed, resolver)?;
+
+    Ok((added, removed))
+}
+
 fn diff_nodes<K, V, F, E>(
     node_a: &Arc<HamtNode<K, V>>,
     node_b: &Arc<HamtNode<K, V>>,

@@ -21,6 +21,7 @@ pub mod hash;
 mod tests;
 
 pub use codec::PersistedInternalNode;
+pub use delta::{diff_hamt_nodes, isolate_delta, Delta, DeltaResult};
 pub use hash::{state_group_id_from_lthash, RootHandle, StateGroupId, StructuralHash};
 
 use hash::StructuralHashBuilder;
@@ -264,24 +265,24 @@ impl<K, V> HamtNode<K, V> {
         self.datamap == 0 && self.nodemap == 0
     }
 
-    /// Checks if any key-value entry in the HAMT satisfies `predicate`.
+    /// Checks if any key-value entry in the HAMT satisfies a predicate.
     ///
     /// Traversal proceeds lazily across child nodes, returning `Ok(true)` and
     /// stopping immediately on the first entry for which `predicate(&key, &value)`
-    /// returns `true`. Returns `Ok(false)` if no matching entry is found.
+    /// returns `Ok(true)`. Returns `Ok(false)` if no matching entry is found.
     ///
     /// # Errors
-    /// Returns any error emitted by `resolver`.
+    /// Returns any error emitted by `resolver` or `predicate`.
     pub fn any_entry<F, E>(
         &self,
         resolver: &mut F,
-        predicate: &mut impl FnMut(&K, &V) -> bool,
+        predicate: &mut impl FnMut(&K, &V) -> Result<bool, E>,
     ) -> Result<bool, E>
     where
         F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
     {
         for (key, value) in &self.leaves {
-            if predicate(key, value) {
+            if predicate(key, value)? {
                 return Ok(true);
             }
         }
@@ -297,6 +298,43 @@ impl<K, V> HamtNode<K, V> {
         }
 
         Ok(false)
+    }
+
+    /// Finds the first key-value entry in the HAMT that satisfies a predicate.
+    ///
+    /// Traversal proceeds lazily across child nodes, returning `Ok(Some((key, value)))`
+    /// and stopping immediately on the first entry for which `predicate(&key, &value)`
+    /// returns `Ok(true)`. Returns `Ok(None)` if no matching entry is found.
+    ///
+    /// # Errors
+    /// Returns any error emitted by `resolver` or `predicate`.
+    pub fn find_entry<F, E>(
+        &self,
+        resolver: &mut F,
+        predicate: &mut impl FnMut(&K, &V) -> Result<bool, E>,
+    ) -> Result<Option<(K, V)>, E>
+    where
+        K: Clone,
+        V: Clone,
+        F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    {
+        for (key, value) in &self.leaves {
+            if predicate(key, value)? {
+                return Ok(Some((key.clone(), value.clone())));
+            }
+        }
+
+        for child in &self.children {
+            let child_node = match child {
+                NodeRef::Resolved(node) => node.clone(),
+                NodeRef::Lazy(hash) => resolver(hash)?,
+            };
+            if let Some(entry) = child_node.find_entry(resolver, predicate)? {
+                return Ok(Some(entry));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Resolves which slot `path_hash` routes to at `depth` and returns what

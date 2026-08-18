@@ -870,31 +870,81 @@ fn test_hamt_any_entry_short_circuits() {
     let mut resolver = |hash: &StructuralHash| {
         resolver_calls.set(resolver_calls.get() + 1);
         if hash == &child_hash {
-            Ok::<_, ()>(child.clone())
+            Ok::<_, &'static str>(child.clone())
         } else {
-            Err(())
+            Err("not found")
         }
     };
 
     // Root leaf match: should return Ok(true) WITHOUT invoking resolver
     let has_root_leaf = root
-        .any_entry(&mut resolver, &mut |k, _v| *k == 5)
+        .any_entry(&mut resolver, &mut |k, _v| Ok(*k == 5))
         .expect("search should succeed");
     assert!(has_root_leaf);
     assert_eq!(resolver_calls.get(), 0);
 
     // Child leaf match: should invoke resolver and return Ok(true)
     let has_child_leaf = root
-        .any_entry(&mut resolver, &mut |k, _v| *k == 20)
+        .any_entry(&mut resolver, &mut |k, _v| Ok(*k == 20))
         .expect("search should succeed");
     assert!(has_child_leaf);
     assert_eq!(resolver_calls.get(), 1);
 
     // No match: returns Ok(false)
     let has_missing = root
-        .any_entry(&mut resolver, &mut |k, _v| *k == 999)
+        .any_entry(&mut resolver, &mut |k, _v| Ok(*k == 999))
         .expect("search should succeed");
     assert!(!has_missing);
+
+    // Fallible predicate error propagation
+    let err_result = root.any_entry(&mut resolver, &mut |_k, _v| Err("db error"));
+    assert_eq!(err_result, Err("db error"));
+}
+
+#[test]
+fn test_hamt_find_entry() {
+    let key = b"dummy_key";
+    let child_datamap = 1_u32 << 3;
+    let child_hash = HamtNode::<u64, u64>::compute_structural_hash(
+        key,
+        child_datamap,
+        0,
+        &[(42_u64, 420_u64)],
+        &[],
+    );
+    let child = Arc::new(HamtNode {
+        datamap: child_datamap,
+        nodemap: 0,
+        leaves: vec![(42_u64, 420_u64)],
+        children: vec![],
+        structural_hash: child_hash,
+    });
+
+    let root = HamtNode {
+        datamap: 1_u32 << 1,
+        nodemap: 1_u32 << 5,
+        leaves: vec![(7_u64, 70_u64)],
+        children: vec![NodeRef::Lazy(child_hash)],
+        structural_hash: [0; 16],
+    };
+
+    let mut resolver = |hash: &StructuralHash| {
+        if hash == &child_hash {
+            Ok::<_, ()>(child.clone())
+        } else {
+            Err(())
+        }
+    };
+
+    let found = root
+        .find_entry(&mut resolver, &mut |k, _v| Ok::<_, ()>(*k == 42))
+        .expect("find should succeed");
+    assert_eq!(found, Some((42_u64, 420_u64)));
+
+    let not_found = root
+        .find_entry(&mut resolver, &mut |k, _v| Ok::<_, ()>(*k == 999))
+        .expect("find should succeed");
+    assert_eq!(not_found, None);
 }
 
 /// Deterministic PRNG (`splitmix64`) so the property test below is
@@ -1597,6 +1647,29 @@ fn test_build_hamt_uses_final_partial_hash_chunk() {
     assert_eq!(node.children.len(), 0);
     assert_eq!(node.datamap.count_ones(), 2);
     assert_eq!(node.nodemap, 0);
+}
+
+#[test]
+fn test_diff_hamt_nodes_shortcut() {
+    let key = b"dummy_server_key";
+    let root_a = build_hamt(key, vec![(1_u64, 100_u64), (2_u64, 200_u64)]).expect("build A");
+    let root_b = build_hamt(key, vec![(1_u64, 100_u64), (2_u64, 250_u64)]).expect("build B");
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("no lazy children in tree")
+    };
+
+    let (added, removed) =
+        crate::hamt::diff_hamt_nodes(&root_a, &root_b, &mut resolver).expect("diff should succeed");
+
+    assert_eq!(added, vec![(2, 250)]);
+    assert_eq!(removed, vec![(2, 200)]);
+
+    // Identical structural hash fast-path
+    let (added_same, removed_same) =
+        crate::hamt::diff_hamt_nodes(&root_a, &root_a, &mut resolver).expect("diff should succeed");
+    assert!(added_same.is_empty());
+    assert!(removed_same.is_empty());
 }
 
 #[test]
