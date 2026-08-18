@@ -529,12 +529,7 @@ where
             continue;
         }
 
-        let Some(next_depth) = depth.checked_add(1) else {
-            return Err(HamtBuildError::HashCollision {
-                depth,
-                bucket_size: bucket.len(),
-            });
-        };
+        let next_depth = depth + 1;
         if next_depth >= HAMT_MAX_DEPTH {
             return Err(HamtBuildError::HashCollision {
                 depth,
