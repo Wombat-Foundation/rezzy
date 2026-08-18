@@ -1256,6 +1256,23 @@ fn test_hamt_insert_propagates_build_hash_collision() {
 }
 
 #[test]
+fn test_hamt_insert_value_replacement() {
+    let key = b"dummy_server_key";
+    let root = build_hamt(key, vec![(10_u64, 100_u64)]).expect("build should work");
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("no lazy children in tree")
+    };
+
+    // Replace value for existing key 10
+    let (new_root, old_val) = crate::hamt::insert(&root, key, 10_u64, 200_u64, &mut resolver)
+        .expect("insert should succeed");
+
+    assert_eq!(old_val, Some(100_u64));
+    assert_eq!(new_root.get(key, &10_u64), Some(&200_u64));
+}
+
+#[test]
 fn test_hamt_error_display_formatting() {
     use alloc::string::ToString;
 
