@@ -487,11 +487,22 @@ where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
     M: FnMut(StructuralHash) -> bool,
 {
-    walk_reachable_node_hashes_at_depth(root, resolver, mark, 0)
+    if !mark(root.structural_hash) {
+        return Ok(());
+    }
+    walk_reachable_children(root, resolver, mark, 0)
 }
 
-fn walk_reachable_node_hashes_at_depth<K, V, F, E, M>(
-    root: &Arc<HamtNode<K, V>>,
+/// Walks `node`'s children, checking each child's hash against `mark`
+/// *before* resolving it — a shared subtree already marked by an earlier
+/// call in the same sweep is skipped without ever calling `resolver` for
+/// it. This matters beyond avoiding wasted resolves: if the caller is
+/// mid-GC-sweep and an already-accounted-for node has since been reaped by
+/// a concurrent pass, resolving it again to reach a `mark` check we didn't
+/// need would fail the whole walk for no reason — checking first makes
+/// that impossible.
+fn walk_reachable_children<K, V, F, E, M>(
+    node: &Arc<HamtNode<K, V>>,
     resolver: &mut F,
     mark: &mut M,
     depth: usize,
@@ -500,16 +511,16 @@ where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
     M: FnMut(StructuralHash) -> bool,
 {
-    if !mark(root.structural_hash) {
-        return Ok(());
-    }
     if depth >= HAMT_MAX_DEPTH {
         return Err(HamtTraversalError::MaxDepthExceeded { depth });
     }
     let next_depth = depth.saturating_add(1);
-    for child in &root.children {
+    for child in &node.children {
+        if !mark(child.structural_hash()) {
+            continue;
+        }
         let child_node = resolve_node(child, resolver).map_err(HamtTraversalError::Resolve)?;
-        walk_reachable_node_hashes_at_depth(&child_node, resolver, mark, next_depth)?;
+        walk_reachable_children(&child_node, resolver, mark, next_depth)?;
     }
     Ok(())
 }

@@ -2126,6 +2126,112 @@ fn test_walk_reachable_node_hashes_shares_subtrees_across_roots() {
 }
 
 #[test]
+fn test_walk_reachable_node_hashes_skips_shared_lazy_child_without_resolving() {
+    use std::collections::BTreeSet;
+
+    let key = b"dummy_server_key";
+
+    // A lazy subtree shared by both roots. If the walk ever resolves an
+    // already-marked child (instead of checking `mark` on the child's hash
+    // first), this resolver call is where that shows up.
+    let shared_leaf = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1_u64, 100_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
+    });
+    let unique_leaf_a = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(2_u64, 200_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(2, 200)], &[]),
+    });
+    let unique_leaf_b = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(3_u64, 300_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(3, 300)], &[]),
+    });
+
+    let shared_lazy = NodeRef::<u64, u64>::Lazy(shared_leaf.structural_hash);
+    let unique_a_lazy = NodeRef::<u64, u64>::Lazy(unique_leaf_a.structural_hash);
+    let unique_b_lazy = NodeRef::<u64, u64>::Lazy(unique_leaf_b.structural_hash);
+
+    // Two roots with genuinely different structural hashes (different
+    // second child), each sharing the same first child subtree.
+    let root_a = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 0b11,
+        leaves: vec![],
+        children: vec![shared_lazy.clone(), unique_a_lazy.clone()],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            0b11,
+            &[],
+            &[shared_lazy.clone(), unique_a_lazy.clone()],
+        ),
+    });
+    let root_b = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 0b11,
+        leaves: vec![],
+        children: vec![shared_lazy.clone(), unique_b_lazy.clone()],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            0b11,
+            &[],
+            &[shared_lazy.clone(), unique_b_lazy.clone()],
+        ),
+    });
+    assert_ne!(
+        root_a.structural_hash, root_b.structural_hash,
+        "roots must genuinely differ so root-level mark() can't short-circuit the whole walk"
+    );
+
+    let mut shared_resolve_count = 0_usize;
+    let mut resolver = |hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        if *hash == shared_leaf.structural_hash {
+            shared_resolve_count = shared_resolve_count.saturating_add(1);
+            Ok(shared_leaf.clone())
+        } else if *hash == unique_leaf_a.structural_hash {
+            Ok(unique_leaf_a.clone())
+        } else if *hash == unique_leaf_b.structural_hash {
+            Ok(unique_leaf_b.clone())
+        } else {
+            panic!("unexpected lazy resolution: {hash:?}")
+        }
+    };
+
+    let mut seen: BTreeSet<StructuralHash> = BTreeSet::new();
+    {
+        let mut mark = |hash: StructuralHash| seen.insert(hash);
+        crate::hamt::walk_reachable_node_hashes(&root_a, &mut resolver, &mut mark)
+            .expect("walk over root_a should succeed");
+    }
+    {
+        let mut mark = |hash: StructuralHash| seen.insert(hash);
+        crate::hamt::walk_reachable_node_hashes(&root_b, &mut resolver, &mut mark)
+            .expect("walk over root_b should succeed");
+    }
+
+    // The root-level hashes genuinely differ, so both roots get walked --
+    // but the shared child must be resolved exactly once across both
+    // walks, and the whole reachable set is root_a + root_b + 3 leaves.
+    assert_eq!(shared_resolve_count, 1);
+    assert!(seen.contains(&root_a.structural_hash));
+    assert!(seen.contains(&root_b.structural_hash));
+    assert!(seen.contains(&shared_leaf.structural_hash));
+    assert!(seen.contains(&unique_leaf_a.structural_hash));
+    assert!(seen.contains(&unique_leaf_b.structural_hash));
+    assert_eq!(seen.len(), 5);
+}
+
+#[test]
 fn test_walk_reachable_node_hashes_root_already_seen_short_circuits() {
     let key = b"dummy_server_key";
     let entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
