@@ -1306,6 +1306,44 @@ fn test_hamt_insert_propagates_build_hash_collision() {
 }
 
 #[test]
+fn test_insert_node_with_ctx_guards_max_depth_reentry() {
+    // Exercises the `depth >= HAMT_MAX_DEPTH` guard in `insert_node_with_ctx`
+    // directly. This is a defensive re-entry check: `insert_into_child_slot`
+    // always calls back in with `next_depth = depth.saturating_add(1)`, so in
+    // practice the guard is reached one recursion after the last real slot,
+    // rather than through the leaf-split-at-`build_node` path already covered
+    // by `test_hamt_insert_propagates_build_hash_collision`.
+    let key = b"dummy_server_key";
+    let node = Arc::new(HamtNode::<u64, u64> {
+        datamap: 0,
+        nodemap: 0,
+        leaves: vec![(1_u64, 10_u64)],
+        children: vec![],
+        structural_hash: [0; 16],
+    });
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("resolver should not be called at a depth-exhausted guard")
+    };
+    let mut key_hash_fn = |k: &u64| key_path_hash(key, k);
+    let mut ctx = InsertCtx {
+        structural_key: key,
+        key_hash: &mut key_hash_fn,
+        resolver: &mut resolver,
+    };
+
+    let result = insert_node_with_ctx(&node, 2_u64, 20_u64, [0u8; 16], HAMT_MAX_DEPTH, &mut ctx);
+
+    assert_eq!(
+        result.unwrap_err(),
+        HamtMutateError::HashCollision {
+            depth: HAMT_MAX_DEPTH,
+            bucket_size: 2,
+        }
+    );
+}
+
+#[test]
 fn test_hamt_insert_value_replacement() {
     let key = b"dummy_server_key";
     let root = build_hamt(key, vec![(10_u64, 100_u64)]).expect("build should work");
