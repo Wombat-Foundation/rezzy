@@ -478,6 +478,15 @@ where
 /// Returns [`HamtTraversalError::Resolve`] if `resolver` fails, or
 /// [`HamtTraversalError::MaxDepthExceeded`] if the walk recurses past the
 /// deepest depth a legitimately-built HAMT can have.
+///
+/// On either error, `mark` may already have recorded the hash of the node
+/// that failed to resolve (or of nodes deeper in an aborted branch) as
+/// "seen," even though its subtree was never walked and its descendants
+/// were never marked. Retrying the sweep against that same set would then
+/// skip that subtree as already-accounted-for, silently omitting live
+/// descendants from the result. Do not reuse a `mark` set after an error —
+/// discard it and rebuild from scratch (or restart the whole sweep) instead
+/// of retrying with it in place.
 pub fn walk_reachable_node_hashes<K, V, F, E, M>(
     root: &Arc<HamtNode<K, V>>,
     resolver: &mut F,
