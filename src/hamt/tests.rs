@@ -1202,7 +1202,34 @@ fn test_build_hamt_with_key_hash_reports_max_depth_exhaustion() {
         |_| [0u8; 16],
     );
 
-    assert!(matches!(result, Err(HamtBuildError::HashCollision { .. })));
+    assert_eq!(
+        result.unwrap_err(),
+        HamtBuildError::HashCollision {
+            depth: HAMT_MAX_DEPTH - 1,
+            bucket_size: 2,
+        }
+    );
+}
+
+#[test]
+fn test_build_hamt_adversarial_multi_key_collision() {
+    let key = b"dummy_server_key";
+    let entries = vec![
+        (CollidingKey(1), 10_u64),
+        (CollidingKey(2), 20_u64),
+        (CollidingKey(3), 30_u64),
+        (CollidingKey(4), 40_u64),
+        (CollidingKey(5), 50_u64),
+    ];
+    let result = crate::hamt::build_hamt_with_key_hash(key, entries, |_| [0u8; 16]);
+
+    assert_eq!(
+        result.unwrap_err(),
+        HamtBuildError::HashCollision {
+            depth: HAMT_MAX_DEPTH - 1,
+            bucket_size: 5,
+        }
+    );
 }
 
 #[test]
@@ -1219,7 +1246,13 @@ fn test_hamt_insert_propagates_build_hash_collision() {
     // forces the leaf-split path all the way to HAMT_MAX_DEPTH.
     let result = crate::hamt::insert(&root, key, CollidingKey(2), 20_u64, &mut resolver);
 
-    assert!(matches!(result, Err(HamtMutateError::HashCollision { .. })));
+    assert_eq!(
+        result.unwrap_err(),
+        HamtMutateError::HashCollision {
+            depth: HAMT_MAX_DEPTH - 1,
+            bucket_size: 2,
+        }
+    );
 }
 
 #[test]
