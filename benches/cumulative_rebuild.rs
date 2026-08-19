@@ -46,6 +46,7 @@ use rezzy::state::LtHash;
 use sha2::{Digest, Sha256};
 
 mod common;
+use common::{collect_all_nodes, collect_new_nodes, to_persisted, Xorshift128};
 
 const S_MAX: usize = 4096;
 const STRUCTURAL_KEY: &[u8] = b"bench-cumulative-rebuild";
@@ -90,7 +91,7 @@ fn unreachable_resolver(
 }
 
 fn node_bytes(node: &HamtNode<Key, Value>) -> usize {
-    common::to_persisted(node).encode_v1().len()
+    to_persisted(node).encode_v1().len()
 }
 
 fn encode_full_map(state: &HashMap<Key, Value>) -> usize {
@@ -109,7 +110,7 @@ fn main() {
     );
     println!("(this is a real step-by-step simulation, not an estimate)\n");
 
-    let mut rng = common::Xorshift128::new(0x00C0_FFEE);
+    let mut rng = Xorshift128::new(0x00C0_FFEE);
     let mut keys: Vec<Key> = Vec::with_capacity(S_MAX);
     let mut values: Vec<Value> = Vec::with_capacity(S_MAX);
     for _ in 0..S_MAX {
@@ -172,13 +173,13 @@ fn main() {
         };
         if let Some(old_root) = &hamt_root {
             let mut new_nodes = Vec::new();
-            common::collect_new_nodes(old_root, &new_root, &mut new_nodes);
+            collect_new_nodes(old_root, &new_root, &mut new_nodes);
             for node in &new_nodes {
                 cum_hamt_persist_bytes += node_bytes(node) as u128;
             }
         } else {
             let mut new_nodes = Vec::new();
-            common::collect_all_nodes(&new_root, &mut new_nodes);
+            collect_all_nodes(&new_root, &mut new_nodes);
             for node in &new_nodes {
                 cum_hamt_persist_bytes += node_bytes(node) as u128;
             }

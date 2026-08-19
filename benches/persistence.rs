@@ -35,6 +35,7 @@ use std::time::{Duration, Instant};
 use rezzy::hamt::{self, codec::HamtCodec, HamtNode};
 
 mod common;
+use common::{collect_new_nodes, to_persisted, Xorshift128};
 
 // String keys/values keep this bench decoupled from rezzy's real `Key`/`Value`
 // aliases (which don't implement `HamtCodec`) while still exercising the same
@@ -45,7 +46,7 @@ type Value = String;
 const STRUCTURAL_KEY: &[u8] = b"bench-persistence";
 
 fn make_entries(n: usize, seed: u64) -> Vec<(Key, Value)> {
-    let mut rng = common::Xorshift128::new(seed);
+    let mut rng = Xorshift128::new(seed);
     let mut entries = Vec::with_capacity(n);
     let mut used = std::collections::HashSet::new();
     while entries.len() < n {
@@ -85,7 +86,7 @@ fn bench_incremental_persist(n: usize, steps: usize) {
         .expect("build should not collide");
     let mut flat_state: std::collections::HashMap<Key, Value> = base_entries.into_iter().collect();
 
-    let mut rng = common::Xorshift128::new(0xBEEF);
+    let mut rng = Xorshift128::new(0xBEEF);
     let mut mutations: Vec<(Key, Value)> = Vec::with_capacity(steps);
     let existing_keys: Vec<Key> = flat_state.keys().cloned().collect();
     for _ in 0..steps {
@@ -120,9 +121,9 @@ fn bench_incremental_persist(n: usize, steps: usize) {
             hamt::insert(&root, STRUCTURAL_KEY, k.clone(), v.clone(), &mut resolver)
                 .expect("insert should not collide");
         let mut new_nodes = Vec::new();
-        common::collect_new_nodes(&root, &new_root, &mut new_nodes);
+        collect_new_nodes(&root, &new_root, &mut new_nodes);
         for node in &new_nodes {
-            hamt_bytes += common::to_persisted(node).encode_v1().len() as u64;
+            hamt_bytes += to_persisted(node).encode_v1().len() as u64;
         }
         root = new_root;
         black_box(&root);
@@ -170,7 +171,7 @@ fn report_speedup(label: &str, legacy: Duration, hamt: Duration) {
 ///   the full state fewer times: cost drops by roughly `batch`x since it's
 ///   simply `steps / batch` full re-serializations instead of `steps`.
 /// - hamt's advantage isn't "diff every hop and sum the deltas" — it's a
-///   single [`common::collect_new_nodes`] between the root at the start of the
+///   single [`collect_new_nodes`] between the root at the start of the
 ///   batch and the root at the end. Mutations within a batch that keep
 ///   revisiting the same spine (e.g. two edits under the same top-level
 ///   bucket) only pay for their *final* shared ancestors once, so this
@@ -185,7 +186,7 @@ fn bench_batched_persist(n: usize, steps: usize, batch: usize) {
         .expect("build should not collide");
     let mut flat_state: std::collections::HashMap<Key, Value> = base_entries.into_iter().collect();
 
-    let mut rng = common::Xorshift128::new(0xBEEF);
+    let mut rng = Xorshift128::new(0xBEEF);
     let existing_keys: Vec<Key> = flat_state.keys().cloned().collect();
     let mut mutations: Vec<(Key, Value)> = Vec::with_capacity(steps);
     for _ in 0..steps {
@@ -224,9 +225,9 @@ fn bench_batched_persist(n: usize, steps: usize, batch: usize) {
             root = new_root;
         }
         let mut new_nodes = Vec::new();
-        common::collect_new_nodes(&batch_start_root, &root, &mut new_nodes);
+        collect_new_nodes(&batch_start_root, &root, &mut new_nodes);
         for node in &new_nodes {
-            hamt_bytes += common::to_persisted(node).encode_v1().len() as u64;
+            hamt_bytes += to_persisted(node).encode_v1().len() as u64;
         }
         black_box(&root);
     }

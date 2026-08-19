@@ -48,6 +48,7 @@ use std::time::{Duration, Instant};
 use rezzy::hamt::{self, codec::HamtCodec, HamtNode};
 
 mod common;
+use common::{collect_new_nodes, to_persisted, Xorshift128};
 
 type Key = String;
 type Value = String;
@@ -56,7 +57,7 @@ const STRUCTURAL_KEY: &[u8] = b"bench-state-groups";
 const SNAPSHOT_EVERY: usize = 100;
 
 fn make_entries(n: usize, seed: u64) -> Vec<(Key, Value)> {
-    let mut rng = common::Xorshift128::new(seed);
+    let mut rng = Xorshift128::new(seed);
     let mut entries = Vec::with_capacity(n);
     let mut used = std::collections::HashSet::new();
     while entries.len() < n {
@@ -136,7 +137,7 @@ fn bench_state_groups(n: usize, steps: usize) {
     // routine case for HAMT (every lookup is O(log32 N) regardless).
     let cold_key = base_entries[0].0.clone();
 
-    let mut rng = common::Xorshift128::new(0xBEEF);
+    let mut rng = Xorshift128::new(0xBEEF);
     let mutable_keys: Vec<Key> = base_entries
         .iter()
         .skip(1)
@@ -177,9 +178,9 @@ fn bench_state_groups(n: usize, steps: usize) {
         .expect("insert should not collide");
         hamt_root = new_root;
         let mut new_nodes = Vec::new();
-        common::collect_new_nodes(&prev_root, &hamt_root, &mut new_nodes);
+        collect_new_nodes(&prev_root, &hamt_root, &mut new_nodes);
         for node in &new_nodes {
-            hamt_bytes_total += node_encoded_len(node) as u64;
+            hamt_bytes_total += to_persisted(node).encode_v1().len() as u64;
         }
         black_box(&hamt_root);
     }
@@ -313,22 +314,6 @@ fn bench_state_groups(n: usize, steps: usize) {
         hamt_lookup_elapsed,
     );
     println!();
-}
-
-fn node_encoded_len(node: &HamtNode<Key, Value>) -> usize {
-    hamt::PersistedInternalNode {
-        datamap: node.datamap,
-        nodemap: node.nodemap,
-        structural_hash: node.structural_hash,
-        leaves: node.leaves.clone(),
-        child_hashes: node
-            .children
-            .iter()
-            .map(hamt::NodeRef::structural_hash)
-            .collect(),
-    }
-    .encode_v1()
-    .len()
 }
 
 fn report_speedup(label: &str, slow: Duration, fast: Duration) {
