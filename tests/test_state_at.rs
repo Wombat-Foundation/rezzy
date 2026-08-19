@@ -434,3 +434,504 @@ fn test_resolve_merge_fast_path_hashed_mismatch() {
     let expected_hash = rezzy::state::lthash::LtHash::from_state(&merged.state);
     assert_eq!(merged.hash, expected_hash);
 }
+
+// ─── Coverage migrations from src/state/at.rs (unit → integration) ────────
+
+/// `compute_state_at` returns `None` for an absent target; the batch variant
+/// resolves present targets while silently skipping absent ones.
+#[test]
+fn test_compute_state_at_missing_target_and_batch() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    assert!(
+        rezzy::compute_state_at(&"GHOST".to_string(), &events_map, StateResVersion::V2).is_none()
+    );
+
+    let batch = rezzy::compute_state_at_batch(&["A", "GHOST"], &events_map, StateResVersion::V2);
+    assert!(batch.contains_key("A"));
+    assert!(!batch.contains_key("GHOST"));
+}
+
+/// `Display for StateComputationError`.
+#[test]
+fn test_state_computation_error_display() {
+    let cyc = rezzy::StateComputationError::<&'static str>::CycleDetected;
+    assert!(cyc.to_string().contains("Cycle detected"));
+
+    let cb = rezzy::StateComputationError::<&'static str>::Callback("boom");
+    assert_eq!(cb.to_string(), "Callback error: boom");
+}
+
+/// The non-optimized streaming pipeline catches a `prev_events` cycle instead
+/// of panicking.
+#[test]
+fn test_compute_state_at_streaming_non_optimized_cycle() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"A","type":"m.room.message","sender":"@x:x","depth":0,"prev_events":["B"],"auth_events":[]}
+{"event_id":"B","type":"m.room.message","sender":"@x:x","depth":0,"prev_events":["A"],"auth_events":[]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    rezzy::compute_state_at_streaming(&["A"], &events_map, StateResVersion::V2, |_, _| {});
+}
+
+/// `compute_auth_chain_diff`'s real heap traversal: the U-walk catch-up loop,
+/// its break on shallower U depth, and the C-walk expansion pushing
+/// newly-reachable auth ids. Only `c2` is seeded as a conflicted tip; `c1`
+/// must be discovered via the C-walk.
+#[test]
+fn test_compute_auth_chain_diff_real_traversal() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"root","type":"m.room.create","state_key":"","sender":"@x:x","depth":0,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"u1","type":"m.room.member","state_key":"@u:x","sender":"@u:x","depth":1,"content":{"membership":"join"},"prev_events":[],"auth_events":["root"]}
+{"event_id":"c1","type":"m.room.member","state_key":"@c1:x","sender":"@c1:x","depth":1,"content":{"membership":"join"},"prev_events":[],"auth_events":["root"]}
+{"event_id":"c2","type":"m.room.member","state_key":"@c2:x","sender":"@c2:x","depth":2,"content":{"membership":"join"},"prev_events":[],"auth_events":["c1"]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    let mut unconflicted: rezzy::SharedState<String, String> = rezzy::SharedState::new();
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@u:x".to_string(),
+        ),
+        "u1".to_string(),
+    );
+    let mut conflicted = rezzy::HashSet::new();
+    conflicted.insert("c2".to_string());
+
+    let diff = rezzy::compute_auth_chain_diff(&unconflicted, &conflicted, &events_map);
+    assert!(diff.contains("c1"), "c1 must be in auth(C) \\ auth(U)");
+    assert!(diff.contains("c2"), "c2 must be in auth(C) \\ auth(U)");
+    assert!(!diff.contains("u1"));
+    assert!(!diff.contains("root"));
+}
+
+/// `compute_merge_base` edge cases: empty extremities and a single extremity
+/// returning itself.
+#[test]
+fn test_compute_merge_base_empty_and_single() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(
+        r#"
+{"event_id":"A","type":"m.room.message","sender":"@x:x","depth":1,"prev_events":[],"auth_events":[]}
+    "#,
+    )
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    let empty: &[&str] = &[];
+    assert!(rezzy::compute_merge_base(empty, &events_map).is_none());
+    assert_eq!(
+        rezzy::compute_merge_base(&["A"], &events_map),
+        Some(&"A".to_string())
+    );
+}
+
+/// `compute_merge_base`'s merge-base-found path and the parent-propagation
+/// push when a parent mask gains bits.
+#[test]
+fn test_compute_merge_base_finds_common_ancestor() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"R","type":"m.room.create","state_key":"","sender":"@x:x","depth":0,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"A","type":"m.room.member","state_key":"@a:x","sender":"@a:x","depth":1,"content":{"membership":"join"},"prev_events":["R"],"auth_events":[]}
+{"event_id":"B","type":"m.room.member","state_key":"@b:x","sender":"@b:x","depth":1,"content":{"membership":"join"},"prev_events":["R"],"auth_events":[]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    assert_eq!(
+        rezzy::compute_merge_base(&["A", "B"], &events_map),
+        Some(&"R".to_string())
+    );
+}
+
+/// `compute_merge_bases`: the convergence/junction path, the
+/// fewer-than-2-extremities early return, the `max_steps` budget break, and
+/// the disjoint-DAG empty result.
+#[test]
+fn test_compute_merge_bases_convergence_and_edge_cases() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"R","type":"m.room.create","state_key":"","sender":"@x:x","depth":0,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"A","type":"m.room.member","state_key":"@a:x","sender":"@a:x","depth":1,"content":{"membership":"join"},"prev_events":["R"],"auth_events":[]}
+{"event_id":"B","type":"m.room.member","state_key":"@b:x","sender":"@b:x","depth":1,"content":{"membership":"join"},"prev_events":["R"],"auth_events":[]}
+{"event_id":"X","type":"m.room.message","sender":"@x:x","depth":0,"prev_events":[],"auth_events":[]}
+{"event_id":"Y","type":"m.room.message","sender":"@x:x","depth":0,"prev_events":[],"auth_events":[]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    // Two tips converging on R.
+    let junctions = rezzy::compute_merge_bases(&["A", "B"], &events_map, 100);
+    assert_eq!(junctions.len(), 1);
+    assert_eq!(junctions[0].event_id, &"R".to_string());
+    assert_eq!(junctions[0].mask, 0b11);
+
+    // Fewer than 2 extremities -> empty.
+    assert!(rezzy::compute_merge_bases(&["A"], &events_map, 100).is_empty());
+
+    // Zero step budget -> no traversal happens.
+    assert!(rezzy::compute_merge_bases(&["A", "B"], &events_map, 0).is_empty());
+
+    // Disjoint tips -> no common ancestor, empty result.
+    assert!(rezzy::compute_merge_bases(&["X", "Y"], &events_map, 100).is_empty());
+}
+
+/// `find_backward_extremities`: events whose `prev_events` reference ids
+/// absent from the map and unacknowledged by the `exists` oracle.
+#[test]
+fn test_find_backward_extremities() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"E1","type":"m.room.message","sender":"@x:x","depth":0,"prev_events":["MISSING"],"auth_events":[]}
+{"event_id":"E2","type":"m.room.message","sender":"@x:x","depth":0,"prev_events":["E1"],"auth_events":[]}
+{"event_id":"E3","type":"m.room.message","sender":"@x:x","depth":0,"prev_events":["REMOTE"],"auth_events":[]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    let extremities = rezzy::find_backward_extremities(&events_map, |id| id == "REMOTE");
+    assert_eq!(extremities.len(), 1);
+    assert_eq!(extremities[0].event_id, "E1");
+    assert_eq!(
+        extremities[0].missing_prev_events,
+        vec!["MISSING".to_string()]
+    );
+}
+
+/// `find_missing_auth_events`: events whose `auth_events` reference ids absent
+/// from the map and unacknowledged by the `exists` oracle.
+#[test]
+fn test_find_missing_auth_events() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"E1","type":"m.room.member","state_key":"@e1:x","sender":"@e1:x","depth":0,"content":{"membership":"join"},"prev_events":[],"auth_events":["MISSING_AUTH"]}
+{"event_id":"E2","type":"m.room.member","state_key":"@e2:x","sender":"@e2:x","depth":0,"content":{"membership":"join"},"prev_events":[],"auth_events":["E1"]}
+{"event_id":"E3","type":"m.room.member","state_key":"@e3:x","sender":"@e3:x","depth":0,"content":{"membership":"join"},"prev_events":[],"auth_events":["REMOTE_AUTH"]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    let missing = rezzy::find_missing_auth_events(&events_map, |id| id == "REMOTE_AUTH");
+    assert_eq!(missing.len(), 1);
+    assert_eq!(missing[0].event_id, "E1");
+    assert_eq!(
+        missing[0].missing_auth_events,
+        vec!["MISSING_AUTH".to_string()]
+    );
+}
+
+/// `compute_topo_positions` on a non-empty DAG: every event gets a unique
+/// 1-indexed topological position, parents first.
+#[test]
+fn test_compute_topo_positions_non_empty() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.message","sender":"@x:x","depth":2,"prev_events":["A"],"auth_events":[]}
+{"event_id":"C","type":"m.room.message","sender":"@x:x","depth":2,"prev_events":["A"],"auth_events":[]}
+{"event_id":"D","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B","C"],"auth_events":[]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    let positions = rezzy::compute_topo_positions(&events_map, |a: &String, b: &String| a.cmp(b));
+    assert_eq!(positions, vec!["A", "B", "C", "D"]);
+}
+
+/// `reverse_topological_order`'s main path — newest event first, parents after
+/// descendants.
+#[test]
+fn test_reverse_topological_order_non_empty() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.message","sender":"@x:x","depth":2,"prev_events":["A"],"auth_events":[]}
+{"event_id":"C","type":"m.room.message","sender":"@x:x","depth":2,"prev_events":["A"],"auth_events":[]}
+{"event_id":"D","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B","C"],"auth_events":[]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    let order = rezzy::reverse_topological_order(
+        &"D".to_string(),
+        &events_map,
+        |a: &String, b: &String| a.cmp(b),
+    );
+    assert_eq!(order, vec!["D", "B", "C", "A"]);
+}
+
+/// `verify_pagination`'s `Duplicate` and `AncestorAfterDescendant` violation
+/// paths.
+#[test]
+fn test_verify_pagination_detects_violations() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.message","sender":"@x:x","depth":2,"prev_events":["A"],"auth_events":[]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    // "A" is duplicated on page 0, and "A" (ancestor) precedes "B" (descendant).
+    let pages: Vec<Vec<String>> = vec![vec!["A".into(), "A".into()], vec!["B".into()]];
+    let violations = rezzy::verify_pagination(&events_map, &pages);
+    assert!(violations
+        .iter()
+        .any(|v| matches!(v, PaginationViolation::Duplicate { .. })));
+    assert!(violations
+        .iter()
+        .any(|v| matches!(v, PaginationViolation::AncestorAfterDescendant { .. })));
+}
+
+/// `compute_state_at` on an all-equal fork: an event whose two parents resolve
+/// to identical states short-circuits the merge.
+#[test]
+fn test_resolve_merge_fast_path_identical_parents() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.message","sender":"@x:x","depth":2,"prev_events":["A"],"auth_events":["A"]}
+{"event_id":"C","type":"m.room.message","sender":"@x:x","depth":2,"prev_events":["A"],"auth_events":["A"]}
+{"event_id":"D","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B","C"],"auth_events":["A"]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    let state = rezzy::compute_state_at(&"D".to_string(), &events_map, StateResVersion::V2);
+    let state = state.expect("state at D must resolve");
+    assert!(state.contains_key(&(
+        rezzy::basespec::event_types::EventType::from("m.room.create"),
+        String::new()
+    )));
+}
+
+/// `compute_state_at` on a genuinely conflicted fork: two parents share a
+/// state key with different values, so full resolution must run.
+#[test]
+fn test_resolve_multiple_prev_states_update_arm() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.topic","state_key":"","sender":"@x:x","depth":2,"content":{"topic":"b"},"prev_events":["A"],"auth_events":["A"]}
+{"event_id":"C","type":"m.room.topic","state_key":"","sender":"@x:x","depth":2,"content":{"topic":"c"},"prev_events":["A"],"auth_events":["A"]}
+{"event_id":"D","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B","C"],"auth_events":["A"]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    let state = rezzy::compute_state_at(&"D".to_string(), &events_map, StateResVersion::V2);
+    let state = state.expect("conflicted fork at D must resolve");
+    // The conflicted topic key must be present, resolved to one of B/C.
+    assert!(state.contains_key(&(
+        rezzy::basespec::event_types::EventType::from("m.room.topic"),
+        String::new()
+    )));
+}
+
+/// `resolve_merge_fast_path_hashed`'s slow path — the incremental `LtHash`
+/// diff arms `Add` and `Remove` when parent states genuinely differ.
+#[test]
+fn test_resolve_merge_fast_path_hashed_slow_path_diff() {
+    use rezzy::state::at::{resolve_merge_fast_path_hashed, HashedState, LocalAuthCache};
+
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@creator:x","depth":1,"content":{"room_version":"10","creator":"@creator:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"M","type":"m.room.member","state_key":"@creator:x","sender":"@creator:x","depth":2,"content":{"membership":"join"},"prev_events":["A"],"auth_events":["A"]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    let mut cache = LocalAuthCache::new(StateResVersion::V2);
+
+    // Add arm: second parent contributes a new member key.
+    let mut first: HashedState<String, String> = HashedState::new();
+    first.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "A".to_string(),
+    );
+    first.hash = rezzy::state::lthash::LtHash::from_state(&first.state);
+
+    let mut second: HashedState<String, String> = HashedState::new();
+    second.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "A".to_string(),
+    );
+    second.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@creator:x".to_string(),
+        ),
+        "M".to_string(),
+    );
+    second.hash = rezzy::state::lthash::LtHash::from_state(&second.state);
+
+    let resolved = resolve_merge_fast_path_hashed(
+        &[first.clone(), second.clone()],
+        &events_map,
+        &mut cache,
+        StateResVersion::V2,
+    );
+    assert!(resolved.state.contains_key(&(
+        rezzy::basespec::event_types::EventType::from("m.room.create"),
+        String::new()
+    )));
+    assert!(resolved.state.contains_key(&(
+        rezzy::basespec::event_types::EventType::from("m.room.member"),
+        "@creator:x".to_string()
+    )));
+
+    // Remove arm: both parents disagree on a member key whose candidate
+    // events are absent from events_map, so the conflicted key is dropped
+    // from the resolved state.
+    let mut first2: HashedState<String, String> = HashedState::new();
+    first2.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "A".to_string(),
+    );
+    first2.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@alice:x".to_string(),
+        ),
+        "GHOST1".to_string(),
+    );
+    first2.hash = rezzy::state::lthash::LtHash::from_state(&first2.state);
+
+    let mut second2: HashedState<String, String> = HashedState::new();
+    second2.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "A".to_string(),
+    );
+    second2.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@alice:x".to_string(),
+        ),
+        "GHOST2".to_string(),
+    );
+    second2.hash = rezzy::state::lthash::LtHash::from_state(&second2.state);
+
+    let resolved2 = resolve_merge_fast_path_hashed(
+        &[first2.clone(), second2.clone()],
+        &events_map,
+        &mut cache,
+        StateResVersion::V2,
+    );
+    // The ghost members are dropped; only the create key survives.
+    assert!(resolved2.state.contains_key(&(
+        rezzy::basespec::event_types::EventType::from("m.room.create"),
+        String::new()
+    )));
+    assert!(!resolved2.state.contains_key(&(
+        rezzy::basespec::event_types::EventType::from("m.room.member"),
+        "@alice:x".to_string()
+    )));
+}
+
+/// `resolve_merge_fast_path_hashed`'s slow-path `Update` arm: the first
+/// parent's topic (sent by a non-member, so auth-invalid) loses to the second
+/// parent's topic (sent by the creator, who is a member via the unconflicted
+/// join), producing an Update diff.
+#[test]
+fn test_resolve_merge_fast_path_hashed_update_arm() {
+    use rezzy::state::at::{resolve_merge_fast_path_hashed, HashedState, LocalAuthCache};
+
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@creator:x","depth":1,"content":{"room_version":"10","creator":"@creator:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"CJ","type":"m.room.member","state_key":"@creator:x","sender":"@creator:x","depth":2,"content":{"membership":"join"},"prev_events":["A"],"auth_events":["A"]}
+{"event_id":"T1","type":"m.room.topic","state_key":"","sender":"@alice:x","depth":2,"content":{"topic":"old"},"prev_events":["A"],"auth_events":["A"]}
+{"event_id":"T2","type":"m.room.topic","state_key":"","sender":"@creator:x","depth":2,"content":{"topic":"new"},"prev_events":["A"],"auth_events":["A"]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    let mut first: HashedState<String, String> = HashedState::new();
+    first.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "A".to_string(),
+    );
+    first.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@creator:x".to_string(),
+        ),
+        "CJ".to_string(),
+    );
+    first.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.topic"),
+            String::new(),
+        ),
+        "T1".to_string(),
+    );
+    first.hash = rezzy::state::lthash::LtHash::from_state(&first.state);
+
+    let mut second: HashedState<String, String> = HashedState::new();
+    second.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "A".to_string(),
+    );
+    second.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@creator:x".to_string(),
+        ),
+        "CJ".to_string(),
+    );
+    second.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.topic"),
+            String::new(),
+        ),
+        "T2".to_string(),
+    );
+    second.hash = rezzy::state::lthash::LtHash::from_state(&second.state);
+
+    let mut cache = LocalAuthCache::new(StateResVersion::V2);
+    let resolved = resolve_merge_fast_path_hashed(
+        &[first, second],
+        &events_map,
+        &mut cache,
+        StateResVersion::V2,
+    );
+    assert_eq!(
+        resolved.state.get(&(
+            rezzy::basespec::event_types::EventType::from("m.room.topic"),
+            String::new()
+        )),
+        Some(&"T2".to_string()),
+        "the auth-invalid first topic must lose to the creator's topic"
+    );
+}
