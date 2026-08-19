@@ -312,14 +312,15 @@ where
     }
 }
 
-pub(crate) fn build_mainline<Id, C, E>(
-    resolved: &crate::state::at::SharedState<Id>,
+pub(crate) fn build_mainline<Id, C, E, K>(
+    resolved: &crate::state::at::SharedState<Id, K>,
     auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
 ) -> Vec<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
     E: EventLike<Id = Id, Content = C>,
+    K: Ord + Clone + Default,
 {
     // TODO: Thread a persistent cache through callers that invoke build_mainline
     // repeatedly (e.g., the delta loop in compute_state_at, lattice fold checkpoints).
@@ -334,8 +335,8 @@ where
 /// Subsequent calls sharing the same cache skip BFS entirely for events
 /// already resolved, turning the mainline walk from `O(M × B)` (M = mainline
 /// length, B = auth chain breadth) to `O(M)` on cache hits.
-pub(crate) fn build_mainline_with_cache<Id, C, E>(
-    resolved: &crate::state::at::SharedState<Id>,
+pub(crate) fn build_mainline_with_cache<Id, C, E, K>(
+    resolved: &crate::state::at::SharedState<Id, K>,
     auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
     pl_parent_cache: &mut HashMap<Id, Option<Id>>,
 ) -> Vec<Id>
@@ -343,14 +344,13 @@ where
     Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
     E: EventLike<Id = Id, Content = C>,
+    K: Ord + Clone + Default,
 {
-    use crate::basespec::event_types::M_EMPTY_STATE_KEY;
-
     let mut mainline = Vec::new();
     let mut seen_in_mainline = hashbrown::HashSet::new();
     let pl_key = (
         alloc::string::String::from(M_ROOM_POWER_LEVELS),
-        alloc::string::String::from(M_EMPTY_STATE_KEY),
+        K::default(),
     );
     let mut current = resolved.get(&pl_key).cloned();
 

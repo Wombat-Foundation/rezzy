@@ -210,7 +210,7 @@ fn test_compute_state_at_batch() {
     assert_eq!(batch_results[tip_id].len(), 100);
 
     // Verify empty batch handles gracefully
-    let empty_results = compute_state_at_batch::<String, serde_json::Value, str, _>(
+    let empty_results = compute_state_at_batch::<String, serde_json::Value, str, _, _>(
         &[],
         &events_map,
         StateResVersion::V2,

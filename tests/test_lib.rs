@@ -111,7 +111,7 @@ mod tests {
 
         let mut sort_set = HashMap::new();
 
-        let create_ev = LeanEvent {
+        let create_ev: LeanEvent<String, serde_json::Value, String> = LeanEvent {
             event_id: "$create".into(),
             event_type: "m.room.create".into(),
             ..Default::default()
@@ -174,7 +174,7 @@ mod tests {
 
         // Let's have a kick event whose auth chain contains an event in the conflicted set ($auth_in_set).
         // Since $kick is a power event, $auth_in_set should be promoted to a power event as well.
-        let kick_ev = LeanEvent {
+        let kick_ev: LeanEvent<String, serde_json::Value, String> = LeanEvent {
             event_id: "$kick".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
@@ -5291,7 +5291,7 @@ fn test_lean_event_borrowed_view_roundtrip() {
     let view = event.as_ref();
     assert_eq!(view.event_id, &event.event_id);
     assert_eq!(view.event_type, event.event_type);
-    assert_eq!(view.state_key, event.state_key.as_deref());
+    assert_eq!(view.state_key, event.state_key.as_ref());
     assert_eq!(view.power_level, event.power_level);
     assert_eq!(view.origin_server_ts, event.origin_server_ts);
     assert_eq!(view.sender, event.sender);

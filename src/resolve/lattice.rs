@@ -284,10 +284,11 @@ pub fn route_power_events<
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
     S3: core::hash::BuildHasher,
+    K: Clone + AsRef<str>,
 >(
-    sort_set: &HashMap<Id, LeanEvent<Id, C>, S1>,
-    power_events: &mut HashMap<Id, LeanEvent<Id, C>, S2>,
-    non_power_events: &mut HashMap<Id, LeanEvent<Id, C>, S3>,
+    sort_set: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    power_events: &mut HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    non_power_events: &mut HashMap<Id, LeanEvent<Id, C, K>, S3>,
     version: crate::StateResVersion,
 ) {
     for (id, ev) in sort_set {
