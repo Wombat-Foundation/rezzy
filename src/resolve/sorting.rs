@@ -21,7 +21,7 @@ use crate::basespec::event_types::{MAX_POWER_LEVEL_RUST, M_ROOM_POWER_LEVELS};
 #[cfg(test)]
 use crate::basespec::rezzy_types::LeanEvent;
 use crate::basespec::rezzy_types::{EventLike, KahnSortResult, SortPriority, StateResVersion};
-use crate::HashMap;
+use crate::{FastMap, HashMap};
 
 /// Dynamically fetches the sender's power level by inspecting the event's immediate `auth_events`.
 /// Recursive traversal of the auth chain is avoided to prevent bypassing immediate restrictions.
@@ -84,7 +84,7 @@ pub(crate) fn compute_auth_distance_iterative<'a, Id, C, E>(
     curr_id: &'a Id,
     auth_context: &'a impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
     create_id: Option<&'a Id>,
-    memo: &mut HashMap<&'a Id, u64>,
+    memo: &mut FastMap<&'a Id, u64>,
 ) -> u64
 where
     Id: crate::basespec::rezzy_types::EventId + 'a,
@@ -168,8 +168,8 @@ where
 {
     pl_cache.clear();
 
-    let mut in_degree: HashMap<Id, usize> = HashMap::new();
-    let mut adjacency: HashMap<Id, Vec<Id>> = HashMap::new();
+    let mut in_degree: FastMap<Id, usize> = FastMap::default();
+    let mut adjacency: FastMap<Id, Vec<Id>> = FastMap::default();
 
     for (id, event) in events {
         in_degree.entry(id.clone()).or_insert(0);
@@ -196,8 +196,8 @@ where
         }
     }
 
-    let depth_cache: HashMap<Id, u64> = if version == StateResVersion::V2_2 {
-        let mut memo = HashMap::new();
+    let depth_cache: FastMap<Id, u64> = if version == StateResVersion::V2_2 {
+        let mut memo = FastMap::default();
         let create_id = create_ev.map(super::super::basespec::rezzy_types::DagNode::event_id);
         events
             .keys()
@@ -209,7 +209,7 @@ where
             })
             .collect()
     } else {
-        HashMap::new()
+        FastMap::default()
     };
 
     let mut queue: BinaryHeap<SortPriority<'_, E>> = BinaryHeap::new();
@@ -321,11 +321,11 @@ where
     C: Clone + crate::basespec::rezzy_types::EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
-    // TODO: Thread a persistent cache through callers that invoke build_mainline
-    // repeatedly (e.g., the delta loop in compute_state_at, lattice fold checkpoints).
-    // Currently each call starts with a fresh cache, so the memoization never hits
-    // in production — only the unit test exercises the cache-hit path.
-    build_mainline_with_cache(resolved, auth_context, &mut HashMap::new())
+    // The hot path (compute_state_at's fork-merge loop) now threads a persistent
+    // cache through `resolve_iterative_sort_with_all_caches`, so this fresh-cache
+    // fallback only matters for one-shot callers (e.g. resolve_lattice_fold's V2
+    // path, which calls build_mainline exactly once per resolution).
+    build_mainline_with_cache(resolved, auth_context, &mut FastMap::default())
 }
 
 /// Like [`build_mainline`], but populates a `pl_parent_cache` mapping each
@@ -337,7 +337,7 @@ where
 pub(crate) fn build_mainline_with_cache<Id, C, E>(
     resolved: &crate::state::at::SharedState<Id>,
     auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
-    pl_parent_cache: &mut HashMap<Id, Option<Id>>,
+    pl_parent_cache: &mut FastMap<Id, Option<Id>>,
 ) -> Vec<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -347,9 +347,9 @@ where
     use crate::basespec::event_types::M_EMPTY_STATE_KEY;
 
     let mut mainline = Vec::new();
-    let mut seen_in_mainline = hashbrown::HashSet::new();
+    let mut seen_in_mainline = crate::FastSet::default();
     let pl_key = (
-        alloc::string::String::from(M_ROOM_POWER_LEVELS),
+        crate::basespec::event_types::EventType::from(M_ROOM_POWER_LEVELS),
         alloc::string::String::from(M_EMPTY_STATE_KEY),
     );
     let mut current = resolved.get(&pl_key).cloned();
@@ -376,7 +376,7 @@ where
             for auth_id in ev.auth_events() {
                 queue.push_back(auth_id.clone());
             }
-            let mut visited = hashbrown::HashSet::new();
+            let mut visited = crate::FastSet::default();
             while let Some(q_id) = queue.pop_front() {
                 if !visited.insert(q_id.clone()) {
                     continue;
@@ -550,7 +550,7 @@ mod tests {
         let mut resolved = imbl::OrdMap::new();
         resolved.insert(
             (
-                alloc::string::String::from("m.room.power_levels"),
+                crate::basespec::event_types::EventType::from("m.room.power_levels"),
                 alloc::string::String::new(),
             ),
             alloc::string::String::from("A"),
@@ -740,11 +740,11 @@ mod tests {
             _marker: core::marker::PhantomData,
         };
 
-        let mut memo = HashMap::new();
         let topic_id: String = "$topic".into();
         let create_id: String = "$create".into();
         let pl_id: String = "$pl".into();
         let join_id: String = "$join".into();
+        let mut memo = FastMap::default();
 
         // First call: triggers iterative traversal through auth chain
         // $topic → $join(dist=2), $pl(dist=1), $create(dist=0) → min = 1
@@ -809,7 +809,7 @@ mod tests {
         resolved.insert(("m.room.power_levels".into(), String::new()), "PL2".into());
 
         // First call: populates cache for PL2 → Some(PL1), PL1 → Some(PL0), PL0 → None
-        let mut cache = HashMap::new();
+        let mut cache = FastMap::default();
         let ml1 = build_mainline_with_cache(&resolved, &ctx, &mut cache);
         assert_eq!(ml1, alloc::vec!["PL2", "PL1", "PL0"]);
         assert_eq!(cache.len(), 3, "all 3 PL events must be cached");

@@ -125,7 +125,10 @@ fn test_lattice_fold_resolves_conflicting_topics() {
     let resolved = resolve_lattice_fold(unconflicted, conflicted, &map, StateResVersion::V2);
 
     // The topic with later timestamp ($topic_b, ts=3000) should win
-    let topic_key = ("m.room.topic".to_string(), String::new());
+    let topic_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.topic"),
+        String::new(),
+    );
     assert_eq!(
         resolved.get(&topic_key),
         Some(&"$topic_b".to_string()),
@@ -159,7 +162,10 @@ fn test_lattice_fold_parity_with_iterative() {
     );
 
     // Lattice and iterative should agree on the topic winner
-    let topic_key = ("m.room.topic".to_string(), String::new());
+    let topic_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.topic"),
+        String::new(),
+    );
     assert_eq!(
         lattice.get(&topic_key),
         iterative.get(&topic_key),
@@ -216,7 +222,10 @@ fn test_lattice_fold_skips_non_state_events() {
     let resolved = resolve_lattice_fold(unconflicted, conflicted, &map, StateResVersion::V2);
 
     // topic_b wins (later ts), message is silently skipped
-    let topic_key = ("m.room.topic".to_string(), String::new());
+    let topic_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.topic"),
+        String::new(),
+    );
     assert_eq!(
         resolved.get(&topic_key),
         Some(&"$topic_b".to_string()),
@@ -224,7 +233,9 @@ fn test_lattice_fold_skips_non_state_events() {
     );
     // No (m.room.message, _) key should appear — it has no state_key
     assert!(
-        !resolved.iter().any(|((t, _), _)| t == "m.room.message"),
+        !resolved
+            .iter()
+            .any(|((t, _), _)| t.as_str() == "m.room.message"),
         "message event must not appear in resolved state"
     );
 }
@@ -238,11 +249,17 @@ fn test_lattice_fold_unconflicted_power_bootstrap_v2_1() {
     let mut unconflicted = utils::build_unconflicted_state_test_helper(&map);
     // Manually add unconflicted power levels and join rules to unconflicted input state
     unconflicted.insert(
-        ("m.room.power_levels".to_string(), String::new()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+            String::new(),
+        ),
         "$pl".to_string(),
     );
     unconflicted.insert(
-        ("m.room.join_rules".to_string(), String::new()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
+            String::new(),
+        ),
         "$jr".to_string(),
     );
 
@@ -255,7 +272,10 @@ fn test_lattice_fold_unconflicted_power_bootstrap_v2_1() {
     // This exercises the iterative fallback path, not the lattice fold's merge logic.
     let resolved = resolve_lattice_fold(unconflicted, conflicted, &map, StateResVersion::V2_1);
 
-    let topic_key = ("m.room.topic".to_string(), String::new());
+    let topic_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.topic"),
+        String::new(),
+    );
     assert_eq!(
         resolved.get(&topic_key),
         Some(&"$topic_b".to_string()),
@@ -264,15 +284,24 @@ fn test_lattice_fold_unconflicted_power_bootstrap_v2_1() {
 
     // Verify unconflicted power levels, join rules, and create events are successfully resolved and present
     assert_eq!(
-        resolved.get(&("m.room.power_levels".to_string(), String::new())),
+        resolved.get(&(
+            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+            String::new()
+        )),
         Some(&"$pl".to_string())
     );
     assert_eq!(
-        resolved.get(&("m.room.join_rules".to_string(), String::new())),
+        resolved.get(&(
+            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
+            String::new()
+        )),
         Some(&"$jr".to_string())
     );
     assert_eq!(
-        resolved.get(&("m.room.create".to_string(), String::new())),
+        resolved.get(&(
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new()
+        )),
         Some(&"$create".to_string())
     );
 }
@@ -294,11 +323,17 @@ fn test_msc4297_lattice_fold_dependency_v2_1_fallback() {
     // Build unconflicted state: has $create, $pl, $jr
     let mut unconflicted = utils::build_unconflicted_state_test_helper(&map);
     unconflicted.insert(
-        ("m.room.power_levels".to_string(), String::new()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+            String::new(),
+        ),
         "$pl".to_string(),
     );
     unconflicted.insert(
-        ("m.room.join_rules".to_string(), String::new()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
+            String::new(),
+        ),
         "$jr".to_string(),
     );
 
@@ -312,7 +347,10 @@ fn test_msc4297_lattice_fold_dependency_v2_1_fallback() {
     let resolved = resolve_lattice_fold(unconflicted, conflicted, &map, StateResVersion::V2_1);
 
     // Verify that the topic is successfully authorized and present!
-    let topic_key = ("m.room.topic".to_string(), String::new());
+    let topic_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.topic"),
+        String::new(),
+    );
     assert_eq!(
         resolved.get(&topic_key),
         Some(&"$alice_topic".to_string()),

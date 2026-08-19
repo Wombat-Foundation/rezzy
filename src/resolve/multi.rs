@@ -46,6 +46,7 @@
 //! );
 //! ```
 
+use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::{
     EventContent, EventId, EventProvider, LeanEvent, StateResVersion,
 };
@@ -85,13 +86,11 @@ pub fn partition_state_maps<'a, Id, I, Iter>(
 where
     Id: EventId,
     I: IntoIterator<Item = Iter>,
-    Iter: IntoIterator<Item = (&'a (alloc::string::String, alloc::string::String), &'a Id)>,
+    Iter: IntoIterator<Item = (&'a (EventType, alloc::string::String), &'a Id)>,
     Id: 'a,
 {
-    let mut occurrences: HashMap<
-        (alloc::string::String, alloc::string::String),
-        HashMap<Id, usize>,
-    > = HashMap::new();
+    let mut occurrences: HashMap<(EventType, alloc::string::String), HashMap<Id, usize>> =
+        HashMap::new();
     for map in state_maps {
         for (key, id) in map {
             let val = occurrences
@@ -192,6 +191,16 @@ where
         conflicted_events.insert(id.clone(), ev.clone());
     }
 
+    // Genuinely conflicted keys: captured *before* the MSC4297 subgraph
+    // supplement below adds more events to `conflicted_events` purely as
+    // auth-chain context. Threading this narrower set into resolution
+    // prevents a subgraph-context event from clobbering a key every input
+    // state map actually agreed on (see resolve_iterative_sort_with_all_caches).
+    // TODO(perf): duplicates an EventType::from() conversion the power/
+    // non-power phases redo per event — see the identical TODO on
+    // resolve::iterative::derive_all_conflicted_keys.
+    let conflicted_keys = crate::resolve::iterative::derive_all_conflicted_keys(&conflicted_events);
+
     // For V2.1+ rooms, compute the conflicted subgraph (MSC4297).
     if matches!(version, StateResVersion::V2_1 | StateResVersion::V2_1_1) {
         let subgraph = compute_v2_1_subgraph(event_context.iter(), &conflicted_ids);
@@ -206,12 +215,15 @@ where
     }
 
     let mut pl_cache = HashMap::new();
-    crate::resolve::iterative::resolve_iterative_sort(
+    crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
         unconflicted_state,
         conflicted_events,
         event_context,
+        None,
         version,
         &mut pl_cache,
+        &mut crate::FastMap::default(),
+        &conflicted_keys,
     )
 }
 
@@ -375,6 +387,11 @@ where
         conflicted_events.insert(id.clone(), ev.clone());
     }
 
+    // Genuinely conflicted keys, captured before the MSC4297 subgraph
+    // supplement below adds more (auth-chain-context-only) events — see
+    // resolve_state_maps's identical comment for why this matters.
+    let conflicted_keys = crate::resolve::iterative::derive_all_conflicted_keys(&conflicted_events);
+
     // Lazily BFS auth chains from conflicted events to build minimal auth context
     let mut auth_context: HashMap<Id, LeanEvent<Id, C>> = HashMap::new();
 
@@ -426,12 +443,15 @@ where
     }
 
     let mut pl_cache = HashMap::new();
-    crate::resolve::iterative::resolve_iterative_sort(
+    crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
         unconflicted_state,
         conflicted_events,
         &auth_context,
+        None,
         version,
         &mut pl_cache,
+        &mut crate::FastMap::default(),
+        &conflicted_keys,
     )
 }
 

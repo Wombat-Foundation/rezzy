@@ -5,7 +5,7 @@
 //! drop-in accelerator must satisfy.
 
 use crate::basespec::rezzy_types::LeanEvent;
-use crate::HashMap;
+use crate::{FastMap, HashMap};
 use alloc::collections::{BTreeSet, VecDeque};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -111,7 +111,7 @@ pub trait Reachability {
 #[cfg(feature = "std")]
 #[derive(Debug, Clone)]
 pub struct ForwardReachabilityIndex<Id> {
-    id_to_index: HashMap<Id, u32>,
+    id_to_index: FastMap<Id, u32>,
     descendant_bitmaps: Vec<RoaringBitmap>,
     cyclic_nodes: BTreeSet<u32>,
 }
@@ -134,7 +134,7 @@ where
         graph: &HashMap<Id, LeanEvent<Id, C>, S>,
     ) -> Self {
         let (topo, children, leftover_nodes) = collect_topology(graph);
-        let mut id_to_index = HashMap::with_capacity(topo.len());
+        let mut id_to_index = FastMap::with_capacity(topo.len());
         for (idx, &id) in topo.iter().enumerate() {
             let idx = u32::try_from(idx).expect("graph too large for roaring bitmap index");
             id_to_index.insert(id.clone(), idx);
@@ -392,7 +392,7 @@ impl CandidateQuery {
 /// it now uses `forward_reachable_ids` and pays none of this cost.
 #[derive(Debug, Clone)]
 pub struct RangePrefilterReachability<Id> {
-    id_to_index: HashMap<Id, u32>,
+    id_to_index: FastMap<Id, u32>,
     /// Inverse of `id_to_index`, ordered by node index. Lets
     /// [`RangePrefilterReachability::forward_reachable_ids`] map visited
     /// node indices back to `Id`s without a hash lookup.
@@ -409,14 +409,14 @@ pub struct RangePrefilterReachability<Id> {
 
 fn collect_topology<Id, C, S>(
     graph: &HashMap<Id, LeanEvent<Id, C>, S>,
-) -> (Vec<&Id>, HashMap<&Id, Vec<&Id>>, Vec<&Id>)
+) -> (Vec<&Id>, FastMap<&Id, Vec<&Id>>, Vec<&Id>)
 where
     Id: crate::basespec::rezzy_types::EventId + Ord,
     C: Clone,
     S: core::hash::BuildHasher,
 {
-    let mut in_degree: HashMap<&Id, usize> = HashMap::new();
-    let mut children: HashMap<&Id, Vec<&Id>> = HashMap::new();
+    let mut in_degree: FastMap<&Id, usize> = FastMap::default();
+    let mut children: FastMap<&Id, Vec<&Id>> = FastMap::default();
 
     for (id, ev) in graph {
         in_degree.entry(id).or_insert(0);
@@ -464,8 +464,8 @@ where
 
 fn index_topology<Id: crate::basespec::rezzy_types::EventId + Ord>(
     topo: &[&Id],
-) -> HashMap<Id, u32> {
-    let mut id_to_index = HashMap::with_capacity(topo.len());
+) -> FastMap<Id, u32> {
+    let mut id_to_index = FastMap::with_capacity(topo.len());
     for (idx, &id) in topo.iter().enumerate() {
         let idx = u32::try_from(idx).expect("graph too large for index space");
         id_to_index.insert(id.clone(), idx);
@@ -475,8 +475,8 @@ fn index_topology<Id: crate::basespec::rezzy_types::EventId + Ord>(
 
 fn build_indexed_children<'a, Id: crate::basespec::rezzy_types::EventId + Ord>(
     topo_len: usize,
-    children: HashMap<&'a Id, Vec<&'a Id>>,
-    id_to_index: &HashMap<Id, u32>,
+    children: FastMap<&'a Id, Vec<&'a Id>>,
+    id_to_index: &FastMap<Id, u32>,
 ) -> (Vec<Vec<u32>>, Vec<usize>) {
     let mut children_by_index = vec![Vec::<u32>::new(); topo_len];
     let mut in_degree_by_index = vec![0_usize; topo_len];

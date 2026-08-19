@@ -18,7 +18,7 @@
 //! store a base snapshot and a chain of deltas.
 //! This module provides the primitives for computing and applying those deltas.
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 pub use super::lthash::{compute_state_hash, LtHash};
@@ -85,7 +85,7 @@ pub fn compute_state_delta<Id: crate::basespec::rezzy_types::EventId>(
             Some(parent_event_id) if parent_event_id == event_id => {}
             _ => {
                 deltas.push(StateDelta {
-                    event_type: event_type.clone(),
+                    event_type: event_type.to_string(),
                     state_key: state_key.clone(),
                     event_id: Some(event_id.clone()),
                 });
@@ -97,7 +97,7 @@ pub fn compute_state_delta<Id: crate::basespec::rezzy_types::EventId>(
     for key in parent.keys() {
         if !current.contains_key(key) {
             deltas.push(StateDelta {
-                event_type: key.0.clone(),
+                event_type: key.0.to_string(),
                 state_key: key.1.clone(),
                 event_id: None,
             });
@@ -118,7 +118,10 @@ pub fn apply_state_delta<Id: crate::basespec::rezzy_types::EventId>(
 ) -> crate::state::at::SharedState<Id> {
     let mut result = base.clone();
     for delta in deltas {
-        let key = (delta.event_type.clone(), delta.state_key.clone());
+        let key = (
+            crate::basespec::event_types::EventType::from(delta.event_type.as_str()),
+            delta.state_key.clone(),
+        );
         if let Some(ref event_id) = delta.event_id {
             result.insert(key, event_id.clone());
         } else {
@@ -340,7 +343,10 @@ pub fn reconstruct_state_at<Id: crate::basespec::rezzy_types::EventId>(
             let mut state = snapshot.clone();
             while let Some(deltas) = delta_stack.pop() {
                 for delta in deltas {
-                    let key = (delta.event_type.clone(), delta.state_key.clone());
+                    let key = (
+                        crate::basespec::event_types::EventType::from(delta.event_type.as_str()),
+                        delta.state_key.clone(),
+                    );
                     if let Some(ref event_id) = delta.event_id {
                         state.insert(key, event_id.clone());
                     } else {

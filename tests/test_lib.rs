@@ -1,6 +1,5 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 mod utils;
-use serde_json::json;
 use std::collections::HashMap;
 extern crate alloc;
 
@@ -457,7 +456,10 @@ mod tests {
     fn test_v2_1_strict_resolution() {
         let mut unconflicted = imbl::OrdMap::new();
         unconflicted.insert(
-            ("m.room.member".into(), "@alice:example.com".into()),
+            (
+                rezzy::basespec::event_types::EventType::from("m.room.member"),
+                "@alice:example.com".into(),
+            ),
             "A".into(),
         );
 
@@ -501,7 +503,10 @@ mod tests {
             &mut std::collections::HashMap::new(),
         );
         assert_eq!(
-            resolved.get(&("m.room.member".into(), "@alice:example.com".into())),
+            resolved.get(&(
+                rezzy::basespec::event_types::EventType::from("m.room.member"),
+                "@alice:example.com".into()
+            )),
             Some(&"A".into())
         );
     }
@@ -973,7 +978,13 @@ mod tests {
     #[test]
     fn test_resolve_iterative_sort_functionality() {
         let mut unconflicted = imbl::OrdMap::new();
-        unconflicted.insert(("type".into(), "key".into()), "id".into());
+        unconflicted.insert(
+            (
+                rezzy::basespec::event_types::EventType::from("type"),
+                "key".into(),
+            ),
+            "id".into(),
+        );
         let conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let resolved = resolve_iterative_sort(
             unconflicted.clone(),
@@ -992,11 +1003,17 @@ mod tests {
         // Uncontested state: Alice is already joined, Bob's old event is the prior state.
         let mut unconflicted = imbl::OrdMap::new();
         unconflicted.insert(
-            ("m.room.member".into(), "@alice:example.com".into()),
+            (
+                rezzy::basespec::event_types::EventType::from("m.room.member"),
+                "@alice:example.com".into(),
+            ),
             "id1".into(),
         );
         unconflicted.insert(
-            ("m.room.member".into(), "@bob:example.com".into()),
+            (
+                rezzy::basespec::event_types::EventType::from("m.room.member"),
+                "@bob:example.com".into(),
+            ),
             "id2".into(),
         );
 
@@ -1129,11 +1146,17 @@ mod tests {
         );
 
         assert_eq!(
-            resolved.get(&("m.room.member".into(), "@alice:example.com".into())),
+            resolved.get(&(
+                rezzy::basespec::event_types::EventType::from("m.room.member"),
+                "@alice:example.com".into()
+            )),
             Some(&"id1".into())
         );
         assert_eq!(
-            resolved.get(&("m.room.member".into(), "@bob:example.com".into())),
+            resolved.get(&(
+                rezzy::basespec::event_types::EventType::from("m.room.member"),
+                "@bob:example.com".into()
+            )),
             Some(&"id2_new".into()) // id2_new wins because voluntary joins are non-power events sorted chronologically.
         );
     }
@@ -2392,7 +2415,10 @@ mod tests {
             }),
             ..Default::default()
         };
-        state.insert(("m.room.create".into(), String::new()), create_ev.clone());
+        state.insert(
+            ("m.room.create".to_string(), String::new()),
+            create_ev.clone(),
+        );
 
         // Test check_auth for m.room.create with prev_events (should fail with CreateWithPrevEvents)
         let bad_create: LeanEvent = LeanEvent {
@@ -2448,7 +2474,10 @@ mod tests {
 
         // Banned user membership transition
         let mut state2 = RoomState::new();
-        state2.insert(("m.room.create".into(), String::new()), create_ev.clone());
+        state2.insert(
+            ("m.room.create".to_string(), String::new()),
+            create_ev.clone(),
+        );
         let banned_member: LeanEvent = LeanEvent {
             event_id: "$ban_member".into(),
             event_type: "m.room.member".into(),
@@ -2458,7 +2487,7 @@ mod tests {
             ..Default::default()
         };
         state2.insert(
-            ("m.room.member".into(), "@bob:example.com".into()),
+            ("m.room.member".to_string(), "@bob:example.com".into()),
             banned_member.clone(),
         );
 
@@ -2533,7 +2562,10 @@ mod tests {
         };
         // Should require PL 50 by default for state events if no PL event is present
         let mut state3 = RoomState::new();
-        state3.insert(("m.room.create".into(), String::new()), create_ev.clone());
+        state3.insert(
+            ("m.room.create".to_string(), String::new()),
+            create_ev.clone(),
+        );
         let bob_joined: LeanEvent = LeanEvent {
             event_id: "$bob_joined".into(),
             event_type: "m.room.member".into(),
@@ -2543,7 +2575,7 @@ mod tests {
             ..Default::default()
         };
         state3.insert(
-            ("m.room.member".into(), "@bob:example.com".into()),
+            ("m.room.member".to_string(), "@bob:example.com".into()),
             bob_joined.clone(),
         );
         assert_eq!(
@@ -2665,7 +2697,10 @@ mod tests {
         // conflicted events.
         let mut unconflicted = imbl::OrdMap::new();
         unconflicted.insert(
-            ("m.room.power_levels".into(), String::new()),
+            (
+                rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+                String::new(),
+            ),
             "INITIAL_PL".into(),
         );
         // This will run kahn sort on power_events, detect a cycle, and print/handle it safely.
@@ -2677,9 +2712,19 @@ mod tests {
             &mut std::collections::HashMap::new(),
         );
         assert!(!resolved.is_empty());
+        // INITIAL_PL wins, not the cyclic A/B pair. A and B mutually auth each
+        // other (a malformed/adversarial DAG shape) for the *same* key that
+        // INITIAL_PL already holds unconflicted — real callers never produce
+        // this shape for a genuinely agreed-upon key, so A/B can only be here
+        // as auth-diff context for some other real conflict. A cyclic pair
+        // reaching this state must not be able to hijack an already-settled
+        // key over the legitimate unconflicted value.
         assert_eq!(
-            &resolved[&("m.room.power_levels".into(), String::new())],
-            "B"
+            &resolved[&(
+                rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+                String::new()
+            )],
+            "INITIAL_PL"
         );
     }
 
@@ -2748,9 +2793,15 @@ mod tests {
         let state_map = state.unwrap();
 
         // State should contain C (create) and A itself
-        assert!(state_map.contains_key(&("m.room.create".into(), String::new())));
+        assert!(state_map.contains_key(&(
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new()
+        )));
         assert_eq!(
-            &state_map[&("m.room.member".into(), "@alice:example.com".into())],
+            &state_map[&(
+                rezzy::basespec::event_types::EventType::from("m.room.member"),
+                "@alice:example.com".into()
+            )],
             "A"
         );
     }
@@ -2847,7 +2898,10 @@ mod tests {
         );
 
         // Assert that a power levels event is resolved, showing the ancestral PL event was correctly processed
-        assert!(resolved.contains_key(&("m.room.power_levels".into(), String::new())));
+        assert!(resolved.contains_key(&(
+            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+            String::new()
+        )));
     }
 
     #[test]
@@ -3706,45 +3760,27 @@ fn test_cdo_apply_filter_cascading_drops() {
 
 #[test]
 fn test_sorting_coverage() {
-    let mut events: HashMap<String, LeanEvent> = HashMap::new();
-    let mut auth: HashMap<String, LeanEvent> = HashMap::new();
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"create","type":"m.room.create","state_key":"","sender":"alice","content":{"creator":"alice"}}
+{"event_id":"pl","type":"m.room.power_levels","state_key":"","sender":"alice","content":{"users_default":10}}
+{"event_id":"missing_pl","type":"m.room.message","sender":"bob","auth_events":["pl"]}
+{"event_id":"empty_auth","type":"m.room.message","sender":"alice","auth_events":[]}
+"#,
+    );
+    let mut events_map: HashMap<String, LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
 
-    let create_ev: LeanEvent = LeanEvent {
-        event_id: "create".into(),
-        event_type: "m.room.create".into(),
-        state_key: Some(String::new()),
-        sender: "alice".into(),
-        content: json!({ "creator": "alice" }),
-        ..Default::default()
-    };
-    events.insert("create".into(), create_ev.clone());
+    let create_ev = events_map.remove("create").unwrap();
+    let pl_ev = events_map.remove("pl").unwrap();
 
-    let pl_ev: LeanEvent = LeanEvent {
-        event_id: "pl".into(),
-        event_type: "m.room.power_levels".into(),
-        state_key: Some(String::new()),
-        content: json!({ "users_default": 10 }),
-        ..Default::default()
-    };
-    auth.insert("pl".into(), pl_ev.clone());
-
-    let missing_pl_ev: LeanEvent = LeanEvent {
-        event_id: "missing_pl".into(),
-        sender: "bob".into(),
-        auth_events: vec!["pl".into()],
-        ..Default::default()
-    };
-    events.insert("missing_pl".into(), missing_pl_ev);
-
-    let empty_auth_ev: LeanEvent = LeanEvent {
-        event_id: "empty_auth".into(),
-        auth_events: vec![],
-        ..Default::default()
-    };
-    events.insert("empty_auth".into(), empty_auth_ev);
+    let mut auth = HashMap::new();
+    auth.insert("pl".into(), pl_ev);
 
     let _ = rezzy::lean_kahn_sort(
-        &events,
+        &events_map,
         &auth,
         Some(&create_ev),
         rezzy::StateResVersion::V2_2,
@@ -3754,39 +3790,25 @@ fn test_sorting_coverage() {
 
 #[test]
 fn test_msc4289_sorting_v2_creator_gets_pl_100() {
-    let mut events: HashMap<String, LeanEvent> = HashMap::new();
-    let auth: HashMap<String, LeanEvent> = HashMap::new();
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"create","type":"m.room.create","state_key":"","sender":"alice","content":{"creator":"alice","room_version":"10"}}
+{"event_id":"alice_msg","type":"m.room.message","sender":"alice","auth_events":[]}
+{"event_id":"bob_msg","type":"m.room.message","sender":"bob","auth_events":[]}
+"#,
+    );
 
-    let create_ev: LeanEvent = LeanEvent {
-        event_id: "create".into(),
-        event_type: "m.room.create".into(),
-        state_key: Some(String::new()),
-        sender: "alice".into(),
-        content: json!({ "creator": "alice", "room_version": "10" }),
-        ..Default::default()
-    };
-    events.insert("create".into(), create_ev.clone());
+    let mut events_map: HashMap<String, LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
 
-    // alice is the creator — in V2, she should get PL 100 (not MAX)
-    let alice_ev: LeanEvent = LeanEvent {
-        event_id: "alice_msg".into(),
-        sender: "alice".into(),
-        auth_events: vec![],
-        ..Default::default()
-    };
-    events.insert("alice_msg".into(), alice_ev);
-
-    let bob_ev: LeanEvent = LeanEvent {
-        event_id: "bob_msg".into(),
-        sender: "bob".into(),
-        auth_events: vec![],
-        ..Default::default()
-    };
-    events.insert("bob_msg".into(), bob_ev);
+    let create_ev = events_map.remove("create").unwrap();
+    let auth = HashMap::new();
 
     // Sort with V2 — creator gets PL 100
     let result = rezzy::lean_kahn_sort(
-        &events,
+        &events_map,
         &auth,
         Some(&create_ev),
         rezzy::StateResVersion::V2,
@@ -3872,7 +3894,10 @@ fn test_resolve_iterative_sort_with_deltas_parity() {
 
     let mut unconflicted = imbl::OrdMap::new();
     unconflicted.insert(
-        ("m.room.member".into(), "@alice:example.com".into()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@alice:example.com".into(),
+        ),
         "alice_join".into(),
     );
 
@@ -3947,7 +3972,7 @@ fn test_resolve_iterative_sort_with_deltas_parity() {
         "should have captured at least one resolution delta"
     );
     // All deltas should target the bob membership slot (only conflicted events)
-    let bob_key: (String, String) = ("m.room.member".into(), "@bob:example.com".into());
+    let bob_key: (String, String) = ("m.room.member".to_string(), "@bob:example.com".into());
     for delta in &deltas {
         assert_eq!(
             delta.key, bob_key,
@@ -3984,7 +4009,13 @@ fn test_resolve_iterative_sort_with_deltas_no_duplicate_power_events() {
     use std::collections::HashMap;
 
     let mut unconflicted = imbl::OrdMap::new();
-    unconflicted.insert(("m.room.create".into(), String::new()), "$create".into());
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "$create".into(),
+    );
 
     let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
     let create_ev = LeanEvent {
@@ -4071,7 +4102,13 @@ fn test_deltas_supplemental_power_event_from_auth_context() {
 
     // Unconflicted: create is settled
     let mut unconflicted = imbl::OrdMap::new();
-    unconflicted.insert(("m.room.create".into(), String::new()), "$create".into());
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "$create".into(),
+    );
 
     // auth_context: everything EXCEPT the two conflicting PLs
     let mut auth_context = std::collections::HashMap::new();
@@ -4096,7 +4133,10 @@ fn test_deltas_supplemental_power_event_from_auth_context() {
     );
 
     // The PL slot must be resolved to one of the two conflicting PLs
-    let pl_key = ("m.room.power_levels".to_string(), String::new());
+    let pl_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+        String::new(),
+    );
     let winner = resolved.get(&pl_key).expect("PL must be resolved");
     assert!(
         winner == "$pl_alice" || winner == "$pl_bob",
@@ -4472,12 +4512,28 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
     );
 
     // === Unconflicted state: everyone agrees on these ===
-    let mut unconflicted: imbl::OrdMap<(String, String), String> = imbl::OrdMap::new();
-    unconflicted.insert(("m.room.create".into(), String::new()), "$create".into());
-    unconflicted.insert(("m.room.power_levels".into(), String::new()), "$pl".into());
+    let mut unconflicted: imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String> =
+        imbl::OrdMap::new();
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "$create".into(),
+    );
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+            String::new(),
+        ),
+        "$pl".into(),
+    );
     // KEY: alice is LEAVE in unconflicted — both sides agree she left
     unconflicted.insert(
-        ("m.room.member".into(), "@alice:example.com".into()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@alice:example.com".into(),
+        ),
         "$alice_leave".into(),
     );
 
@@ -4539,7 +4595,10 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
 
     // V2: unconflicted alice=leave → alice's $jr_invite fails auth → $jr_public wins
     // V2.1: empty initial state + local_auth alice=joined → $jr_invite passes → later event wins
-    let jr_key: (String, String) = ("m.room.join_rules".into(), String::new());
+    let jr_key: (rezzy::basespec::event_types::EventType, String) = (
+        rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
+        String::new(),
+    );
 
     assert_ne!(
         state_v2.get(&jr_key),
@@ -4791,7 +4850,13 @@ fn test_coverage_sweeper_for_unreachable_edges() {
 
     // Cover get_initial_resolved_state for V1
     let mut unconf = imbl::OrdMap::new();
-    unconf.insert(("m.room.create".into(), String::new()), "123".into());
+    unconf.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "123".into(),
+    );
     let v1_resolved = rezzy::resolve::resolve_iterative_sort(
         unconf.clone(),
         HashMap::<String, LeanEvent<String>>::new(),
@@ -4904,8 +4969,14 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         &mut std::collections::HashMap::new(),
     );
 
-    assert!(!resolved.contains_key(&("m.room.power_levels".into(), String::new())));
-    assert!(!resolved.contains_key(&("m.room.topic".into(), String::new())));
+    assert!(!resolved.contains_key(&(
+        rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+        String::new()
+    )));
+    assert!(!resolved.contains_key(&(
+        rezzy::basespec::event_types::EventType::from("m.room.topic"),
+        String::new()
+    )));
     assert!(deltas
         .iter()
         .any(|d| d.event_id == "$bogus_pl" && !d.accepted));
@@ -5491,7 +5562,7 @@ fn test_local_auth_cache_version_invalidation() {
     /// Build a minimal conflicted-state fixture for cache invalidation tests.
     #[allow(clippy::type_complexity)]
     fn make_fixture() -> (
-        imbl::OrdMap<(String, String), String>,
+        imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
         HashMap<String, LeanEvent<String>>,
         HashMap<String, LeanEvent<String>>,
     ) {
@@ -5509,11 +5580,17 @@ fn test_local_auth_cache_version_invalidation() {
 
         let unconflicted = [
             (
-                ("m.room.create".into(), String::new()),
+                (
+                    rezzy::basespec::event_types::EventType::from("m.room.create"),
+                    String::new(),
+                ),
                 String::from("$create"),
             ),
             (
-                ("m.room.member".into(), "@alice:x".into()),
+                (
+                    rezzy::basespec::event_types::EventType::from("m.room.member"),
+                    "@alice:x".into(),
+                ),
                 String::from("$join"),
             ),
         ]
@@ -5601,7 +5678,10 @@ fn test_trivial_conflict_fast_path_picks_later_ts() {
     let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
     // B (ts=200) should win the topic slot
     assert_eq!(
-        state.get(&("m.room.topic".into(), String::new())),
+        state.get(&(
+            rezzy::basespec::event_types::EventType::from("m.room.topic"),
+            String::new()
+        )),
         Some(&"B".to_string()),
         "Later timestamp should win in trivial conflict fast path"
     );
@@ -5630,7 +5710,10 @@ fn test_trivial_conflict_fast_path_ts_tie_falls_back_to_event_id() {
     let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
     // Same ts=100, so event_id tiebreak: "B" > "A" → B wins
     assert_eq!(
-        state.get(&("m.room.topic".into(), String::new())),
+        state.get(&(
+            rezzy::basespec::event_types::EventType::from("m.room.topic"),
+            String::new()
+        )),
         Some(&"B".to_string()),
         "Equal timestamps should fall back to lexicographic event_id comparison"
     );
@@ -5658,7 +5741,10 @@ fn test_trivial_conflict_power_event_fallthrough() {
     // Kahn sort + iterative auth. The trivial fast path skips power events
     // entirely, so getting the correct winner proves fallthrough occurred.
     assert_eq!(
-        state.get(&("m.room.power_levels".into(), String::new())),
+        state.get(&(
+            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+            String::new()
+        )),
         Some(&"PL_B".to_string()),
         "Full pipeline must resolve competing PLs — later ts wins"
     );
@@ -5847,7 +5933,10 @@ fn test_mainline_position_beats_timestamp_on_divergent_auth_chains() {
     // (position 1) and gets applied first, then overwritten.
     // A raw timestamp comparison would incorrectly pick $topic_old_pl.
     assert_eq!(
-        state.get(&("m.room.topic".into(), String::new())),
+        state.get(&(
+            rezzy::basespec::event_types::EventType::from("m.room.topic"),
+            String::new()
+        )),
         Some(&"$topic_new_pl".to_string()),
         "Mainline position (closeness to current PL) must beat raw timestamp"
     );
@@ -5865,6 +5954,7 @@ fn test_mainline_position_beats_timestamp_on_divergent_auth_chains() {
 /// the full `events_map` as `event_context` implicitly satisfies the subgraph
 /// requirement via auth-chain expansion inside `resolve_iterative_sort`.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn test_msc4297_problem_b_resolve_state_maps_parity() {
     // MSC4297 Problem B events (from fixtures/MSC4297-problem-B/pdus-v12.json)
     let all_evs = utils::parse_jsonl_events(
@@ -5891,35 +5981,107 @@ fn test_msc4297_problem_b_resolve_state_maps_parity() {
 
     // Fork "Eve": sees $pl0 as PL, has eve's display-name change
     let mut state_eve = imbl::OrdMap::new();
-    state_eve.insert(("m.room.create".into(), String::new()), "$create".into());
     state_eve.insert(
-        ("m.room.member".into(), "@alice:x".into()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "$create".into(),
+    );
+    state_eve.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@alice:x".into(),
+        ),
         "$join_a".into(),
     );
-    state_eve.insert(("m.room.power_levels".into(), String::new()), "$pl0".into());
-    state_eve.insert(("m.room.join_rules".into(), String::new()), "$jr".into());
-    state_eve.insert(("m.room.member".into(), "@bob:x".into()), "$join_b".into());
     state_eve.insert(
-        ("m.room.member".into(), "@charlie:x".into()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+            String::new(),
+        ),
+        "$pl0".into(),
+    );
+    state_eve.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
+            String::new(),
+        ),
+        "$jr".into(),
+    );
+    state_eve.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@bob:x".into(),
+        ),
+        "$join_b".into(),
+    );
+    state_eve.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@charlie:x".into(),
+        ),
         "$join_c".into(),
     );
-    state_eve.insert(("m.room.member".into(), "@eve:x".into()), "$eve_dn".into());
+    state_eve.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@eve:x".into(),
+        ),
+        "$eve_dn".into(),
+    );
 
     // Fork "Zara": sees $pl2 as PL (Bob promoted Charlie), has zara's join
     let mut state_zara = imbl::OrdMap::new();
-    state_zara.insert(("m.room.create".into(), String::new()), "$create".into());
     state_zara.insert(
-        ("m.room.member".into(), "@alice:x".into()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "$create".into(),
+    );
+    state_zara.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@alice:x".into(),
+        ),
         "$join_a".into(),
     );
-    state_zara.insert(("m.room.join_rules".into(), String::new()), "$jr".into());
-    state_zara.insert(("m.room.member".into(), "@bob:x".into()), "$join_b".into());
     state_zara.insert(
-        ("m.room.member".into(), "@charlie:x".into()),
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
+            String::new(),
+        ),
+        "$jr".into(),
+    );
+    state_zara.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@bob:x".into(),
+        ),
+        "$join_b".into(),
+    );
+    state_zara.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@charlie:x".into(),
+        ),
         "$join_c".into(),
     );
-    state_zara.insert(("m.room.power_levels".into(), String::new()), "$pl2".into());
-    state_zara.insert(("m.room.member".into(), "@zara:x".into()), "$join_z".into());
+    state_zara.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+            String::new(),
+        ),
+        "$pl2".into(),
+    );
+    state_zara.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@zara:x".into(),
+        ),
+        "$join_z".into(),
+    );
 
     // Path A: resolve_state_maps (new library API)
     let state_maps = vec![state_eve.clone(), state_zara.clone()];
@@ -5959,7 +6121,10 @@ fn test_msc4297_problem_b_resolve_state_maps_parity() {
     );
 
     // Sanity: PL should be resolved (not dropped)
-    let pl_key = ("m.room.power_levels".into(), String::new());
+    let pl_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+        String::new(),
+    );
     assert!(
         resolved_api.contains_key(&pl_key),
         "MSC4297 Problem B: power_levels must be present in resolved state"
@@ -6073,7 +6238,9 @@ fn test_performance_and_correctness_dense_bifurcations() {
     // ── Build K forks, each with D cascading PL changes ──
     // Each fork k is "owned" by user k, who issues PL changes that
     // promote/demote other users differently on each fork.
-    let mut fork_state_maps: Vec<imbl::OrdMap<(String, String), String>> = Vec::new();
+    let mut fork_state_maps: Vec<
+        imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+    > = Vec::new();
 
     for fork in 0..NUM_FORKS {
         let fork_user = &users[fork];
@@ -6139,18 +6306,51 @@ fn test_performance_and_correctness_dense_bifurcations() {
 
         // Build state map for this fork
         let mut state = imbl::OrdMap::new();
-        state.insert(("m.room.create".into(), String::new()), "$create".into());
-        state.insert(("m.room.member".into(), users[0].clone()), "$join_0".into());
-        state.insert(("m.room.join_rules".into(), String::new()), "$jr".into());
+        state.insert(
+            (
+                rezzy::basespec::event_types::EventType::from("m.room.create"),
+                String::new(),
+            ),
+            "$create".into(),
+        );
+        state.insert(
+            (
+                rezzy::basespec::event_types::EventType::from("m.room.member"),
+                users[0].clone(),
+            ),
+            "$join_0".into(),
+        );
+        state.insert(
+            (
+                rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
+                String::new(),
+            ),
+            "$jr".into(),
+        );
         for (i, user) in users.iter().enumerate().skip(1) {
-            state.insert(("m.room.member".into(), user.clone()), format!("$join_{i}"));
+            state.insert(
+                (
+                    rezzy::basespec::event_types::EventType::from("m.room.member"),
+                    user.clone(),
+                ),
+                format!("$join_{i}"),
+            );
         }
         // Fork's final PL
-        state.insert(("m.room.power_levels".into(), String::new()), prev_pl_id);
+        state.insert(
+            (
+                rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+                String::new(),
+            ),
+            prev_pl_id,
+        );
         // Fork's extra members
         for (m, extra_user) in extra_users.iter().enumerate() {
             state.insert(
-                ("m.room.member".into(), extra_user.clone()),
+                (
+                    rezzy::basespec::event_types::EventType::from("m.room.member"),
+                    extra_user.clone(),
+                ),
                 format!("$mem_f{fork}_m{m}"),
             );
         }
@@ -6190,7 +6390,10 @@ fn test_performance_and_correctness_dense_bifurcations() {
     let dur_v2_1 = start.elapsed();
 
     // Both must have create event
-    let create_key = ("m.room.create".into(), String::new());
+    let create_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.create"),
+        String::new(),
+    );
     assert!(resolved_v2.contains_key(&create_key), "V2 must have create");
     assert!(
         resolved_v2_1.contains_key(&create_key),
@@ -6198,7 +6401,10 @@ fn test_performance_and_correctness_dense_bifurcations() {
     );
 
     // Both must resolve a PL event
-    let pl_key = ("m.room.power_levels".into(), String::new());
+    let pl_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+        String::new(),
+    );
     assert!(
         resolved_v2.contains_key(&pl_key),
         "V2 must have power_levels"
@@ -6295,7 +6501,10 @@ fn test_performance_and_correctness_dense_bifurcations() {
         "V2 and V2.1 must agree on create event"
     );
     for user in &users {
-        let key = ("m.room.member".into(), user.clone());
+        let key = (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            user.clone(),
+        );
         assert_eq!(
             resolved_v2.get(&key),
             resolved_v2_1.get(&key),
@@ -6355,4 +6564,119 @@ fn test_lean_event_serialize_propagates_write_error() {
         &ev,
     );
     assert!(result.is_err());
+}
+
+#[test]
+fn test_conflicted_keys_derived_before_cdo() {
+    use rezzy::basespec::event_types::EventType;
+    use rezzy::{cdo, resolve_iterative_sort_with_deltas, LeanEvent, StateResVersion};
+    use std::collections::HashMap;
+
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$root","type":"m.room.create","state_key":"","sender":"@alice:example.com","depth":1,"origin_server_ts":1000,"prev_events":[],"auth_events":[],"content":{"room_version":"12.1","creator":"@alice:example.com"}}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:example.com","sender":"@alice:example.com","depth":2,"origin_server_ts":1100,"prev_events":[],"auth_events":["$root"],"content":{"membership":"join"}}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:example.com","sender":"@bob:example.com","depth":2,"origin_server_ts":1200,"prev_events":[],"auth_events":["$root"],"content":{"membership":"join"}}
+{"event_id":"$pl_ancestor","type":"m.room.power_levels","state_key":"","sender":"@alice:example.com","power_level":100,"depth":3,"origin_server_ts":1300,"prev_events":[],"auth_events":["$root","$alice_join"],"content":{"users":{"@bob:example.com":50},"users_default":0,"events_default":0,"state_default":50,"ban":50}}
+{"event_id":"$alice_bans_bob","type":"m.room.member","state_key":"@bob:example.com","sender":"@alice:example.com","power_level":100,"depth":4,"origin_server_ts":1400,"prev_events":["$pl_ancestor"],"auth_events":["$root","$alice_join","$bob_join","$pl_ancestor"],"content":{"membership":"ban"}}
+{"event_id":"$bob_pl_dominated","type":"m.room.power_levels","state_key":"","sender":"@bob:example.com","power_level":50,"depth":5,"origin_server_ts":1500,"prev_events":["$pl_ancestor"],"auth_events":["$root","$alice_join","$bob_join","$pl_ancestor"],"content":{"users":{"@bob:example.com":50}}}
+{"event_id":"$jr_1","type":"m.room.join_rules","state_key":"","sender":"@alice:example.com","power_level":100,"depth":6,"origin_server_ts":1600,"prev_events":["$pl_ancestor"],"auth_events":["$root","$alice_join","$pl_ancestor"],"content":{"join_rule":"public"}}
+"#,
+    );
+
+    let by_id: HashMap<String, LeanEvent> = events
+        .into_iter()
+        .map(|e| (e.event_id.clone(), e))
+        .collect();
+
+    let mut auth = HashMap::new();
+    for id in ["$root", "$alice_join", "$bob_join", "$pl_ancestor"] {
+        auth.insert(id.to_string(), by_id[id].clone());
+    }
+
+    let mut conflicted = HashMap::new();
+    for id in ["$alice_bans_bob", "$bob_pl_dominated", "$jr_1"] {
+        conflicted.insert(id.to_string(), by_id[id].clone());
+    }
+
+    // Verify CDO filter actually drops $bob_pl_dominated when $alice_bans_bob is in conflicted set
+    let cdo_filtered = cdo::apply_cdo_filter(&conflicted, &auth);
+    assert!(cdo_filtered.contains_key("$alice_bans_bob"));
+    assert!(!cdo_filtered.contains_key("$bob_pl_dominated"));
+
+    let unconflicted = [
+        (
+            (EventType::from("m.room.create"), String::new()),
+            "$root".to_string(),
+        ),
+        (
+            (
+                EventType::from("m.room.member"),
+                "@alice:example.com".to_string(),
+            ),
+            "$alice_join".to_string(),
+        ),
+    ]
+    .into_iter()
+    .collect();
+
+    let (resolved, deltas) = resolve_iterative_sort_with_deltas(
+        unconflicted,
+        conflicted,
+        &auth,
+        StateResVersion::V2_1_1,
+        &mut HashMap::new(),
+    );
+
+    // Expected resolved keys: create, alice_join, bob member (ban), join_rules, power_levels.
+    let mut keys: Vec<(String, String)> = resolved
+        .keys()
+        .map(|k| (k.0.as_str().to_string(), k.1.clone()))
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            ("m.room.create".to_string(), String::new()),
+            ("m.room.join_rules".to_string(), String::new()),
+            (
+                "m.room.member".to_string(),
+                "@alice:example.com".to_string()
+            ),
+            ("m.room.member".to_string(), "@bob:example.com".to_string()),
+            ("m.room.power_levels".to_string(), String::new()),
+        ]
+    );
+
+    // Verify $bob_pl_dominated was dropped by CDO and does not appear in resolved or resolution deltas
+    assert!(!resolved.values().any(|v| v == "$bob_pl_dominated"));
+    assert!(!deltas.iter().any(|d| d.event_id == "$bob_pl_dominated"));
+
+    // Verify deltas for accepted conflicted events
+    assert!(deltas.iter().any(|d| d.event_id == "$alice_bans_bob"
+        && d.accepted
+        && d.key.0.as_str() == "m.room.member"
+        && d.key.1 == "@bob:example.com"));
+    assert!(deltas
+        .iter()
+        .any(|d| d.event_id == "$jr_1" && d.accepted && d.key.0.as_str() == "m.room.join_rules"));
+
+    // Verify $alice_bans_bob won member state for @bob:example.com
+    assert_eq!(
+        resolved.get(&(
+            EventType::from("m.room.member"),
+            "@bob:example.com".to_string()
+        )),
+        Some(&"$alice_bans_bob".to_string())
+    );
+
+    // Critical assertion for regression coverage:
+    // Because conflicted_keys was derived BEFORE CDO dropped $bob_pl_dominated,
+    // (m.room.power_levels, "") was retained in conflicted_keys.
+    // This allows ancestral power level $pl_ancestor (routed by MSC4297) to be decided in resolved state.
+    // If conflicted_keys were derived AFTER CDO, $pl_ancestor would be skipped and power_levels key would be missing.
+    assert_eq!(
+        resolved.get(&(EventType::from("m.room.power_levels"), String::new())),
+        Some(&"$pl_ancestor".to_string())
+    );
 }

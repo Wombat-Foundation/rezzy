@@ -6,6 +6,7 @@
 //!
 //! This is used for fast auth-chain difference computations in state resolution.
 
+use crate::FastMap;
 use crate::HashMap;
 use crate::LeanEvent;
 use alloc::collections::VecDeque;
@@ -42,8 +43,8 @@ where
     pub fn build<C: Clone, S: core::hash::BuildHasher>(
         sort_context: &HashMap<Id, LeanEvent<Id, C>, S>,
     ) -> Self {
-        let mut in_degree: HashMap<&Id, usize> = HashMap::new();
-        let mut adjacency: HashMap<&Id, Vec<&Id>> = HashMap::new();
+        let mut in_degree: FastMap<&Id, usize> = FastMap::default();
+        let mut adjacency: FastMap<&Id, Vec<&Id>> = FastMap::default();
 
         for (id, ev) in sort_context {
             in_degree.entry(id).or_insert(0);

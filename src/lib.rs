@@ -126,7 +126,7 @@ pub fn resolved_state_entries<Id: basespec::rezzy_types::EventId>(
     let mut entries = final_state_map
         .iter()
         .map(|((event_type, state_key), event_id)| ResolvedStateEntry {
-            event_type: event_type.clone(),
+            event_type: event_type.to_string(),
             state_key: state_key.clone(),
             event_id: event_id.to_string(),
         })
@@ -150,6 +150,28 @@ pub use std::collections::{HashMap, HashSet};
 /// See the `std` variant's documentation.
 #[cfg(not(feature = "std"))]
 pub use hashbrown::{HashMap, HashSet};
+
+/// Internal-only hashmap/hashset for maps rezzy builds and owns entirely
+/// (never a caller-supplied parameter or a public field), keyed with
+/// `hashbrown`'s `foldhash`-based `DefaultHashBuilder` instead of
+/// `std::collections`'s `SipHash13`.
+///
+/// State keys and event IDs handled by resolution originate from federation
+/// input an attacker can choose, so these maps still benefit from a randomized
+/// hasher. `foldhash` gives us a fast, minimally DoS-resistant, non-cryptographic
+/// default; that is appropriate here because the maps are internal-only, but we
+/// do not treat it as a security boundary. Not part of the public API:
+/// swapping the hasher on a caller-visible `HashMap<K, V, S>` parameter would
+/// silently break every external caller that passes a
+/// `std::collections::HashMap` there, since `S: BuildHasher` genericity only
+/// covers the hasher, not the underlying map type. See `benches/state_backend.rs`
+/// and the perf investigation this followed for how that was found out the hard
+/// way.
+pub(crate) type FastMap<K, V> = hashbrown::HashMap<K, V, hashbrown::DefaultHashBuilder>;
+
+/// See [`FastMap`]'s documentation.
+#[allow(dead_code)]
+pub(crate) type FastSet<K> = hashbrown::HashSet<K, hashbrown::DefaultHashBuilder>;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]

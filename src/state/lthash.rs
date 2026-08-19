@@ -210,6 +210,31 @@ impl LtHash {
         self.add_seed(&new);
     }
 
+    /// Record a replacement that is required to stay on the same `(event_type, state_key)`.
+    ///
+    /// This is a defensive wrapper for callers that want an explicit invariant check before
+    /// performing the remove/add pair.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `old_event_type != new_event_type` or `old_state_key != new_state_key`.
+    pub fn replace_checked(
+        &mut self,
+        old_event_type: &str,
+        old_state_key: &str,
+        old_event_id: &(impl core::fmt::Display + ?Sized),
+        new_event_type: &str,
+        new_state_key: &str,
+        new_event_id: &(impl core::fmt::Display + ?Sized),
+    ) {
+        assert!(
+            old_event_type == new_event_type && old_state_key == new_state_key,
+            "mismatched replacement key: ({old_event_type}, {old_state_key}) -> ({new_event_type}, {new_state_key})",
+        );
+        self.sub_seed(&Self::seed(old_event_type, old_state_key, &old_event_id));
+        self.add_seed(&Self::seed(new_event_type, new_state_key, &new_event_id));
+    }
+
     /// Compute the full hash from a state map (non-incremental).
     #[must_use]
     pub fn from_state<Id>(state: &crate::state::at::SharedState<Id>) -> Self
@@ -218,7 +243,7 @@ impl LtHash {
     {
         let mut hash = Self::ZERO;
         for ((event_type, state_key), event_id) in state {
-            let s = Self::seed(event_type, state_key, event_id);
+            let s = Self::seed(event_type.as_str(), state_key, event_id);
             hash.add_seed(&s);
         }
         hash
@@ -266,7 +291,7 @@ mod tests {
     use alloc::string::String;
     use alloc::vec::Vec;
 
-    type StateMap = imbl::OrdMap<(String, String), String>;
+    type StateMap = imbl::OrdMap<(crate::basespec::event_types::EventType, String), String>;
 
     #[test]
     fn test_state_hash_determinism() {
@@ -371,6 +396,37 @@ mod tests {
         expected.insert("m.room.topic", "", "$t2");
 
         assert_eq!(h, expected);
+    }
+
+    #[test]
+    fn test_lthash_mismatched_state_key_replace_panics() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut h = LtHash::ZERO;
+            h.replace_checked(
+                "m.room.member",
+                "@alice:example.com",
+                "$old",
+                "m.room.member",
+                "@bob:example.com",
+                "$new",
+            );
+        }));
+
+        assert!(result.is_err(), "mismatched replacement key should panic");
+    }
+
+    #[test]
+    #[should_panic(expected = "mismatched replacement key")]
+    fn test_lthash_mismatched_event_type_replace_panics() {
+        let mut h = LtHash::ZERO;
+        h.replace_checked(
+            "m.room.member",
+            "@alice:example.com",
+            "$old",
+            "m.room.power_levels",
+            "@alice:example.com",
+            "$new",
+        );
     }
 
     /// Validate against the official MSC4500 test vectors.
@@ -498,10 +554,13 @@ mod tests {
         // Populate state with some initial keys to work with
         let mut keys = Vec::new();
         for i in 0..15 {
-            let key = (alloc::format!("type_{i}"), alloc::format!("state_key_{i}"));
+            let key = (
+                crate::basespec::event_types::EventType::from(alloc::format!("type_{i}")),
+                alloc::format!("state_key_{i}"),
+            );
             let val = alloc::format!("$initial_event_{i}");
             state.insert(key.clone(), val.clone());
-            running_hash.insert(&key.0, &key.1, &val);
+            running_hash.insert(key.0.as_str(), &key.1, &val);
             keys.push(key);
         }
 
@@ -521,7 +580,7 @@ mod tests {
                     // Create a new key
                     let id = rng.next();
                     let key = (
-                        alloc::format!("type_{id}"),
+                        crate::basespec::event_types::EventType::from(alloc::format!("type_{id}")),
                         alloc::format!("state_key_{id}"),
                     );
                     keys.push(key.clone());
@@ -532,9 +591,9 @@ mod tests {
 
                 // If it existed, we do a replace under the hood, or insert/remove.
                 if let Some(old_val) = state.get(&key) {
-                    running_hash.replace(&key.0, &key.1, old_val, &new_val);
+                    running_hash.replace(key.0.as_str(), &key.1, old_val, &new_val);
                 } else {
-                    running_hash.insert(&key.0, &key.1, &new_val);
+                    running_hash.insert(key.0.as_str(), &key.1, &new_val);
                 }
                 state.insert(key, new_val);
             } else if op == 1 && !keys.is_empty() {
@@ -543,7 +602,7 @@ mod tests {
                 let idx = rng.next_range(0, keys_len - 1) as usize;
                 let key = keys.swap_remove(idx);
                 if let Some(val) = state.remove(&key) {
-                    running_hash.remove(&key.0, &key.1, &val);
+                    running_hash.remove(key.0.as_str(), &key.1, &val);
                 }
             } else {
                 // Replace via explicit .replace API
@@ -552,7 +611,7 @@ mod tests {
                 let key = &keys[idx];
                 if let Some(old_val) = state.get(key).cloned() {
                     let new_val = alloc::format!("$replaced_{}", rng.next());
-                    running_hash.replace(&key.0, &key.1, &old_val, &new_val);
+                    running_hash.replace(key.0.as_str(), &key.1, &old_val, &new_val);
                     state.insert(key.clone(), new_val);
                 }
             }

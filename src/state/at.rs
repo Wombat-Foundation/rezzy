@@ -26,8 +26,9 @@
 //! - **Batch mode:** computes state at multiple targets in a single topological
 //!   pass, amortizing the graph traversal cost.
 
+use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
-use crate::HashMap;
+use crate::{FastMap, HashMap};
 use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::string::String;
@@ -370,7 +371,19 @@ where
 
 /// An O(1) cloneable, persistent state map. Note that `state_key: ""`
 /// is _never_ `null` or `None`.
-pub type SharedState<Id = String> = imbl::OrdMap<(String, String), Id>;
+///
+/// The `event_type` half of the key is interned via [`EventType`] so that
+/// well-known types use compact enum representations and avoid per-entry
+/// type-string allocations in state keys. Equality, ordering, and hashing
+/// still follow the canonical string form.
+///
+/// A HAMT-backed state map was benchmarked as a replacement
+/// (`benches/state_backend.rs`) and lost on the access pattern that
+/// matters most here: forking a state map into several branches and
+/// diverging each (what conflict resolution does), where it was 6-22x
+/// slower than `OrdMap`'s clone. `imbl::OrdMap`'s RRB-tree is tuned
+/// specifically for cheap-clone/structural-sharing workloads, so it stays.
+pub type SharedState<Id = String> = imbl::OrdMap<(EventType, String), Id>;
 
 /// Computes the resolved room state *after* a given event.
 ///
@@ -390,7 +403,7 @@ pub fn compute_state_at<Id, C, Q, S>(
     target_event_id: &Q,
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     version: StateResVersion,
-) -> Option<BTreeMap<(String, String), Id>>
+) -> Option<BTreeMap<(EventType, String), Id>>
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + Ord + core::hash::Hash,
@@ -413,6 +426,8 @@ where
 /// This is the batch variant of [`compute_state_at`]. It shares the topological
 /// sort and ancestor traversal across all targets, which is significantly faster
 /// than calling `compute_state_at` in a loop when the targets share ancestors.
+/// TODO: once the incremental state pipeline uses `crate::hamt`, this should
+/// be able to reuse more structure between forked states.
 ///
 /// Returns a map from each found target event ID to its resolved state.
 /// Target IDs not found in `events_map` are silently skipped.
@@ -437,7 +452,7 @@ pub fn compute_state_at_batch<Id, C, Q, S>(
     target_event_ids: &[&Q],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     version: StateResVersion,
-) -> HashMap<Id, BTreeMap<(String, String), Id>>
+) -> HashMap<Id, BTreeMap<(EventType, String), Id>>
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
@@ -485,6 +500,8 @@ impl<E: core::fmt::Debug + core::fmt::Display> std::error::Error for StateComput
 /// immediately compress and store the state (e.g. directly into a `RocksDB`
 /// buffer), bounding the peak memory for materialized state maps to the live
 /// frontier/DAG width under strict `O(n_reachable_ancestors)` indexing metadata.
+/// TODO: pair this with the HAMT-backed state map to reduce clone pressure on
+/// large fork-heavy DAGs.
 ///
 /// **NOTE:** Target IDs not found in `events_map` are silently skipped!
 ///
@@ -590,7 +607,7 @@ where
 /// and yields the target states as they are completed.
 fn run_state_pipeline_streaming<'a, Id, C, S, F, E>(
     index_to_id: &[&'a Id],
-    id_to_index: &HashMap<&'a Id, usize>,
+    id_to_index: &FastMap<&'a Id, usize>,
     is_target: &[bool],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     version: StateResVersion,
@@ -610,6 +627,7 @@ where
     }
 
     let mut global_auth_cache = LocalAuthCache::new(version);
+    let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
 
     let mut state_after_map: Vec<Option<SharedState<Id>>> = core::iter::repeat_with(|| None)
         .take(index_to_id.len())
@@ -642,13 +660,19 @@ where
         } else if prev_states.len() == 1 {
             prev_states.into_iter().next().unwrap()
         } else {
-            resolve_merge_fast_path(&prev_states, events_map, &mut global_auth_cache, version)
+            resolve_merge_fast_path(
+                &prev_states,
+                events_map,
+                &mut global_auth_cache,
+                &mut mainline_cache,
+                version,
+            )
         };
 
         if ev.state_key.is_some() {
             state_before.insert(
                 (
-                    ev.event_type.clone(),
+                    EventType::from(ev.event_type.as_str()),
                     ev.state_key.clone().unwrap_or_default(),
                 ),
                 ev.event_id.clone(),
@@ -974,13 +998,13 @@ where
 fn collect_ancestor_short_ids_batch<'a, Id, C, S>(
     target_event_ids: &[&'a Id],
     events_map: &'a HashMap<Id, LeanEvent<Id, C>, S>,
-) -> (HashMap<&'a Id, usize>, Vec<&'a Id>)
+) -> (FastMap<&'a Id, usize>, Vec<&'a Id>)
 where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: Clone,
 {
-    let mut id_to_index: HashMap<&Id, usize> = HashMap::new();
+    let mut id_to_index: FastMap<&Id, usize> = FastMap::default();
     let mut index_to_id: Vec<&Id> = Vec::new();
     let mut queue = Vec::new();
 
@@ -1019,7 +1043,7 @@ where
 /// Returns the events sorted such that parents always appear before their children.
 fn topological_sort_short_ids<Id, C, S>(
     index_to_id: &[&Id],
-    id_to_index: &HashMap<&Id, usize>,
+    id_to_index: &FastMap<&Id, usize>,
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
 ) -> (Vec<usize>, Vec<usize>)
 where
@@ -1037,7 +1061,7 @@ where
             continue;
         };
         let mut seen = if ev.prev_events.len() > 1 {
-            Some(crate::HashSet::new())
+            Some(crate::FastSet::default())
         } else {
             None
         };
@@ -1083,6 +1107,7 @@ fn resolve_merge_fast_path<Id, C, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C>,
+    mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
 ) -> SharedState<Id>
 where
@@ -1096,9 +1121,15 @@ where
     if all_match {
         first.clone()
     } else {
-        resolve_multiple_prev_states(prev_states, events_map, global_auth_cache, version)
-            .into_iter()
-            .collect()
+        resolve_multiple_prev_states(
+            prev_states,
+            events_map,
+            global_auth_cache,
+            mainline_cache,
+            version,
+        )
+        .into_iter()
+        .collect()
     }
 }
 
@@ -1109,6 +1140,7 @@ fn resolve_multiple_prev_states<Id, C, S>(
     prev_states: &[SharedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C>,
+    mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
 ) -> SharedState<Id>
 where
@@ -1116,7 +1148,7 @@ where
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
 {
-    let mut conflicted_keys = crate::HashSet::new();
+    let mut conflicted_keys = crate::FastSet::default();
     let mut conflicted_state_set = crate::HashSet::new();
     let base = &prev_states[0];
 
@@ -1160,13 +1192,15 @@ where
     }
 
     let mut pl_cache = HashMap::new();
-    crate::resolve::iterative::resolve_iterative_sort_with_cache(
+    crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
         unconflicted_state,
         conflicted_events,
         events_map,
         Some(global_auth_cache),
         version,
         &mut pl_cache,
+        mainline_cache,
+        &conflicted_keys,
     )
 }
 
@@ -1218,7 +1252,7 @@ where
     S2: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
 {
-    let mut u_visited = crate::HashSet::new();
+    let mut u_visited = crate::FastSet::default();
     let mut u_heap_elements = Vec::with_capacity(unconflicted_state.len());
     for id in unconflicted_state.values() {
         if u_visited.insert(id.clone()) {
@@ -1229,7 +1263,7 @@ where
     }
     let mut u_heap = alloc::collections::BinaryHeap::from(u_heap_elements);
 
-    let mut c_visited = crate::HashSet::new();
+    let mut c_visited = crate::FastSet::default();
     let mut c_heap = alloc::collections::BinaryHeap::new();
     for id in conflicted_state_set {
         if u_visited.contains(id) {
@@ -1965,11 +1999,11 @@ where
     }
 
     /// Incremental insertion of a state entry into both the map and `LtHash`.
-    pub fn insert(&mut self, key: (String, String), event_id: Id) {
+    pub fn insert(&mut self, key: (EventType, String), event_id: Id) {
         if let Some(old_id) = self.state.get(&key) {
-            self.hash.remove(&key.0, &key.1, old_id);
+            self.hash.remove(key.0.as_str(), &key.1, old_id);
         }
-        self.hash.insert(&key.0, &key.1, &event_id);
+        self.hash.insert(key.0.as_str(), &key.1, &event_id);
         self.state.insert(key, event_id);
     }
 }
@@ -1978,6 +2012,8 @@ where
 ///
 /// If all parent states are identical (verified by `LtHash` + `ptr_eq` + full equality),
 /// returns the first state directly. Otherwise falls back to full state resolution.
+/// TODO: swap the state payload over to the HAMT-backed structure so this
+/// fast path can reuse more structure across fork-heavy merges.
 ///
 /// # Panics
 ///
@@ -1986,6 +2022,32 @@ pub fn resolve_merge_fast_path_hashed<Id, C, S>(
     prev_states: &[HashedState<Id>],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C>,
+    version: StateResVersion,
+) -> HashedState<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    S: core::hash::BuildHasher,
+    C: crate::basespec::rezzy_types::EventContent,
+{
+    resolve_merge_fast_path_hashed_with_cache(
+        prev_states,
+        events_map,
+        global_auth_cache,
+        &mut FastMap::default(),
+        version,
+    )
+}
+
+/// Like [`resolve_merge_fast_path_hashed`], but additionally accepts a
+/// `mainline_cache` that callers invoking this repeatedly against the same DAG
+/// (e.g. [`run_state_pipeline_streaming_optimized`]'s fork-merge loop) can
+/// thread across calls, so `build_mainline`'s BFS-per-call turns into an
+/// `O(M)` cache-hit walk instead of restarting from scratch every time.
+fn resolve_merge_fast_path_hashed_with_cache<Id, C, S>(
+    prev_states: &[HashedState<Id>],
+    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    global_auth_cache: &mut LocalAuthCache<Id, C>,
+    mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
 ) -> HashedState<Id>
 where
@@ -2009,25 +2071,30 @@ where
     } else {
         let shared_states: Vec<SharedState<Id>> =
             prev_states.iter().map(|s| s.state.clone()).collect();
-        let resolved =
-            resolve_multiple_prev_states(&shared_states, events_map, global_auth_cache, version);
+        let resolved = resolve_multiple_prev_states(
+            &shared_states,
+            events_map,
+            global_auth_cache,
+            mainline_cache,
+            version,
+        );
 
         // Incremental LtHash update from the first parent state!
         let mut hash = first.hash;
         for diff_item in first.state.diff(&resolved) {
             match diff_item {
                 imbl::ordmap::DiffItem::Add(key, new_id) => {
-                    hash.insert(&key.0, &key.1, new_id);
+                    hash.insert(key.0.as_str(), &key.1, new_id);
                 }
                 imbl::ordmap::DiffItem::Remove(key, old_id) => {
-                    hash.remove(&key.0, &key.1, old_id);
+                    hash.remove(key.0.as_str(), &key.1, old_id);
                 }
                 imbl::ordmap::DiffItem::Update {
                     old: (key, old_id),
                     new: (_, new_id),
                 } => {
-                    hash.remove(&key.0, &key.1, old_id);
-                    hash.insert(&key.0, &key.1, new_id);
+                    hash.remove(key.0.as_str(), &key.1, old_id);
+                    hash.insert(key.0.as_str(), &key.1, new_id);
                 }
             }
         }
@@ -2041,7 +2108,7 @@ where
 
 fn run_state_pipeline_streaming_optimized<'a, Id, C, S, F, E>(
     index_to_id: &[&'a Id],
-    id_to_index: &HashMap<&'a Id, usize>,
+    id_to_index: &FastMap<&'a Id, usize>,
     is_target: &[bool],
     events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
     version: StateResVersion,
@@ -2061,6 +2128,7 @@ where
     }
 
     let mut global_auth_cache = LocalAuthCache::new(version);
+    let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
 
     let mut state_after_map: Vec<Option<HashedState<Id>>> = core::iter::repeat_with(|| None)
         .take(index_to_id.len())
@@ -2072,7 +2140,7 @@ where
 
         let mut prev_states = Vec::with_capacity(ev.prev_events.len());
         let mut seen_parents = if ev.prev_events.len() > 1 {
-            Some(crate::HashSet::new())
+            Some(crate::FastSet::default())
         } else {
             None
         };
@@ -2129,17 +2197,18 @@ where
         } else if has_single_parent {
             prev_states.into_iter().next().unwrap()
         } else {
-            resolve_merge_fast_path_hashed(
+            resolve_merge_fast_path_hashed_with_cache(
                 &prev_states,
                 events_map,
                 &mut global_auth_cache,
+                &mut mainline_cache,
                 version,
             )
         };
 
         if is_state {
             let key = (
-                ev.event_type.clone(),
+                EventType::from(ev.event_type.as_str()),
                 ev.state_key.clone().unwrap_or_default(),
             );
             state_before.insert(key, ev.event_id.clone());
@@ -2467,7 +2536,10 @@ mod tests {
         // Resolved map pointing to the event
         let mut resolved = imbl::OrdMap::new();
         resolved.insert(
-            (M_ROOM_MEMBER.to_string(), "@target:example.com".to_string()),
+            (
+                EventType::from(M_ROOM_MEMBER),
+                "@target:example.com".to_string(),
+            ),
             "$kick".to_string(),
         );
 
@@ -2500,7 +2572,10 @@ mod tests {
         {
             let mut resolved_leave = imbl::OrdMap::new();
             resolved_leave.insert(
-                (M_ROOM_MEMBER.to_string(), "@target:example.com".to_string()),
+                (
+                    EventType::from(M_ROOM_MEMBER),
+                    "@target:example.com".to_string(),
+                ),
                 "$leave".to_string(),
             );
 
@@ -2540,7 +2615,7 @@ mod tests {
         {
             let mut resolved = imbl::OrdMap::new();
             resolved.insert(
-                (M_ROOM_POWER_LEVELS.to_string(), String::new()),
+                (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
                 "$pl_missing".to_string(),
             );
 

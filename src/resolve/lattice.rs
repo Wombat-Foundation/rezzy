@@ -50,6 +50,7 @@
 //!    fan-out via `std::thread::scope`, splits events into chunks, and coordinates
 //!    the fold-then-merge pipeline.
 
+use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::{
     resolve::sorting::{build_mainline, compute_closest_mainline_positions},
@@ -104,8 +105,8 @@ where
 }
 
 fn update_winner_if_better<'a, Id, C>(
-    winners: &mut HashMap<(String, String), &'a LeanEvent<Id, C>>,
-    key: (String, String),
+    winners: &mut HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
+    key: (EventType, String),
     ev: &'a LeanEvent<Id, C>,
     mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
@@ -136,12 +137,12 @@ fn fold_lattice_chunk<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash::Bu
     version: StateResVersion,
     create_ev: Option<&LeanEvent<Id, C>>,
     // jscpd:ignore-end
-) -> HashMap<(String, String), &'a LeanEvent<Id, C>>
+) -> HashMap<(EventType, String), &'a LeanEvent<Id, C>>
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + Clone,
 {
-    let mut thread_res: HashMap<(String, String), &'a LeanEvent<Id, C>> = HashMap::new();
+    let mut thread_res: HashMap<(EventType, String), &'a LeanEvent<Id, C>> = HashMap::new();
     let mut local_auth_cache = crate::state::at::LocalAuthCache::<Id, C>::new(version);
 
     for &ev in chunk {
@@ -168,15 +169,18 @@ where
         }
 
         // NOW COMPETE FOR LUB
-        let key = (ev.event_type.clone(), ev.state_key.clone().unwrap());
+        let key = (
+            EventType::from(ev.event_type.as_str()),
+            ev.state_key.clone().unwrap(),
+        );
         update_winner_if_better(&mut thread_res, key, ev, mainline_distances, mainline_len);
     }
     thread_res
 }
 
 fn merge_lattice_winners<'a, Id, C>(
-    key_winners: &mut HashMap<(String, String), &'a LeanEvent<Id, C>>,
-    thread_res: HashMap<(String, String), &'a LeanEvent<Id, C>>,
+    key_winners: &mut HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
+    thread_res: HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
     mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
 ) where
@@ -207,7 +211,7 @@ fn compute_lattice_coordinatized_winners<
     version: StateResVersion,
     create_ev: Option<&LeanEvent<Id, C>>,
     // jscpd:ignore-end
-    key_winners: &mut HashMap<(String, String), &'a LeanEvent<Id, C>>,
+    key_winners: &mut HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
 ) where
     Id: crate::basespec::rezzy_types::EventId + Sync + Send,
     C: crate::basespec::rezzy_types::EventContent + Clone + Sync + Send,
@@ -351,6 +355,12 @@ where
         );
     }
 
+    // This exploratory path doesn't add auth-diff/subgraph-context events to
+    // `conflicted_events` beyond what its own caller supplied, so every
+    // entry is treated as genuinely conflicted (matching the pre-existing
+    // behavior of this experimental resolver).
+    let conflicted_keys = crate::resolve::iterative::derive_all_conflicted_keys(&conflicted_events);
+
     let original_conflicted_keys = crate::resolve::iterative::prepare_conflicted_and_keys(
         &mut conflicted_events,
         auth_context,
@@ -382,6 +392,7 @@ where
         &mut local_auth_cache,
         create_ev,
         &mut pl_cache,
+        &conflicted_keys,
     );
 
     let sort_set = &conflicted_events;

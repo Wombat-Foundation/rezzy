@@ -15,7 +15,7 @@ pub type StateGroupId = [u8; 32];
 
 /// A resolved root handle carrying both the local structural hash and the
 /// global state-group identifier.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RootHandle {
     pub structural_hash: StructuralHash,
     pub state_group_id: StateGroupId,
@@ -67,4 +67,21 @@ impl Hasher for StructuralHashBuilder {
 #[must_use]
 pub fn state_group_id_from_lthash(lattice: &crate::state::LtHash) -> StateGroupId {
     lattice.checksum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_root_handle_hashable() {
+        let handle = RootHandle {
+            structural_hash: [1; 16],
+            state_group_id: [2; 32],
+        };
+        let mut set = HashSet::new();
+        set.insert(handle.clone());
+        assert!(set.contains(&handle));
+    }
 }

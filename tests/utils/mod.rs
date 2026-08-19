@@ -8,7 +8,7 @@ use std::collections::HashMap;
 #[allow(dead_code)]
 pub fn build_unconflicted_state_test_helper(
     auth_context: &HashMap<String, LeanEvent>,
-) -> imbl::OrdMap<(String, String), String> {
+) -> imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String> {
     let mut unconflicted = imbl::OrdMap::new();
 
     // Find the create event in the auth_context
@@ -25,7 +25,7 @@ pub fn build_unconflicted_state_test_helper(
 
     unconflicted.insert(
         (
-            create_ev.event_type.clone(),
+            rezzy::basespec::event_types::EventType::from(create_ev.event_type.as_str()),
             create_ev
                 .state_key
                 .clone()
