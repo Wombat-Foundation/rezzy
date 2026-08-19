@@ -47,37 +47,16 @@ use std::time::{Duration, Instant};
 
 use rezzy::hamt::{self, codec::HamtCodec, HamtNode};
 
+mod common;
+
 type Key = String;
 type Value = String;
 
 const STRUCTURAL_KEY: &[u8] = b"bench-state-groups";
 const SNAPSHOT_EVERY: usize = 100;
 
-struct Xorshift128 {
-    state: [u64; 2],
-}
-
-impl Xorshift128 {
-    fn new(seed: u64) -> Self {
-        Self {
-            state: [seed ^ 0x9E37_79B9_7F4A_7C15, seed.wrapping_add(1) | 1],
-        }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.state[0];
-        let y = self.state[1];
-        self.state[0] = y;
-        x ^= x << 23;
-        x ^= x >> 17;
-        x ^= y ^ (y >> 26);
-        self.state[1] = x;
-        x.wrapping_add(y)
-    }
-}
-
 fn make_entries(n: usize, seed: u64) -> Vec<(Key, Value)> {
-    let mut rng = Xorshift128::new(seed);
+    let mut rng = common::Xorshift128::new(seed);
     let mut entries = Vec::with_capacity(n);
     let mut used = std::collections::HashSet::new();
     while entries.len() < n {
@@ -157,7 +136,7 @@ fn bench_state_groups(n: usize, steps: usize) {
     // routine case for HAMT (every lookup is O(log32 N) regardless).
     let cold_key = base_entries[0].0.clone();
 
-    let mut rng = Xorshift128::new(0xBEEF);
+    let mut rng = common::Xorshift128::new(0xBEEF);
     let mutable_keys: Vec<Key> = base_entries
         .iter()
         .skip(1)
@@ -198,7 +177,7 @@ fn bench_state_groups(n: usize, steps: usize) {
         .expect("insert should not collide");
         hamt_root = new_root;
         let mut new_nodes = Vec::new();
-        crate_collect_new_nodes(&prev_root, &hamt_root, &mut new_nodes);
+        common::collect_new_nodes(&prev_root, &hamt_root, &mut new_nodes);
         for node in &new_nodes {
             hamt_bytes_total += node_encoded_len(node) as u64;
         }
@@ -334,58 +313,6 @@ fn bench_state_groups(n: usize, steps: usize) {
         hamt_lookup_elapsed,
     );
     println!();
-}
-
-// --- node-diff helpers (same shape as persistence.rs's `collect_new_nodes` /
-// `to_persisted`; duplicated locally so this file stands alone) ---
-
-fn crate_collect_new_nodes(
-    old: &std::sync::Arc<HamtNode<Key, Value>>,
-    new: &std::sync::Arc<HamtNode<Key, Value>>,
-    out: &mut Vec<std::sync::Arc<HamtNode<Key, Value>>>,
-) {
-    if std::sync::Arc::ptr_eq(old, new) || old.structural_hash == new.structural_hash {
-        return;
-    }
-    out.push(std::sync::Arc::clone(new));
-
-    let (n_a, n_b) = (old.nodemap, new.nodemap);
-    let (mut cidx_a, mut cidx_b) = (0usize, 0usize);
-    for i in 0..32 {
-        let bit = 1u32 << i;
-        let (in_a, in_b) = (n_a & bit != 0, n_b & bit != 0);
-        match (in_a, in_b) {
-            (true, true) => {
-                if let (hamt::NodeRef::Resolved(a), hamt::NodeRef::Resolved(b)) =
-                    (&old.children[cidx_a], &new.children[cidx_b])
-                {
-                    crate_collect_new_nodes(a, b, out);
-                }
-                cidx_a += 1;
-                cidx_b += 1;
-            }
-            (true, false) => cidx_a += 1,
-            (false, true) => {
-                if let hamt::NodeRef::Resolved(b) = &new.children[cidx_b] {
-                    collect_all_nodes(b, out);
-                }
-                cidx_b += 1;
-            }
-            (false, false) => {}
-        }
-    }
-}
-
-fn collect_all_nodes(
-    node: &std::sync::Arc<HamtNode<Key, Value>>,
-    out: &mut Vec<std::sync::Arc<HamtNode<Key, Value>>>,
-) {
-    out.push(std::sync::Arc::clone(node));
-    for child in &node.children {
-        if let hamt::NodeRef::Resolved(c) = child {
-            collect_all_nodes(c, out);
-        }
-    }
 }
 
 fn node_encoded_len(node: &HamtNode<Key, Value>) -> usize {

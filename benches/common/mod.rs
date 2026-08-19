@@ -5,6 +5,7 @@
 //! over `K, V` and referenced from a single `mod common;` in each bench —
 //! means a change to the HAMT child layout or to `PersistedInternalNode` is
 //! fixed once instead of silently drifting across three copies.
+#![allow(dead_code)]
 
 use std::sync::Arc;
 

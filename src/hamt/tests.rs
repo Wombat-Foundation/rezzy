@@ -916,10 +916,7 @@ fn test_hamt_any_entry_short_circuits() {
 
     // Fallible predicate error propagation
     let err_result = root.any_entry(&mut resolver, &mut |_k, _v| Err("db error"));
-    assert_eq!(
-        err_result,
-        Err(HamtTraversalError::Resolve("db error"))
-    );
+    assert_eq!(err_result, Err(HamtTraversalError::Resolve("db error")));
 }
 
 #[test]
