@@ -159,6 +159,11 @@ name = "state_groups"
 path = "benches/state_groups.rs"
 harness = false
 
+[[bench]]
+name = "cumulative_rebuild"
+path = "benches/cumulative_rebuild.rs"
+harness = false
+
 [[test]]
 name = "test_snapshots"
 path = "tests/test_snapshots.rs"
