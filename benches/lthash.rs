@@ -277,7 +277,9 @@ fn report_speedup_two(label: &str, slower_baseline: Duration, faster_baseline: D
 }
 
 fn main() {
-    for &n in &[16usize, 128, 1024, 8192, 65536] {
-        bench_incremental_hash(n, 500);
+    for &n in &[
+        16usize, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
+    ] {
+        bench_incremental_hash(n, 300);
     }
 }

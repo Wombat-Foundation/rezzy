@@ -432,7 +432,9 @@ fn main() {
     // 500) so the bounded chain's lookup isn't measured at its trivial
     // best case of landing exactly on a snapshot. See the assertion in
     // `bench_state_groups`.
-    for &n in &[128usize, 1024, 2048, 4096, 8192, 16384, 32768, 65536] {
+    for &n in &[
+        16usize, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
+    ] {
         bench_state_groups(n, 550);
     }
 }
