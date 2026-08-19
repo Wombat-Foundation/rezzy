@@ -206,16 +206,8 @@ fn bench_incremental_hash(n: usize, steps: usize) {
     let lt_start = Instant::now();
     for op in &ops {
         match op {
-            Op::Insert(k, v) => {
+            Op::Insert(k, v) | Op::Overwrite(k, v) => {
                 if let Some(old) = state.insert(k.clone(), v.clone()) {
-                    lt.replace(&k.0, &k.1, &old, v);
-                } else {
-                    lt.insert(&k.0, &k.1, v);
-                }
-            }
-            Op::Overwrite(k, v) => {
-                let old = state.insert(k.clone(), v.clone());
-                if let Some(old) = old {
                     lt.replace(&k.0, &k.1, &old, v);
                 } else {
                     lt.insert(&k.0, &k.1, v);
