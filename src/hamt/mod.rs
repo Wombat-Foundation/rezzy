@@ -280,12 +280,29 @@ impl<K, V> HamtNode<K, V> {
         &self,
         resolver: &mut F,
         predicate: &mut impl FnMut(&K, &V) -> Result<bool, E>,
-    ) -> Result<bool, E>
+    ) -> Result<bool, HamtTraversalError<E>>
     where
         F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
     {
+        self.any_entry_inner(resolver, predicate, 0)
+    }
+
+    fn any_entry_inner<F, E>(
+        &self,
+        resolver: &mut F,
+        predicate: &mut impl FnMut(&K, &V) -> Result<bool, E>,
+        depth: usize,
+    ) -> Result<bool, HamtTraversalError<E>>
+    where
+        F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    {
+        if depth >= HAMT_MAX_DEPTH {
+            return Err(HamtTraversalError::MaxDepthExceeded { depth });
+        }
+        let next_depth = depth.saturating_add(1);
+
         for (key, value) in &self.leaves {
-            if predicate(key, value)? {
+            if predicate(key, value).map_err(HamtTraversalError::Resolve)? {
                 return Ok(true);
             }
         }
@@ -293,9 +310,9 @@ impl<K, V> HamtNode<K, V> {
         for child in &self.children {
             let child_node = match child {
                 NodeRef::Resolved(node) => node.clone(),
-                NodeRef::Lazy(hash) => resolver(hash)?,
+                NodeRef::Lazy(hash) => resolver(hash).map_err(HamtTraversalError::Resolve)?,
             };
-            if child_node.any_entry(resolver, predicate)? {
+            if child_node.any_entry_inner(resolver, predicate, next_depth)? {
                 return Ok(true);
             }
         }
@@ -310,19 +327,41 @@ impl<K, V> HamtNode<K, V> {
     /// returns `Ok(true)`. Returns `Ok(None)` if no matching entry is found.
     ///
     /// # Errors
-    /// Returns any error emitted by `resolver` or `predicate`.
+    /// Returns [`HamtTraversalError::Resolve`] with the error emitted by
+    /// `resolver` or `predicate`, or [`HamtTraversalError::MaxDepthExceeded`]
+    /// if the walk recurses past the deepest depth a legitimately-built HAMT
+    /// can have.
     pub fn find_entry<F, E>(
         &self,
         resolver: &mut F,
         predicate: &mut impl FnMut(&K, &V) -> Result<bool, E>,
-    ) -> Result<Option<(K, V)>, E>
+    ) -> Result<Option<(K, V)>, HamtTraversalError<E>>
     where
         K: Clone,
         V: Clone,
         F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
     {
+        self.find_entry_inner(resolver, predicate, 0)
+    }
+
+    fn find_entry_inner<F, E>(
+        &self,
+        resolver: &mut F,
+        predicate: &mut impl FnMut(&K, &V) -> Result<bool, E>,
+        depth: usize,
+    ) -> Result<Option<(K, V)>, HamtTraversalError<E>>
+    where
+        K: Clone,
+        V: Clone,
+        F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    {
+        if depth >= HAMT_MAX_DEPTH {
+            return Err(HamtTraversalError::MaxDepthExceeded { depth });
+        }
+        let next_depth = depth.saturating_add(1);
+
         for (key, value) in &self.leaves {
-            if predicate(key, value)? {
+            if predicate(key, value).map_err(HamtTraversalError::Resolve)? {
                 return Ok(Some((key.clone(), value.clone())));
             }
         }
@@ -330,9 +369,9 @@ impl<K, V> HamtNode<K, V> {
         for child in &self.children {
             let child_node = match child {
                 NodeRef::Resolved(node) => node.clone(),
-                NodeRef::Lazy(hash) => resolver(hash)?,
+                NodeRef::Lazy(hash) => resolver(hash).map_err(HamtTraversalError::Resolve)?,
             };
-            if let Some(entry) = child_node.find_entry(resolver, predicate)? {
+            if let Some(entry) = child_node.find_entry_inner(resolver, predicate, next_depth)? {
                 return Ok(Some(entry));
             }
         }

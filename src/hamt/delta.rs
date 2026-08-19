@@ -19,7 +19,7 @@ pub fn isolate_delta<K, V, F, E>(
     root_b: &Arc<HamtNode<K, V>>,
     lattice_b: &LtHash,
     resolver: &mut F,
-) -> DeltaResult<K, V, E>
+) -> DeltaResult<K, V, HamtTraversalError<E>>
 where
     K: Hash + Clone + Eq,
     V: Hash + Clone + Eq,
@@ -36,7 +36,7 @@ where
     let mut removed = Vec::new();
 
     // Begin recursive diffing
-    diff_nodes(root_a, root_b, &mut added, &mut removed, resolver)?;
+    diff_nodes(root_a, root_b, &mut added, &mut removed, resolver, 0)?;
 
     Ok((added, removed))
 }
@@ -50,7 +50,7 @@ pub fn diff_hamt_nodes<K, V, F, E>(
     root_a: &Arc<HamtNode<K, V>>,
     root_b: &Arc<HamtNode<K, V>>,
     resolver: &mut F,
-) -> DeltaResult<K, V, E>
+) -> DeltaResult<K, V, HamtTraversalError<E>>
 where
     K: Hash + Clone + Eq,
     V: Hash + Clone + Eq,
@@ -63,7 +63,7 @@ where
     let mut added = Vec::new();
     let mut removed = Vec::new();
 
-    diff_nodes(root_a, root_b, &mut added, &mut removed, resolver)?;
+    diff_nodes(root_a, root_b, &mut added, &mut removed, resolver, 0)?;
 
     Ok((added, removed))
 }
@@ -74,7 +74,8 @@ fn diff_nodes<K, V, F, E>(
     added: &mut Vec<(K, V)>,
     removed: &mut Vec<(K, V)>,
     resolver: &mut F,
-) -> Result<(), E>
+    depth: usize,
+) -> Result<(), HamtTraversalError<E>>
 where
     K: Hash + Clone + Eq,
     V: Hash + Clone + Eq,
@@ -89,6 +90,11 @@ where
     if node_a.structural_hash == node_b.structural_hash {
         return Ok(());
     }
+
+    if depth >= HAMT_MAX_DEPTH {
+        return Err(HamtTraversalError::MaxDepthExceeded { depth });
+    }
+    let next_depth = depth.saturating_add(1);
 
     // Traverse datamaps
     let d_a = node_a.datamap;
@@ -145,9 +151,11 @@ where
                 let child_b = &node_b.children[cidx_b];
 
                 if child_a.structural_hash() != child_b.structural_hash() {
-                    let res_a = resolve_node(child_a, resolver)?;
-                    let res_b = resolve_node(child_b, resolver)?;
-                    diff_nodes(&res_a, &res_b, added, removed, resolver)?;
+                    let res_a =
+                        resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
+                    let res_b =
+                        resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
+                    diff_nodes(&res_a, &res_b, added, removed, resolver, next_depth)?;
                 }
 
                 cidx_a = cidx_a.wrapping_add(1);
@@ -155,14 +163,14 @@ where
             }
             (true, false) => {
                 let child_a = &node_a.children[cidx_a];
-                let res_a = resolve_node(child_a, resolver)?;
-                collect_all_leaves(&res_a, removed, resolver)?;
+                let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
+                collect_all_leaves(&res_a, removed, resolver, next_depth)?;
                 cidx_a = cidx_a.wrapping_add(1);
             }
             (false, true) => {
                 let child_b = &node_b.children[cidx_b];
-                let res_b = resolve_node(child_b, resolver)?;
-                collect_all_leaves(&res_b, added, resolver)?;
+                let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
+                collect_all_leaves(&res_b, added, resolver, next_depth)?;
                 cidx_b = cidx_b.wrapping_add(1);
             }
             (false, false) => {}
@@ -563,18 +571,23 @@ fn collect_all_leaves<K, V, F, E>(
     node: &Arc<HamtNode<K, V>>,
     collection: &mut Vec<(K, V)>,
     resolver: &mut F,
-) -> Result<(), E>
+    depth: usize,
+) -> Result<(), HamtTraversalError<E>>
 where
     K: Hash + Clone + Eq,
     V: Hash + Clone + Eq,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
+    if depth >= HAMT_MAX_DEPTH {
+        return Err(HamtTraversalError::MaxDepthExceeded { depth });
+    }
+    let next_depth = depth.saturating_add(1);
     for (k, v) in &node.leaves {
         collection.push((k.clone(), v.clone()));
     }
     for child in &node.children {
-        let child_node = resolve_node(child, resolver)?;
-        collect_all_leaves(&child_node, collection, resolver)?;
+        let child_node = resolve_node(child, resolver).map_err(HamtTraversalError::Resolve)?;
+        collect_all_leaves(&child_node, collection, resolver, next_depth)?;
     }
     Ok(())
 }
