@@ -1,15 +1,28 @@
 //! Compares `LtHash` (MSC4500 homomorphic state hash, `rezzy::state::LtHash`)
-//! against a "legacy" state hash for incremental state progression: after
-//! every single state-map mutation (insert / overwrite / remove), what does
-//! it cost to produce an up-to-date state hash?
+//! against *two* non-homomorphic baselines for incremental state
+//! progression: after every single state-map mutation (insert / overwrite /
+//! remove), what does it cost to produce an up-to-date state hash?
 //!
-//! - **legacy**: no incrementality. Recompute the hash from scratch every
-//!   mutation by canonically encoding every `(event_type, state_key,
-//!   event_id)` entry in sorted order and feeding it through SHA-256 — the
-//!   natural non-homomorphic baseline (roughly what you'd get hashing a
-//!   canonical JSON/CBOR state snapshot).
-//! - **`LtHash`**: `insert`/`remove`/`replace` are `O(1)` lattice
-//!   add/subtract, independent of state size.
+//! - **conduwuit-style, `O(S log S)`**: no persistent sorted structure
+//!   across calls — every mutation collects the full state into a `Vec`
+//!   and sorts it before hashing, so the sort dominates. This models
+//!   hashing a freshly-derived canonical snapshot rather than maintaining
+//!   an incrementally-sorted index alongside it.
+//! - **Synapse-style, `O(S)`**: no sort at all. Combines a SHA-256 digest
+//!   per entry via a commutative XOR-fold, so it doesn't need entries in
+//!   any particular order — but it's still a *full* recompute over all `S`
+//!   entries every mutation, just without the `log S` sort factor. This is
+//!   the same "hash each element, combine independent of order" idea
+//!   `LtHash` uses, just non-incrementally: rebuilt from scratch every
+//!   mutation instead of updated in place.
+//! - **`LtHash`, `O(1)`**: `insert`/`remove`/`replace` are lattice
+//!   add/subtract on the *existing* accumulator — no re-scan of the state
+//!   at all, independent of `S`.
+//!
+//! These are complexity-class models, not literal ports of either
+//! project's source — the point is the shape (`O(1)` vs `O(S)` vs
+//! `O(S log S)`), which is what actually determines how these scale as
+//! room state grows, not which exact hash function each project picks.
 //!
 //! Run with: `cargo bench --bench lthash`
 #![allow(
@@ -20,7 +33,7 @@
     clippy::doc_markdown
 )]
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use rezzy::state::LtHash;
@@ -69,33 +82,60 @@ fn make_entries(n: usize, seed: u64) -> Vec<(StateKey, String)> {
     entries
 }
 
-/// Canonical, sorted-order full-state hash: what a non-homomorphic "just
-/// hash a snapshot" implementation would do. `BTreeMap` iteration is
-/// already key-sorted, so this is the cheapest legacy baseline can get away
-/// with `event_type + state_key` still needing a length-prefixed encoding
-/// against key-boundary ambiguity.
-fn legacy_hash(state: &BTreeMap<StateKey, String>) -> [u8; 32] {
+fn canonical_row(event_type: &str, state_key: &str, event_id: &str) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(event_type.len() + state_key.len() + event_id.len() + 12);
+    buf.extend_from_slice(&(event_type.len() as u32).to_le_bytes());
+    buf.extend_from_slice(event_type.as_bytes());
+    buf.extend_from_slice(&(state_key.len() as u32).to_le_bytes());
+    buf.extend_from_slice(state_key.as_bytes());
+    buf.extend_from_slice(&(event_id.len() as u32).to_le_bytes());
+    buf.extend_from_slice(event_id.as_bytes());
+    buf
+}
+
+/// conduwuit-style: `O(S log S)`. State lives in a flat, unordered
+/// `HashMap` (no persistent sorted index is maintained across mutations),
+/// so producing a canonical hash means collecting every entry and sorting
+/// it fresh each time before feeding it through SHA-256 sequentially.
+fn conduwuit_style_hash(state: &HashMap<StateKey, String>) -> [u8; 32] {
+    let mut rows: Vec<Vec<u8>> = state
+        .iter()
+        .map(|((event_type, state_key), event_id)| canonical_row(event_type, state_key, event_id))
+        .collect();
+    rows.sort_unstable();
     let mut hasher = Sha256::new();
-    for ((event_type, state_key), event_id) in state {
-        hasher.update((event_type.len() as u32).to_le_bytes());
-        hasher.update(event_type.as_bytes());
-        hasher.update((state_key.len() as u32).to_le_bytes());
-        hasher.update(state_key.as_bytes());
-        hasher.update((event_id.len() as u32).to_le_bytes());
-        hasher.update(event_id.as_bytes());
+    for row in &rows {
+        hasher.update(row);
     }
     hasher.finalize().into()
+}
+
+/// Synapse-style: `O(S)`. Order-independent by construction (XOR-fold of
+/// per-entry digests, same trick `LtHash` uses for commutativity) so no
+/// sort is needed — but still a full recompute over every entry each
+/// mutation, not an incremental update against a running accumulator.
+fn synapse_style_hash(state: &HashMap<StateKey, String>) -> [u8; 32] {
+    let mut acc = [0u8; 32];
+    for ((event_type, state_key), event_id) in state {
+        let row = canonical_row(event_type, state_key, event_id);
+        let digest: [u8; 32] = Sha256::digest(&row).into();
+        for (a, d) in acc.iter_mut().zip(digest.iter()) {
+            *a ^= d;
+        }
+    }
+    acc
 }
 
 /// Applies `steps` sequential mutations (mix of new-key inserts, overwrites
 /// of existing keys, and removals) to an `n`-entry base state, and for each
 /// one measures the cost of bringing a running state hash up to date under
-/// both strategies.
+/// all three strategies.
+#[allow(clippy::too_many_lines)]
 fn bench_incremental_hash(n: usize, steps: usize) {
     println!("incremental state hash after each mutation (n={n}, steps={steps}):");
 
     let base_entries = make_entries(n, 0x5EED_0000 + n as u64);
-    let mut state: BTreeMap<StateKey, String> = base_entries.into_iter().collect();
+    let mut state: HashMap<StateKey, String> = base_entries.into_iter().collect();
 
     let mut lt = LtHash::ZERO;
     for ((event_type, state_key), event_id) in &state {
@@ -133,20 +173,35 @@ fn bench_incremental_hash(n: usize, steps: usize) {
         }
     }
 
-    let mut legacy_state = state.clone();
-    let legacy_start = Instant::now();
+    let mut conduwuit_state = state.clone();
+    let conduwuit_start = Instant::now();
     for op in &ops {
         match op {
             Op::Insert(k, v) | Op::Overwrite(k, v) => {
-                legacy_state.insert(k.clone(), v.clone());
+                conduwuit_state.insert(k.clone(), v.clone());
             }
             Op::Remove(k) => {
-                legacy_state.remove(k);
+                conduwuit_state.remove(k);
             }
         }
-        std::hint::black_box(legacy_hash(&legacy_state));
+        std::hint::black_box(conduwuit_style_hash(&conduwuit_state));
     }
-    let legacy_elapsed = legacy_start.elapsed();
+    let conduwuit_elapsed = conduwuit_start.elapsed();
+
+    let mut synapse_state = state.clone();
+    let synapse_start = Instant::now();
+    for op in &ops {
+        match op {
+            Op::Insert(k, v) | Op::Overwrite(k, v) => {
+                synapse_state.insert(k.clone(), v.clone());
+            }
+            Op::Remove(k) => {
+                synapse_state.remove(k);
+            }
+        }
+        std::hint::black_box(synapse_style_hash(&synapse_state));
+    }
+    let synapse_elapsed = synapse_start.elapsed();
 
     let lt_start = Instant::now();
     for op in &ops {
@@ -178,25 +233,46 @@ fn bench_incremental_hash(n: usize, steps: usize) {
 
     let op_count = ops.len() as u32;
     println!(
-        "  legacy (full sorted SHA-256 every step): {:.1} ns/op",
-        (legacy_elapsed.as_nanos() as f64) / f64::from(op_count)
+        "  conduwuit-style (O(S log S), sort + SHA-256 every step): {:.1} ns/op",
+        (conduwuit_elapsed.as_nanos() as f64) / f64::from(op_count)
     );
     println!(
-        "  LtHash (O(1) lattice add/sub + BLAKE2b checksum): {:.1} ns/op",
+        "  synapse-style (O(S), unsorted XOR-fold of SHA-256 every step): {:.1} ns/op",
+        (synapse_elapsed.as_nanos() as f64) / f64::from(op_count)
+    );
+    println!(
+        "  LtHash (O(1), lattice add/sub + BLAKE2b checksum): {:.1} ns/op",
         (lt_elapsed.as_nanos() as f64) / f64::from(op_count)
     );
-    report_speedup(legacy_elapsed, lt_elapsed);
+    report_speedup("conduwuit-style", conduwuit_elapsed, lt_elapsed);
+    report_speedup("synapse-style", synapse_elapsed, lt_elapsed);
+    report_speedup_two(
+        "synapse-style vs conduwuit-style",
+        conduwuit_elapsed,
+        synapse_elapsed,
+    );
     println!();
 }
 
-fn report_speedup(legacy: Duration, lthash: Duration) {
-    let legacy_ns = legacy.as_nanos() as f64;
+fn report_speedup(label: &str, baseline: Duration, lthash: Duration) {
+    let baseline_ns = baseline.as_nanos() as f64;
     let lthash_ns = lthash.as_nanos() as f64;
-    let speedup = legacy_ns / lthash_ns;
+    let speedup = baseline_ns / lthash_ns;
     if speedup >= 1.0 {
-        println!("  => LtHash is {speedup:.2}x faster than legacy");
+        println!("  => LtHash is {speedup:.2}x faster than {label}");
     } else {
-        println!("  => LtHash is {:.2}x SLOWER than legacy", 1.0 / speedup);
+        println!("  => LtHash is {:.2}x SLOWER than {label}", 1.0 / speedup);
+    }
+}
+
+fn report_speedup_two(label: &str, slower_baseline: Duration, faster_baseline: Duration) {
+    let slow_ns = slower_baseline.as_nanos() as f64;
+    let fast_ns = faster_baseline.as_nanos() as f64;
+    let ratio = slow_ns / fast_ns;
+    if ratio >= 1.0 {
+        println!("  => {label}: {ratio:.2}x faster (no-sort O(S) beats sorted O(S log S))");
+    } else {
+        println!("  => {label}: {:.2}x SLOWER", 1.0 / ratio);
     }
 }
 
