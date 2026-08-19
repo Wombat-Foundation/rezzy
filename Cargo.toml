@@ -144,6 +144,21 @@ name = "mainline_cache"
 path = "benches/mainline_cache.rs"
 harness = false
 
+[[bench]]
+name = "persistence"
+path = "benches/persistence.rs"
+harness = false
+
+[[bench]]
+name = "lthash"
+path = "benches/lthash.rs"
+harness = false
+
+[[bench]]
+name = "state_groups"
+path = "benches/state_groups.rs"
+harness = false
+
 [[test]]
 name = "test_snapshots"
 path = "tests/test_snapshots.rs"

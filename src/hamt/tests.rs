@@ -1,6 +1,6 @@
 use super::*;
 use crate::hamt::codec::PersistedInternalNode;
-use crate::hamt::delta::isolate_delta;
+use crate::hamt::delta::{isolate_delta, HamtTraversalError};
 use crate::hamt::{build_hamt, build_hamt_root_handle, HamtBuildError};
 use crate::state::LtHash;
 use alloc::vec;
@@ -134,6 +134,24 @@ fn test_hamt_mutate_error_display_and_source() {
 
     let resolve = HamtMutateError::Resolve(std::io::Error::other("boom"));
     assert_eq!(format!("{resolve}"), "hamt mutation resolver failed: boom");
+    let source = resolve
+        .source()
+        .expect("resolve variant should expose source");
+    assert_eq!(format!("{source}"), "boom");
+}
+
+#[test]
+#[cfg(feature = "std")]
+fn test_hamt_traversal_error_display_and_source() {
+    let max_depth = HamtTraversalError::<std::io::Error>::MaxDepthExceeded { depth: 42 };
+    assert_eq!(
+        format!("{max_depth}"),
+        "hamt traversal exceeded max depth at 42"
+    );
+    assert!(max_depth.source().is_none());
+
+    let resolve = HamtTraversalError::Resolve(std::io::Error::other("boom"));
+    assert_eq!(format!("{resolve}"), "hamt traversal resolver failed: boom");
     let source = resolve
         .source()
         .expect("resolve variant should expose source");
