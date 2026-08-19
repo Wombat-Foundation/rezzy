@@ -12,7 +12,9 @@ pub type DeltaResult<K, V, E> = Result<(Delta<K, V>, Delta<K, V>), E>;
 ///   tries are convergently identical.
 ///
 /// # Errors
-/// Returns the error from the `resolver` closure if it fails to resolve a lazy node.
+/// Returns [`HamtTraversalError::Resolve`] if the `resolver` fails to resolve a lazy node, or
+/// [`HamtTraversalError::MaxDepthExceeded`] if the diff recurses past the deepest depth a
+/// legitimately-built HAMT can have.
 pub fn isolate_delta<K, V, F, E>(
     root_a: &Arc<HamtNode<K, V>>,
     lattice_a: &LtHash,
@@ -45,7 +47,9 @@ where
 /// short-circuiting on identical structural hashes without requiring `LtHash` references.
 ///
 /// # Errors
-/// Returns the error from the `resolver` closure if it fails to resolve a lazy node.
+/// Returns [`HamtTraversalError::Resolve`] if the `resolver` fails to resolve a lazy node, or
+/// [`HamtTraversalError::MaxDepthExceeded`] if the diff recurses past the deepest depth a
+/// legitimately-built HAMT can have.
 pub fn diff_hamt_nodes<K, V, F, E>(
     root_a: &Arc<HamtNode<K, V>>,
     root_b: &Arc<HamtNode<K, V>>,

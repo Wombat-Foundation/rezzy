@@ -275,7 +275,10 @@ impl<K, V> HamtNode<K, V> {
     /// returns `Ok(true)`. Returns `Ok(false)` if no matching entry is found.
     ///
     /// # Errors
-    /// Returns any error emitted by `resolver` or `predicate`.
+    /// Returns [`HamtTraversalError::Resolve`] with the error emitted by
+    /// `resolver` or `predicate`, or [`HamtTraversalError::MaxDepthExceeded`]
+    /// if the walk recurses past the deepest depth a legitimately-built HAMT
+    /// can have.
     pub fn any_entry<F, E>(
         &self,
         resolver: &mut F,
