@@ -22,21 +22,18 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 /// A single entry in a state diff.
+///
+/// Generic over the state-key type `K` (defaults to `String`); see
+/// [`crate::basespec::rezzy_types::StateKey`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StateDiffEntry<Id> {
+pub enum StateDiffEntry<Id, K = String> {
     /// Key exists in `new` but not in `old`.
-    Added {
-        key: (EventType, String),
-        event_id: Id,
-    },
+    Added { key: (EventType, K), event_id: Id },
     /// Key exists in `old` but not in `new`.
-    Removed {
-        key: (EventType, String),
-        event_id: Id,
-    },
+    Removed { key: (EventType, K), event_id: Id },
     /// Key exists in both but maps to different events.
     Changed {
-        key: (EventType, String),
+        key: (EventType, K),
         old_event_id: Id,
         new_event_id: Id,
     },
@@ -44,12 +41,12 @@ pub enum StateDiffEntry<Id> {
 
 /// The result of diffing two state snapshots.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StateDiff<Id> {
+pub struct StateDiff<Id, K = String> {
     /// All differences between old and new state.
-    pub entries: Vec<StateDiffEntry<Id>>,
+    pub entries: Vec<StateDiffEntry<Id, K>>,
 }
 
-impl<Id> StateDiff<Id> {
+impl<Id, K> StateDiff<Id, K> {
     /// Number of state keys that changed.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -63,21 +60,21 @@ impl<Id> StateDiff<Id> {
     }
 
     /// Iterate over only the added entries.
-    pub fn added(&self) -> impl Iterator<Item = &StateDiffEntry<Id>> {
+    pub fn added(&self) -> impl Iterator<Item = &StateDiffEntry<Id, K>> {
         self.entries
             .iter()
             .filter(|e| matches!(e, StateDiffEntry::Added { .. }))
     }
 
     /// Iterate over only the removed entries.
-    pub fn removed(&self) -> impl Iterator<Item = &StateDiffEntry<Id>> {
+    pub fn removed(&self) -> impl Iterator<Item = &StateDiffEntry<Id, K>> {
         self.entries
             .iter()
             .filter(|e| matches!(e, StateDiffEntry::Removed { .. }))
     }
 
     /// Iterate over only the changed entries.
-    pub fn changed(&self) -> impl Iterator<Item = &StateDiffEntry<Id>> {
+    pub fn changed(&self) -> impl Iterator<Item = &StateDiffEntry<Id, K>> {
         self.entries
             .iter()
             .filter(|e| matches!(e, StateDiffEntry::Changed { .. }))
@@ -107,10 +104,10 @@ impl<Id> StateDiff<Id> {
 /// assert_eq!(diff.len(), 3); // topic changed, name removed, avatar added
 /// ```
 #[must_use]
-pub fn compute_state_diff<Id: EventId>(
-    old: &SharedState<Id>,
-    new: &SharedState<Id>,
-) -> StateDiff<Id> {
+pub fn compute_state_diff<Id: EventId, K: Ord + Clone>(
+    old: &SharedState<Id, K>,
+    new: &SharedState<Id, K>,
+) -> StateDiff<Id, K> {
     let mut entries = Vec::new();
 
     for diff_item in old.diff(new) {

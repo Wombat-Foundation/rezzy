@@ -111,12 +111,12 @@ pub trait StateKeyDyn {
     fn state_key(&self) -> &str;
 }
 
-impl StateKeyDyn for (String, String) {
+impl<K: AsRef<str>> StateKeyDyn for (String, K) {
     fn ev_type(&self) -> &str {
         &self.0
     }
     fn state_key(&self) -> &str {
-        &self.1
+        self.1.as_ref()
     }
 }
 
@@ -129,25 +129,27 @@ impl<'a> StateKeyDyn for (&'a str, &'a str) {
     }
 }
 
-impl<'a> Borrow<dyn StateKeyDyn + 'a> for (String, String) {
+impl<'a, K: AsRef<str> + 'a> Borrow<dyn StateKeyDyn + 'a> for (String, K) {
     fn borrow(&self) -> &(dyn StateKeyDyn + 'a) {
         self
     }
 }
 
-impl StateKeyDyn for (crate::basespec::event_types::EventType, String) {
+impl<K: AsRef<str>> StateKeyDyn for (crate::basespec::event_types::EventType, K) {
     fn ev_type(&self) -> &str {
         self.0.as_str()
     }
     fn state_key(&self) -> &str {
-        &self.1
+        self.1.as_ref()
     }
 }
 
 // Sound only because `EventType`'s `Ord`/`Eq`/`Hash` are defined against
 // `as_str()` (see its doc comment) and therefore agree with `dyn
 // StateKeyDyn`'s lexicographic string ordering used below.
-impl<'a> Borrow<dyn StateKeyDyn + 'a> for (crate::basespec::event_types::EventType, String) {
+impl<'a, K: AsRef<str> + 'a> Borrow<dyn StateKeyDyn + 'a>
+    for (crate::basespec::event_types::EventType, K)
+{
     fn borrow(&self) -> &(dyn StateKeyDyn + 'a) {
         self
     }
@@ -187,11 +189,15 @@ pub trait StateProvider<Id = String, C = serde_json::Value, E = LeanEvent<Id, C>
 }
 
 /// The room state at a specific point in the DAG (keyed by (type, `state_key`) -> event).
-pub type RoomState<Id = String, C = serde_json::Value> =
-    alloc::collections::BTreeMap<(String, String), LeanEvent<Id, C>>;
+pub type RoomState<Id = String, C = serde_json::Value, K = String> =
+    alloc::collections::BTreeMap<(String, K), LeanEvent<Id, C, K>>;
 
-impl<Id, C> StateProvider<Id, C, LeanEvent<Id, C>> for RoomState<Id, C> {
-    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C>> {
+impl<Id, C, K> StateProvider<Id, C, LeanEvent<Id, C, K>> for RoomState<Id, C, K>
+where
+    K: Ord,
+    for<'q> (String, K): Borrow<dyn StateKeyDyn + 'q>,
+{
+    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C, K>> {
         let query: &dyn StateKeyDyn = &(event_type, state_key);
         self.get(query)
     }

@@ -44,10 +44,10 @@ use core::cmp::Ordering;
 /// Will panic if `child_id` or `possible_ancestor_id` are found in the context's key-value entries
 /// but their corresponding values are missing from the context map (violating graph integrity).
 #[must_use]
-pub fn is_ancestor<Id, C: Clone, Q, S: core::hash::BuildHasher>(
+pub fn is_ancestor<Id, C: Clone, Q, S: core::hash::BuildHasher, K>(
     child_id: &Q,
     possible_ancestor_id: &Q,
-    context: &HashMap<Id, LeanEvent<Id, C>, S>,
+    context: &HashMap<Id, LeanEvent<Id, C, K>, S>,
 ) -> bool
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
@@ -104,10 +104,10 @@ const WORDS_PER_CHUNK: usize = 8;
 /// Number of `u64` words per bitmask chunk (4 × 64 = 256 bits on AVX2/NEON).
 const WORDS_PER_CHUNK: usize = 4;
 
-fn compute_cdo_bit_masks_chunk<Id, C, S: core::hash::BuildHasher>(
+fn compute_cdo_bit_masks_chunk<Id, C, S: core::hash::BuildHasher, K>(
     admin_chunk: &[Id],
     id_to_idx: &HashMap<Id, usize, S>,
-    sorted_events: &[(usize, &LeanEvent<Id, C>)],
+    sorted_events: &[(usize, &LeanEvent<Id, C, K>)],
     parents: &[Vec<usize>],
     children: &[Vec<usize>],
     and_masks: &mut [u64],
@@ -151,9 +151,9 @@ fn compute_cdo_bit_masks_chunk<Id, C, S: core::hash::BuildHasher>(
     }
 }
 
-fn sort_cdo_events<'a, Id: Ord + Clone, C: Clone>(
-    events: &[&'a LeanEvent<Id, C>],
-) -> Vec<&'a LeanEvent<Id, C>> {
+fn sort_cdo_events<'a, Id: Ord + Clone, C: Clone, K>(
+    events: &[&'a LeanEvent<Id, C, K>],
+) -> Vec<&'a LeanEvent<Id, C, K>> {
     let mut sorted = events.to_vec();
     sorted.sort_by(|a, b| {
         let type_priority = |t: &str| match t {
@@ -182,17 +182,17 @@ fn sort_cdo_events<'a, Id: Ord + Clone, C: Clone>(
     sorted
 }
 
-struct AdjacencyStructures<'a, Id, C> {
+struct AdjacencyStructures<'a, Id, C, K> {
     id_to_idx: HashMap<Id, usize>,
-    sorted_events: Vec<(usize, &'a LeanEvent<Id, C>)>,
+    sorted_events: Vec<(usize, &'a LeanEvent<Id, C, K>)>,
     parents: Vec<Vec<usize>>,
     children: Vec<Vec<usize>>,
 }
 
-fn build_adjacency_structures<'a, Id, C: Clone, S1, S2>(
-    conflicted_events: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
-    auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
-) -> AdjacencyStructures<'a, Id, C>
+fn build_adjacency_structures<'a, Id, C: Clone, S1, S2, K>(
+    conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
+) -> AdjacencyStructures<'a, Id, C, K>
 where
     Id: crate::basespec::rezzy_types::EventId,
     S1: core::hash::BuildHasher,
@@ -270,14 +270,15 @@ struct PrioritizedEvents<Id> {
     priority_pos: HashMap<Id, usize>,
 }
 
-fn prioritize_events<Id, C: crate::basespec::rezzy_types::EventContent + Clone, S1>(
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
+fn prioritize_events<Id, C: crate::basespec::rezzy_types::EventContent + Clone, S1, K>(
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
 ) -> PrioritizedEvents<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
     S1: core::hash::BuildHasher,
+    K: AsRef<str>,
 {
-    let admin_events_to_sort: Vec<&LeanEvent<Id, C>> = conflicted_events
+    let admin_events_to_sort: Vec<&LeanEvent<Id, C, K>> = conflicted_events
         .values()
         .filter(|e| e.is_ban_or_kick() || e.is_demotion() || e.is_lockdown())
         .collect();
@@ -304,13 +305,15 @@ fn process_direct_domination_chunks<
     Id,
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
+    K,
 >(
-    adj: &AdjacencyStructures<'_, Id, C>,
+    adj: &AdjacencyStructures<'_, Id, C, K>,
     prioritized: &PrioritizedEvents<Id>,
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
 ) -> BTreeSet<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
+    K: AsRef<str>,
 {
     let n = adj.sorted_events.len();
     let mut dropped_ids = BTreeSet::new();
@@ -390,12 +393,18 @@ where
     dropped_ids
 }
 
-fn propagate_transitive_dependencies<Id, C: Clone, S1: core::hash::BuildHasher>(
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
+fn propagate_transitive_dependencies<
+    Id,
+    C: crate::basespec::rezzy_types::EventContent + Clone,
+    S1: core::hash::BuildHasher,
+    K,
+>(
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
     mut dropped_ids: BTreeSet<Id>,
 ) -> BTreeSet<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
+    K: AsRef<str>,
 {
     let mut dependents: HashMap<Id, Vec<Id>> = HashMap::new();
     for (id, event) in conflicted_events {
@@ -441,12 +450,14 @@ pub fn apply_cdo_filter<
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
+    K,
 >(
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
-) -> HashMap<Id, LeanEvent<Id, C>>
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+) -> HashMap<Id, LeanEvent<Id, C, K>>
 where
     Id: crate::basespec::rezzy_types::EventId,
+    K: AsRef<str> + Clone,
 {
     // jscpd:ignore-end
     let adj = build_adjacency_structures(conflicted_events, auth_context);

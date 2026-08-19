@@ -39,13 +39,13 @@ pub enum ResolvePhase {
 /// these for every conflicted event that is auth-checked, regardless of whether
 /// it was accepted or rejected.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ResolutionDelta<Id: crate::basespec::rezzy_types::EventId = String> {
+pub struct ResolutionDelta<Id: crate::basespec::rezzy_types::EventId = String, K = String> {
     /// The event that was auth-checked.
     pub event_id: Id,
     /// Whether the event passed the iterative auth check.
     pub accepted: bool,
     /// The `(event_type, state_key)` slot this event targets.
-    pub key: (String, String),
+    pub key: (crate::basespec::event_types::EventType, K),
     /// The event ID that was previously in this slot (if any).
     /// `None` if the slot was empty before this event.
     pub replaced: Option<Id>,
@@ -73,9 +73,12 @@ pub struct StateDelta<Id: crate::basespec::rezzy_types::EventId = String> {
 ///
 /// If the two states are identical, returns an empty `Vec`.
 #[must_use]
-pub fn compute_state_delta<Id: crate::basespec::rezzy_types::EventId>(
-    parent: &crate::state::at::SharedState<Id>,
-    current: &crate::state::at::SharedState<Id>,
+pub fn compute_state_delta<
+    Id: crate::basespec::rezzy_types::EventId,
+    K: Ord + Clone + AsRef<str>,
+>(
+    parent: &crate::state::at::SharedState<Id, K>,
+    current: &crate::state::at::SharedState<Id, K>,
 ) -> Vec<StateDelta<Id>> {
     let mut deltas = Vec::new();
 
@@ -86,7 +89,7 @@ pub fn compute_state_delta<Id: crate::basespec::rezzy_types::EventId>(
             _ => {
                 deltas.push(StateDelta {
                     event_type: event_type.to_string(),
-                    state_key: state_key.clone(),
+                    state_key: state_key.as_ref().to_string(),
                     event_id: Some(event_id.clone()),
                 });
             }
@@ -98,7 +101,7 @@ pub fn compute_state_delta<Id: crate::basespec::rezzy_types::EventId>(
         if !current.contains_key(key) {
             deltas.push(StateDelta {
                 event_type: key.0.to_string(),
-                state_key: key.1.clone(),
+                state_key: key.1.as_ref().to_string(),
                 event_id: None,
             });
         }

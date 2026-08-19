@@ -237,13 +237,14 @@ impl LtHash {
 
     /// Compute the full hash from a state map (non-incremental).
     #[must_use]
-    pub fn from_state<Id>(state: &crate::state::at::SharedState<Id>) -> Self
+    pub fn from_state<Id, K>(state: &crate::state::at::SharedState<Id, K>) -> Self
     where
         Id: crate::basespec::rezzy_types::EventId,
+        K: Ord + AsRef<str>,
     {
         let mut hash = Self::ZERO;
         for ((event_type, state_key), event_id) in state {
-            let s = Self::seed(event_type.as_str(), state_key, event_id);
+            let s = Self::seed(event_type.as_str(), state_key.as_ref(), event_id);
             hash.add_seed(&s);
         }
         hash
@@ -278,8 +279,8 @@ impl LtHash {
 /// wrapping addition of all seeds — making it order-independent and
 /// incrementally updatable.
 #[must_use]
-pub fn compute_state_hash<Id: crate::basespec::rezzy_types::EventId>(
-    state: &crate::state::at::SharedState<Id>,
+pub fn compute_state_hash<Id: crate::basespec::rezzy_types::EventId, K: Ord + AsRef<str>>(
+    state: &crate::state::at::SharedState<Id, K>,
 ) -> [u8; 32] {
     LtHash::from_state(state).checksum()
 }
