@@ -47,9 +47,8 @@
 /// - **Order independence**: addition is commutative + associative.
 /// - **Cryptographic security**: hard to find set collisions (SVP).
 ///
-/// TODO: `LtHash` is `Copy` over `[u16; 1024]` (2 KiB), so `StateUpdate::New/Unchanged`
-/// copies the full value. If profiling shows this is hot, consider boxing or
-/// using references in rebuild loops.
+/// `StateUpdate::New/Unchanged` now carry `&LtHash` (borrowed, zero-copy); callers
+/// that need to retain the hash (e.g. across a thread channel) copy it explicitly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LtHash(pub [u16; 1024]);
 
@@ -253,7 +252,7 @@ impl LtHash {
     /// Finalize into the 32-byte wire digest per MSC4500 §6:
     /// `BLAKE2b-256(S)`, where `S` is the 2048-byte lattice.
     #[must_use]
-    pub fn checksum(&self) -> [u8; 32] {
+    pub fn digest(&self) -> [u8; 32] {
         use blake2::digest::consts::U32;
         use blake2::{Blake2b, Digest};
         let mut hasher = Blake2b::<U32>::new();
@@ -282,7 +281,7 @@ impl LtHash {
 pub fn compute_state_hash<Id: crate::basespec::rezzy_types::EventId, K: Ord + AsRef<str>>(
     state: &crate::state::at::SharedState<Id, K>,
 ) -> [u8; 32] {
-    LtHash::from_state(state).checksum()
+    LtHash::from_state(state).digest()
 }
 
 #[cfg(test)]
@@ -306,7 +305,7 @@ mod tests {
         let h1 = compute_state_hash(&state);
         let h2 = compute_state_hash(&state);
         assert_eq!(h1, h2, "same state must produce same hash");
-        assert_eq!(h1.len(), 32, "LtHash final checksum should be 32 bytes");
+        assert_eq!(h1.len(), 32, "LtHash final digest should be 32 bytes");
     }
 
     #[test]
@@ -333,7 +332,7 @@ mod tests {
         let h2 = LtHash::from_state(&state);
         assert_eq!(h1, h2);
         assert_ne!(h1, LtHash::ZERO);
-        assert_eq!(h1.checksum().len(), 32);
+        assert_eq!(h1.digest().len(), 32);
     }
 
     #[test]
@@ -450,7 +449,7 @@ mod tests {
         // --- Empty state (n=0) ---
         let s0 = LtHash::ZERO;
         assert_eq!(
-            hex(&s0.checksum()),
+            hex(&s0.digest()),
             "200823e5158b3774c11b5c61850ada762f8264144a9bebec3ebac5a2adde67b8"
         );
 
@@ -464,7 +463,7 @@ mod tests {
         let s1_bytes: Vec<u8> = s1.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
         assert_eq!(hex(&s1_bytes), "d72df88a72ff61da6b2287649ff6001c");
         assert_eq!(
-            hex(&s1.checksum()),
+            hex(&s1.digest()),
             "3bcd9f595b4b5c7095b300ec5cf37ff1ff3f79400643f7ba66171e150ddb6606"
         );
 
@@ -473,7 +472,7 @@ mod tests {
         s_back.sub_seed(&seed1);
         assert_eq!(s_back, LtHash::ZERO);
         assert_eq!(
-            hex(&s_back.checksum()),
+            hex(&s_back.digest()),
             "200823e5158b3774c11b5c61850ada762f8264144a9bebec3ebac5a2adde67b8"
         );
 
@@ -487,7 +486,7 @@ mod tests {
         let s2_bytes: Vec<u8> = s2.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
         assert_eq!(hex(&s2_bytes), "63cb41224c614368e98d0a8afef5066a");
         assert_eq!(
-            hex(&s2.checksum()),
+            hex(&s2.digest()),
             "99d3ed0ae604d2fb5849f7280062e27ecea4425b64b25190e067e3d6a755680c"
         );
 
@@ -502,7 +501,7 @@ mod tests {
         let s3_bytes: Vec<u8> = s3.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
         assert_eq!(hex(&s3_bytes), "296ff8b7c050f4ec0c0419bdf2b7cc9e");
         assert_eq!(
-            hex(&s3.checksum()),
+            hex(&s3.digest()),
             "8b611750bb056a38f9e3f9fcc74ae1f0771f12ade0daecc6963e302d15f8e67f"
         );
     }

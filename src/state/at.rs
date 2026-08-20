@@ -1951,8 +1951,11 @@ pub enum StateUpdate<'b, Id, K = String> {
     New {
         /// The resolved state map at this target.
         state: SharedState<Id, K>,
-        /// The incrementally maintained `LtHash` checksum for this state.
-        hash: crate::state::lthash::LtHash,
+        /// The incrementally maintained `LtHash` digest for this state, borrowed
+        /// from the pipeline's owned state. Zero-copy: callers that only compare,
+        /// look up, or digest can borrow; only callers that need to retain the
+        /// hash (e.g. across a thread channel) should copy it.
+        hash: &'b crate::state::lthash::LtHash,
     },
     /// The state at this event is completely unchanged from its parent's state.
     /// Consumers can reuse the parent's state directly, skipping compression and O(N) traversals.
@@ -1966,8 +1969,9 @@ pub enum StateUpdate<'b, Id, K = String> {
     Unchanged {
         /// The event ID of the single parent event from which this state is inherited.
         parent_event_id: &'b Id,
-        /// The `LtHash` checksum of the parent state.
-        hash: crate::state::lthash::LtHash,
+        /// The `LtHash` digest of the parent state, borrowed from the pipeline's
+        /// owned state (zero-copy; see [`StateUpdate::New`]).
+        hash: &'b crate::state::lthash::LtHash,
     },
 }
 
@@ -1996,14 +2000,14 @@ impl<Id: Clone, K: Ord + Clone> Clone for StateUpdate<'_, Id, K> {
         match self {
             Self::New { state, hash } => Self::New {
                 state: state.clone(),
-                hash: *hash,
+                hash,
             },
             Self::Unchanged {
                 parent_event_id,
                 hash,
             } => Self::Unchanged {
                 parent_event_id,
-                hash: *hash,
+                hash,
             },
         }
     }
@@ -2062,6 +2066,23 @@ where
             } => get_parent_state(parent_event_id)
                 .expect("StateUpdate::Unchanged requires the parent state to be available"),
         }
+    }
+
+    /// Borrows the `LtHash` digest carried by this update (zero-copy).
+    #[must_use]
+    pub fn hash(&self) -> &crate::state::lthash::LtHash {
+        match self {
+            StateUpdate::New { hash, .. } | StateUpdate::Unchanged { hash, .. } => hash,
+        }
+    }
+
+    /// Computes the 32-byte MSC4500 §6 digest of the carried `LtHash`.
+    ///
+    /// Cheap (`BLAKE2b` over the 2 KiB lattice) and collision-resistant to 256 bits;
+    /// useful as a compact dedup/identity key without copying the full lattice.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        self.hash().digest()
     }
 }
 
@@ -2305,7 +2326,7 @@ where
                             .iter()
                             .find(|pe| id_to_index.contains_key(*pe))
                             .expect("has_single_parent implies at least one prev_event is in id_to_index"),
-                        hash: parent_state.hash,
+                        hash: &parent_state.hash,
                     },
                 )
                 .map_err(StateComputationError::Callback)?;
@@ -2339,7 +2360,7 @@ where
                 idx,
                 StateUpdate::New {
                     state: state_before.state.clone(),
-                    hash: state_before.hash,
+                    hash: &state_before.hash,
                 },
             )
             .map_err(StateComputationError::Callback)?;
@@ -3642,7 +3663,7 @@ mod tests {
 
         let update = StateUpdate::Unchanged {
             parent_event_id: &parent_id,
-            hash,
+            hash: &hash,
         };
 
         let resolved = update.into_state(|id| {
@@ -3897,7 +3918,7 @@ mod tests {
 
         let update = StateUpdate::New {
             state: state.clone(),
-            hash,
+            hash: &hash,
         };
 
         // The callback must never be invoked for the `New` arm.
@@ -4002,10 +4023,13 @@ mod tests {
         state
     }
 
+    static ZERO_HASH: crate::state::lthash::LtHash = crate::state::lthash::LtHash([0; 1024]);
+    static ONE_HASH: crate::state::lthash::LtHash = crate::state::lthash::LtHash([1; 1024]);
+
     fn new_update() -> StateUpdate<'static, String, String> {
         StateUpdate::New {
             state: init_state(),
-            hash: crate::state::lthash::LtHash::default(),
+            hash: &ZERO_HASH,
         }
     }
 
@@ -4027,7 +4051,7 @@ mod tests {
             "{:?}",
             StateUpdate::<String, String>::Unchanged {
                 parent_event_id: &parent,
-                hash: crate::state::lthash::LtHash::default(),
+                hash: &ZERO_HASH,
             }
         );
         assert!(
@@ -4047,7 +4071,7 @@ mod tests {
         let parent = String::from("$parent");
         let unchanged = StateUpdate::<String, String>::Unchanged {
             parent_event_id: &parent,
-            hash: crate::state::lthash::LtHash::default(),
+            hash: &ZERO_HASH,
         };
         assert_eq!(unchanged.clone(), unchanged);
     }
@@ -4062,14 +4086,14 @@ mod tests {
         let a = new_update();
         let b = StateUpdate::<String, String>::New {
             state: init_state(),
-            hash: crate::state::lthash::LtHash([1; 1024]),
+            hash: &ONE_HASH,
         };
         assert_ne!(a, b);
 
         // New with a different state map compares unequal.
         let c = StateUpdate::<String, String>::New {
             state: SharedState::new(),
-            hash: crate::state::lthash::LtHash::default(),
+            hash: &ZERO_HASH,
         };
         assert_ne!(a, c);
 
@@ -4078,24 +4102,24 @@ mod tests {
         let p2 = String::from("$other");
         let d1 = StateUpdate::<String, String>::Unchanged {
             parent_event_id: &p1,
-            hash: crate::state::lthash::LtHash::default(),
+            hash: &ZERO_HASH,
         };
         let d2 = StateUpdate::<String, String>::Unchanged {
             parent_event_id: &p2,
-            hash: crate::state::lthash::LtHash::default(),
+            hash: &ZERO_HASH,
         };
         assert_eq!(d1.clone(), d1);
         assert_ne!(d1, d2);
 
         // A New and an Unchanged are never equal, even with the same hash.
-        let different_hash = [2; 1024];
+        let different_hash = crate::state::lthash::LtHash([2; 1024]);
         let new = StateUpdate::<String, String>::New {
             state: SharedState::new(),
-            hash: crate::state::lthash::LtHash(different_hash),
+            hash: &different_hash,
         };
         let unchanged = StateUpdate::<String, String>::Unchanged {
             parent_event_id: &p1,
-            hash: crate::state::lthash::LtHash(different_hash),
+            hash: &different_hash,
         };
         assert_ne!(new, unchanged);
     }
