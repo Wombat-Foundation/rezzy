@@ -2068,21 +2068,22 @@ where
         }
     }
 
-    /// Borrows the `LtHash` digest carried by this update (zero-copy).
+    /// Borrows the carried `LtHash` lattice (the 2 KiB homomorphic accumulator)
+    /// — zero-copy. The 32-byte cryptographic hash of it is [`StateUpdate::digest`].
     #[must_use]
-    pub fn hash(&self) -> &crate::state::lthash::LtHash {
+    pub fn lattice(&self) -> &crate::state::lthash::LtHash {
         match self {
             StateUpdate::New { hash, .. } | StateUpdate::Unchanged { hash, .. } => hash,
         }
     }
 
-    /// Computes the 32-byte MSC4500 §6 digest of the carried `LtHash`.
+    /// Computes the 32-byte MSC4500 §6 digest of the carried `LtHash` lattice.
     ///
     /// Cheap (`BLAKE2b` over the 2 KiB lattice) and collision-resistant to 256 bits;
     /// useful as a compact dedup/identity key without copying the full lattice.
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
-        self.hash().digest()
+        self.lattice().digest()
     }
 }
 
@@ -4122,6 +4123,38 @@ mod tests {
             hash: &different_hash,
         };
         assert_ne!(new, unchanged);
+    }
+
+    /// Coverage: `StateUpdate::lattice` and `StateUpdate::digest` must expose the
+    /// carried `LtHash` lattice (borrowed, zero-copy) and its 32-byte digest, for
+    /// both the `New` and `Unchanged` variants.
+    #[test]
+    fn test_state_update_lattice_and_digest_accessors() {
+        let mut state: SharedState<String, String> = SharedState::new();
+        state.insert(
+            (EventType::from("m.room.topic"), String::new()),
+            "$topic".to_string(),
+        );
+        let hash = crate::state::lthash::LtHash::from_state(&state);
+        let parent = String::from("$parent");
+
+        let new = StateUpdate::<String, String>::New {
+            state: state.clone(),
+            hash: &hash,
+        };
+        assert_eq!(new.lattice(), &hash);
+        assert_eq!(new.digest(), hash.digest());
+        assert_eq!(new.digest().len(), 32);
+
+        let unchanged = StateUpdate::<String, String>::Unchanged {
+            parent_event_id: &parent,
+            hash: &hash,
+        };
+        assert_eq!(unchanged.lattice(), &hash);
+        assert_eq!(unchanged.digest(), hash.digest());
+
+        // Both variants derived from the same lattice must share a digest.
+        assert_eq!(new.digest(), unchanged.digest());
     }
 
     fn init_hashed_state() -> HashedState<String, String> {
