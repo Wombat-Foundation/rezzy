@@ -3099,7 +3099,7 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
             bitmap_audit
                 .universe
                 .hash_at(idx)
-                .expect("every set index was assigned by IndexedUniverse::build")
+                .expect("every set index was assigned by IndexedUniverse::try_build")
         })
         .collect();
     assert_eq!(
@@ -3114,7 +3114,7 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
             bitmap_audit
                 .universe
                 .hash_at(idx)
-                .expect("every set index was assigned by IndexedUniverse::build")
+                .expect("every set index was assigned by IndexedUniverse::try_build")
         })
         .collect();
     assert_eq!(
@@ -3139,7 +3139,8 @@ fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates()
 
     // h1 appears twice; it must collapse onto a single index rather than
     // being assigned two.
-    let universe = crate::hamt::IndexedUniverse::build([h1, h2, h1, h3]);
+    let universe = crate::hamt::IndexedUniverse::try_build([h1, h2, h1, h3])
+        .expect("small test universe fits in u32");
 
     assert_eq!(
         universe.len(),

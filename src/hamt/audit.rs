@@ -14,7 +14,7 @@
 //! further safety checks, never as a delete list on its own.
 
 use std::collections::{HashMap, HashSet};
-use std::{sync::Arc, vec::Vec};
+use std::{fmt, sync::Arc, vec::Vec};
 
 use roaring::RoaringBitmap;
 
@@ -22,6 +22,27 @@ use super::{
     delta::{walk_reachable_node_hashes, HamtTraversalError},
     HamtNode, StructuralHash,
 };
+
+/// [`IndexedUniverse::try_build`] was given more than `u32::MAX` distinct
+/// hashes, so no dense index could be assigned to all of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UniverseTooLarge {
+    /// The number of distinct hashes that overflowed a `u32` index.
+    pub distinct_count: usize,
+}
+
+impl fmt::Display for UniverseTooLarge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "universe has {} distinct hashes, more than u32::MAX can index",
+            self.distinct_count
+        )
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for UniverseTooLarge {}
 
 /// A `universe` of node hashes assigned dense `u32` indexes, in the order the
 /// hashes were given.
@@ -43,25 +64,29 @@ impl IndexedUniverse {
     /// Assigns each hash in `universe` a dense `u32` index, first-seen order.
     /// Duplicate hashes collapse onto the same index.
     ///
-    /// # Panics
-    /// Panics if `universe` contains more than `u32::MAX` distinct hashes —
-    /// not a realistic size for a single audit's node universe.
-    #[must_use]
-    pub fn build(universe: impl IntoIterator<Item = StructuralHash>) -> Self {
+    /// # Errors
+    /// Returns [`UniverseTooLarge`] if `universe` contains more than
+    /// `u32::MAX` distinct hashes.
+    pub fn try_build(
+        universe: impl IntoIterator<Item = StructuralHash>,
+    ) -> Result<Self, UniverseTooLarge> {
         let mut hashes: Vec<StructuralHash> = Vec::new();
         let mut index_by_hash: HashMap<StructuralHash, u32> = HashMap::new();
         for hash in universe {
-            index_by_hash.entry(hash).or_insert_with(|| {
-                let idx = u32::try_from(hashes.len())
-                    .expect("universe has far fewer than u32::MAX distinct hashes");
+            if let std::collections::hash_map::Entry::Vacant(entry) = index_by_hash.entry(hash) {
+                let Ok(idx) = u32::try_from(hashes.len()) else {
+                    return Err(UniverseTooLarge {
+                        distinct_count: hashes.len().saturating_add(1),
+                    });
+                };
+                entry.insert(idx);
                 hashes.push(hash);
-                idx
-            });
+            }
         }
-        Self {
+        Ok(Self {
             hashes,
             index_by_hash,
-        }
+        })
     }
 
     /// The number of distinct hashes indexed.
@@ -111,42 +136,94 @@ pub struct BitmapReachabilityAudit {
     pub unreachable: RoaringBitmap,
 }
 
+/// Errors from [`bitmap_reachability_audit`]: either the traversal itself
+/// failed, or `universe` could not be given a dense index.
+#[derive(Debug, Clone)]
+pub enum BitmapAuditError<E> {
+    /// `universe` had more than `u32::MAX` distinct hashes.
+    Universe(UniverseTooLarge),
+    /// The reachability walk itself failed.
+    Traversal(HamtTraversalError<E>),
+}
+
+impl<E: fmt::Display> fmt::Display for BitmapAuditError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Universe(err) => write!(f, "{err}"),
+            Self::Traversal(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl<E> std::error::Error for BitmapAuditError<E> where E: std::error::Error + 'static {}
+
+impl<E> From<UniverseTooLarge> for BitmapAuditError<E> {
+    fn from(err: UniverseTooLarge) -> Self {
+        Self::Universe(err)
+    }
+}
+
+impl<E> From<HamtTraversalError<E>> for BitmapAuditError<E> {
+    fn from(err: HamtTraversalError<E>) -> Self {
+        Self::Traversal(err)
+    }
+}
+
 /// Partitions `universe` into reachable/unreachable [`RoaringBitmap`]s over a
 /// freshly built [`IndexedUniverse`].
 ///
-/// Same traversal and semantics as [`reachability_audit`]; this only differs
-/// in how the result is represented.
+/// Same traversal and semantics as [`reachability_audit`], but marks
+/// directly into a `RoaringBitmap` via `universe`'s dense index instead of
+/// accumulating a `HashSet<StructuralHash>` mark set first — this is the
+/// version worth using when the caller actually wants the roaring
+/// representation, not `reachability_audit`'s result reshaped afterward.
+/// Hashes the walk reaches that are outside `universe` are marked but never
+/// materialize a bitmap entry, matching `reachability_audit`'s handling of
+/// the same case.
 ///
 /// # Errors
-/// See [`reachability_audit`].
+/// Returns [`BitmapAuditError::Universe`] if `universe` has more than
+/// `u32::MAX` distinct hashes, or [`BitmapAuditError::Traversal`] on the
+/// same conditions as [`reachability_audit`].
 ///
 /// # Panics
-/// See [`IndexedUniverse::build`].
+/// See [`IndexedUniverse::try_build`] — `universe`'s length was already
+/// bounds-checked there, so the internal re-derivation of it as a `u32`
+/// cannot actually panic.
 pub fn bitmap_reachability_audit<K, V, F, E>(
     roots: impl IntoIterator<Item = Arc<HamtNode<K, V>>>,
     universe: impl IntoIterator<Item = StructuralHash>,
     resolver: &mut F,
-) -> Result<BitmapReachabilityAudit, HamtTraversalError<E>>
+) -> Result<BitmapReachabilityAudit, BitmapAuditError<E>>
 where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
-    let universe = IndexedUniverse::build(universe);
-
-    let mut marked: HashSet<StructuralHash> = HashSet::new();
-    for root in roots {
-        walk_reachable_node_hashes(&root, resolver, &mut |hash| marked.insert(hash))?;
-    }
+    let universe = IndexedUniverse::try_build(universe)?;
 
     let mut reachable = RoaringBitmap::new();
-    let mut unreachable = RoaringBitmap::new();
-    for (idx, hash) in universe.hashes.iter().enumerate() {
-        let idx = u32::try_from(idx).expect("IndexedUniverse::build already bounds-checked this");
-        if marked.contains(hash) {
-            reachable.insert(idx);
-        } else {
-            unreachable.insert(idx);
-        }
+    // Hashes outside `universe` still need dedup so a subtree shared across
+    // roots (or reachable from inside and outside `universe`) is walked
+    // once, same as `reachability_audit`. `reachable`'s own membership
+    // check covers dedup for anything actually in `universe`, so this set
+    // only ever grows for hashes the caller's `universe` scan missed.
+    let mut visited_outside_universe: HashSet<StructuralHash> = HashSet::new();
+    for root in roots {
+        walk_reachable_node_hashes(&root, resolver, &mut |hash| {
+            if let Some(idx) = universe.index_of(&hash) {
+                reachable.insert(idx)
+            } else {
+                visited_outside_universe.insert(hash)
+            }
+        })
+        .map_err(BitmapAuditError::Traversal)?;
     }
+
+    let universe_len = u32::try_from(universe.len())
+        .expect("IndexedUniverse::try_build already bounds-checked this");
+    let unreachable: RoaringBitmap = (0..universe_len)
+        .filter(|idx| !reachable.contains(*idx))
+        .collect();
 
     Ok(BitmapReachabilityAudit {
         universe,

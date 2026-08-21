@@ -24,8 +24,8 @@ pub mod hash;
 mod tests;
 
 pub use audit::{
-    bitmap_reachability_audit, reachability_audit, unreachable_node_hashes,
-    BitmapReachabilityAudit, IndexedUniverse, ReachabilityAudit,
+    bitmap_reachability_audit, reachability_audit, unreachable_node_hashes, BitmapAuditError,
+    BitmapReachabilityAudit, IndexedUniverse, ReachabilityAudit, UniverseTooLarge,
 };
 pub use codec::PersistedInternalNode;
 pub use delta::{
