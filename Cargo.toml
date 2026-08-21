@@ -249,6 +249,10 @@ required-features = ["mock-ruma"]
 name = "test_lattice"
 path = "tests/test_lattice.rs"
 
+[[test]]
+name = "differential_harness"
+path = "tests/differential_harness.rs"
+
 [lints.rust]
 unsafe_code = "deny"
 unexpected_cfgs = { level = "warn", check-cfg = [
