@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Randomized differential + determinism harness for state resolution.
 //!
 //! Phase B empirical backbone. For each randomly-generated room DAG:
