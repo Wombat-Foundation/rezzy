@@ -42,8 +42,11 @@
 //! - **`is_ban_or_kick()` domination**: unlike `is_lockdown()`/`is_demotion()`,
 //!   its structural check (`state_key == sender`) is already exact, not a
 //!   coarse over-approximation, so it did not reproduce a divergence from
-//!   full V2.1 resolution in the topology tested (see
-//!   `test_cdo_ban_domination_benign_convergence` in `tests/test_critique.rs`).
+//!   full V2.1 resolution in either of two structurally distinct topologies
+//!   tested (see `test_anomaly_20_concurrent_ban_still_holds` — `MEM_BAN`,
+//!   type-priority tiebreak — and `test_anomaly_21_concurrent_kick_still_holds`
+//!   — `MEM_LEAVE`-as-kick, real differing `power_level`-driven priority —
+//!   both in `tests/test_critique.rs`).
 //! - **Restricted/knock-restricted `join_rules`**: `is_lockdown()` only fires
 //!   for `join_rule == "invite"`, so those never enter `admin_actions` at
 //!   all and always fall through to full resolution, which already models

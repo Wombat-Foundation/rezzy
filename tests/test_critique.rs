@@ -562,3 +562,27 @@ fn test_anomaly_20_concurrent_ban_still_holds() {
          and Charlie's own join (against public join_rules) wins the conflict cleanly"
     );
 }
+
+/// A second, structurally different topology for the `is_ban_or_kick()`
+/// audit -- `test_anomaly_20` alone was one data point, not a proof.
+/// This one exercises the `MEM_LEAVE`-as-kick branch of `is_ban_or_kick()`
+/// instead of `MEM_BAN` (a different membership value entirely), and uses
+/// real, differing `power_level` fields to drive CDO's priority ordering
+/// (`sort_cdo_events`) instead of falling back to its type-priority
+/// tiebreak the way `test_anomaly_20` did (no `power_level` fields set
+/// there): Alice (PL 100) kicks Bob (PL 100 admin action) on one branch;
+/// independently, Bob (PL 50, citing his own grant) kicks Dave on another.
+/// Same result expected: Bob's own kick is already invalid by the time
+/// full resolution reaches his kick of Dave, so CDO's early drop still
+/// agrees with full V2.1 resolution.
+#[test]
+fn test_anomaly_21_concurrent_kick_still_holds() {
+    let (resolved, map) = assert_benign_convergence("21_concurrent_kick_still_holds.jsonl");
+    assert_eq!(get_membership(&resolved, &map, "@bob:example.com"), "leave");
+    assert_eq!(
+        get_membership(&resolved, &map, "@dave:example.com"),
+        "join",
+        "Bob's own kick is already invalid by the time full resolution reaches it, \
+         so his kick of Dave must not take effect -- CDO's early drop agrees"
+    );
+}
