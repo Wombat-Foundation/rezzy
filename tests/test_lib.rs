@@ -2206,6 +2206,99 @@ mod tests {
         assert!(!filtered.contains_key("$bob_name_change"));
     }
 
+    // Coverage: build_adjacency_structures multi-hop transitive closure
+    // (cdo.rs:212, 215). A conflicted event whose auth chain extends >=2 hops
+    // into auth_context forces the `while let Some(aid) = queue.pop_front()`
+    // loop to iterate and push grandparents. The chain also gives $P3 in-degree
+    // 0, exercising the Kahn source promotion (cdo.rs:244, 268).
+    #[test]
+    fn test_cdo_multihop_auth_chain_closure() {
+        use serde_json::json;
+
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let mut auth: HashMap<String, LeanEvent> = HashMap::new();
+
+        let make_pl = |id: &str, parents: Vec<String>| LeanEvent {
+            event_id: id.into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            prev_events: parents.clone(),
+            auth_events: parents,
+            content: json!({ "users": { "@alice:example.com": 100 } }),
+            ..Default::default()
+        };
+
+        let p3 = make_pl("$P3", vec![]);
+        let p2 = make_pl("$P2", vec!["$P3".into()]);
+        let p1 = make_pl("$P1", vec!["$P2".into()]);
+        auth.insert(p3.event_id.clone(), p3);
+        auth.insert(p2.event_id.clone(), p2);
+        auth.insert(p1.event_id.clone(), p1);
+
+        let join: LeanEvent = LeanEvent {
+            event_id: "$join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@bob:example.com".into(),
+            prev_events: vec!["$P1".into()],
+            auth_events: vec!["$P1".into()],
+            content: json!({ "membership": "join" }),
+            ..Default::default()
+        };
+        conflicted.insert(join.event_id.clone(), join);
+
+        // No admin action among the conflicted set, so nothing is dropped; the
+        // deep chain is still pulled in via the multi-hop closure and the
+        // topological sort completes without a leftover cycle fallback.
+        let safe = apply_cdo_filter(&conflicted, &auth);
+        assert_eq!(safe.len(), 1, "only the join survives: {:?}", safe.keys());
+        assert!(safe.contains_key("$join"));
+    }
+
+    // Coverage: sort_cdo_events / build_adjacency_structures defensive cycle
+    // fallback (cdo.rs:277-285). A genuine prev/auth cycle leaves some ids never
+    // reaching in-degree 0; the leftover branch must append them in sorted
+    // order rather than dropping them from the sweep.
+    #[test]
+    fn test_cdo_cycle_leftover_fallback() {
+        use serde_json::json;
+
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let auth: HashMap<String, LeanEvent> = HashMap::new();
+
+        let a: LeanEvent = LeanEvent {
+            event_id: "$A".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@bob:example.com".into(),
+            prev_events: vec!["$B".into()],
+            auth_events: vec!["$B".into()],
+            content: json!({ "membership": "join" }),
+            ..Default::default()
+        };
+        let b: LeanEvent = LeanEvent {
+            event_id: "$B".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@carol:example.com".into()),
+            sender: "@carol:example.com".into(),
+            prev_events: vec!["$A".into()],
+            auth_events: vec!["$A".into()],
+            content: json!({ "membership": "join" }),
+            ..Default::default()
+        };
+        conflicted.insert(a.event_id.clone(), a);
+        conflicted.insert(b.event_id.clone(), b);
+
+        // Mutual cycle: neither $A nor $B ever reaches in-degree 0, so the
+        // topological sort falls through to the deterministic leftover append.
+        // No admin action, so both events survive the filter without a panic.
+        let safe = apply_cdo_filter(&conflicted, &auth);
+        assert_eq!(safe.len(), 2, "both events must survive: {:?}", safe.keys());
+        assert!(safe.contains_key("$A"));
+        assert!(safe.contains_key("$B"));
+    }
+
     #[test]
     fn test_anomaly_06b_mod_membership_evaporation() {
         use serde_json::json;
