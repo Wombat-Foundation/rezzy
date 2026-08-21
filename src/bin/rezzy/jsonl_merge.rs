@@ -3,6 +3,7 @@
 use std::string::String;
 use std::vec::Vec;
 
+/// Perform a connectivity check across states.
 fn perform_connectivity_check(
     per_file_ids: &[std::collections::HashSet<String>],
 ) -> Result<(), anyhow::Error> {
@@ -46,6 +47,7 @@ fn perform_connectivity_check(
     Ok(())
 }
 
+/// Report the highest shared depths.
 fn report_highest_shared_depths(
     per_file_ids: &[std::collections::HashSet<String>],
     merged: &[serde_json::Value],

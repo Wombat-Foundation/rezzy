@@ -4061,7 +4061,7 @@ mod tests {
             parent_event_id: &parent,
             hash: &ZERO_HASH,
         };
-        let f = alloc::format!("{:?}", test_unchanged);
+        let f = alloc::format!("{test_unchanged:?}");
         assert!(
             f.contains("Unchanged"),
             "debug output should name the Unchanged variant: {f}"
