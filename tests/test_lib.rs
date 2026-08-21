@@ -2299,6 +2299,67 @@ mod tests {
         assert!(safe.contains_key("$B"));
     }
 
+    // Regression for the cycle-leftover domination fix: an event that only
+    // exists because Kahn's algorithm hit a cycle (an `unordered_id`) must
+    // not be dropped as a domination target, because its array position is
+    // not a real topological order. Here an admin ban dominates a cyclic
+    // event by structural match; without the `unordered_ids` guard the sweep
+    // would drop the cyclic event based on an unreliable ordering.
+    #[test]
+    fn test_cdo_cycle_leftover_not_dominated() {
+        use serde_json::json;
+
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let auth: HashMap<String, LeanEvent> = HashMap::new();
+
+        let alice_ban_bob: LeanEvent = LeanEvent {
+            event_id: "$alice_ban_bob".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@alice:example.com".into(),
+            power_level: 100,
+            origin_server_ts: 1000,
+            content: json!({ "membership": "ban" }),
+            ..Default::default()
+        };
+        // $A and $B form a mutual prev/auth cycle; $B is a ban of Dave by
+        // Bob (structurally matched by alice_ban_bob). Both are unordered.
+        let a: LeanEvent = LeanEvent {
+            event_id: "$A".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@alice:example.com".into(),
+            prev_events: vec!["$B".into()],
+            auth_events: vec!["$B".into()],
+            content: json!({ "membership": "ban" }),
+            ..Default::default()
+        };
+        let b: LeanEvent = LeanEvent {
+            event_id: "$B".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@dave:example.com".into()),
+            sender: "@bob:example.com".into(),
+            prev_events: vec!["$A".into()],
+            auth_events: vec!["$A".into()],
+            power_level: 50,
+            content: json!({ "membership": "ban" }),
+            ..Default::default()
+        };
+        conflicted.insert(a.event_id.clone(), a);
+        conflicted.insert(b.event_id.clone(), b);
+        conflicted.insert(alice_ban_bob.event_id.clone(), alice_ban_bob);
+
+        let safe = apply_cdo_filter(&conflicted, &auth);
+
+        // The cyclic events are unordered: their array position carries no
+        // causal meaning, so they must neither dominate nor be dominated.
+        // They survive the filter (only the genuinely-ordered admin ban
+        // could ever be used for domination, and even it is not trusted to
+        // drop an unordered event).
+        assert!(safe.contains_key("$A"), "unordered $A must not be dropped");
+        assert!(safe.contains_key("$B"), "unordered $B must not be dropped");
+    }
+
     // Coverage: process_direct_domination_chunks "already-dropped admin" skip
     // (cdo.rs:407). A lower-priority admin action (`$bob_ban_carol`) is dropped
     // by a higher-priority ban (`$alice_ban_bob`). It remains in that chunk's
@@ -4046,6 +4107,54 @@ fn test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action() {
         safe.contains_key("$bob_bans_charlie"),
         "Bob's ban cites its own pre-demotion PL grant, so an independent-branch \
          demotion must not dominate it"
+    );
+}
+
+/// Regression for the `sender_has_pre_demotion_pl()` soundness fix: a sender
+/// **absent** from the cited PL event's `users` map must NOT be treated as
+/// empowered. Per the spec, an absent user's power falls back to
+/// `users_default` (and to 0 when that is also absent), so an independent-branch
+/// demotion still dominates an action taken by such a sender.
+///
+/// Mirrors `test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action`
+/// but with Bob omitted from `$pl_grant_bob.users` (and no `users_default`),
+/// so Bob's effective pre-demotion PL is 0 rather than 50.
+#[test]
+fn test_cdo_demotion_dominates_absent_sender() {
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@alice:a","room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:a","sender":"@alice:a","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl_init","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:a":100},"ban":50,"kick":50},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":3,"origin_server_ts":1003,"content":{"membership":"join"},"prev_events":["$pl_init"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$pl_demote_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100,"@bob:b":0},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$pl_grant_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$bob_join","$pl_init"]}
+{"event_id":"$bob_bans_charlie","type":"m.room.member","state_key":"@charlie:c","sender":"@bob:b","depth":5,"origin_server_ts":2001,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$bob_join","$pl_grant_bob"]}
+"#,
+    );
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+
+    for ev in &events {
+        match ev.event_id.as_str() {
+            "$pl_demote_bob" | "$pl_grant_bob" | "$bob_bans_charlie" => {
+                conflicted.insert(ev.event_id.clone(), ev.clone());
+            }
+            _ => {
+                auth_context.insert(ev.event_id.clone(), ev.clone());
+            }
+        }
+    }
+
+    let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
+
+    // Bob is absent from $pl_grant_bob.users (no users_default), so his
+    // effective pre-demotion PL is 0 -- the demotion legitimately dominates
+    // his ban of Charlie.
+    assert!(
+        !safe.contains_key("$bob_bans_charlie"),
+        "Bob has no pre-demotion PL grant (absent from users, no users_default), \
+         so an independent-branch demotion must dominate his ban"
     );
 }
 

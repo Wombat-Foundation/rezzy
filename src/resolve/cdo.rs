@@ -203,6 +203,11 @@ struct AdjacencyStructures<'a, Id, C, K> {
     sorted_events: Vec<(usize, &'a LeanEvent<Id, C, K>)>,
     parents: Vec<Vec<usize>>,
     children: Vec<Vec<usize>>,
+    /// IDs appended after Kahn's algorithm failed to reach in-degree zero
+    /// (i.e. the input contained a cycle). These have no true topological
+    /// position, so the SWAR ancestor/descendant bitmasks are unreliable for
+    /// them; domination decisions must not be made from their ordering.
+    unordered_ids: BTreeSet<Id>,
 }
 
 fn build_adjacency_structures<'a, Id, C: Clone, S1, S2, K>(
@@ -298,6 +303,10 @@ where
     // referential integrity is somehow violated (e.g. a maliciously crafted
     // cycle) and some ids never reach in-degree zero, append them in a
     // deterministic order rather than silently dropping them from the sweep.
+    // Track them as `unordered_ids`: their array position is not a real
+    // topological order, so the domination sweeps must not draw conclusions
+    // from it (they treat them as neither dominator nor dominatee).
+    let mut unordered_ids = BTreeSet::new();
     if sorted_ids.len() < relevant_events.len() {
         let mut leftover: Vec<Id> = relevant_events
             .keys()
@@ -305,6 +314,7 @@ where
             .cloned()
             .collect();
         leftover.sort();
+        unordered_ids.extend(leftover.iter().cloned());
         sorted_ids.extend(leftover);
     }
 
@@ -334,6 +344,7 @@ where
         sorted_events,
         parents,
         children,
+        unordered_ids,
     }
 }
 
@@ -450,8 +461,16 @@ where
             .get(aid)
             .or_else(|| auth_context.get(aid))
             .is_some_and(|ev| {
-                ev.event_type == M_ROOM_POWER_LEVELS
-                    && ev.get_user_power_level(target_ev.sender.as_str()) != Some(0)
+                if ev.event_type != M_ROOM_POWER_LEVELS {
+                    return false;
+                }
+                // Effective PL: explicit `users[sender]` wins; else
+                // `users_default`; else 0. Only a strictly-positive level
+                // counts as a pre-demotion grant -- an absent entry falls
+                // through to `users_default` (usually 0), not empowerment.
+                let explicit = ev.get_user_power_level(target_ev.sender.as_str());
+                let effective = explicit.or_else(|| ev.get_users_default()).unwrap_or(0);
+                effective > 0
             })
     })
 }
@@ -499,14 +518,14 @@ where
         // Build a map of active admin actions in this chunk to their relative index within the chunk
         let mut chunk_admin_to_pos = HashMap::new();
         for (i, admin_id) in chunk.iter().enumerate() {
-            if !dropped_ids.contains(admin_id) {
+            if !dropped_ids.contains(admin_id) && !adj.unordered_ids.contains(admin_id) {
                 chunk_admin_to_pos.insert(admin_id, i);
             }
         }
 
         // Check for direct domination against all non-dropped events
         for event_id in &priority_ordered_ids {
-            if dropped_ids.contains(*event_id) {
+            if dropped_ids.contains(*event_id) || adj.unordered_ids.contains(*event_id) {
                 continue;
             }
 
