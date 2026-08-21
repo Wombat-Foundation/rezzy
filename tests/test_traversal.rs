@@ -1096,21 +1096,22 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
         String::new(),
     );
 
-    // CDO\'s transitive closure drops nexy_join (dominated by lock) AND nexy_promo/nexy_bans_spammer (transitively dependent)
-    assert!(
-        !resolved_v211.contains_key(&nexy_member_key),
-        "CDO: Nexy join must be dropped because of the concurrent lockdown"
+    // The V2.1.1 CDO pre-filter was removed as unsound, so it no longer drops
+    // nexy's concurrent join, promotion, or ban. nexy validly joined under the
+    // public rules in her own auth chain; the "ghost moderator" (a joined and
+    // promoted nexy who bans the spammer while join_rules resolves to invite)
+    // now manifests and is documented here rather than masked.
+    assert_eq!(
+        resolved_v211.get(&nexy_member_key).map(String::as_str),
+        Some("$nexy_join")
     );
-    assert!(
-        !resolved_v211.contains_key(&spammer_member_key),
-        "CDO: Spammer ban must be transitively dropped since Nexy never legally joined"
+    assert_eq!(
+        resolved_v211.get(&spammer_member_key).map(String::as_str),
+        Some("$nexy_bans_spammer")
     );
-
-    // The resolved PL should revert to the original admin-only state
-    let final_pl_id = &resolved_v211[&pl_key];
-    assert_ne!(
-        final_pl_id, "$nexy_promo",
-        "CDO: Nexy\'s promotion must be dropped, resolving to the safe baseline"
+    assert_eq!(
+        resolved_v211.get(&pl_key),
+        Some(&"$nexy_promo".to_string())
     );
 }
 
@@ -1230,10 +1231,21 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
         "@spammer:example.com".to_string(),
     );
 
-    // CDO must drop the concurrent spammer join due to the concurrent lockdown
-    assert!(
-        !resolved_v211.contains_key(&spammer_key),
-        "CDO: Spammer join must be dropped because of the concurrent lockdown"
+    // The V2.1.1 CDO pre-filter was removed as unsound, so the concurrent
+    // lockdown no longer drops spammer's join. spammer's join was validly
+    // authorized under the public join_rules in its own auth chain, so it
+    // survives — the "ghost member" (joined while join_rules resolves to
+    // invite) now manifests and is documented here rather than masked.
+    assert_eq!(
+        resolved_v211.get(&spammer_key).map(String::as_str),
+        Some("$spammer_join")
+    );
+    assert_eq!(
+        resolved_v211.get(&(
+            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
+            String::new()
+        )),
+        Some(&"$admin_lock".to_string())
     );
 }
 
