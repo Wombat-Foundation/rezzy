@@ -3171,6 +3171,130 @@ fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates()
 }
 
 #[test]
+fn test_universe_too_large_display() {
+    use alloc::string::ToString;
+
+    let err = crate::hamt::audit::UniverseTooLarge {
+        distinct_count: 4_294_967_296,
+    };
+    assert_eq!(
+        err.to_string(),
+        "universe has 4294967296 distinct hashes, more than u32::MAX can index"
+    );
+}
+
+#[test]
+fn test_bitmap_audit_error_display_and_conversions() {
+    use alloc::string::ToString;
+
+    let universe_err = crate::hamt::audit::UniverseTooLarge { distinct_count: 42 };
+    let wrapped: crate::hamt::BitmapAuditError<&str> = universe_err.into();
+    assert_eq!(
+        wrapped.to_string(),
+        "universe has 42 distinct hashes, more than u32::MAX can index"
+    );
+    assert!(matches!(
+        wrapped,
+        crate::hamt::BitmapAuditError::Universe(_)
+    ));
+
+    let traversal_err: HamtTraversalError<&str> = HamtTraversalError::MaxDepthExceeded { depth: 7 };
+    let wrapped: crate::hamt::BitmapAuditError<&str> = traversal_err.into();
+    assert_eq!(
+        wrapped.to_string(),
+        "hamt traversal exceeded max depth at 7"
+    );
+    assert!(matches!(
+        wrapped,
+        crate::hamt::BitmapAuditError::Traversal(_)
+    ));
+}
+
+#[test]
+fn test_bitmap_reachability_audit_dedupes_shared_hash_missing_from_universe() {
+    // `universe` deliberately omits a hash the walk actually reaches, so
+    // `bitmap_reachability_audit` must fall back to `visited_outside_universe`
+    // for it. Two roots share that same out-of-universe subtree, so the
+    // resolver must still only be asked to resolve it once across the whole
+    // walk — proving the outside-universe fallback set is doing real dedup,
+    // not just being populated and ignored.
+    let key = b"outside_universe_key";
+    let shared_leaf: Arc<HamtNode<u64, u64>> = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1_u64, 100_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
+    });
+
+    // root_a and root_b each keep one leaf of their own (in different slots,
+    // so their structural hashes differ) alongside a shared reference to the
+    // same lazy child, `shared_leaf` — the case where dedup can't just rely
+    // on the root-level check short-circuiting the whole walk.
+    let root_a_leaves = [(2_u64, 200_u64)];
+    let root_a_children = [NodeRef::<u64, u64>::Lazy(shared_leaf.structural_hash)];
+    let root_a: Arc<HamtNode<u64, u64>> = Arc::new(HamtNode {
+        datamap: 0b01,
+        nodemap: 0b10,
+        leaves: root_a_leaves.to_vec(),
+        children: vec![NodeRef::Lazy(shared_leaf.structural_hash)],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0b01,
+            0b10,
+            &root_a_leaves,
+            &root_a_children,
+        ),
+    });
+    let root_b_leaves = [(3_u64, 300_u64)];
+    let root_b_children = [NodeRef::<u64, u64>::Lazy(shared_leaf.structural_hash)];
+    let root_b: Arc<HamtNode<u64, u64>> = Arc::new(HamtNode {
+        datamap: 0b01,
+        nodemap: 0b10,
+        leaves: root_b_leaves.to_vec(),
+        children: vec![NodeRef::Lazy(shared_leaf.structural_hash)],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0b01,
+            0b10,
+            &root_b_leaves,
+            &root_b_children,
+        ),
+    });
+    assert_ne!(
+        root_a.structural_hash, root_b.structural_hash,
+        "root_a and root_b must be distinct roots for this test to be meaningful"
+    );
+
+    let resolve_count = std::cell::Cell::new(0_u32);
+    let mut resolver = |hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        assert_eq!(*hash, shared_leaf.structural_hash);
+        resolve_count.set(resolve_count.get() + 1);
+        Ok(shared_leaf.clone())
+    };
+
+    // `universe` only covers the two roots' own hashes, not the shared leaf
+    // they both lazily reference.
+    let universe = vec![root_a.structural_hash, root_b.structural_hash];
+
+    let bitmap_audit = crate::hamt::bitmap_reachability_audit(
+        [root_a.clone(), root_b.clone()],
+        universe,
+        &mut resolver,
+    )
+    .expect("bitmap audit should succeed");
+
+    assert_eq!(
+        resolve_count.get(),
+        1,
+        "shared out-of-universe subtree must be resolved and walked only once"
+    );
+    // Both roots are in `universe` and reachable from themselves.
+    assert_eq!(bitmap_audit.reachable.len(), 2);
+    assert_eq!(bitmap_audit.unreachable.len(), 0);
+}
+
+#[test]
 fn test_unreachable_node_hashes_shares_subtrees_across_roots() {
     let key = b"dummy_server_key";
 
