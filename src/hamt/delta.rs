@@ -72,6 +72,7 @@ where
     Ok((added, removed))
 }
 
+/// Helper to iterate over the indices of set bits in a 32-bit integer.
 fn set_bits(mut bits: u32) -> impl Iterator<Item = usize> {
     core::iter::from_fn(move || {
         if bits == 0 {
