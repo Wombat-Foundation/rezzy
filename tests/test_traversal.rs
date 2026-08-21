@@ -935,8 +935,10 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
     // Phase 1 evaluates the lockdown and Nexy\'s promotion and ban first (because they are Power Events).
     // Phase 2 evaluates Nexy\'s join. Nexy\'s join is rejected due to the lockdown.
     // In unpatched v2.1, her promotion and ban survive, leaving a "Ghost Moderator".
-    // In CDO (v2.2), her join is concurrent and dominated by the invite lockdown,
-    // and her subsequent actions (promotion, ban) are transitively dropped due to dependency.
+    // Under CDO (v2.1.1) the outcome is the same: Nexy's join is rejected against
+    // the resolved (invite) join rules and her member key is absent, while her ban
+    // of the spammer and her promotion still resolve. Only the join evaporates;
+    // her promotion and ban are not transitively dropped.
 
     let (auth_context, conflicted_events, unconflicted_state) = make_ghost_moderator_events();
 
@@ -1837,7 +1839,7 @@ fn test_v2_1_1_power_phase_membership_bypass_prevention() {
 /// requires V2.1 to match other MSC4297 implementations bug-for-bug. Do NOT "fix" this test
 /// by adding membership supplementation to V2.1 — use V2.1.1+ for that.
 #[test]
-fn test_v2_1_stock_does_not_supplement_membership() {
+fn test_v2_1_rejects_pl_from_progressively_banned_sender() {
     let auth_evs = utils::parse_jsonl_events(
         r#"
         {"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:x", "origin_server_ts": 100, "content": {"room_version": "12"}}
@@ -2180,7 +2182,7 @@ fn auth_diff_context_event_scenario(version: StateResVersion) -> Option<String> 
 ///   let the conflicted-phase win over unconflicted state for *genuinely*
 ///   conflicted keys (that's what makes MSC4297 ban/kick supplementation
 ///   work — see the `test_v2_1_1_*_supplementation` tests and
-///   `test_v2_1_stock_does_not_supplement_membership` above), but the new
+///   `test_v2_1_rejects_pl_from_progressively_banned_sender` above), but the new
 ///   genuinely-conflicted-key gate means an auth-diff-context event's own
 ///   key is never inserted into `resolved` at all when nothing actually
 ///   conflicts on it — so it's left for `merge_unconflicted_power_events`/

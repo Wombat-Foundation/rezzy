@@ -7051,13 +7051,12 @@ fn test_conflicted_keys_derived_before_cdo() {
         ]
     );
 
-    // With the CDO removed from the normative path, $bob_pl_dominated is
-    // processed (so it appears in deltas) but is rejected because bob is
-    // banned — it never wins its key.
+    // $bob_pl_dominated is dropped by the CDO pre-filter (verified above), so it
+    // is never processed at all — it appears in neither resolved state nor the
+    // emitted deltas. Its key (m.room.power_levels, "") is supplied by the
+    // genuinely-unconflicted $pl_ancestor instead.
     assert!(!resolved.values().any(|v| v == "$bob_pl_dominated"));
-    assert!(!deltas
-        .iter()
-        .any(|d| d.event_id == "$bob_pl_dominated" && d.accepted));
+    assert!(!deltas.iter().any(|d| d.event_id == "$bob_pl_dominated"));
 
     // Verify deltas for accepted conflicted events
     assert!(deltas.iter().any(|d| d.event_id == "$alice_bans_bob"
