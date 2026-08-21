@@ -47,9 +47,8 @@
 /// - **Order independence**: addition is commutative + associative.
 /// - **Cryptographic security**: hard to find set collisions (SVP).
 ///
-/// TODO: `LtHash` is `Copy` over `[u16; 1024]` (2 KiB), so `StateUpdate::New/Unchanged`
-/// copies the full value. If profiling shows this is hot, consider boxing or
-/// using references in rebuild loops.
+/// `StateUpdate::New/Unchanged` now carry `&LtHash` (borrowed, zero-copy); callers
+/// that need to retain the hash (e.g. across a thread channel) copy it explicitly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LtHash(pub [u16; 1024]);
 
@@ -97,7 +96,7 @@ impl LtHash {
     /// The identity element (empty state).
     pub const ZERO: Self = Self([0u16; 1024]);
 
-    /// Domain separation tag per MSC4500.
+    /// Domain separation tag (v1 variant, deviates from MSC4500 standard).
     const DST: &'static [u8] = b"msc4500_lthash16_v1\x00";
 
     /// Compute the 2048-byte SHAKE256 expansion for a single state entry.
@@ -237,13 +236,14 @@ impl LtHash {
 
     /// Compute the full hash from a state map (non-incremental).
     #[must_use]
-    pub fn from_state<Id>(state: &crate::state::at::SharedState<Id>) -> Self
+    pub fn from_state<Id, K>(state: &crate::state::at::SharedState<Id, K>) -> Self
     where
         Id: crate::basespec::rezzy_types::EventId,
+        K: Ord + AsRef<str>,
     {
         let mut hash = Self::ZERO;
         for ((event_type, state_key), event_id) in state {
-            let s = Self::seed(event_type.as_str(), state_key, event_id);
+            let s = Self::seed(event_type.as_str(), state_key.as_ref(), event_id);
             hash.add_seed(&s);
         }
         hash
@@ -252,7 +252,7 @@ impl LtHash {
     /// Finalize into the 32-byte wire digest per MSC4500 §6:
     /// `BLAKE2b-256(S)`, where `S` is the 2048-byte lattice.
     #[must_use]
-    pub fn checksum(&self) -> [u8; 32] {
+    pub fn digest(&self) -> [u8; 32] {
         use blake2::digest::consts::U32;
         use blake2::{Blake2b, Digest};
         let mut hasher = Blake2b::<U32>::new();
@@ -278,10 +278,10 @@ impl LtHash {
 /// wrapping addition of all seeds — making it order-independent and
 /// incrementally updatable.
 #[must_use]
-pub fn compute_state_hash<Id: crate::basespec::rezzy_types::EventId>(
-    state: &crate::state::at::SharedState<Id>,
+pub fn compute_state_hash<Id: crate::basespec::rezzy_types::EventId, K: Ord + AsRef<str>>(
+    state: &crate::state::at::SharedState<Id, K>,
 ) -> [u8; 32] {
-    LtHash::from_state(state).checksum()
+    LtHash::from_state(state).digest()
 }
 
 #[cfg(test)]
@@ -305,7 +305,7 @@ mod tests {
         let h1 = compute_state_hash(&state);
         let h2 = compute_state_hash(&state);
         assert_eq!(h1, h2, "same state must produce same hash");
-        assert_eq!(h1.len(), 32, "LtHash final checksum should be 32 bytes");
+        assert_eq!(h1.len(), 32, "LtHash final digest should be 32 bytes");
     }
 
     #[test]
@@ -332,7 +332,7 @@ mod tests {
         let h2 = LtHash::from_state(&state);
         assert_eq!(h1, h2);
         assert_ne!(h1, LtHash::ZERO);
-        assert_eq!(h1.checksum().len(), 32);
+        assert_eq!(h1.digest().len(), 32);
     }
 
     #[test]
@@ -446,11 +446,18 @@ mod tests {
             )
         }
 
+        // Digest vectors are published by MSC4500 in unpadded base64url (the
+        // wire form); lattice/expansion prefixes remain hex in the spec.
+        fn b64u(bytes: &[u8]) -> alloc::string::String {
+            use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+            URL_SAFE_NO_PAD.encode(bytes)
+        }
+
         // --- Empty state (n=0) ---
         let s0 = LtHash::ZERO;
         assert_eq!(
-            hex(&s0.checksum()),
-            "200823e5158b3774c11b5c61850ada762f8264144a9bebec3ebac5a2adde67b8"
+            b64u(&s0.digest()),
+            "IAgj5RWLN3TBG1xhhQradi-CZBRKm-vsPrrFoq3eZ7g"
         );
 
         // --- Scenario 1: Add element 1 ---
@@ -463,8 +470,8 @@ mod tests {
         let s1_bytes: Vec<u8> = s1.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
         assert_eq!(hex(&s1_bytes), "c6a4f2e8f4016c9aaf9c52e67020f221");
         assert_eq!(
-            hex(&s1.checksum()),
-            "d26472b7d70e5811b22aa575e1ada898b3c83891547d7d0b90972aa44db42db2"
+            b64u(&s1.digest()),
+            "0mRyt9cOWBGyKqV14a2omLPIOJFUfX0LkJcqpE20LbI"
         );
 
         // --- Scenario 2: Remove element 1 ---
@@ -472,8 +479,8 @@ mod tests {
         s_back.sub_seed(&seed1);
         assert_eq!(s_back, LtHash::ZERO);
         assert_eq!(
-            hex(&s_back.checksum()),
-            "200823e5158b3774c11b5c61850ada762f8264144a9bebec3ebac5a2adde67b8"
+            b64u(&s_back.digest()),
+            "IAgj5RWLN3TBG1xhhQradi-CZBRKm-vsPrrFoq3eZ7g"
         );
 
         // --- Scenario 3: Add element 2 ---
@@ -486,8 +493,8 @@ mod tests {
         let s2_bytes: Vec<u8> = s2.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
         assert_eq!(hex(&s2_bytes), "47ac154946d35272c8d8ff8d7da5ec4e");
         assert_eq!(
-            hex(&s2.checksum()),
-            "687f1b5c3c5c4132b6fdc03c070e01287b01aec044e98560ccdfee501009cc0f"
+            b64u(&s2.digest()),
+            "aH8bXDxcQTK2_cA8Bw4BKHsBrsBE6YVgzN_uUBAJzA8"
         );
 
         // --- Scenario 4: Replace element 1 with element 3 ---
@@ -501,8 +508,8 @@ mod tests {
         let s3_bytes: Vec<u8> = s3.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
         assert_eq!(hex(&s3_bytes), "95f0dbf054079fa8eb1c2a6ec017f441");
         assert_eq!(
-            hex(&s3.checksum()),
-            "0c1eb97da39dcc2ab9cfa61c4da329dbcd8e230b892a70583857c934424927a9"
+            b64u(&s3.digest()),
+            "DB65faOdzCq5z6YcTaMp282OIwuJKnBYOFfJNEJJJ6k"
         );
     }
 

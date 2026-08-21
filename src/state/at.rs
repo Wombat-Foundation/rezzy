@@ -40,15 +40,15 @@ use alloc::vec::Vec;
 /// reach this event. When the same `(type, state_key)` is found at multiple
 /// depths, the shallowest (closest) entry wins.
 #[derive(Debug, Clone)]
-pub struct LocalAuthEntry<Id, C = serde_json::Value> {
+pub struct LocalAuthEntry<Id, C = serde_json::Value, K = String> {
     /// The auth event itself.
-    pub event: LeanEvent<Id, C>,
+    pub event: LeanEvent<Id, C, K>,
     /// Number of auth-chain hops from the original event to this one.
     pub auth_depth: usize,
 }
 
 /// Inner type for the local auth cache to satisfy clippy's `type_complexity` lint.
-pub type LocalAuthCacheMap<Id, C> = BTreeMap<(String, String), LocalAuthEntry<Id, C>>;
+pub type LocalAuthCacheMap<Id, C, K> = BTreeMap<(EventType, K), LocalAuthEntry<Id, C, K>>;
 
 /// Memoization cache for local auth context computation.
 ///
@@ -59,12 +59,13 @@ pub type LocalAuthCacheMap<Id, C> = BTreeMap<(String, String), LocalAuthEntry<Id
 /// This cache tracks which `StateResVersion` its entries were computed for.
 /// Callers must clear the cache when reusing it with a different `StateResVersion`
 /// (higher-level helpers like `resolve_iterative_sort_with_cache*` do this automatically).
-pub struct LocalAuthCache<Id = String, C = serde_json::Value> {
+pub struct LocalAuthCache<Id = String, C = serde_json::Value, K = String> {
     pub version: StateResVersion,
-    pub map: crate::HashMap<Id, LocalAuthCacheMap<Id, C>>,
+    pub map: crate::HashMap<Id, LocalAuthCacheMap<Id, C, K>>,
 }
 
-impl<Id, C> LocalAuthCache<Id, C> {
+impl<Id, C, K> LocalAuthCache<Id, C, K> {
+    /// Create a new local auth cache for the specified room version.
     #[must_use]
     pub fn new(version: StateResVersion) -> Self {
         Self {
@@ -74,12 +75,12 @@ impl<Id, C> LocalAuthCache<Id, C> {
     }
 }
 
-pub(crate) struct OverlayState<'a, Id, C, S1, S2> {
-    pub(crate) resolved: &'a crate::state::at::SharedState<Id>,
-    pub(crate) auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
-    pub(crate) sort_set: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
-    pub(crate) local_auth: BTreeMap<(String, String), LeanEvent<Id, C>>,
-    pub(crate) create_ev: Option<&'a LeanEvent<Id, C>>,
+pub(crate) struct OverlayState<'a, Id, C, S1, S2, K = String> {
+    pub(crate) resolved: &'a crate::state::at::SharedState<Id, K>,
+    pub(crate) auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    pub(crate) sort_set: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    pub(crate) local_auth: BTreeMap<(EventType, K), LeanEvent<Id, C, K>>,
+    pub(crate) create_ev: Option<&'a LeanEvent<Id, C, K>>,
     pub(crate) version: StateResVersion,
     pub(crate) is_power_phase: bool,
     pub(crate) candidate_event_type: &'a str,
@@ -90,9 +91,13 @@ impl<
         C: crate::basespec::rezzy_types::EventContent,
         S1: core::hash::BuildHasher,
         S2: core::hash::BuildHasher,
-    > crate::auth::StateProvider<Id, C> for OverlayState<'_, Id, C, S1, S2>
+        K,
+    > crate::auth::StateProvider<Id, C, LeanEvent<Id, C, K>> for OverlayState<'_, Id, C, S1, S2, K>
+where
+    K: Ord + Clone + Default + AsRef<str> + 'static,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C>> {
+    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C, K>> {
         use crate::basespec::event_types::{M_EMPTY_STATE_KEY, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
 
         let query: &dyn crate::auth::StateKeyDyn = &(event_type, state_key);
@@ -146,7 +151,6 @@ impl<
             }
         }
 
-        // Check local auth chain (BFS result) second!
         if let Some(ev) = self.local_auth.get(query) {
             // Under Matrix State Resolution, during the power phase, a required auth event in the conflicted set
             // can ONLY be used if it has been successfully authorized and resolved
@@ -215,21 +219,24 @@ impl<
 #[allow(clippy::too_many_arguments)]
 /// Authenticates an event against the current resolved state and an optional local auth context.
 /// Ensures the event complies with the Matrix spec rules for its given type.
-pub(crate) fn iterative_auth_ok<
+pub(crate) fn iterative_auth_ok<Id, C, S1, S2, K>(
+    ev: &LeanEvent<Id, C, K>,
+    resolved: &crate::state::at::SharedState<Id, K>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    sort_set: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    local_auth: BTreeMap<(EventType, K), LeanEvent<Id, C, K>>,
+    cached_create: Option<&LeanEvent<Id, C, K>>,
+    version: StateResVersion,
+    is_power_phase: bool,
+) -> bool
+where
     Id: crate::basespec::rezzy_types::EventId,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
->(
-    ev: &LeanEvent<Id, C>,
-    resolved: &crate::state::at::SharedState<Id>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S1>,
-    sort_set: &HashMap<Id, LeanEvent<Id, C>, S2>,
-    local_auth: BTreeMap<(String, String), LeanEvent<Id, C>>,
-    cached_create: Option<&LeanEvent<Id, C>>,
-    version: StateResVersion,
-    is_power_phase: bool,
-) -> bool {
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+{
     if ev.rejected || ev.soft_fail {
         return false;
     }
@@ -250,15 +257,15 @@ pub(crate) fn iterative_auth_ok<
 
 /// Merges an event into a local auth map if it is an auth event (e.g. power levels, join rules).
 /// Ensures that newer auth events replace older ones during chain traversal.
-pub(crate) fn update_local_auth<Id: Clone + Ord, C: Clone>(
-    local_auth: &mut BTreeMap<(String, String), LocalAuthEntry<Id, C>>,
-    aev: &LeanEvent<Id, C>,
+pub(crate) fn update_local_auth<Id: Clone + Ord, C: Clone, K: Clone + Ord>(
+    local_auth: &mut BTreeMap<(EventType, K), LocalAuthEntry<Id, C, K>>,
+    aev: &LeanEvent<Id, C, K>,
     depth: usize,
 ) {
     let Some(sk) = &aev.state_key else {
         return;
     };
-    let key = (aev.event_type.clone(), sk.clone());
+    let key = (EventType::from(aev.event_type.as_str()), sk.clone());
     match local_auth.entry(key) {
         alloc::collections::btree_map::Entry::Vacant(e) => {
             e.insert(LocalAuthEntry {
@@ -278,18 +285,19 @@ pub(crate) fn update_local_auth<Id: Clone + Ord, C: Clone>(
 }
 
 /// Resolves the auth chain context incrementally and stores it in the shared cache.
-pub(crate) fn compute_local_auth<Id, C, S1, S2>(
-    event: &LeanEvent<Id, C>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S1>,
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S2>,
-    cache: &mut LocalAuthCache<Id, C>,
+pub(crate) fn compute_local_auth<Id, C, S1, S2, K>(
+    event: &LeanEvent<Id, C, K>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    cache: &mut LocalAuthCache<Id, C, K>,
     version: StateResVersion,
-) -> BTreeMap<(String, String), LeanEvent<Id, C>>
+) -> BTreeMap<(EventType, K), LeanEvent<Id, C, K>>
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
+    K: Clone + Ord,
 {
     if let Some(cached) = cache.map.get(&event.event_id) {
         return cached
@@ -299,7 +307,7 @@ where
             .collect();
     }
 
-    let mut local_auth: BTreeMap<(String, String), LocalAuthEntry<Id, C>> = BTreeMap::new();
+    let mut local_auth: BTreeMap<(EventType, K), LocalAuthEntry<Id, C, K>> = BTreeMap::new();
     let mut queue = alloc::collections::VecDeque::new();
     for aid in &event.auth_events {
         queue.push_back((aid.clone(), 1));
@@ -377,13 +385,16 @@ where
 /// type-string allocations in state keys. Equality, ordering, and hashing
 /// still follow the canonical string form.
 ///
+/// Generic over the state-key type `K` (defaults to `String`); see
+/// [`crate::basespec::rezzy_types::StateKey`].
+///
 /// A HAMT-backed state map was benchmarked as a replacement
 /// (`benches/state_backend.rs`) and lost on the access pattern that
 /// matters most here: forking a state map into several branches and
 /// diverging each (what conflict resolution does), where it was 6-22x
 /// slower than `OrdMap`'s clone. `imbl::OrdMap`'s RRB-tree is tuned
 /// specifically for cheap-clone/structural-sharing workloads, so it stays.
-pub type SharedState<Id = String> = imbl::OrdMap<(EventType, String), Id>;
+pub type SharedState<Id = String, K = String> = imbl::OrdMap<(EventType, K), Id>;
 
 /// Computes the resolved room state *after* a given event.
 ///
@@ -399,16 +410,18 @@ pub type SharedState<Id = String> = imbl::OrdMap<(EventType, String), Id>;
 /// Will panic if graph invariants are violated (specifically, if an ancestor event
 /// present in the reachable subgraph is missing from `events_map` during topological processing).
 #[must_use]
-pub fn compute_state_at<Id, C, Q, S>(
+pub fn compute_state_at<Id, C, Q, S, K>(
     target_event_id: &Q,
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
-) -> Option<BTreeMap<(EventType, String), Id>>
+) -> Option<BTreeMap<(EventType, K), Id>>
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + Ord + core::hash::Hash,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     if !events_map.contains_key(target_event_id) {
         return None;
@@ -448,16 +461,18 @@ where
 /// Will panic if graph invariants are violated (specifically, if an ancestor event
 /// present in the reachable subgraph is missing from `events_map` during topological processing).
 #[must_use]
-pub fn compute_state_at_batch<Id, C, Q, S>(
+pub fn compute_state_at_batch<Id, C, Q, S, K>(
     target_event_ids: &[&Q],
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
-) -> HashMap<Id, BTreeMap<(EventType, String), Id>>
+) -> HashMap<Id, BTreeMap<(EventType, K), Id>>
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let mut results = HashMap::with_capacity(target_event_ids.len());
 
@@ -509,9 +524,9 @@ impl<E: core::fmt::Debug + core::fmt::Display> std::error::Error for StateComput
 ///
 /// Will panic if graph invariants are violated (specifically, if an ancestor event
 /// present in the reachable subgraph is missing from `events_map` during topological processing).
-pub fn compute_state_at_streaming<Id, C, Q, S, F>(
+pub fn compute_state_at_streaming<Id, C, Q, S, F, K>(
     target_event_ids: &[&Q],
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
 ) where
@@ -519,7 +534,9 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F>(
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    F: FnMut(Id, SharedState<Id>),
+    F: FnMut(Id, SharedState<Id, K>),
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let result = try_compute_state_at_streaming(
         target_event_ids,
@@ -551,9 +568,9 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F>(
 /// # Errors
 /// Returns `StateComputationError::CycleDetected` if a cycle is found in the reachable graph.
 /// Returns `StateComputationError::Callback(e)` if the callback yields an error.
-pub fn try_compute_state_at_streaming<Id, C, Q, S, F, E>(
+pub fn try_compute_state_at_streaming<Id, C, Q, S, F, E, K>(
     target_event_ids: &[&Q],
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
 ) -> Result<(), StateComputationError<E>>
@@ -562,7 +579,9 @@ where
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    F: FnMut(Id, SharedState<Id>) -> Result<(), E>,
+    F: FnMut(Id, SharedState<Id, K>) -> Result<(), E>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let mut actual_target_ids = Vec::new();
     let mut seen = alloc::collections::BTreeSet::new();
@@ -605,11 +624,11 @@ where
 ///
 /// Topologically sorts all reachable ancestors, incrementally merges state at forks,
 /// and yields the target states as they are completed.
-fn run_state_pipeline_streaming<'a, Id, C, S, F, E>(
+fn run_state_pipeline_streaming<'a, Id, C, S, F, E, K>(
     index_to_id: &[&'a Id],
     id_to_index: &FastMap<&'a Id, usize>,
     is_target: &[bool],
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target: F,
 ) -> Result<(), StateComputationError<E>>
@@ -617,7 +636,9 @@ where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    F: FnMut(usize, SharedState<Id>) -> Result<(), E>,
+    F: FnMut(usize, SharedState<Id, K>) -> Result<(), E>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let (sorted_ancestors, mut out_degree) =
         topological_sort_short_ids(index_to_id, id_to_index, events_map);
@@ -629,7 +650,7 @@ where
     let mut global_auth_cache = LocalAuthCache::new(version);
     let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
 
-    let mut state_after_map: Vec<Option<SharedState<Id>>> = core::iter::repeat_with(|| None)
+    let mut state_after_map: Vec<Option<SharedState<Id, K>>> = core::iter::repeat_with(|| None)
         .take(index_to_id.len())
         .collect();
 
@@ -655,7 +676,7 @@ where
             }
         }
 
-        let mut state_before: SharedState<Id> = if prev_states.is_empty() {
+        let mut state_before: SharedState<Id, K> = if prev_states.is_empty() {
             SharedState::new()
         } else if prev_states.len() == 1 {
             prev_states.into_iter().next().unwrap()
@@ -995,9 +1016,9 @@ where
 
 /// Collects all reachable ancestor events across a batch of target events and assigns them
 /// contiguous integer IDs (short IDs) for fast topological processing and array lookups.
-fn collect_ancestor_short_ids_batch<'a, Id, C, S>(
+fn collect_ancestor_short_ids_batch<'a, Id, C, S, K>(
     target_event_ids: &[&'a Id],
-    events_map: &'a HashMap<Id, LeanEvent<Id, C>, S>,
+    events_map: &'a HashMap<Id, LeanEvent<Id, C, K>, S>,
 ) -> (FastMap<&'a Id, usize>, Vec<&'a Id>)
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -1041,10 +1062,10 @@ where
 /// Performs a topological sort of the graph represented by short `usize` indexes.
 /// Performs Kahn's topological sort on the collected ancestor graph.
 /// Returns the events sorted such that parents always appear before their children.
-fn topological_sort_short_ids<Id, C, S>(
+fn topological_sort_short_ids<Id, C, S, K>(
     index_to_id: &[&Id],
     id_to_index: &FastMap<&Id, usize>,
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
 ) -> (Vec<usize>, Vec<usize>)
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -1103,17 +1124,19 @@ where
 
 /// Fast-path resolution for merging multiple states when they are all structurally identical.
 /// Bypasses full state resolution by simply returning one of the identical parent states.
-fn resolve_merge_fast_path<Id, C, S>(
-    prev_states: &[SharedState<Id>],
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
-    global_auth_cache: &mut LocalAuthCache<Id, C>,
+fn resolve_merge_fast_path<Id, C, S, K>(
+    prev_states: &[SharedState<Id, K>],
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
-) -> SharedState<Id>
+) -> SharedState<Id, K>
 where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let first = &prev_states[0];
     let all_match = prev_states[1..].iter().all(|state| first == state);
@@ -1136,17 +1159,19 @@ where
 /// Slow path for merging multiple parent states via the state resolution algorithm.
 /// Full state resolution path for DAG nodes with multiple parents (forks).
 /// Groups the unconflicted state and runs `resolve_iterative_sort` on the conflicted subset.
-fn resolve_multiple_prev_states<Id, C, S>(
-    prev_states: &[SharedState<Id>],
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
-    global_auth_cache: &mut LocalAuthCache<Id, C>,
+fn resolve_multiple_prev_states<Id, C, S, K>(
+    prev_states: &[SharedState<Id, K>],
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
-) -> SharedState<Id>
+) -> SharedState<Id, K>
 where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let mut conflicted_keys = crate::FastSet::default();
     let mut conflicted_state_set = crate::HashSet::new();
@@ -1241,16 +1266,17 @@ where
 ///
 /// Internal `unwrap()` calls are guarded by `peek()`
 /// checks and cannot panic under normal operation.
-pub fn compute_auth_chain_diff<Id, C, S1, S2>(
-    unconflicted_state: &SharedState<Id>,
+pub fn compute_auth_chain_diff<Id, C, S1, S2, K>(
+    unconflicted_state: &SharedState<Id, K>,
     conflicted_state_set: &crate::HashSet<Id, S2>,
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S1>,
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
 ) -> crate::HashSet<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
+    K: Ord + Clone,
 {
     let mut u_visited = crate::FastSet::default();
     let mut u_heap_elements = Vec::with_capacity(unconflicted_state.len());
@@ -1284,10 +1310,12 @@ where
             if u_depth < c_depth {
                 break;
             }
-            let (_, u_id) = u_heap.pop().unwrap();
-            let Some(ev) = events_map.get(&u_id) else {
-                continue;
-            };
+            let (_, u_id) = u_heap
+                .pop()
+                .expect("invariant: heap peek implies non-empty pop");
+            let ev = events_map.get(&u_id).expect(
+                "invariant: every heap entry corresponds to an event present in events_map",
+            );
             for auth_id in &ev.auth_events {
                 if u_visited.insert(auth_id.clone()) {
                     if let Some(a_ev) = events_map.get(auth_id) {
@@ -1297,12 +1325,14 @@ where
             }
         }
 
-        let (_, c_id) = c_heap.pop().unwrap();
+        let (_, c_id) = c_heap
+            .pop()
+            .expect("invariant: heap peek implies non-empty pop");
         if !u_visited.contains(&c_id) {
             auth_diff.insert(c_id.clone());
-            let Some(ev) = events_map.get(&c_id) else {
-                continue;
-            };
+            let ev = events_map.get(&c_id).expect(
+                "invariant: every heap entry corresponds to an event present in events_map",
+            );
             for auth_id in &ev.auth_events {
                 if u_visited.contains(auth_id) {
                     continue; // PRUNE EARLY
@@ -1516,8 +1546,8 @@ where
 ///   deterministic tiebreaking within topological levels.
 /// - **Space**: `O(V)` for the position map.
 #[must_use]
-pub fn compute_topo_positions<Id, C, S, F>(
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+pub fn compute_topo_positions<Id, C, S, F, K>(
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     tiebreak: F,
 ) -> Vec<Id>
 where
@@ -1591,7 +1621,9 @@ where
 /// Panics if a sorted event ID is not found in `events_map` (indicates a
 /// bug in the topological sort).
 #[must_use]
-pub fn compute_depths<Id, C, S>(events_map: &HashMap<Id, LeanEvent<Id, C>, S>) -> HashMap<Id, u64>
+pub fn compute_depths<Id, C, S, K>(
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+) -> HashMap<Id, u64>
 where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
@@ -1678,8 +1710,8 @@ pub struct DepthDivergence<Id> {
 ///
 /// `O(Σ |prev_events|)` — linear in the total number of parent references.
 #[must_use]
-pub fn find_depth_divergences<Id, C, S>(
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+pub fn find_depth_divergences<Id, C, S, K>(
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
 ) -> Vec<DepthDivergence<Id>>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -1743,8 +1775,8 @@ where
 ///
 /// Identical to [`compute_topo_positions`]: `O(V log V + E)`.
 #[must_use]
-pub fn resolve_gap_fill_order<Id, C, S, F>(
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+pub fn resolve_gap_fill_order<Id, C, S, F, K>(
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     tiebreak: F,
 ) -> Vec<Id>
 where
@@ -1770,9 +1802,9 @@ where
 /// - **Time**: `O(V + E)` for ancestor collection + Kahn sort.
 /// - **Space**: `O(V)`.
 #[must_use]
-pub fn reverse_topological_order<Id, C, Q, S, F>(
+pub fn reverse_topological_order<Id, C, Q, S, F, K>(
     tip: &Q,
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     tiebreak: F,
 ) -> Vec<Id>
 where
@@ -1862,8 +1894,8 @@ pub enum PaginationViolation<Id> {
 ///
 /// A `Vec` of violations. Empty means the pages are well-formed.
 #[must_use]
-pub fn verify_pagination<Id, C, S>(
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+pub fn verify_pagination<Id, C, S, K>(
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     pages: &[Vec<Id>],
 ) -> Vec<PaginationViolation<Id>>
 where
@@ -1919,14 +1951,20 @@ where
 }
 
 /// Represents an optimization-friendly state update yielded during topological streaming.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StateUpdate<'b, Id> {
+///
+/// Manual `Clone`/`Debug`/`PartialEq`/`Eq` impls (rather than `#[derive]`) because
+/// `SharedState<Id, K>` (an `imbl::OrdMap`) requires `K: Ord` structurally, which
+/// `#[derive]`'s naive per-field bound inference does not add automatically.
+pub enum StateUpdate<'b, Id, K = String> {
     /// The state has been newly resolved, or modified by a state-changing event.
     New {
         /// The resolved state map at this target.
-        state: SharedState<Id>,
-        /// The incrementally maintained `LtHash` checksum for this state.
-        hash: crate::state::lthash::LtHash,
+        state: SharedState<Id, K>,
+        /// The incrementally maintained `LtHash` digest for this state, borrowed
+        /// from the pipeline's owned state. Zero-copy: callers that only compare,
+        /// look up, or digest can borrow; only callers that need to retain the
+        /// hash (e.g. across a thread channel) should copy it.
+        hash: &'b crate::state::lthash::LtHash,
     },
     /// The state at this event is completely unchanged from its parent's state.
     /// Consumers can reuse the parent's state directly, skipping compression and O(N) traversals.
@@ -1940,16 +1978,86 @@ pub enum StateUpdate<'b, Id> {
     Unchanged {
         /// The event ID of the single parent event from which this state is inherited.
         parent_event_id: &'b Id,
-        /// The `LtHash` checksum of the parent state.
-        hash: crate::state::lthash::LtHash,
+        /// The `LtHash` digest of the parent state, borrowed from the pipeline's
+        /// owned state (zero-copy; see [`StateUpdate::New`]).
+        hash: &'b crate::state::lthash::LtHash,
     },
 }
 
-impl<Id> StateUpdate<'_, Id>
+impl<Id: core::fmt::Debug, K: core::fmt::Debug + Ord> core::fmt::Debug for StateUpdate<'_, Id, K> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::New { state, hash } => f
+                .debug_struct("New")
+                .field("state", state)
+                .field("hash", hash)
+                .finish(),
+            Self::Unchanged {
+                parent_event_id,
+                hash,
+            } => f
+                .debug_struct("Unchanged")
+                .field("parent_event_id", parent_event_id)
+                .field("hash", hash)
+                .finish(),
+        }
+    }
+}
+
+impl<Id: Clone, K: Ord + Clone> Clone for StateUpdate<'_, Id, K> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::New { state, hash } => Self::New {
+                state: state.clone(),
+                hash,
+            },
+            Self::Unchanged {
+                parent_event_id,
+                hash,
+            } => Self::Unchanged {
+                parent_event_id,
+                hash,
+            },
+        }
+    }
+}
+
+impl<Id: PartialEq, K: Ord + PartialEq> PartialEq for StateUpdate<'_, Id, K> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::New {
+                    state: s1,
+                    hash: h1,
+                },
+                Self::New {
+                    state: s2,
+                    hash: h2,
+                },
+            ) => s1 == s2 && h1 == h2,
+            (
+                Self::Unchanged {
+                    parent_event_id: p1,
+                    hash: h1,
+                },
+                Self::Unchanged {
+                    parent_event_id: p2,
+                    hash: h2,
+                },
+            ) => p1 == p2 && h1 == h2,
+            _ => false,
+        }
+    }
+}
+
+impl<Id: Eq, K: Ord + Eq> Eq for StateUpdate<'_, Id, K> {}
+
+impl<Id, K> StateUpdate<'_, Id, K>
 where
     Id: Clone,
+    K: Ord + Clone,
 {
-    /// Resolves and yields the full `SharedState<Id>`, either returning the newly resolved state
+    /// Resolves and yields the full `SharedState<Id, K>`, either returning the newly resolved state
     /// or looking up the parent state via a provided closure.
     ///
     /// # Panics
@@ -1958,8 +2066,8 @@ where
     /// return the parent event state.
     pub fn into_state(
         self,
-        mut get_parent_state: impl FnMut(&Id) -> Option<SharedState<Id>>,
-    ) -> SharedState<Id> {
+        mut get_parent_state: impl FnMut(&Id) -> Option<SharedState<Id, K>>,
+    ) -> SharedState<Id, K> {
         match self {
             StateUpdate::New { state, .. } => state,
             StateUpdate::Unchanged {
@@ -1968,18 +2076,57 @@ where
                 .expect("StateUpdate::Unchanged requires the parent state to be available"),
         }
     }
+
+    /// Borrows the carried `LtHash` lattice (the 2 KiB homomorphic accumulator)
+    /// — zero-copy. The 32-byte cryptographic hash of it is [`StateUpdate::digest`].
+    #[must_use]
+    pub fn lattice(&self) -> &crate::state::lthash::LtHash {
+        match self {
+            StateUpdate::New { hash, .. } | StateUpdate::Unchanged { hash, .. } => hash,
+        }
+    }
+
+    /// Computes the 32-byte MSC4500 §6 digest of the carried `LtHash` lattice.
+    ///
+    /// Cheap (`BLAKE2b` over the 2 KiB lattice) and collision-resistant to 256 bits;
+    /// useful as a compact dedup/identity key without copying the full lattice.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        self.lattice().digest()
+    }
 }
 
 /// A wrapper that pairs a `SharedState` map with its incrementally maintained `LtHash`.
-#[derive(Clone, Debug)]
-pub struct HashedState<Id> {
+///
+/// Manual `Clone`/`Debug` impls (rather than `#[derive]`) because `SharedState<Id, K>`
+/// (an `imbl::OrdMap`) requires `K: Ord` structurally, which `#[derive]`'s naive
+/// per-field bound inference does not add automatically.
+pub struct HashedState<Id, K = String> {
     /// The underlying state map.
-    pub state: SharedState<Id>,
+    pub state: SharedState<Id, K>,
     /// The incrementally updated cryptographic `LtHash`.
     pub hash: crate::state::lthash::LtHash,
 }
 
-impl<Id> Default for HashedState<Id> {
+impl<Id: Clone, K: Ord + Clone> Clone for HashedState<Id, K> {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            hash: self.hash,
+        }
+    }
+}
+
+impl<Id: core::fmt::Debug, K: Ord + core::fmt::Debug> core::fmt::Debug for HashedState<Id, K> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HashedState")
+            .field("state", &self.state)
+            .field("hash", &self.hash)
+            .finish()
+    }
+}
+
+impl<Id, K: Ord + Clone> Default for HashedState<Id, K> {
     fn default() -> Self {
         Self {
             state: SharedState::new(),
@@ -1988,9 +2135,10 @@ impl<Id> Default for HashedState<Id> {
     }
 }
 
-impl<Id> HashedState<Id>
+impl<Id, K> HashedState<Id, K>
 where
     Id: crate::basespec::rezzy_types::EventId,
+    K: Ord + Clone + AsRef<str>,
 {
     /// Creates a new empty `HashedState`.
     #[must_use]
@@ -1999,11 +2147,11 @@ where
     }
 
     /// Incremental insertion of a state entry into both the map and `LtHash`.
-    pub fn insert(&mut self, key: (EventType, String), event_id: Id) {
+    pub fn insert(&mut self, key: (EventType, K), event_id: Id) {
         if let Some(old_id) = self.state.get(&key) {
-            self.hash.remove(key.0.as_str(), &key.1, old_id);
+            self.hash.remove(key.0.as_str(), key.1.as_ref(), old_id);
         }
-        self.hash.insert(key.0.as_str(), &key.1, &event_id);
+        self.hash.insert(key.0.as_str(), key.1.as_ref(), &event_id);
         self.state.insert(key, event_id);
     }
 }
@@ -2018,16 +2166,18 @@ where
 /// # Panics
 ///
 /// Panics if `prev_states` is empty. At least 2 entries are needed for meaningful merging.
-pub fn resolve_merge_fast_path_hashed<Id, C, S>(
-    prev_states: &[HashedState<Id>],
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
-    global_auth_cache: &mut LocalAuthCache<Id, C>,
+pub fn resolve_merge_fast_path_hashed<Id, C, S, K>(
+    prev_states: &[HashedState<Id, K>],
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     version: StateResVersion,
-) -> HashedState<Id>
+) -> HashedState<Id, K>
 where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     resolve_merge_fast_path_hashed_with_cache(
         prev_states,
@@ -2043,17 +2193,19 @@ where
 /// (e.g. [`run_state_pipeline_streaming_optimized`]'s fork-merge loop) can
 /// thread across calls, so `build_mainline`'s BFS-per-call turns into an
 /// `O(M)` cache-hit walk instead of restarting from scratch every time.
-fn resolve_merge_fast_path_hashed_with_cache<Id, C, S>(
-    prev_states: &[HashedState<Id>],
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
-    global_auth_cache: &mut LocalAuthCache<Id, C>,
+fn resolve_merge_fast_path_hashed_with_cache<Id, C, S, K>(
+    prev_states: &[HashedState<Id, K>],
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
-) -> HashedState<Id>
+) -> HashedState<Id, K>
 where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let first = &prev_states[0];
 
@@ -2069,7 +2221,7 @@ where
     if all_match {
         first.clone()
     } else {
-        let shared_states: Vec<SharedState<Id>> =
+        let shared_states: Vec<SharedState<Id, K>> =
             prev_states.iter().map(|s| s.state.clone()).collect();
         let resolved = resolve_multiple_prev_states(
             &shared_states,
@@ -2084,17 +2236,17 @@ where
         for diff_item in first.state.diff(&resolved) {
             match diff_item {
                 imbl::ordmap::DiffItem::Add(key, new_id) => {
-                    hash.insert(key.0.as_str(), &key.1, new_id);
+                    hash.insert(key.0.as_str(), key.1.as_ref(), new_id);
                 }
                 imbl::ordmap::DiffItem::Remove(key, old_id) => {
-                    hash.remove(key.0.as_str(), &key.1, old_id);
+                    hash.remove(key.0.as_str(), key.1.as_ref(), old_id);
                 }
                 imbl::ordmap::DiffItem::Update {
                     old: (key, old_id),
                     new: (_, new_id),
                 } => {
-                    hash.remove(key.0.as_str(), &key.1, old_id);
-                    hash.insert(key.0.as_str(), &key.1, new_id);
+                    hash.remove(key.0.as_str(), key.1.as_ref(), old_id);
+                    hash.insert(key.0.as_str(), key.1.as_ref(), new_id);
                 }
             }
         }
@@ -2106,11 +2258,11 @@ where
     }
 }
 
-fn run_state_pipeline_streaming_optimized<'a, Id, C, S, F, E>(
+fn run_state_pipeline_streaming_optimized<'a, Id, C, S, F, E, K>(
     index_to_id: &[&'a Id],
     id_to_index: &FastMap<&'a Id, usize>,
     is_target: &[bool],
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target: F,
 ) -> Result<(), StateComputationError<E>>
@@ -2118,7 +2270,9 @@ where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    F: for<'b> FnMut(usize, StateUpdate<'b, Id>) -> Result<(), E>,
+    F: for<'b> FnMut(usize, StateUpdate<'b, Id, K>) -> Result<(), E>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let (sorted_ancestors, mut out_degree) =
         topological_sort_short_ids(index_to_id, id_to_index, events_map);
@@ -2130,7 +2284,7 @@ where
     let mut global_auth_cache = LocalAuthCache::new(version);
     let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
 
-    let mut state_after_map: Vec<Option<HashedState<Id>>> = core::iter::repeat_with(|| None)
+    let mut state_after_map: Vec<Option<HashedState<Id, K>>> = core::iter::repeat_with(|| None)
         .take(index_to_id.len())
         .collect();
 
@@ -2156,9 +2310,6 @@ where
                     continue;
                 }
             }
-            if out_degree[pe_idx] == 0 {
-                continue;
-            }
             out_degree[pe_idx] = out_degree[pe_idx].saturating_sub(1);
             if out_degree[pe_idx] == 0 {
                 if let Some(pe_state) = state_after_map[pe_idx].take() {
@@ -2172,7 +2323,7 @@ where
         let is_state = ev.state_key.is_some();
         let has_single_parent = prev_states.len() == 1;
 
-        let mut state_before: HashedState<Id> = if prev_states.is_empty() {
+        let mut state_before: HashedState<Id, K> = if prev_states.is_empty() {
             HashedState::new()
         } else if has_single_parent && !is_state {
             let parent_state = prev_states.into_iter().next().unwrap();
@@ -2185,7 +2336,7 @@ where
                             .iter()
                             .find(|pe| id_to_index.contains_key(*pe))
                             .expect("has_single_parent implies at least one prev_event is in id_to_index"),
-                        hash: parent_state.hash,
+                        hash: &parent_state.hash,
                     },
                 )
                 .map_err(StateComputationError::Callback)?;
@@ -2219,7 +2370,7 @@ where
                 idx,
                 StateUpdate::New {
                     state: state_before.state.clone(),
-                    hash: state_before.hash,
+                    hash: &state_before.hash,
                 },
             )
             .map_err(StateComputationError::Callback)?;
@@ -2247,9 +2398,9 @@ where
 /// # Behavior
 /// Duplicate target IDs are silently deduplicated, and targets absent from `events_map`
 /// are dropped. The callback count may therefore be less than the input count.
-pub fn try_compute_state_at_streaming_optimized<Id, C, Q, S, F, E>(
+pub fn try_compute_state_at_streaming_optimized<Id, C, Q, S, F, E, K>(
     target_event_ids: &[&Q],
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
 ) -> Result<(), StateComputationError<E>>
@@ -2258,7 +2409,9 @@ where
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    F: for<'b> FnMut(Id, StateUpdate<'b, Id>) -> Result<(), E>,
+    F: for<'b> FnMut(Id, StateUpdate<'b, Id, K>) -> Result<(), E>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let mut actual_target_ids = Vec::new();
     let mut seen = alloc::collections::BTreeSet::new();
@@ -2303,9 +2456,9 @@ where
 /// Returns `true` if the graph traversal completed successfully, or `false` if a cycle
 /// was detected in the reachable subgraph.
 #[must_use = "a `false` return means a cycle was detected and results are incomplete; silently discarding it defeats the purpose of cycle detection"]
-pub fn compute_state_at_streaming_optimized<Id, C, Q, S, F>(
+pub fn compute_state_at_streaming_optimized<Id, C, Q, S, F, K>(
     target_event_ids: &[&Q],
-    events_map: &HashMap<Id, LeanEvent<Id, C>, S>,
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
 ) -> bool
@@ -2314,7 +2467,9 @@ where
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    F: for<'b> FnMut(Id, StateUpdate<'b, Id>),
+    F: for<'b> FnMut(Id, StateUpdate<'b, Id, K>),
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let result = try_compute_state_at_streaming_optimized(
         target_event_ids,
@@ -2467,15 +2622,18 @@ mod tests {
 
         let local_auth = vec![
             (
-                ("m.room.create".to_string(), String::new()),
+                (EventType::from("m.room.create"), String::new()),
                 create_ev.clone(),
             ),
             (
-                ("m.room.power_levels".to_string(), String::new()),
+                (EventType::from("m.room.power_levels"), String::new()),
                 pl_bot.clone(),
             ),
             (
-                ("m.room.member".to_string(), "@bot:example.com".to_string()),
+                (
+                    EventType::from("m.room.member"),
+                    "@bot:example.com".to_string(),
+                ),
                 bot_join.clone(),
             ),
         ]
@@ -2595,6 +2753,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn test_overlay_state_coverage_boosters() {
         let create_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
@@ -2607,6 +2766,13 @@ mod tests {
         let pl_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
             event_id: "$pl".into(),
             event_type: "m.room.power_levels".into(),
+            sender: "@creator:example.com".into(),
+            ..Default::default()
+        };
+
+        let jr_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
+            event_id: "$jr".into(),
+            event_type: "m.room.join_rules".into(),
             sender: "@creator:example.com".into(),
             ..Default::default()
         };
@@ -2625,7 +2791,7 @@ mod tests {
 
             let mut local_auth = BTreeMap::new();
             local_auth.insert(
-                (M_ROOM_POWER_LEVELS.to_string(), String::new()),
+                (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
                 pl_ev.clone(),
             );
 
@@ -2653,7 +2819,7 @@ mod tests {
 
             let mut local_auth = BTreeMap::new();
             local_auth.insert(
-                (M_ROOM_POWER_LEVELS.to_string(), String::new()),
+                (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
                 pl_ev.clone(),
             );
 
@@ -2682,7 +2848,7 @@ mod tests {
 
             let mut local_auth = BTreeMap::new();
             local_auth.insert(
-                (M_ROOM_POWER_LEVELS.to_string(), String::new()),
+                (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
                 pl_ev.clone(),
             );
 
@@ -2699,6 +2865,49 @@ mod tests {
 
             let res = overlay.get_event(M_ROOM_POWER_LEVELS, "");
             assert!(res.is_none());
+        }
+
+        // 4. Test case: a required event (m.room.join_rules) that IS resolved.
+        // V2.1.1 does not supplement join_rules, so the early resolved-state
+        // return is skipped; the power-phase fallback (line 176) then returns
+        // the resolved event itself.
+        {
+            let mut resolved = imbl::OrdMap::new();
+            resolved.insert(
+                (
+                    EventType::from(crate::basespec::event_types::M_ROOM_JOIN_RULES),
+                    String::new(),
+                ),
+                "$jr".to_string(),
+            );
+
+            let auth_context = HashMap::new();
+            let mut sort_set = HashMap::new();
+            sort_set.insert("$jr".to_string(), jr_ev.clone());
+
+            let mut local_auth = BTreeMap::new();
+            local_auth.insert(
+                (
+                    EventType::from(crate::basespec::event_types::M_ROOM_JOIN_RULES),
+                    String::new(),
+                ),
+                jr_ev.clone(),
+            );
+
+            let overlay = OverlayState {
+                resolved: &resolved,
+                auth_context: &auth_context,
+                sort_set: &sort_set,
+                local_auth,
+                create_ev: Some(&create_ev),
+                version: StateResVersion::V2_1_1,
+                is_power_phase: true,
+                candidate_event_type: crate::basespec::event_types::M_ROOM_JOIN_RULES,
+            };
+
+            let res = overlay.get_event(crate::basespec::event_types::M_ROOM_JOIN_RULES, "");
+            assert!(res.is_some());
+            assert_eq!(res.unwrap().event_id, "$jr");
         }
     }
 
@@ -3173,6 +3382,54 @@ mod tests {
         assert!(diff.is_empty(), "shared event should be pruned, empty diff");
     }
 
+    /// Coverage / reachability probe for `compute_auth_chain_diff`'s defensive
+    /// `else { continue }` guards (lines 1314 and 1329).
+    ///
+    /// The heap-based traversals only ever push an event id after verifying it
+    /// is present in `events_map`, and `events_map` is immutable for the call,
+    /// so a popped id is always present. This test drives the function with
+    /// ids that are absent from `events_map` (in both `unconflicted_state` and
+    /// `conflicted_state_set`) and with an event whose `auth_events` reference a
+    /// missing id, exercising every skip-guard but confirming that the
+    /// `else continue` branches themselves are never taken.
+    #[test]
+    fn test_auth_chain_diff_missing_ids_are_skipped_not_pushed() {
+        // A genuine event with an auth_event that is NOT in events_map.
+        let a = LeanEvent {
+            event_id: "A".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@a:x".into()),
+            sender: "@a:x".into(),
+            depth: 2,
+            content: json!({"membership": "join"}),
+            auth_events: vec!["GHOST_AUTH".into()],
+            ..Default::default()
+        };
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+
+        // conflicted_state_set contains "A" (present) plus "GHOST_CONFLICT" (absent).
+        let mut conflicted = crate::HashSet::new();
+        conflicted.insert("A".to_string());
+        conflicted.insert("GHOST_CONFLICT".to_string());
+
+        // unconflicted_state maps a state entry to "GHOST_UNCONFLICTED" (absent).
+        let mut unconflicted = imbl::OrdMap::new();
+        unconflicted.insert(
+            ("m.room.member".into(), "@ghost:x".into()),
+            "GHOST_UNCONFLICTED".into(),
+        );
+
+        // Must not panic; absent ids are silently skipped rather than pushed.
+        let diff = compute_auth_chain_diff(&unconflicted, &conflicted, &events_map);
+        // "A" is in the conflicted set and not reachable from unconflicted, so it
+        // lands in the diff; ghost ids are dropped.
+        assert!(diff.contains("A"));
+        assert!(!diff.contains("GHOST_CONFLICT"));
+        assert!(!diff.contains("GHOST_UNCONFLICTED"));
+        assert!(!diff.contains("GHOST_AUTH"));
+    }
+
     /// Coverage: `compute_merge_base` when a popped event has no mask (line 908).
     /// This happens when an extremity references a `prev_event` that was pushed
     /// onto the heap but never had a mask entry (orphan in the graph).
@@ -3416,7 +3673,7 @@ mod tests {
 
         let update = StateUpdate::Unchanged {
             parent_event_id: &parent_id,
-            hash,
+            hash: &hash,
         };
 
         let resolved = update.into_state(|id| {
@@ -3671,7 +3928,7 @@ mod tests {
 
         let update = StateUpdate::New {
             state: state.clone(),
-            hash,
+            hash: &hash,
         };
 
         // The callback must never be invoked for the `New` arm.
@@ -3762,5 +4019,598 @@ mod tests {
         // Sorted by (parent, child): both share parent "A", so child order breaks the tie.
         assert_eq!(divergences[0].child, "B");
         assert_eq!(divergences[1].child, "Z");
+    }
+
+    fn init_state() -> SharedState<String, String> {
+        let mut state: SharedState<String, String> = SharedState::new();
+        state.insert(
+            (
+                EventType::from("m.room.member"),
+                "@alice:example.com".to_string(),
+            ),
+            "$evt".to_string(),
+        );
+        state
+    }
+
+    static ZERO_HASH: crate::state::lthash::LtHash = crate::state::lthash::LtHash([0; 1024]);
+    static ONE_HASH: crate::state::lthash::LtHash = crate::state::lthash::LtHash([1; 1024]);
+
+    fn new_update() -> StateUpdate<'static, String, String> {
+        StateUpdate::New {
+            state: init_state(),
+            hash: &ZERO_HASH,
+        }
+    }
+
+    /// Coverage: `Debug for StateUpdate` must print the correct variant name.
+    #[test]
+    fn test_state_update_debug() {
+        // New variant formats as `New { state: ..., hash: ... }`.
+        let f = alloc::format!("{:?}", new_update());
+        assert!(
+            f.contains("New"),
+            "debug output should name the New variant: {f}"
+        );
+        assert!(f.contains("state"));
+        assert!(f.contains("hash"));
+
+        // Unchanged variant formats as `Unchanged { parent_event_id: ..., hash: ... }`.
+        let parent = String::from("$parent");
+        let test_unchanged: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
+            parent_event_id: &parent,
+            hash: &ZERO_HASH,
+        };
+        let f = alloc::format!("{test_unchanged:?}");
+        assert!(
+            f.contains("Unchanged"),
+            "debug output should name the Unchanged variant: {f}"
+        );
+        assert!(f.contains("parent_event_id"));
+        assert!(f.contains("hash"));
+    }
+
+    /// Coverage: `Clone for StateUpdate` must deep-clone the state and copy the hash.
+    #[test]
+    fn test_state_update_clone() {
+        let new = new_update();
+        assert_eq!(new.clone(), new);
+
+        let parent = String::from("$parent");
+        let unchanged: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
+            parent_event_id: &parent,
+            hash: &ZERO_HASH,
+        };
+        assert_eq!(unchanged.clone(), unchanged);
+    }
+
+    /// Coverage: `PartialEq for StateUpdate` must compare variant-specific fields.
+    #[test]
+    fn test_state_update_partial_eq() {
+        // Same New (identical state map and hash) compares equal.
+        assert_eq!(new_update(), new_update());
+
+        // New with a different hash compares unequal.
+        let a = new_update();
+        let b: StateUpdate<'_, String, String> = StateUpdate::New {
+            state: init_state(),
+            hash: &ONE_HASH,
+        };
+        assert_ne!(a, b);
+
+        // New with a different state map compares unequal.
+        let c: StateUpdate<'_, String, String> = StateUpdate::New {
+            state: SharedState::new(),
+            hash: &ZERO_HASH,
+        };
+        assert_ne!(a, c);
+
+        // Unchanged compares equal when parent id and hash match, unequal otherwise.
+        let p1 = String::from("$parent");
+        let p2 = String::from("$other");
+        let d1: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
+            parent_event_id: &p1,
+            hash: &ZERO_HASH,
+        };
+        let d2: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
+            parent_event_id: &p2,
+            hash: &ZERO_HASH,
+        };
+        assert_eq!(d1.clone(), d1);
+        assert_ne!(d1, d2);
+
+        // A New and an Unchanged are never equal, even with the same hash.
+        let different_hash = crate::state::lthash::LtHash([2; 1024]);
+        let new: StateUpdate<'_, String, String> = StateUpdate::New {
+            state: SharedState::new(),
+            hash: &different_hash,
+        };
+        let unchanged: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
+            parent_event_id: &p1,
+            hash: &different_hash,
+        };
+        assert_ne!(new, unchanged);
+    }
+
+    /// Coverage: `StateUpdate::lattice` and `StateUpdate::digest` must expose the
+    /// carried `LtHash` lattice (borrowed, zero-copy) and its 32-byte digest, for
+    /// both the `New` and `Unchanged` variants.
+    #[test]
+    fn test_state_update_lattice_and_digest_accessors() {
+        let mut state: SharedState<String, String> = SharedState::new();
+        state.insert(
+            (EventType::from("m.room.topic"), String::new()),
+            "$topic".to_string(),
+        );
+        let hash = crate::state::lthash::LtHash::from_state(&state);
+        let parent = String::from("$parent");
+
+        let new: StateUpdate<'_, String, String> = StateUpdate::New {
+            state: state.clone(),
+            hash: &hash,
+        };
+        assert_eq!(new.lattice(), &hash);
+        assert_eq!(new.digest(), hash.digest());
+        assert_eq!(new.digest().len(), 32);
+
+        let unchanged: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
+            parent_event_id: &parent,
+            hash: &hash,
+        };
+        assert_eq!(unchanged.lattice(), &hash);
+        assert_eq!(unchanged.digest(), hash.digest());
+
+        // Both variants derived from the same lattice must share a digest.
+        assert_eq!(new.digest(), unchanged.digest());
+    }
+
+    fn init_hashed_state() -> HashedState<String, String> {
+        HashedState {
+            state: init_state(),
+            hash: crate::state::lthash::LtHash::default(),
+        }
+    }
+
+    /// Coverage: `Default for HashedState` yields an empty state and a default hash.
+    #[test]
+    fn test_hashed_state_default() {
+        let hs = HashedState::<String, String>::default();
+        assert!(hs.state.is_empty(), "default state should be empty");
+        assert_eq!(hs.hash, crate::state::lthash::LtHash::default());
+    }
+
+    /// Coverage: `Debug for HashedState` must print the struct name and both fields.
+    #[test]
+    fn test_hashed_state_debug() {
+        let f = alloc::format!("{:?}", init_hashed_state());
+        assert!(
+            f.contains("HashedState"),
+            "debug output should name HashedState: {f}"
+        );
+        assert!(f.contains("state"));
+        assert!(f.contains("hash"));
+    }
+
+    /// Coverage: `Clone for HashedState` must deep-clone the state and copy the hash.
+    #[test]
+    fn test_hashed_state_clone() {
+        let hs = init_hashed_state();
+        let cloned = hs.clone();
+        assert_eq!(cloned.state, hs.state);
+        assert_eq!(cloned.hash, hs.hash);
+    }
+
+    /// Coverage: `find_depth_divergences`'s seen-edge guard (line 1725): when a
+    /// child repeats the same `prev_event` id twice, only the first occurrence
+    /// is examined; the duplicate is short-circuited.
+    #[test]
+    fn test_find_depth_divergences_dedups_repeated_parent() {
+        let a = LeanEvent {
+            event_id: "A".into(),
+            prev_events: vec![],
+            depth: 1,
+            ..Default::default()
+        };
+        // B lists A twice and claims a depth that violates monotonicity.
+        let b = LeanEvent {
+            event_id: "B".into(),
+            prev_events: vec!["A".into(), "A".into()],
+            depth: 1,
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+        events_map.insert("B".into(), b);
+
+        let divergences = find_depth_divergences(&events_map);
+        // The duplicated (A,B) edge is only counted once.
+        assert_eq!(
+            divergences.len(),
+            1,
+            "duplicate parent must be deduplicated"
+        );
+    }
+
+    /// Coverage: `try_compute_state_at_streaming_optimized` early-returns when
+    /// every requested target is absent from `events_map` (line 2403).
+    #[test]
+    fn test_try_compute_state_at_streaming_optimized_with_no_resolvable_targets() {
+        let events_map: HashMap<String, LeanEvent> = HashMap::new();
+        let mut callback_called = false;
+
+        let result: Result<(), StateComputationError<&'static str>> =
+            try_compute_state_at_streaming_optimized(
+                &["ghost"],
+                &events_map,
+                crate::StateResVersion::V2,
+                |_, _| {
+                    callback_called = true;
+                    Ok(())
+                },
+            );
+
+        assert_eq!(result, Ok(()));
+        assert!(
+            !callback_called,
+            "callback must not run when there are no actual targets"
+        );
+    }
+
+    /// Coverage: the `run_state_pipeline_streaming_optimized` `prev_events` loop
+    /// guards — a parent outside the batch (line 2276) and a duplicated parent
+    /// in a single event's `prev_events` (line 2283).
+    #[test]
+    fn test_streaming_optimized_tolerates_missing_and_duplicate_parents() {
+        // A is a genuine root.
+        let a = LeanEvent {
+            event_id: "A".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@x:x".into(),
+            content: json!({"room_version": "10"}),
+            depth: 1,
+            ..Default::default()
+        };
+        // B targets a missing parent ("MISSING") and repeats "A" twice.
+        let b = LeanEvent {
+            event_id: "B".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@b:x".into()),
+            sender: "@x:x".into(),
+            content: json!({"membership": "join"}),
+            prev_events: vec!["A".into(), "A".into(), "MISSING".into()],
+            depth: 2,
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("A".into(), a);
+        events_map.insert("B".into(), b);
+
+        let mut yielded_ids = alloc::vec![];
+        let mut saw_new = false;
+        let ok = compute_state_at_streaming_optimized(
+            &["B"],
+            &events_map,
+            crate::StateResVersion::V2,
+            |id, update| {
+                yielded_ids.push(id);
+                if matches!(update, StateUpdate::New { .. }) {
+                    saw_new = true;
+                }
+            },
+        );
+
+        assert!(ok, "must complete without panicking");
+        // B is the only target and must be yielded exactly once.
+        assert_eq!(yielded_ids, alloc::vec!["B".to_string()]);
+        assert!(saw_new, "B's state is new, not inherited");
+    }
+
+    /// Coverage: `iterative_auth_ok`'s rejected/soft-fail short-circuit (line 240).
+    #[test]
+    fn test_iterative_auth_ok_rejected_and_soft_fail() {
+        let resolved: SharedState<String, String> = SharedState::new();
+        let auth_context: HashMap<String, LeanEvent> = HashMap::new();
+        let sort_set: HashMap<String, LeanEvent> = HashMap::new();
+
+        let rejected = LeanEvent {
+            event_id: "X".into(),
+            event_type: "m.room.message".into(),
+            rejected: true,
+            ..Default::default()
+        };
+        assert!(!iterative_auth_ok(
+            &rejected,
+            &resolved,
+            &auth_context,
+            &sort_set,
+            BTreeMap::new(),
+            None,
+            crate::StateResVersion::V2,
+            false,
+        ));
+
+        let soft_failed = LeanEvent {
+            event_id: "Y".into(),
+            event_type: "m.room.message".into(),
+            soft_fail: true,
+            ..Default::default()
+        };
+        assert!(!iterative_auth_ok(
+            &soft_failed,
+            &resolved,
+            &auth_context,
+            &sort_set,
+            BTreeMap::new(),
+            None,
+            crate::StateResVersion::V2,
+            false,
+        ));
+    }
+
+    /// Coverage: `update_local_auth` — the no-state-key early return (line 265)
+    /// and the occupied-entry replacement when a shallower depth wins
+    /// (lines 275-281).
+    #[test]
+    fn test_update_local_auth_shallower_depth_replaces() {
+        let mut local_auth: BTreeMap<
+            (EventType, String),
+            LocalAuthEntry<String, serde_json::Value, String>,
+        > = BTreeMap::new();
+
+        // Non-state event has no state_key -> early return.
+        let msg = LeanEvent {
+            event_id: "M".into(),
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            ..Default::default()
+        };
+        update_local_auth(&mut local_auth, &msg, 5);
+        assert!(local_auth.is_empty());
+
+        // Two state events on the same key: the shallower depth replaces the deeper.
+        let m1 = LeanEvent {
+            event_id: "M1".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@alice:x".into()),
+            sender: "@alice:x".into(),
+            content: json!({"membership": "join"}),
+            ..Default::default()
+        };
+        let m2 = LeanEvent {
+            event_id: "M2".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@alice:x".into()),
+            sender: "@alice:x".into(),
+            content: json!({"membership": "join"}),
+            ..Default::default()
+        };
+        update_local_auth(&mut local_auth, &m1, 3);
+        update_local_auth(&mut local_auth, &m2, 1);
+
+        let key = (EventType::from("m.room.member"), "@alice:x".to_string());
+        let entry = local_auth
+            .get(&key)
+            .expect("member key must be present in local auth");
+        assert_eq!(entry.event.event_id, "M2", "shallower depth must win");
+        assert_eq!(entry.auth_depth, 1);
+    }
+
+    /// Coverage: `compute_local_auth` — the duplicate-auth visited guard
+    /// (line 318), the V2.1.1 cached-ancestor propagation (lines 333-348), and
+    /// the V2.1.1 BFS parent-queueing for uncached auth events (lines 365-366).
+    #[allow(clippy::many_single_char_names)]
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn test_compute_local_auth_duplicate_and_cached_ancestors() {
+        let root = LeanEvent {
+            event_id: "R".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@x:x".into(),
+            depth: 0,
+            ..Default::default()
+        };
+        let a = LeanEvent {
+            event_id: "A".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@a:x".into()),
+            sender: "@a:x".into(),
+            content: json!({"membership": "join"}),
+            auth_events: vec!["R".into()],
+            depth: 1,
+            ..Default::default()
+        };
+        let x = LeanEvent {
+            event_id: "X".into(),
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            auth_events: vec!["R".into()],
+            depth: 1,
+            ..Default::default()
+        };
+        let e = LeanEvent {
+            event_id: "E".into(),
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            auth_events: vec!["A".into(), "A".into()],
+            depth: 2,
+            ..Default::default()
+        };
+        let e2 = LeanEvent {
+            event_id: "E2".into(),
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            auth_events: vec!["X".into()],
+            depth: 3,
+            ..Default::default()
+        };
+        let p = LeanEvent {
+            event_id: "P".into(),
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            auth_events: vec!["R".into()],
+            depth: 1,
+            ..Default::default()
+        };
+        let d = LeanEvent {
+            event_id: "D".into(),
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            auth_events: vec!["P".into()],
+            depth: 2,
+            ..Default::default()
+        };
+        let e3 = LeanEvent {
+            event_id: "E3".into(),
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            // D (uncached) drives the uncached V2.1.1 queue through P to the
+            // create event; A (cached) is queued alongside to exercise the
+            // cached-empty-map arm for R.
+            auth_events: vec!["D".into(), "A".into()],
+            depth: 4,
+            ..Default::default()
+        };
+        let p2 = LeanEvent {
+            event_id: "P2".into(),
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            auth_events: vec!["R".into()],
+            depth: 1,
+            ..Default::default()
+        };
+        let a2 = LeanEvent {
+            event_id: "A2".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@a2:x".into()),
+            sender: "@a2:x".into(),
+            content: json!({"membership": "join"}),
+            // A2's cache entry reaches the create at auth_depth 2 (via P2).
+            auth_events: vec!["P2".into()],
+            depth: 1,
+            ..Default::default()
+        };
+        let b2 = LeanEvent {
+            event_id: "B2".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@b2:x".into()),
+            sender: "@b2:x".into(),
+            content: json!({"membership": "join"}),
+            // B2's cache entry reaches the create at auth_depth 1 (direct).
+            auth_events: vec!["R".into()],
+            depth: 1,
+            ..Default::default()
+        };
+        let e4 = LeanEvent {
+            event_id: "E4".into(),
+            event_type: "m.room.message".into(),
+            sender: "@x:x".into(),
+            auth_events: vec!["A2".into(), "B2".into()],
+            depth: 4,
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert("R".into(), root.clone());
+        events_map.insert("A".into(), a.clone());
+        events_map.insert("X".into(), x);
+        events_map.insert("E".into(), e.clone());
+        events_map.insert("E2".into(), e2.clone());
+        events_map.insert("P".into(), p);
+        events_map.insert("D".into(), d);
+        events_map.insert("E3".into(), e3.clone());
+        events_map.insert("P2".into(), p2);
+        events_map.insert("A2".into(), a2.clone());
+        events_map.insert("B2".into(), b2.clone());
+        events_map.insert("E4".into(), e4.clone());
+
+        let conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let mut cache = LocalAuthCache::new(crate::StateResVersion::V2_1_1);
+
+        // Prime the cache for A so the cached-ancestor path is live below.
+        compute_local_auth(
+            &a,
+            &events_map,
+            &conflicted,
+            &mut cache,
+            crate::StateResVersion::V2_1_1,
+        );
+
+        // E.auth = [A, A]: A is cached (propagation path) and duplicated (visited guard).
+        let la_e = compute_local_auth(
+            &e,
+            &events_map,
+            &conflicted,
+            &mut cache,
+            crate::StateResVersion::V2_1_1,
+        );
+        assert!(la_e.contains_key(&("m.room.member".into(), "@a:x".into())));
+        assert!(la_e.contains_key(&("m.room.create".into(), String::new())));
+
+        // E2.auth = [X]: X is uncached, so its parents are queued for V2.1.1.
+        let la_e2 = compute_local_auth(
+            &e2,
+            &events_map,
+            &conflicted,
+            &mut cache,
+            crate::StateResVersion::V2_1_1,
+        );
+        assert!(la_e2.contains_key(&("m.room.create".into(), String::new())));
+
+        // Prime the cache for R (create, no auth) so E3's R hit takes the
+        // cached-ancestor path too.
+        compute_local_auth(
+            &root,
+            &events_map,
+            &conflicted,
+            &mut cache,
+            crate::StateResVersion::V2_1_1,
+        );
+
+        // E3.auth = [A, R]: A's propagation adds (create,"")->R at total depth 2;
+        // R then claims the same key at depth 1, replacing it via the occupied
+        // local_auth entry arm (strictly-shallower-depth branch).
+        let la_e3 = compute_local_auth(
+            &e3,
+            &events_map,
+            &conflicted,
+            &mut cache,
+            crate::StateResVersion::V2_1_1,
+        );
+        assert!(la_e3.contains_key(&("m.room.create".into(), String::new())));
+        assert!(la_e3.contains_key(&("m.room.member".into(), "@a:x".into())));
+
+        // Prime the cache for A2 (create at auth_depth 2 via P2) and B2 (create
+        // at auth_depth 1). When E4 processes both cached ancestors, A2 claims
+        // the create at total depth 3 and B2's shallower total depth 2 must
+        // replace it — the occupied local_auth entry arm.
+        compute_local_auth(
+            &a2,
+            &events_map,
+            &conflicted,
+            &mut cache,
+            crate::StateResVersion::V2_1_1,
+        );
+        compute_local_auth(
+            &b2,
+            &events_map,
+            &conflicted,
+            &mut cache,
+            crate::StateResVersion::V2_1_1,
+        );
+
+        let la_e4 = compute_local_auth(
+            &e4,
+            &events_map,
+            &conflicted,
+            &mut cache,
+            crate::StateResVersion::V2_1_1,
+        );
+        assert!(la_e4.contains_key(&("m.room.create".into(), String::new())));
+        assert!(la_e4.contains_key(&("m.room.member".into(), "@a2:x".into())));
+        assert!(la_e4.contains_key(&("m.room.member".into(), "@b2:x".into())));
     }
 }

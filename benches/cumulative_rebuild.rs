@@ -90,6 +90,10 @@ fn unreachable_resolver(
     |_hash| unreachable!("bench trees are always fully resolved")
 }
 
+fn node_bytes(node: &HamtNode<Key, Value>) -> usize {
+    to_persisted(node).encode_v1().len()
+}
+
 fn encode_full_map(state: &HashMap<Key, Value>) -> usize {
     let mut buf = Vec::new();
     for (k, v) in state {
@@ -171,13 +175,13 @@ fn main() {
             let mut new_nodes = Vec::new();
             collect_new_nodes(old_root, &new_root, &mut new_nodes);
             for node in &new_nodes {
-                cum_hamt_persist_bytes += to_persisted(node).encode_v1().len() as u128;
+                cum_hamt_persist_bytes += node_bytes(node) as u128;
             }
         } else {
             let mut new_nodes = Vec::new();
             collect_all_nodes(&new_root, &mut new_nodes);
             for node in &new_nodes {
-                cum_hamt_persist_bytes += to_persisted(node).encode_v1().len() as u128;
+                cum_hamt_persist_bytes += node_bytes(node) as u128;
             }
         }
         hamt_root = Some(new_root);

@@ -18,6 +18,7 @@ pub mod delta;
 pub mod hash;
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;
 
 pub use codec::PersistedInternalNode;

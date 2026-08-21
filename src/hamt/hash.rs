@@ -63,13 +63,14 @@ impl Hasher for StructuralHashBuilder {
 
 /// Computes the 32-byte state-group identifier from the full resolved lattice.
 ///
-/// This uses the `LtHash` checksum, which is `BLAKE2b-256(lattice)`.
+/// This uses the `LtHash` digest, which is `BLAKE2b-256(lattice)`.
 #[must_use]
 pub fn state_group_id_from_lthash(lattice: &crate::state::LtHash) -> StateGroupId {
-    lattice.checksum()
+    lattice.digest()
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use std::collections::HashSet;

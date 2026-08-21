@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/// Fetch the room state over the network.
 pub fn fetch_room_state(
     homeserver: &str,
     room_id: &str,

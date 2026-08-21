@@ -43,6 +43,22 @@ pub trait EventId:
 }
 impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display> EventId for T {}
 
+/// Trait alias for types that can serve as the "key" half of a Matrix state
+/// tuple `(event_type, state_key)`.
+///
+/// Any type that is `Clone + Eq + Hash + Ord + AsRef<str> + Default + 'static` automatically
+/// implements this trait via a blanket impl. In practice, this is `String`
+/// (the default everywhere in this crate), but it can be substituted with a
+/// lighter interned/`Arc<str>`-style key by downstream homeservers.
+///
+/// **Contract:**
+/// - `K::default().as_ref()` **must** equal the empty string `""`.
+/// - Any implementor's `Ord` ordering **must** match the lexicographic byte ordering of
+///   its `AsRef<str>` representation. This contract is required for `Borrow`-based
+///   `BTreeMap` lookups to function correctly.
+pub trait StateKey: Clone + Eq + core::hash::Hash + Ord + AsRef<str> + Default + 'static {}
+impl<T: Clone + Eq + core::hash::Hash + Ord + AsRef<str> + Default + 'static> StateKey for T {}
+
 /// Selects which state resolution algorithm to use.
 ///
 /// Each variant corresponds to a set of Matrix room versions and spec behaviors:
@@ -330,7 +346,7 @@ pub trait DagNode {
     fn auth_events(&self) -> &[Self::Id];
 }
 
-impl<Id: EventId, C> DagNode for LeanEvent<Id, C> {
+impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
     type Id = Id;
 
     fn event_id(&self) -> &Id {
@@ -514,7 +530,7 @@ pub trait EventLike: DagNode {
     }
 }
 
-impl<Id: EventId, C: EventContent> EventLike for LeanEvent<Id, C> {
+impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEvent<Id, C, K> {
     type Content = C;
 
     fn event_type(&self) -> alloc::borrow::Cow<'_, str> {
@@ -524,7 +540,7 @@ impl<Id: EventId, C: EventContent> EventLike for LeanEvent<Id, C> {
         &self.sender
     }
     fn state_key(&self) -> Option<&str> {
-        self.state_key.as_deref()
+        self.state_key.as_ref().map(AsRef::as_ref)
     }
     fn power_level(&self) -> i64 {
         self.power_level
@@ -761,14 +777,16 @@ impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
 /// TODO: Consider adding optional `room_id` validation or a dedicated `ForeignEvent`
 /// error check, in case rogue "foreign room" events leak into the `auth_context`.
 #[derive(Debug, Clone, Default)]
-pub struct LeanEvent<Id = String, C = Value> {
+pub struct LeanEvent<Id = String, C = Value, K = String> {
     /// Unique event identifier (e.g. `$abc123:example.com`).
     pub event_id: Id,
     /// Matrix event type (e.g. `m.room.member`, `m.room.power_levels`).
     pub event_type: String,
     /// State key for state events; `None` for timeline (non-state) events.
-    /// For `m.room.member` events this is the target user's MXID.
-    pub state_key: Option<String>,
+    /// For `m.room.member` events this is the target user's MXID. Generic
+    /// over `K` (defaults to `String`) so downstream homeservers may use a
+    /// lighter interned key type; see [`StateKey`].
+    pub state_key: Option<K>,
     /// Sender's power level at the time of the event, used for sort priority.
     /// This is a pre-computed cache — the authoritative PL is derived from the
     /// auth chain during resolution.
@@ -801,10 +819,10 @@ pub struct LeanEvent<Id = String, C = Value> {
 /// want to expose event data to rezzy without materializing a fresh owned
 /// `LeanEvent` up front.
 #[derive(Debug, Clone, Copy)]
-pub struct LeanEventRef<'a, Id = String, C = Value> {
+pub struct LeanEventRef<'a, Id = String, C = Value, K = String> {
     pub event_id: &'a Id,
     pub event_type: &'a str,
-    pub state_key: Option<&'a str>,
+    pub state_key: Option<&'a K>,
     pub power_level: i64,
     pub origin_server_ts: u64,
     pub sender: &'a str,
@@ -816,18 +834,19 @@ pub struct LeanEventRef<'a, Id = String, C = Value> {
     pub soft_fail: bool,
 }
 
-impl<Id: EventId, C> LeanEventRef<'_, Id, C> {
+impl<Id: EventId, C, K> LeanEventRef<'_, Id, C, K> {
     /// Materializes an owned [`LeanEvent`] from this borrowed view.
     #[must_use]
-    pub fn to_owned(&self) -> LeanEvent<Id, C>
+    pub fn to_owned(&self) -> LeanEvent<Id, C, K>
     where
         Id: Clone,
         C: Clone,
+        K: Clone,
     {
         LeanEvent {
             event_id: self.event_id.clone(),
             event_type: String::from(self.event_type),
-            state_key: self.state_key.map(String::from),
+            state_key: self.state_key.cloned(),
             power_level: self.power_level,
             origin_server_ts: self.origin_server_ts,
             sender: String::from(self.sender),
@@ -841,14 +860,14 @@ impl<Id: EventId, C> LeanEventRef<'_, Id, C> {
     }
 }
 
-impl<Id, C> LeanEvent<Id, C> {
+impl<Id, C, K> LeanEvent<Id, C, K> {
     /// Returns a borrowed view of this event without cloning.
     #[must_use]
-    pub fn as_ref(&self) -> LeanEventRef<'_, Id, C> {
+    pub fn as_ref(&self) -> LeanEventRef<'_, Id, C, K> {
         LeanEventRef {
             event_id: &self.event_id,
             event_type: &self.event_type,
-            state_key: self.state_key.as_deref(),
+            state_key: self.state_key.as_ref(),
             power_level: self.power_level,
             origin_server_ts: self.origin_server_ts,
             sender: &self.sender,
@@ -862,7 +881,7 @@ impl<Id, C> LeanEvent<Id, C> {
     }
 }
 
-impl<Id: EventId, C: EventContent> DagNode for LeanEventRef<'_, Id, C> {
+impl<Id: EventId, C: EventContent, K> DagNode for LeanEventRef<'_, Id, C, K> {
     type Id = Id;
 
     fn event_id(&self) -> &Id {
@@ -879,7 +898,7 @@ impl<Id: EventId, C: EventContent> DagNode for LeanEventRef<'_, Id, C> {
     }
 }
 
-impl<Id: EventId, C: EventContent> EventLike for LeanEventRef<'_, Id, C> {
+impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEventRef<'_, Id, C, K> {
     type Content = C;
 
     fn event_type(&self) -> alloc::borrow::Cow<'_, str> {
@@ -889,7 +908,7 @@ impl<Id: EventId, C: EventContent> EventLike for LeanEventRef<'_, Id, C> {
         self.sender
     }
     fn state_key(&self) -> Option<&str> {
-        self.state_key
+        self.state_key.map(AsRef::as_ref)
     }
     fn power_level(&self) -> i64 {
         self.power_level
@@ -910,7 +929,9 @@ impl<Id: EventId, C: EventContent> EventLike for LeanEventRef<'_, Id, C> {
     }
 }
 
-impl<Id: serde::Serialize, C: serde::Serialize> serde::Serialize for LeanEvent<Id, C> {
+impl<Id: serde::Serialize, C: serde::Serialize, K: AsRef<str>> serde::Serialize
+    for LeanEvent<Id, C, K>
+{
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -925,7 +946,7 @@ impl<Id: serde::Serialize, C: serde::Serialize> serde::Serialize for LeanEvent<I
         state.serialize_field(FIELD_EVENT_ID, &self.event_id)?;
         state.serialize_field(FIELD_TYPE, &self.event_type)?;
         if let Some(ref sk) = self.state_key {
-            state.serialize_field(FIELD_STATE_KEY, sk)?;
+            state.serialize_field(FIELD_STATE_KEY, sk.as_ref())?;
         }
         state.serialize_field(FIELD_POWER_LEVEL, &self.power_level)?;
         state.serialize_field(FIELD_ORIGIN_SERVER_TS, &self.origin_server_ts)?;
@@ -1429,7 +1450,7 @@ pub fn domain_matches(id1: &str, id2: &str) -> bool {
     !d1.is_empty() && !d2.is_empty() && d1.eq_ignore_ascii_case(d2)
 }
 
-impl<Id, C> LeanEvent<Id, C> {
+impl<Id, C, K> LeanEvent<Id, C, K> {
     /// Validates basic syntactic limits (`prev_events`, `auth_events` array sizes).
     ///
     /// NOTE: Event types are NOT whitelisted — the spec does not restrict types at the auth level.
@@ -1458,6 +1479,7 @@ impl<Id, C> LeanEvent<Id, C> {
     where
         Id: core::fmt::Display,
         C: EventContent,
+        K: AsRef<str>,
     {
         if StateResVersion::from_room_version(room_version).is_none() {
             return Err("unsupported room_version");
@@ -1541,7 +1563,7 @@ impl<Id, C> LeanEvent<Id, C> {
         // fields above; state_key is optional (only present on state events), so
         // this branch is skipped entirely for non-state events.
         if let Some(ref state_key) = self.state_key {
-            check_length!(state_key, "state_key");
+            check_length!(state_key.as_ref(), "state_key");
         }
 
         Ok(())
@@ -1549,6 +1571,7 @@ impl<Id, C> LeanEvent<Id, C> {
 
     // --- Typed Content Accessors (delegate to EventContent) ---
 
+    /// Get the membership state of this event.
     pub fn get_membership(&self) -> Option<&str>
     where
         C: EventContent,
@@ -1556,6 +1579,7 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_membership()
     }
 
+    /// Get the join rule of this event.
     pub fn get_join_rule(&self) -> Option<&str>
     where
         C: EventContent,
@@ -1563,6 +1587,7 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_join_rule()
     }
 
+    /// Get the authorized via users server for a join rule.
     pub fn get_join_authorised_via_users_server(&self) -> Option<&str>
     where
         C: EventContent,
@@ -1570,6 +1595,7 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_join_authorised_via_users_server()
     }
 
+    /// Get the power level of a specific user.
     pub fn get_user_power_level(&self, user: &str) -> Option<i64>
     where
         C: EventContent,
@@ -1577,6 +1603,7 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_user_power_level(user)
     }
 
+    /// Get the power level requirement for a specific event type.
     pub fn get_event_power_level(&self, event_type: &str) -> Option<i64>
     where
         C: EventContent,
@@ -1584,6 +1611,7 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_event_power_level(event_type)
     }
 
+    /// Get the default power level for users.
     pub fn get_users_default(&self) -> Option<i64>
     where
         C: EventContent,
@@ -1591,6 +1619,7 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_users_default()
     }
 
+    /// Get the default power level for events.
     pub fn get_events_default(&self) -> Option<i64>
     where
         C: EventContent,
@@ -1598,6 +1627,7 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_events_default()
     }
 
+    /// Get the default power level for state events.
     pub fn get_state_default(&self) -> Option<i64>
     where
         C: EventContent,
@@ -1605,6 +1635,7 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_state_default()
     }
 
+    /// Get the power level required to ban.
     pub fn get_ban(&self) -> Option<i64>
     where
         C: EventContent,
@@ -1612,6 +1643,7 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_ban()
     }
 
+    /// Get the power level required to kick.
     pub fn get_kick(&self) -> Option<i64>
     where
         C: EventContent,
@@ -1619,6 +1651,7 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_kick()
     }
 
+    /// Get the power level required to invite.
     pub fn get_invite(&self) -> Option<i64>
     where
         C: EventContent,
@@ -1626,6 +1659,7 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_invite()
     }
 
+    /// Get the power level required to redact.
     pub fn get_redact(&self) -> Option<i64>
     where
         C: EventContent,
@@ -1633,6 +1667,7 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_redact()
     }
 
+    /// Get the creator of the room.
     pub fn get_creator(&self) -> Option<&str>
     where
         C: EventContent,
@@ -1640,6 +1675,7 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_creator()
     }
 
+    /// Get the room version.
     pub fn get_room_version(&self) -> Option<&str>
     where
         C: EventContent,
@@ -1647,6 +1683,7 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_room_version()
     }
 
+    /// Get the event ID this event redacts.
     pub fn get_redacts(&self) -> Option<&str>
     where
         C: EventContent,
@@ -1654,6 +1691,7 @@ impl<Id, C> LeanEvent<Id, C> {
         self.content.get_redacts()
     }
 
+    /// Check if the sender is an additional creator.
     pub fn has_additional_creator(&self, sender: &str) -> bool
     where
         C: EventContent,
@@ -1685,7 +1723,7 @@ fn sort_json_value_keys(value: &mut Value) {
     }
 }
 
-impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
+impl<'de> Deserialize<'de> for LeanEvent<String, Value, String> {
     #[allow(clippy::too_many_lines)]
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -1877,27 +1915,27 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value> {
     }
 }
 
-impl<Id: PartialEq, C> PartialEq for LeanEvent<Id, C> {
+impl<Id: PartialEq, C, K> PartialEq for LeanEvent<Id, C, K> {
     fn eq(&self, other: &Self) -> bool {
         self.event_id == other.event_id
     }
 }
 
-impl<Id: Eq, C> Eq for LeanEvent<Id, C> {}
+impl<Id: Eq, C, K> Eq for LeanEvent<Id, C, K> {}
 
-impl<Id: Ord, C> Ord for LeanEvent<Id, C> {
+impl<Id: Ord, C, K> Ord for LeanEvent<Id, C, K> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.event_id.cmp(&other.event_id)
     }
 }
 
-impl<Id: Ord, C> PartialOrd for LeanEvent<Id, C> {
+impl<Id: Ord, C, K> PartialOrd for LeanEvent<Id, C, K> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<Id, C: EventContent> LeanEvent<Id, C> {
+impl<Id, C: EventContent, K: AsRef<str>> LeanEvent<Id, C, K> {
     /// Returns `true` if this event is a ban (`membership: "ban"`) or a kick
     /// (`membership: "leave"` where `state_key ≠ sender`).
     ///
@@ -1910,7 +1948,7 @@ impl<Id, C: EventContent> LeanEvent<Id, C> {
                     || membership == crate::basespec::event_types::MEM_LEAVE
                 {
                     if let Some(ref state_key) = self.state_key {
-                        return state_key != &self.sender;
+                        return state_key.as_ref() != self.sender.as_str();
                     }
                 }
             }
@@ -1965,7 +2003,7 @@ impl<Id, C: EventContent> LeanEvent<Id, C> {
     #[must_use]
     pub fn restricts_sender(&self, sender: &str) -> bool {
         if self.is_ban_or_kick() {
-            return self.state_key.as_deref() == Some(sender);
+            return self.state_key.as_ref().map(AsRef::as_ref) == Some(sender);
         }
         if self.is_demotion() {
             return self.get_user_power_level(sender) == Some(0);
@@ -1978,7 +2016,7 @@ impl<Id, C: EventContent> LeanEvent<Id, C> {
     /// Checks whether `self` is a ban/kick/demotion targeting `other`'s sender,
     /// or a join-rules lockdown that blocks `other`'s join attempt.
     #[must_use]
-    pub fn restricts_event(&self, other: &LeanEvent<Id, C>) -> bool {
+    pub fn restricts_event(&self, other: &LeanEvent<Id, C, K>) -> bool {
         if self.is_ban_or_kick() || self.is_demotion() {
             return self.restricts_sender(&other.sender);
         }
@@ -1990,7 +2028,7 @@ impl<Id, C: EventContent> LeanEvent<Id, C> {
     }
 }
 
-impl<Id: Ord, C> LeanEvent<Id, C> {
+impl<Id: Ord, C, K> LeanEvent<Id, C, K> {
     /// Deterministic ordering: depth ascending, then `event_id` ascending.
     /// Use this instead of `sort_by_key(|ev| ev.depth)` to avoid
     /// non-determinism from `HashMap` iteration order on equal depths.

@@ -321,8 +321,6 @@ fn bench_state_groups(n: usize, steps: usize) {
     println!();
 }
 
-// --- node-diff helpers come from `common` (same shape as persistence.rs) ---
-
 fn report_speedup(label: &str, slow: Duration, fast: Duration) {
     let slow_ns = slow.as_nanos() as f64;
     let fast_ns = fast.as_nanos() as f64;

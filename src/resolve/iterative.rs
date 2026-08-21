@@ -32,10 +32,7 @@ use crate::{
     state::at::{compute_local_auth, iterative_auth_ok, LocalAuthCache},
     FastMap, HashMap,
 };
-use alloc::{
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::vec::Vec;
 
 /// Prepares the conflicted events map and tracks original conflicted keys before CDO pre-filtering.
 pub(crate) fn prepare_conflicted_and_keys<
@@ -43,11 +40,15 @@ pub(crate) fn prepare_conflicted_and_keys<
     C: crate::basespec::rezzy_types::EventContent,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
+    K,
 >(
-    conflicted_events: &mut HashMap<Id, LeanEvent<Id, C>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    conflicted_events: &mut HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     version: StateResVersion,
-) -> alloc::collections::BTreeSet<Id> {
+) -> alloc::collections::BTreeSet<Id>
+where
+    K: AsRef<str> + Clone,
+{
     let original_conflicted_keys = conflicted_events.keys().cloned().collect();
     if version == StateResVersion::V2_1_1 {
         let filtered = crate::resolve::cdo::apply_cdo_filter(conflicted_events, auth_context);
@@ -86,11 +87,12 @@ pub(crate) fn prepare_conflicted_and_keys<
 // `Id` only) instead of re-deriving it — a real (if narrow) restructure, not
 // attempted here since it's a constant-factor cost bounded by the conflicted
 // set size, not the full event set.
-pub(crate) fn derive_all_conflicted_keys<Id, C, S>(
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S>,
-) -> crate::FastSet<(EventType, String)>
+pub(crate) fn derive_all_conflicted_keys<Id, C, S, K>(
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+) -> crate::FastSet<(EventType, K)>
 where
     Id: crate::basespec::rezzy_types::EventId,
+    K: Clone + Default + Eq + core::hash::Hash,
 {
     conflicted_events
         .values()
@@ -122,10 +124,11 @@ pub fn expand_v2_power_events_auth_chains<
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
     S3: core::hash::BuildHasher,
+    K: Clone,
 >(
-    power_events: &mut HashMap<Id, LeanEvent<Id, C>, S1>,
-    non_power_events: &mut HashMap<Id, LeanEvent<Id, C>, S2>,
-    sort_set: &HashMap<Id, LeanEvent<Id, C>, S3>,
+    power_events: &mut HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    non_power_events: &mut HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    sort_set: &HashMap<Id, LeanEvent<Id, C, K>, S3>,
 ) {
     let mut queue: alloc::collections::VecDeque<Id> = power_events.keys().cloned().collect();
     while let Some(id) = queue.pop_front() {
@@ -149,9 +152,10 @@ pub(crate) fn route_msc4297_ancestral_power_events<
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
+    K: Clone,
 >(
-    power_events: &mut HashMap<Id, LeanEvent<Id, C>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    power_events: &mut HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     original_conflicted_keys: &alloc::collections::BTreeSet<Id>,
     version: StateResVersion,
 ) {
@@ -200,23 +204,25 @@ pub(crate) fn route_msc4297_ancestral_power_events<
 
 /// Runs the sequential power phase iterative auth checks to establish the authoritative administrative framework.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4>(
-    resolved: &mut crate::state::at::SharedState<Id>,
-    power_events: &HashMap<Id, LeanEvent<Id, C>, S4>,
-    sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S3>,
+pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, K>(
+    resolved: &mut crate::state::at::SharedState<Id, K>,
+    power_events: &HashMap<Id, LeanEvent<Id, C, K>, S4>,
+    sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, LeanEvent<Id, C, K>>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S3>,
     version: StateResVersion,
-    local_auth_cache: &mut LocalAuthCache<Id, C>,
-    create_ev: Option<&LeanEvent<Id, C>>,
+    local_auth_cache: &mut LocalAuthCache<Id, C, K>,
+    create_ev: Option<&LeanEvent<Id, C, K>>,
     pl_cache: &mut HashMap<Id, i64>,
-    conflicted_keys: &crate::FastSet<(EventType, String)>,
+    conflicted_keys: &crate::FastSet<(EventType, K)>,
 ) where
     Id: crate::basespec::rezzy_types::EventId,
     S2: core::hash::BuildHasher,
     S3: core::hash::BuildHasher,
     S4: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let sorted_power_ids = lean_kahn_sort(power_events, sort_context, create_ev, version, pl_cache);
     for id in &sorted_power_ids {
@@ -260,12 +266,13 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4>(
 
 /// Returns the starting point for state resolution based on the algorithm version.
 /// V1 and V2 inherit the unconflicted state as their base, whereas V2.1+ starts from an empty set.
-pub(crate) fn get_initial_resolved_state<Id>(
-    unconflicted_state: &crate::state::at::SharedState<Id>,
+pub(crate) fn get_initial_resolved_state<Id, K>(
+    unconflicted_state: &crate::state::at::SharedState<Id, K>,
     version: StateResVersion,
-) -> crate::state::at::SharedState<Id>
+) -> crate::state::at::SharedState<Id, K>
 where
     Id: Clone,
+    K: Ord + Clone,
 {
     if version.is_v2_1_plus() {
         imbl::OrdMap::new()
@@ -274,12 +281,13 @@ where
     }
 }
 
-pub(crate) fn merge_unconflicted_power_events<Id>(
+pub(crate) fn merge_unconflicted_power_events<Id, K>(
     version: StateResVersion,
-    unconflicted_state: &crate::state::at::SharedState<Id>,
-    resolved: &mut crate::state::at::SharedState<Id>,
+    unconflicted_state: &crate::state::at::SharedState<Id, K>,
+    resolved: &mut crate::state::at::SharedState<Id, K>,
 ) where
     Id: Clone,
+    K: Ord + Clone + Default,
 {
     use crate::basespec::event_types::{M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_POWER_LEVELS};
 
@@ -288,7 +296,7 @@ pub(crate) fn merge_unconflicted_power_events<Id>(
     // into `resolved` before building the mainline, so they are visible to `build_mainline` and sorting.
     if version.is_v2_1_plus() {
         for event_type in [M_ROOM_POWER_LEVELS, M_ROOM_JOIN_RULES, M_ROOM_CREATE] {
-            let key = (EventType::from(event_type), alloc::string::String::new());
+            let key = (EventType::from(event_type), K::default());
             if let Some(v) = unconflicted_state.get(&key) {
                 resolved.entry(key).or_insert_with(|| v.clone());
             }
@@ -302,23 +310,24 @@ pub(crate) fn merge_unconflicted_power_events<Id>(
 /// tracking the deterministically chosen `m.room.create` event, and yielding the separated subsets
 /// for subsequent Kahn sorting and iterative auth checks.
 #[allow(clippy::type_complexity)]
-pub(crate) fn execute_power_phase<'a, Id, C, S1, S2>(
-    unconflicted_state: &crate::state::at::SharedState<Id>,
-    conflicted_events: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
-    auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
+pub(crate) fn execute_power_phase<'a, Id, C, S1, S2, K>(
+    unconflicted_state: &crate::state::at::SharedState<Id, K>,
+    conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
     original_conflicted_keys: &alloc::collections::BTreeSet<Id>,
     version: StateResVersion,
 ) -> (
-    crate::basespec::rezzy_types::SortContext<'a, Id, C, S1, S2>, // sort_context
-    HashMap<Id, LeanEvent<Id, C>>,                                // power_events
-    HashMap<Id, LeanEvent<Id, C>>,                                // non_power_events
-    Option<&'a LeanEvent<Id, C>>,                                 // m.room.create event
+    crate::basespec::rezzy_types::SortContext<'a, Id, C, S1, S2, LeanEvent<Id, C, K>>, // sort_context
+    HashMap<Id, LeanEvent<Id, C, K>>, // power_events
+    HashMap<Id, LeanEvent<Id, C, K>>, // non_power_events
+    Option<&'a LeanEvent<Id, C, K>>,  // m.room.create event
 )
 where
     Id: crate::basespec::rezzy_types::EventId,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
+    K: Ord + Clone + Default + AsRef<str>,
 {
     let sort_context = crate::basespec::rezzy_types::SortContext {
         primary: conflicted_events,
@@ -352,7 +361,7 @@ where
 
     let create_key = (
         EventType::from(crate::basespec::event_types::M_ROOM_CREATE),
-        String::new(),
+        K::default(),
     );
 
     let create_ev = unconflicted_state
@@ -454,14 +463,19 @@ pub fn resolve_iterative_sort<
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
+    K,
 >(
-    unconflicted_state: crate::state::at::SharedState<Id>,
-    conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    unconflicted_state: crate::state::at::SharedState<Id, K>,
+    conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64>,
-) -> crate::state::at::SharedState<Id> {
-    resolve_iterative_sort_with_cache::<Id, C, S1, S2>(
+) -> crate::state::at::SharedState<Id, K>
+where
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+{
+    resolve_iterative_sort_with_cache::<Id, C, S1, S2, K>(
         unconflicted_state,
         conflicted_events,
         auth_context,
@@ -480,16 +494,21 @@ pub fn resolve_iterative_sort_with_cache<
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
+    K,
 >(
-    unconflicted_state: crate::state::at::SharedState<Id>,
-    conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
-    external_auth_cache: Option<&mut LocalAuthCache<Id, C>>,
+    unconflicted_state: crate::state::at::SharedState<Id, K>,
+    conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64>,
-) -> crate::state::at::SharedState<Id> {
+) -> crate::state::at::SharedState<Id, K>
+where
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+{
     let conflicted_keys = derive_all_conflicted_keys(&conflicted_events);
-    resolve_iterative_sort_with_all_caches::<Id, C, S1, S2>(
+    resolve_iterative_sort_with_all_caches::<Id, C, S1, S2, K>(
         unconflicted_state,
         conflicted_events,
         auth_context,
@@ -513,16 +532,21 @@ pub(crate) fn resolve_iterative_sort_with_all_caches<
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
+    K,
 >(
-    unconflicted_state: crate::state::at::SharedState<Id>,
-    mut conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
-    external_auth_cache: Option<&mut LocalAuthCache<Id, C>>,
+    unconflicted_state: crate::state::at::SharedState<Id, K>,
+    mut conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
-    conflicted_keys: &crate::FastSet<(EventType, String)>,
-) -> crate::state::at::SharedState<Id> {
+    conflicted_keys: &crate::FastSet<(EventType, K)>,
+) -> crate::state::at::SharedState<Id, K>
+where
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+{
     let original_conflicted_keys =
         prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
 
@@ -537,7 +561,7 @@ pub(crate) fn resolve_iterative_sort_with_all_caches<
         version,
     );
 
-    let mut fallback_cache = crate::state::at::LocalAuthCache::<Id, C>::new(version);
+    let mut fallback_cache = crate::state::at::LocalAuthCache::<Id, C, K>::new(version);
     let local_auth_cache = match external_auth_cache {
         Some(cache) => cache,
         None => &mut fallback_cache,
@@ -568,7 +592,7 @@ pub(crate) fn resolve_iterative_sort_with_all_caches<
     let mainline = build_mainline_with_cache(&resolved, &sort_context, mainline_cache);
 
     // Step 4: Sort non-power events by mainline ordering + iterative auth check
-    let mut non_power_list: Vec<&LeanEvent<Id, C>> = non_power_events.values().collect();
+    let mut non_power_list: Vec<&LeanEvent<Id, C, K>> = non_power_events.values().collect();
     mainline_sort(&mut non_power_list, &mainline, &sort_context);
 
     for ev in non_power_list {
@@ -655,17 +679,22 @@ pub fn resolve_iterative_sort_with_deltas<
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
+    K,
 >(
-    unconflicted_state: crate::state::at::SharedState<Id>,
-    conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    unconflicted_state: crate::state::at::SharedState<Id, K>,
+    conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64>,
 ) -> (
-    crate::state::at::SharedState<Id>,
-    alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id>>,
-) {
-    resolve_iterative_sort_with_cache_and_deltas::<Id, C, S1, S2>(
+    crate::state::at::SharedState<Id, K>,
+    alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
+)
+where
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+{
+    resolve_iterative_sort_with_cache_and_deltas::<Id, C, S1, S2, K>(
         unconflicted_state,
         conflicted_events,
         auth_context,
@@ -685,17 +714,22 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
+    K,
 >(
-    unconflicted_state: crate::state::at::SharedState<Id>,
-    mut conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
-    external_auth_cache: Option<&mut LocalAuthCache<Id, C>>,
+    unconflicted_state: crate::state::at::SharedState<Id, K>,
+    mut conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64>,
 ) -> (
-    crate::state::at::SharedState<Id>,
-    alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id>>,
-) {
+    crate::state::at::SharedState<Id, K>,
+    alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
+)
+where
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+{
     use crate::state::delta::{ResolutionDelta, ResolvePhase};
 
     let conflicted_keys = derive_all_conflicted_keys(&conflicted_events);
@@ -756,7 +790,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
                 deltas.push(ResolutionDelta {
                     event_id: event.event_id.clone(),
                     accepted,
-                    key: (key.0.to_string(), key.1),
+                    key: key.clone(),
                     replaced,
                     phase: ResolvePhase::Power,
                 });
@@ -769,7 +803,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
     merge_unconflicted_power_events(version, &unconflicted_state, &mut resolved);
 
     let mainline = build_mainline(&resolved, &sort_context);
-    let mut non_power_list: alloc::vec::Vec<&LeanEvent<Id, C>> =
+    let mut non_power_list: alloc::vec::Vec<&LeanEvent<Id, C, K>> =
         non_power_events.values().collect();
     mainline_sort(&mut non_power_list, &mainline, &sort_context);
 
@@ -797,7 +831,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
         deltas.push(ResolutionDelta {
             event_id: ev.event_id.clone(),
             accepted,
-            key: (key.0.to_string(), key.1),
+            key: key.clone(),
             replaced,
             phase: ResolvePhase::NonPower,
         });

@@ -276,7 +276,7 @@ fn main() {
             || {
                 let mut total_states = 0usize;
                 for &target in &target_refs {
-                    let state = compute_state_at::<String, serde_json::Value, str, _>(
+                    let state = compute_state_at::<String, serde_json::Value, str, _, String>(
                         target,
                         &events,
                         StateResVersion::V2_1,

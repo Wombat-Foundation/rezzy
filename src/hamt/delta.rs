@@ -2,7 +2,7 @@ use std::{fmt, hash::Hash, sync::Arc, vec::Vec};
 
 use crate::state::LtHash;
 
-use super::{HamtNode, NodeRef, StructuralHash, HAMT_MAX_DEPTH};
+use super::{map_index, HamtNode, NodeRef, StructuralHash, HAMT_MAX_DEPTH};
 
 pub type Delta<K, V> = Vec<(K, V)>;
 pub type DeltaResult<K, V, E> = Result<(Delta<K, V>, Delta<K, V>), E>;
@@ -12,9 +12,9 @@ pub type DeltaResult<K, V, E> = Result<(Delta<K, V>, Delta<K, V>), E>;
 ///   tries are convergently identical.
 ///
 /// # Errors
-/// Returns [`HamtTraversalError::Resolve`] if the `resolver` fails to resolve a
-/// lazy node, or [`HamtTraversalError::MaxDepthExceeded`] if the diff recurses
-/// past the deepest depth a legitimately-built HAMT can have.
+/// Returns [`HamtTraversalError::Resolve`] if the `resolver` fails to resolve a lazy node, or
+/// [`HamtTraversalError::MaxDepthExceeded`] if the diff recurses past the deepest depth a
+/// legitimately-built HAMT can have.
 pub fn isolate_delta<K, V, F, E>(
     root_a: &Arc<HamtNode<K, V>>,
     lattice_a: &LtHash,
@@ -47,9 +47,9 @@ where
 /// short-circuiting on identical structural hashes without requiring `LtHash` references.
 ///
 /// # Errors
-/// Returns [`HamtTraversalError::Resolve`] if the `resolver` fails to resolve a
-/// lazy node, or [`HamtTraversalError::MaxDepthExceeded`] if the diff recurses
-/// past the deepest depth a legitimately-built HAMT can have.
+/// Returns [`HamtTraversalError::Resolve`] if the `resolver` fails to resolve a lazy node, or
+/// [`HamtTraversalError::MaxDepthExceeded`] if the diff recurses past the deepest depth a
+/// legitimately-built HAMT can have.
 pub fn diff_hamt_nodes<K, V, F, E>(
     root_a: &Arc<HamtNode<K, V>>,
     root_b: &Arc<HamtNode<K, V>>,
@@ -72,6 +72,20 @@ where
     Ok((added, removed))
 }
 
+/// Helper to iterate over the indices of set bits in a 32-bit integer.
+fn set_bits(mut bits: u32) -> impl Iterator<Item = usize> {
+    core::iter::from_fn(move || {
+        if bits == 0 {
+            None
+        } else {
+            let bit = bits & bits.wrapping_neg();
+            bits &= bits.wrapping_sub(1);
+            Some(bit.trailing_zeros() as usize)
+        }
+    })
+}
+
+/// Recursively compute the structural diff between two HAMT nodes.
 fn diff_nodes<K, V, F, E>(
     node_a: &Arc<HamtNode<K, V>>,
     node_b: &Arc<HamtNode<K, V>>,
@@ -100,40 +114,34 @@ where
     }
     let next_depth = depth.saturating_add(1);
 
-    // Traverse datamaps
+    // Traverse datamaps. Derive the three disjoint slot classes with bitwise
+    // set ops, then walk only the occupied slots instead of all 32.
     let d_a = node_a.datamap;
     let d_b = node_b.datamap;
 
-    let mut idx_a = 0;
-    let mut idx_b = 0;
-
-    for i in 0..32 {
-        let bit = 1 << i;
+    let union = d_a | d_b;
+    for slot in set_bits(union) {
+        let bit = 1 << slot;
         let in_a = (d_a & bit) != 0;
         let in_b = (d_b & bit) != 0;
 
-        match (in_a, in_b) {
-            (true, true) => {
-                let (k_a, v_a) = &node_a.leaves[idx_a];
-                let (k_b, v_b) = &node_b.leaves[idx_b];
-                if k_a != k_b || v_a != v_b {
-                    removed.push((k_a.clone(), v_a.clone()));
-                    added.push((k_b.clone(), v_b.clone()));
-                }
-                idx_a = idx_a.wrapping_add(1);
-                idx_b = idx_b.wrapping_add(1);
-            }
-            (true, false) => {
-                let (k_a, v_a) = &node_a.leaves[idx_a];
+        if in_a && in_b {
+            let idx_a = map_index(d_a, slot);
+            let idx_b = map_index(d_b, slot);
+            let (k_a, v_a) = &node_a.leaves[idx_a];
+            let (k_b, v_b) = &node_b.leaves[idx_b];
+            if k_a != k_b || v_a != v_b {
                 removed.push((k_a.clone(), v_a.clone()));
-                idx_a = idx_a.wrapping_add(1);
-            }
-            (false, true) => {
-                let (k_b, v_b) = &node_b.leaves[idx_b];
                 added.push((k_b.clone(), v_b.clone()));
-                idx_b = idx_b.wrapping_add(1);
             }
-            (false, false) => {}
+        } else if in_a {
+            let idx_a = map_index(d_a, slot);
+            let (k_a, v_a) = &node_a.leaves[idx_a];
+            removed.push((k_a.clone(), v_a.clone()));
+        } else if in_b {
+            let idx_b = map_index(d_b, slot);
+            let (k_b, v_b) = &node_b.leaves[idx_b];
+            added.push((k_b.clone(), v_b.clone()));
         }
     }
 
@@ -141,43 +149,33 @@ where
     let n_a = node_a.nodemap;
     let n_b = node_b.nodemap;
 
-    let mut cidx_a = 0;
-    let mut cidx_b = 0;
-
-    for i in 0..32 {
-        let bit = 1 << i;
+    let union = n_a | n_b;
+    for slot in set_bits(union) {
+        let bit = 1 << slot;
         let in_a = (n_a & bit) != 0;
         let in_b = (n_b & bit) != 0;
 
-        match (in_a, in_b) {
-            (true, true) => {
-                let child_a = &node_a.children[cidx_a];
-                let child_b = &node_b.children[cidx_b];
+        if in_a && in_b {
+            let cidx_a = map_index(n_a, slot);
+            let cidx_b = map_index(n_b, slot);
+            let child_a = &node_a.children[cidx_a];
+            let child_b = &node_b.children[cidx_b];
 
-                if child_a.structural_hash() != child_b.structural_hash() {
-                    let res_a =
-                        resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
-                    let res_b =
-                        resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-                    diff_nodes(&res_a, &res_b, added, removed, resolver, next_depth)?;
-                }
-
-                cidx_a = cidx_a.wrapping_add(1);
-                cidx_b = cidx_b.wrapping_add(1);
-            }
-            (true, false) => {
-                let child_a = &node_a.children[cidx_a];
+            if child_a.structural_hash() != child_b.structural_hash() {
                 let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
-                collect_all_leaves(&res_a, removed, resolver, next_depth)?;
-                cidx_a = cidx_a.wrapping_add(1);
-            }
-            (false, true) => {
-                let child_b = &node_b.children[cidx_b];
                 let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-                collect_all_leaves(&res_b, added, resolver, next_depth)?;
-                cidx_b = cidx_b.wrapping_add(1);
+                diff_nodes(&res_a, &res_b, added, removed, resolver, next_depth)?;
             }
-            (false, false) => {}
+        } else if in_a {
+            let cidx_a = map_index(n_a, slot);
+            let child_a = &node_a.children[cidx_a];
+            let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
+            collect_all_leaves(&res_a, removed, resolver, next_depth)?;
+        } else if in_b {
+            let cidx_b = map_index(n_b, slot);
+            let child_b = &node_b.children[cidx_b];
+            let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
+            collect_all_leaves(&res_b, added, resolver, next_depth)?;
         }
     }
 
@@ -357,6 +355,7 @@ where
     })
 }
 
+/// Recursively compute the hash differences between two HAMT nodes.
 fn diff_node_hashes_rec<K, V, F, E>(
     node_a: &Arc<HamtNode<K, V>>,
     node_b: &Arc<HamtNode<K, V>>,
@@ -388,44 +387,35 @@ where
     let n_a = node_a.nodemap;
     let n_b = node_b.nodemap;
 
-    let mut cidx_a = 0;
-    let mut cidx_b = 0;
     let next_depth = depth.saturating_add(1);
 
-    for i in 0..32 {
-        let bit = 1 << i;
+    let union = n_a | n_b;
+    for slot in set_bits(union) {
+        let bit = 1 << slot;
         let in_a = (n_a & bit) != 0;
         let in_b = (n_b & bit) != 0;
 
-        match (in_a, in_b) {
-            (true, true) => {
-                let child_a = &node_a.children[cidx_a];
-                let child_b = &node_b.children[cidx_b];
+        if in_a && in_b {
+            let cidx_a = map_index(n_a, slot);
+            let cidx_b = map_index(n_b, slot);
+            let child_a = &node_a.children[cidx_a];
+            let child_b = &node_b.children[cidx_b];
 
-                if child_a.structural_hash() != child_b.structural_hash() {
-                    let res_a =
-                        resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
-                    let res_b =
-                        resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-                    diff_node_hashes_rec(&res_a, &res_b, superseded, new, resolver, next_depth)?;
-                }
-
-                cidx_a = cidx_a.wrapping_add(1);
-                cidx_b = cidx_b.wrapping_add(1);
-            }
-            (true, false) => {
-                let child_a = &node_a.children[cidx_a];
+            if child_a.structural_hash() != child_b.structural_hash() {
                 let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
-                append_reachable_node_hashes(&res_a, superseded, resolver, next_depth)?;
-                cidx_a = cidx_a.wrapping_add(1);
-            }
-            (false, true) => {
-                let child_b = &node_b.children[cidx_b];
                 let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-                append_reachable_node_hashes(&res_b, new, resolver, next_depth)?;
-                cidx_b = cidx_b.wrapping_add(1);
+                diff_node_hashes_rec(&res_a, &res_b, superseded, new, resolver, next_depth)?;
             }
-            (false, false) => {}
+        } else if in_a {
+            let cidx_a = map_index(n_a, slot);
+            let child_a = &node_a.children[cidx_a];
+            let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
+            append_reachable_node_hashes(&res_a, superseded, resolver, next_depth)?;
+        } else if in_b {
+            let cidx_b = map_index(n_b, slot);
+            let child_b = &node_b.children[cidx_b];
+            let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
+            append_reachable_node_hashes(&res_b, new, resolver, next_depth)?;
         }
     }
 
