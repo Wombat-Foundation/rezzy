@@ -104,16 +104,7 @@ impl<Id, K> StateDiff<Id, K> {
 /// assert_eq!(diff.len(), 3); // topic changed, name removed, avatar added
 /// ```
 #[must_use]
-pub fn compute_state_diff<Id: EventId>(
-    old: &SharedState<Id, String>,
-    new: &SharedState<Id, String>,
-) -> StateDiff<Id, String> {
-    compute_state_diff_generic(old, new)
-}
-
-/// Compute the diff between two state snapshots using a generic key type.
-#[must_use]
-pub fn compute_state_diff_generic<Id: EventId, K: Ord + Clone>(
+pub fn compute_state_diff<Id: EventId, K: Ord + Clone>(
     old: &SharedState<Id, K>,
     new: &SharedState<Id, K>,
 ) -> StateDiff<Id, K> {

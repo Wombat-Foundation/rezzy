@@ -73,27 +73,14 @@ pub struct StateDelta<Id: crate::basespec::rezzy_types::EventId = String> {
 ///
 /// If the two states are identical, returns an empty `Vec`.
 ///
-/// This is the `String`-keyed convenience entry point. If the caller's
-/// `SharedState` uses a substituted key type (e.g. an interned or
-/// `Arc<str>`-style [`StateKey`](crate::basespec::rezzy_types::StateKey)),
-/// use [`compute_state_delta_generic`] instead — `StateDelta::state_key` is
-/// always `String` either way, so both flatten `K` down to it at the end.
+/// Accepts any `SharedState<Id, K>` — not just the `String`-keyed default —
+/// including a substituted key type such as an interned or
+/// `Arc<str>`-style [`StateKey`](crate::basespec::rezzy_types::StateKey).
+/// `StateDelta::state_key` is always a plain `String`: this is a persisted
+/// wire format independent of whatever in-memory `K` the caller used, so
+/// each entry's key is flattened via `K::as_ref()` regardless of `K`.
 #[must_use]
-pub fn compute_state_delta<Id: crate::basespec::rezzy_types::EventId>(
-    parent: &crate::state::at::SharedState<Id, String>,
-    current: &crate::state::at::SharedState<Id, String>,
-) -> Vec<StateDelta<Id>> {
-    compute_state_delta_generic(parent, current)
-}
-
-/// Computes the delta between a parent state and the current state using a
-/// generic key type.
-///
-/// Same semantics as [`compute_state_delta`]; see its docs for the exact
-/// addition/modification/deletion rules. `K::as_ref()` is materialized into
-/// `StateDelta::state_key: String` for each emitted entry.
-#[must_use]
-pub fn compute_state_delta_generic<Id, K>(
+pub fn compute_state_delta<Id, K>(
     parent: &crate::state::at::SharedState<Id, K>,
     current: &crate::state::at::SharedState<Id, K>,
 ) -> Vec<StateDelta<Id>>
@@ -565,8 +552,8 @@ mod tests {
     }
 
     /// A non-`String` state-key type, standing in for a downstream
-    /// interned/`Arc<str>`-style key. Proves `compute_state_delta_generic`
-    /// isn't just `compute_state_delta` with an unused type parameter.
+    /// interned/`Arc<str>`-style key. Proves `compute_state_delta` accepts
+    /// something other than `String` for `K`.
     #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
     struct InternedKey(alloc::string::String);
 
@@ -583,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_state_delta_generic_with_non_string_key() {
+    fn test_compute_state_delta_with_non_string_key() {
         type InternedStateMap = crate::state::at::SharedState<String, InternedKey>;
 
         let mut parent = InternedStateMap::new();
@@ -616,7 +603,7 @@ mod tests {
             "$3".into(), // added
         );
 
-        let deltas = compute_state_delta_generic(&parent, &current);
+        let deltas = compute_state_delta(&parent, &current);
         // Every StateDelta::state_key must have been flattened down to a
         // plain String, matching K::as_ref() exactly.
         let mut state_keys: alloc::vec::Vec<&str> =
