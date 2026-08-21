@@ -70,6 +70,7 @@ pub fn state_group_id_from_lthash(lattice: &crate::state::LtHash) -> StateGroupI
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use std::collections::HashSet;

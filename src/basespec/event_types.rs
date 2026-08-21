@@ -299,6 +299,7 @@ pub const MAX_SAFE_JSON_INTEGER: u64 = MAX_POWER_LEVEL_JSON as u64;
 pub const MAX_POWER_LEVEL_RUST: i64 = i64::MAX;
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod event_type_tests {
     use super::*;
     use alloc::format;

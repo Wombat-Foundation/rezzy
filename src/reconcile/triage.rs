@@ -70,6 +70,7 @@ pub struct StrataEstimate {
 /// # Errors
 /// Returns an error when root finding exceeds its work budget.
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn estimate_delta(
     local: &[[u64; STRATUM_CAPACITY]; STRATA_COUNT],
     remote: &[[u64; STRATUM_CAPACITY]; STRATA_COUNT],
@@ -112,6 +113,7 @@ fn estimate_delta_internal(
     for stratum in (0..STRATA_COUNT).rev() {
         let residual: [u64; STRATUM_CAPACITY] =
             core::array::from_fn(|index| local[stratum][index] ^ remote[stratum][index]);
+
         match pinsketch::decode(&residual, STRATUM_CAPACITY) {
             Ok(roots) => {
                 let cardinality =
@@ -121,6 +123,7 @@ fn estimate_delta_internal(
                     .ok_or(AlgebraicError::CountOverflow)?;
                 lowest_decoded = Some(stratum);
             }
+
             Err(AlgebraicError::DecodeFailure) => {
                 if lowest_decoded.is_none() && stratum == STRATA_COUNT - 1 {
                     return Ok((SATURATED_DELTA_ESTIMATE, true));
@@ -132,6 +135,7 @@ fn estimate_delta_internal(
                 let estimate = decoded_tail
                     .max(OVER_CAPACITY_DELTA_FLOOR)
                     .saturating_mul(1_u64 << shift);
+
                 return Ok((estimate, true));
             }
             Err(error) => return Err(error),
@@ -187,6 +191,7 @@ pub fn decode_bucket_sketches(
                 u64::from_le_bytes(value)
             })
             .collect();
+
         let sketch = SyndromeSketch::from_coordinates(coordinates)?;
         match sketch.decode_elements(request.capacity) {
             Ok(roots) => successful_buckets.push(BucketDecodeSuccess {
