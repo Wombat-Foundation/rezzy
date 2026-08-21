@@ -196,21 +196,27 @@ where
         }
     }
 
-    let depth_cache: FastMap<Id, u64> = if version == StateResVersion::V2_2 {
-        let mut memo = FastMap::default();
-        let create_id = create_ev.map(super::super::basespec::rezzy_types::DagNode::event_id);
-        events
-            .keys()
-            .map(|id| {
-                (
-                    id.clone(),
-                    compute_auth_distance_iterative(id, sort_context, create_id, &mut memo),
-                )
-            })
-            .collect()
-    } else {
-        FastMap::default()
-    };
+    // Populate `auth_chain_distance` (shortest hops to `create` in the auth
+    // graph) for both V2.1.1 and V2.2 — the versions whose power-event sort
+    // uses it as a tie-break (`SortPriority::cmp`). V2.1 (stock MSC4297) does
+    // not use it, so it is left zero-filled there and V2.1 falls straight
+    // through to `origin_server_ts`.
+    let depth_cache: FastMap<Id, u64> =
+        if version == StateResVersion::V2_1_1 || version == StateResVersion::V2_2 {
+            let mut memo = FastMap::default();
+            let create_id = create_ev.map(super::super::basespec::rezzy_types::DagNode::event_id);
+            events
+                .keys()
+                .map(|id| {
+                    (
+                        id.clone(),
+                        compute_auth_distance_iterative(id, sort_context, create_id, &mut memo),
+                    )
+                })
+                .collect()
+        } else {
+            FastMap::default()
+        };
 
     let mut queue: BinaryHeap<SortPriority<'_, E>> = BinaryHeap::new();
     for (id, &degree) in &in_degree {

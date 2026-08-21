@@ -280,8 +280,13 @@ fn resolve(p: &Problem, version: StateResVersion) -> SharedState {
     )
 }
 
-/// V2.1 and V2.1.1 are semantically identical after the CDO / deviation removal;
-/// this must hold across thousands of random DAGs.
+/// V2.1 and V2.1.1 must agree on inputs that don't hit V2.1.1's `auth_chain_distance`
+/// sort tie-break. The generator gives equal-power-level candidates the same
+/// base references, so they share the same auth-chain distance and both versions
+/// fall through to `origin_server_ts` -- hence equality here. The *divergence*
+/// V2.1.1 introduces (ordering equal-PL events by auth-chain distance rather than
+/// timestamp) is exercised directly in
+/// `test_sort_priority_v2_1_1_auth_chain_distance_tie_break` (unit).
 #[test]
 fn differential_v21_equals_v211() {
     let mut rng = Rng::new(0x9E37_79B9_7F4A_7C15u64);
@@ -294,6 +299,82 @@ fn differential_v21_equals_v211() {
             "V2.1 and V2.1.1 diverged on random DAG iteration {iter}"
         );
     }
+}
+
+/// V2.1.1's live `auth_chain_distance` tie-break must change the winner of an
+/// equal-power-level conflict relative to V2.1. Two `m.room.member` ban
+/// candidates for the same target, both sent by the PL-100 creator, but at
+/// different auth-chain distances to `$create`:
+///
+/// `$ban_near` cites `[create, ...]` (distance 1, later ts 210); `$ban_far`
+/// cites `[admin_join, pl, jr]` (distance 2, earlier ts 170). V2.1's
+/// reverse-power-ordering pops the later `origin_server_ts` first, so
+/// `$ban_near` wins; V2.1.1's `auth_chain_distance` tie-break (larger wins)
+/// picks `$ban_far` instead.
+#[test]
+fn test_v2_1_1_diverges_from_v2_1_on_equal_pl_distance() {
+    use rezzy::basespec::event_types::EventType;
+
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@admin:x","origin_server_ts":100,"prev_events":[],"auth_events":[],"content":{"room_version":"12.1","creator":"@admin:x"}}
+{"event_id":"$admin_join","type":"m.room.member","state_key":"@admin:x","sender":"@admin:x","origin_server_ts":110,"prev_events":["$create"],"auth_events":["$create"],"content":{"membership":"join"}}
+{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@admin:x","origin_server_ts":120,"prev_events":["$admin_join"],"auth_events":["$create","$admin_join"],"content":{"users":{"@admin:x":100},"ban":50}}
+{"event_id":"$jr","type":"m.room.join_rules","state_key":"","sender":"@admin:x","origin_server_ts":130,"prev_events":["$pl"],"auth_events":["$create","$admin_join","$pl"],"content":{"join_rule":"public"}}
+{"event_id":"$charlie_join","type":"m.room.member","state_key":"@charlie:x","sender":"@charlie:x","origin_server_ts":140,"prev_events":["$jr"],"auth_events":["$create","$pl","$jr"],"content":{"membership":"join"}}
+{"event_id":"$ban_near","type":"m.room.member","state_key":"@charlie:x","sender":"@admin:x","origin_server_ts":210,"prev_events":["$charlie_join"],"auth_events":["$create","$admin_join","$pl"],"content":{"membership":"ban"}}
+{"event_id":"$ban_far","type":"m.room.member","state_key":"@charlie:x","sender":"@admin:x","origin_server_ts":170,"prev_events":["$charlie_join"],"auth_events":["$admin_join","$pl","$jr"],"content":{"membership":"ban"}}
+"#,
+    );
+
+    let mut by_id = HashMap::new();
+    for ev in &events {
+        by_id.insert(ev.event_id.clone(), ev.clone());
+    }
+
+    let mut auth_context = HashMap::new();
+    let mut unconflicted = SharedState::new();
+    let mut conflicted = HashMap::new();
+    for ev in &events {
+        auth_context.insert(ev.event_id.clone(), ev.clone());
+        let sk = ev.state_key.clone().unwrap_or_default();
+        let key = (EventType::from(ev.event_type.as_str()), sk);
+        match ev.event_id.as_str() {
+            "$ban_near" | "$ban_far" => {
+                conflicted.insert(ev.event_id.clone(), ev.clone());
+            }
+            _ => {
+                unconflicted.insert(key, ev.event_id.clone());
+            }
+        }
+    }
+    let _ = by_id;
+
+    let r21 = resolve(
+        &Problem {
+            unconflicted: unconflicted.clone(),
+            conflicted: conflicted.clone(),
+            auth_context: auth_context.clone(),
+        },
+        StateResVersion::V2_1,
+    );
+    let r211 = resolve(
+        &Problem {
+            unconflicted,
+            conflicted,
+            auth_context,
+        },
+        StateResVersion::V2_1_1,
+    );
+
+    let member_key = (EventType::from("m.room.member"), "@charlie:x".to_string());
+
+    // V2.1: reverse-power-ordering pops LATER ts first -> $ban_near (ts 210) wins.
+    assert_eq!(r21.get(&member_key).map(String::as_str), Some("$ban_near"));
+    // V2.1.1: equal-PL tie broken by auth_chain_distance (larger wins) -> $ban_far (distance 2) wins.
+    assert_eq!(r211.get(&member_key).map(String::as_str), Some("$ban_far"));
+    // The tie-break must actually be live: the two versions disagree.
+    assert_ne!(r21, r211);
 }
 
 /// Same input, fresh caches -> identical output (no platform/order dependence).
