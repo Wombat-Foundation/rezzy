@@ -3994,6 +3994,61 @@ fn test_cdo_apply_filter_cascading_drops() {
     );
 }
 
+/// Mirrors `test_cdo_apply_filter_cascading_drops`' ban scenario, but for
+/// `is_demotion()`'s domination path instead of `is_ban_or_kick()`'s: an
+/// independent-branch `power_levels` event that demotes Bob to 0 must not
+/// dominate a ban Bob issued on a *different* branch while still validly
+/// PL-50, citing that PL grant in its own `auth_events`.
+///
+/// This is the same unsoundness `join_has_prior_authorization()` fixes for
+/// join-rules lockdowns (see `resolve/cdo.rs`), applied to the
+/// `is_demotion()` domination path via `sender_has_pre_demotion_pl()`.
+#[test]
+fn test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action() {
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@alice:a","room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:a","sender":"@alice:a","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl_init","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:a":100},"ban":50,"kick":50},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":3,"origin_server_ts":1003,"content":{"membership":"join"},"prev_events":["$pl_init"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$pl_demote_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100,"@bob:b":0},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$pl_grant_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100,"@bob:b":50},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$bob_join","$pl_init"]}
+{"event_id":"$bob_bans_charlie","type":"m.room.member","state_key":"@charlie:c","sender":"@bob:b","depth":5,"origin_server_ts":2001,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$alice_join","$bob_join","$pl_grant_bob"]}
+"#,
+    );
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+
+    for ev in &events {
+        match ev.event_id.as_str() {
+            "$pl_demote_bob" | "$pl_grant_bob" | "$bob_bans_charlie" => {
+                conflicted.insert(ev.event_id.clone(), ev.clone());
+            }
+            _ => {
+                auth_context.insert(ev.event_id.clone(), ev.clone());
+            }
+        }
+    }
+
+    let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
+
+    assert!(
+        safe.contains_key("$pl_demote_bob"),
+        "the demotion itself is an admin action and must survive"
+    );
+
+    // $bob_bans_charlie's own auth_events cite $pl_grant_bob (Bob at PL
+    // 50), the state it was actually authorized against -- $pl_demote_bob
+    // exists only on an independent branch and does not invalidate that
+    // authorization, the same way join_has_prior_authorization() protects
+    // an analogous join.
+    assert!(
+        safe.contains_key("$bob_bans_charlie"),
+        "Bob's ban cites its own pre-demotion PL grant, so an independent-branch \
+         demotion must not dominate it"
+    );
+}
+
 #[test]
 fn test_sorting_coverage() {
     let events = utils::parse_jsonl_events(

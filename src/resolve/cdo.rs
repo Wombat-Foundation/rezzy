@@ -29,6 +29,25 @@
 //! Ancestor/descendant relationships are computed via SWAR (SIMD-within-a-register)
 //! bitmask sweeps over a topologically-sorted event array. The chunk size is
 //! auto-selected at compile time: 512 bits on AVX-512, 256 bits otherwise.
+//!
+//! ## Soundness: domination must never diverge from full resolution
+//!
+//! An independent-branch admin action must never dominate a target event
+//! that already carries its own, separate authorization for the state the
+//! admin action would otherwise contest — see [`join_has_prior_authorization`]
+//! and [`sender_has_pre_demotion_pl`], both fixes for cases where the
+//! `restricts_event`/`restricts_sender` structural check fired without
+//! verifying the target was actually unauthorized. Two related classes of
+//! this were audited and found *not* to need a fix:
+//! - **`is_ban_or_kick()` domination**: unlike `is_lockdown()`/`is_demotion()`,
+//!   its structural check (`state_key == sender`) is already exact, not a
+//!   coarse over-approximation, so it did not reproduce a divergence from
+//!   full V2.1 resolution in the topology tested (see
+//!   `test_cdo_ban_domination_benign_convergence` in `tests/test_critique.rs`).
+//! - **Restricted/knock-restricted `join_rules`**: `is_lockdown()` only fires
+//!   for `join_rule == "invite"`, so those never enter `admin_actions` at
+//!   all and always fall through to full resolution, which already models
+//!   `join_authorised_via_users_server` correctly.
 
 use crate::basespec::event_types::{
     MEM_INVITE, MEM_JOIN, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
@@ -399,6 +418,41 @@ where
     })
 }
 
+/// Returns `true` if `target_ev` cites, in its own `auth_events`, a
+/// `power_levels` event under which its sender was *not* at PL 0.
+///
+/// `is_demotion()` treats *any* `m.room.power_levels` event as a demotion
+/// (it does not check whether anyone was actually demoted), so
+/// `restricts_sender`'s domination check fires for every PL event on an
+/// independent branch, regardless of whether the target's own authorization
+/// predates it. This mirrors `join_has_prior_authorization`: an independent
+/// branch's demotion must not retroactively invalidate an action the sender
+/// took while validly empowered, if that empowerment is what the action's
+/// own `auth_events` actually cite. See
+/// `test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action`.
+fn sender_has_pre_demotion_pl<Id, C, K, S1, S2>(
+    target_ev: &LeanEvent<Id, C, K>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+) -> bool
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    K: AsRef<str>,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+{
+    target_ev.auth_events.iter().any(|aid| {
+        conflicted_events
+            .get(aid)
+            .or_else(|| auth_context.get(aid))
+            .is_some_and(|ev| {
+                ev.event_type == M_ROOM_POWER_LEVELS
+                    && ev.get_user_power_level(target_ev.sender.as_str()) != Some(0)
+            })
+    })
+}
+
 fn process_direct_domination_chunks<
     Id,
     C: crate::basespec::rezzy_types::EventContent + Clone,
@@ -481,6 +535,12 @@ where
                                 let dominates = admin_ev.restricts_event(target_ev)
                                     && !(admin_ev.is_lockdown()
                                         && join_has_prior_authorization(
+                                            target_ev,
+                                            conflicted_events,
+                                            auth_context,
+                                        ))
+                                    && !(admin_ev.is_demotion()
+                                        && sender_has_pre_demotion_pl(
                                             target_ev,
                                             conflicted_events,
                                             auth_context,

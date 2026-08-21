@@ -508,3 +508,49 @@ fn test_anomaly_18_unauthorized_admin_amplification() {
     let (resolved, map) = resolve_pathology("18_unauthorized_admin_amplification.jsonl");
     assert_eq!(get_membership(&resolved, &map, "@bob:example.com"), "ban");
 }
+
+/// Explores whether the `is_ban_or_kick()` domination path has the same
+/// unsoundness `join_has_prior_authorization`/`sender_has_pre_demotion_pl`
+/// fixed for the lockdown and demotion paths (see `resolve/cdo.rs`): does
+/// an independent-branch ban on Bob cause CDO to drop an action Bob took
+/// on a *different* branch while validly empowered (citing that
+/// empowerment in his own `auth_events`), even though Bob's ban never
+/// entered that branch's causal history at all?
+///
+/// Unlike the lockdown/demotion cases, this compares V2.1 (no CDO) against
+/// V2.1.1 (CDO) directly as the ground-truth oracle -- if CDO changes the
+/// answer, it's unsound by definition (V2.1.1 must only ever be a
+/// pre-filtering optimization over V2.1's semantics, never a different
+/// algorithm).
+#[test]
+fn test_cdo_ban_domination_benign_convergence() {
+    let events: Vec<LeanEvent> = r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:example.com","depth":0,"origin_server_ts":1000,"content":{"creator":"@alice:example.com","room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:example.com","sender":"@alice:example.com","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl_init","type":"m.room.power_levels","state_key":"","sender":"@alice:example.com","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:example.com":100},"ban":50,"kick":50},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:example.com","sender":"@bob:example.com","depth":3,"origin_server_ts":1003,"content":{"membership":"join"},"prev_events":["$pl_init"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$charlie_join","type":"m.room.member","state_key":"@charlie:example.com","sender":"@charlie:example.com","depth":4,"origin_server_ts":1004,"content":{"membership":"join"},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$pl_grant_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:example.com","depth":5,"origin_server_ts":1005,"content":{"users":{"@alice:example.com":100,"@bob:example.com":50},"ban":50,"kick":50},"prev_events":["$charlie_join"],"auth_events":["$create","$alice_join","$bob_join","$pl_init"]}
+{"event_id":"$ban_bob","type":"m.room.member","state_key":"@bob:example.com","sender":"@alice:example.com","depth":6,"origin_server_ts":2000,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$bob_bans_charlie","type":"m.room.member","state_key":"@charlie:example.com","sender":"@bob:example.com","depth":6,"origin_server_ts":2001,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$alice_join","$bob_join","$pl_grant_bob"]}
+"#
+    .lines()
+    .filter(|line| !line.trim().is_empty())
+    .map(|line| serde_json::from_str(line).expect("valid LeanEvent JSONL"))
+    .collect();
+
+    let resolved_v2_1 = resolve_full(&events, StateResVersion::V2_1);
+    let resolved_v2_1_1 = resolve_full(&events, StateResVersion::V2_1_1);
+    let map = to_event_map(&events);
+
+    assert_eq!(
+        resolved_v2_1_1,
+        resolved_v2_1,
+        "CDO must never change the answer relative to V2.1's full resolution \
+         (V2.1: bob={}, charlie={}; V2.1.1: bob={}, charlie={})",
+        get_membership(&resolved_v2_1, &map, "@bob:example.com"),
+        get_membership(&resolved_v2_1, &map, "@charlie:example.com"),
+        get_membership(&resolved_v2_1_1, &map, "@bob:example.com"),
+        get_membership(&resolved_v2_1_1, &map, "@charlie:example.com"),
+    );
+}
