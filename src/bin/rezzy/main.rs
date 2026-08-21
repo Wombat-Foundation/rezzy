@@ -69,6 +69,7 @@ pub struct Args {
     pub origin: String,
 }
 
+/// Run the CLI application.
 fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
     let input_val = load_or_fetch_input_value(args)?;
     let (raw_events, heads) = parse_and_extract_heads(&input_val)?;

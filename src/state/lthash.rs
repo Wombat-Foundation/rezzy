@@ -96,7 +96,7 @@ impl LtHash {
     /// The identity element (empty state).
     pub const ZERO: Self = Self([0u16; 1024]);
 
-    /// Domain separation tag per MSC4500.
+    /// Domain separation tag (v1 variant, deviates from MSC4500 standard).
     const DST: &'static [u8] = b"msc4500_lthash16_v1\x00";
 
     /// Compute the 2048-byte SHAKE256 expansion for a single state entry.
@@ -449,26 +449,8 @@ mod tests {
         // Digest vectors are published by MSC4500 in unpadded base64url (the
         // wire form); lattice/expansion prefixes remain hex in the spec.
         fn b64u(bytes: &[u8]) -> alloc::string::String {
-            const ALPHABET: &[u8; 64] =
-                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-            let mut out = alloc::string::String::with_capacity(bytes.len().div_ceil(3) * 4);
-            for chunk in bytes.chunks(3) {
-                let b = [
-                    chunk[0],
-                    chunk.get(1).copied().unwrap_or(0),
-                    chunk.get(2).copied().unwrap_or(0),
-                ];
-                let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-                out.push(ALPHABET[(n >> 18) as usize & 63] as char);
-                out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-                if chunk.len() > 1 {
-                    out.push(ALPHABET[(n >> 6) as usize & 63] as char);
-                }
-                if chunk.len() > 2 {
-                    out.push(ALPHABET[n as usize & 63] as char);
-                }
-            }
-            out
+            use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+            URL_SAFE_NO_PAD.encode(bytes)
         }
 
         // --- Empty state (n=0) ---

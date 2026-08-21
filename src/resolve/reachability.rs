@@ -272,6 +272,7 @@ impl CandidatePositions {
         matches!(self, Self::None)
     }
 
+    /// Push a new position.
     fn push(&mut self, position: usize) {
         *self = match core::mem::take(self) {
             Self::None => Self::One(position),
@@ -283,6 +284,7 @@ impl CandidatePositions {
         };
     }
 
+    /// Get an iterator over the positions.
     fn iter(&self) -> CandidatePositionsIter<'_> {
         match self {
             Self::None => CandidatePositionsIter::Empty,
@@ -301,6 +303,7 @@ enum CandidatePositionsIter<'a> {
 impl Iterator for CandidatePositionsIter<'_> {
     type Item = usize;
 
+    /// Get the next position.
     fn next(&mut self) -> Option<usize> {
         match self {
             Self::Empty => None,
@@ -321,6 +324,7 @@ struct CandidateQuery {
 }
 
 impl CandidateQuery {
+    /// Get the span of positions.
     fn span(&self, node_count: usize) -> usize {
         self.min_candidate_index
             .zip(self.max_candidate_index)
@@ -335,6 +339,7 @@ impl CandidateQuery {
         self.unique_candidate_count
     }
 
+    /// Get the positions at a specific node index.
     fn positions_at(&self, node_idx: u32) -> CandidatePositionsIter<'_> {
         self.candidate_positions
             .get(node_idx as usize)
@@ -496,6 +501,7 @@ fn build_indexed_children<'a, Id: crate::basespec::rezzy_types::EventId + Ord>(
     (children_by_index, in_degree_by_index)
 }
 
+/// Build descendant ranges for reachability queries.
 fn build_descendant_ranges(children_by_index: &[Vec<u32>]) -> Vec<(u32, u32)> {
     let mut descendant_ranges = vec![(0_u32, 0_u32); children_by_index.len()];
     for idx in (0..children_by_index.len()).rev() {
@@ -512,6 +518,7 @@ fn build_descendant_ranges(children_by_index: &[Vec<u32>]) -> Vec<(u32, u32)> {
     descendant_ranges
 }
 
+/// Build segments for segment jumps.
 fn build_segments(
     children_by_index: &[Vec<u32>],
     in_degree_by_index: &[usize],
@@ -631,6 +638,7 @@ where
         self.segment_mode
     }
 
+    /// Select the best traversal mode for the candidates.
     fn select_traversal_mode(&self, candidates: &CandidateQuery) -> TraversalMode {
         if candidates.candidate_count == 0 || candidates.known_candidate_position_count == 0 {
             return TraversalMode::PlainIndexedBfs;
@@ -930,6 +938,7 @@ where
             .collect()
     }
 
+    /// Check if a node reaches another by index.
     fn reaches_index(&self, from_idx: u32, to_idx: u32) -> bool {
         if from_idx == to_idx {
             return true;

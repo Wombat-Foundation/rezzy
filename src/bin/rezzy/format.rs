@@ -31,6 +31,7 @@ pub struct FormattingContext<'a> {
     pub event_count: usize,
 }
 
+/// Format the output for deltas.
 pub fn format_deltas_output(ctx: &FormattingContext) -> serde_json::Value {
     let mut sorted_events: Vec<&LeanEvent> = ctx.events_map.values().collect();
     sorted_events.sort_by(|a, b| a.cmp_by_depth(b));
@@ -137,6 +138,7 @@ pub fn format_deltas_output(ctx: &FormattingContext) -> serde_json::Value {
     serde_json::json!(checkpoints)
 }
 
+/// Compute the roots of the components.
 pub fn compute_component_roots(
     events_map: &HashMap<String, LeanEvent>,
     include_prev: bool,
@@ -205,6 +207,7 @@ pub fn compute_component_roots(
     component_roots
 }
 
+/// Format the summary output.
 pub fn format_summary_output(ctx: &FormattingContext) -> serde_json::Value {
     let mut state_entries: Vec<serde_json::Value> = Vec::new();
     let mut members: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
@@ -334,6 +337,7 @@ fn format_resolve_state_output(ctx: &FormattingContext) -> serde_json::Value {
     })
 }
 
+/// Get a user's display name.
 pub fn get_user_displayname(user_id: &str, displaynames: &HashMap<String, String>) -> String {
     displaynames.get(user_id).cloned().unwrap_or_else(|| {
         user_id
@@ -345,6 +349,7 @@ pub fn get_user_displayname(user_id: &str, displaynames: &HashMap<String, String
     })
 }
 
+/// Format an event description.
 pub fn format_event_description(
     ev: &LeanEvent,
     sender: &str,
@@ -442,6 +447,7 @@ pub fn format_event_description(
     }
 }
 
+/// Format the timeline output.
 pub fn format_timeline_output(ctx: &FormattingContext) -> serde_json::Value {
     let mut displaynames: HashMap<String, String> = HashMap::new();
     let mut sorted_events: Vec<&LeanEvent> = ctx.events_map.values().collect();
@@ -513,6 +519,7 @@ pub fn format_timeline_output(ctx: &FormattingContext) -> serde_json::Value {
     })
 }
 
+/// Format the main CLI output.
 pub fn format_cli_output(ctx: &FormattingContext) -> serde_json::Value {
     match ctx.args.format {
         OutputFormat::Deltas => format_deltas_output(ctx),

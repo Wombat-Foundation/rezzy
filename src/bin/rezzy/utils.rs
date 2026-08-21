@@ -28,11 +28,13 @@ use std::time::Instant;
 
 pub type SharedStateMap = std::sync::Arc<ResolvedState>;
 
+/// Parse a room version string.
 pub fn parse_room_version(ver: &str) -> anyhow::Result<StateResVersion> {
     StateResVersion::from_room_version(ver)
         .ok_or_else(|| anyhow::anyhow!("Unsupported room version: {ver}"))
 }
 
+/// Detect the room version from a state map.
 pub fn detect_version(
     events: &[serde_json::Value],
     debug: bool,
@@ -84,6 +86,7 @@ pub fn compute_state_hash(state: &imbl::OrdMap<(EventType, String), String>) -> 
     format!("{hash:016x}")
 }
 
+/// Load a JSON file.
 pub fn load_file(input_path: &PathBuf) -> anyhow::Result<Vec<serde_json::Value>> {
     let input_reader: Box<dyn Read> = if input_path.to_str() == Some("-") {
         Box::new(io::stdin())
@@ -135,6 +138,7 @@ pub fn load_file(input_path: &PathBuf) -> anyhow::Result<Vec<serde_json::Value>>
     }
 }
 
+/// Load or fetch the input value from args.
 pub fn load_or_fetch_input_value(args: &Args) -> anyhow::Result<serde_json::Value> {
     if let Some(room_id) = &args.room {
         let homeserver = args
@@ -186,6 +190,7 @@ pub fn load_or_fetch_input_value(args: &Args) -> anyhow::Result<serde_json::Valu
     }
 }
 
+/// Parse input and extract the state heads.
 pub fn parse_and_extract_heads(
     input_val: &serde_json::Value,
 ) -> anyhow::Result<(Vec<serde_json::Value>, Vec<String>)> {
@@ -263,6 +268,7 @@ fn build_state_map(
     state_map
 }
 
+/// Compute state maps for the given events.
 pub fn compute_state_maps(
     heads: &[String],
     events_map: &HashMap<String, LeanEvent>,
@@ -298,6 +304,7 @@ pub fn compute_state_maps(
 
 pub type ResolvedState = imbl::OrdMap<(EventType, String), String>;
 
+/// Resolve parent states for a set of events.
 pub fn resolve_parent_states(
     parent_states: &[SharedStateMap],
     events_map: &HashMap<String, LeanEvent>,
@@ -324,6 +331,7 @@ pub fn resolve_parent_states(
     std::sync::Arc::new(resolved)
 }
 
+/// Partition and resolve state across components.
 pub fn partition_and_resolve_state(
     heads: &[String],
     events_map: &HashMap<String, LeanEvent>,
@@ -397,6 +405,7 @@ pub fn partition_and_resolve_state(
     (final_state_map, duration)
 }
 
+/// Apply global power levels to the state.
 pub fn apply_global_power_levels(
     events_map: &mut HashMap<String, LeanEvent>,
     creator_user_id: &str,
@@ -464,6 +473,7 @@ pub fn apply_global_power_levels(
     }
 }
 
+/// Convert epoch days to a YMD tuple.
 pub fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
     let z = days.wrapping_add(719_468);
     let era = (if z >= 0 { z } else { z.wrapping_sub(146_096) }).wrapping_div(146_097);

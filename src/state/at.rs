@@ -65,6 +65,7 @@ pub struct LocalAuthCache<Id = String, C = serde_json::Value, K = String> {
 }
 
 impl<Id, C, K> LocalAuthCache<Id, C, K> {
+    /// Create a new local auth cache for the specified room version.
     #[must_use]
     pub fn new(version: StateResVersion) -> Self {
         Self {
@@ -201,8 +202,8 @@ where
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     if ev.rejected || ev.soft_fail {
         return false;
@@ -387,8 +388,8 @@ where
     Q: ?Sized + Eq + Ord + core::hash::Hash,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     if !events_map.contains_key(target_event_id) {
         return None;
@@ -438,8 +439,8 @@ where
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let mut results = HashMap::with_capacity(target_event_ids.len());
 
@@ -502,8 +503,8 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F, K>(
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
     F: FnMut(Id, SharedState<Id, K>),
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let result = try_compute_state_at_streaming(
         target_event_ids,
@@ -547,8 +548,8 @@ where
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
     F: FnMut(Id, SharedState<Id, K>) -> Result<(), E>,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let mut actual_target_ids = Vec::new();
     let mut seen = alloc::collections::BTreeSet::new();
@@ -604,8 +605,8 @@ where
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
     F: FnMut(usize, SharedState<Id, K>) -> Result<(), E>,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let (sorted_ancestors, mut out_degree) =
         topological_sort_short_ids(index_to_id, id_to_index, events_map);
@@ -1102,8 +1103,8 @@ where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let first = &prev_states[0];
     let all_match = prev_states[1..].iter().all(|state| first == state);
@@ -1137,8 +1138,8 @@ where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let mut conflicted_keys = crate::FastSet::default();
     let mut conflicted_state_set = crate::HashSet::new();
@@ -1277,8 +1278,12 @@ where
             if u_depth < c_depth {
                 break;
             }
-            let (_, u_id) = u_heap.pop().unwrap();
-            let ev = events_map.get(&u_id).unwrap();
+            let (_, u_id) = u_heap
+                .pop()
+                .expect("invariant: heap peek implies non-empty pop");
+            let ev = events_map.get(&u_id).expect(
+                "invariant: every heap entry corresponds to an event present in events_map",
+            );
             for auth_id in &ev.auth_events {
                 if u_visited.insert(auth_id.clone()) {
                     if let Some(a_ev) = events_map.get(auth_id) {
@@ -1288,10 +1293,14 @@ where
             }
         }
 
-        let (_, c_id) = c_heap.pop().unwrap();
+        let (_, c_id) = c_heap
+            .pop()
+            .expect("invariant: heap peek implies non-empty pop");
         if !u_visited.contains(&c_id) {
             auth_diff.insert(c_id.clone());
-            let ev = events_map.get(&c_id).unwrap();
+            let ev = events_map.get(&c_id).expect(
+                "invariant: every heap entry corresponds to an event present in events_map",
+            );
             for auth_id in &ev.auth_events {
                 if u_visited.contains(auth_id) {
                     continue; // PRUNE EARLY
@@ -2135,8 +2144,8 @@ where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     resolve_merge_fast_path_hashed_with_cache(
         prev_states,
@@ -2163,8 +2172,8 @@ where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let first = &prev_states[0];
 
@@ -2230,8 +2239,8 @@ where
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
     F: for<'b> FnMut(usize, StateUpdate<'b, Id, K>) -> Result<(), E>,
-    K: Ord + Clone + Default + AsRef<str> + core::hash::Hash + Eq + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let (sorted_ancestors, mut out_degree) =
         topological_sort_short_ids(index_to_id, id_to_index, events_map);
@@ -2369,8 +2378,8 @@ where
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
     F: for<'b> FnMut(Id, StateUpdate<'b, Id, K>) -> Result<(), E>,
-    K: Ord + Clone + Default + AsRef<str> + core::hash::Hash + Eq + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let mut actual_target_ids = Vec::new();
     let mut seen = alloc::collections::BTreeSet::new();
@@ -2427,8 +2436,8 @@ where
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
     F: for<'b> FnMut(Id, StateUpdate<'b, Id, K>),
-    K: Ord + Clone + Default + AsRef<str> + core::hash::Hash + Eq + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let result = try_compute_state_at_streaming_optimized(
         target_event_ids,
@@ -3922,13 +3931,11 @@ mod tests {
 
         // Unchanged variant formats as `Unchanged { parent_event_id: ..., hash: ... }`.
         let parent = String::from("$parent");
-        let f = alloc::format!(
-            "{:?}",
-            StateUpdate::<String, String>::Unchanged {
-                parent_event_id: &parent,
-                hash: &ZERO_HASH,
-            }
-        );
+        let test_unchanged: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
+            parent_event_id: &parent,
+            hash: &ZERO_HASH,
+        };
+        let f = alloc::format!("{test_unchanged:?}");
         assert!(
             f.contains("Unchanged"),
             "debug output should name the Unchanged variant: {f}"
@@ -3944,7 +3951,7 @@ mod tests {
         assert_eq!(new.clone(), new);
 
         let parent = String::from("$parent");
-        let unchanged = StateUpdate::<String, String>::Unchanged {
+        let unchanged: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
             parent_event_id: &parent,
             hash: &ZERO_HASH,
         };
@@ -3959,14 +3966,14 @@ mod tests {
 
         // New with a different hash compares unequal.
         let a = new_update();
-        let b = StateUpdate::<String, String>::New {
+        let b: StateUpdate<'_, String, String> = StateUpdate::New {
             state: init_state(),
             hash: &ONE_HASH,
         };
         assert_ne!(a, b);
 
         // New with a different state map compares unequal.
-        let c = StateUpdate::<String, String>::New {
+        let c: StateUpdate<'_, String, String> = StateUpdate::New {
             state: SharedState::new(),
             hash: &ZERO_HASH,
         };
@@ -3975,11 +3982,11 @@ mod tests {
         // Unchanged compares equal when parent id and hash match, unequal otherwise.
         let p1 = String::from("$parent");
         let p2 = String::from("$other");
-        let d1 = StateUpdate::<String, String>::Unchanged {
+        let d1: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
             parent_event_id: &p1,
             hash: &ZERO_HASH,
         };
-        let d2 = StateUpdate::<String, String>::Unchanged {
+        let d2: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
             parent_event_id: &p2,
             hash: &ZERO_HASH,
         };
@@ -3988,11 +3995,11 @@ mod tests {
 
         // A New and an Unchanged are never equal, even with the same hash.
         let different_hash = crate::state::lthash::LtHash([2; 1024]);
-        let new = StateUpdate::<String, String>::New {
+        let new: StateUpdate<'_, String, String> = StateUpdate::New {
             state: SharedState::new(),
             hash: &different_hash,
         };
-        let unchanged = StateUpdate::<String, String>::Unchanged {
+        let unchanged: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
             parent_event_id: &p1,
             hash: &different_hash,
         };
@@ -4012,7 +4019,7 @@ mod tests {
         let hash = crate::state::lthash::LtHash::from_state(&state);
         let parent = String::from("$parent");
 
-        let new = StateUpdate::<String, String>::New {
+        let new: StateUpdate<'_, String, String> = StateUpdate::New {
             state: state.clone(),
             hash: &hash,
         };
@@ -4020,7 +4027,7 @@ mod tests {
         assert_eq!(new.digest(), hash.digest());
         assert_eq!(new.digest().len(), 32);
 
-        let unchanged = StateUpdate::<String, String>::Unchanged {
+        let unchanged: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
             parent_event_id: &parent,
             hash: &hash,
         };
