@@ -63,15 +63,11 @@ where
         return false;
     };
 
-    let child_ev = context.get(actual_child.borrow()).unwrap();
-    let and_ev = context.get(actual_ancestor.borrow()).unwrap();
-
-    // Only apply depth pruning if depths are populated (greater than 0).
-    // Test events created with Default::default() default to depth 0.
-    if child_ev.depth > 0 && and_ev.depth > 0 && and_ev.depth >= child_ev.depth {
-        return false;
-    }
-
+    // No pruning on `depth` here: it is an author-supplied field on the
+    // event, not verified against the graph before this runs, so a forged
+    // depth (e.g. an ancestor claiming a depth >= the child's) could make a
+    // real ancestor relationship come back `false`. Correctness over the
+    // pruning shortcut — walk the actual prev_events/auth_events edges.
     let mut stack = Vec::new();
     stack.push(actual_child);
     let mut visited = BTreeSet::new();
@@ -82,10 +78,6 @@ where
             return true;
         }
         if let Some(ev) = context.get(current.borrow()) {
-            // Prune branches that are already at or below the ancestor's depth (if populated)
-            if ev.depth > 0 && and_ev.depth > 0 && ev.depth <= and_ev.depth {
-                continue;
-            }
             for parent in ev.prev_events.iter().chain(ev.auth_events.iter()) {
                 if visited.insert(parent) {
                     stack.push(parent);
@@ -223,25 +215,81 @@ where
         }
     }
 
-    let n = relevant_events.len();
-    let mut id_to_idx = HashMap::with_capacity(n);
-    let mut events_list = Vec::with_capacity(n);
-
+    // Topologically order `relevant_events` via Kahn's algorithm over the
+    // actual prev_events/auth_events edges, so the SWAR sweeps below
+    // (`compute_cdo_bit_masks_chunk`) can rely on every parent sitting at a
+    // strictly lower array index than every child. Do not sort by
+    // `event.depth` here: `depth` is an author-supplied field that is not
+    // verified against the graph before this filter runs, so a forged depth
+    // can desynchronize array order from true causal order. The forward and
+    // backward sweeps are each a single O(N) pass that accumulates
+    // transitive ancestor/descendant bitmasks assuming strict topological
+    // order; a desynchronized order corrupts those bitmasks silently
+    // instead of erroring.
+    let mut in_degree: HashMap<Id, usize> = HashMap::with_capacity(relevant_events.len());
+    let mut children_of: HashMap<Id, Vec<Id>> = HashMap::with_capacity(relevant_events.len());
+    for id in relevant_events.keys() {
+        in_degree.insert(id.clone(), 0);
+    }
     for (id, &ev) in &relevant_events {
-        id_to_idx.insert(id.clone(), 0);
-        events_list.push(ev);
+        for parent_id in ev.prev_events.iter().chain(ev.auth_events.iter()) {
+            if relevant_events.contains_key(parent_id) {
+                if let Some(deg) = in_degree.get_mut(id) {
+                    *deg = deg.saturating_add(1);
+                }
+                children_of
+                    .entry(parent_id.clone())
+                    .or_default()
+                    .push(id.clone());
+            }
+        }
     }
 
-    // Sort by depth then event_id for topological ordering
-    events_list.sort_unstable_by(|a, b| {
-        a.depth
-            .cmp(&b.depth)
-            .then_with(|| a.event_id.cmp(&b.event_id))
-    });
+    // Deterministic Kahn's algorithm: always expand the lexicographically
+    // smallest ready id first, so output order stays reproducible across
+    // identical inputs (matching the previous sort's event_id tie-break).
+    let mut ready: BTreeSet<Id> = in_degree
+        .iter()
+        .filter(|&(_, &deg)| deg == 0)
+        .map(|(id, _)| id.clone())
+        .collect();
+    let mut sorted_ids: Vec<Id> = Vec::with_capacity(relevant_events.len());
+    let mut included: BTreeSet<Id> = BTreeSet::new();
+    while let Some(id) = ready.iter().next().cloned() {
+        ready.remove(&id);
+        included.insert(id.clone());
+        if let Some(children) = children_of.get(&id) {
+            for child in children {
+                if let Some(deg) = in_degree.get_mut(child) {
+                    *deg = deg.saturating_sub(1);
+                    if *deg == 0 {
+                        ready.insert(child.clone());
+                    }
+                }
+            }
+        }
+        sorted_ids.push(id);
+    }
+    // Defensive fallback: a genuine event DAG cannot contain a cycle, but if
+    // referential integrity is somehow violated (e.g. a maliciously crafted
+    // cycle) and some ids never reach in-degree zero, append them in a
+    // deterministic order rather than silently dropping them from the sweep.
+    if sorted_ids.len() < relevant_events.len() {
+        let mut leftover: Vec<Id> = relevant_events
+            .keys()
+            .filter(|id| !included.contains(*id))
+            .cloned()
+            .collect();
+        leftover.sort();
+        sorted_ids.extend(leftover);
+    }
 
-    let mut sorted_events = Vec::with_capacity(events_list.len());
-    for (i, &ev) in events_list.iter().enumerate() {
-        id_to_idx.insert(ev.event_id.clone(), i);
+    let n = relevant_events.len();
+    let mut id_to_idx = HashMap::with_capacity(n);
+    let mut sorted_events = Vec::with_capacity(n);
+    for (i, id) in sorted_ids.into_iter().enumerate() {
+        let ev = relevant_events[&id];
+        id_to_idx.insert(id, i);
         sorted_events.push((i, ev));
     }
 

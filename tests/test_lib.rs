@@ -3647,10 +3647,17 @@ fn test_cdo_is_ancestor() {
     ));
 }
 
-/// Coverage: `is_ancestor` early return when ancestor.depth >= child.depth (cdo.rs:70-72).
-/// An event deeper in the DAG cannot be an ancestor of a shallower one.
+/// Regression coverage for the removed depth-based pruning in
+/// `is_ancestor`: `$and` is a literal `auth_events` parent of `$child` (a
+/// real graph edge), but `$and.depth` (5) is numerically >= `$child.depth`
+/// (3) — an author-forgeable relationship that has nothing to do with the
+/// actual graph. `is_ancestor` must resolve this from `prev_events`/
+/// `auth_events` alone and correctly report `$and` as an ancestor; the old
+/// depth-comparison short-circuit made this come back `false` regardless of
+/// the real edge, which is the exact soundness gap this test now guards
+/// against reintroducing.
 #[test]
-fn test_cdo_is_ancestor_depth_prune_early_return() {
+fn test_cdo_is_ancestor_ignores_forged_depth_relationship() {
     let events = utils::parse_jsonl_events(
         r#"
 {"event_id":"$child","type":"m.room.member","state_key":"@a:x","sender":"@a:x","depth":3,"origin_server_ts":100,"content":{"membership":"join"},"prev_events":["$and"],"auth_events":["$and"]}
@@ -3662,18 +3669,19 @@ fn test_cdo_is_ancestor_depth_prune_early_return() {
         .map(|e| (e.event_id.clone(), e.clone()))
         .collect();
 
-    // ancestor depth(5) >= child depth(3) → immediate false
+    // $and is a genuine auth_events parent of $child, so it IS an ancestor
+    // regardless of the (forged-looking) depth relationship.
     assert!(
-        !rezzy::resolve::cdo::is_ancestor("$child", "$and", &ctx),
-        "deeper event cannot be ancestor of shallower one"
+        rezzy::resolve::cdo::is_ancestor("$child", "$and", &ctx),
+        "a real auth_events edge must be honored even when the depth field disagrees with it"
     );
 }
 
-/// Coverage: `is_ancestor` traversal depth prune when intermediate event
-/// depth <= ancestor depth (cdo.rs:85-87). The DFS skips branches
-/// at or below the ancestor's depth since their parents are even shallower.
+/// Coverage: `is_ancestor` correctly reports `false` for two events on
+/// genuinely disconnected branches, with no real path between them via
+/// `prev_events`/`auth_events` — regardless of their `depth` values.
 #[test]
-fn test_cdo_is_ancestor_depth_prune_traversal() {
+fn test_cdo_is_ancestor_disconnected_branch() {
     let events = utils::parse_jsonl_events(
         r#"
 {"event_id":"$child","type":"m.room.member","state_key":"@a:x","sender":"@a:x","depth":10,"origin_server_ts":100,"content":{"membership":"join"},"prev_events":["$mid"],"auth_events":[]}
@@ -3687,11 +3695,12 @@ fn test_cdo_is_ancestor_depth_prune_traversal() {
         .map(|e| (e.event_id.clone(), e.clone()))
         .collect();
 
-    // Traversal from $child visits $mid. $mid.depth(3) <= $and.depth(5) → prune.
-    // $deep is never explored. $and is on a disconnected branch → false.
+    // Full traversal from $child reaches $mid then $deep via prev_events;
+    // $and has no edge into that chain from either direction, so it's
+    // correctly reported unreachable.
     assert!(
         !rezzy::resolve::cdo::is_ancestor("$child", "$and", &ctx),
-        "depth prune should stop traversal at mid"
+        "$and is on a genuinely disconnected branch"
     );
 }
 
