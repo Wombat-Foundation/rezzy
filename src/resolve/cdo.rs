@@ -30,7 +30,9 @@
 //! bitmask sweeps over a topologically-sorted event array. The chunk size is
 //! auto-selected at compile time: 512 bits on AVX-512, 256 bits otherwise.
 
-use crate::basespec::event_types::{M_ROOM_JOIN_RULES, M_ROOM_POWER_LEVELS};
+use crate::basespec::event_types::{
+    MEM_INVITE, MEM_JOIN, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
+};
 use crate::basespec::rezzy_types::LeanEvent;
 use crate::HashMap;
 use alloc::collections::BTreeSet;
@@ -349,15 +351,65 @@ where
     }
 }
 
+/// Returns `true` if `join_ev` (an `m.room.member` join) already carries its
+/// own authorization, independent of whatever `join_rules` state exists on
+/// an unrelated causal branch. Either of:
+/// - its `auth_events` cite a prior membership event for the same sender
+///   with membership `invite` or `join` (a returning/already-invited
+///   member), or
+/// - its `auth_events` cite a `m.room.join_rules` event that was *not*
+///   itself a lockdown (e.g. `public`) — the `join_rules` state the join
+///   was actually authorized against.
+///
+/// A CDO join-rules lockdown must not dominate a join that already has
+/// either of these: per the Matrix auth rules, a join authorized against a
+/// non-invite-only state (or a prior invite) remains valid even if a
+/// join-rules lockdown was concurrently, and causally independently,
+/// applied on another branch. Without this check, `restricts_event`'s
+/// lockdown case would drop *any* structurally-matching join regardless of
+/// whether the joiner actually lacked authorization — see
+/// `test_anomaly_17_sliced_dag_membership_desync` (an invited join dropped
+/// by an unrelated lockdown) and `test_anomaly_06b_mod_membership_evaporation`
+/// (a join into a still-public room dropped by a later, independent-branch
+/// lockdown, cascading to drop everything auth'd through that join).
+fn join_has_prior_authorization<Id, C, K, S1, S2>(
+    join_ev: &LeanEvent<Id, C, K>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+) -> bool
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    K: AsRef<str>,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+{
+    join_ev.auth_events.iter().any(|aid| {
+        conflicted_events
+            .get(aid)
+            .or_else(|| auth_context.get(aid))
+            .is_some_and(|ev| {
+                let cites_prior_membership = ev.event_type == M_ROOM_MEMBER
+                    && ev.state_key.as_ref().map(K::as_ref) == Some(join_ev.sender.as_str())
+                    && matches!(ev.get_membership(), Some(MEM_INVITE | MEM_JOIN));
+                let cites_non_lockdown_join_rules =
+                    ev.event_type == M_ROOM_JOIN_RULES && !ev.is_lockdown();
+                cites_prior_membership || cites_non_lockdown_join_rules
+            })
+    })
+}
+
 fn process_direct_domination_chunks<
     Id,
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
     K,
 >(
     adj: &AdjacencyStructures<'_, Id, C, K>,
     prioritized: &PrioritizedEvents<Id>,
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
 ) -> BTreeSet<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -426,7 +478,14 @@ where
                     if !is_ancestor_admin && !is_descendant_admin {
                         if let Some(admin_ev) = conflicted_events.get(admin_id) {
                             if let Some(target_ev) = conflicted_events.get(*event_id) {
-                                if admin_ev.restricts_event(target_ev) {
+                                let dominates = admin_ev.restricts_event(target_ev)
+                                    && !(admin_ev.is_lockdown()
+                                        && join_has_prior_authorization(
+                                            target_ev,
+                                            conflicted_events,
+                                            auth_context,
+                                        ));
+                                if dominates {
                                     dropped_ids.insert((*event_id).clone());
                                     break;
                                 }
@@ -505,7 +564,8 @@ where
     // jscpd:ignore-end
     let adj = build_adjacency_structures(conflicted_events, auth_context);
     let prioritized = prioritize_events(conflicted_events);
-    let dropped_ids = process_direct_domination_chunks(&adj, &prioritized, conflicted_events);
+    let dropped_ids =
+        process_direct_domination_chunks(&adj, &prioritized, conflicted_events, auth_context);
     let final_dropped_ids = propagate_transitive_dependencies(conflicted_events, dropped_ids);
 
     // Return strictly the transitively safe set

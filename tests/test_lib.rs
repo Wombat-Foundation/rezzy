@@ -2552,24 +2552,32 @@ mod tests {
             nexy_bans_spammer.clone(),
         );
 
-        // Under v2.1.1, apply_cdo_filter is executed.
-        // 1. $rules_invite (invite lockdown) is concurrent with $nexy_join, and restricts joins, dropping $nexy_join.
-        // 2. $nexy_promo requires $nexy_join in its auth_events. Since $nexy_join was dropped, $nexy_promo is dropped transitively.
-        // 3. $nexy_bans_spammer requires $nexy_promo. Since $nexy_promo was dropped, it is dropped transitively.
+        // Under v2.1.1, apply_cdo_filter is executed. $rules_invite (invite
+        // lockdown) is concurrent with $nexy_join, but must NOT dominate it:
+        // $nexy_join's own auth_events cite $jr_pub, a non-lockdown
+        // (public) join_rules event, which is the state it was actually
+        // authorized against. A lockdown on an unrelated causal branch does
+        // not retroactively invalidate that authorization -- dropping
+        // $nexy_join here (and cascading through $nexy_promo and
+        // $nexy_bans_spammer) was the exact unsoundness
+        // test_anomaly_17_sliced_dag_membership_desync and
+        // test_anomaly_06b_mod_membership_evaporation caught at the
+        // integration level; this is its unit-level counterpart.
         let filtered = apply_cdo_filter(&conflicted, &auth);
 
         assert!(filtered.contains_key("$rules_invite"));
         assert!(
-            !filtered.contains_key("$nexy_join"),
-            "Nexy's join must be dropped by direct invite lockdown"
+            filtered.contains_key("$nexy_join"),
+            "Nexy's join cites a non-lockdown join_rules event in its own auth_events, \
+             so an unrelated-branch lockdown must not dominate it"
         );
         assert!(
-            !filtered.contains_key("$nexy_promo"),
-            "Nexy's promotion must be dropped by auth transitive closure"
+            filtered.contains_key("$nexy_promo"),
+            "Nexy's promotion must survive since $nexy_join was not dropped"
         );
         assert!(
-            !filtered.contains_key("$nexy_bans_spammer"),
-            "Nexy's ban on spammer must be dropped by auth transitive closure cascade"
+            filtered.contains_key("$nexy_bans_spammer"),
+            "Nexy's ban on spammer must survive since $nexy_promo was not dropped"
         );
     }
 
