@@ -2299,6 +2299,132 @@ mod tests {
         assert!(safe.contains_key("$B"));
     }
 
+    // Coverage: process_direct_domination_chunks "already-dropped admin" skip
+    // (cdo.rs:407). A lower-priority admin action (`$bob_ban_carol`) is dropped
+    // by a higher-priority ban (`$alice_ban_bob`). It remains in that chunk's
+    // `chunk_admin_to_pos` map, so when a LATER event (`$dave_join`) is checked
+    // the dropped admin is re-encountered and skipped via `continue`. Dave is a
+    // different sender than the ban target so no admin restricts him, forcing
+    // the loop to walk past the dropped admin (deterministic regardless of the
+    // map's iteration order). Also exercises the transitive-dependency
+    // propagation (cdo.rs:470-474) via `$dependent` (auths the dropped ban).
+    #[test]
+    fn test_cdo_skip_already_dropped_admin_in_chunk() {
+        use serde_json::json;
+
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let auth: HashMap<String, LeanEvent> = HashMap::new();
+
+        let alice_ban_bob: LeanEvent = LeanEvent {
+            event_id: "$alice_ban_bob".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@alice:example.com".into(),
+            power_level: 100,
+            origin_server_ts: 1000,
+            content: json!({ "membership": "ban" }),
+            ..Default::default()
+        };
+        let bob_ban_carol: LeanEvent = LeanEvent {
+            event_id: "$bob_ban_carol".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@carol:example.com".into()),
+            sender: "@bob:example.com".into(),
+            power_level: 0,
+            origin_server_ts: 1100,
+            content: json!({ "membership": "ban" }),
+            ..Default::default()
+        };
+        let dave_join: LeanEvent = LeanEvent {
+            event_id: "$dave_join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@dave:example.com".into()),
+            sender: "@dave:example.com".into(),
+            power_level: 0,
+            origin_server_ts: 1200,
+            content: json!({ "membership": "join" }),
+            ..Default::default()
+        };
+        // Auth-depends on the dropped ban; must itself be dropped only through
+        // transitive propagation (dave/eve are not the ban target).
+        let dependent: LeanEvent = LeanEvent {
+            event_id: "$dependent".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@eve:example.com".into()),
+            sender: "@eve:example.com".into(),
+            power_level: 0,
+            origin_server_ts: 1300,
+            auth_events: vec!["$bob_ban_carol".into()],
+            content: json!({ "membership": "join" }),
+            ..Default::default()
+        };
+
+        conflicted.insert(alice_ban_bob.event_id.clone(), alice_ban_bob);
+        conflicted.insert(bob_ban_carol.event_id.clone(), bob_ban_carol);
+        conflicted.insert(dave_join.event_id.clone(), dave_join);
+        conflicted.insert(dependent.event_id.clone(), dependent);
+
+        let safe = apply_cdo_filter(&conflicted, &auth);
+        assert_eq!(
+            safe.len(),
+            2,
+            "only the surviving ban + dave remain: {:?}",
+            safe.keys()
+        );
+        assert!(safe.contains_key("$alice_ban_bob"));
+        assert!(safe.contains_key("$dave_join"));
+        assert!(!safe.contains_key("$bob_ban_carol"));
+        assert!(!safe.contains_key("$dependent"));
+    }
+
+    // Coverage: process_direct_domination_chunks "already-dropped event" skip
+    // (cdo.rs:401). Requires a second chunk, which needs more admin actions than
+    // `chunk_size = WORDS_PER_CHUNK * 64 = 512`. Alice's high-priority ban drops
+    // every one of Bob's 513 bans during chunk 1; chunk 2 then re-visits those
+    // already-dropped events and must skip them via `continue`.
+    #[test]
+    fn test_cdo_multichunk_revisits_dropped_event() {
+        use serde_json::json;
+
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let auth: HashMap<String, LeanEvent> = HashMap::new();
+
+        let alice_ban_bob: LeanEvent = LeanEvent {
+            event_id: "$alice_ban_bob".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@alice:example.com".into(),
+            power_level: 100,
+            origin_server_ts: 1000,
+            content: json!({ "membership": "ban" }),
+            ..Default::default()
+        };
+        conflicted.insert(alice_ban_bob.event_id.clone(), alice_ban_bob);
+
+        for i in 0..513u64 {
+            let ban: LeanEvent = LeanEvent {
+                event_id: format!("$bob_ban_{i}"),
+                event_type: "m.room.member".into(),
+                state_key: Some(format!("@target_{i}:example.com")),
+                sender: "@bob:example.com".into(),
+                power_level: 0,
+                origin_server_ts: 2000 + i,
+                content: json!({ "membership": "ban" }),
+                ..Default::default()
+            };
+            conflicted.insert(ban.event_id.clone(), ban);
+        }
+
+        let safe = apply_cdo_filter(&conflicted, &auth);
+        assert_eq!(
+            safe.len(),
+            1,
+            "only Alice's surviving ban remains: {:?}",
+            safe.keys()
+        );
+        assert!(safe.contains_key("$alice_ban_bob"));
+    }
+
     #[test]
     fn test_anomaly_06b_mod_membership_evaporation() {
         use serde_json::json;
