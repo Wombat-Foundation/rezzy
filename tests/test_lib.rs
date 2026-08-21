@@ -6651,9 +6651,13 @@ fn test_conflicted_keys_derived_before_cdo() {
         ]
     );
 
-    // Verify $bob_pl_dominated was dropped by CDO and does not appear in resolved or resolution deltas
+    // With the CDO removed from the normative path, $bob_pl_dominated is
+    // processed (so it appears in deltas) but is rejected because bob is
+    // banned — it never wins its key.
     assert!(!resolved.values().any(|v| v == "$bob_pl_dominated"));
-    assert!(!deltas.iter().any(|d| d.event_id == "$bob_pl_dominated"));
+    assert!(!deltas
+        .iter()
+        .any(|d| d.event_id == "$bob_pl_dominated" && d.accepted));
 
     // Verify deltas for accepted conflicted events
     assert!(deltas.iter().any(|d| d.event_id == "$alice_bans_bob"
@@ -6673,11 +6677,9 @@ fn test_conflicted_keys_derived_before_cdo() {
         Some(&"$alice_bans_bob".to_string())
     );
 
-    // Critical assertion for regression coverage:
-    // Because conflicted_keys was derived BEFORE CDO dropped $bob_pl_dominated,
-    // (m.room.power_levels, "") was retained in conflicted_keys.
-    // This allows ancestral power level $pl_ancestor (routed by MSC4297) to be decided in resolved state.
-    // If conflicted_keys were derived AFTER CDO, $pl_ancestor would be skipped and power_levels key would be missing.
+    // $bob_pl_dominated (bob's power_levels, rejected since bob is banned) never
+    // wins (m.room.power_levels, ""); the ancestral $pl_ancestor (routed by
+    // MSC4297) is decided in resolved state instead.
     assert_eq!(
         resolved.get(&(EventType::from("m.room.power_levels"), String::new())),
         Some(&"$pl_ancestor".to_string())
