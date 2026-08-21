@@ -34,6 +34,32 @@ use crate::{
 };
 use alloc::vec::Vec;
 
+/// Prepares the conflicted events map and tracks original conflicted keys before CDO pre-filtering.
+pub(crate) fn prepare_conflicted_and_keys<
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+    K,
+>(
+    conflicted_events: &mut HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    version: StateResVersion,
+) -> alloc::collections::BTreeSet<Id>
+where
+    K: AsRef<str> + Clone,
+{
+    let original_conflicted_keys = conflicted_events.keys().cloned().collect();
+    if version == StateResVersion::V2_1_1 {
+        let filtered = crate::resolve::cdo::apply_cdo_filter(conflicted_events, auth_context);
+        conflicted_events.clear();
+        for (k, v) in filtered {
+            conflicted_events.insert(k, v);
+        }
+    }
+    original_conflicted_keys
+}
+
 /// Derives a genuine-conflicted-key set by treating every event in
 /// `conflicted_events` as genuinely conflicting (as opposed to being present
 /// only as auth-chain context for a *different* key's genuine conflict).
@@ -509,7 +535,7 @@ pub(crate) fn resolve_iterative_sort_with_all_caches<
     K,
 >(
     unconflicted_state: crate::state::at::SharedState<Id, K>,
-    conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    mut conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
     version: StateResVersion,
@@ -521,8 +547,8 @@ where
     K: crate::basespec::rezzy_types::StateKey,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    let original_conflicted_keys: alloc::collections::BTreeSet<Id> =
-        conflicted_events.keys().cloned().collect();
+    let original_conflicted_keys =
+        prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
 
     // MSC4297 (v2.1+): The algorithm starts from an empty set of state.
     let mut resolved = get_initial_resolved_state(&unconflicted_state, version);
@@ -691,7 +717,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
     K,
 >(
     unconflicted_state: crate::state::at::SharedState<Id, K>,
-    conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    mut conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
     version: StateResVersion,
@@ -707,8 +733,8 @@ where
     use crate::state::delta::{ResolutionDelta, ResolvePhase};
 
     let conflicted_keys = derive_all_conflicted_keys(&conflicted_events);
-    let original_conflicted_keys: alloc::collections::BTreeSet<Id> =
-        conflicted_events.keys().cloned().collect();
+    let original_conflicted_keys =
+        prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
 
     let mut resolved = get_initial_resolved_state(&unconflicted_state, version);
     let mut deltas = alloc::vec::Vec::new();
