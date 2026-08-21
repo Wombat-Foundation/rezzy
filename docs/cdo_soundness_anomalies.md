@@ -77,17 +77,23 @@ bug is worth keeping on record even where it didn't find one.
 ## Regenerating the diagrams
 
 ```sh
-python3 ../dag-toolkit/viz/daggraph.py tests/critique_data/19_demoted_but_still_authorized.jsonl \
+IN19=tests/critique_data/19_demoted_but_still_authorized.jsonl
+NOTE19="Priya's ban of troll must survive alice's independent-branch demotion"
+OUT19=docs/img/anomaly_19_demoted_but_still_authorized.png
+python3 ../dag-toolkit/viz/daggraph.py "$IN19" \
   --show-auth --highlight priya,troll \
   --title "Anomaly 19: Demoted But Still Authorized" \
-  --note "Priya's ban of troll must survive alice's independent-branch demotion" \
-  -o /tmp/19.dot && dot -Tpng /tmp/19.dot -o docs/img/anomaly_19_demoted_but_still_authorized.png
+  --note "$NOTE19" \
+  -o /tmp/19.dot && dot -Tpng /tmp/19.dot -o "$OUT19"
 
-python3 ../dag-toolkit/viz/daggraph.py tests/critique_data/20_concurrent_ban_still_holds.jsonl \
+IN20=tests/critique_data/20_concurrent_ban_still_holds.jsonl
+NOTE20="Bob's ban of charlie must not survive alice's independent-branch ban"
+OUT20=docs/img/anomaly_20_concurrent_ban_still_holds.png
+python3 ../dag-toolkit/viz/daggraph.py "$IN20" \
   --show-auth --highlight bob,charlie \
   --title "Anomaly 20: Concurrent Ban Still Holds" \
-  --note "Bob's ban of charlie must not survive alice's independent-branch ban of bob" \
-  -o /tmp/20.dot && dot -Tpng /tmp/20.dot -o docs/img/anomaly_20_concurrent_ban_still_holds.png
+  --note "$NOTE20" \
+  -o /tmp/20.dot && dot -Tpng /tmp/20.dot -o "$OUT20"
 ```
 
 ## See also
