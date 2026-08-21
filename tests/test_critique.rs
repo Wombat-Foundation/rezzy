@@ -287,12 +287,12 @@ fn test_anomaly_02_admin_lockout() {
 #[test]
 fn test_anomaly_03_phantom_join_rules() {
     let (resolved, map) = resolve_pathology("03_phantom_join_rules.jsonl");
-    // Charlie's join references the *public* join_rules in its own auth chain,
-    // so it is valid; the invite-only join_rules on the other branch is the
-    // "phantom" the (now-removed) CDO wrongly used to drop it.
+    // Per the spec, Charlie's join is auth-checked against the *resolved*
+    // join_rules (which resolves to invite), not the public rules in his own
+    // auth chain. Charlie is not invited, so the join is rejected.
     assert_eq!(
         get_membership(&resolved, &map, "@charlie:example.com"),
-        "join"
+        "none"
     );
     assert_eq!(
         get_membership(&resolved, &map, "@alice:example.com"),

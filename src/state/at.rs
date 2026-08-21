@@ -97,57 +97,25 @@ where
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C, K>> {
-        use crate::basespec::event_types::{M_EMPTY_STATE_KEY, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
+        use crate::basespec::event_types::{M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
 
         let query: &dyn crate::auth::StateKeyDyn = &(event_type, state_key);
 
-        // V2.1 (stock MSC4297): during the power phase, supplement ONLY m.room.power_levels.
-        // In the remaining-events phase, V2.1 supplements all event types.
-        // V2.1.1: restricts supplementation to PL+member in ALL phases (causal domination).
-        let should_supplement = match self.version {
-            StateResVersion::V2_1 => {
-                if self.is_power_phase {
-                    event_type == M_ROOM_POWER_LEVELS && state_key == M_EMPTY_STATE_KEY
-                } else {
-                    true
-                }
-            }
-            // TODO: verify whether V2.2 should keep the same transitive supplementation
-            // rule as V2.1.1 for state DAGs.
-            StateResVersion::V2_1_1 | StateResVersion::V2_2 => {
-                (event_type == M_ROOM_POWER_LEVELS && state_key == M_EMPTY_STATE_KEY)
-                    || (event_type == M_ROOM_MEMBER)
-            }
-            _ => true,
-        };
+        // V2.1+ (MSC4297): required auth keys come from the (resolved) state in
+        // ALL phases — power phase included. The prior PL-only power-phase
+        // restriction and the V2.1.1 ban/kick-only member supplement were both
+        // non-spec "causal-domination" scaffolding; a banned sender's later
+        // power event must be rejected against the resolved ban.
 
-        if should_supplement {
-            // Check consensus resolved state
-            let resolved_ev = self.resolved.get(query).and_then(|eid| {
-                self.auth_context
-                    .get(eid)
-                    .or_else(|| self.sort_set.get(eid))
-            });
+        // Check consensus resolved state
+        let resolved_ev = self.resolved.get(query).and_then(|eid| {
+            self.auth_context
+                .get(eid)
+                .or_else(|| self.sort_set.get(eid))
+        });
 
-            if let Some(ev) = resolved_ev {
-                if self.version == StateResVersion::V2_1_1
-                    && self.is_power_phase
-                    && event_type == M_ROOM_MEMBER
-                {
-                    // V2.1.1 Fix: Only supplement bans and kicks in power phase
-                    let is_ban_or_kick = ev.get_membership().is_some_and(|m| {
-                        m == crate::basespec::event_types::MEM_BAN
-                            || (m == crate::basespec::event_types::MEM_LEAVE
-                                && ev.sender.as_str() != state_key)
-                    });
-                    if is_ban_or_kick {
-                        return Some(ev);
-                    }
-                    // If it's a normal join/invite, fall through to local auth
-                } else {
-                    return Some(ev);
-                }
-            }
+        if let Some(ev) = resolved_ev {
+            return Some(ev);
         }
 
         if let Some(ev) = self.local_auth.get(query) {
@@ -2651,101 +2619,7 @@ mod tests {
     }
 
     #[test]
-    fn test_v2_1_1_power_phase_ban_supplementation_coverage() {
-        use crate::auth::StateProvider;
-        use crate::basespec::event_types::M_ROOM_MEMBER;
-
-        let create_ev = LeanEvent {
-            event_id: "$create".into(),
-            event_type: "m.room.create".into(),
-            sender: "@admin:example.com".into(),
-            ..Default::default()
-        };
-
-        // 1. A kick event (MEM_LEAVE with sender != state_key)
-        let kick_ev = LeanEvent {
-            event_id: "$kick".into(),
-            event_type: M_ROOM_MEMBER.to_string(),
-            state_key: Some("@target:example.com".into()),
-            sender: "@admin:example.com".into(),
-            content: json!({ "membership": "leave" }),
-            ..Default::default()
-        };
-
-        // 2. A self-leave event (MEM_LEAVE with sender == state_key)
-        let leave_ev = LeanEvent {
-            event_id: "$leave".into(),
-            event_type: M_ROOM_MEMBER.to_string(),
-            state_key: Some("@target:example.com".into()),
-            sender: "@target:example.com".into(),
-            content: json!({ "membership": "leave" }),
-            ..Default::default()
-        };
-
-        // Resolved map pointing to the event
-        let mut resolved = imbl::OrdMap::new();
-        resolved.insert(
-            (
-                EventType::from(M_ROOM_MEMBER),
-                "@target:example.com".to_string(),
-            ),
-            "$kick".to_string(),
-        );
-
-        let mut auth_context = HashMap::new();
-        auth_context.insert("$kick".to_string(), kick_ev.clone());
-        auth_context.insert("$leave".to_string(), leave_ev.clone());
-
-        let sort_set = HashMap::new();
-        let local_auth = BTreeMap::new();
-
-        // OverlayState with kick event: is_ban_or_kick evaluates to true, should supplement and return the kick event
-        {
-            let overlay = OverlayState {
-                resolved: &resolved,
-                auth_context: &auth_context,
-                sort_set: &sort_set,
-                local_auth: local_auth.clone(),
-                create_ev: Some(&create_ev),
-                version: StateResVersion::V2_1_1,
-                is_power_phase: true,
-                candidate_event_type: M_ROOM_MEMBER,
-            };
-
-            let supplemented = overlay.get_event(M_ROOM_MEMBER, "@target:example.com");
-            assert!(supplemented.is_some());
-            assert_eq!(supplemented.unwrap().event_id, "$kick");
-        }
-
-        // OverlayState with self-leave event: is_ban_or_kick evaluates to false, should NOT supplement
-        {
-            let mut resolved_leave = imbl::OrdMap::new();
-            resolved_leave.insert(
-                (
-                    EventType::from(M_ROOM_MEMBER),
-                    "@target:example.com".to_string(),
-                ),
-                "$leave".to_string(),
-            );
-
-            let overlay = OverlayState {
-                resolved: &resolved_leave,
-                auth_context: &auth_context,
-                sort_set: &sort_set,
-                local_auth: local_auth.clone(),
-                create_ev: Some(&create_ev),
-                version: StateResVersion::V2_1_1,
-                is_power_phase: true,
-                candidate_event_type: M_ROOM_MEMBER,
-            };
-
-            let supplemented = overlay.get_event(M_ROOM_MEMBER, "@target:example.com");
-            assert!(supplemented.is_none());
-        }
-    }
-
     #[allow(clippy::too_many_lines)]
-    #[test]
     fn test_overlay_state_coverage_boosters() {
         let create_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
             event_id: "$create".into(),
