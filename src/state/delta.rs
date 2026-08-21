@@ -72,22 +72,11 @@ pub struct StateDelta<Id: crate::basespec::rezzy_types::EventId = String> {
 /// - **Deletions**: keys present in `parent` but not in `current`.
 ///
 /// If the two states are identical, returns an empty `Vec`.
-///
-/// Accepts any `SharedState<Id, K>` — not just the `String`-keyed default —
-/// including a substituted key type such as an interned or
-/// `Arc<str>`-style [`StateKey`](crate::basespec::rezzy_types::StateKey).
-/// `StateDelta::state_key` is always a plain `String`: this is a persisted
-/// wire format independent of whatever in-memory `K` the caller used, so
-/// each entry's key is flattened via `K::as_ref()` regardless of `K`.
 #[must_use]
-pub fn compute_state_delta<Id, K>(
-    parent: &crate::state::at::SharedState<Id, K>,
-    current: &crate::state::at::SharedState<Id, K>,
-) -> Vec<StateDelta<Id>>
-where
-    Id: crate::basespec::rezzy_types::EventId,
-    K: Ord + Clone + AsRef<str>,
-{
+pub fn compute_state_delta<Id: crate::basespec::rezzy_types::EventId>(
+    parent: &crate::state::at::SharedState<Id, String>,
+    current: &crate::state::at::SharedState<Id, String>,
+) -> Vec<StateDelta<Id>> {
     let mut deltas = Vec::new();
 
     // Additions and modifications
@@ -97,7 +86,7 @@ where
             _ => {
                 deltas.push(StateDelta {
                     event_type: event_type.to_string(),
-                    state_key: state_key.as_ref().to_string(),
+                    state_key: state_key.clone(),
                     event_id: Some(event_id.clone()),
                 });
             }
@@ -109,7 +98,7 @@ where
         if !current.contains_key(key) {
             deltas.push(StateDelta {
                 event_type: key.0.to_string(),
-                state_key: key.1.as_ref().to_string(),
+                state_key: key.1.clone(),
                 event_id: None,
             });
         }
@@ -549,72 +538,6 @@ mod tests {
         let delta = compute_state_delta(&parent, &current);
         let reconstructed = apply_state_delta(&parent, &delta);
         assert_eq!(current, reconstructed);
-    }
-
-    /// A non-`String` state-key type, standing in for a downstream
-    /// interned/`Arc<str>`-style key. Proves `compute_state_delta` accepts
-    /// something other than `String` for `K`.
-    #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-    struct InternedKey(alloc::string::String);
-
-    impl AsRef<str> for InternedKey {
-        fn as_ref(&self) -> &str {
-            &self.0
-        }
-    }
-
-    impl From<&str> for InternedKey {
-        fn from(s: &str) -> Self {
-            Self(s.into())
-        }
-    }
-
-    #[test]
-    fn test_compute_state_delta_with_non_string_key() {
-        type InternedStateMap = crate::state::at::SharedState<String, InternedKey>;
-
-        let mut parent = InternedStateMap::new();
-        parent.insert(("m.room.create".into(), InternedKey::from("")), "$1".into());
-        parent.insert(
-            (
-                "m.room.member".into(),
-                InternedKey::from("@alice:example.com"),
-            ),
-            "$2".into(),
-        );
-
-        let mut current = InternedStateMap::new();
-        current.insert(
-            ("m.room.create".into(), InternedKey::from("")),
-            "$1".into(), // unchanged
-        );
-        current.insert(
-            (
-                "m.room.member".into(),
-                InternedKey::from("@alice:example.com"),
-            ),
-            "$4".into(), // modified
-        );
-        current.insert(
-            (
-                "m.room.member".into(),
-                InternedKey::from("@bob:example.com"),
-            ),
-            "$3".into(), // added
-        );
-
-        let deltas = compute_state_delta(&parent, &current);
-        // Every StateDelta::state_key must have been flattened down to a
-        // plain String, matching K::as_ref() exactly.
-        let mut state_keys: alloc::vec::Vec<&str> =
-            deltas.iter().map(|d| d.state_key.as_str()).collect();
-        state_keys.sort_unstable();
-        assert_eq!(
-            state_keys,
-            ["@alice:example.com", "@bob:example.com"],
-            "modified/added entries must carry their InternedKey's as_ref() string \
-             (m.room.create is unchanged and must not appear)"
-        );
     }
 
     #[test]
