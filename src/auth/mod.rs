@@ -61,6 +61,13 @@ pub enum AuthError<Id = String> {
     MissingCreate,
     /// The event failed basic syntactic validation (e.g. invalid event type, too many `prev_events`).
     InvalidSyntax(String),
+    /// Rule 2.2: `auth_events` omits a `(type, state_key)` pair required by
+    /// the auth-events selection algorithm (e.g. the target member event for
+    /// a membership change, or the room's power levels).
+    IncompleteAuthEvents {
+        event_type: String,
+        state_key: String,
+    },
 }
 
 impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
@@ -91,6 +98,15 @@ impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
             }
             AuthError::InvalidSyntax(reason) => {
                 write!(f, "invalid syntax: {reason}")
+            }
+            AuthError::IncompleteAuthEvents {
+                event_type,
+                state_key,
+            } => {
+                write!(
+                    f,
+                    "auth_events omits required ({event_type}, {state_key:?})"
+                )
             }
         }
     }
@@ -566,6 +582,27 @@ pub fn check_auth_with_context<
                 return Err(AuthError::InvalidSyntax(
                     "auth_events contains duplicate (type, state_key) pair".into(),
                 ));
+            }
+        }
+
+        // Rule 2.2: auth_events must cite every (type, state_key) pair the
+        // selection algorithm requires *and that actually exists in the
+        // room's current state* — not just valid, non-duplicate entries.
+        // A required type with no state entry yet (e.g. m.room.power_levels
+        // before the room has ever set one) is correctly absent from
+        // auth_events, so it's excluded here rather than demanded. Omitting
+        // a citation that *does* exist in state (e.g. the target member
+        // event for a membership change) previously passed silently; see
+        // `required_auth_types_for` and `docs/spec_audit.md` rule 2.2.
+        for (req_type, req_key) in required_auth_types_for(event, event_type, version) {
+            if state.get_event(&req_type, &req_key).is_none() {
+                continue;
+            }
+            if !seen_tuples.contains(&(req_type.clone(), req_key.clone())) {
+                return Err(AuthError::IncompleteAuthEvents {
+                    event_type: req_type,
+                    state_key: req_key,
+                });
             }
         }
     }
@@ -1583,6 +1620,60 @@ pub fn warn_unexpected_auth_events<
 /// included in auth events. The room's existence is implied via `room_id`.
 ///
 /// Equivalent to Ruma's `state_res::auth_types_for_event`.
+/// Trait-generic counterpart to [`auth_types_for_event`], used by rule 2.2's
+/// completeness check in `check_auth_with_context`. Operates on
+/// [`EventLike`]/[`crate::basespec::rezzy_types::EventContent`] accessors
+/// rather than raw `serde_json::Value`, so it works for any event
+/// representation (not just JSON-backed ones).
+///
+/// Mirrors `auth_types_for_event`'s selection logic exactly; keep the two in
+/// sync if the algorithm changes.
+fn required_auth_types_for<
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    event: &E,
+    event_type: &str,
+    version: StateResVersion,
+) -> Vec<(String, String)> {
+    let mut required = Vec::new();
+
+    if event_type == M_ROOM_CREATE {
+        return required;
+    }
+
+    if !version.is_v2_1_plus() {
+        required.push((String::from(M_ROOM_CREATE), String::new()));
+    }
+    required.push((String::from(M_ROOM_MEMBER), String::from(event.sender())));
+    required.push((String::from(M_ROOM_POWER_LEVELS), String::new()));
+
+    if event_type == M_ROOM_MEMBER {
+        if let Some(sk) = event.state_key().filter(|sk| *sk != event.sender()) {
+            required.push((String::from(M_ROOM_MEMBER), String::from(sk)));
+        }
+
+        let membership = event.get_membership();
+
+        if matches!(membership, Some(MEM_JOIN | MEM_INVITE | MEM_KNOCK)) {
+            required.push((String::from(M_ROOM_JOIN_RULES), String::new()));
+        }
+
+        if let Some(token) = event.content().get_third_party_invite_token() {
+            required.push((String::from(M_ROOM_THIRD_PARTY_INVITE), String::from(token)));
+        }
+
+        if membership == Some(MEM_JOIN) {
+            if let Some(authorising_user) = event.get_join_authorised_via_users_server() {
+                required.push((String::from(M_ROOM_MEMBER), String::from(authorising_user)));
+            }
+        }
+    }
+
+    required
+}
+
 #[must_use]
 pub fn auth_types_for_event(
     event_type: &str,

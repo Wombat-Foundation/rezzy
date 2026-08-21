@@ -1,7 +1,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 mod utils;
 use rezzy::auth::*;
-use rezzy::basespec::event_types::M_ROOM_CREATE;
+use rezzy::basespec::event_types::{M_ROOM_CREATE, M_ROOM_MEMBER};
 use rezzy::*;
 use serde_json::json;
 
@@ -705,13 +705,16 @@ fn test_iterative_auth_chain() {
         "@alice:example.com",
         json!({"membership": "join"}),
     );
-    let msg = make_event(
+    let mut msg = make_event(
         "$msg",
         "m.room.message",
         None,
         "@alice:example.com",
         json!({"body": "hello"}),
     );
+    // Rule 2.2: auth_events must cite the sender's own current membership
+    // once it exists in state (added by $join).
+    msg.auth_events = vec!["$join".into()];
     let (accepted, rejected) = check_auth_chain(
         &[create, join, msg],
         &RoomState::new(),
@@ -729,7 +732,7 @@ fn test_auth_chain_rejects_unauthorized() {
 {"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:x.com","sender":"@alice:x.com","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":[]}
 {"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@alice:x.com","depth":2,"origin_server_ts":1002,"content":{"ban":50,"users":{"@alice:x.com":100}},"prev_events":["$alice_join"],"auth_events":["$alice_join"]}
 {"event_id":"$ban_bob","type":"m.room.member","state_key":"@bob:x.com","sender":"@alice:x.com","depth":3,"origin_server_ts":1003,"content":{"membership":"ban"},"prev_events":["$pl"],"auth_events":["$alice_join","$pl"]}
-{"event_id":"$bob_msg","type":"m.room.message","sender":"@bob:x.com","depth":4,"origin_server_ts":1004,"content":{"body":"I am banned"},"prev_events":["$ban_bob"],"auth_events":[]}
+{"event_id":"$bob_msg","type":"m.room.message","sender":"@bob:x.com","depth":4,"origin_server_ts":1004,"content":{"body":"I am banned"},"prev_events":["$ban_bob"],"auth_events":["$ban_bob","$pl"]}
     "#,
     );
 
@@ -4711,6 +4714,127 @@ fn test_rule_2_1_duplicate_auth_event_pair_rejected() {
     assert!(
         matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("duplicate (type, state_key)")),
         "Duplicate auth events of same type and state_key must be rejected, got {res:?}"
+    );
+}
+
+/// Rule 2.2 completeness: an event that omits a required, already-existing
+/// citation (here, the target member event for a ban) must be hard-rejected
+/// -- not silently accepted the way pre-fix rezzy accepted it. This is the
+/// class of bug fixtures 19/20/21 hit: the omission was invisible because
+/// only cited entries were validated, never the completeness of the set.
+#[test]
+fn test_rule_2_2_omitted_target_member_rejected() {
+    let mut state = RoomState::new();
+    let create_ev = make_event(
+        "$c",
+        M_ROOM_CREATE,
+        Some(""),
+        "@admin:example.com",
+        json!({}),
+    );
+    state.insert((M_ROOM_CREATE.into(), String::new()), create_ev.clone());
+
+    let admin_join = make_event(
+        "$admin_join",
+        M_ROOM_MEMBER,
+        Some("@admin:example.com"),
+        "@admin:example.com",
+        json!({"membership": "join"}),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@admin:example.com".into()),
+        admin_join.clone(),
+    );
+
+    let bob_join = make_event(
+        "$bob_join",
+        M_ROOM_MEMBER,
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({"membership": "join"}),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@bob:example.com".into()),
+        bob_join.clone(),
+    );
+
+    let mut provider = rezzy::HashMap::new();
+    provider.insert("$c".to_string(), create_ev);
+    provider.insert("$admin_join".to_string(), admin_join);
+    provider.insert("$bob_join".to_string(), bob_join);
+
+    let mut ban_bob = make_event(
+        "$ban_bob",
+        M_ROOM_MEMBER,
+        Some("@bob:example.com"),
+        "@admin:example.com",
+        json!({"membership": "ban"}),
+    );
+    // Omits $bob_join -- the target's own membership -- even though it
+    // exists in state.
+    ban_bob.auth_events = vec!["$c".into(), "$admin_join".into()];
+
+    let res = check_auth_with_context(&ban_bob, &state, StateResVersion::V2, None, Some(&provider));
+    assert!(
+        matches!(
+            res,
+            Err(AuthError::IncompleteAuthEvents { ref event_type, ref state_key })
+                if event_type == "m.room.member" && state_key == "@bob:example.com"
+        ),
+        "Omitting the target member citation must be a hard rejection, got {res:?}"
+    );
+
+    // Citing it fixes the rejection (other rules -- PL sufficiency etc. --
+    // are irrelevant here since state has no power_levels event at all, so
+    // that requirement is correctly not demanded).
+    ban_bob.auth_events.push("$bob_join".into());
+    let res = check_auth_with_context(&ban_bob, &state, StateResVersion::V2, None, Some(&provider));
+    assert!(
+        res.is_ok(),
+        "citing the target member should pass rule 2.2, got {res:?}"
+    );
+}
+
+/// Rule 2.2 must not demand a citation for a required type that has no
+/// entry in the room's current state yet (e.g. `m.room.power_levels` before
+/// the room ever set one) -- the selection algorithm only cites types that
+/// actually exist, it doesn't manufacture placeholder requirements.
+#[test]
+fn test_rule_2_2_absent_from_state_not_required() {
+    let mut state = RoomState::new();
+    let create_ev = make_event(
+        "$c",
+        M_ROOM_CREATE,
+        Some(""),
+        "@alice:example.com",
+        json!({}),
+    );
+    state.insert((M_ROOM_CREATE.into(), String::new()), create_ev.clone());
+
+    let mut provider = rezzy::HashMap::new();
+    provider.insert("$c".to_string(), create_ev);
+
+    // Alice's own first join: no power_levels event exists yet in state, and
+    // alice has no prior membership to cite either.
+    let mut alice_join = make_event(
+        "$alice_join",
+        M_ROOM_MEMBER,
+        Some("@alice:example.com"),
+        "@alice:example.com",
+        json!({"membership": "join"}),
+    );
+    alice_join.auth_events = vec!["$c".into()];
+
+    let res = check_auth_with_context(
+        &alice_join,
+        &state,
+        StateResVersion::V2,
+        None,
+        Some(&provider),
+    );
+    assert!(
+        res.is_ok(),
+        "power_levels/self-member requirements absent from state must not be demanded, got {res:?}"
     );
 }
 
