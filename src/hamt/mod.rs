@@ -23,7 +23,7 @@ pub mod hash;
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;
 
-pub use audit::unreachable_node_hashes;
+pub use audit::{reachability_audit, unreachable_node_hashes, ReachabilityAudit};
 pub use codec::PersistedInternalNode;
 pub use delta::{
     diff_hamt_nodes, diff_node_hashes, isolate_delta, reachable_node_hashes,

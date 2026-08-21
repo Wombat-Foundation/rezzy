@@ -2973,6 +2973,75 @@ fn test_unreachable_node_hashes_reports_only_the_orphan() {
 }
 
 #[test]
+fn test_reachability_audit_partitions_universe_and_agrees_with_unreachable_node_hashes() {
+    use std::collections::BTreeSet;
+
+    // Same two-disjoint-trees fixture as
+    // `test_unreachable_node_hashes_reports_only_the_orphan`, reused here to
+    // check the fuller `ReachabilityAudit` result: `reachable` must be the
+    // exact complement of `unreachable` within `universe`, and must agree
+    // with what `unreachable_node_hashes` reports for the same inputs (it
+    // is defined as a thin wrapper over `reachability_audit`).
+    let live_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
+    let orphan_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
+    let root_live = build_hamt(b"live_key", live_entries).expect("build live root");
+    let root_orphan = build_hamt(b"orphan_key", orphan_entries).expect("build orphan root");
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("both trees are fully resolved, no lazy children")
+    };
+
+    let expected_live_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_live, &mut resolver)
+            .expect("live walk should succeed")
+            .into_iter()
+            .collect();
+    let expected_orphan_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_orphan, &mut resolver)
+            .expect("orphan walk should succeed")
+            .into_iter()
+            .collect();
+
+    let universe: Vec<StructuralHash> = expected_live_hashes
+        .iter()
+        .copied()
+        .chain(expected_orphan_hashes.iter().copied())
+        .collect();
+
+    let audit =
+        crate::hamt::reachability_audit([root_live.clone()], universe.clone(), &mut resolver)
+            .expect("audit should succeed");
+
+    let reachable_set: BTreeSet<StructuralHash> = audit.reachable.iter().copied().collect();
+    assert_eq!(
+        reachable_set, expected_live_hashes,
+        "reachable side must be exactly the live tree's hashes"
+    );
+    let unreachable_set: BTreeSet<StructuralHash> = audit.unreachable.iter().copied().collect();
+    assert_eq!(
+        unreachable_set, expected_orphan_hashes,
+        "unreachable side must be exactly the orphan tree's hashes"
+    );
+
+    // reachable and unreachable must partition universe: no overlap, and
+    // together they account for every hash in it.
+    assert!(reachable_set.is_disjoint(&unreachable_set));
+    let universe_set: BTreeSet<StructuralHash> = universe.iter().copied().collect();
+    let mut recombined: BTreeSet<StructuralHash> = reachable_set.clone();
+    recombined.extend(unreachable_set.iter().copied());
+    assert_eq!(recombined, universe_set);
+
+    // Must agree with the unreachable_node_hashes convenience wrapper on
+    // identical inputs.
+    let via_wrapper: BTreeSet<StructuralHash> =
+        crate::hamt::audit::unreachable_node_hashes([root_live], universe, &mut resolver)
+            .expect("wrapper audit should succeed")
+            .into_iter()
+            .collect();
+    assert_eq!(via_wrapper, unreachable_set);
+}
+
+#[test]
 fn test_unreachable_node_hashes_shares_subtrees_across_roots() {
     let key = b"dummy_server_key";
 
