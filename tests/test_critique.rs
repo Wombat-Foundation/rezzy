@@ -287,9 +287,12 @@ fn test_anomaly_02_admin_lockout() {
 #[test]
 fn test_anomaly_03_phantom_join_rules() {
     let (resolved, map) = resolve_pathology("03_phantom_join_rules.jsonl");
+    // Charlie's join references the *public* join_rules in its own auth chain,
+    // so it is valid; the invite-only join_rules on the other branch is the
+    // "phantom" the (now-removed) CDO wrongly used to drop it.
     assert_eq!(
         get_membership(&resolved, &map, "@charlie:example.com"),
-        "none"
+        "join"
     );
     assert_eq!(
         get_membership(&resolved, &map, "@alice:example.com"),
@@ -333,11 +336,14 @@ fn test_anomaly_06_action_evaporation() {
 fn test_anomaly_06b_mod_membership_evaporation() {
     let (resolved, map) = resolve_pathology("06b_mod_membership_evaporation.jsonl");
     assert_eq!(get_membership(&resolved, &map, "@nexy:example.com"), "none");
+    // With the CDO gone, nexy's valid ban on spammer (auth'd against the
+    // power_levels granting nexy PL 50) takes effect.
     assert_eq!(
         get_membership(&resolved, &map, "@spammer:example.com"),
-        "join"
+        "ban"
     );
-    // Honest members are unaffected.
+    // nexy's ban on charlie auths against an older power_levels (nexy PL 0),
+    // so it is rejected and charlie remains joined.
     assert_eq!(
         get_membership(&resolved, &map, "@charlie:example.com"),
         "join"
@@ -477,15 +483,11 @@ fn test_anomaly_16_causality_leakage() {
 #[test]
 fn test_anomaly_17_sliced_dag_membership_desync() {
     let (resolved, map) = resolve_pathology("17_sliced_dag_membership_desync.jsonl");
-    // NOTE: v2.1.1 CDO pre-filter is overly aggressive here.  Cat had a valid
-    // invite and should be allowed to join under invite-only join_rules, so the
-    // correct answer is "join".  v2.1.1 currently produces "invite" because the
-    // Causal Domination filter strips her join event.  This assertion documents
-    // the current (buggy) behavior — fix the CDO and flip this to "join".
-    assert_eq!(
-        get_membership(&resolved, &map, "@cat:maunium.net"),
-        "invite"
-    );
+    // The V2.1.1 CDO pre-filter was removed as unsound: it dropped this join
+    // because an independent-branch join_rules lockdown "dominated" it, even
+    // though Cat had a valid invite and may join under invite-only join_rules
+    // (see reference auth). With the CDO gone, Cat resolves to "join".
+    assert_eq!(get_membership(&resolved, &map, "@cat:maunium.net"), "join");
     assert_eq!(
         get_membership(&resolved, &map, "@reminder:maunium.net"),
         "join"
