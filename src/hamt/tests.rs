@@ -2921,3 +2921,215 @@ fn test_hamt_node_persisted_round_trip() {
         );
     }
 }
+
+#[test]
+fn test_unreachable_node_hashes_reports_only_the_orphan() {
+    use std::collections::BTreeSet;
+
+    // Two entirely distinct trees keyed under different structural keys, so
+    // they share no node hashes at any level: `root_live` stands in for a
+    // still-referenced state group, `root_orphan` for one whose only root
+    // record was already deleted upstream (the case this function exists to
+    // find).
+    let live_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
+    let orphan_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
+    let root_live = build_hamt(b"live_key", live_entries).expect("build live root");
+    let root_orphan = build_hamt(b"orphan_key", orphan_entries).expect("build orphan root");
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("both trees are fully resolved, no lazy children")
+    };
+
+    let expected_orphan_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_orphan, &mut resolver)
+            .expect("orphan walk should succeed")
+            .into_iter()
+            .collect();
+    let live_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_live, &mut resolver)
+            .expect("live walk should succeed")
+            .into_iter()
+            .collect();
+    assert!(
+        expected_orphan_hashes.is_disjoint(&live_hashes),
+        "fixture must not accidentally share node hashes between the two trees"
+    );
+
+    let universe = live_hashes
+        .iter()
+        .copied()
+        .chain(expected_orphan_hashes.iter().copied());
+
+    let unreachable: BTreeSet<StructuralHash> =
+        crate::hamt::audit::unreachable_node_hashes([root_live], universe, &mut resolver)
+            .expect("audit should succeed")
+            .into_iter()
+            .collect();
+
+    assert_eq!(
+        unreachable, expected_orphan_hashes,
+        "only the orphan tree's node hashes should come back as unreachable"
+    );
+}
+
+#[test]
+fn test_unreachable_node_hashes_shares_subtrees_across_roots() {
+    let key = b"dummy_server_key";
+
+    // Same shared-child fixture used by
+    // `test_walk_reachable_node_hashes_skips_shared_lazy_child_without_resolving`:
+    // both roots reference `shared_leaf`, so it must never show up as
+    // unreachable, and the resolver must only be asked to resolve it once
+    // across the whole multi-root audit.
+    let shared_leaf = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1_u64, 100_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
+    });
+    let unique_leaf_a = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(2_u64, 200_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(2, 200)], &[]),
+    });
+    // An orphan leaf that neither root references at all.
+    let orphan_leaf = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(4_u64, 400_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(4, 400)], &[]),
+    });
+
+    let shared_lazy = NodeRef::<u64, u64>::Lazy(shared_leaf.structural_hash);
+    let unique_a_lazy = NodeRef::<u64, u64>::Lazy(unique_leaf_a.structural_hash);
+
+    let root_a = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 0b11,
+        leaves: vec![],
+        children: vec![shared_lazy.clone(), unique_a_lazy.clone()],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            0b11,
+            &[],
+            &[shared_lazy.clone(), unique_a_lazy.clone()],
+        ),
+    });
+    // root_b only references the shared child, wrapped so its own hash
+    // differs from root_a's.
+    let root_b = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 1,
+        leaves: vec![],
+        children: vec![shared_lazy.clone()],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1,
+            &[],
+            core::slice::from_ref(&shared_lazy),
+        ),
+    });
+
+    let mut shared_resolve_count = 0_usize;
+    let mut resolver = |hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        if *hash == shared_leaf.structural_hash {
+            shared_resolve_count = shared_resolve_count.saturating_add(1);
+            Ok(shared_leaf.clone())
+        } else if *hash == unique_leaf_a.structural_hash {
+            Ok(unique_leaf_a.clone())
+        } else {
+            panic!("unexpected lazy resolution: {hash:?}")
+        }
+    };
+
+    let universe = [
+        root_a.structural_hash,
+        root_b.structural_hash,
+        shared_leaf.structural_hash,
+        unique_leaf_a.structural_hash,
+        orphan_leaf.structural_hash,
+    ];
+
+    let unreachable =
+        crate::hamt::audit::unreachable_node_hashes([root_a, root_b], universe, &mut resolver)
+            .expect("audit should succeed");
+
+    assert_eq!(
+        unreachable,
+        vec![orphan_leaf.structural_hash],
+        "only the never-referenced leaf should be reported unreachable"
+    );
+    assert_eq!(
+        shared_resolve_count, 1,
+        "the shared child must be resolved once across both roots, not once per root"
+    );
+}
+
+#[test]
+fn test_unreachable_node_hashes_empty_roots_reports_entire_universe() {
+    let root = Arc::new(HamtNode::<u64, u64> {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1, 100)],
+        children: vec![],
+        structural_hash: [0xEE; 16],
+    });
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("no roots means nothing is ever walked")
+    };
+
+    let universe = [root.structural_hash];
+    let unreachable = crate::hamt::audit::unreachable_node_hashes([], universe, &mut resolver)
+        .expect("audit over an empty root set should still succeed");
+
+    assert_eq!(
+        unreachable, universe,
+        "with no live roots, every node in the universe is a GC candidate"
+    );
+}
+
+#[test]
+fn test_unreachable_node_hashes_propagates_resolver_error_without_partial_result() {
+    let key = b"dummy_server_key";
+    let leaf = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1_u64, 100_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
+    });
+    let leaf_lazy = NodeRef::<u64, u64>::Lazy(leaf.structural_hash);
+    let root = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 1,
+        leaves: vec![],
+        children: vec![leaf_lazy.clone()],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1,
+            &[],
+            core::slice::from_ref(&leaf_lazy),
+        ),
+    });
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, &'static str> {
+        Err("resolve failed")
+    };
+
+    let universe = [root.structural_hash, leaf.structural_hash];
+    let err = crate::hamt::audit::unreachable_node_hashes([root], universe, &mut resolver)
+        .expect_err(
+        "resolver failure during the mark phase must propagate, not degrade to a partial answer",
+    );
+    assert_eq!(
+        err,
+        crate::hamt::HamtTraversalError::Resolve("resolve failed")
+    );
+}

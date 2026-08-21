@@ -4,6 +4,7 @@
 //! - `hash`: keyed structural hashing for subtree identity
 //! - `codec`: dense on-disk encoding for persisted internal nodes
 //! - `delta`: subtree differencing for set isolation
+//! - `audit`: multi-root reachability audit for storage GC
 //! - `tests`: regression coverage for the generic HAMT core
 
 use alloc::{sync::Arc, vec, vec::Vec};
@@ -13,6 +14,7 @@ use core::{
     hash::{Hash, Hasher},
 };
 
+pub mod audit;
 pub mod codec;
 pub mod delta;
 pub mod hash;
@@ -21,6 +23,7 @@ pub mod hash;
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;
 
+pub use audit::unreachable_node_hashes;
 pub use codec::PersistedInternalNode;
 pub use delta::{
     diff_hamt_nodes, diff_node_hashes, isolate_delta, reachable_node_hashes,
