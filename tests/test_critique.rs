@@ -529,6 +529,10 @@ fn test_anomaly_19_demoted_but_still_authorized() {
     let (resolved, map) = assert_benign_convergence("19_demoted_but_still_authorized.jsonl");
     assert_eq!(get_membership(&resolved, &map, "@troll:example.com"), "ban");
     assert_eq!(
+        get_membership(&resolved, &map, "@priya:example.com"),
+        "join"
+    );
+    assert_eq!(
         get_user_power_level(&resolved, &map, "@priya:example.com"),
         0
     );
@@ -550,10 +554,11 @@ fn test_anomaly_19_demoted_but_still_authorized() {
 fn test_anomaly_20_concurrent_ban_still_holds() {
     let (resolved, map) = assert_benign_convergence("20_concurrent_ban_still_holds.jsonl");
     assert_eq!(get_membership(&resolved, &map, "@bob:example.com"), "ban");
-    assert_ne!(
+    assert_eq!(
         get_membership(&resolved, &map, "@charlie:example.com"),
-        "ban",
+        "join",
         "Bob's own ban is already invalid by the time full resolution reaches it, \
-         so his ban of Charlie must not take effect -- CDO's early drop agrees"
+         so his ban of Charlie must not take effect -- CDO's early drop agrees, \
+         and Charlie's own join (against public join_rules) wins the conflict cleanly"
     );
 }
