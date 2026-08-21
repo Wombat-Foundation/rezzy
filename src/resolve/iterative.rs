@@ -32,7 +32,7 @@ use crate::{
     state::at::{compute_local_auth, iterative_auth_ok, LocalAuthCache},
     FastMap, HashMap,
 };
-use alloc::{string::String, vec::Vec};
+use alloc::vec::Vec;
 
 /// Prepares the conflicted events map and tracks original conflicted keys before CDO pre-filtering.
 pub(crate) fn prepare_conflicted_and_keys<
@@ -221,8 +221,8 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, K>(
     S3: core::hash::BuildHasher,
     S4: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let sorted_power_ids = lean_kahn_sort(power_events, sort_context, create_ev, version, pl_cache);
     for id in &sorted_power_ids {
@@ -472,8 +472,8 @@ pub fn resolve_iterative_sort<
     pl_cache: &mut HashMap<Id, i64>,
 ) -> crate::state::at::SharedState<Id, K>
 where
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (alloc::string::String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     resolve_iterative_sort_with_cache::<Id, C, S1, S2, K>(
         unconflicted_state,
@@ -504,8 +504,8 @@ pub fn resolve_iterative_sort_with_cache<
     pl_cache: &mut HashMap<Id, i64>,
 ) -> crate::state::at::SharedState<Id, K>
 where
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (alloc::string::String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let conflicted_keys = derive_all_conflicted_keys(&conflicted_events);
     resolve_iterative_sort_with_all_caches::<Id, C, S1, S2, K>(
@@ -544,8 +544,8 @@ pub(crate) fn resolve_iterative_sort_with_all_caches<
     conflicted_keys: &crate::FastSet<(EventType, K)>,
 ) -> crate::state::at::SharedState<Id, K>
 where
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (alloc::string::String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let original_conflicted_keys =
         prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
@@ -691,8 +691,8 @@ pub fn resolve_iterative_sort_with_deltas<
     alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
 )
 where
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (alloc::string::String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     resolve_iterative_sort_with_cache_and_deltas::<Id, C, S1, S2, K>(
         unconflicted_state,
@@ -727,8 +727,8 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
     alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
 )
 where
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (alloc::string::String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     use crate::state::delta::{ResolutionDelta, ResolvePhase};
 

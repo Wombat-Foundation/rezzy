@@ -393,18 +393,12 @@ where
     dropped_ids
 }
 
-fn propagate_transitive_dependencies<
-    Id,
-    C: crate::basespec::rezzy_types::EventContent + Clone,
-    S1: core::hash::BuildHasher,
-    K,
->(
+fn propagate_transitive_dependencies<Id, C: Clone, S1: core::hash::BuildHasher, K>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
     mut dropped_ids: BTreeSet<Id>,
 ) -> BTreeSet<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
-    K: AsRef<str>,
 {
     let mut dependents: HashMap<Id, Vec<Id>> = HashMap::new();
     for (id, event) in conflicted_events {

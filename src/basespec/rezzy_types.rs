@@ -46,12 +46,18 @@ impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Disp
 /// Trait alias for types that can serve as the "key" half of a Matrix state
 /// tuple `(event_type, state_key)`.
 ///
-/// Any type that is `Clone + Eq + Hash + Ord + AsRef<str>` automatically
+/// Any type that is `Clone + Eq + Hash + Ord + AsRef<str> + Default + 'static` automatically
 /// implements this trait via a blanket impl. In practice, this is `String`
 /// (the default everywhere in this crate), but it can be substituted with a
 /// lighter interned/`Arc<str>`-style key by downstream homeservers.
-pub trait StateKey: Clone + Eq + core::hash::Hash + Ord + AsRef<str> {}
-impl<T: Clone + Eq + core::hash::Hash + Ord + AsRef<str>> StateKey for T {}
+///
+/// **Contract:**
+/// - `K::default().as_ref()` **must** equal the empty string `""`.
+/// - Any implementor's `Ord` ordering **must** match the lexicographic byte ordering of
+///   its `AsRef<str>` representation. This contract is required for `Borrow`-based
+///   `BTreeMap` lookups to function correctly.
+pub trait StateKey: Clone + Eq + core::hash::Hash + Ord + AsRef<str> + Default + 'static {}
+impl<T: Clone + Eq + core::hash::Hash + Ord + AsRef<str> + Default + 'static> StateKey for T {}
 
 /// Selects which state resolution algorithm to use.
 ///
@@ -923,7 +929,7 @@ impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEventRef<'_,
     }
 }
 
-impl<Id: serde::Serialize, C: serde::Serialize, K: serde::Serialize> serde::Serialize
+impl<Id: serde::Serialize, C: serde::Serialize, K: AsRef<str>> serde::Serialize
     for LeanEvent<Id, C, K>
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -940,7 +946,7 @@ impl<Id: serde::Serialize, C: serde::Serialize, K: serde::Serialize> serde::Seri
         state.serialize_field(FIELD_EVENT_ID, &self.event_id)?;
         state.serialize_field(FIELD_TYPE, &self.event_type)?;
         if let Some(ref sk) = self.state_key {
-            state.serialize_field(FIELD_STATE_KEY, sk)?;
+            state.serialize_field(FIELD_STATE_KEY, sk.as_ref())?;
         }
         state.serialize_field(FIELD_POWER_LEVEL, &self.power_level)?;
         state.serialize_field(FIELD_ORIGIN_SERVER_TS, &self.origin_server_ts)?;

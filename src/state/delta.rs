@@ -73,12 +73,9 @@ pub struct StateDelta<Id: crate::basespec::rezzy_types::EventId = String> {
 ///
 /// If the two states are identical, returns an empty `Vec`.
 #[must_use]
-pub fn compute_state_delta<
-    Id: crate::basespec::rezzy_types::EventId,
-    K: Ord + Clone + AsRef<str>,
->(
-    parent: &crate::state::at::SharedState<Id, K>,
-    current: &crate::state::at::SharedState<Id, K>,
+pub fn compute_state_delta<Id: crate::basespec::rezzy_types::EventId>(
+    parent: &crate::state::at::SharedState<Id, String>,
+    current: &crate::state::at::SharedState<Id, String>,
 ) -> Vec<StateDelta<Id>> {
     let mut deltas = Vec::new();
 
@@ -89,7 +86,7 @@ pub fn compute_state_delta<
             _ => {
                 deltas.push(StateDelta {
                     event_type: event_type.to_string(),
-                    state_key: state_key.as_ref().to_string(),
+                    state_key: state_key.clone(),
                     event_id: Some(event_id.clone()),
                 });
             }
@@ -101,7 +98,7 @@ pub fn compute_state_delta<
         if !current.contains_key(key) {
             deltas.push(StateDelta {
                 event_type: key.0.to_string(),
-                state_key: key.1.as_ref().to_string(),
+                state_key: key.1.clone(),
                 event_id: None,
             });
         }

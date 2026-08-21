@@ -233,8 +233,8 @@ where
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     if ev.rejected || ev.soft_fail {
         return false;
@@ -419,8 +419,8 @@ where
     Q: ?Sized + Eq + Ord + core::hash::Hash,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     if !events_map.contains_key(target_event_id) {
         return None;
@@ -470,8 +470,8 @@ where
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let mut results = HashMap::with_capacity(target_event_ids.len());
 
@@ -534,8 +534,8 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F, K>(
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
     F: FnMut(Id, SharedState<Id, K>),
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let result = try_compute_state_at_streaming(
         target_event_ids,
@@ -579,8 +579,8 @@ where
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
     F: FnMut(Id, SharedState<Id, K>) -> Result<(), E>,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let mut actual_target_ids = Vec::new();
     let mut seen = alloc::collections::BTreeSet::new();
@@ -636,8 +636,8 @@ where
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
     F: FnMut(usize, SharedState<Id, K>) -> Result<(), E>,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let (sorted_ancestors, mut out_degree) =
         topological_sort_short_ids(index_to_id, id_to_index, events_map);
@@ -1134,8 +1134,8 @@ where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let first = &prev_states[0];
     let all_match = prev_states[1..].iter().all(|state| first == state);
@@ -1169,8 +1169,8 @@ where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let mut conflicted_keys = crate::FastSet::default();
     let mut conflicted_state_set = crate::HashSet::new();
@@ -1309,8 +1309,12 @@ where
             if u_depth < c_depth {
                 break;
             }
-            let (_, u_id) = u_heap.pop().unwrap();
-            let ev = events_map.get(&u_id).unwrap();
+            let (_, u_id) = u_heap
+                .pop()
+                .expect("invariant: heap peek implies non-empty pop");
+            let ev = events_map.get(&u_id).expect(
+                "invariant: every heap entry corresponds to an event present in events_map",
+            );
             for auth_id in &ev.auth_events {
                 if u_visited.insert(auth_id.clone()) {
                     if let Some(a_ev) = events_map.get(auth_id) {
@@ -1320,10 +1324,14 @@ where
             }
         }
 
-        let (_, c_id) = c_heap.pop().unwrap();
+        let (_, c_id) = c_heap
+            .pop()
+            .expect("invariant: heap peek implies non-empty pop");
         if !u_visited.contains(&c_id) {
             auth_diff.insert(c_id.clone());
-            let ev = events_map.get(&c_id).unwrap();
+            let ev = events_map.get(&c_id).expect(
+                "invariant: every heap entry corresponds to an event present in events_map",
+            );
             for auth_id in &ev.auth_events {
                 if u_visited.contains(auth_id) {
                     continue; // PRUNE EARLY
@@ -2167,8 +2175,8 @@ where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     resolve_merge_fast_path_hashed_with_cache(
         prev_states,
@@ -2195,8 +2203,8 @@ where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + core::hash::Hash + Eq + AsRef<str> + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let first = &prev_states[0];
 
@@ -2262,8 +2270,8 @@ where
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
     F: for<'b> FnMut(usize, StateUpdate<'b, Id, K>) -> Result<(), E>,
-    K: Ord + Clone + Default + AsRef<str> + core::hash::Hash + Eq + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let (sorted_ancestors, mut out_degree) =
         topological_sort_short_ids(index_to_id, id_to_index, events_map);
@@ -2401,8 +2409,8 @@ where
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
     F: for<'b> FnMut(Id, StateUpdate<'b, Id, K>) -> Result<(), E>,
-    K: Ord + Clone + Default + AsRef<str> + core::hash::Hash + Eq + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let mut actual_target_ids = Vec::new();
     let mut seen = alloc::collections::BTreeSet::new();
@@ -2459,8 +2467,8 @@ where
     S: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
     F: for<'b> FnMut(Id, StateUpdate<'b, Id, K>),
-    K: Ord + Clone + Default + AsRef<str> + core::hash::Hash + Eq + 'static,
-    for<'q> (String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    K: crate::basespec::rezzy_types::StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let result = try_compute_state_at_streaming_optimized(
         target_event_ids,

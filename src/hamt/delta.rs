@@ -72,6 +72,18 @@ where
     Ok((added, removed))
 }
 
+fn set_bits(mut bits: u32) -> impl Iterator<Item = usize> {
+    core::iter::from_fn(move || {
+        if bits == 0 {
+            None
+        } else {
+            let bit = bits & bits.wrapping_neg();
+            bits &= bits.wrapping_sub(1);
+            Some(bit.trailing_zeros() as usize)
+        }
+    })
+}
+
 fn diff_nodes<K, V, F, E>(
     node_a: &Arc<HamtNode<K, V>>,
     node_b: &Arc<HamtNode<K, V>>,
@@ -105,90 +117,64 @@ where
     let d_a = node_a.datamap;
     let d_b = node_b.datamap;
 
-    let both = d_a & d_b;
-    let only_a = d_a & !d_b;
-    let only_b = d_b & !d_a;
+    let union = d_a | d_b;
+    for slot in set_bits(union) {
+        let bit = 1 << slot;
+        let in_a = (d_a & bit) != 0;
+        let in_b = (d_b & bit) != 0;
 
-    let mut bits = both;
-    while bits != 0 {
-        let bit = bits & bits.wrapping_neg();
-        bits &= bits.wrapping_sub(1);
-        let slot = bit.trailing_zeros() as usize;
-        let idx_a = map_index(d_a, slot);
-        let idx_b = map_index(d_b, slot);
-        let (k_a, v_a) = &node_a.leaves[idx_a];
-        let (k_b, v_b) = &node_b.leaves[idx_b];
-        if k_a != k_b || v_a != v_b {
+        if in_a && in_b {
+            let idx_a = map_index(d_a, slot);
+            let idx_b = map_index(d_b, slot);
+            let (k_a, v_a) = &node_a.leaves[idx_a];
+            let (k_b, v_b) = &node_b.leaves[idx_b];
+            if k_a != k_b || v_a != v_b {
+                removed.push((k_a.clone(), v_a.clone()));
+                added.push((k_b.clone(), v_b.clone()));
+            }
+        } else if in_a {
+            let idx_a = map_index(d_a, slot);
+            let (k_a, v_a) = &node_a.leaves[idx_a];
             removed.push((k_a.clone(), v_a.clone()));
+        } else if in_b {
+            let idx_b = map_index(d_b, slot);
+            let (k_b, v_b) = &node_b.leaves[idx_b];
             added.push((k_b.clone(), v_b.clone()));
         }
-    }
-
-    let mut bits = only_a;
-    while bits != 0 {
-        let bit = bits & bits.wrapping_neg();
-        bits &= bits.wrapping_sub(1);
-        let slot = bit.trailing_zeros() as usize;
-        let idx_a = map_index(d_a, slot);
-        let (k_a, v_a) = &node_a.leaves[idx_a];
-        removed.push((k_a.clone(), v_a.clone()));
-    }
-
-    let mut bits = only_b;
-    while bits != 0 {
-        let bit = bits & bits.wrapping_neg();
-        bits &= bits.wrapping_sub(1);
-        let slot = bit.trailing_zeros() as usize;
-        let idx_b = map_index(d_b, slot);
-        let (k_b, v_b) = &node_b.leaves[idx_b];
-        added.push((k_b.clone(), v_b.clone()));
     }
 
     // Traverse nodemaps
     let n_a = node_a.nodemap;
     let n_b = node_b.nodemap;
 
-    let both = n_a & n_b;
-    let only_a = n_a & !n_b;
-    let only_b = n_b & !n_a;
+    let union = n_a | n_b;
+    for slot in set_bits(union) {
+        let bit = 1 << slot;
+        let in_a = (n_a & bit) != 0;
+        let in_b = (n_b & bit) != 0;
 
-    let mut bits = both;
-    while bits != 0 {
-        let bit = bits & bits.wrapping_neg();
-        bits &= bits.wrapping_sub(1);
-        let slot = bit.trailing_zeros() as usize;
-        let cidx_a = map_index(n_a, slot);
-        let cidx_b = map_index(n_b, slot);
-        let child_a = &node_a.children[cidx_a];
-        let child_b = &node_b.children[cidx_b];
+        if in_a && in_b {
+            let cidx_a = map_index(n_a, slot);
+            let cidx_b = map_index(n_b, slot);
+            let child_a = &node_a.children[cidx_a];
+            let child_b = &node_b.children[cidx_b];
 
-        if child_a.structural_hash() != child_b.structural_hash() {
+            if child_a.structural_hash() != child_b.structural_hash() {
+                let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
+                let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
+                diff_nodes(&res_a, &res_b, added, removed, resolver, next_depth)?;
+            }
+        } else if in_a {
+            let cidx_a = map_index(n_a, slot);
+            let child_a = &node_a.children[cidx_a];
             let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
+            collect_all_leaves(&res_a, removed, resolver, next_depth)?;
+        } else if in_b {
+            let cidx_b = map_index(n_b, slot);
+            let child_b = &node_b.children[cidx_b];
             let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-            diff_nodes(&res_a, &res_b, added, removed, resolver, next_depth)?;
+            collect_all_leaves(&res_b, added, resolver, next_depth)?;
         }
-    }
-
-    let mut bits = only_a;
-    while bits != 0 {
-        let bit = bits & bits.wrapping_neg();
-        bits &= bits.wrapping_sub(1);
-        let slot = bit.trailing_zeros() as usize;
-        let cidx_a = map_index(n_a, slot);
-        let child_a = &node_a.children[cidx_a];
-        let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
-        collect_all_leaves(&res_a, removed, resolver, next_depth)?;
-    }
-
-    let mut bits = only_b;
-    while bits != 0 {
-        let bit = bits & bits.wrapping_neg();
-        bits &= bits.wrapping_sub(1);
-        let slot = bit.trailing_zeros() as usize;
-        let cidx_b = map_index(n_b, slot);
-        let child_b = &node_b.children[cidx_b];
-        let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-        collect_all_leaves(&res_b, added, resolver, next_depth)?;
     }
 
     Ok(())
@@ -400,47 +386,34 @@ where
 
     let next_depth = depth.saturating_add(1);
 
-    let both = n_a & n_b;
-    let only_a = n_a & !n_b;
-    let only_b = n_b & !n_a;
+    let union = n_a | n_b;
+    for slot in set_bits(union) {
+        let bit = 1 << slot;
+        let in_a = (n_a & bit) != 0;
+        let in_b = (n_b & bit) != 0;
 
-    let mut bits = both;
-    while bits != 0 {
-        let bit = bits & bits.wrapping_neg();
-        bits &= bits.wrapping_sub(1);
-        let slot = bit.trailing_zeros() as usize;
-        let cidx_a = map_index(n_a, slot);
-        let cidx_b = map_index(n_b, slot);
-        let child_a = &node_a.children[cidx_a];
-        let child_b = &node_b.children[cidx_b];
+        if in_a && in_b {
+            let cidx_a = map_index(n_a, slot);
+            let cidx_b = map_index(n_b, slot);
+            let child_a = &node_a.children[cidx_a];
+            let child_b = &node_b.children[cidx_b];
 
-        if child_a.structural_hash() != child_b.structural_hash() {
+            if child_a.structural_hash() != child_b.structural_hash() {
+                let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
+                let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
+                diff_node_hashes_rec(&res_a, &res_b, superseded, new, resolver, next_depth)?;
+            }
+        } else if in_a {
+            let cidx_a = map_index(n_a, slot);
+            let child_a = &node_a.children[cidx_a];
             let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
+            append_reachable_node_hashes(&res_a, superseded, resolver, next_depth)?;
+        } else if in_b {
+            let cidx_b = map_index(n_b, slot);
+            let child_b = &node_b.children[cidx_b];
             let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-            diff_node_hashes_rec(&res_a, &res_b, superseded, new, resolver, next_depth)?;
+            append_reachable_node_hashes(&res_b, new, resolver, next_depth)?;
         }
-    }
-
-    let mut bits = only_a;
-    while bits != 0 {
-        let bit = bits & bits.wrapping_neg();
-        bits &= bits.wrapping_sub(1);
-        let slot = bit.trailing_zeros() as usize;
-        let cidx_a = map_index(n_a, slot);
-        let child_a = &node_a.children[cidx_a];
-        let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
-        append_reachable_node_hashes(&res_a, superseded, resolver, next_depth)?;
-    }
-
-    let mut bits = only_b;
-    while bits != 0 {
-        let bit = bits & bits.wrapping_neg();
-        bits &= bits.wrapping_sub(1);
-        let slot = bit.trailing_zeros() as usize;
-        let cidx_b = map_index(n_b, slot);
-        let child_b = &node_b.children[cidx_b];
-        let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-        append_reachable_node_hashes(&res_b, new, resolver, next_depth)?;
     }
 
     Ok(())
