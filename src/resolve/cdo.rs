@@ -34,8 +34,8 @@
 //!
 //! An independent-branch admin action must never dominate a target event
 //! that already carries its own, separate authorization for the state the
-//! admin action would otherwise contest — see [`join_has_prior_authorization`]
-//! and [`sender_has_pre_demotion_pl`], both fixes for cases where the
+//! admin action would otherwise contest — see `join_has_prior_authorization`
+//! and `sender_has_pre_demotion_pl` below, both fixes for cases where the
 //! `restricts_event`/`restricts_sender` structural check fired without
 //! verifying the target was actually unauthorized. Two related classes of
 //! this were audited and found *not* to need a fix:
