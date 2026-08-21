@@ -1571,6 +1571,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
 
     // --- Typed Content Accessors (delegate to EventContent) ---
 
+    /// Get the membership state of this event.
     pub fn get_membership(&self) -> Option<&str>
     where
         C: EventContent,
@@ -1578,6 +1579,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_membership()
     }
 
+    /// Get the join rule of this event.
     pub fn get_join_rule(&self) -> Option<&str>
     where
         C: EventContent,
@@ -1585,6 +1587,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_join_rule()
     }
 
+    /// Get the authorized via users server for a join rule.
     pub fn get_join_authorised_via_users_server(&self) -> Option<&str>
     where
         C: EventContent,
@@ -1592,6 +1595,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_join_authorised_via_users_server()
     }
 
+    /// Get the power level of a specific user.
     pub fn get_user_power_level(&self, user: &str) -> Option<i64>
     where
         C: EventContent,
@@ -1599,6 +1603,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_user_power_level(user)
     }
 
+    /// Get the power level requirement for a specific event type.
     pub fn get_event_power_level(&self, event_type: &str) -> Option<i64>
     where
         C: EventContent,
@@ -1606,6 +1611,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_event_power_level(event_type)
     }
 
+    /// Get the default power level for users.
     pub fn get_users_default(&self) -> Option<i64>
     where
         C: EventContent,
@@ -1613,6 +1619,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_users_default()
     }
 
+    /// Get the default power level for events.
     pub fn get_events_default(&self) -> Option<i64>
     where
         C: EventContent,
@@ -1620,6 +1627,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_events_default()
     }
 
+    /// Get the default power level for state events.
     pub fn get_state_default(&self) -> Option<i64>
     where
         C: EventContent,
@@ -1627,6 +1635,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_state_default()
     }
 
+    /// Get the power level required to ban.
     pub fn get_ban(&self) -> Option<i64>
     where
         C: EventContent,
@@ -1634,6 +1643,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_ban()
     }
 
+    /// Get the power level required to kick.
     pub fn get_kick(&self) -> Option<i64>
     where
         C: EventContent,
@@ -1641,6 +1651,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_kick()
     }
 
+    /// Get the power level required to invite.
     pub fn get_invite(&self) -> Option<i64>
     where
         C: EventContent,
@@ -1648,6 +1659,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_invite()
     }
 
+    /// Get the power level required to redact.
     pub fn get_redact(&self) -> Option<i64>
     where
         C: EventContent,
@@ -1655,6 +1667,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_redact()
     }
 
+    /// Get the creator of the room.
     pub fn get_creator(&self) -> Option<&str>
     where
         C: EventContent,
@@ -1662,6 +1675,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_creator()
     }
 
+    /// Get the room version.
     pub fn get_room_version(&self) -> Option<&str>
     where
         C: EventContent,
@@ -1669,6 +1683,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_room_version()
     }
 
+    /// Get the event ID this event redacts.
     pub fn get_redacts(&self) -> Option<&str>
     where
         C: EventContent,
@@ -1676,6 +1691,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_redacts()
     }
 
+    /// Check if the sender is an additional creator.
     pub fn has_additional_creator(&self, sender: &str) -> bool
     where
         C: EventContent,

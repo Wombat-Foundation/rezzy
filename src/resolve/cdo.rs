@@ -393,6 +393,7 @@ where
     dropped_ids
 }
 
+/// Transitively propagate dependencies to safely drop them.
 fn propagate_transitive_dependencies<Id, C: Clone, S1: core::hash::BuildHasher, K>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
     mut dropped_ids: BTreeSet<Id>,

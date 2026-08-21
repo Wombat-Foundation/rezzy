@@ -85,6 +85,7 @@ fn set_bits(mut bits: u32) -> impl Iterator<Item = usize> {
     })
 }
 
+/// Recursively compute the structural diff between two HAMT nodes.
 fn diff_nodes<K, V, F, E>(
     node_a: &Arc<HamtNode<K, V>>,
     node_b: &Arc<HamtNode<K, V>>,
@@ -354,6 +355,7 @@ where
     })
 }
 
+/// Recursively compute the hash differences between two HAMT nodes.
 fn diff_node_hashes_rec<K, V, F, E>(
     node_a: &Arc<HamtNode<K, V>>,
     node_b: &Arc<HamtNode<K, V>>,

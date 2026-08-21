@@ -65,6 +65,7 @@ pub struct LocalAuthCache<Id = String, C = serde_json::Value, K = String> {
 }
 
 impl<Id, C, K> LocalAuthCache<Id, C, K> {
+    /// Create a new local auth cache for the specified room version.
     #[must_use]
     pub fn new(version: StateResVersion) -> Self {
         Self {
