@@ -96,8 +96,8 @@ impl LtHash {
     /// The identity element (empty state).
     pub const ZERO: Self = Self([0u16; 1024]);
 
-    /// Domain separation tag per MSC4500.
-    const DST: &'static [u8] = b"msc4500_lthash16\x00";
+    /// Domain separation tag (v1 variant, deviates from MSC4500 standard).
+    const DST: &'static [u8] = b"msc4500_lthash16_v1\x00";
 
     /// Compute the 2048-byte SHAKE256 expansion for a single state entry.
     ///
@@ -463,15 +463,15 @@ mod tests {
         // --- Scenario 1: Add element 1 ---
         let seed1 = LtHash::seed("m.room.member", "@alice:example.com", &"$event_1");
         let exp1_bytes: Vec<u8> = seed1.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&exp1_bytes), "d72df88a72ff61da6b2287649ff6001c");
+        assert_eq!(hex(&exp1_bytes), "c6a4f2e8f4016c9aaf9c52e67020f221");
 
         let mut s1 = s0;
         s1.add_seed(&seed1);
         let s1_bytes: Vec<u8> = s1.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&s1_bytes), "d72df88a72ff61da6b2287649ff6001c");
+        assert_eq!(hex(&s1_bytes), "c6a4f2e8f4016c9aaf9c52e67020f221");
         assert_eq!(
             b64u(&s1.digest()),
-            "O82fWVtLXHCVswDsXPN_8f8_eUAGQ_e6ZhceFQ3bZgY"
+            "0mRyt9cOWBGyKqV14a2omLPIOJFUfX0LkJcqpE20LbI"
         );
 
         // --- Scenario 2: Remove element 1 ---
@@ -486,30 +486,30 @@ mod tests {
         // --- Scenario 3: Add element 2 ---
         let seed2 = LtHash::seed("m.room.name", "", &"$event_2");
         let exp2_bytes: Vec<u8> = seed2.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&exp2_bytes), "8c9d4997da61e28d7e6b83255fff064e");
+        assert_eq!(hex(&exp2_bytes), "8107236052d1e6d7193cada70d85fa2c");
 
         let mut s2 = s1;
         s2.add_seed(&seed2);
         let s2_bytes: Vec<u8> = s2.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&s2_bytes), "63cb41224c614368e98d0a8afef5066a");
+        assert_eq!(hex(&s2_bytes), "47ac154946d35272c8d8ff8d7da5ec4e");
         assert_eq!(
             b64u(&s2.digest()),
-            "mdPtCuYE0vtYSfcoAGLifs6kQltkslGQ4Gfj1qdVaAw"
+            "aH8bXDxcQTK2_cA8Bw4BKHsBrsBE6YVgzN_uUBAJzA8"
         );
 
         // --- Scenario 4: Replace element 1 with element 3 ---
         let seed3 = LtHash::seed("m.room.member", "@alice:example.com", &"$event_3");
         let exp3_bytes: Vec<u8> = seed3.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&exp3_bytes), "9dd1af20e6ee125f8e98969793b8c650");
+        assert_eq!(hex(&exp3_bytes), "14e9b8900236b9d0d2e07dc6b392fa14");
 
         let mut s3 = s2;
         s3.sub_seed(&seed1);
         s3.add_seed(&seed3);
         let s3_bytes: Vec<u8> = s3.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&s3_bytes), "296ff8b7c050f4ec0c0419bdf2b7cc9e");
+        assert_eq!(hex(&s3_bytes), "95f0dbf054079fa8eb1c2a6ec017f441");
         assert_eq!(
             b64u(&s3.digest()),
-            "i2EXULsFajj54_n8x0rh8HcfEq3g2uzGlj4wLRX45n8"
+            "DB65faOdzCq5z6YcTaMp282OIwuJKnBYOFfJNEJJJ6k"
         );
     }
 
