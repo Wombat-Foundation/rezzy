@@ -156,7 +156,7 @@ impl<E: fmt::Display> fmt::Display for BitmapAuditError<E> {
 }
 
 #[cfg(feature = "std")]
-impl<E> std::error::Error for BitmapAuditError<E> where E: std::error::Error + 'static {}
+impl<E> std::error::Error for BitmapAuditError<E> where E: std::error::Error + fmt::Debug + 'static {}
 
 impl<E> From<UniverseTooLarge> for BitmapAuditError<E> {
     fn from(err: UniverseTooLarge) -> Self {
@@ -188,9 +188,12 @@ impl<E> From<HamtTraversalError<E>> for BitmapAuditError<E> {
 /// same conditions as [`reachability_audit`].
 ///
 /// # Panics
-/// See [`IndexedUniverse::try_build`] — `universe`'s length was already
-/// bounds-checked there, so the internal re-derivation of it as a `u32`
-/// cannot actually panic.
+/// Does not panic on any caller-controlled input — an oversized `universe`
+/// is reported as [`BitmapAuditError::Universe`], not a panic. The one
+/// `.expect()` in this function's body re-derives `universe.len()` as a
+/// `u32` for bitmap construction, which [`IndexedUniverse::try_build`]
+/// (called just above it, and propagated with `?` on failure) already
+/// guarantees fits.
 pub fn bitmap_reachability_audit<K, V, F, E>(
     roots: impl IntoIterator<Item = Arc<HamtNode<K, V>>>,
     universe: impl IntoIterator<Item = StructuralHash>,
