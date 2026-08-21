@@ -2093,9 +2093,9 @@ fn test_walk_reachable_node_hashes_shares_subtrees_across_roots() {
     use std::collections::BTreeSet;
 
     let key = b"dummy_server_key";
-    // Two independently built trees that share no entries, so the only way
-    // any node hash can coincide between them is genuine structural
-    // sharing/coincidence -- there isn't any here, this is the baseline.
+    // Two independently built trees from identical entries: distinct `Arc`
+    // allocations, identical content, and therefore identical node hashes at
+    // every level. Walking the second one must mark nothing new.
     let entries_a: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
     let entries_b: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
     let root_a = build_hamt(key, entries_a).expect("build A");
