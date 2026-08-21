@@ -2627,6 +2627,88 @@ mod tests {
         );
     }
 
+    /// Direct `V2.1` vs `V2.1.1` comparison for `OverlayState::get_event`'s
+    /// power-phase local-auth fallback (lines ~122-168): confirms the *real*
+    /// polarity of the version gate, since a first-pass reading of just the
+    /// comments here ("gate the power-phase fallback behind V2.1.1+ only")
+    /// suggested V2.1.1 is strictly more permissive than V2.1. Tracing the
+    /// actual control flow (and `test_overlay_state_coverage_boosters` case 3
+    /// below) shows the opposite: when the gate is *false* (V2.1, or any
+    /// non-power-phase/non-required-type/non-power-candidate case), the code
+    /// falls through to an unconditional `Some(ev)` -- V2.1 is the more
+    /// permissive one. The gate only *narrows* things further, for V2.1.1+,
+    /// when the query is a required type (`PL/join_rules`) mid-power-phase: it
+    /// then additionally requires the candidate itself to be a power-shaped
+    /// event before falling back to local auth, returning `None` otherwise.
+    #[test]
+    fn test_overlay_state_v2_1_vs_v2_1_1_power_phase_fallback_polarity() {
+        let create_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            sender: "@creator:example.com".into(),
+            ..Default::default()
+        };
+        let pl_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
+            event_id: "$pl".into(),
+            event_type: "m.room.power_levels".into(),
+            sender: "@creator:example.com".into(),
+            ..Default::default()
+        };
+
+        // A required-type (PL) query, present in local_auth but not yet in
+        // `resolved`, requested on behalf of a non-power candidate
+        // (`m.room.message`) during the power phase.
+        let build_overlay = |version: StateResVersion| {
+            let resolved = imbl::OrdMap::new();
+            let auth_context = HashMap::new();
+            let mut sort_set = HashMap::new();
+            sort_set.insert("$pl".to_string(), pl_ev.clone());
+            let mut local_auth = BTreeMap::new();
+            local_auth.insert(
+                (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
+                pl_ev.clone(),
+            );
+            (resolved, auth_context, sort_set, local_auth, version)
+        };
+
+        let (resolved, auth_context, sort_set, local_auth, version) =
+            build_overlay(StateResVersion::V2_1);
+        let overlay_v21 = OverlayState {
+            resolved: &resolved,
+            auth_context: &auth_context,
+            sort_set: &sort_set,
+            local_auth,
+            create_ev: Some(&create_ev),
+            version,
+            is_power_phase: true,
+            candidate_event_type: "m.room.message",
+        };
+        assert!(
+            overlay_v21.get_event(M_ROOM_POWER_LEVELS, "").is_some(),
+            "V2.1 has no power-phase gate at all here -- it falls back to local \
+             auth unconditionally, regardless of what kind of event is asking"
+        );
+
+        let (resolved, auth_context, sort_set, local_auth, version) =
+            build_overlay(StateResVersion::V2_1_1);
+        let overlay_v211 = OverlayState {
+            resolved: &resolved,
+            auth_context: &auth_context,
+            sort_set: &sort_set,
+            local_auth,
+            create_ev: Some(&create_ev),
+            version,
+            is_power_phase: true,
+            candidate_event_type: "m.room.message",
+        };
+        assert!(
+            overlay_v211.get_event(M_ROOM_POWER_LEVELS, "").is_none(),
+            "V2.1.1 is the *stricter* one here: a non-power candidate (a plain \
+             message) may not bypass-authorize against an unresolved, only \
+             locally-known power_levels event"
+        );
+    }
+
     #[test]
     #[allow(clippy::too_many_lines)]
     fn test_overlay_state_coverage_boosters() {
