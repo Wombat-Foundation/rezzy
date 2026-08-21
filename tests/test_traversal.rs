@@ -1097,10 +1097,11 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
     );
 
     // The V2.1.1 CDO pre-filter was removed as unsound, so it no longer drops
-    // nexy's concurrent join, promotion, or ban. nexy validly joined under the
-    // public rules in her own auth chain; the "ghost moderator" (a joined and
-    // promoted nexy who bans the spammer while join_rules resolves to invite)
-    // now manifests and is documented here rather than masked.
+    // nexy's concurrent join, promotion, or ban. In v2.1's conflicted/
+    // unconflicted model the member key and the join_rules key resolve
+    // independently: nexy's join is auth-checked against its own auth chain
+    // (public rules), so it — and the promotion and ban that build on it —
+    // validly survive even though the join_rules key resolves to invite.
     assert_eq!(
         resolved_v211.get(&nexy_member_key).map(String::as_str),
         Some("$nexy_join")
@@ -1109,10 +1110,7 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
         resolved_v211.get(&spammer_member_key).map(String::as_str),
         Some("$nexy_bans_spammer")
     );
-    assert_eq!(
-        resolved_v211.get(&pl_key),
-        Some(&"$nexy_promo".to_string())
-    );
+    assert_eq!(resolved_v211.get(&pl_key), Some(&"$nexy_promo".to_string()));
 }
 
 #[test]
@@ -1232,10 +1230,10 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
     );
 
     // The V2.1.1 CDO pre-filter was removed as unsound, so the concurrent
-    // lockdown no longer drops spammer's join. spammer's join was validly
-    // authorized under the public join_rules in its own auth chain, so it
-    // survives — the "ghost member" (joined while join_rules resolves to
-    // invite) now manifests and is documented here rather than masked.
+    // lockdown no longer drops spammer's join. In v2.1's conflicted/
+    // unconflicted model spammer's join is auth-checked against its own auth
+    // chain (public rules), so it validly survives as a separate conflicted
+    // key even though the join_rules key independently resolves to invite.
     assert_eq!(
         resolved_v211.get(&spammer_key).map(String::as_str),
         Some("$spammer_join")
