@@ -4057,13 +4057,11 @@ mod tests {
 
         // Unchanged variant formats as `Unchanged { parent_event_id: ..., hash: ... }`.
         let parent = String::from("$parent");
-        let f = alloc::format!(
-            "{:?}",
-            StateUpdate::<String, String>::Unchanged {
-                parent_event_id: &parent,
-                hash: &ZERO_HASH,
-            }
-        );
+        let test_unchanged: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
+            parent_event_id: &parent,
+            hash: &ZERO_HASH,
+        };
+        let f = alloc::format!("{:?}", test_unchanged);
         assert!(
             f.contains("Unchanged"),
             "debug output should name the Unchanged variant: {f}"
@@ -4079,7 +4077,7 @@ mod tests {
         assert_eq!(new.clone(), new);
 
         let parent = String::from("$parent");
-        let unchanged = StateUpdate::<String, String>::Unchanged {
+        let unchanged: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
             parent_event_id: &parent,
             hash: &ZERO_HASH,
         };
@@ -4094,14 +4092,14 @@ mod tests {
 
         // New with a different hash compares unequal.
         let a = new_update();
-        let b = StateUpdate::<String, String>::New {
+        let b: StateUpdate<'_, String, String> = StateUpdate::New {
             state: init_state(),
             hash: &ONE_HASH,
         };
         assert_ne!(a, b);
 
         // New with a different state map compares unequal.
-        let c = StateUpdate::<String, String>::New {
+        let c: StateUpdate<'_, String, String> = StateUpdate::New {
             state: SharedState::new(),
             hash: &ZERO_HASH,
         };
@@ -4110,11 +4108,11 @@ mod tests {
         // Unchanged compares equal when parent id and hash match, unequal otherwise.
         let p1 = String::from("$parent");
         let p2 = String::from("$other");
-        let d1 = StateUpdate::<String, String>::Unchanged {
+        let d1: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
             parent_event_id: &p1,
             hash: &ZERO_HASH,
         };
-        let d2 = StateUpdate::<String, String>::Unchanged {
+        let d2: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
             parent_event_id: &p2,
             hash: &ZERO_HASH,
         };
@@ -4123,11 +4121,11 @@ mod tests {
 
         // A New and an Unchanged are never equal, even with the same hash.
         let different_hash = crate::state::lthash::LtHash([2; 1024]);
-        let new = StateUpdate::<String, String>::New {
+        let new: StateUpdate<'_, String, String> = StateUpdate::New {
             state: SharedState::new(),
             hash: &different_hash,
         };
-        let unchanged = StateUpdate::<String, String>::Unchanged {
+        let unchanged: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
             parent_event_id: &p1,
             hash: &different_hash,
         };
@@ -4147,7 +4145,7 @@ mod tests {
         let hash = crate::state::lthash::LtHash::from_state(&state);
         let parent = String::from("$parent");
 
-        let new = StateUpdate::<String, String>::New {
+        let new: StateUpdate<'_, String, String> = StateUpdate::New {
             state: state.clone(),
             hash: &hash,
         };
@@ -4155,7 +4153,7 @@ mod tests {
         assert_eq!(new.digest(), hash.digest());
         assert_eq!(new.digest().len(), 32);
 
-        let unchanged = StateUpdate::<String, String>::Unchanged {
+        let unchanged: StateUpdate<'_, String, String> = StateUpdate::Unchanged {
             parent_event_id: &parent,
             hash: &hash,
         };
