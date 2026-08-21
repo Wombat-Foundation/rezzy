@@ -80,6 +80,15 @@ where
 
 /// Computes the shortest distance from the event to the m.room.create event via `auth_events`.
 /// Safely avoids stack overflow on deep DAGs using an iterative post-order traversal with memoization.
+///
+/// # Semantics
+/// The distance is the minimum number of `auth_events` hops to `create`. Because most events
+/// cite `create` (or an event that cites it) directly, many events collapse to distance 1 — so
+/// this only meaningfully *differentiates* events whose auth chain reaches `create` indirectly,
+/// e.g. power events citing an earlier `m.room.power_levels` that itself cites `create`. Two
+/// events that both cite `create` directly tie at distance 1, and the sort falls through to the
+/// next tie-break (`origin_server_ts`). This is the quantity V2.1.1/V2.2 use as the equal-PL
+/// power-event tie-break; V2.1 does not use it.
 pub(crate) fn compute_auth_distance_iterative<'a, Id, C, E>(
     curr_id: &'a Id,
     auth_context: &'a impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
