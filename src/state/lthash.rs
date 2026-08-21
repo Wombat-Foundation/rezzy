@@ -446,11 +446,36 @@ mod tests {
             )
         }
 
+        // Digest vectors are published by MSC4500 in unpadded base64url (the
+        // wire form); lattice/expansion prefixes remain hex in the spec.
+        fn b64u(bytes: &[u8]) -> alloc::string::String {
+            const ALPHABET: &[u8; 64] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut out = alloc::string::String::with_capacity(bytes.len().div_ceil(3) * 4);
+            for chunk in bytes.chunks(3) {
+                let b = [
+                    chunk[0],
+                    chunk.get(1).copied().unwrap_or(0),
+                    chunk.get(2).copied().unwrap_or(0),
+                ];
+                let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+                out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+                out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+                if chunk.len() > 1 {
+                    out.push(ALPHABET[(n >> 6) as usize & 63] as char);
+                }
+                if chunk.len() > 2 {
+                    out.push(ALPHABET[n as usize & 63] as char);
+                }
+            }
+            out
+        }
+
         // --- Empty state (n=0) ---
         let s0 = LtHash::ZERO;
         assert_eq!(
-            hex(&s0.digest()),
-            "200823e5158b3774c11b5c61850ada762f8264144a9bebec3ebac5a2adde67b8"
+            b64u(&s0.digest()),
+            "IAgj5RWLN3TBG1xhhQradi-CZBRKm-vsPrrFoq3eZ7g"
         );
 
         // --- Scenario 1: Add element 1 ---
@@ -463,8 +488,8 @@ mod tests {
         let s1_bytes: Vec<u8> = s1.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
         assert_eq!(hex(&s1_bytes), "c6a4f2e8f4016c9aaf9c52e67020f221");
         assert_eq!(
-            hex(&s1.digest()),
-            "d26472b7d70e5811b22aa575e1ada898b3c83891547d7d0b90972aa44db42db2"
+            b64u(&s1.digest()),
+            "0mRyt9cOWBGyKqV14a2omLPIOJFUfX0LkJcqpE20LbI"
         );
 
         // --- Scenario 2: Remove element 1 ---
@@ -472,8 +497,8 @@ mod tests {
         s_back.sub_seed(&seed1);
         assert_eq!(s_back, LtHash::ZERO);
         assert_eq!(
-            hex(&s_back.digest()),
-            "200823e5158b3774c11b5c61850ada762f8264144a9bebec3ebac5a2adde67b8"
+            b64u(&s_back.digest()),
+            "IAgj5RWLN3TBG1xhhQradi-CZBRKm-vsPrrFoq3eZ7g"
         );
 
         // --- Scenario 3: Add element 2 ---
@@ -486,8 +511,8 @@ mod tests {
         let s2_bytes: Vec<u8> = s2.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
         assert_eq!(hex(&s2_bytes), "47ac154946d35272c8d8ff8d7da5ec4e");
         assert_eq!(
-            hex(&s2.digest()),
-            "687f1b5c3c5c4132b6fdc03c070e01287b01aec044e98560ccdfee501009cc0f"
+            b64u(&s2.digest()),
+            "aH8bXDxcQTK2_cA8Bw4BKHsBrsBE6YVgzN_uUBAJzA8"
         );
 
         // --- Scenario 4: Replace element 1 with element 3 ---
@@ -501,8 +526,8 @@ mod tests {
         let s3_bytes: Vec<u8> = s3.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
         assert_eq!(hex(&s3_bytes), "95f0dbf054079fa8eb1c2a6ec017f441");
         assert_eq!(
-            hex(&s3.digest()),
-            "0c1eb97da39dcc2ab9cfa61c4da329dbcd8e230b892a70583857c934424927a9"
+            b64u(&s3.digest()),
+            "DB65faOdzCq5z6YcTaMp282OIwuJKnBYOFfJNEJJJ6k"
         );
     }
 
