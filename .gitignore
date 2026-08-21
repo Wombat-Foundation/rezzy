@@ -29,6 +29,9 @@ matrix-spec-txt/
 /*.jsonl
 /*.html
 
+# assets and fixturs
+*.png
+
 # paper
 paper.aux
 paper.log
