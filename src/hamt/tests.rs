@@ -3133,3 +3133,286 @@ fn test_unreachable_node_hashes_propagates_resolver_error_without_partial_result
         crate::hamt::HamtTraversalError::Resolve("resolve failed")
     );
 }
+
+// --- isolate_delta order-invariance -----------------------------------
+//
+// `diff_nodes` (src/hamt/delta.rs) derives three disjoint slot classes per
+// bitmap (both/only_a/only_b) via bitwise set ops instead of a naive 0..32
+// scan. Within a class, bits are still visited in ascending slot order (the
+// `bits & bits.wrapping_neg()` / `bits &= bits.wrapping_sub(1)` idiom always
+// peels the lowest set bit first), but the *classes* are now emitted one
+// after another rather than interleaved by slot number the way a single
+// 0..32 pass would. `added`/`removed` are documented as unordered Vecs
+// (see delta.rs), but nothing previously pinned that down against a
+// consumer that assumes slot-major order. These tests do.
+//
+// The oracle is built independently of `diff_nodes`'s bitmask shape: full
+// leaf enumeration of both roots via `visit_entries` into `BTreeMap`s, then
+// a plain key/value set difference. A shape-twin oracle (e.g. a naive
+// 0..32 loop) would agree with `diff_nodes` on every bug they share, so it
+// is deliberately not used.
+
+/// Sorted `(key, value)` pairs for one side of a delta, using `u32` keys and
+/// values so no signed/narrowing conversion is ever required against the
+/// `usize`-based bit-scan indices in `diff_nodes` or the `usize`-based
+/// `Rng::below`.
+type DeltaEntries = alloc::vec::Vec<(u32, u32)>;
+
+/// Enumerates every leaf of `root` into a `BTreeMap`, resolving lazy
+/// children with `resolver`. Independent of `diff_nodes`'s traversal shape.
+fn oracle_leaves<F>(
+    root: &Arc<HamtNode<u32, u32>>,
+    resolver: &mut F,
+) -> alloc::collections::BTreeMap<u32, u32>
+where
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<u32, u32>>, core::convert::Infallible>,
+{
+    let mut out = alloc::collections::BTreeMap::new();
+    root.visit_entries(resolver, &mut |k: &u32, v: &u32| {
+        out.insert(*k, *v);
+        Ok::<(), core::convert::Infallible>(())
+    })
+    .expect("infallible resolver cannot fail");
+    out
+}
+
+/// Computes `added`/`removed` as sorted `(key, value)` vectors from the
+/// oracle leaf maps, independent of `isolate_delta`'s emission order.
+fn oracle_delta(
+    a: &alloc::collections::BTreeMap<u32, u32>,
+    b: &alloc::collections::BTreeMap<u32, u32>,
+) -> (DeltaEntries, DeltaEntries) {
+    let mut removed: DeltaEntries = a
+        .iter()
+        .filter(|(k, v)| b.get(k) != Some(v))
+        .map(|(k, v)| (*k, *v))
+        .collect();
+    let mut added: DeltaEntries = b
+        .iter()
+        .filter(|(k, v)| a.get(k) != Some(v))
+        .map(|(k, v)| (*k, *v))
+        .collect();
+    removed.sort_unstable();
+    added.sort_unstable();
+    (added, removed)
+}
+
+/// Asserts `isolate_delta`'s output matches the oracle as sorted multisets,
+/// i.e. up to reordering only (no missing/extra/duplicated entries).
+fn assert_delta_matches_oracle(root_a: &Arc<HamtNode<u32, u32>>, root_b: &Arc<HamtNode<u32, u32>>) {
+    let mut infallible =
+        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u32, u32>>, core::convert::Infallible> {
+            unreachable!("fixtures below contain no lazy nodes")
+        };
+
+    let leaves_a = oracle_leaves(root_a, &mut infallible);
+    let leaves_b = oracle_leaves(root_b, &mut infallible);
+    let (mut want_added, mut want_removed) = oracle_delta(&leaves_a, &leaves_b);
+
+    let lattice_a = LtHash::default();
+    let lattice_b = LtHash([1u16; 1024]);
+    let (mut got_added, mut got_removed) =
+        isolate_delta(root_a, &lattice_a, root_b, &lattice_b, &mut infallible)
+            .expect("isolate_delta should succeed against lazy-free fixtures");
+    got_added.sort_unstable();
+    got_removed.sort_unstable();
+    want_added.sort_unstable();
+    want_removed.sort_unstable();
+
+    assert_eq!(got_added, want_added, "added set diverges from oracle");
+    assert_eq!(
+        got_removed, want_removed,
+        "removed set diverges from oracle"
+    );
+}
+
+/// A single HAMT node deliberately built to straddle all three bitmask
+/// classes at once, at both the datamap and the nodemap level, so a
+/// slot-major (single 0..32 pass) consumer and a class-major
+/// (both-then-only_a-then-only_b) consumer would disagree on order:
+///
+/// datamap slots: 0 (both, differing value), 1 (`only_a`), 2 (`only_b`)
+/// nodemap slots: 3 (both, differing child), 4 (`only_a`), 5 (`only_b`)
+#[test]
+fn test_isolate_delta_boundary_straddling_class_order_invariant() {
+    let key = b"order_invariance_boundary";
+
+    let child_a_leaf = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(30_u32, 3000_u32)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(30, 3000)], &[]),
+    });
+    let child_b_leaf = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(31_u32, 3100_u32)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(31, 3100)], &[]),
+    });
+    let only_a_child = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(40_u32, 4000_u32)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(40, 4000)], &[]),
+    });
+    let only_b_child = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(50_u32, 5000_u32)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(50, 5000)], &[]),
+    });
+
+    // datamap slot 0: differing value (both classes) -> removed(0,100)/added(0,101)
+    // datamap slot 1: only in A -> removed(1,200)
+    // datamap slot 2: only in B -> added(2,300)
+    // nodemap slot 3: differing child (both) -> removed(30,3000)/added(31,3100)
+    // nodemap slot 4: only in A -> removed(40,4000)
+    // nodemap slot 5: only in B -> added(50,5000)
+    let root_a = Arc::new(HamtNode {
+        datamap: 0b011,
+        nodemap: 0b011 << 3,
+        leaves: vec![(0_u32, 100_u32), (1_u32, 200_u32)],
+        children: vec![
+            NodeRef::Resolved(child_a_leaf.clone()),
+            NodeRef::Resolved(only_a_child.clone()),
+        ],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0b011,
+            0b011 << 3,
+            &[(0, 100), (1, 200)],
+            &[
+                NodeRef::Resolved(child_a_leaf.clone()),
+                NodeRef::Resolved(only_a_child.clone()),
+            ],
+        ),
+    });
+    let root_b = Arc::new(HamtNode {
+        datamap: 0b101,
+        nodemap: 0b101 << 3,
+        leaves: vec![(0_u32, 101_u32), (2_u32, 300_u32)],
+        children: vec![
+            NodeRef::Resolved(child_b_leaf.clone()),
+            NodeRef::Resolved(only_b_child.clone()),
+        ],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0b101,
+            0b101 << 3,
+            &[(0, 101), (2, 300)],
+            &[
+                NodeRef::Resolved(child_b_leaf.clone()),
+                NodeRef::Resolved(only_b_child.clone()),
+            ],
+        ),
+    });
+
+    assert_delta_matches_oracle(&root_a, &root_b);
+}
+
+/// Deterministic xorshift64* PRNG, matching the idiom already used in
+/// `tests/differential_harness.rs` (Phase B harness).
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Rng(seed | 1)
+    }
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// Returns a value in `0..n`, computed entirely in `u64` and narrowed
+    /// back to `u32` via a checked conversion. `n` is always a small,
+    /// compile-time-bounded constant at call sites in this module (well
+    /// under `u32::MAX`), so `self.next() % u64::from(n)` is itself `< n`
+    /// and the narrowing conversion below cannot fail; `expect` documents
+    /// that invariant instead of silently discarding a truncation via a
+    /// cast or a clippy allow.
+    fn below(&mut self, n: u32) -> u32 {
+        let n64 = u64::from(n);
+        let r64 = self
+            .next()
+            .checked_rem(n64)
+            .expect("n64 = u64::from(n: u32) is 0 only if n is 0; no call site passes n = 0");
+        u32::try_from(r64).expect("r64 < n64 = u64::from(u32), so it always fits back in u32")
+    }
+}
+
+#[test]
+fn test_isolate_delta_order_invariant_randomized() {
+    let mut rng = Rng::new(0xD15C_0DE1);
+
+    for trial in 0..500_u32 {
+        let key = format!("order_invariance_random_{trial}");
+        let key_bytes = key.as_bytes();
+
+        let n_a = 1 + rng.below(24);
+        let n_b = 1 + rng.below(24);
+        let key_space = 40_u32;
+
+        let entries_a: DeltaEntries = (0..n_a)
+            .map(|_| (rng.below(key_space), rng.below(1000)))
+            .collect();
+        let entries_b: DeltaEntries = (0..n_b)
+            .map(|_| (rng.below(key_space), rng.below(1000)))
+            .collect();
+
+        // Later entries for the same key win (build_hamt inserts in order),
+        // so dedupe the same way for the oracle input.
+        let mut map_a: alloc::collections::BTreeMap<u32, u32> = alloc::collections::BTreeMap::new();
+        for (k, v) in entries_a.iter().copied() {
+            map_a.insert(k, v);
+        }
+        let mut map_b: alloc::collections::BTreeMap<u32, u32> = alloc::collections::BTreeMap::new();
+        for (k, v) in entries_b.iter().copied() {
+            map_b.insert(k, v);
+        }
+
+        // Small integer keys can occasionally collide in path-hash space at
+        // this key_space size; that's an unrelated property of build_hamt's
+        // hashing, not something this order-invariance property test is
+        // checking, so skip (not fail) on the rare collision.
+        let (Ok(root_a), Ok(root_b)) = (
+            build_hamt::<u32, u32, _>(key_bytes, entries_a),
+            build_hamt::<u32, u32, _>(key_bytes, entries_b),
+        ) else {
+            continue;
+        };
+
+        let mut infallible =
+            |_hash: &StructuralHash| -> Result<Arc<HamtNode<u32, u32>>, core::convert::Infallible> {
+                unreachable!("build_hamt fixtures contain no lazy nodes")
+            };
+
+        let (mut want_added, mut want_removed) = oracle_delta(&map_a, &map_b);
+        let lattice_a = LtHash::default();
+        let lattice_b = LtHash([1u16; 1024]);
+        let (mut got_added, mut got_removed) =
+            isolate_delta(&root_a, &lattice_a, &root_b, &lattice_b, &mut infallible)
+                .expect("isolate_delta should succeed against lazy-free random fixtures");
+
+        got_added.sort_unstable();
+        got_removed.sort_unstable();
+        want_added.sort_unstable();
+        want_removed.sort_unstable();
+
+        assert_eq!(
+            got_added, want_added,
+            "trial {trial}: added set diverges from oracle"
+        );
+        assert_eq!(
+            got_removed, want_removed,
+            "trial {trial}: removed set diverges from oracle"
+        );
+    }
+}
