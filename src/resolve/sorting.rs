@@ -78,78 +78,6 @@ where
     event.power_level()
 }
 
-/// Computes the shortest distance from the event to the m.room.create event via `auth_events`.
-/// Safely avoids stack overflow on deep DAGs using an iterative post-order traversal with memoization.
-///
-/// # Semantics
-/// The distance is the minimum number of `auth_events` hops to `create`. Because most events
-/// cite `create` (or an event that cites it) directly, many events collapse to distance 1 — so
-/// this only meaningfully *differentiates* events whose auth chain reaches `create` indirectly,
-/// e.g. power events citing an earlier `m.room.power_levels` that itself cites `create`. Two
-/// events that both cite `create` directly tie at distance 1, and the sort falls through to the
-/// next tie-break (`origin_server_ts`). This is the quantity V2.1.1/V2.2 use as the equal-PL
-/// power-event tie-break; V2.1 does not use it.
-pub(crate) fn compute_auth_distance_iterative<'a, Id, C, E>(
-    curr_id: &'a Id,
-    auth_context: &'a impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
-    create_id: Option<&'a Id>,
-    memo: &mut FastMap<&'a Id, u64>,
-) -> u64
-where
-    Id: crate::basespec::rezzy_types::EventId + 'a,
-    C: 'a,
-    E: EventLike<Id = Id, Content = C> + 'a,
-{
-    if Some(curr_id) == create_id {
-        return 0;
-    }
-    if let Some(&dist) = memo.get(curr_id) {
-        if dist != u64::MAX - 1 {
-            return dist;
-        }
-    }
-
-    let mut stack = Vec::new();
-    stack.push(curr_id);
-
-    while let Some(&top) = stack.last() {
-        if let Some(&dist) = memo.get(top) {
-            if dist != u64::MAX - 1 {
-                stack.pop();
-                continue;
-            }
-        } else {
-            memo.insert(top, u64::MAX - 1);
-        }
-
-        let mut all_children_done = true;
-        let mut min_dist = u64::MAX;
-
-        if let Some(ev) = auth_context.get_event(top) {
-            if !ev.auth_events().is_empty() {
-                for aid in ev.auth_events() {
-                    if Some(aid) == create_id {
-                        min_dist = min_dist.min(1);
-                    } else if let Some(&c_dist) = memo.get(aid) {
-                        if c_dist != u64::MAX - 1 {
-                            min_dist = min_dist.min(c_dist.saturating_add(1));
-                        }
-                    } else {
-                        all_children_done = false;
-                        stack.push(aid);
-                    }
-                }
-            }
-        }
-
-        if all_children_done {
-            memo.insert(top, min_dist);
-            stack.pop();
-        }
-    }
-
-    memo.get(curr_id).copied().unwrap_or(u64::MAX)
-}
 
 /// Detailed Kahn's Topological Sort algorithm for event power resolution.
 ///
@@ -205,28 +133,6 @@ where
         }
     }
 
-    // Populate `auth_chain_distance` (shortest hops to `create` in the auth
-    // graph) for both V2.1.1 and V2.2 — the versions whose power-event sort
-    // uses it as a tie-break (`SortPriority::cmp`). V2.1 (stock MSC4297) does
-    // not use it, so it is left zero-filled there and V2.1 falls straight
-    // through to `origin_server_ts`.
-    let depth_cache: FastMap<Id, u64> =
-        if version == StateResVersion::V2_1_1 || version == StateResVersion::V2_2 {
-            let mut memo = FastMap::default();
-            let create_id = create_ev.map(super::super::basespec::rezzy_types::DagNode::event_id);
-            events
-                .keys()
-                .map(|id| {
-                    (
-                        id.clone(),
-                        compute_auth_distance_iterative(id, sort_context, create_id, &mut memo),
-                    )
-                })
-                .collect()
-        } else {
-            FastMap::default()
-        };
-
     let mut queue: BinaryHeap<SortPriority<'_, E>> = BinaryHeap::new();
     for (id, &degree) in &in_degree {
         if degree == 0 {
@@ -234,7 +140,6 @@ where
                 queue.push(SortPriority {
                     event,
                     power_level: pl_cache.get(id).copied().unwrap_or(0),
-                    auth_chain_distance: depth_cache.get(id).copied().unwrap_or(0),
                     version,
                 });
             }
@@ -255,7 +160,6 @@ where
                     queue.push(SortPriority {
                         event: next_ev,
                         power_level: pl_cache.get(next_id).copied().unwrap_or(0),
-                        auth_chain_distance: depth_cache.get(next_id).copied().unwrap_or(0),
                         version,
                     });
                 }
@@ -712,85 +616,6 @@ mod tests {
     }
 
     /// Coverage: `compute_auth_distance_iterative`
-    /// Creates a 3-hop auth chain and verifies the iterative DFS + memoization.
-    #[test]
-    fn test_auth_distance_iterative_deep_chain() {
-        use crate::basespec::rezzy_types::SortContext;
-
-        let create = LeanEvent::<String> {
-            event_id: "$create".into(),
-            event_type: "m.room.create".into(),
-            auth_events: alloc::vec![],
-            ..Default::default()
-        };
-        let pl = LeanEvent::<String> {
-            event_id: "$pl".into(),
-            event_type: "m.room.power_levels".into(),
-            auth_events: alloc::vec!["$create".into()],
-            ..Default::default()
-        };
-        let join = LeanEvent::<String> {
-            event_id: "$join".into(),
-            event_type: "m.room.member".into(),
-            auth_events: alloc::vec!["$create".into(), "$pl".into()],
-            ..Default::default()
-        };
-        let topic = LeanEvent::<String> {
-            event_id: "$topic".into(),
-            event_type: "m.room.topic".into(),
-            auth_events: alloc::vec!["$create".into(), "$pl".into(), "$join".into()],
-            ..Default::default()
-        };
-
-        let mut primary: HashMap<String, LeanEvent<String>> = HashMap::new();
-        primary.insert("$create".into(), create.clone());
-        primary.insert("$pl".into(), pl);
-        primary.insert("$join".into(), join);
-        primary.insert("$topic".into(), topic);
-
-        let secondary: HashMap<String, LeanEvent<String>> = HashMap::new();
-        let sort_ctx = SortContext {
-            primary: &primary,
-            secondary: &secondary,
-            _marker: core::marker::PhantomData,
-        };
-
-        let topic_id: String = "$topic".into();
-        let create_id: String = "$create".into();
-        let pl_id: String = "$pl".into();
-        let join_id: String = "$join".into();
-        let mut memo = FastMap::default();
-
-        // First call: triggers iterative traversal through auth chain
-        // $topic → $join(dist=2), $pl(dist=1), $create(dist=0) → min = 1
-        let dist =
-            compute_auth_distance_iterative(&topic_id, &sort_ctx, Some(&create_id), &mut memo);
-        assert_eq!(
-            dist, 1,
-            "$topic should be distance 1 from $create (direct auth)"
-        );
-
-        // Second call: hits memoization early return (line 96)
-        let dist2 =
-            compute_auth_distance_iterative(&topic_id, &sort_ctx, Some(&create_id), &mut memo);
-        assert_eq!(dist2, dist, "Memoized result must match");
-
-        // Verify intermediate memos were populated
-        assert_eq!(
-            memo.get(&pl_id),
-            Some(&1),
-            "$pl should be distance 1 from $create"
-        );
-        assert_eq!(
-            memo.get(&join_id),
-            Some(&1),
-            "$join has $create in auth → distance 1"
-        );
-    }
-
-    /// Coverage: `build_mainline_with_cache` cache hit path (sorting.rs:355-361).
-    ///
-    /// Calling `build_mainline_with_cache` twice with the same cache: the first
     /// call populates the cache for each PL event, and the second call hits the
     /// cache early, skipping the BFS entirely.
     #[test]

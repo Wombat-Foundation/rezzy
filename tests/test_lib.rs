@@ -250,13 +250,11 @@ mod tests {
         let p_base = SortPriority {
             power_level: e_base.power_level,
             event: &e_base,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         let p_worst_pl = SortPriority {
             power_level: e_worst_pl.power_level,
             event: &e_worst_pl,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
 
@@ -272,7 +270,6 @@ mod tests {
         let p_later_ts = SortPriority {
             power_level: e_later_ts.power_level,
             event: &e_later_ts,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         // p_later_ts has ts 20 (better — wins); later ts pops LAST = is Smaller.
@@ -288,7 +285,6 @@ mod tests {
         let p_larger_id = SortPriority {
             power_level: e_larger_id.power_level,
             event: &e_larger_id,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         // p_larger_id has id "$2" (better — wins); larger id pops LAST = is Smaller.
@@ -296,59 +292,6 @@ mod tests {
         assert_eq!(p_base.cmp(&p_larger_id), Ordering::Greater);
     }
 
-    /// V2.1.1 introduces an `auth_chain_distance` tie-breaker between equal PLs.
-    #[test]
-    fn test_sort_priority_v2_1_1_auth_chain_distance_tie_break() {
-        let evs = utils::parse_jsonl_events(
-            r#"
-            {"event_id": "$close", "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 10}
-            {"event_id": "$far",   "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 10}
-        "#,
-        );
-
-        // Case 1: Equal PL, different auth_chain_distance.
-        let p_close = SortPriority {
-            power_level: 100,
-            event: &evs[0],
-            auth_chain_distance: 1,
-            version: rezzy::StateResVersion::V2_1_1,
-        };
-        let p_far = SortPriority {
-            power_level: 100,
-            event: &evs[1],
-            auth_chain_distance: 5,
-            version: rezzy::StateResVersion::V2_1_1,
-        };
-        // cmp uses `other.distance.cmp(&self.distance)`:
-        //   p_far.cmp(p_close) → other(1).cmp(self(5)) → Less
-        assert_eq!(p_far.cmp(&p_close), Ordering::Less);
-        assert_eq!(p_close.cmp(&p_far), Ordering::Greater);
-
-        // Case 2: Equal PL AND equal distance → falls through to origin_server_ts.
-        let evs2 = utils::parse_jsonl_events(
-            r#"
-            {"event_id": "$early", "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 10}
-            {"event_id": "$late",  "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 20}
-        "#,
-        );
-        let p_early = SortPriority {
-            power_level: 100,
-            event: &evs2[0],
-            auth_chain_distance: 3,
-            version: rezzy::StateResVersion::V2_1_1,
-        };
-        let p_late = SortPriority {
-            power_level: 100,
-            event: &evs2[1],
-            auth_chain_distance: 3,
-            version: rezzy::StateResVersion::V2_1_1,
-        };
-        // Equal distance → earlier ts pops first (Greater = loses).
-        assert_eq!(p_early.cmp(&p_late), Ordering::Greater);
-        assert_eq!(p_late.cmp(&p_early), Ordering::Less);
-    }
-
-    /// `SortPriority` derives Copy; the manual Clone impl must agree.
     #[test]
     fn test_sort_priority_clone() {
         let evs = utils::parse_jsonl_events(
@@ -359,7 +302,6 @@ mod tests {
         let p = SortPriority {
             power_level: 50,
             event: &evs[0],
-            auth_chain_distance: 3,
             version: rezzy::StateResVersion::V2_1_1,
         };
         #[allow(clippy::clone_on_copy)]
@@ -378,13 +320,11 @@ mod tests {
         let p_v1 = SortPriority {
             power_level: 0,
             event: &event,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V1,
         };
         let p_v2 = SortPriority {
             power_level: 0,
             event: &event,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
 
@@ -842,13 +782,11 @@ mod tests {
         let p1 = SortPriority {
             power_level: e1.power_level,
             event: &e1,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         let p2 = SortPriority {
             power_level: e2.power_level,
             event: &e2,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         assert!(p1.partial_cmp(&p2).is_some());
@@ -1307,7 +1245,6 @@ mod tests {
         let p = SortPriority {
             power_level: e.power_level,
             event: &e,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         let p2 = p;
@@ -1574,7 +1511,6 @@ mod tests {
         let p_base = SortPriority {
             power_level: e_base.power_level,
             event: &e_base,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         let e_high_power: LeanEvent = LeanEvent {
@@ -1584,7 +1520,6 @@ mod tests {
         let p_high_power = SortPriority {
             power_level: e_high_power.power_level,
             event: &e_high_power,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         // p_base is WORSE (PL 50 < 100). Higher PL is Greater (pops first). So p_base < p_high_power.
@@ -1596,7 +1531,6 @@ mod tests {
         let p_best = SortPriority {
             power_level: e_best.power_level,
             event: &e_best,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         // p_best has TS 100 (better: later wins). Better must be Smaller (pops last).
@@ -1609,7 +1543,6 @@ mod tests {
         let p_early_id = SortPriority {
             power_level: e_early_id.power_level,
             event: &e_early_id,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         // p_base has ID "m" (better — larger id wins). Better must be Smaller (pops last). So p_base < p_early_id.
@@ -1617,7 +1550,6 @@ mod tests {
         let p_v1_base = SortPriority {
             power_level: e_base.power_level,
             event: &e_base,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V1,
         };
         let e_shallow: LeanEvent = LeanEvent {
@@ -1627,7 +1559,6 @@ mod tests {
         let p_shallow = SortPriority {
             power_level: e_shallow.power_level,
             event: &e_shallow,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V1,
         };
         // V1: shallow depth (1) is better. Better must be Smaller (pops last). So p_v1_base > p_shallow.
@@ -1635,7 +1566,6 @@ mod tests {
         let p_v1_early_id = SortPriority {
             power_level: e_early_id.power_level,
             event: &e_early_id,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V1,
         };
         // V1: early ID "a" is better. Better must be Smaller (pops last). So p_v1_base > p_v1_early_id.
@@ -5283,13 +5213,11 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     let p1_v1 = SortPriority {
         event: &ev1_v1,
         power_level: 0,
-        auth_chain_distance: 0,
         version: StateResVersion::V1,
     };
     let p2_v1 = SortPriority {
         event: &ev2_v1,
         power_level: 0,
-        auth_chain_distance: 0,
         version: StateResVersion::V1,
     };
     assert_eq!(p1_v1.cmp(&p2_v1), core::cmp::Ordering::Less); // A < B
@@ -5307,13 +5235,11 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     let p1_v2 = SortPriority {
         event: &ev1_v2,
         power_level: 0,
-        auth_chain_distance: 0,
         version: StateResVersion::V2,
     };
     let p2_v2 = SortPriority {
         event: &ev2_v2,
         power_level: 0,
-        auth_chain_distance: 0,
         version: StateResVersion::V2,
     };
     assert_eq!(p1_v2.cmp(&p2_v2), core::cmp::Ordering::Greater); // A > B (inverted)

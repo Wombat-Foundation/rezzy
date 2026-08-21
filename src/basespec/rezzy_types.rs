@@ -2059,8 +2059,6 @@ pub struct SortPriority<'a, E = LeanEvent<String, Value>> {
     pub event: &'a E,
     /// The sender's power level, derived from the auth chain (not `event.power_level`).
     pub power_level: i64,
-    /// Shortest auth-chain distance to the `m.room.create` event (V2.2 only).
-    pub auth_chain_distance: u64,
     /// The resolution version, which selects the comparison strategy.
     pub version: StateResVersion,
 }
@@ -2123,18 +2121,6 @@ impl<E: EventLike> Ord for SortPriority<'_, E> {
                 // makes Alice's ban appear before Bob's concurrent PL change).
                 match self.power_level.cmp(&other.power_level) {
                     Ordering::Equal => {
-                        // V2.1.1: prioritize topological depth over `origin_server_ts`.
-                        // Smaller Depth -> Greater TieBreaker -> Pops First -> Loses.
-                        // Larger Depth -> Smaller TieBreaker -> Pops Last -> Wins.
-                        if self.version == StateResVersion::V2_1_1
-                            || self.version == StateResVersion::V2_2
-                        {
-                            match other.auth_chain_distance.cmp(&self.auth_chain_distance) {
-                                Ordering::Equal => {}
-                                ord => return ord,
-                            }
-                        }
-
                         match other
                             .event
                             .origin_server_ts()
