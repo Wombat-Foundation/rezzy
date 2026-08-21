@@ -3131,6 +3131,76 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
     assert_eq!(reachable_via_bitmap, hash_reachable_set);
 }
 
+/// Regression for the duplicate-unreachable dedup: `reachability_audit`'s
+/// `unreachable` field is a `Vec` that must remain a *partition* of `universe`
+/// (each hash at most once), matching the dedup the bitmap variant's
+/// `IndexedUniverse` provides. When `universe` repeats an unreachable hash,
+/// both audit paths must still emit it exactly once.
+#[test]
+fn test_reachability_audit_dedups_duplicate_unreachable_hashes() {
+    use std::collections::BTreeSet;
+
+    let entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i)).collect();
+    let root_live = build_hamt(b"live_key", entries).expect("build live root");
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("fully resolved tree, no lazy children")
+    };
+
+    let live_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_live, &mut resolver)
+            .expect("live walk should succeed")
+            .into_iter()
+            .collect();
+
+    // An orphan hash that is NOT reachable from `root_live`.
+    let orphan: StructuralHash = [0xFF; 16];
+    assert!(!live_hashes.contains(&orphan));
+
+    // Duplicate the orphan (and a live hash too) in `universe`.
+    let mut universe: Vec<StructuralHash> = Vec::new();
+    universe.extend(live_hashes.iter().copied());
+    universe.push(orphan);
+    universe.push(orphan); // duplicate unreachable
+    universe.push(orphan); // triplicate
+
+    let hash_audit =
+        crate::hamt::reachability_audit([root_live.clone()], universe.clone(), &mut resolver)
+            .expect("hash audit should succeed");
+    // `unreachable` must be a partition: the orphan appears exactly once,
+    // not once per occurrence in `universe`.
+    let unreachable_count = hash_audit
+        .unreachable
+        .iter()
+        .filter(|h| **h == orphan)
+        .count();
+    assert_eq!(
+        unreachable_count, 1,
+        "duplicate unreachable hash must be emitted exactly once, got {unreachable_count}"
+    );
+
+    // And it must agree with the bitmap variant's dedup.
+    let bitmap_audit = crate::hamt::bitmap_reachability_audit([root_live], universe, &mut resolver)
+        .expect("bitmap audit should succeed");
+    let bitmap_unreachable: BTreeSet<StructuralHash> = bitmap_audit
+        .unreachable
+        .iter()
+        .map(|idx| {
+            bitmap_audit
+                .universe
+                .hash_at(idx)
+                .expect("every set index was assigned by IndexedUniverse::try_build")
+        })
+        .collect();
+    let hash_unreachable: BTreeSet<StructuralHash> =
+        hash_audit.unreachable.iter().copied().collect();
+    assert_eq!(
+        hash_unreachable, bitmap_unreachable,
+        "hash and bitmap audits must agree on the deduped unreachable set"
+    );
+    assert_eq!(hash_unreachable, BTreeSet::from([orphan]));
+}
+
 #[test]
 fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates() {
     let h1: StructuralHash = [1; 16];

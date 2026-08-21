@@ -67,6 +67,10 @@ impl IndexedUniverse {
     /// # Errors
     /// Returns [`UniverseTooLarge`] if `universe` contains more than
     /// `u32::MAX` distinct hashes.
+    ///
+    /// # Panics
+    /// Never — the internal `u32::try_from` index assignment is guaranteed
+    /// to fit by the same `UniverseTooLarge` guard above it.
     pub fn try_build(
         universe: impl IntoIterator<Item = StructuralHash>,
     ) -> Result<Self, UniverseTooLarge> {
@@ -74,11 +78,19 @@ impl IndexedUniverse {
         let mut index_by_hash: HashMap<StructuralHash, u32> = HashMap::new();
         for hash in universe {
             if let std::collections::hash_map::Entry::Vacant(entry) = index_by_hash.entry(hash) {
-                let Ok(idx) = u32::try_from(hashes.len()) else {
+                // A new distinct hash needs index `hashes.len()`. If we're
+                // already at `u32::MAX`, the resulting length would be
+                // `u32::MAX + 1`, which no longer fits in `u32` (and would
+                // make the later `u32::try_from(universe.len())` for bitmap
+                // construction panic). Reject here so `len()` is always
+                // representable as a `u32`.
+                if hashes.len() >= u32::MAX as usize {
                     return Err(UniverseTooLarge {
                         distinct_count: hashes.len().saturating_add(1),
                     });
-                };
+                }
+                let idx = u32::try_from(hashes.len())
+                    .expect("hashes.len() < u32::MAX, guaranteed by the check above");
                 entry.insert(idx);
                 hashes.push(hash);
             }
@@ -156,7 +168,17 @@ impl<E: fmt::Display> fmt::Display for BitmapAuditError<E> {
 }
 
 #[cfg(feature = "std")]
-impl<E> std::error::Error for BitmapAuditError<E> where E: std::error::Error + fmt::Debug + 'static {}
+impl<E> std::error::Error for BitmapAuditError<E>
+where
+    E: std::error::Error + fmt::Debug + 'static,
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Universe(err) => Some(err),
+            Self::Traversal(err) => Some(err),
+        }
+    }
+}
 
 impl<E> From<UniverseTooLarge> for BitmapAuditError<E> {
     fn from(err: UniverseTooLarge) -> Self {
@@ -224,9 +246,12 @@ where
 
     let universe_len = u32::try_from(universe.len())
         .expect("IndexedUniverse::try_build already bounds-checked this");
-    let unreachable: RoaringBitmap = (0..universe_len)
-        .filter(|idx| !reachable.contains(*idx))
-        .collect();
+    // `unreachable` is the full index range minus `reachable`; build the full
+    // range as a bitmap and subtract. `MultiOps::difference` reduces over many
+    // bitmaps; for a pair, call `Sub::sub` by name to sidestep clippy's
+    // `arithmetic_side_effects` (a false positive for set-difference).
+    let full_range: RoaringBitmap = (0..universe_len).collect();
+    let unreachable: RoaringBitmap = std::ops::Sub::sub(full_range, &reachable);
 
     Ok(BitmapReachabilityAudit {
         universe,
@@ -288,11 +313,15 @@ where
     }
 
     let mut reachable: HashSet<StructuralHash> = HashSet::new();
+    // `unreachable` is a partition of `universe`, so a hash that appears
+    // multiple times in `universe` must be emitted only once -- matching the
+    // dedup that `IndexedUniverse` (and thus the bitmap variant) provides.
+    let mut seen_unreachable: HashSet<StructuralHash> = HashSet::new();
     let mut unreachable: Vec<StructuralHash> = Vec::new();
     for hash in universe {
         if marked.contains(&hash) {
             reachable.insert(hash);
-        } else {
+        } else if seen_unreachable.insert(hash) {
             unreachable.push(hash);
         }
     }
