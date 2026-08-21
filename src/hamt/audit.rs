@@ -13,13 +13,147 @@
 //! `unreachable` side of a [`ReachabilityAudit`] as a candidate list for
 //! further safety checks, never as a delete list on its own.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::{sync::Arc, vec::Vec};
+
+use roaring::RoaringBitmap;
 
 use super::{
     delta::{walk_reachable_node_hashes, HamtTraversalError},
     HamtNode, StructuralHash,
 };
+
+/// A `universe` of node hashes assigned dense `u32` indexes, in the order the
+/// hashes were given.
+///
+/// This is the compaction step a `RoaringBitmap`-backed audit needs:
+/// `StructuralHash` (16 bytes, high-entropy, not locally dense) cannot be
+/// used as a roaring index directly, so every hash in `universe` is given a
+/// stable position instead. Identity always resolves back through
+/// [`Self::hash_at`]/`hashes` to the full hash — the dense index is a
+/// local, single-call addressing scheme, not an identifier of its own.
+#[derive(Debug, Clone)]
+pub struct IndexedUniverse {
+    /// `hashes[i]` is the `StructuralHash` assigned to dense index `i`.
+    hashes: Vec<StructuralHash>,
+    index_by_hash: HashMap<StructuralHash, u32>,
+}
+
+impl IndexedUniverse {
+    /// Assigns each hash in `universe` a dense `u32` index, first-seen order.
+    /// Duplicate hashes collapse onto the same index.
+    ///
+    /// # Panics
+    /// Panics if `universe` contains more than `u32::MAX` distinct hashes —
+    /// not a realistic size for a single audit's node universe.
+    #[must_use]
+    pub fn build(universe: impl IntoIterator<Item = StructuralHash>) -> Self {
+        let mut hashes: Vec<StructuralHash> = Vec::new();
+        let mut index_by_hash: HashMap<StructuralHash, u32> = HashMap::new();
+        for hash in universe {
+            index_by_hash.entry(hash).or_insert_with(|| {
+                let idx = u32::try_from(hashes.len())
+                    .expect("universe has far fewer than u32::MAX distinct hashes");
+                hashes.push(hash);
+                idx
+            });
+        }
+        Self {
+            hashes,
+            index_by_hash,
+        }
+    }
+
+    /// The number of distinct hashes indexed.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.hashes.len()
+    }
+
+    /// True if no hashes are indexed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.hashes.is_empty()
+    }
+
+    /// The dense index assigned to `hash`, if it was part of `universe`.
+    #[must_use]
+    pub fn index_of(&self, hash: &StructuralHash) -> Option<u32> {
+        self.index_by_hash.get(hash).copied()
+    }
+
+    /// The full hash assigned to dense index `idx`, if in range.
+    #[must_use]
+    pub fn hash_at(&self, idx: u32) -> Option<StructuralHash> {
+        self.hashes.get(idx as usize).copied()
+    }
+
+    /// All indexed hashes, in dense-index order.
+    #[must_use]
+    pub fn hashes(&self) -> &[StructuralHash] {
+        &self.hashes
+    }
+}
+
+/// The result of a multi-root reachability audit, expressed as
+/// [`RoaringBitmap`]s over an [`IndexedUniverse`] rather than as
+/// `StructuralHash` collections.
+///
+/// Use this instead of [`ReachabilityAudit`] when the caller needs to keep
+/// many audits in memory, diff them, or intersect/union them repeatedly —
+/// operations `RoaringBitmap` is built for and a `HashSet<StructuralHash>`
+/// is not. `universe` is the only place `StructuralHash` identity lives;
+/// `reachable`/`unreachable` are addressed purely through its dense indexes.
+#[derive(Debug, Clone)]
+pub struct BitmapReachabilityAudit {
+    pub universe: IndexedUniverse,
+    pub reachable: RoaringBitmap,
+    pub unreachable: RoaringBitmap,
+}
+
+/// Partitions `universe` into reachable/unreachable [`RoaringBitmap`]s over a
+/// freshly built [`IndexedUniverse`].
+///
+/// Same traversal and semantics as [`reachability_audit`]; this only differs
+/// in how the result is represented.
+///
+/// # Errors
+/// See [`reachability_audit`].
+///
+/// # Panics
+/// See [`IndexedUniverse::build`].
+pub fn bitmap_reachability_audit<K, V, F, E>(
+    roots: impl IntoIterator<Item = Arc<HamtNode<K, V>>>,
+    universe: impl IntoIterator<Item = StructuralHash>,
+    resolver: &mut F,
+) -> Result<BitmapReachabilityAudit, HamtTraversalError<E>>
+where
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    let universe = IndexedUniverse::build(universe);
+
+    let mut marked: HashSet<StructuralHash> = HashSet::new();
+    for root in roots {
+        walk_reachable_node_hashes(&root, resolver, &mut |hash| marked.insert(hash))?;
+    }
+
+    let mut reachable = RoaringBitmap::new();
+    let mut unreachable = RoaringBitmap::new();
+    for (idx, hash) in universe.hashes.iter().enumerate() {
+        let idx = u32::try_from(idx).expect("IndexedUniverse::build already bounds-checked this");
+        if marked.contains(hash) {
+            reachable.insert(idx);
+        } else {
+            unreachable.insert(idx);
+        }
+    }
+
+    Ok(BitmapReachabilityAudit {
+        universe,
+        reachable,
+        unreachable,
+    })
+}
 
 /// The result of a multi-root reachability audit: `universe` partitioned
 /// into hashes reachable from at least one of the audited roots and hashes

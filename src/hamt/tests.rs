@@ -3042,6 +3042,134 @@ fn test_reachability_audit_partitions_universe_and_agrees_with_unreachable_node_
 }
 
 #[test]
+fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
+    use std::collections::BTreeSet;
+
+    // Same two-disjoint-trees fixture as
+    // `test_reachability_audit_partitions_universe_and_agrees_with_unreachable_node_hashes`.
+    // The bitmap variant must partition the same way and, once its dense
+    // indexes are mapped back through `IndexedUniverse`, must agree exactly
+    // with the `StructuralHash`-keyed `reachability_audit` result on the
+    // same inputs.
+    let live_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
+    let orphan_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
+    let root_live = build_hamt(b"live_key", live_entries).expect("build live root");
+    let root_orphan = build_hamt(b"orphan_key", orphan_entries).expect("build orphan root");
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("both trees are fully resolved, no lazy children")
+    };
+
+    let expected_live_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_live, &mut resolver)
+            .expect("live walk should succeed")
+            .into_iter()
+            .collect();
+    let expected_orphan_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_orphan, &mut resolver)
+            .expect("orphan walk should succeed")
+            .into_iter()
+            .collect();
+
+    let universe: Vec<StructuralHash> = expected_live_hashes
+        .iter()
+        .copied()
+        .chain(expected_orphan_hashes.iter().copied())
+        .collect();
+
+    let bitmap_audit = crate::hamt::bitmap_reachability_audit(
+        [root_live.clone()],
+        universe.clone(),
+        &mut resolver,
+    )
+    .expect("bitmap audit should succeed");
+
+    // Every index in `universe` must land in exactly one of the two bitmaps.
+    assert!((&bitmap_audit.reachable & &bitmap_audit.unreachable).is_empty());
+    let mut recombined = bitmap_audit.reachable.clone();
+    recombined |= &bitmap_audit.unreachable;
+    let all_indices: roaring::RoaringBitmap =
+        (0..u32::try_from(universe.len()).expect("small test universe")).collect();
+    assert_eq!(recombined, all_indices);
+
+    let reachable_via_bitmap: BTreeSet<StructuralHash> = bitmap_audit
+        .reachable
+        .iter()
+        .map(|idx| {
+            bitmap_audit
+                .universe
+                .hash_at(idx)
+                .expect("every set index was assigned by IndexedUniverse::build")
+        })
+        .collect();
+    assert_eq!(
+        reachable_via_bitmap, expected_live_hashes,
+        "bitmap reachable side, resolved back through IndexedUniverse, must match the live tree"
+    );
+
+    let unreachable_via_bitmap: BTreeSet<StructuralHash> = bitmap_audit
+        .unreachable
+        .iter()
+        .map(|idx| {
+            bitmap_audit
+                .universe
+                .hash_at(idx)
+                .expect("every set index was assigned by IndexedUniverse::build")
+        })
+        .collect();
+    assert_eq!(
+        unreachable_via_bitmap, expected_orphan_hashes,
+        "bitmap unreachable side, resolved back through IndexedUniverse, must match the orphan tree"
+    );
+
+    // Must agree with the StructuralHash-keyed reachability_audit on the
+    // exact same inputs.
+    let hash_audit = crate::hamt::reachability_audit([root_live], universe, &mut resolver)
+        .expect("hash audit should succeed");
+    let hash_reachable_set: BTreeSet<StructuralHash> =
+        hash_audit.reachable.iter().copied().collect();
+    assert_eq!(reachable_via_bitmap, hash_reachable_set);
+}
+
+#[test]
+fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates() {
+    let h1: StructuralHash = [1; 16];
+    let h2: StructuralHash = [2; 16];
+    let h3: StructuralHash = [3; 16];
+
+    // h1 appears twice; it must collapse onto a single index rather than
+    // being assigned two.
+    let universe = crate::hamt::IndexedUniverse::build([h1, h2, h1, h3]);
+
+    assert_eq!(
+        universe.len(),
+        3,
+        "duplicate hash must not inflate the count"
+    );
+    assert!(!universe.is_empty());
+
+    let idx1 = universe.index_of(&h1).expect("h1 was indexed");
+    let idx2 = universe.index_of(&h2).expect("h2 was indexed");
+    let idx3 = universe.index_of(&h3).expect("h3 was indexed");
+    assert_ne!(idx1, idx2);
+    assert_ne!(idx1, idx3);
+    assert_ne!(idx2, idx3);
+
+    assert_eq!(universe.hash_at(idx1), Some(h1));
+    assert_eq!(universe.hash_at(idx2), Some(h2));
+    assert_eq!(universe.hash_at(idx3), Some(h3));
+
+    let missing: StructuralHash = [9; 16];
+    assert_eq!(universe.index_of(&missing), None);
+    assert_eq!(
+        universe.hash_at(u32::try_from(universe.len()).unwrap()),
+        None
+    );
+
+    assert_eq!(universe.hashes().len(), 3);
+}
+
+#[test]
 fn test_unreachable_node_hashes_shares_subtrees_across_roots() {
     let key = b"dummy_server_key";
 
