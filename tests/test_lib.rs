@@ -2368,6 +2368,93 @@ mod tests {
         assert!(!safe.contains_key("$dependent"));
     }
 
+    // Regression: transitive drop requires NO surviving auth path.
+    //
+    // `$bob_ban_carol` is dropped (direct domination by `$alice_ban_bob`).
+    // `$dependent_with_surviving` cites it but ALSO cites a kept event
+    // (`$survivor_auth`), so it has a surviving auth path and is a legitimate
+    // replacement, not a propagated drop. Before the fix,
+    // `propagate_transitive_dependencies` dropped it because ANY cited event
+    // was dropped, which over-dropped the V2.1 winner in the differential
+    // harness's iteration-23 witness (`$@u2_cand_b_2` citing the dropped
+    // `$@u1_cand_b_1` alongside the kept `$@u2_cand_a_2`). The drop must now
+    // only propagate when ALL of the event's auth_events are dropped.
+    #[test]
+    fn test_cdo_transitive_drop_requires_no_surviving_auth() {
+        use serde_json::json;
+
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let auth: HashMap<String, LeanEvent> = HashMap::new();
+
+        let alice_ban_bob: LeanEvent = LeanEvent {
+            event_id: "$alice_ban_bob".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@alice:example.com".into(),
+            power_level: 100,
+            origin_server_ts: 1000,
+            content: json!({ "membership": "ban" }),
+            ..Default::default()
+        };
+        // Directly dominated by alice_ban_bob (higher PL, independent).
+        let bob_ban_carol: LeanEvent = LeanEvent {
+            event_id: "$bob_ban_carol".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@carol:example.com".into()),
+            sender: "@bob:example.com".into(),
+            power_level: 0,
+            origin_server_ts: 1100,
+            content: json!({ "membership": "ban" }),
+            ..Default::default()
+        };
+        // A surviving, independently-valid auth path for the dependent.
+        let survivor_auth: LeanEvent = LeanEvent {
+            event_id: "$survivor_auth".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@dave:example.com".into()),
+            sender: "@dave:example.com".into(),
+            power_level: 0,
+            origin_server_ts: 1150,
+            content: json!({ "membership": "join" }),
+            ..Default::default()
+        };
+        // Cites a dropped event AND a surviving one -> must NOT be dropped.
+        let dependent_with_surviving: LeanEvent = LeanEvent {
+            event_id: "$dependent_with_surviving".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@eve:example.com".into()),
+            sender: "@eve:example.com".into(),
+            power_level: 0,
+            origin_server_ts: 1200,
+            auth_events: vec!["$bob_ban_carol".into(), "$survivor_auth".into()],
+            content: json!({ "membership": "join" }),
+            ..Default::default()
+        };
+
+        conflicted.insert(alice_ban_bob.event_id.clone(), alice_ban_bob);
+        conflicted.insert(bob_ban_carol.event_id.clone(), bob_ban_carol);
+        conflicted.insert(survivor_auth.event_id.clone(), survivor_auth);
+        conflicted.insert(
+            dependent_with_surviving.event_id.clone(),
+            dependent_with_surviving,
+        );
+
+        let safe = apply_cdo_filter(&conflicted, &auth);
+        assert!(
+            safe.contains_key("$alice_ban_bob"),
+            "surviving admin ban kept"
+        );
+        assert!(safe.contains_key("$survivor_auth"), "surviving auth kept");
+        assert!(
+            safe.contains_key("$dependent_with_surviving"),
+            "dependent with a surviving auth path must not be transitively dropped"
+        );
+        assert!(
+            !safe.contains_key("$bob_ban_carol"),
+            "directly-dominated admin ban still dropped"
+        );
+    }
+
     // Coverage: process_direct_domination_chunks "already-dropped event" skip
     // (cdo.rs:401). Requires a second chunk, which needs more admin actions than
     // `chunk_size = WORDS_PER_CHUNK * 64 = 512`. Alice's high-priority ban drops

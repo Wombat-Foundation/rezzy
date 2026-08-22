@@ -582,7 +582,16 @@ where
     dropped_ids
 }
 
-/// Transitively propagate dependencies to safely drop them.
+/// Transitively propagate a drop to an event only when the drop truly
+/// invalidates it: an event `F` is dropped only if **all** of its
+/// `auth_events` are themselves dropped. Citing a dropped event is a
+/// *replacement*, not a drop, when `F` has a surviving auth event (an
+/// unconflicted event, or a kept candidate) it could be authorized through —
+/// dropping `F` then would over-drop an event full resolution might accept.
+/// Only when no auth path survives is the drop genuinely propagated.
+///
+/// This is a fixpoint: dropping one event can push a dependent over the
+/// all-auth-dropped threshold on the next pass.
 fn propagate_transitive_dependencies<Id, C: Clone, S1: core::hash::BuildHasher, K>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
     mut dropped_ids: BTreeSet<Id>,
@@ -590,25 +599,27 @@ fn propagate_transitive_dependencies<Id, C: Clone, S1: core::hash::BuildHasher, 
 where
     Id: crate::basespec::rezzy_types::EventId,
 {
-    let mut dependents: HashMap<Id, Vec<Id>> = HashMap::new();
-    for (id, event) in conflicted_events {
-        for auth_id in &event.auth_events {
-            dependents
-                .entry(auth_id.clone())
-                .or_default()
-                .push(id.clone());
-        }
-    }
-
-    let mut queue: Vec<Id> = dropped_ids.iter().cloned().collect();
-    while let Some(current_dropped) = queue.pop() {
-        if let Some(children) = dependents.get(&current_dropped) {
-            for child in children {
-                if !dropped_ids.contains(child) {
-                    dropped_ids.insert(child.clone());
-                    queue.push(child.clone());
-                }
+    loop {
+        let mut changed = false;
+        for (id, event) in conflicted_events {
+            if dropped_ids.contains(id) {
+                continue;
             }
+            // An event with no auth_events is authorized by default and must
+            // never be dropped. Otherwise it is dropped only when every auth
+            // path it cites is gone.
+            if !event.auth_events.is_empty()
+                && event
+                    .auth_events
+                    .iter()
+                    .all(|auth_id| dropped_ids.contains(auth_id))
+            {
+                dropped_ids.insert(id.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
         }
     }
     dropped_ids
