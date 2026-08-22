@@ -39,6 +39,22 @@ fn test_from_value_requires_event_id_or_room_version() {
 }
 
 #[test]
+fn test_reference_hash_rejects_v1_v2() {
+    // v1/v2 event IDs are opaque server-assigned strings, not reference hashes.
+    let pdu = json!({
+        "event_id": "$1:example.com",
+        "type": "m.room.message",
+        "sender": "@user:example.com",
+        "origin_server_ts": 1000,
+        "content": { "body": "x" }
+    });
+    assert!(reference_hash(&pdu, "1").is_err());
+    assert!(reference_hash(&pdu, "2").is_err());
+    assert!(reference_hash(&pdu, "3").is_ok());
+    assert!(reference_hash(&pdu, "4").is_ok());
+}
+
+#[test]
 fn test_reference_hash_is_redaction_invariant_and_keeps_hashes() {
     // Reference hash (room v4+) = SHA-256 of the canonical JSON of the REDACTED
     // event, with `signatures`/`unsigned` removed but `hashes` retained. Because

@@ -399,7 +399,9 @@ pub fn redact_json(value: &Value, room_version: &str) -> Value {
 /// whatever numbers are present rather than rejecting them.
 ///
 /// # Errors
-/// Returns `Err` if the canonical JSON cannot be serialized.
+/// Returns `Err` when the room version has no reference hash (v1/v2, whose
+/// event IDs are opaque server-assigned strings, not hashes) or the canonical
+/// JSON cannot be serialized.
 pub fn reference_hash(
     value: &Value,
     room_version: &str,
@@ -407,6 +409,16 @@ pub fn reference_hash(
     use crate::basespec::event_types::{FIELD_SIGNATURES, FIELD_UNSIGNED};
     use base64::Engine as _;
     use sha2::{Digest, Sha256};
+
+    let major = room_version
+        .split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok());
+    if major.is_some_and(|m| m <= 2) {
+        return Err(alloc::format!(
+            "no reference hash for room version {room_version}: v1/v2 event IDs are opaque server-assigned strings, not hashes"
+        ));
+    }
 
     let mut redacted = redact_json(value, room_version);
     if let Some(obj) = redacted.as_object_mut() {
@@ -2017,6 +2029,12 @@ impl LeanEvent<String, Value, String> {
     /// Parses a lean event from a raw PDU `Value`, optionally deriving a
     /// missing `event_id` from the room version's reference hash (see
     /// [`reference_hash`]).
+    ///
+    /// This performs **parsing only — not content-hash/signature verification**.
+    /// Verification is a homeserver ingest responsibility, invoked via
+    /// [`verify_content_hash`] (or the [`EventVerifier`] hook) on the raw PDU
+    /// *before* calling this; `from_value` does not auto-verify so it remains
+    /// usable on partial PDUs and after the homeserver has already checked.
     ///
     /// # Errors
     /// Returns `Err` when `event_type` is empty/missing, `power_level` has an
