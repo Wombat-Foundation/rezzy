@@ -555,10 +555,10 @@ fn bucket_index(hash: &StructuralHash, depth: usize) -> usize {
     let bit_offset = depth.saturating_mul(HAMT_BRANCH_BITS);
     let byte_index = bit_offset / 8;
     let bit_shift = bit_offset % 8;
+    let hash_len = hash.len();
     debug_assert!(
-        byte_index < hash.len(),
-        "byte_index out of bounds for StructuralHash ({byte_index} >= {})",
-        hash.len()
+        byte_index < hash_len,
+        "byte_index out of bounds for StructuralHash ({byte_index} >= {hash_len})",
     );
 
     let mut word = u16::from(hash[byte_index]);
@@ -1222,9 +1222,10 @@ where
         NodeRef::Resolved(child) => child.clone(),
         NodeRef::Lazy(hash) => resolver(hash).map_err(HamtMutateError::Resolve)?,
     };
-    let Some(next_depth) = depth.checked_add(1) else {
-        return Ok((RemoveOutcome::Node(node.clone()), None));
-    };
+    // `depth < HAMT_MAX_DEPTH` here (the entry guard returned otherwise), so
+    // `checked_add(1)` can never overflow; a plain saturating increment is
+    // equivalent and keeps the max-depth re-entry check below live.
+    let next_depth = depth.saturating_add(1);
     if next_depth >= HAMT_MAX_DEPTH {
         return Ok((RemoveOutcome::Node(node.clone()), None));
     }

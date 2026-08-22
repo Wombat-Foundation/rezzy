@@ -549,6 +549,92 @@ fn test_hamt_search_resolves_lazy_child() {
     assert_eq!(calls, 1);
 }
 
+/// Covers the `NodeRef::Resolved` child recursion in
+/// `search_by_path_hash_inner` (mod.rs:459-461): a search whose path descends
+/// through an already-materialized (non-lazy) internal child must recurse into
+/// it directly, never invoking the resolver. Mirrors
+/// `test_hamt_search_resolves_lazy_child`, but with the child resolved instead
+/// of lazy, exercising the sibling branch of the same `slot_at` dispatch.
+#[test]
+fn test_hamt_search_descends_resolved_child() {
+    let key = b"dummy_server_key";
+    let query = find_key_with_path_slots(key, 3, 7);
+    let child = Arc::new(HamtNode {
+        datamap: 1_u32 << 7,
+        nodemap: 0,
+        leaves: vec![(query, 42_u64)],
+        children: vec![],
+        structural_hash: HamtNode::<u64, u64>::compute_structural_hash(
+            key,
+            1_u32 << 7,
+            0,
+            &[(query, 42_u64)],
+            &[],
+        ),
+    });
+    let root = HamtNode {
+        datamap: 0,
+        nodemap: 1_u32 << 3,
+        leaves: vec![],
+        children: vec![NodeRef::<u64, u64>::Resolved(child.clone())],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1_u32 << 3,
+            &[],
+            &[NodeRef::<u64, u64>::Resolved(child.clone())],
+        ),
+    };
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("resolved child should not be resolved lazily")
+    };
+
+    let found = root
+        .search(key, &query, &mut resolver)
+        .expect("search should succeed");
+    assert_eq!(found, Some(42_u64));
+}
+
+/// Covers the `depth >= HAMT_MAX_DEPTH` guard in
+/// `search_by_path_hash_inner` (mod.rs:450-452): a search that recurses past
+/// the deepest a legitimately-built HAMT can be must return `Ok(None)` rather
+/// than keep descending (or overflow the stack). A zero path-hash routes to
+/// slot 0 at every level, so searching the single-child `build_deep_chain`
+/// descends one level per recursion until the guard fires.
+#[test]
+fn test_hamt_search_by_path_hash_rejects_excessive_depth() {
+    let root = build_deep_chain(HAMT_MAX_DEPTH, 0xAA);
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("fully resolved chain, no lazy children")
+    };
+
+    let result = root.search_by_path_hash(&0_u64, &[0u8; 16], &mut resolver);
+    assert_eq!(
+        result,
+        Ok(None),
+        "search must terminate at HAMT_MAX_DEPTH, not recurse further"
+    );
+}
+
+/// Covers the `depth >= HAMT_MAX_DEPTH` guard in `get_by_path_hash_inner`
+/// (mod.rs:423-425): a resolved (non-lazy) lookup that recurses past the
+/// deepest a legitimately-built HAMT can be must return `None` rather than
+/// keep descending. A zero path-hash routes slot 0 at every level, so
+/// descending the single-child `build_deep_chain` hits the guard exactly at
+/// `HAMT_MAX_DEPTH`.
+#[test]
+fn test_hamt_get_by_path_hash_rejects_excessive_depth() {
+    let root = build_deep_chain(HAMT_MAX_DEPTH, 0xAA);
+
+    assert_eq!(
+        root.get_by_path_hash(&0_u64, &[0u8; 16]),
+        None,
+        "get must terminate at HAMT_MAX_DEPTH, not recurse further"
+    );
+}
+
 #[test]
 fn test_hamt_lookup_with_custom_key_hash() {
     let key = b"dummy_server_key";
@@ -1359,6 +1445,75 @@ fn test_insert_node_with_ctx_guards_max_depth_reentry() {
             bucket_size: 2,
         }
     );
+}
+
+/// Covers the `depth >= HAMT_MAX_DEPTH` entry guard in `remove_node_with_ctx`
+/// (mod.rs:1189-1191): a removal invoked already at max depth must return the
+/// node untouched (nothing removed) instead of descending. This is the
+/// defensive re-entry check; `remove` always starts at depth 0, so it is only
+/// reachable by calling the context function directly.
+#[test]
+fn test_remove_node_with_ctx_guards_max_depth_entry() {
+    let key = b"dummy_server_key";
+    let node = Arc::new(HamtNode::<u64, u64> {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1_u64, 10_u64)],
+        children: vec![],
+        structural_hash: [0; 16],
+    });
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("entry guard returns before any resolver call")
+    };
+
+    let (outcome, removed) = remove_node_with_ctx(
+        &node,
+        key,
+        &1_u64,
+        &[0u8; 16],
+        HAMT_MAX_DEPTH,
+        &mut resolver,
+    )
+    .expect("guard returns Ok, not Err");
+    assert!(matches!(outcome, RemoveOutcome::Node(_)));
+    assert_eq!(removed, None);
+}
+
+/// Covers the `next_depth >= HAMT_MAX_DEPTH` re-entry guard in
+/// `remove_node_with_ctx` (mod.rs:1228-1230): a removal that resolved a child
+/// at depth `HAMT_MAX_DEPTH - 1` must bail before recursing one level too
+/// deep. The caller must land on the nodemap branch (a child at the routed
+/// slot) so `depth.checked_add(1)` is actually reached; a zero path-hash
+/// routes slot 0 at every depth.
+#[test]
+fn test_remove_node_with_ctx_guards_max_depth_reentry() {
+    let key = b"dummy_server_key";
+    let child = Arc::new(HamtNode::<u64, u64> {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(2_u64, 20_u64)],
+        children: vec![],
+        structural_hash: [0; 16],
+    });
+    let node = Arc::new(HamtNode::<u64, u64> {
+        datamap: 0,
+        nodemap: 1,
+        leaves: vec![],
+        children: vec![NodeRef::Resolved(child)],
+        structural_hash: [0; 16],
+    });
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("resolved child is never resolved lazily")
+    };
+
+    let depth = HAMT_MAX_DEPTH - 1;
+    let (outcome, removed) =
+        remove_node_with_ctx(&node, key, &2_u64, &[0u8; 16], depth, &mut resolver)
+            .expect("re-entry guard returns Ok, not Err");
+    assert!(matches!(outcome, RemoveOutcome::Node(_)));
+    assert_eq!(removed, None);
 }
 
 #[test]
