@@ -3280,6 +3280,61 @@ fn test_bitmap_audit_error_display_and_conversions() {
     ));
 }
 
+/// Exercises the `source()` chain on [`BitmapAuditError`] (audit.rs's
+/// `std::error::Error` impl): both variants must forward their wrapped error,
+/// and each must downcast back to the concrete inner type. This is the one
+/// piece of the audit error surface not pinned down by
+/// `test_bitmap_audit_error_display_and_conversions`, which only checks
+/// Display and `From` conversion.
+#[test]
+#[cfg(feature = "std")]
+fn test_bitmap_audit_error_source_and_downcast() {
+    use alloc::string::ToString;
+    use std::error::Error as _;
+
+    // Universe variant: `source()` returns the wrapped UniverseTooLarge.
+    let universe_err = crate::hamt::audit::UniverseTooLarge {
+        distinct_count: 123,
+    };
+    let wrapped: crate::hamt::BitmapAuditError<std::io::Error> = universe_err.into();
+    assert_eq!(
+        wrapped.to_string(),
+        "universe has 123 distinct hashes, more than u32::MAX can index"
+    );
+    let source = wrapped
+        .source()
+        .expect("Universe variant must expose a source");
+    let downcast = source
+        .downcast_ref::<crate::hamt::audit::UniverseTooLarge>()
+        .expect("Universe source must downcast to UniverseTooLarge");
+    assert_eq!(downcast.distinct_count, 123);
+
+    // Traversal variant: `source()` returns the wrapped HamtTraversalError,
+    // whose own `source()` in turn exposes the inner resolver error.
+    let traversal: crate::hamt::HamtTraversalError<std::io::Error> =
+        crate::hamt::HamtTraversalError::Resolve(std::io::Error::other("boom"));
+    let wrapped: crate::hamt::BitmapAuditError<std::io::Error> = traversal.into();
+    assert_eq!(wrapped.to_string(), "hamt traversal resolver failed: boom");
+    let source = wrapped
+        .source()
+        .expect("Traversal variant must expose a source");
+    let downcast = source
+        .downcast_ref::<crate::hamt::HamtTraversalError<std::io::Error>>()
+        .expect("Traversal source must downcast to HamtTraversalError");
+    assert!(matches!(
+        downcast,
+        crate::hamt::HamtTraversalError::Resolve(_)
+    ));
+    assert_eq!(downcast.to_string(), "hamt traversal resolver failed: boom");
+    let inner_source = downcast
+        .source()
+        .expect("HamtTraversalError::Resolve must expose its inner io::Error");
+    let io_downcast = inner_source
+        .downcast_ref::<std::io::Error>()
+        .expect("inner source must downcast to io::Error");
+    assert_eq!(io_downcast.to_string(), "boom");
+}
+
 #[test]
 fn test_bitmap_reachability_audit_dedupes_shared_hash_missing_from_universe() {
     // `universe` deliberately omits a hash the walk actually reaches, so
