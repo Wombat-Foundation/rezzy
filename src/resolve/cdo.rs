@@ -53,7 +53,7 @@
 //! - **Transitive propagation:** an event dropped via a dropped dominator
 //!   cascaded drops transitively (fixed, then the whole filter retired).
 //! - **Forgeable priority:** `sort_cdo_events` ordered dominators by the
-//!   author-supplied `event.power_level` (see note on [`sort_cdo_events`]),
+//!   author-supplied `event.power_level` (see the note on that function),
 //!   never validated against auth — a second, independent trust-of-input hole,
 //!   the same class the resolver refuses to tolerate for `depth`.
 //!
