@@ -62,7 +62,7 @@ name = "bench_files"
 path = "scripts/bench_files.rs"
 
 [features]
-default = ["std", "hashing"]
+default = ["std"]
 std = ["alloc", "serde_json/std", "serde/std", "dep:roaring"]
 alloc = []
 cli = [
@@ -76,7 +76,6 @@ cli = [
     "dep:zeroize",
 ]
 regen = ["std"]
-hashing = []
 signing = []
 mock-ruma = [
     "dep:insta",

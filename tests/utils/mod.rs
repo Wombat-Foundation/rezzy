@@ -122,6 +122,7 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
                 .get("depth")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0),
+            hashes: None,
         });
     }
     events
@@ -157,7 +158,6 @@ pub fn parse_jsonl_state(input: &str) -> RoomState {
 /// full spec-mandated redaction step, so the output may differ from a real
 /// event ID for events with non-allowed content keys.
 /// TODO: Full redaction compliance across room versions.
-#[cfg(feature = "hashing")]
 #[allow(dead_code)]
 pub fn print_canonical_hash(json_str: &str) {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};

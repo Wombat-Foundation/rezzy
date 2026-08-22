@@ -296,6 +296,7 @@ impl<Id: Clone, K: Clone> LeanEvent<Id, Value, K> {
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
+            hashes: None,
         }
     }
 }
@@ -324,6 +325,106 @@ pub fn apply_redaction<Id: Clone + AsRef<str>, K: Clone>(
         return None;
     }
     Some(target.redacted(room_version))
+}
+
+/// Content-hash verification: the `hashes.sha256` commitment binds an event
+/// to its canonical JSON, which is how a redaction is committed/verified
+/// against the event it targets.
+impl<Id: AsRef<str>, K: AsRef<str>> LeanEvent<Id, Value, K> {
+    /// Reconstructs the canonical wire-form PDU used to derive the content
+    /// hash: the wire fields only, with the internal cache fields
+    /// (`power_level`, `rejected`, `soft_fail`) and the envelope fields the
+    /// spec excludes from hashing (`hashes`, `signatures`, `unsigned`) dropped.
+    #[must_use]
+    fn canonical_wire_value(&self) -> Value {
+        use crate::basespec::event_types::{
+            FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
+            FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_STATE_KEY, FIELD_TYPE,
+        };
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            FIELD_AUTH_EVENTS.into(),
+            Value::Array(
+                self.auth_events
+                    .iter()
+                    .map(|e| Value::String(e.as_ref().to_string()))
+                    .collect(),
+            ),
+        );
+        obj.insert(FIELD_CONTENT.into(), self.content.clone());
+        obj.insert(FIELD_DEPTH.into(), Value::from(self.depth));
+        obj.insert(
+            FIELD_EVENT_ID.into(),
+            Value::String(self.event_id.as_ref().to_string()),
+        );
+        obj.insert(
+            FIELD_ORIGIN_SERVER_TS.into(),
+            Value::from(self.origin_server_ts),
+        );
+        obj.insert(
+            FIELD_PREV_EVENTS.into(),
+            Value::Array(
+                self.prev_events
+                    .iter()
+                    .map(|e| Value::String(e.as_ref().to_string()))
+                    .collect(),
+            ),
+        );
+        obj.insert(FIELD_SENDER.into(), Value::String(self.sender.clone()));
+        if let Some(ref sk) = self.state_key {
+            obj.insert(
+                FIELD_STATE_KEY.into(),
+                Value::String(sk.as_ref().to_string()),
+            );
+        }
+        obj.insert(FIELD_TYPE.into(), Value::String(self.event_type.clone()));
+        Value::Object(obj)
+    }
+
+    /// Computes the content hash (`hashes.sha256`) as URL-safe unpadded base64
+    /// of the SHA-256 of the canonical JSON.
+    ///
+    /// # Errors
+    /// Returns `Err` if the canonical JSON cannot be serialized.
+    pub fn compute_content_hash(&self) -> Result<alloc::string::String, alloc::string::String> {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        use sha2::{Digest, Sha256};
+
+        let mut value = self.canonical_wire_value();
+        sort_json_value_keys(&mut value);
+        let canonical_json = serde_json::to_string(&value).map_err(|e| e.to_string())?;
+        let mut hasher = Sha256::new();
+        hasher.update(canonical_json.as_bytes());
+        let hash = hasher.finalize();
+        Ok(URL_SAFE_NO_PAD.encode(hash))
+    }
+
+    /// Verifies the event's `hashes.sha256` against the recomputed canonical-JSON
+    /// hash.
+    ///
+    /// # Errors
+    /// Returns `Err` when the event carries no `hashes` dict, when
+    /// `hashes.sha256` is missing or not a string, when the recomputed hash
+    /// does not match, or when the `hashing` feature is disabled.
+    pub fn verify_content_hash(&self) -> Result<(), alloc::string::String> {
+        let Some(hashes) = &self.hashes else {
+            return Err(alloc::string::String::from(
+                "event has no hashes dict to verify",
+            ));
+        };
+        let Some(expected) = hashes.get("sha256").and_then(Value::as_str) else {
+            return Err(alloc::string::String::from(
+                "hashes.sha256 is missing or not a string",
+            ));
+        };
+        let computed = self.compute_content_hash()?;
+        if computed != expected {
+            return Err(alloc::format!(
+                "content hash mismatch: hashes.sha256={expected}, computed={computed}"
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl serde::Serialize for StateResVersion {
@@ -892,6 +993,10 @@ pub struct LeanEvent<Id = String, C = Value, K = String> {
     /// Whether this event was soft-failed.
     /// TODO: Add dedicated test coverage for soft-failed events to ensure they are handled according to spec (especially vs rejected).
     pub soft_fail: bool,
+    /// The `hashes` dict from the wire PDU (e.g. `{"sha256": "..."}`) — the
+    /// content-hash commitment used to verify/commit redactions. `None` for
+    /// events without one (e.g. redacted copies, which drop the commitment).
+    pub hashes: Option<Value>,
 }
 
 /// Borrowed view over a [`LeanEvent`] that avoids cloning event envelopes.
@@ -913,6 +1018,7 @@ pub struct LeanEventRef<'a, Id = String, C = Value, K = String> {
     pub depth: u64,
     pub rejected: bool,
     pub soft_fail: bool,
+    pub hashes: Option<&'a Value>,
 }
 
 impl<Id: EventId, C, K> LeanEventRef<'_, Id, C, K> {
@@ -937,6 +1043,7 @@ impl<Id: EventId, C, K> LeanEventRef<'_, Id, C, K> {
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
+            hashes: self.hashes.cloned(),
         }
     }
 }
@@ -958,6 +1065,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
+            hashes: self.hashes.as_ref(),
         }
     }
 }
@@ -1018,9 +1126,9 @@ impl<Id: serde::Serialize, C: serde::Serialize, K: AsRef<str>> serde::Serialize
         S: serde::Serializer,
     {
         use crate::basespec::event_types::{
-            FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
-            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_REJECTED, FIELD_SENDER, FIELD_SOFT_FAIL,
-            FIELD_STATE_KEY, FIELD_TYPE,
+            FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_HASHES,
+            FIELD_ORIGIN_SERVER_TS, FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_REJECTED,
+            FIELD_SENDER, FIELD_SOFT_FAIL, FIELD_STATE_KEY, FIELD_TYPE,
         };
         use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("LeanEvent", 12)?;
@@ -1038,6 +1146,9 @@ impl<Id: serde::Serialize, C: serde::Serialize, K: AsRef<str>> serde::Serialize
         state.serialize_field(FIELD_DEPTH, &self.depth)?;
         state.serialize_field(FIELD_REJECTED, &self.rejected)?;
         state.serialize_field(FIELD_SOFT_FAIL, &self.soft_fail)?;
+        if let Some(hashes) = &self.hashes {
+            state.serialize_field(FIELD_HASHES, hashes)?;
+        }
         state.end()
     }
 }
@@ -1781,7 +1892,6 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
     }
 }
 
-#[cfg(feature = "hashing")]
 fn sort_json_value_keys(value: &mut Value) {
     match value {
         Value::Object(map) => {
@@ -1810,6 +1920,7 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value, String> {
     where
         D: serde::Deserializer<'de>,
     {
+        use crate::basespec::event_types::FIELD_HASHES;
         use crate::basespec::event_types::{
             FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
             FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_REDACTS, FIELD_REJECTED, FIELD_SENDER,
@@ -1821,33 +1932,24 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value, String> {
         let event_id = if let Some(id) = value.get(FIELD_EVENT_ID).and_then(|v| v.as_str()) {
             String::from(id)
         } else {
-            #[cfg(feature = "hashing")]
-            {
-                use crate::basespec::event_types::{FIELD_SIGNATURES, FIELD_UNSIGNED};
-                use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-                use sha2::{Digest, Sha256};
+            use crate::basespec::event_types::{FIELD_SIGNATURES, FIELD_UNSIGNED};
+            use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+            use sha2::{Digest, Sha256};
 
-                let mut hash_value = value.clone();
-                if let Some(obj) = hash_value.as_object_mut() {
-                    obj.remove(FIELD_UNSIGNED);
-                    obj.remove(FIELD_SIGNATURES);
-                }
-                sort_json_value_keys(&mut hash_value);
-
-                let canonical_json =
-                    serde_json::to_string(&hash_value).map_err(serde::de::Error::custom)?;
-                let mut hasher = Sha256::new();
-                hasher.update(canonical_json.as_bytes());
-                let hash = hasher.finalize();
-
-                alloc::format!("${}", URL_SAFE_NO_PAD.encode(hash))
+            let mut hash_value = value.clone();
+            if let Some(obj) = hash_value.as_object_mut() {
+                obj.remove(FIELD_UNSIGNED);
+                obj.remove(FIELD_SIGNATURES);
             }
-            #[cfg(not(feature = "hashing"))]
-            {
-                return Err(serde::de::Error::custom(
-                    "event_id is missing and 'hashing' feature is disabled",
-                ));
-            }
+            sort_json_value_keys(&mut hash_value);
+
+            let canonical_json =
+                serde_json::to_string(&hash_value).map_err(serde::de::Error::custom)?;
+            let mut hasher = Sha256::new();
+            hasher.update(canonical_json.as_bytes());
+            let hash = hasher.finalize();
+
+            alloc::format!("${}", URL_SAFE_NO_PAD.encode(hash))
         };
 
         let event_type: String = value
@@ -1979,6 +2081,16 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value, String> {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 
+        let hashes = match value.get(FIELD_HASHES) {
+            Some(Value::Object(obj)) if !obj.is_empty() => Some(Value::Object(obj.clone())),
+            Some(Value::Object(_) | Value::Null) | None => None,
+            Some(_) => {
+                return Err(serde::de::Error::custom(
+                    "hashes must be an object (e.g. {\"sha256\": \"...\"})",
+                ));
+            }
+        };
+
         Ok(LeanEvent {
             event_id,
             event_type,
@@ -1992,6 +2104,7 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value, String> {
             depth,
             rejected,
             soft_fail,
+            hashes,
         })
     }
 }

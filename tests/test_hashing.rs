@@ -2,7 +2,6 @@
 use rezzy::LeanEvent;
 use serde_json::json;
 
-#[cfg(feature = "hashing")]
 #[test]
 fn test_event_id_hashing_sequence_and_stripping() {
     // Event 1 has signatures and unsigned fields that must be completely stripped
@@ -55,7 +54,6 @@ fn test_event_id_hashing_sequence_and_stripping() {
 /// Coverage: `sort_json_value_keys` Array branch.
 /// Deserializing an event with array content forces the recursive key sorter
 /// to walk the Array arm.
-#[cfg(feature = "hashing")]
 #[test]
 fn test_event_hashing_with_array_content() {
     let payload = json!({
@@ -77,22 +75,4 @@ fn test_event_hashing_with_array_content() {
         "Event ID must be a valid hash: {}",
         ev.event_id
     );
-}
-
-#[cfg(not(feature = "hashing"))]
-#[test]
-fn test_missing_event_id_fails_without_hashing() {
-    let json_payload = json!({
-        "type": "m.room.message",
-        "sender": "@alice:example.com",
-        "origin_server_ts": 123_456_789,
-        "content": {
-            "body": "Hello, world!"
-        }
-    });
-
-    let result: Result<LeanEvent, _> = serde_json::from_value(json_payload);
-    assert!(result.is_err());
-    let err_msg = result.unwrap_err().to_string();
-    assert!(err_msg.contains("event_id is missing"));
 }

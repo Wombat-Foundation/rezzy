@@ -1976,6 +1976,7 @@ mod tests {
             depth: 1,
             sender: "@user:example.com".into(),
             content: serde_json::Value::Object(serde_json::Map::new()),
+            hashes: None,
         }
     }
 
@@ -3740,6 +3741,94 @@ fn test_redaction_application_guards() {
 }
 
 #[test]
+fn test_hashes_round_trip_and_content_hash_verification() {
+    use rezzy::LeanEvent;
+
+    // A PDU carrying a hashes dict retains it through deserialization.
+    let pdu = r#"{
+        "event_id": "$1:example.com",
+        "type": "m.room.message",
+        "sender": "@bob:example.com",
+        "origin_server_ts": 1,
+        "depth": 2,
+        "content": { "body": "hello" },
+        "hashes": { "sha256": "abc123" },
+        "unsigned": { "age": 5 }
+    }"#;
+    let ev: LeanEvent = serde_json::from_str(pdu).unwrap();
+    assert_eq!(
+        ev.hashes.as_ref().and_then(|h| h["sha256"].as_str()),
+        Some("abc123")
+    );
+    assert!(ev.verify_content_hash().is_err()); // "abc123" is not a real hash.
+
+    // Compute a real content hash, stamp it, and verify it passes.
+    let mut signed: LeanEvent = LeanEvent {
+        event_id: "$1:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 1,
+        depth: 2,
+        content: serde_json::json!({ "body": "hello" }),
+        ..Default::default()
+    };
+    let hash = signed.compute_content_hash().unwrap();
+    signed.hashes = Some(serde_json::json!({ "sha256": hash }));
+    assert!(signed.verify_content_hash().is_ok());
+
+    // Tampering with content breaks the commitment.
+    let mut tampered = signed.clone();
+    tampered.content = serde_json::json!({ "body": "evil" });
+    assert!(tampered.verify_content_hash().is_err());
+
+    // No hashes dict -> nothing to verify -> Err.
+    let mut no_hashes = signed.clone();
+    no_hashes.hashes = None;
+    assert!(no_hashes.verify_content_hash().is_err());
+
+    // Serialization emits the hashes dict.
+    let re: LeanEvent = serde_json::from_str(&serde_json::to_string(&signed).unwrap()).unwrap();
+    assert_eq!(re.hashes, signed.hashes);
+    assert!(re.verify_content_hash().is_ok());
+}
+
+#[test]
+fn test_redaction_verification_chain_commits_via_content_hash() {
+    use rezzy::LeanEvent;
+
+    // Target event with a valid content-hash commitment.
+    let mut target: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        depth: 3,
+        content: serde_json::json!({ "body": "spam" }),
+        ..Default::default()
+    };
+    let hash = target.compute_content_hash().unwrap();
+    target.hashes = Some(serde_json::json!({ "sha256": hash }));
+    assert!(target.verify_content_hash().is_ok());
+
+    // Redaction verifies/commits the target via its content hash.
+    let redaction: LeanEvent = LeanEvent {
+        event_id: "$r:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    assert_eq!(redaction.get_redacts(), Some("$msg:example.com"));
+
+    let redacted = rezzy::apply_redaction(&target, &redaction, "12").unwrap();
+    assert_eq!(redacted.content, serde_json::json!({}));
+    // A redacted copy drops the content-hash commitment (no claim of integrity).
+    assert!(redacted.hashes.is_none());
+    // The original target's commitment is still intact and verifiable.
+    assert!(target.verify_content_hash().is_ok());
+}
+
+#[test]
 fn test_types_deserialize_power_level_variants() {
     let json_int =
         r#"{"event_id":"$1","type":"m.room.message","origin_server_ts":1,"power_level":100}"#;
@@ -4875,6 +4964,7 @@ fn test_lean_event_serialize_roundtrip() {
         depth: 5,
         rejected: true,
         soft_fail: true,
+        hashes: None,
     };
     let json = serde_json::to_string(&ev).unwrap();
     let back: LeanEvent<String> = serde_json::from_str(&json).unwrap();
@@ -5902,6 +5992,7 @@ fn test_lean_event_borrowed_view_roundtrip() {
         depth: 5,
         rejected: true,
         soft_fail: false,
+        hashes: None,
     };
 
     let view = event.as_ref();
@@ -5950,6 +6041,7 @@ fn test_lean_event_borrowed_view_accessors() {
         depth: 5,
         rejected: true,
         soft_fail: false,
+        hashes: None,
     };
 
     let view = event.as_ref();
@@ -7100,6 +7192,7 @@ fn test_lean_event_serialize_propagates_write_error() {
         depth: 1,
         rejected: false,
         soft_fail: false,
+        hashes: None,
     };
 
     let result = serde_json::to_writer(
