@@ -592,6 +592,19 @@ where
 ///
 /// This is a fixpoint: dropping one event can push a dependent over the
 /// all-auth-dropped threshold on the next pass.
+///
+/// ## Effectively dead on the production path
+///
+/// `dropped_ids` only ever contains *conflicted* event IDs. Every real Matrix
+/// event cites `m.room.create` in `auth_events` (auth rule 1), and `$create`
+/// is never conflicted, so it is never in `dropped_ids`. Consequently
+/// `all(|auth| dropped_ids.contains(auth))` cannot be true for any event with
+/// a real auth chain, and this function never drops anything on a production
+/// DAG. It exists to make the CDO a pure direct-domination filter on real
+/// input; only synthetic fixtures (e.g. a candidate whose entire auth list is
+/// a single dominated ban) can trip it. Do not read it as work the CDO saves
+/// on real rooms — on the production path the CDO is exactly the direct-
+/// domination sweep below.
 fn propagate_transitive_dependencies<Id, C: Clone, S1: core::hash::BuildHasher, K>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
     mut dropped_ids: BTreeSet<Id>,

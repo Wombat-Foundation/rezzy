@@ -2,13 +2,17 @@
 //! Differential + determinism harness for state resolution.
 //!
 //! Phase B empirical backbone. For each randomly-generated room DAG:
-//! - **Differential:** resolve with `V2_1` and `V2_1_1` and compare. The two
-//!   versions are **not** semantically equivalent: V2.1.1 adds the CDO
-//!   pre-filter and a power-phase local-auth fallback guard (`at.rs`), both
-//!   absent from stock V2.1. Divergences are therefore logged for manual
-//!   inspection, and the per-run count is asserted below a regression bound so
-//!   a divergence that explodes (e.g. a CDO over-drop) fails the test instead
-//!   of silently passing as a logging no-op.
+//! - **Differential:** resolve with `V2_1` and `V2_1_1` and assert **identical**
+//!   output. V2.1.1 runs the CDO pre-filter (V2.1 does not); if the CDO ever
+//!   drops a candidate full resolution would keep, the versions diverge and the
+//!   test fails. The CDO is confirmed to actually fire on this generator — see
+//!   `cdo_drop_rate_measured` — so the assertion is real coverage, not vacuous.
+//!   V2.1.1's only other difference (the `at.rs` power-phase fallback) is never
+//!   reached by these DAG shapes, so it does not produce divergence here.
+//! - **Drop-rate:** `cdo_drop_rate_measured` reports total events dropped by
+//!   the CDO and how many DAGs had a non-empty drop set, so a `0/2000`
+//!   divergence count can be read as evidence rather than as the CDO doing no
+//!   work.
 //! - **Determinism:** resolve the same DAG twice (fresh caches) and assert
 //!   identical output. This guards the resolution path against any
 //!   platform-dependent divergence (see `determinism_same_input_same_output`).
@@ -24,7 +28,6 @@ mod utils;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
 
 /// Deterministic xorshift64* — reproducible across runs (fixed seed).
 struct Rng(u64);
@@ -310,67 +313,37 @@ fn resolve(p: &Problem, version: StateResVersion) -> SharedState {
 
 /// Differential coverage over the multi-level random DAG generator.
 ///
-/// V2.1 and V2.1.1 are *not* asserted equal here: V2.1.1 intentionally differs
-/// from V2.1 via its power-phase local-auth fallback guard (`at.rs:132`, the
-/// ban-evasion fix). The multi-level generator (candidates citing earlier
-/// candidates, forged depths) exercises transitive reachability and surfaces
-/// real divergences the old flat generator could not produce.
+/// Resolves each DAG with `V2_1` and `V2_1_1` and asserts the results are
+/// **identical**. This is a strong invariant, not a bound:
 ///
-/// So this test guarantees:
-/// - any V2.1 vs V2.1.1 divergence is logged to stderr for manual inspection
-///   (passing the run, since the divergence is intended, not a regression), and
-/// - the per-run divergence count stays under a temporary regression bound
-///   (see the assertion below).
+/// - V2.1.1 runs the CDO pre-filter; V2.1 does not. If the CDO ever drops a
+///   candidate that full resolution would keep, the versions diverge and this
+///   test fails. `cdo_drop_rate_measured` confirms the CDO actually fires
+///   (2087 drops over 626/2000 DAGs), so this is real coverage, not vacuous.
+/// - V2.1.1's only other difference is the `at.rs:132` power-phase local-auth
+///   fallback guard. The generator's DAG shapes never reach that guard (it
+///   fires on ban-evasion topologies the generator does not produce), so it is
+///   not a source of divergence here.
 ///
-/// Determinism is not re-checked here — it is covered by
-/// `determinism_same_input_same_output` (each version resolved twice on 1000
-/// DAGs). This test runs only two resolutions per DAG (one per version), so
-/// it is fast even at 2000 iterations.
+/// Determinism is covered separately by `determinism_same_input_same_output`.
 ///
-/// # The divergence count is not comparable across the parallelization
+/// # Why strict equality, and not a count bound
 ///
-/// `69e4a44` changed the seeding scheme from one shared, sequentially-advanced
-/// RNG to an independently-seeded RNG per iteration (`iteration_rng`), so
-/// iteration *i* now generates a *different* DAG than it did before. The
-/// current run reports 61/2000 divergences, whereas `0916121` (old seeding,
-/// same nominal `BASE_SEED`) recorded 73/2000. These two numbers are NOT
-/// comparable; the difference is the generator change, not a semantic one.
-///
-/// # The bound below is temporary scaffolding
-///
-/// The `diverged_total < 150` assertion is a stopgap so the test can fail at
-/// all; it is NOT a correctness invariant (V2.1 vs V2.1.1 divergence is
-/// expected, so a count is not a meaningful signal, and a real over-drop moves
-/// the count by one or two DAGs, far under the bound). It exists only until
-/// the classification experiment replaces it with a set-equality assertion:
-/// the set of diverging iterations is exactly *S*, and every member of *S* is
-/// attributable to the `at.rs` power-phase fallback (it vanishes when the CDO
-/// is disabled and reappears when it is enabled).
-///
-/// One recorded V2_1-vs-V2_1_1 divergence: the iteration index, both
-/// versions' resolved states, and the conflicted events that produced them.
-type Divergence = (u64, SharedState, SharedState, HashMap<String, LeanEvent>);
-
+/// `0916121` relaxed this to "log divergences, pass under a bound" on the
+/// premise that V2.1 vs V2.1.1 divergence was *intended* (the `at.rs` fallback).
+/// That premise was wrong on this generator: the fallback is never reached, and
+/// every recorded divergence traced to a CDO over-drop — a bug. With the
+/// over-drop fixed, the two versions agree on all 2000 DAGs, so equality is the
+/// correct, meaningful invariant here.
 #[test]
 fn differential_v21_equals_v211() {
     const ITER_COUNT: u64 = 2000;
     const BASE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
     let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
 
-    // (iteration, resolved V2.1, resolved V2.1.1, conflicted map) for every
-    // diverging DAG. Collected during the parallel loop, then printed after it
-    // in iteration order so the output stays deterministic regardless of
-    // thread count.
-    let divergences: Mutex<Vec<Divergence>> = Mutex::new(Vec::new());
-    let diverged = AtomicU64::new(0);
-
     std::thread::scope(|s| {
         for t in 0..threads {
-            let divergences = &divergences;
-            let diverged = &diverged;
             s.spawn(move || {
-                let mut local_diverged = 0u64;
-                let mut local_divergences: Vec<Divergence> = Vec::new();
                 let mut iter = u64::try_from(t).unwrap_or(0);
                 let stride = u64::try_from(threads).unwrap_or(0);
                 while iter < ITER_COUNT {
@@ -378,51 +351,69 @@ fn differential_v21_equals_v211() {
                     let problem = gen_problem(&mut rng, 1000 + iter * 13);
                     let r21 = resolve(&problem, StateResVersion::V2_1);
                     let r211 = resolve(&problem, StateResVersion::V2_1_1);
+                    assert_eq!(
+                        r21, r211,
+                        "V2.1 and V2.1.1 diverged on DAG iteration {iter}: \
+                         the CDO likely dropped a candidate full resolution would keep"
+                    );
+                    iter += stride;
+                }
+            });
+        }
+    });
+}
 
-                    if r21 != r211 {
-                        local_diverged += 1;
-                        local_divergences.push((iter, r21, r211, problem.conflicted));
+/// Measures how much work the CDO actually does on the generator's DAGs.
+///
+/// `0/2000` V2.1 vs V2.1.1 divergences is only meaningful if the CDO *drops*
+/// a non-trivial number of events: if it drops almost nothing, both versions
+/// agree trivially and the differential result is vacuous evidence about the
+/// direct-domination path. This test answers that directly — total events
+/// dropped by `apply_cdo_filter` across the run, and how many DAGs had a
+/// non-empty drop set — without resolving anything.
+#[test]
+fn cdo_drop_rate_measured() {
+    const ITER_COUNT: u64 = 2000;
+    const BASE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+
+    let dropped_total = AtomicU64::new(0);
+    let dag_count = AtomicU64::new(0);
+
+    std::thread::scope(|s| {
+        for t in 0..threads {
+            let dropped_total = &dropped_total;
+            let dag_count = &dag_count;
+            s.spawn(move || {
+                let mut local_dropped = 0u64;
+                let mut local_dags = 0u64;
+                let mut iter = u64::try_from(t).unwrap_or(0);
+                let stride = u64::try_from(threads).unwrap_or(0);
+                while iter < ITER_COUNT {
+                    let mut rng = iteration_rng(BASE_SEED, iter);
+                    let problem = gen_problem(&mut rng, 1000 + iter * 13);
+                    let safe =
+                        rezzy::cdo::apply_cdo_filter(&problem.conflicted, &problem.auth_context);
+                    let dropped = u64::try_from(problem.conflicted.len() - safe.len()).unwrap_or(0);
+                    local_dropped += dropped;
+                    if dropped > 0 {
+                        local_dags += 1;
                     }
                     iter += stride;
                 }
-                diverged.fetch_add(local_diverged, Ordering::Relaxed);
-                divergences.lock().unwrap().extend(local_divergences);
+                dropped_total.fetch_add(local_dropped, Ordering::Relaxed);
+                dag_count.fetch_add(local_dags, Ordering::Relaxed);
             });
         }
     });
 
-    let mut divergences = divergences.into_inner().unwrap_or_default();
-    divergences.sort_unstable_by_key(|(iter, _, _, _)| *iter);
-    for (iter, r21, r211, conflicted) in &divergences {
-        eprintln!("V2.1 vs V2.1.1 diverged on iteration {iter}");
-        for (id, ev) in conflicted {
-            eprintln!(
-                "  {}: {} by {} sk={:?} ts={} depth={} prev={:?} auth={:?}",
-                id,
-                ev.event_type,
-                ev.sender,
-                ev.state_key,
-                ev.origin_server_ts,
-                ev.depth,
-                ev.prev_events,
-                ev.auth_events
-            );
-        }
-        eprintln!("  v21   = {r21:?}");
-        eprintln!("  v211  = {r211:?}");
-    }
-    let diverged_total = diverged.load(Ordering::Relaxed);
-
-    // TEMPORARY stopgap bound — see the module doc's "# The bound below is
-    // temporary scaffolding". It only fails on a ~3x divergence explosion; it
-    // is deliberately NOT a correctness invariant (a real over-drop moves the
-    // count by one or two DAGs). It will be replaced by the set-equality
-    // classification assertion once the CDO-disabled experiment lands.
-    assert!(
-        diverged_total < 150,
-        "V2.1 vs V2.1.1 diverged on {diverged_total}/{ITER_COUNT} DAGs, far beyond the intended subset; investigate"
+    let dropped_total = dropped_total.load(Ordering::Relaxed);
+    let dag_count = dag_count.load(Ordering::Relaxed);
+    let dags_with_conflict = ITER_COUNT; // generator always produces conflicted candidates
+    eprintln!(
+        "cdo: {dropped_total} events dropped by apply_cdo_filter over {ITER_COUNT} DAGs; \
+         {dag_count} DAGs had a non-empty drop set ({dags_with_conflict} DAGs have conflicted candidates)"
     );
-    eprintln!("differential: {diverged_total}/{ITER_COUNT} DAGs diverged between V2.1 and V2.1.1");
 }
 
 #[test]
