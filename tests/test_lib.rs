@@ -4213,6 +4213,7 @@ fn test_cdo_creator_detected_from_context_not_auth_events() {
     let events = utils::parse_jsonl_events(
         r#"
 {"event_id":"$create","type":"m.room.create","state_key":"","sender":"@owner:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@owner:a","room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$decoy_create","type":"m.room.create","state_key":"","sender":"@other:x","depth":0,"origin_server_ts":999,"content":{"creator":"@other:x","room_version":"12"},"prev_events":[],"auth_events":[]}
 {"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@owner:a","depth":1,"origin_server_ts":1001,"content":{"users":{"@owner:a":0},"state_default":50},"prev_events":["$create"],"auth_events":["$create"]}
 {"event_id":"$pl_demote","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":2,"origin_server_ts":2000,"content":{"users":{"@owner:a":0,"@admin:a":100},"state_default":50},"prev_events":["$pl"],"auth_events":["$create","$pl"]}
 {"event_id":"$owner_avatar","type":"m.room.avatar","state_key":"","sender":"@owner:a","depth":3,"origin_server_ts":2001,"content":{"url":"mxc://x"},"prev_events":["$pl"],"auth_events":["$pl"]}
@@ -4222,7 +4223,7 @@ fn test_cdo_creator_detected_from_context_not_auth_events() {
     let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
     for ev in &events {
         match ev.event_id.as_str() {
-            "$create" | "$pl" => {
+            "$create" | "$decoy_create" | "$pl" => {
                 auth_context.insert(ev.event_id.clone(), ev.clone());
             }
             _ => {
@@ -4234,7 +4235,7 @@ fn test_cdo_creator_detected_from_context_not_auth_events() {
     let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
     assert!(
         safe.contains_key("$owner_avatar"),
-        "the creator is detected from context (create not in auth_events) and keeps implicit max power"
+        "the room's own create (an ancestor) is selected over the decoy, so the creator keeps implicit max power"
     );
 }
 

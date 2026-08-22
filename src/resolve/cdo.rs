@@ -513,6 +513,42 @@ where
     })
 }
 
+/// Returns `true` if `create_ev` is reachable as an ancestor of `target_ev`
+/// through the `prev_events`/`auth_events` edges present in the conflicted and
+/// auth context.
+fn create_is_ancestor<Id, C, K, S1, S2>(
+    target_ev: &LeanEvent<Id, C, K>,
+    create_ev: &LeanEvent<Id, C, K>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+) -> bool
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: Clone,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+{
+    if target_ev.event_id == create_ev.event_id {
+        return true;
+    }
+    let mut stack = alloc::vec![target_ev.event_id.clone()];
+    let mut visited = BTreeSet::new();
+    visited.insert(target_ev.event_id.clone());
+    while let Some(id) = stack.pop() {
+        if id == create_ev.event_id {
+            return true;
+        }
+        if let Some(ev) = conflicted_events.get(&id).or_else(|| auth_context.get(&id)) {
+            for parent in ev.prev_events.iter().chain(ev.auth_events.iter()) {
+                if visited.insert(parent.clone()) {
+                    stack.push(parent.clone());
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Checks whether the sender was already empowered by the cited power-level state.
 fn sender_has_pre_demotion_pl<Id, C, K, S1, S2>(
     target_ev: &LeanEvent<Id, C, K>,
@@ -529,10 +565,25 @@ where
     // For V12+ the spec removes `m.room.create` from `auth_events` (see
     // spec_audit.md rule 2.4, V1-V11 only), so the create event must be found
     // from the room/auth context rather than the target's own auth list.
+    // Prefer a create that is an ancestor of the target (the room's own
+    // create), falling back deterministically to the smallest event_id when the
+    // context is ambiguous, so creator authority never comes from an arbitrary
+    // branch.
     let create_event = conflicted_events
         .values()
         .chain(auth_context.values())
-        .find(|ev| ev.event_type == crate::basespec::event_types::M_ROOM_CREATE);
+        .filter(|ev| ev.event_type == crate::basespec::event_types::M_ROOM_CREATE)
+        .min_by_key(|ev| {
+            (
+                core::cmp::Reverse(create_is_ancestor(
+                    target_ev,
+                    ev,
+                    conflicted_events,
+                    auth_context,
+                )),
+                &ev.event_id,
+            )
+        });
 
     let target_membership = target_current_membership(target_ev, conflicted_events, auth_context);
 
