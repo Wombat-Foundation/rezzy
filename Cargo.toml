@@ -164,6 +164,11 @@ name = "cumulative_rebuild"
 path = "benches/cumulative_rebuild.rs"
 harness = false
 
+[[bench]]
+name = "hamt_audit_bitmap"
+path = "benches/hamt_audit_bitmap.rs"
+harness = false
+
 [[test]]
 name = "test_snapshots"
 path = "tests/test_snapshots.rs"
