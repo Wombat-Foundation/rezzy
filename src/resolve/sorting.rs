@@ -615,7 +615,6 @@ mod tests {
         assert_eq!(dist["topic"], 0);
     }
 
-    /// Coverage: `compute_auth_distance_iterative`
     /// call populates the cache for each PL event, and the second call hits the
     /// cache early, skipping the BFS entirely.
     #[test]

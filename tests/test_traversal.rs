@@ -369,7 +369,7 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
     };
 
     // Bob (PL 0) attempts to join.
-    // Exact same origin_server_ts and auth_chain_distance as the ban to force a pure Power Level tie-break.
+    // Exact same origin_server_ts as the ban to force a pure Power Level tie-break.
     let bob_join = LeanEvent {
         event_id: "$bob_join".to_string(),
         event_type: "m.room.member".to_string(),
@@ -410,7 +410,7 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
 
 #[test]
 fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
-    // Exact same test, but running under V2.1.1 to prove auth_chain_distance doesn't change the outcome.
+    // Exact same test, but running under V2.1.1 to confirm the outcome is unchanged.
     let create_ev = LeanEvent {
         event_id: "$create".to_string(),
         event_type: "m.room.create".to_string(),
@@ -1671,15 +1671,13 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
     );
 }
 
-/// Coverage: `compute_auth_distance_iterative`
-///
-/// V2.2 uses auth chain distance from `$create` as a tie-breaker in Kahn sort.
-/// This test constructs two competing topic events with multi-hop auth chains,
-/// forcing the iterative DFS traversal through `auth_events` to compute distances.
-/// Multiple conflicted events processed through the same memo cache exercise
-/// the memoization hit path (line 96) and the stack walk logic (lines 106, 111, 123).
+/// V2.2 power-event ordering uses power level, then `origin_server_ts`, then
+/// `event_id` (the redundant `auth_chain_distance` tie-break was removed). This
+/// constructs two competing topic events with equal power level (0) and equal
+/// `origin_server_ts`, forcing the final `event_id` lexicographic tie-break:
+/// `$topic_a` sorts first and `$topic_b` (larger id) wins via last-write-wins.
 #[test]
-fn test_v2_2_auth_distance_tiebreak() {
+fn test_v2_2_event_id_tiebreak() {
     let auth_evs = utils::parse_jsonl_events(
         r#"
         {"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:x", "origin_server_ts": 100, "content": {"room_version": "13", "creator": "@admin:x"}}
