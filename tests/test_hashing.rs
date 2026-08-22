@@ -94,3 +94,26 @@ fn test_reference_hash_canonicalizes_array_content() {
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
     assert!(!h.is_empty());
 }
+
+#[test]
+fn test_hash_base64_alphabet_differs_v3_vs_v4() {
+    // The base64 alphabet is a room-version attribute: v3 uses the STANDARD
+    // alphabet (+ and /), v4+ uses URL-safe (- and _). Both unpadded.
+    let pdu = json!({
+        "event_id": "$1:example.com",
+        "type": "m.room.message",
+        "sender": "@u:example.com",
+        "origin_server_ts": 1,
+        "depth": 1,
+        "content": { "body": "hello" }
+    });
+    let v3 = reference_hash(&pdu, "3").unwrap();
+    let v4 = reference_hash(&pdu, "4").unwrap();
+    assert!(v4
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    assert!(v3
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/'));
+    assert_ne!(v3, v4);
+}

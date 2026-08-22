@@ -322,6 +322,25 @@ fn redact_top_level(value: &Value, room_version: &str) -> Value {
     }
     Value::Object(out)
 }
+/// The base64 engine used for Matrix hash encodings, derived from the room
+/// version. Room v3 uses the STANDARD alphabet; room v4+ uses URL-safe. Both
+/// are unpadded. Mirrors Synapse's Rust (`ROOM_V3 -> STANDARD`, else
+/// `URL_SAFE`) and its `unpaddedbase64.encode_base64` (default STANDARD).
+#[must_use]
+fn hash_base64_engine(room_version: &str) -> base64::engine::GeneralPurpose {
+    use base64::engine::{general_purpose::NO_PAD, GeneralPurpose};
+    let is_v3 = room_version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major == 3);
+    let alphabet = if is_v3 {
+        &base64::alphabet::STANDARD
+    } else {
+        &base64::alphabet::URL_SAFE
+    };
+    GeneralPurpose::new(alphabet, NO_PAD)
+}
 
 /// The Matrix redaction algorithm applied to a raw PDU `Value`, both halves:
 ///
@@ -357,8 +376,9 @@ pub fn redact_json(value: &Value, room_version: &str) -> Value {
 
 /// Computes the Matrix **reference hash** of a PDU `Value` — the event ID for
 /// room versions 4+: SHA-256 of the canonical JSON of the *redacted* event
-/// (with `signatures`/`unsigned` removed; `hashes` is retained), returned as
-/// URL-safe unpadded base64 (no `$` prefix).
+/// (with `signatures`/`unsigned` removed; `hashes` is retained), encoded with
+/// the room version's base64 alphabet (STANDARD for v3, URL-safe for v4+; no
+/// `$` prefix).
 ///
 /// # Errors
 /// Returns `Err` if the canonical JSON cannot be serialized.
@@ -367,7 +387,7 @@ pub fn reference_hash(
     room_version: &str,
 ) -> Result<alloc::string::String, alloc::string::String> {
     use crate::basespec::event_types::{FIELD_SIGNATURES, FIELD_UNSIGNED};
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use base64::Engine as _;
     use sha2::{Digest, Sha256};
 
     let mut redacted = redact_json(value, room_version);
@@ -379,18 +399,22 @@ pub fn reference_hash(
     let canonical = serde_json::to_string(&redacted).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
-    Ok(URL_SAFE_NO_PAD.encode(hasher.finalize()))
+    Ok(hash_base64_engine(room_version).encode(hasher.finalize()))
 }
 
 /// Computes the Matrix **content hash** of a PDU `Value` (`hashes.sha256`):
 /// SHA-256 of the canonical JSON of the *unredacted* event with `unsigned`,
-/// `signatures`, and `hashes` removed, as URL-safe unpadded base64.
+/// `signatures`, and `hashes` removed, encoded with the room version's base64
+/// alphabet (STANDARD for v3, URL-safe for v4+).
 ///
 /// # Errors
 /// Returns `Err` if the canonical JSON cannot be serialized.
-pub fn compute_content_hash(value: &Value) -> Result<alloc::string::String, alloc::string::String> {
+pub fn compute_content_hash(
+    value: &Value,
+    room_version: &str,
+) -> Result<alloc::string::String, alloc::string::String> {
     use crate::basespec::event_types::{FIELD_HASHES, FIELD_SIGNATURES, FIELD_UNSIGNED};
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use base64::Engine as _;
     use sha2::{Digest, Sha256};
 
     let mut v = value.clone();
@@ -403,7 +427,7 @@ pub fn compute_content_hash(value: &Value) -> Result<alloc::string::String, allo
     let canonical = serde_json::to_string(&v).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
-    Ok(URL_SAFE_NO_PAD.encode(hasher.finalize()))
+    Ok(hash_base64_engine(room_version).encode(hasher.finalize()))
 }
 
 /// Verifies a raw PDU `Value`'s `hashes.sha256` against its recomputed content
@@ -414,7 +438,7 @@ pub fn compute_content_hash(value: &Value) -> Result<alloc::string::String, allo
 /// # Errors
 /// Returns `Err` when `hashes.sha256` is missing/not a string, or when the
 /// recomputed content hash does not match.
-pub fn verify_content_hash(value: &Value) -> Result<(), alloc::string::String> {
+pub fn verify_content_hash(value: &Value, room_version: &str) -> Result<(), alloc::string::String> {
     let Some(expected) = value
         .get(crate::basespec::event_types::FIELD_HASHES)
         .and_then(|h| h.get("sha256"))
@@ -424,7 +448,7 @@ pub fn verify_content_hash(value: &Value) -> Result<(), alloc::string::String> {
             "hashes.sha256 is missing or not a string",
         ));
     };
-    let computed = compute_content_hash(value)?;
+    let computed = compute_content_hash(value, room_version)?;
     if computed != expected {
         return Err(alloc::format!(
             "content hash mismatch: hashes.sha256={expected}, computed={computed}"

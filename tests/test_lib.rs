@@ -3769,20 +3769,20 @@ fn test_content_hash_verification_on_raw_pdu() {
 
     // A bogus hash fails.
     pdu["hashes"] = serde_json::json!({ "sha256": "abc123" });
-    assert!(verify_content_hash(&pdu).is_err());
+    assert!(verify_content_hash(&pdu, "11").is_err());
 
     // A real content hash passes.
-    let hash = compute_content_hash(&pdu).unwrap();
+    let hash = compute_content_hash(&pdu, "11").unwrap();
     pdu["hashes"] = serde_json::json!({ "sha256": hash });
-    assert!(verify_content_hash(&pdu).is_ok());
+    assert!(verify_content_hash(&pdu, "11").is_ok());
 
     // Tampering with content breaks the commitment.
     pdu["content"] = serde_json::json!({ "body": "evil" });
-    assert!(verify_content_hash(&pdu).is_err());
+    assert!(verify_content_hash(&pdu, "11").is_err());
 
     // Missing hashes dict -> nothing to verify -> Err.
     pdu.as_object_mut().unwrap().remove("hashes");
-    assert!(verify_content_hash(&pdu).is_err());
+    assert!(verify_content_hash(&pdu, "11").is_err());
 }
 
 #[test]
