@@ -423,7 +423,7 @@ impl<K, V> HamtNode<K, V> {
         if depth >= HAMT_MAX_DEPTH {
             return None;
         }
-        let next_depth = depth.wrapping_add(1);
+        let next_depth = depth.saturating_add(1);
 
         match self.slot_at(path_hash, depth) {
             Slot::Leaf((stored_key, value)) => (stored_key.borrow() == key).then_some(value),
@@ -450,7 +450,7 @@ impl<K, V> HamtNode<K, V> {
         if depth >= HAMT_MAX_DEPTH {
             return Ok(None);
         }
-        let next_depth = depth.wrapping_add(1);
+        let next_depth = depth.saturating_add(1);
 
         match self.slot_at(path_hash, depth) {
             Slot::Leaf((stored_key, value)) => {
