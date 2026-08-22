@@ -1,3 +1,5 @@
+#![allow(clippy::arithmetic_side_effects)]
+
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -24,7 +26,7 @@ fn bench_once_sub(full_range: &RoaringBitmap, reachable: &RoaringBitmap) -> Roar
 }
 
 fn bench_once_difference(full_range: &RoaringBitmap, reachable: &RoaringBitmap) -> RoaringBitmap {
-    [&full_range, reachable].difference()
+    [full_range, reachable].difference()
 }
 
 fn bench_once_sub_assign(full_range: &RoaringBitmap, reachable: &RoaringBitmap) -> RoaringBitmap {
@@ -54,11 +56,12 @@ fn report_case(universe_len: u32, missing_stride: u32, iters: usize) {
     let difference = time_case(iters, || bench_once_difference(&full_range, &reachable));
     let sub_assign = time_case(iters, || bench_once_sub_assign(&full_range, &reachable));
 
-    let filter_ns = filter.as_nanos() as f64 / iters as f64;
-    let operator_ns = operator.as_nanos() as f64 / iters as f64;
-    let sub_ns = sub.as_nanos() as f64 / iters as f64;
-    let difference_ns = difference.as_nanos() as f64 / iters as f64;
-    let sub_assign_ns = sub_assign.as_nanos() as f64 / iters as f64;
+    let iters_u128 = u128::try_from(iters).expect("benchmark iteration count fits in u128");
+    let filter_ns = filter.as_nanos() / iters_u128;
+    let operator_ns = operator.as_nanos() / iters_u128;
+    let sub_ns = sub.as_nanos() / iters_u128;
+    let difference_ns = difference.as_nanos() / iters_u128;
+    let sub_assign_ns = sub_assign.as_nanos() / iters_u128;
 
     println!(
         "universe={universe_len} missing_stride={missing_stride} iters={iters}: filter={filter_ns:.1} ns/op, operator={operator_ns:.1} ns/op, sub={sub_ns:.1} ns/op, difference={difference_ns:.1} ns/op, sub_assign={sub_assign_ns:.1} ns/op"
