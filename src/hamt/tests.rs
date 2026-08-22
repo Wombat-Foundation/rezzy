@@ -3727,6 +3727,18 @@ impl Rng {
     }
 }
 
+fn dedupe_last_wins(entries: &DeltaEntries) -> DeltaEntries {
+    let mut seen = alloc::collections::BTreeSet::new();
+    let mut deduped = Vec::with_capacity(entries.len());
+    for (k, v) in entries.iter().copied().rev() {
+        if seen.insert(k) {
+            deduped.push((k, v));
+        }
+    }
+    deduped.reverse();
+    deduped
+}
+
 #[test]
 fn test_isolate_delta_order_invariant_randomized() {
     let mut rng = Rng::new(0xD15C_0DE1);
@@ -3746,6 +3758,8 @@ fn test_isolate_delta_order_invariant_randomized() {
         let entries_b: DeltaEntries = (0..n_b)
             .map(|_| (rng.below(key_space), rng.below(1000)))
             .collect();
+        let entries_a = dedupe_last_wins(&entries_a);
+        let entries_b = dedupe_last_wins(&entries_b);
 
         // Later entries for the same key win (build_hamt inserts in order),
         // so dedupe the same way for the oracle input.

@@ -52,7 +52,7 @@
 use crate::basespec::event_types::{
     MEM_INVITE, MEM_JOIN, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
 };
-use crate::basespec::rezzy_types::LeanEvent;
+use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::HashMap;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
@@ -431,8 +431,8 @@ where
 /// independent branch, regardless of whether the target's own authorization
 /// predates it. This mirrors `join_has_prior_authorization`: an independent
 /// branch's demotion must not retroactively invalidate an action the sender
-/// took while validly empowered, if that empowerment is what the action's
-/// own `auth_events` actually cite. See
+/// took while validly empowered under the cited power-level state, if that
+/// empowerment is what the action's own `auth_events` actually cite. See
 /// `test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action`.
 fn sender_has_pre_demotion_pl<Id, C, K, S1, S2>(
     target_ev: &LeanEvent<Id, C, K>,
@@ -446,16 +446,42 @@ where
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 {
+    let create_event = target_ev.auth_events.iter().find_map(|aid| {
+        conflicted_events
+            .get(aid)
+            .or_else(|| auth_context.get(aid))
+            .filter(|ev| ev.event_type == crate::basespec::event_types::M_ROOM_CREATE)
+    });
+
     target_ev.auth_events.iter().any(|aid| {
         conflicted_events
             .get(aid)
             .or_else(|| auth_context.get(aid))
             .is_some_and(|ev| {
-                ev.event_type == M_ROOM_POWER_LEVELS
-                    && ev
-                        .get_user_power_level(target_ev.sender.as_str())
-                        .or_else(|| ev.get_users_default())
-                        .is_some_and(|level| level > 0)
+                ev.event_type == M_ROOM_POWER_LEVELS && {
+                    let sender_pl = if create_event
+                        .and_then(|create_ev| {
+                            create_ev
+                                .get_room_version()
+                                .and_then(StateResVersion::from_room_version)
+                        })
+                        .is_some_and(|version| version.is_v2_1_plus())
+                        && (create_event.is_some_and(|create_ev| {
+                            create_ev.sender.as_str() == target_ev.sender.as_str()
+                                || create_ev.has_additional_creator(target_ev.sender.as_str())
+                        })) {
+                        i64::MAX
+                    } else {
+                        ev.get_user_power_level(target_ev.sender.as_str())
+                            .or_else(|| ev.get_users_default())
+                            .unwrap_or(0)
+                    };
+                    let required_pl = ev
+                        .get_event_power_level(M_ROOM_POWER_LEVELS)
+                        .or_else(|| ev.get_state_default())
+                        .unwrap_or(50);
+                    sender_pl >= required_pl
+                }
             })
     })
 }

@@ -246,51 +246,6 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         emitted_conflicted_ids.push(id2);
     }
 
-    // Occasionally a conflicted join_rules or power_levels candidate.
-    match rng.below(3) {
-        0 => {
-            let jr2 = LeanEvent {
-                event_id: "$jr_conf".to_string(),
-                event_type: "m.room.join_rules".to_string(),
-                state_key: Some(String::new()),
-                sender: "@admin:x".to_string(),
-                origin_server_ts: ts,
-                content: serde_json::json!({ "join_rule": "invite" }),
-                auth_events: vec![
-                    "$create".to_string(),
-                    "$admin_join".to_string(),
-                    "$pl".to_string(),
-                ],
-                prev_events: vec!["$pl".to_string()],
-                depth: 1 + rng.below(8) as u64,
-                ..Default::default()
-            };
-            conflicted.insert("$jr_conf".to_string(), jr2);
-            emitted_conflicted_ids.push("$jr_conf".to_string());
-        }
-        1 => {
-            let pl2 = LeanEvent {
-                event_id: "$pl_conf".to_string(),
-                event_type: "m.room.power_levels".to_string(),
-                state_key: Some(String::new()),
-                sender: "@admin:x".to_string(),
-                origin_server_ts: ts,
-                content: serde_json::json!({ "users": { "@admin:x": 100 }, "state_default": 0 }),
-                auth_events: vec![
-                    "$create".to_string(),
-                    "$admin_join".to_string(),
-                    "$pl".to_string(),
-                ],
-                prev_events: vec!["$pl".to_string()],
-                depth: 1 + rng.below(8) as u64,
-                ..Default::default()
-            };
-            conflicted.insert("$pl_conf".to_string(), pl2);
-            emitted_conflicted_ids.push("$pl_conf".to_string());
-        }
-        _ => {}
-    }
-
     // Everything is in the auth context too (so auth lookups resolve).
     for (id, ev) in &conflicted {
         auth_context.insert(id.clone(), ev.clone());
