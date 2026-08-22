@@ -27,7 +27,9 @@ use super::{
 /// hashes, so no dense index could be assigned to all of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UniverseTooLarge {
-    /// The number of distinct hashes that overflowed a `u32` index.
+    /// The true total number of distinct hashes in `universe` (which exceeds
+    /// `u32::MAX`). Not a constant `u32::MAX + 1`: the builder keeps counting
+    /// distinct hashes past the bound before failing.
     pub distinct_count: usize,
 }
 
@@ -76,7 +78,8 @@ impl IndexedUniverse {
     ) -> Result<Self, UniverseTooLarge> {
         let mut hashes: Vec<StructuralHash> = Vec::new();
         let mut index_by_hash: HashMap<StructuralHash, u32> = HashMap::new();
-        for hash in universe {
+        let mut iter = universe.into_iter();
+        for hash in iter.by_ref() {
             if let std::collections::hash_map::Entry::Vacant(entry) = index_by_hash.entry(hash) {
                 // A new distinct hash needs index `hashes.len()`. If we're
                 // already at `u32::MAX`, the resulting length would be
@@ -85,9 +88,18 @@ impl IndexedUniverse {
                 // construction panic). Reject here so `len()` is always
                 // representable as a `u32`.
                 if hashes.len() >= u32::MAX as usize {
-                    return Err(UniverseTooLarge {
-                        distinct_count: hashes.len().saturating_add(1),
-                    });
+                    // Keep counting distinct hashes past the bound so
+                    // `distinct_count` reports the *true* total — the previous
+                    // value was always `u32::MAX + 1` (no information).
+                    let mut seen: HashSet<StructuralHash> = index_by_hash.keys().copied().collect();
+                    seen.insert(hash);
+                    let mut distinct_count = seen.len();
+                    for h in iter {
+                        if seen.insert(h) {
+                            distinct_count = distinct_count.saturating_add(1);
+                        }
+                    }
+                    return Err(UniverseTooLarge { distinct_count });
                 }
                 let idx = u32::try_from(hashes.len())
                     .expect("hashes.len() < u32::MAX, guaranteed by the check above");

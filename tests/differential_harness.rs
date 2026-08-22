@@ -350,7 +350,7 @@ fn differential_v21_equals_v211() {
         for t in 0..threads {
             s.spawn(move || {
                 let mut iter = u64::try_from(t).unwrap_or(0);
-                let stride = u64::try_from(threads).unwrap_or(0);
+                let stride = u64::try_from(threads).unwrap_or(1);
                 while iter < ITER_COUNT {
                     let mut rng = iteration_rng(BASE_SEED, iter);
                     let problem = gen_problem(&mut rng, 1000 + iter * 13);
@@ -410,7 +410,7 @@ fn cdo_drop_rate_measured() {
                 let mut local_dropped_winners = 0u64;
                 let mut local_dropped_winner_dags = 0u64;
                 let mut iter = u64::try_from(t).unwrap_or(0);
-                let stride = u64::try_from(threads).unwrap_or(0);
+                let stride = u64::try_from(threads).unwrap_or(1);
                 while iter < ITER_COUNT {
                     let mut rng = iteration_rng(BASE_SEED, iter);
                     let problem = gen_problem(&mut rng, 1000 + iter * 13);
@@ -642,7 +642,7 @@ fn determinism_same_input_same_output() {
         for t in 0..threads {
             s.spawn(move || {
                 let mut iter = u64::try_from(t).unwrap_or(0);
-                let stride = u64::try_from(threads).unwrap_or(0);
+                let stride = u64::try_from(threads).unwrap_or(1);
                 while iter < ITER_COUNT {
                     let mut rng = iteration_rng(BASE_SEED, iter);
                     let problem = gen_problem(&mut rng, 7000 + iter * 17);
