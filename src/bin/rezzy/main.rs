@@ -139,6 +139,47 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
         );
     }
 
+    if !args.quiet {
+        let (backward, missing_auth) =
+            utils::report_gaps(&events_map, |id| events_map.contains_key(id));
+        let describe = |id: &str| -> String {
+            match events_map.get(id) {
+                Some(ev) => {
+                    format!("{} {} ts={}", ev.event_type, ev.sender, ev.origin_server_ts)
+                }
+                None => String::from("<?>"),
+            }
+        };
+        if !missing_auth.is_empty() {
+            eprintln!(
+                "[WARN] {} event(s) reference auth_events absent from local set (auth cannot be fully verified):",
+                missing_auth.len()
+            );
+            for gap in missing_auth.iter().take(20) {
+                eprintln!(
+                    "    {} ({}) -> missing auth {}",
+                    gap.event_id,
+                    describe(&gap.event_id),
+                    gap.missing_auth_events.join(", ")
+                );
+            }
+        }
+        if !backward.is_empty() {
+            eprintln!(
+                "[WARN] {} event(s) reference prev_events absent from local set (backfill/backward extremity):",
+                backward.len()
+            );
+            for gap in backward.iter().take(20) {
+                eprintln!(
+                    "    {} ({}) -> missing prev {}",
+                    gap.event_id,
+                    describe(&gap.event_id),
+                    gap.missing_prev_events.join(", ")
+                );
+            }
+        }
+    }
+
     let state_maps = compute_state_maps(&heads, &events_map, &raw_map);
 
     if version != rezzy::StateResVersion::V2_1 && version != rezzy::StateResVersion::V2_1_1 {
