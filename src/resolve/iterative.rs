@@ -43,21 +43,26 @@ pub(crate) fn prepare_conflicted_and_keys<
     K,
 >(
     conflicted_events: &mut HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
-    version: StateResVersion,
+    _auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    _version: StateResVersion,
 ) -> alloc::collections::BTreeSet<Id>
 where
     K: AsRef<str> + Clone,
 {
-    let original_conflicted_keys = conflicted_events.keys().cloned().collect();
-    if version == StateResVersion::V2_1_1 {
-        let filtered = crate::resolve::cdo::apply_cdo_filter(conflicted_events, auth_context);
-        conflicted_events.clear();
-        for (k, v) in filtered {
-            conflicted_events.insert(k, v);
-        }
-    }
-    original_conflicted_keys
+    // The V2.1.1 CDO pre-filter used to run here, dropping conflicted events
+    // that are causally dominated by a structurally-admin event
+    // (ban/kick/lockdown/demotion) without verifying the dominator passes auth.
+    // That is a state-erasure vector: an auth-invalid, low-power user's forged
+    // ban erases legitimate memberships on CDO-running servers while non-CDO
+    // (Synapse) servers keep them — a permanent federation fork. A drop is
+    // sound iff IterativeAuthChecks would have rejected the event, which the
+    // CDO could not establish at this (pre-auth) point.
+    //
+    // The pre-filter is retired from the live path (see src/resolve/cdo.rs,
+    // retained as design history) pending a resolved-state screening pass that
+    // applies auth predicates directly instead of approximating domination.
+    // Do NOT restore this call without that soundness guarantee.
+    conflicted_events.keys().cloned().collect()
 }
 
 /// Derives a genuine-conflicted-key set by treating every event in

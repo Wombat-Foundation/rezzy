@@ -2290,19 +2290,17 @@ mod tests {
         assert!(safe.contains_key("$B"), "unordered $B must not be dropped");
     }
 
-    // KNOWN SOUNDNESS GAP — dominator-validity. The CDO drops a candidate based
+    // Dominator-validity gap — resolved. The CDO used to drop a candidate based
     // on a structurally-a-ban/kick admin action WITHOUT checking that the
     // dominator itself would pass auth. Here `@mallory` has PL 0 (below the
-    // room's ban level), so `$evil_ban` is auth-INVALID and full resolution
-    // rejects it; `$victim_join` (an auth-valid join into the public room) is
-    // the correct V2.1 winner for @bob. But the CDO drops `$victim_join`
-    // because `$evil_ban.restricts_event` fires on its structural shape, so
-    // V2.1.1 resolves @bob to no membership. This is a real divergence an
-    // attacker can provoke. It is pinned here as the CURRENT behavior; it must
-    // be re-examined when the dominator-validity gap is addressed (a full fix
-    // requires running auth on the dominator, which the CDO deliberately avoids).
+    // room's ban level), so `$evil_ban` is auth-INVALID; `$victim_join` (an
+    // auth-valid join into the public room) is the correct winner for @bob.
+    // The unsound CDO pre-filter is retired from `prepare_conflicted_and_keys`,
+    // so V2.1.1 now rejects `$evil_ban` on auth and keeps the join, matching
+    // V2.1. This test guards that the live path stays sound: if someone
+    // re-connects the pre-filter, it fails loudly.
     #[test]
-    fn test_cdo_dominator_validity_auth_invalid_ban_drops_winner() {
+    fn test_cdo_dominator_validity_closed_v2_1_1_keeps_winner() {
         use rezzy::basespec::event_types::EventType;
         use serde_json::json;
 
@@ -2409,12 +2407,12 @@ mod tests {
         conflicted.insert(evil_ban.event_id.clone(), evil_ban);
         conflicted.insert(victim_join.event_id.clone(), victim_join);
 
-        let safe = apply_cdo_filter(&conflicted, &auth_context);
-        assert!(
-            !safe.contains_key("$victim_join"),
-            "CDO currently (unsoundly) drops the auth-valid join"
-        );
-
+        // NOTE: this test guards the *live* V2.1.1 path. The CDO pre-filter
+        // (which used to drop `$victim_join` on the strength of the auth-invalid
+        // `$evil_ban`) is retired from `prepare_conflicted_and_keys` for exactly
+        // this reason — the dominator-validity gap. Resolution must now reject
+        // `$evil_ban` on auth and keep the join, so V2.1.1 must match V2.1. If
+        // someone re-connects the unsound pre-filter, this test fails loudly.
         let bob_key = (EventType::from("m.room.member"), "@bob:x".to_string());
         let r21 = resolve_iterative_sort(
             unconflicted.clone(),
@@ -2431,7 +2429,11 @@ mod tests {
             &mut std::collections::HashMap::new(),
         );
         assert_eq!(r21.get(&bob_key), Some(&"$victim_join".to_string()));
-        assert_eq!(r211.get(&bob_key), None);
+        assert_eq!(
+            r211, r21,
+            "V2.1.1 must not diverge: an auth-invalid dominator must not erase a \
+             resolved winner"
+        );
     }
 
     // Coverage: process_direct_domination_chunks "already-dropped event" skip
@@ -7044,12 +7046,18 @@ fn test_conflicted_keys_derived_before_cdo() {
         ]
     );
 
-    // $bob_pl_dominated is dropped by the CDO pre-filter (verified above), so it
-    // is never processed at all — it appears in neither resolved state nor the
-    // emitted deltas. Its key (m.room.power_levels, "") is supplied by the
-    // genuinely-unconflicted $pl_ancestor instead.
+    // $bob_pl_dominated (bob's power_levels) is dropped by the retained CDO
+    // operator (verified above — a *correct* drop here: @alice genuinely bans
+    // bob, so the dominator is auth-valid). But the live V2.1.1 path no longer
+    // runs the CDO pre-filter (retired from prepare_conflicted_and_keys; see the
+    // dominator-validity soundness note there). So $bob_pl_dominated is now
+    // processed by resolution and correctly REJECTED on auth — a banned user's
+    // power_levels cannot be applied — surfacing as a rejected delta instead of
+    // being absent. It still never wins the key.
     assert!(!resolved.values().any(|v| v == "$bob_pl_dominated"));
-    assert!(!deltas.iter().any(|d| d.event_id == "$bob_pl_dominated"));
+    assert!(deltas
+        .iter()
+        .any(|d| d.event_id == "$bob_pl_dominated" && !d.accepted));
 
     // Verify deltas for accepted conflicted events
     assert!(deltas.iter().any(|d| d.event_id == "$alice_bans_bob"

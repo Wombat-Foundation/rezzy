@@ -12,45 +12,61 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Causal Domination Operator (CDO) — vectorized pre-filter for conflicted events.
+//! Causal Domination Operator (CDO) — vectorized conflicted-event filter.
+//! **Retired from the live path and retained as design history.**
 //!
-//! The CDO is a V2.1.1 optimization that runs *before* the main resolution
-//! algorithm. It identifies conflicted events that are **causally dominated**
-//! by a higher-priority administrative action (ban, kick, PL demotion, or
-//! join-rules lockdown) and removes them from the conflicted set entirely.
+//! This module is no longer called by resolution: the V2.1.1 pre-filter was
+//! removed from `prepare_conflicted_and_keys` (see the soundness note there)
+//! because it was unsound. It is kept here, with its tests, as the record of
+//! what was tried and why it failed, and as a reference for the replacement
+//! (a resolved-state screening pass that *applies* auth predicates instead of
+//! approximating domination).
 //!
-//! An event is "causally dominated" if:
-//! 1. A higher-priority admin action *restricts* it (see [`LeanEvent::restricts_event`]).
-//! 2. The admin action is **not** an ancestor or descendant of the event
-//!    (i.e. they are on independent causal branches).
+//! ## What the CDO was
 //!
-//! ## Implementation
+//! A V2.1.1 optimization that ran *before* the main resolution algorithm. It
+//! identified conflicted events **causally dominated** by a higher-priority
+//! administrative action (ban, kick, PL demotion, or join-rules lockdown) and
+//! removed them from the conflicted set. An event was "causally dominated" if
+//! a higher-priority admin action *restricted* it (see
+//! [`LeanEvent::restricts_event`]) and was **not** an ancestor or descendant
+//! of it (independent causal branches). Ancestor/descendant relationships were
+//! computed via SWAR bitmask sweeps over a topologically-sorted event array.
 //!
-//! Ancestor/descendant relationships are computed via SWAR (SIMD-within-a-register)
-//! bitmask sweeps over a topologically-sorted event array. The chunk size is
-//! auto-selected at compile time: 512 bits on AVX-512, 256 bits otherwise.
+//! ## Why it is unsound
 //!
-//! ## Soundness: domination must never diverge from full resolution
+//! **A drop is sound iff `IterativeAuthChecks` would have rejected the event.**
+//! The CDO ran pre-auth, before `resolved` held the authoritative power state,
+//! so it could never establish that. Three independent violations were found,
+//! each by an adversarial fixture rather than by reasoning:
+//! - **Dominator-validity (the decisive one):** the CDO trusted a dominator's
+//!   *structural* shape (ban/kick/lockdown/demotion) without verifying the
+//!   dominator itself passes auth. An auth-invalid, low-power user's forged
+//!   ban erases a legitimate membership on CDO-running servers while non-CDO
+//!   (Synapse) servers keep it — a permanent federation fork. This falsifies
+//!   the earlier claim (below) that `is_ban_or_kick` domination "did not
+//!   reproduce a divergence." Reachable across all three admin classes; see
+//!   `cdo_dominator_validity_gap_scope_inverted` in the differential harness.
+//! - **Join-rules lockdown:** `is_lockdown()` fired on independent branches
+//!   without checking the target was actually unauthorized (mitigated for a
+//!   target that cites prior authorization, but bypassable).
+//! - **Transitive propagation:** an event dropped via a dropped dominator
+//!   cascaded drops transitively (fixed, then the whole filter retired).
+//! - **Forgeable priority:** `sort_cdo_events` ordered dominators by the
+//!   author-supplied `event.power_level` (see note on [`sort_cdo_events`]),
+//!   never validated against auth — a second, independent trust-of-input hole,
+//!   the same class the resolver refuses to tolerate for `depth`.
 //!
-//! An independent-branch admin action must never dominate a target event
-//! that already carries its own, separate authorization for the state the
-//! admin action would otherwise contest — see `join_has_prior_authorization`
-//! and `sender_has_pre_demotion_pl` below, both fixes for cases where the
-//! `restricts_event`/`restricts_sender` structural check fired without
-//! verifying the target was actually unauthorized. Two related classes of
-//! this were audited and found *not* to need a fix:
-//! - **`is_ban_or_kick()` domination**: unlike `is_lockdown()`/`is_demotion()`,
-//!   its structural check (`state_key == sender`) is already exact, not a
-//!   coarse over-approximation, so it did not reproduce a divergence from
-//!   full V2.1 resolution in either of two structurally distinct topologies
-//!   tested (see `test_anomaly_20_concurrent_ban_still_holds` — `MEM_BAN`,
-//!   type-priority tiebreak — and `test_anomaly_21_concurrent_kick_still_holds`
-//!   — `MEM_LEAVE`-as-kick, real differing `power_level`-driven priority —
-//!   both in `tests/test_critique.rs`).
-//! - **Restricted/knock-restricted `join_rules`**: `is_lockdown()` only fires
-//!   for `join_rule == "invite"`, so those never enter `admin_actions` at
-//!   all and always fall through to full resolution, which already models
-//!   `join_authorised_via_users_server` correctly.
+//! ## What the replacement must be
+//!
+//! Not "the CDO moved later." Once `resolved` holds authoritative
+//! `power_levels`/`join_rules`/`bans`, the sound predicate is the auth rule itself
+//! ("is this sender banned / under-powered in `resolved`?"), applied directly
+//! as an O(N) screening pass over remaining candidates — not a domination test.
+//! Concurrency-implies-domination was the unsound core; it does not come back
+//! post-power-phase, it stops being needed. The replacement must also check
+//! what phase-2 (non-power) acceptance can still mutate that another event's
+//! auth reads, and must not change mainline ordering of the surviving set.
 
 use crate::basespec::event_types::{
     MEM_INVITE, MEM_JOIN, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
@@ -170,6 +186,14 @@ fn compute_cdo_bit_masks_chunk<Id, C, S: core::hash::BuildHasher, K>(
 fn sort_cdo_events<'a, Id: Ord + Clone, C: Clone, K>(
     events: &[&'a LeanEvent<Id, C, K>],
 ) -> Vec<&'a LeanEvent<Id, C, K>> {
+    // Trusts the author-supplied `event.power_level` (cdo.rs) rather than the
+    // auth-derived sender level the resolver uses via `SortPriority.power_level`
+    // (rezzy_types.rs). This field is never populated from auth before the
+    // filter runs (see prepare_conflicted_and_keys), so an attacker can forge a
+    // high `power_level` to hoist their structural admin event ahead of the
+    // victim's — a second, independent trust-of-input hole, the same class the
+    // Kahn sort below refuses to tolerate for `depth`. Retained as design
+    // history; the replacement must order by the auth-derived level.
     let mut sorted = events.to_vec();
     sorted.sort_by(|a, b| {
         let type_priority = |t: &str| match t {

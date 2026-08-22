@@ -3,19 +3,19 @@
 //!
 //! Phase B empirical backbone. For each randomly-generated room DAG:
 //! - **Differential:** resolve with `V2_1` and `V2_1_1` and assert **identical**
-//!   output. V2.1.1 runs the CDO pre-filter (V2.1 does not); the two versions
-//!   must agree on every DAG. Note this only fails if a CDO drop *changes a
-//!   winner*: dropping a candidate that was going to lose its key contest is
-//!   invisible to the resolved state. `cdo_drop_rate_measured` measures how
-//!   observable the CDO is (see below).
+//!   output. The two versions must agree on every DAG. A drop is sound iff
+//!   `IterativeAuthChecks` would have rejected the event; the retired CDO
+//!   pre-filter could not establish that, and the differential is how its
+//!   violations were caught.
 //! - **Drop-rate & winner-overlap:** `cdo_drop_rate_measured` reports how much
-//!   the CDO drops (2087 events / 626 DAGs on 2000) and — the key signal — how
+//! - **Drop-rate & winner-overlap:** `cdo_drop_rate_measured` reports how much
+//!   the retained `apply_cdo_filter` operator drops and — the key signal — how
 //!   many dropped IDs appear as *winners* in the resolved state. That count is
-//!   0 on the regular generator: it never produces a dominated *winner*, so
-//!   the differential cannot observe a CDO error there. `dominated_winner_generator`
-//!   closes that blind spot: it builds DAGs with an auth-invalid dominator and
-//!   reaches a dominated winner on every one (200/200 diverge), exposing the
-//!   CDO's dominator-validity gap.
+//!   0 on the regular generator: it never produces a dominated *winner*, so it
+//!   cannot observe a CDO error there. `dominated_winner_generator` closes that
+//!   blind spot with an auth-invalid dominator, reaching a dominated winner on
+//!   every DAG — which exposed the dominator-validity gap and motivated retiring
+//!   the pre-filter from the live path. It now asserts the live path is sound.
 //! - **Determinism:** resolve the same DAG twice (fresh caches) and assert
 //!   identical output. This guards the resolution path against any
 //!   platform-dependent divergence (see `determinism_same_input_same_output`).
@@ -461,7 +461,7 @@ fn cdo_drop_rate_measured() {
 /// An adversarial problem where an **auth-invalid**, structurally-a-ban/kick
 /// admin event (issued by a low-power user) causally dominates an **auth-valid**
 /// join on an independent branch. Full resolution rejects the ban and keeps the
-/// join (a genuine winner), but the CDO drops the join because it trusts the
+/// join (a genuine winner); the retired CDO dropped it because it trusted the
 /// dominator's structural shape without running auth — the dominator-validity
 /// gap. The regular generator never produces these, so its winner-overlap is 0
 /// and the differential cannot observe the CDO at all.
@@ -546,7 +546,7 @@ fn gen_dominated_winner_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         state_key: Some("@victim:x".into()),
         sender: attacker.to_string(),
         origin_server_ts: seed_base_ts + 1000,
-        power_level: 100, // higher CDO priority than the victim's join
+        power_level: 0, // no forged priority: earlier ts breaks the tie vs the join
         content: serde_json::json!({ "membership": atk_membership }),
         auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
         prev_events: vec!["$jr".into()],
@@ -583,13 +583,14 @@ fn gen_dominated_winner_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
     }
 }
 
-/// The adversarial counterpart to `cdo_drop_rate_measured`: this generator
-/// produces dominated *winners*, so the differential *can* see the CDO — and
-/// does: it diverges on every DAG, and the CDO drops the resolved winner in
-/// every one. That is the dominator-validity soundness gap, characterized
-/// here as reachable and observable. A full fix requires the CDO to run auth on
-/// the dominator before trusting it to drop a candidate; until then this test
-/// documents the current (unsound) behavior.
+/// The adversarial counterpart to `cdo_drop_rate_measured`. This generator
+/// produces dominated *winners* — the shape the regular generator can't reach —
+/// which is what exposed the dominator-validity gap. The unsound CDO pre-filter
+/// has since been retired from `prepare_conflicted_and_keys`, so this asserts
+/// the live path is now sound: V2.1.1 must match V2.1 on every DAG (no
+/// divergence), while the retained operator (`apply_cdo_filter`) still drops
+/// the resolved winner — informational, and the reason it stays disconnected.
+/// If someone re-connects the pre-filter, `diverged` climbs and this fails.
 #[test]
 fn dominated_winner_generator() {
     const ITER_COUNT: u64 = 200;
@@ -621,12 +622,13 @@ fn dominated_winner_generator() {
         }
     }
     eprintln!(
-        "dominated-winner generator: {diverged}/{ITER_COUNT} DAGs diverged; \
-         {dropped_winners} dropped a resolved winner"
+        "dominated-winner generator: {diverged}/{ITER_COUNT} DAGs diverged (live path); \
+         retained apply_cdo_filter drops the resolved winner on {dropped_winners}"
     );
-    assert!(
-        dropped_winners > 0,
-        "adversarial generator must reach dominated winners to close the CDO blind spot"
+    assert_eq!(
+        diverged, 0,
+        "live V2.1.1 must not diverge from V2.1: the retired CDO pre-filter must \
+         not be re-connected"
     );
 }
 
@@ -652,4 +654,181 @@ fn determinism_same_input_same_output() {
             });
         }
     });
+}
+
+/// Dominator-validity gap, scope + closure. The gap is not limited to ban/kick:
+/// an **auth-invalid** admin event can dominate a **valid** join across all
+/// three structural admin classes (ban/kick, join-rules lockdown, power-levels
+/// demotion), even with no forged `power_level` field (the attacker's earlier
+/// `ts` breaks the tie). Full resolution rejects the dominator on auth and
+/// keeps the join.
+///
+/// The unsound CDO pre-filter is retired from `prepare_conflicted_and_keys`, so
+/// this now asserts the live path is sound — V2.1.1 must not drop the winner:
+/// `r21 == r211` and the join survives. It goes green only because the
+/// pre-filter is disconnected; re-connecting it makes this fail. Do not invert
+/// it into a "green on the bug" assertion; that is how the repo regressed
+/// before (`test_cdo_apply_filter_cascading_drops`, flipped by 3ef473a).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn cdo_dominator_validity_gap_scope_inverted() {
+    // Shared public-room base (create / admin_join / pl:admin=100 / jr:public).
+    fn base() -> (Vec<LeanEvent>, HashMap<String, LeanEvent>, SharedState) {
+        let mut ts = 5000u64;
+        let create: LeanEvent = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:x".into(),
+            origin_server_ts: ts,
+            depth: 1,
+            content: serde_json::json!({ "room_version": "12.1", "creator": "@admin:x" }),
+            ..Default::default()
+        };
+        ts += 1;
+        let admin_join: LeanEvent = LeanEvent {
+            event_id: "$admin_join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@admin:x".into()),
+            sender: "@admin:x".into(),
+            origin_server_ts: ts,
+            depth: 2,
+            prev_events: vec!["$create".into()],
+            auth_events: vec!["$create".into()],
+            content: serde_json::json!({ "membership": "join" }),
+            ..Default::default()
+        };
+        ts += 1;
+        let pl: LeanEvent = LeanEvent {
+            event_id: "$pl".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:x".into(),
+            origin_server_ts: ts,
+            depth: 3,
+            content: serde_json::json!({ "users": { "@admin:x": 100 }, "users_default": 0, "state_default": 50, "ban": 50 }),
+            auth_events: vec!["$create".into(), "$admin_join".into()],
+            prev_events: vec!["$admin_join".into()],
+            ..Default::default()
+        };
+        ts += 1;
+        let jr: LeanEvent = LeanEvent {
+            event_id: "$jr".into(),
+            event_type: "m.room.join_rules".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:x".into(),
+            origin_server_ts: ts,
+            depth: 4,
+            content: serde_json::json!({ "join_rule": "public" }),
+            auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
+            prev_events: vec!["$pl".into()],
+            ..Default::default()
+        };
+        let mut auth_context = HashMap::new();
+        let mut unconflicted = SharedState::new();
+        for ev in [&create, &admin_join, &pl, &jr] {
+            auth_context.insert(ev.event_id.clone(), ev.clone());
+            unconflicted.insert(
+                (
+                    rezzy::basespec::event_types::EventType::from(ev.event_type.as_str()),
+                    ev.state_key.clone().unwrap_or_default(),
+                ),
+                ev.event_id.clone(),
+            );
+        }
+        (vec![create, admin_join, pl, jr], auth_context, unconflicted)
+    }
+
+    let victim_key: SKey = (
+        rezzy::basespec::event_types::EventType::from("m.room.member"),
+        "@victim:x".into(),
+    );
+
+    // Cases: attacker is auth-invalid (low-power @mallory), dominator is
+    // structural. No forged `power_level` — attacker ts is earlier, so it sorts
+    // first and dominates. The victim join cites only create/admin_join/pl
+    // (no non-lockdown join_rules, no pre-demotion PL), so the target-side
+    // exemptions don't rescue it — yet full resolution still keeps it.
+    let cases: Vec<LeanEvent> = vec![
+        // A: ban
+        LeanEvent {
+            event_id: "$atkA".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@victim:x".into()),
+            sender: "@mallory:x".into(),
+            origin_server_ts: 6000,
+            depth: 5,
+            power_level: 0,
+            content: serde_json::json!({ "membership": "ban" }),
+            auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
+            prev_events: vec!["$jr".into()],
+            ..Default::default()
+        },
+        // B: join-rules lockdown
+        LeanEvent {
+            event_id: "$atkB".into(),
+            event_type: "m.room.join_rules".into(),
+            state_key: Some(String::new()),
+            sender: "@mallory:x".into(),
+            origin_server_ts: 6000,
+            depth: 5,
+            power_level: 0,
+            content: serde_json::json!({ "join_rule": "invite" }),
+            auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
+            prev_events: vec!["$jr".into()],
+            ..Default::default()
+        },
+        // C: power-levels demotion (users[@victim] = 0)
+        LeanEvent {
+            event_id: "$atkC".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@mallory:x".into(),
+            origin_server_ts: 6000,
+            depth: 5,
+            power_level: 0,
+            content: serde_json::json!({ "users": { "@admin:x": 100, "@victim:x": 0 }, "users_default": 0 }),
+            auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
+            prev_events: vec!["$jr".into()],
+            ..Default::default()
+        },
+    ];
+
+    for (i, atk) in cases.iter().enumerate() {
+        let vic: LeanEvent = LeanEvent {
+            event_id: format!("$vic{i}"),
+            event_type: "m.room.member".into(),
+            state_key: Some("@victim:x".into()),
+            sender: "@victim:x".into(),
+            origin_server_ts: 6100,
+            depth: 5,
+            power_level: 0,
+            content: serde_json::json!({ "membership": "join" }),
+            auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
+            prev_events: vec!["$jr".into()],
+            ..Default::default()
+        };
+        let (_, ac, uc) = base();
+        let mut conf = HashMap::new();
+        conf.insert(atk.event_id.clone(), atk.clone());
+        conf.insert(vic.event_id.clone(), vic.clone());
+        let p = Problem {
+            unconflicted: uc,
+            conflicted: conf,
+            auth_context: ac,
+        };
+        let r21 = resolve(&p, StateResVersion::V2_1);
+        let r211 = resolve(&p, StateResVersion::V2_1_1);
+        // Correct behavior: the auth-invalid dominator must not erase the join.
+        assert_eq!(
+            r21.get(&victim_key),
+            Some(&format!("$vic{i}")),
+            "V2.1 must keep the auth-valid join as the winner (case {i})"
+        );
+        assert_eq!(
+            r21, r211,
+            "V2.1.1 (CDO) must not diverge from V2.1: an auth-invalid {i} dominator \
+             must not drop the resolved winner"
+        );
+    }
 }
