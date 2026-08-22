@@ -13,9 +13,11 @@
 //! `unreachable` side of a [`ReachabilityAudit`] as a candidate list for
 //! further safety checks, never as a delete list on its own.
 
-use std::collections::{HashMap, HashSet};
-use std::{fmt, sync::Arc, vec::Vec};
+use crate::{HashMap, HashSet};
+use alloc::{sync::Arc, vec::Vec};
+use core::fmt;
 
+#[cfg(feature = "std")]
 use roaring::RoaringBitmap;
 
 use super::{
@@ -53,7 +55,7 @@ impl std::error::Error for UniverseTooLarge {}
 /// stable position instead. Identity always resolves back through
 /// [`Self::hash_at`]/`hashes` to the full hash — the dense index is a
 /// local, single-call addressing scheme, not an identifier of its own.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexedUniverse {
     /// `hashes[i]` is the `StructuralHash` assigned to dense index `i`.
     hashes: Vec<StructuralHash>,
@@ -67,21 +69,29 @@ impl IndexedUniverse {
     /// # Errors
     /// Returns [`UniverseTooLarge`] if `universe` contains more than
     /// `u32::MAX` distinct hashes.
+    ///
+    /// # Panics
+    /// Panics only if the internal overflow guard is violated and a dense
+    /// index can no longer be represented as `u32`.
     pub fn try_build(
         universe: impl IntoIterator<Item = StructuralHash>,
     ) -> Result<Self, UniverseTooLarge> {
         let mut hashes: Vec<StructuralHash> = Vec::new();
         let mut index_by_hash: HashMap<StructuralHash, u32> = HashMap::new();
         for hash in universe {
-            if let std::collections::hash_map::Entry::Vacant(entry) = index_by_hash.entry(hash) {
-                let Ok(idx) = u32::try_from(hashes.len()) else {
-                    return Err(UniverseTooLarge {
-                        distinct_count: hashes.len().saturating_add(1),
-                    });
-                };
-                entry.insert(idx);
-                hashes.push(hash);
+            if index_by_hash.contains_key(&hash) {
+                continue;
             }
+            if hashes.len() >= u32::MAX as usize {
+                return Err(UniverseTooLarge {
+                    distinct_count: hashes.len().saturating_add(1),
+                });
+            }
+            let idx = u32::try_from(hashes.len()).expect(
+                "IndexedUniverse::try_build bounds-checks the dense index before converting it",
+            );
+            index_by_hash.insert(hash, idx);
+            hashes.push(hash);
         }
         Ok(Self {
             hashes,
@@ -129,16 +139,21 @@ impl IndexedUniverse {
 /// operations `RoaringBitmap` is built for and a `HashSet<StructuralHash>`
 /// is not. `universe` is the only place `StructuralHash` identity lives;
 /// `reachable`/`unreachable` are addressed purely through its dense indexes.
-#[derive(Debug, Clone)]
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BitmapReachabilityAudit {
+    /// Dense-index universe backing the bitmap partitions.
     pub universe: IndexedUniverse,
+    /// Bitmap of dense indices reachable from at least one root.
     pub reachable: RoaringBitmap,
+    /// Bitmap of dense indices not reachable from any root.
     pub unreachable: RoaringBitmap,
 }
 
 /// Errors from [`bitmap_reachability_audit`]: either the traversal itself
 /// failed, or `universe` could not be given a dense index.
-#[derive(Debug, Clone)]
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BitmapAuditError<E> {
     /// `universe` had more than `u32::MAX` distinct hashes.
     Universe(UniverseTooLarge),
@@ -146,6 +161,7 @@ pub enum BitmapAuditError<E> {
     Traversal(HamtTraversalError<E>),
 }
 
+#[cfg(feature = "std")]
 impl<E: fmt::Display> fmt::Display for BitmapAuditError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -156,14 +172,26 @@ impl<E: fmt::Display> fmt::Display for BitmapAuditError<E> {
 }
 
 #[cfg(feature = "std")]
-impl<E> std::error::Error for BitmapAuditError<E> where E: std::error::Error + fmt::Debug + 'static {}
+impl<E> std::error::Error for BitmapAuditError<E>
+where
+    E: std::error::Error + fmt::Debug + 'static,
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Universe(err) => Some(err),
+            Self::Traversal(err) => <HamtTraversalError<E> as std::error::Error>::source(err),
+        }
+    }
+}
 
+#[cfg(feature = "std")]
 impl<E> From<UniverseTooLarge> for BitmapAuditError<E> {
     fn from(err: UniverseTooLarge) -> Self {
         Self::Universe(err)
     }
 }
 
+#[cfg(feature = "std")]
 impl<E> From<HamtTraversalError<E>> for BitmapAuditError<E> {
     fn from(err: HamtTraversalError<E>) -> Self {
         Self::Traversal(err)
@@ -194,6 +222,7 @@ impl<E> From<HamtTraversalError<E>> for BitmapAuditError<E> {
 /// `u32` for bitmap construction, which [`IndexedUniverse::try_build`]
 /// (called just above it, and propagated with `?` on failure) already
 /// guarantees fits.
+#[cfg(feature = "std")]
 pub fn bitmap_reachability_audit<K, V, F, E>(
     roots: impl IntoIterator<Item = Arc<HamtNode<K, V>>>,
     universe: impl IntoIterator<Item = StructuralHash>,
@@ -224,9 +253,8 @@ where
 
     let universe_len = u32::try_from(universe.len())
         .expect("IndexedUniverse::try_build already bounds-checked this");
-    let unreachable: RoaringBitmap = (0..universe_len)
-        .filter(|idx| !reachable.contains(*idx))
-        .collect();
+    let mut unreachable: RoaringBitmap = (0..universe_len).collect();
+    unreachable = <RoaringBitmap as core::ops::Sub<&RoaringBitmap>>::sub(unreachable, &reachable);
 
     Ok(BitmapReachabilityAudit {
         universe,
@@ -289,7 +317,11 @@ where
 
     let mut reachable: HashSet<StructuralHash> = HashSet::new();
     let mut unreachable: Vec<StructuralHash> = Vec::new();
+    let mut seen_universe: HashSet<StructuralHash> = HashSet::new();
     for hash in universe {
+        if !seen_universe.insert(hash) {
+            continue;
+        }
         if marked.contains(&hash) {
             reachable.insert(hash);
         } else {

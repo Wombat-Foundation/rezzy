@@ -544,6 +544,25 @@ fn test_cdo_ban_domination_benign_convergence() {
     let map = to_event_map(&events);
 
     assert_eq!(
+        get_membership(&resolved_v2_1, &map, "@bob:example.com"),
+        "ban",
+        "the fixture expects bob to remain banned"
+    );
+    assert_eq!(
+        get_membership(&resolved_v2_1, &map, "@charlie:example.com"),
+        "none",
+        "the fixture expects charlie to be rejected"
+    );
+    assert_eq!(
+        get_membership(&resolved_v2_1_1, &map, "@bob:example.com"),
+        "ban"
+    );
+    assert_eq!(
+        get_membership(&resolved_v2_1_1, &map, "@charlie:example.com"),
+        "none"
+    );
+
+    assert_eq!(
         resolved_v2_1_1,
         resolved_v2_1,
         "CDO must never change the answer relative to V2.1's full resolution \

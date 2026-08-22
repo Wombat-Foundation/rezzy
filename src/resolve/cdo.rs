@@ -200,6 +200,7 @@ struct AdjacencyStructures<'a, Id, C, K> {
     sorted_events: Vec<(usize, &'a LeanEvent<Id, C, K>)>,
     parents: Vec<Vec<usize>>,
     children: Vec<Vec<usize>>,
+    unordered_ids: BTreeSet<Id>,
 }
 
 fn build_adjacency_structures<'a, Id, C: Clone, S1, S2, K>(
@@ -276,6 +277,7 @@ where
         .collect();
     let mut sorted_ids: Vec<Id> = Vec::with_capacity(relevant_events.len());
     let mut included: BTreeSet<Id> = BTreeSet::new();
+    let mut unordered_ids: BTreeSet<Id> = BTreeSet::new();
     while let Some(id) = ready.iter().next().cloned() {
         ready.remove(&id);
         included.insert(id.clone());
@@ -302,6 +304,7 @@ where
             .cloned()
             .collect();
         leftover.sort();
+        unordered_ids.extend(leftover.iter().cloned());
         sorted_ids.extend(leftover);
     }
 
@@ -331,6 +334,7 @@ where
         sorted_events,
         parents,
         children,
+        unordered_ids,
     }
 }
 
@@ -419,7 +423,7 @@ where
 }
 
 /// Returns `true` if `target_ev` cites, in its own `auth_events`, a
-/// `power_levels` event under which its sender was *not* at PL 0.
+/// `power_levels` event under which its sender had an effective PL above 0.
 ///
 /// `is_demotion()` treats *any* `m.room.power_levels` event as a demotion
 /// (it does not check whether anyone was actually demoted), so
@@ -448,7 +452,10 @@ where
             .or_else(|| auth_context.get(aid))
             .is_some_and(|ev| {
                 ev.event_type == M_ROOM_POWER_LEVELS
-                    && ev.get_user_power_level(target_ev.sender.as_str()) != Some(0)
+                    && ev
+                        .get_user_power_level(target_ev.sender.as_str())
+                        .or_else(|| ev.get_users_default())
+                        .is_some_and(|level| level > 0)
             })
     })
 }
@@ -506,10 +513,16 @@ where
             if dropped_ids.contains(*event_id) {
                 continue;
             }
+            if adj.unordered_ids.contains(*event_id) {
+                continue;
+            }
 
             if let Some(&ev_idx) = adj.id_to_idx.get(*event_id) {
                 for (&admin_id, &orig_idx) in &chunk_admin_to_pos {
                     if dropped_ids.contains(admin_id) {
+                        continue;
+                    }
+                    if adj.unordered_ids.contains(admin_id) {
                         continue;
                     }
                     // Only higher-priority admin actions (occurring earlier in the sorted list) can dominate

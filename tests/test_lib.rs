@@ -4014,6 +4014,7 @@ fn test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action() {
 {"event_id":"$pl_demote_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100,"@bob:b":0},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl_init"]}
 {"event_id":"$pl_grant_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100,"@bob:b":50},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$bob_join","$pl_init"]}
 {"event_id":"$bob_bans_charlie","type":"m.room.member","state_key":"@charlie:c","sender":"@bob:b","depth":5,"origin_server_ts":2001,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$alice_join","$bob_join","$pl_grant_bob"]}
+{"event_id":"$charlie_bans_dave","type":"m.room.member","state_key":"@dave:d","sender":"@charlie:c","depth":6,"origin_server_ts":2002,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$alice_join","$bob_join","$pl_grant_bob"]}
 "#,
     );
     let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
@@ -4021,7 +4022,7 @@ fn test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action() {
 
     for ev in &events {
         match ev.event_id.as_str() {
-            "$pl_demote_bob" | "$pl_grant_bob" | "$bob_bans_charlie" => {
+            "$pl_demote_bob" | "$pl_grant_bob" | "$bob_bans_charlie" | "$charlie_bans_dave" => {
                 conflicted.insert(ev.event_id.clone(), ev.clone());
             }
             _ => {
@@ -4046,6 +4047,11 @@ fn test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action() {
         safe.contains_key("$bob_bans_charlie"),
         "Bob's ban cites its own pre-demotion PL grant, so an independent-branch \
          demotion must not dominate it"
+    );
+    assert!(
+        !safe.contains_key("$charlie_bans_dave"),
+        "Charlie's ban cites a PL event that does not empower Charlie, so the \
+         independent-branch demotion must still dominate it"
     );
 }
 
@@ -6943,8 +6949,7 @@ fn test_conflicted_keys_derived_before_cdo() {
     );
 
     // With the CDO removed from the normative path, $bob_pl_dominated is
-    // processed (so it appears in deltas) but is rejected because bob is
-    // banned — it never wins its key.
+    // rejected because bob is banned — it never wins its key.
     assert!(!resolved.values().any(|v| v == "$bob_pl_dominated"));
     assert!(!deltas
         .iter()

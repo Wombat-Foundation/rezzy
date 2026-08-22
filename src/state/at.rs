@@ -2651,6 +2651,14 @@ mod tests {
             ..Default::default()
         };
 
+        let member_ban_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
+            event_id: "$member_ban".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bannee:example.com".into()),
+            sender: "@moderator:example.com".into(),
+            ..Default::default()
+        };
+
         // 1. Test case: resolved_id is found but the event is missing from both auth_context and sort_set (returns None).
         {
             let mut resolved = imbl::OrdMap::new();
@@ -2782,6 +2790,50 @@ mod tests {
             let res = overlay.get_event(crate::basespec::event_types::M_ROOM_JOIN_RULES, "");
             assert!(res.is_some());
             assert_eq!(res.unwrap().event_id, "$jr");
+        }
+
+        // 5. Test case: in V2, a resolved member ban is still returned directly
+        // during power-phase authorization.
+        {
+            let mut resolved = imbl::OrdMap::new();
+            resolved.insert(
+                (
+                    EventType::from(crate::basespec::event_types::M_ROOM_MEMBER),
+                    "@bannee:example.com".into(),
+                ),
+                "$member_ban".to_string(),
+            );
+
+            let auth_context = HashMap::new();
+            let mut sort_set = HashMap::new();
+            sort_set.insert("$member_ban".to_string(), member_ban_ev.clone());
+
+            let mut local_auth = BTreeMap::new();
+            local_auth.insert(
+                (
+                    EventType::from(crate::basespec::event_types::M_ROOM_MEMBER),
+                    "@bannee:example.com".into(),
+                ),
+                member_ban_ev.clone(),
+            );
+
+            let overlay = OverlayState {
+                resolved: &resolved,
+                auth_context: &auth_context,
+                sort_set: &sort_set,
+                local_auth,
+                create_ev: Some(&create_ev),
+                version: StateResVersion::V2,
+                is_power_phase: true,
+                candidate_event_type: crate::basespec::event_types::M_ROOM_MEMBER,
+            };
+
+            let res = overlay.get_event(
+                crate::basespec::event_types::M_ROOM_MEMBER,
+                "@bannee:example.com",
+            );
+            assert!(res.is_some());
+            assert_eq!(res.unwrap().event_id, "$member_ban");
         }
     }
 

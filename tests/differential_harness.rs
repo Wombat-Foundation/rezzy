@@ -6,10 +6,10 @@
 //!   results. Since the CDO and the V2.1.1 semantic deviations were removed,
 //!   the two versions are semantically equivalent, so this is a strong check
 //!   that no divergence crept back in.
-//! - **Determinism:** resolve the same DAG twice (fresh caches) and assert
-//!   identical output. The CDO's `WORDS_PER_CHUNK` build-time SIMD split (the
-//!   old federation split-brain hazard) is gone with the CDO; this guards the
-//!   remaining path against any platform-dependent divergence.
+//! - **Determinism:** resolve the same DAG twice in the same process with
+//!   fresh caches and assert identical output. This checks that repeated
+//!   resolutions of the same input remain stable even when the cache state is
+//!   rebuilt from scratch between runs.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -65,12 +65,18 @@ fn mem_event(
     ts: u64,
     depth: u64,
     base: &[String],
+    extra_prev: Option<String>,
 ) -> LeanEvent {
     let mut prev_events = Vec::new();
     let mut auth_events = Vec::new();
     let n = 1 + rng.below(2);
     for _ in 0..n {
         prev_events.push(base[rng.below(base.len())].clone());
+    }
+    if let Some(parent) = extra_prev {
+        if !prev_events.contains(&parent) {
+            prev_events.push(parent);
+        }
     }
     // auth: always create; plus a subset of the base chain
     auth_events.push("$create".to_string());
@@ -124,6 +130,7 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         ts,
         2,
         &["$create".into()],
+        None,
     );
     ts += 1;
 
@@ -189,30 +196,54 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
     }
 
     let mut conflicted = HashMap::new();
+    let mut emitted_conflicted_ids: Vec<String> = Vec::new();
 
     // Conflicted membership candidates for a subset of users (random values).
     let membership_vals = ["join", "invite", "leave", "ban"];
     for (i, u) in users.iter().enumerate() {
         let conflict = rng.below(3) == 0;
+        let chain_parent = if emitted_conflicted_ids.is_empty() || rng.below(2) == 0 {
+            None
+        } else {
+            emitted_conflicted_ids.last().cloned()
+        };
         if !conflict {
-            // single unconflicted-ish join (still passed as conflicted set; fine)
+            // Single candidate that may either stay concurrent with the base
+            // DAG or hang off an earlier conflicted event, to exercise both
+            // flat and multi-level causal chains.
             let id = format!("${}_join_{}", u.split(':').next().unwrap(), i);
-            let ev = mem_event(rng, &id, u, u, "join", ts, 5, &base);
+            let depth = 2 + rng.below(8) as u64;
+            let ev = mem_event(
+                rng,
+                &id,
+                u,
+                u,
+                "join",
+                ts,
+                depth,
+                &base,
+                chain_parent.clone(),
+            );
             ts += 1;
             conflicted.insert(id.clone(), ev);
+            emitted_conflicted_ids.push(id);
             continue;
         }
         // two candidates for the same user -> genuine conflict
         let m1 = rng.pick(&membership_vals);
         let id1 = format!("${}_cand_a_{}", u.split(':').next().unwrap(), i);
-        let ev1 = mem_event(rng, &id1, u, u, m1, ts, 5, &base);
+        let depth1 = 2 + rng.below(8) as u64;
+        let ev1 = mem_event(rng, &id1, u, u, m1, ts, depth1, &base, None);
         ts += 1;
         let m2 = rng.pick(&membership_vals);
         let id2 = format!("${}_cand_b_{}", u.split(':').next().unwrap(), i);
-        let ev2 = mem_event(rng, &id2, u, u, m2, ts, 5, &base);
+        let depth2 = 2 + rng.below(8) as u64;
+        let ev2 = mem_event(rng, &id2, u, u, m2, ts, depth2, &base, None);
         ts += 1;
         conflicted.insert(id1.clone(), ev1);
         conflicted.insert(id2.clone(), ev2);
+        emitted_conflicted_ids.push(id1);
+        emitted_conflicted_ids.push(id2);
     }
 
     // Occasionally a conflicted join_rules or power_levels candidate.
@@ -231,10 +262,11 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
                     "$pl".to_string(),
                 ],
                 prev_events: vec!["$pl".to_string()],
-                depth: 4,
+                depth: 1 + rng.below(8) as u64,
                 ..Default::default()
             };
             conflicted.insert("$jr_conf".to_string(), jr2);
+            emitted_conflicted_ids.push("$jr_conf".to_string());
         }
         1 => {
             let pl2 = LeanEvent {
@@ -250,10 +282,11 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
                     "$pl".to_string(),
                 ],
                 prev_events: vec!["$pl".to_string()],
-                depth: 4,
+                depth: 1 + rng.below(8) as u64,
                 ..Default::default()
             };
             conflicted.insert("$pl_conf".to_string(), pl2);
+            emitted_conflicted_ids.push("$pl_conf".to_string());
         }
         _ => {}
     }

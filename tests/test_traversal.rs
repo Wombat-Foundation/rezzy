@@ -934,9 +934,8 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
     // Concurrently, an Admin locks the room to "invite".
     // Phase 1 evaluates the lockdown and Nexy\'s promotion and ban first (because they are Power Events).
     // Phase 2 evaluates Nexy\'s join. Nexy\'s join is rejected due to the lockdown.
-    // In unpatched v2.1, her promotion and ban survive, leaving a "Ghost Moderator".
-    // In CDO (v2.2), her join is concurrent and dominated by the invite lockdown,
-    // and her subsequent actions (promotion, ban) are transitively dropped due to dependency.
+    // In the intended post-CDO outcome, Nexy's join is rejected and her member
+    // key is absent, while her ban of the spammer and her promotion still resolve.
 
     let (auth_context, conflicted_events, unconflicted_state) = make_ghost_moderator_events();
 
@@ -965,7 +964,7 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
     // Per the spec, nexy's join is auth-checked against the resolved join_rules
     // (which resolves to invite); nexy is not invited, so her join is rejected
     // and her member key is absent. Her ban on the spammer and her promotion
-    // (admin's power_levels) are separate power events that still resolve.
+    // (admin's power_levels) remain resolved.
     assert_eq!(
         resolved_v211.get(&nexy_member_key).map(String::as_str),
         None
@@ -1830,14 +1829,16 @@ fn test_v2_1_1_power_phase_membership_bypass_prevention() {
     );
 }
 
-/// Pin stock V2.1 (MSC4297) behavior: membership is NOT supplemented during the power phase.
+/// Pin stock V2.1 (MSC4297) behavior: reject a power-level event when the sender
+/// is progressively banned and the sender membership is not supplemented during
+/// the power phase.
 ///
 /// This is the *intentional* spec-mandated behavior. Mallory's PL event passes auth because
 /// the engine does not check her progressive ban during the power phase. Federation convergence
 /// requires V2.1 to match other MSC4297 implementations bug-for-bug. Do NOT "fix" this test
 /// by adding membership supplementation to V2.1 — use V2.1.1+ for that.
 #[test]
-fn test_v2_1_stock_does_not_supplement_membership() {
+fn test_v2_1_rejects_pl_from_progressively_banned_sender() {
     let auth_evs = utils::parse_jsonl_events(
         r#"
         {"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:x", "origin_server_ts": 100, "content": {"room_version": "12"}}
@@ -1896,8 +1897,7 @@ fn test_v2_1_stock_does_not_supplement_membership() {
     // Under V2.1 (MSC4297), required auth keys (incl. the sender's member event)
     // come from the resolved state. $mal_ban (ts 500) sorts before $mal_pl (ts
     // 700), so by the time $mal_pl is auth-checked Mallory is resolved as banned
-    // and $mal_pl is rejected — $admin_pl wins. (The prior "stock V2.1 does not
-    // supplement membership" behavior was a non-spec deviation, now removed.)
+    // and $mal_pl is rejected — $admin_pl wins.
     assert_eq!(
         resolved.get(&pl_key),
         Some(&"$admin_pl".to_string()),
@@ -2180,7 +2180,7 @@ fn auth_diff_context_event_scenario(version: StateResVersion) -> Option<String> 
 ///   let the conflicted-phase win over unconflicted state for *genuinely*
 ///   conflicted keys (that's what makes MSC4297 ban/kick supplementation
 ///   work — see the `test_v2_1_1_*_supplementation` tests and
-///   `test_v2_1_stock_does_not_supplement_membership` above), but the new
+///   `test_v2_1_rejects_pl_from_progressively_banned_sender` above), but the new
 ///   genuinely-conflicted-key gate means an auth-diff-context event's own
 ///   key is never inserted into `resolved` at all when nothing actually
 ///   conflicts on it — so it's left for `merge_unconflicted_power_events`/

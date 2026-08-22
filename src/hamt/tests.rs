@@ -3089,7 +3089,7 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
     let mut recombined = bitmap_audit.reachable.clone();
     recombined |= &bitmap_audit.unreachable;
     let all_indices: roaring::RoaringBitmap =
-        (0..u32::try_from(universe.len()).expect("small test universe")).collect();
+        (0..u32::try_from(bitmap_audit.universe.len()).expect("small test universe")).collect();
     assert_eq!(recombined, all_indices);
 
     let reachable_via_bitmap: BTreeSet<StructuralHash> = bitmap_audit
@@ -3124,11 +3124,28 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
 
     // Must agree with the StructuralHash-keyed reachability_audit on the
     // exact same inputs.
-    let hash_audit = crate::hamt::reachability_audit([root_live], universe, &mut resolver)
-        .expect("hash audit should succeed");
+    let repeated_orphan = expected_orphan_hashes
+        .iter()
+        .copied()
+        .next()
+        .expect("orphan tree is non-empty");
+    let mut universe_with_duplicate = universe;
+    universe_with_duplicate.push(repeated_orphan);
+
+    let hash_audit =
+        crate::hamt::reachability_audit([root_live], universe_with_duplicate, &mut resolver)
+            .expect("hash audit should succeed");
     let hash_reachable_set: BTreeSet<StructuralHash> =
         hash_audit.reachable.iter().copied().collect();
     assert_eq!(reachable_via_bitmap, hash_reachable_set);
+    assert_eq!(
+        hash_audit
+            .unreachable
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>(),
+        expected_orphan_hashes
+    );
 }
 
 #[test]
@@ -3152,13 +3169,14 @@ fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates()
     let idx1 = universe.index_of(&h1).expect("h1 was indexed");
     let idx2 = universe.index_of(&h2).expect("h2 was indexed");
     let idx3 = universe.index_of(&h3).expect("h3 was indexed");
-    assert_ne!(idx1, idx2);
-    assert_ne!(idx1, idx3);
-    assert_ne!(idx2, idx3);
+    assert_eq!(idx1, 0);
+    assert_eq!(idx2, 1);
+    assert_eq!(idx3, 2);
 
     assert_eq!(universe.hash_at(idx1), Some(h1));
     assert_eq!(universe.hash_at(idx2), Some(h2));
     assert_eq!(universe.hash_at(idx3), Some(h3));
+    assert_eq!(universe.hashes(), &[h1, h2, h3]);
 
     let missing: StructuralHash = [9; 16];
     assert_eq!(universe.index_of(&missing), None);
@@ -3186,6 +3204,16 @@ fn test_universe_too_large_display() {
 #[test]
 fn test_bitmap_audit_error_display_and_conversions() {
     use alloc::string::ToString;
+    use std::error::Error as _;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct SourceErr;
+    impl core::fmt::Display for SourceErr {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("source-chain")
+        }
+    }
+    impl std::error::Error for SourceErr {}
 
     let universe_err = crate::hamt::audit::UniverseTooLarge { distinct_count: 42 };
     let wrapped: crate::hamt::BitmapAuditError<&str> = universe_err.into();
@@ -3194,20 +3222,49 @@ fn test_bitmap_audit_error_display_and_conversions() {
         "universe has 42 distinct hashes, more than u32::MAX can index"
     );
     assert!(matches!(
-        wrapped,
+        &wrapped,
         crate::hamt::BitmapAuditError::Universe(_)
     ));
+    assert_eq!(
+        wrapped,
+        crate::hamt::BitmapAuditError::Universe(crate::hamt::audit::UniverseTooLarge {
+            distinct_count: 42,
+        })
+    );
 
-    let traversal_err: HamtTraversalError<&str> = HamtTraversalError::MaxDepthExceeded { depth: 7 };
-    let wrapped: crate::hamt::BitmapAuditError<&str> = traversal_err.into();
+    let universe_err = crate::hamt::audit::UniverseTooLarge { distinct_count: 7 };
+    let wrapped: crate::hamt::BitmapAuditError<SourceErr> = universe_err.into();
+    assert!(wrapped.source().is_some());
+
+    let traversal_err: HamtTraversalError<SourceErr> = HamtTraversalError::Resolve(SourceErr);
+    let wrapped: crate::hamt::BitmapAuditError<SourceErr> = traversal_err.clone().into();
     assert_eq!(
         wrapped.to_string(),
-        "hamt traversal exceeded max depth at 7"
+        "hamt traversal resolver failed: source-chain"
     );
     assert!(matches!(
-        wrapped,
+        &wrapped,
         crate::hamt::BitmapAuditError::Traversal(_)
     ));
+    assert_eq!(
+        wrapped,
+        crate::hamt::BitmapAuditError::Traversal(traversal_err)
+    );
+    assert_eq!(
+        wrapped
+            .source()
+            .expect("resolver failures should preserve their source")
+            .to_string(),
+        "source-chain"
+    );
+
+    let traversal_err: HamtTraversalError<SourceErr> =
+        HamtTraversalError::MaxDepthExceeded { depth: 7 };
+    let wrapped: crate::hamt::BitmapAuditError<SourceErr> = traversal_err.into();
+    assert!(
+        wrapped.source().is_none(),
+        "max-depth errors do not have a nested source"
+    );
 }
 
 #[test]
@@ -3237,7 +3294,7 @@ fn test_bitmap_reachability_audit_dedupes_shared_hash_missing_from_universe() {
         datamap: 0b01,
         nodemap: 0b10,
         leaves: root_a_leaves.to_vec(),
-        children: vec![NodeRef::Lazy(shared_leaf.structural_hash)],
+        children: root_a_children.to_vec(),
         structural_hash: HamtNode::compute_structural_hash(
             key,
             0b01,
@@ -3252,7 +3309,7 @@ fn test_bitmap_reachability_audit_dedupes_shared_hash_missing_from_universe() {
         datamap: 0b01,
         nodemap: 0b10,
         leaves: root_b_leaves.to_vec(),
-        children: vec![NodeRef::Lazy(shared_leaf.structural_hash)],
+        children: root_b_children.to_vec(),
         structural_hash: HamtNode::compute_structural_hash(
             key,
             0b01,
@@ -3673,6 +3730,7 @@ impl Rng {
 #[test]
 fn test_isolate_delta_order_invariant_randomized() {
     let mut rng = Rng::new(0xD15C_0DE1);
+    let mut successful_trials = 0_u32;
 
     for trial in 0..500_u32 {
         let key = format!("order_invariance_random_{trial}");
@@ -3710,6 +3768,7 @@ fn test_isolate_delta_order_invariant_randomized() {
         ) else {
             continue;
         };
+        successful_trials = successful_trials.saturating_add(1);
 
         let mut infallible =
             |_hash: &StructuralHash| -> Result<Arc<HamtNode<u32, u32>>, core::convert::Infallible> {
@@ -3737,4 +3796,9 @@ fn test_isolate_delta_order_invariant_randomized() {
             "trial {trial}: removed set diverges from oracle"
         );
     }
+
+    assert!(
+        successful_trials >= 20,
+        "expected the randomized oracle check to run most trials, but only {successful_trials} succeeded"
+    );
 }
