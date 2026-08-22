@@ -78,7 +78,6 @@ where
     event.power_level()
 }
 
-
 /// Detailed Kahn's Topological Sort algorithm for event power resolution.
 ///
 /// This function performs a reverse topological sort on a set of events, placing

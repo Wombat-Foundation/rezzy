@@ -194,7 +194,14 @@ fn test_banned_sender_message_is_hard_rejected() {
     };
 
     let mut auth_context = HashMap::new();
-    for ev in [&create_ev, &admin_join, &pl_ev, &bob_join, &ban_bob, &bob_msg] {
+    for ev in [
+        &create_ev,
+        &admin_join,
+        &pl_ev,
+        &bob_join,
+        &ban_bob,
+        &bob_msg,
+    ] {
         auth_context.insert(ev.event_id.clone(), ev.clone());
     }
 
