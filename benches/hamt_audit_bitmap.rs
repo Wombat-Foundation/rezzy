@@ -15,12 +15,22 @@ fn bench_once_filter(universe_len: u32, reachable: &RoaringBitmap) -> RoaringBit
         .collect()
 }
 
+fn bench_once_operator(full_range: &RoaringBitmap, reachable: &RoaringBitmap) -> RoaringBitmap {
+    full_range - reachable
+}
+
 fn bench_once_sub(full_range: &RoaringBitmap, reachable: &RoaringBitmap) -> RoaringBitmap {
     std::ops::Sub::sub(full_range, reachable)
 }
 
 fn bench_once_difference(full_range: &RoaringBitmap, reachable: &RoaringBitmap) -> RoaringBitmap {
     [&full_range, reachable].difference()
+}
+
+fn bench_once_sub_assign(full_range: &RoaringBitmap, reachable: &RoaringBitmap) -> RoaringBitmap {
+    let mut out = full_range.clone();
+    out -= reachable;
+    out
 }
 
 fn time_case<F>(iters: usize, mut f: F) -> Duration
@@ -39,15 +49,19 @@ fn report_case(universe_len: u32, missing_stride: u32, iters: usize) {
     let full_range: RoaringBitmap = (0..universe_len).collect();
 
     let filter = time_case(iters, || bench_once_filter(universe_len, &reachable));
+    let operator = time_case(iters, || bench_once_operator(&full_range, &reachable));
     let sub = time_case(iters, || bench_once_sub(&full_range, &reachable));
     let difference = time_case(iters, || bench_once_difference(&full_range, &reachable));
+    let sub_assign = time_case(iters, || bench_once_sub_assign(&full_range, &reachable));
 
     let filter_ns = filter.as_nanos() as f64 / iters as f64;
+    let operator_ns = operator.as_nanos() as f64 / iters as f64;
     let sub_ns = sub.as_nanos() as f64 / iters as f64;
     let difference_ns = difference.as_nanos() as f64 / iters as f64;
+    let sub_assign_ns = sub_assign.as_nanos() as f64 / iters as f64;
 
     println!(
-        "universe={universe_len} missing_stride={missing_stride} iters={iters}: filter={filter_ns:.1} ns/op, sub={sub_ns:.1} ns/op, difference={difference_ns:.1} ns/op"
+        "universe={universe_len} missing_stride={missing_stride} iters={iters}: filter={filter_ns:.1} ns/op, operator={operator_ns:.1} ns/op, sub={sub_ns:.1} ns/op, difference={difference_ns:.1} ns/op, sub_assign={sub_assign_ns:.1} ns/op"
     );
 }
 
