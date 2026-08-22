@@ -286,7 +286,14 @@ fn redact_content(content: &Value, rule: RedactionRule) -> Value {
 /// Content is stripped separately by [`redact_content`]; this is the second
 /// half of the spec's redaction algorithm. v11+ no longer protects
 /// `origin`/`membership`/`prev_state` at the top level; pre-v11 versions keep
-/// them.
+/// them. v12+ (MSC4291) drops `room_id` on `m.room.create` (the room ID is
+/// derived from the event ID, so the create carries none).
+///
+/// The unstable-version deviations are intentionally not modeled — rezzy
+/// handles the stable v1-v12 set, and their redaction identifiers
+/// (`org.matrix.msc3389.10` preserving `m.relates_to.{rel_type,event_id}`;
+/// `org.matrix.msc4242.12` swapping `auth_events` for `prev_state_events`) are
+/// unrecognized and fail closed.
 #[must_use]
 fn redact_top_level(value: &Value, room_version: &str) -> Value {
     use crate::basespec::event_types::{
@@ -297,6 +304,11 @@ fn redact_top_level(value: &Value, room_version: &str) -> Value {
     let Value::Object(obj) = value else {
         return Value::Object(serde_json::Map::default());
     };
+    // MSC4291 (room IDs as hashes, room v12+): the create event carries no
+    // room_id, so it must not be preserved on redaction.
+    let is_v12_create = obj.get(FIELD_TYPE).and_then(Value::as_str)
+        == Some(crate::basespec::event_types::M_ROOM_CREATE)
+        && room_version_is_v12_or_later(room_version);
     let mut out = serde_json::Map::new();
     let take = |key: &str, out: &mut serde_json::Map<String, Value>| {
         if let Some(v) = obj.get(key) {
@@ -305,7 +317,9 @@ fn redact_top_level(value: &Value, room_version: &str) -> Value {
     };
     take(FIELD_EVENT_ID, &mut out);
     take(FIELD_TYPE, &mut out);
-    take("room_id", &mut out);
+    if !is_v12_create {
+        take("room_id", &mut out);
+    }
     take(FIELD_SENDER, &mut out);
     take(FIELD_STATE_KEY, &mut out);
     take(FIELD_CONTENT, &mut out);
@@ -376,9 +390,13 @@ pub fn redact_json(value: &Value, room_version: &str) -> Value {
 
 /// Computes the Matrix **reference hash** of a PDU `Value` — the event ID for
 /// room versions 4+: SHA-256 of the canonical JSON of the *redacted* event
-/// (with `signatures`/`unsigned` removed; `hashes` is retained), encoded with
-/// the room version's base64 alphabet (STANDARD for v3, URL-safe for v4+; no
-/// `$` prefix).
+/// (with `signatures`/`unsigned`/legacy `age_ts` removed; `hashes` is
+/// retained), encoded with the room version's base64 alphabet (STANDARD for
+/// v3, URL-safe for v4+; no `$` prefix).
+///
+/// Canonicalization is tolerant of out-of-range integers (like Synapse's
+/// `relaxed` mode): `sort_json_value_keys` + `serde_json::to_string` serialize
+/// whatever numbers are present rather than rejecting them.
 ///
 /// # Errors
 /// Returns `Err` if the canonical JSON cannot be serialized.
@@ -394,6 +412,8 @@ pub fn reference_hash(
     if let Some(obj) = redacted.as_object_mut() {
         obj.remove(FIELD_UNSIGNED);
         obj.remove(FIELD_SIGNATURES);
+        // Legacy top-level field Synapse strips before hashing.
+        obj.remove("age_ts");
     }
     sort_json_value_keys(&mut redacted);
     let canonical = serde_json::to_string(&redacted).map_err(|e| e.to_string())?;
@@ -1668,6 +1688,16 @@ fn room_version_is_v11_or_later(room_version: &str) -> bool {
         .next()
         .and_then(|major| major.parse::<u32>().ok())
         .is_some_and(|major| major >= 11)
+}
+
+/// Returns `true` if `room_version`'s major version is 12 or later (the
+/// `org.matrix.hydra.11`/v12 event format where room IDs are hashes, MSC4291).
+fn room_version_is_v12_or_later(room_version: &str) -> bool {
+    room_version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 12)
 }
 
 /// Returns `true` if `id` is a syntactically valid Matrix user ID: `@` prefix,
