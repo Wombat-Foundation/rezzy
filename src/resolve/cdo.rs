@@ -50,7 +50,7 @@
 //!   `join_authorised_via_users_server` correctly.
 
 use crate::basespec::event_types::{
-    MEM_BAN, MEM_INVITE, MEM_JOIN, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
+    MEM_BAN, MEM_INVITE, MEM_JOIN, MEM_LEAVE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
 };
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::HashMap;
@@ -443,22 +443,29 @@ where
 fn required_power_level_for<Id, C, K>(
     target_ev: &LeanEvent<Id, C, K>,
     pl_ev: &LeanEvent<Id, C, K>,
+    current_membership: Option<&str>,
 ) -> i64
 where
     C: crate::basespec::rezzy_types::EventContent,
     K: AsRef<str>,
 {
     if target_ev.event_type.as_str() == M_ROOM_MEMBER {
-        // Self membership transitions (join/invite/leave, non-ban) need no PL;
-        // ban/kick need the ban/kick level.
-        if target_ev.is_ban_or_kick() {
-            if target_ev.get_membership() == Some(MEM_BAN) {
-                pl_ev.get_ban().unwrap_or(50)
-            } else {
-                pl_ev.get_kick().unwrap_or(50)
+        // Mirror the auth engine's member-transition PL rules. Self
+        // transitions (join/leave/knock) need no PL; invite needs the invite
+        // level; ban needs the ban level; a leave of another user is either a
+        // kick (target joined, needs the kick level) or an unban (target
+        // currently banned, needs the ban level).
+        match target_ev.get_membership() {
+            Some(MEM_BAN) => pl_ev.get_ban().unwrap_or(50),
+            Some(MEM_INVITE) => pl_ev.get_invite().unwrap_or(0),
+            Some(MEM_LEAVE) if target_ev.is_ban_or_kick() => {
+                if current_membership == Some(MEM_BAN) {
+                    pl_ev.get_ban().unwrap_or(50)
+                } else {
+                    pl_ev.get_kick().unwrap_or(50)
+                }
             }
-        } else {
-            i64::MIN
+            _ => i64::MIN,
         }
     } else if target_ev.event_type.as_str()
         == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE
@@ -471,6 +478,33 @@ where
     } else {
         pl_ev.get_events_default().unwrap_or(0)
     }
+}
+
+/// Returns the target user's current membership, if a member event for them is
+/// present in the conflicted or auth context. Used to distinguish a kick (target
+/// joined) from an unban (target currently banned).
+fn target_current_membership<'a, Id, C, K, S1, S2>(
+    target_ev: &LeanEvent<Id, C, K>,
+    conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
+) -> Option<&'a str>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    K: AsRef<str>,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+{
+    let target = target_ev.state_key.as_ref()?.as_ref();
+    conflicted_events
+        .values()
+        .chain(auth_context.values())
+        .filter(|ev| ev.event_id != target_ev.event_id)
+        .find(|ev| {
+            ev.event_type == M_ROOM_MEMBER
+                && ev.state_key.as_ref().map(AsRef::as_ref) == Some(target)
+        })
+        .and_then(|ev| ev.get_membership())
 }
 
 /// Checks whether the sender was already empowered by the cited power-level state.
@@ -492,6 +526,8 @@ where
             .or_else(|| auth_context.get(aid))
             .filter(|ev| ev.event_type == crate::basespec::event_types::M_ROOM_CREATE)
     });
+
+    let target_membership = target_current_membership(target_ev, conflicted_events, auth_context);
 
     target_ev.auth_events.iter().any(|aid| {
         conflicted_events
@@ -516,7 +552,7 @@ where
                             .or_else(|| ev.get_users_default())
                             .unwrap_or(0)
                     };
-                    let required_pl = required_power_level_for(target_ev, ev);
+                    let required_pl = required_power_level_for(target_ev, ev, target_membership);
                     sender_pl >= required_pl
                 }
             })

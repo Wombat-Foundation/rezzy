@@ -4161,18 +4161,32 @@ fn test_cdo_cycle_skip_ordering() {
     // violation the CDO defends against) leaves both events in
     // `unordered_ids` after Kahn's sort. The domination loop's `continue`
     // guards for unordered events and admin actions both fire, so neither
-    // event is dominated — both fall through to full resolution.
+    // cyclic event is dominated — both fall through to full resolution.
+    //
+    // A separate, non-cyclic target (`$bob_avatar`, authorized against
+    // `$pl_admin` which grants Bob PL 0) would be dominated by `$demote`
+    // if the unordered-admin guard did not skip it; asserting it survives
+    // proves the cycle guard is what prevents the domination.
     let events = utils::parse_jsonl_events(
         r#"
 {"event_id":"$demote","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":2,"origin_server_ts":1000,"content":{"users":{"@bob:b":0}},"prev_events":["$bob_join"],"auth_events":["$bob_join"]}
 {"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$demote"],"auth_events":["$demote"]}
+{"event_id":"$pl_admin","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":1,"origin_server_ts":1500,"content":{"users":{"@bob:b":0},"state_default":50},"prev_events":[],"auth_events":[]}
+{"event_id":"$bob_avatar","type":"m.room.avatar","state_key":"","sender":"@bob:b","depth":3,"origin_server_ts":2000,"content":{"url":"mxc://x"},"prev_events":["$pl_admin"],"auth_events":["$pl_admin"]}
 "#,
     );
     let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
     for ev in &events {
-        conflicted.insert(ev.event_id.clone(), ev.clone());
+        match ev.event_id.as_str() {
+            "$pl_admin" => {
+                auth_context.insert(ev.event_id.clone(), ev.clone());
+            }
+            _ => {
+                conflicted.insert(ev.event_id.clone(), ev.clone());
+            }
+        }
     }
-    let auth_context: HashMap<String, LeanEvent> = HashMap::new();
 
     let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
     assert!(
@@ -4182,6 +4196,10 @@ fn test_cdo_cycle_skip_ordering() {
     assert!(
         safe.contains_key("$bob_join"),
         "cyclic events are skipped by domination ordering, not dropped"
+    );
+    assert!(
+        safe.contains_key("$bob_avatar"),
+        "the unordered admin is skipped, so it cannot dominate a normally-targeted event"
     );
 }
 

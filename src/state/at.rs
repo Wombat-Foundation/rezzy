@@ -127,13 +127,15 @@ where
             let is_required_type = event_type == M_ROOM_POWER_LEVELS
                 || event_type == crate::basespec::event_types::M_ROOM_JOIN_RULES;
 
-            // Gate the power-phase fallback behind V2.1.1+ only.
-            // Stock V2.1 must not fall back to local auth for required types
-            let is_v2_1_1_or_above =
-                self.version == StateResVersion::V2_1_1 || self.version == StateResVersion::V2_2;
+            // Gate the power-phase fallback behind V2.1+ (MSC4297) so it
+            // behaves consistently across V2.1 and V2.1.1: in the power
+            // phase, a required auth key in the conflicted set is only used
+            // via the local-auth fallback under the narrow conditions below,
+            // rather than being trusted unconditionally.
+            let is_v2_1_plus = self.version.is_v2_1_plus();
 
             if self.is_power_phase
-                && is_v2_1_1_or_above
+                && is_v2_1_plus
                 && is_required_type
                 && self.sort_set.contains_key(&ev.event_id)
             {
@@ -147,7 +149,7 @@ where
                     }
                     None
                 } else {
-                    // Under V2.1.1+, during the power phase, we fall back to the local auth event
+                    // Under V2.1+, during the power phase, we fall back to the local auth event
                     // if NO event of this type has been resolved yet, BUT only if we are currently
                     // resolving a power/required event itself. This prevents non-power events from
                     // bypass-authorizing against unresolved/conflicted power events.
@@ -2835,6 +2837,43 @@ mod tests {
                 assert!(res.is_some());
                 assert_eq!(res.unwrap().event_id, "$member_ban");
             }
+        }
+
+        // 6. Test case: no resolved event, but a matching local-auth candidate
+        // for a required type with a power-phase candidate. V2.1 and V2.1.1 must
+        // take the same (gated) fallback and return the identical result.
+        {
+            let resolved = imbl::OrdMap::new();
+            let auth_context = HashMap::new();
+            let mut sort_set = HashMap::new();
+            sort_set.insert("$pl".to_string(), pl_ev.clone());
+
+            let mut local_auth = BTreeMap::new();
+            local_auth.insert(
+                (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
+                pl_ev.clone(),
+            );
+
+            let mut results = Vec::new();
+            for version in [StateResVersion::V2_1, StateResVersion::V2_1_1] {
+                let overlay = OverlayState {
+                    resolved: &resolved,
+                    auth_context: &auth_context,
+                    sort_set: &sort_set,
+                    local_auth: local_auth.clone(),
+                    create_ev: Some(&create_ev),
+                    version,
+                    is_power_phase: true,
+                    candidate_event_type: M_ROOM_POWER_LEVELS,
+                };
+                let res = overlay.get_event(M_ROOM_POWER_LEVELS, "");
+                assert!(res.is_some());
+                results.push(res.unwrap().event_id.clone());
+            }
+            assert_eq!(
+                results[0], results[1],
+                "V2.1 and V2.1.1 must resolve the fallback identically"
+            );
         }
     }
 

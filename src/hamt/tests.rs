@@ -3722,13 +3722,16 @@ impl Rng {
     }
 
     /// Returns a value in `0..n`, computed entirely in `u64` and narrowed
-    /// back to `u32` via a checked conversion. `n` is always a small,
-    /// compile-time-bounded constant at call sites in this module (well
-    /// under `u32::MAX`), so `self.next() % u64::from(n)` is itself `< n`
-    /// and the narrowing conversion below cannot fail; `expect` documents
-    /// that invariant instead of silently discarding a truncation via a
-    /// cast or a clippy allow.
-    /// Returns a value in `0..n` without truncating or panicking.
+    /// back to `u32` via a checked conversion.
+    ///
+    /// # Preconditions
+    /// `n` must be greater than zero. Call sites in this module always pass a
+    /// small, compile-time-bounded constant (well under `u32::MAX`), so
+    /// `self.next() % u64::from(n)` is `< n` and the narrowing conversion
+    /// cannot fail.
+    ///
+    /// # Panics
+    /// Panics if `n == 0`, since `checked_rem` on zero returns `None`.
     fn below(&mut self, n: u32) -> u32 {
         let n64 = u64::from(n);
         let r64 = self
