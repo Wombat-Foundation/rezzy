@@ -4056,6 +4056,100 @@ fn test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action() {
 }
 
 #[test]
+fn test_cdo_demotion_empowerment_branch_coverage() {
+    // Exercises every branch of `required_power_level_for` through
+    // `sender_has_pre_demotion_pl`:
+    //   * a member self-join (no PL needed -> i64::MIN) survives,
+    //   * a third-party invite (required = invite level, here 0) survives,
+    //   * a state event with a specific `events` override (topic = 50) is
+    //     dropped because the sender lacks the required PL,
+    //   * the room creator (implicit max PL, i64::MAX) survives regardless.
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@owner:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@owner:a","room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$owner_join","type":"m.room.member","state_key":"@owner:a","sender":"@owner:a","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$admin_join","type":"m.room.member","state_key":"@admin:a","sender":"@admin:a","depth":1,"origin_server_ts":1002,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl_init","type":"m.room.power_levels","state_key":"","sender":"@owner:a","depth":2,"origin_server_ts":1003,"content":{"users":{"@owner:a":100,"@admin:a":100},"users_default":0,"invite":0,"events":{"m.room.topic":50},"state_default":50},"prev_events":["$owner_join"],"auth_events":["$create","$owner_join"]}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":3,"origin_server_ts":1004,"content":{"membership":"join"},"prev_events":["$pl_init"],"auth_events":["$create","$owner_join","$pl_init"]}
+{"event_id":"$pl_demote","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@owner:a":0,"@admin:a":100,"@bob:b":0},"users_default":0,"invite":0,"events":{"m.room.topic":50},"state_default":50},"prev_events":["$admin_join"],"auth_events":["$create","$owner_join","$admin_join","$pl_init"]}
+{"event_id":"$owner_topic","type":"m.room.topic","state_key":"","sender":"@owner:a","depth":4,"origin_server_ts":2001,"content":{"topic":"hi"},"prev_events":["$owner_join"],"auth_events":["$create","$owner_join","$pl_init"]}
+{"event_id":"$bob_rejoin","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":4,"origin_server_ts":2002,"content":{"membership":"join"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
+{"event_id":"$bob_3pi","type":"m.room.third_party_invite","state_key":"","sender":"@bob:b","depth":4,"origin_server_ts":2003,"content":{"display_name":"x"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
+{"event_id":"$bob_topic","type":"m.room.topic","state_key":"","sender":"@bob:b","depth":4,"origin_server_ts":2004,"content":{"topic":"hi"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
+"#,
+    );
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+
+    for ev in &events {
+        match ev.event_id.as_str() {
+            "$pl_demote" | "$owner_topic" | "$bob_rejoin" | "$bob_3pi" | "$bob_topic" => {
+                conflicted.insert(ev.event_id.clone(), ev.clone());
+            }
+            _ => {
+                auth_context.insert(ev.event_id.clone(), ev.clone());
+            }
+        }
+    }
+
+    let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
+
+    // The demotion itself is an admin action and must survive.
+    assert!(safe.contains_key("$pl_demote"));
+    // Room creator has implicit max power (i64::MAX branch): survives.
+    assert!(
+        safe.contains_key("$owner_topic"),
+        "the room creator keeps implicit max power and is not dominated"
+    );
+    // A member self-join needs no power level (i64::MIN branch): survives.
+    assert!(
+        safe.contains_key("$bob_rejoin"),
+        "a PL-0 sender's self-join is a valid action and is not dominated"
+    );
+    // A third-party invite requires only the invite level (here 0): survives.
+    assert!(
+        safe.contains_key("$bob_3pi"),
+        "the third-party invite requires only invite=0, which the sender meets"
+    );
+    // A topic event requires events.m.room.topic = 50, which a PL-0 sender lacks:
+    // not empowered pre-demotion, so the independent demotion dominates it.
+    assert!(
+        !safe.contains_key("$bob_topic"),
+        "a PL-0 sender is not empowered to send a topic (requires 50), so it is dropped"
+    );
+}
+
+#[test]
+fn test_cdo_cycle_skip_ordering() {
+    // A deliberately cyclic conflicted graph (a referential-integrity
+    // violation the CDO defends against) leaves both events in
+    // `unordered_ids` after Kahn's sort. The domination loop's `continue`
+    // guards for unordered events and admin actions both fire, so neither
+    // event is dominated — both fall through to full resolution.
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$demote","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":2,"origin_server_ts":1000,"content":{"users":{"@bob:b":0}},"prev_events":["$bob_join"],"auth_events":["$bob_join"]}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$demote"],"auth_events":["$demote"]}
+"#,
+    );
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in &events {
+        conflicted.insert(ev.event_id.clone(), ev.clone());
+    }
+    let auth_context: HashMap<String, LeanEvent> = HashMap::new();
+
+    let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
+    assert!(
+        safe.contains_key("$demote"),
+        "cyclic events are skipped by domination ordering, not dropped"
+    );
+    assert!(
+        safe.contains_key("$bob_join"),
+        "cyclic events are skipped by domination ordering, not dropped"
+    );
+}
+
+#[test]
 fn test_sorting_coverage() {
     let events = utils::parse_jsonl_events(
         r#"
