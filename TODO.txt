@@ -1,4 +1,32 @@
 ##############################
+08/22/2026
+##############################
+
+Here's the open ledger, prioritized. (Marking what just got closed this session.)
+Hash/redaction thread
+- ✅ v1/v2 reference-hash guard (just added).
+- ✅ v3 standard base64 / v4+ url-safe (hash_base64_engine).
+- ✅ create-guard removal confirmed against v11 spec.
+- ⚠️ Ingest path unwired — verify_content_hash/redact_json are exposed boundary tools but nothing connects them to EventProvider ingestion. The "no-op wtf" you raised: the EventVerifier trait is a no-op default. This is the real design hole. (Decided: document as homeserver hook; but the end-to-end flow is still unbuilt.)
+- ⚠️ Deserialize hard-errors on missing event_id — right call, but a breaking change; needs a changelog line if the crate keeps one.
+CDO thread (still unbuilt)
+- ⚠️ Resolved-state screening pass — the actual CDO replacement, never built. The three pre-prototype checks (phase-2 mutation visibility, mainline-order perturbation, cost ratio) still stand.
+- ⚠️ at.rs power-phase fallback never exercised by the generator — real coverage gap; needs ban-evasion DAG shapes the generator doesn't produce.
+- ⚠️ Paper/REPORT.md/WRITEUP.md coherence — advisor bundle still describes the pre-screening world.
+Process
+- ⚠️ The auto-committer — still landing wip commits (f67f7c6 forced a soft-reset). The ledger's explicit "do next."
+- ⚠️ Do-not-restore is a comment, not a test — same shape that already got reverted once (c505e46→fae8f8c). Plus the conflict-marker CI gate, full CI on merge commits, and the test-count ratchet.
+Dropped from the original review, never picked up
+- ⚠️ differential_harness.rs: stride = unwrap_or(0) — infinite loop, one-character fix; plus the single-iteration replay hook and per-iteration ID namespacing.
+- ⚠️ HAMT: distinct_count carries no info (always u32::MAX+1); the generic-index-type fix; the bitmap-vs-hashset partition property test; build-vs-remove depth-exhaustion asymmetry.
+- ✅/⚠️ cdo.rs — retired-module, low stakes; is_ancestor # Panics doc doesn't match the body, public dead code.
+The two the ledger flagged as "do next" were the v1–v3 hash guard (now done) and finding the auto-committer. Want me to hunt the auto-committer, knock out the differential_harness stride fix, or start the screening pass?
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+##############################
 07/30/2026
 ##############################
 
