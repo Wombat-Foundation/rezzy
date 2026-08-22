@@ -315,9 +315,13 @@ fn resolve(p: &Problem, version: StateResVersion) -> SharedState {
 /// real divergences the old flat generator could not produce.
 ///
 /// So this test guarantees:
-/// - each version is deterministic on the same input (broad invariant), and
 /// - any V2.1 vs V2.1.1 divergence is logged to stderr for manual inspection
 ///   (passing the run, since the divergence is intended, not a regression).
+///
+/// Determinism is not re-checked here — it is covered by
+/// `determinism_same_input_same_output` (each version resolved twice on 1000
+/// DAGs). This test runs only two resolutions per DAG (one per version), so
+/// it is fast even at 2000 iterations.
 ///
 /// One recorded V2_1-vs-V2_1_1 divergence: the iteration index, both
 /// versions' resolved states, and the conflicted events that produced them.
@@ -350,12 +354,6 @@ fn differential_v21_equals_v211() {
                     let problem = gen_problem(&mut rng, 1000 + iter * 13);
                     let r21 = resolve(&problem, StateResVersion::V2_1);
                     let r211 = resolve(&problem, StateResVersion::V2_1_1);
-
-                    // Determinism per version: the strong, always-expected invariant.
-                    let r21_b = resolve(&problem, StateResVersion::V2_1);
-                    let r211_b = resolve(&problem, StateResVersion::V2_1_1);
-                    assert_eq!(r21, r21_b, "V2.1 not deterministic on iteration {iter}");
-                    assert_eq!(r211, r211_b, "V2.1.1 not deterministic on iteration {iter}");
 
                     if r21 != r211 {
                         local_diverged += 1;
