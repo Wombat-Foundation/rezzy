@@ -18,7 +18,7 @@ use alloc::{sync::Arc, vec::Vec};
 use core::fmt;
 
 #[cfg(feature = "std")]
-use roaring::RoaringBitmap;
+use roaring::{MultiOps, RoaringBitmap};
 
 use super::{
     delta::{walk_reachable_node_hashes, HamtTraversalError},
@@ -253,8 +253,8 @@ where
 
     let universe_len = u32::try_from(universe.len())
         .expect("IndexedUniverse::try_build already bounds-checked this");
-    let mut unreachable: RoaringBitmap = (0..universe_len).collect();
-    unreachable = <RoaringBitmap as core::ops::Sub<&RoaringBitmap>>::sub(unreachable, &reachable);
+    let full_range: RoaringBitmap = (0..universe_len).collect();
+    let unreachable: RoaringBitmap = [&full_range, &reachable].difference();
 
     Ok(BitmapReachabilityAudit {
         universe,
