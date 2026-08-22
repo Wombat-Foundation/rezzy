@@ -2290,6 +2290,150 @@ mod tests {
         assert!(safe.contains_key("$B"), "unordered $B must not be dropped");
     }
 
+    // KNOWN SOUNDNESS GAP — dominator-validity. The CDO drops a candidate based
+    // on a structurally-a-ban/kick admin action WITHOUT checking that the
+    // dominator itself would pass auth. Here `@mallory` has PL 0 (below the
+    // room's ban level), so `$evil_ban` is auth-INVALID and full resolution
+    // rejects it; `$victim_join` (an auth-valid join into the public room) is
+    // the correct V2.1 winner for @bob. But the CDO drops `$victim_join`
+    // because `$evil_ban.restricts_event` fires on its structural shape, so
+    // V2.1.1 resolves @bob to no membership. This is a real divergence an
+    // attacker can provoke. It is pinned here as the CURRENT behavior; it must
+    // be re-examined when the dominator-validity gap is addressed (a full fix
+    // requires running auth on the dominator, which the CDO deliberately avoids).
+    #[test]
+    fn test_cdo_dominator_validity_auth_invalid_ban_drops_winner() {
+        use rezzy::basespec::event_types::EventType;
+        use serde_json::json;
+
+        let mut ts = 1000u64;
+        let create: LeanEvent = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:x".into(),
+            origin_server_ts: ts,
+            content: json!({ "room_version": "12.1", "creator": "@admin:x" }),
+            ..Default::default()
+        };
+        ts += 1;
+        let admin_join: LeanEvent = LeanEvent {
+            event_id: "$admin_join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@admin:x".into()),
+            sender: "@admin:x".into(),
+            origin_server_ts: ts,
+            prev_events: vec!["$create".into()],
+            auth_events: vec!["$create".into()],
+            depth: 2,
+            ..Default::default()
+        };
+        ts += 1;
+        let pl: LeanEvent = LeanEvent {
+            event_id: "$pl".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:x".into(),
+            origin_server_ts: ts,
+            content: json!({
+                "users": { "@admin:x": 100 },
+                "users_default": 0,
+                "state_default": 50,
+                "ban": 50
+            }),
+            auth_events: vec!["$create".into(), "$admin_join".into()],
+            prev_events: vec!["$admin_join".into()],
+            depth: 3,
+            ..Default::default()
+        };
+        ts += 1;
+        let jr: LeanEvent = LeanEvent {
+            event_id: "$jr".into(),
+            event_type: "m.room.join_rules".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:x".into(),
+            origin_server_ts: ts,
+            content: json!({ "join_rule": "public" }),
+            auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
+            prev_events: vec!["$pl".into()],
+            depth: 4,
+            ..Default::default()
+        };
+
+        let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+        for ev in [&create, &admin_join, &pl, &jr] {
+            auth_context.insert(ev.event_id.clone(), ev.clone());
+        }
+        let mut unconflicted: imbl::OrdMap<(EventType, String), String> = imbl::OrdMap::new();
+        for ev in [&create, &admin_join, &pl, &jr] {
+            let sk = ev.state_key.clone().unwrap_or_default();
+            unconflicted.insert(
+                (EventType::from(ev.event_type.as_str()), sk),
+                ev.event_id.clone(),
+            );
+        }
+
+        let evil_ban: LeanEvent = LeanEvent {
+            event_id: "$evil_ban".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:x".into()),
+            sender: "@mallory:x".into(),
+            origin_server_ts: 2000,
+            power_level: 100,
+            content: json!({ "membership": "ban" }),
+            auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
+            prev_events: vec!["$jr".into()],
+            depth: 5,
+            ..Default::default()
+        };
+        let victim_join: LeanEvent = LeanEvent {
+            event_id: "$victim_join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:x".into()),
+            sender: "@bob:x".into(),
+            origin_server_ts: 2100,
+            power_level: 0,
+            content: json!({ "membership": "join" }),
+            auth_events: vec![
+                "$create".into(),
+                "$admin_join".into(),
+                "$pl".into(),
+                "$jr".into(),
+            ],
+            prev_events: vec!["$jr".into()],
+            depth: 5,
+            ..Default::default()
+        };
+
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        conflicted.insert(evil_ban.event_id.clone(), evil_ban);
+        conflicted.insert(victim_join.event_id.clone(), victim_join);
+
+        let safe = apply_cdo_filter(&conflicted, &auth_context);
+        assert!(
+            !safe.contains_key("$victim_join"),
+            "CDO currently (unsoundly) drops the auth-valid join"
+        );
+
+        let bob_key = (EventType::from("m.room.member"), "@bob:x".to_string());
+        let r21 = resolve_iterative_sort(
+            unconflicted.clone(),
+            conflicted.clone(),
+            &auth_context,
+            rezzy::StateResVersion::V2_1,
+            &mut std::collections::HashMap::new(),
+        );
+        let r211 = resolve_iterative_sort(
+            unconflicted.clone(),
+            conflicted.clone(),
+            &auth_context,
+            rezzy::StateResVersion::V2_1_1,
+            &mut std::collections::HashMap::new(),
+        );
+        assert_eq!(r21.get(&bob_key), Some(&"$victim_join".to_string()));
+        assert_eq!(r211.get(&bob_key), None);
+    }
+
     // Coverage: process_direct_domination_chunks "already-dropped event" skip
     // (cdo.rs:401). Requires a second chunk, which needs more admin actions than
     // `chunk_size = WORDS_PER_CHUNK * 64 = 512`. Alice's high-priority ban drops
@@ -2778,7 +2922,7 @@ mod tests {
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let mut auth: HashMap<String, LeanEvent> = HashMap::new();
 
-        let create = LeanEvent {
+        let create: LeanEvent = LeanEvent {
             event_id: "CREATE".into(),
             event_type: "m.room.create".into(),
             state_key: Some(String::new()),

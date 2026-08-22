@@ -11,10 +11,11 @@
 //! - **Drop-rate & winner-overlap:** `cdo_drop_rate_measured` reports how much
 //!   the CDO drops (2087 events / 626 DAGs on 2000) and — the key signal — how
 //!   many dropped IDs appear as *winners* in the resolved state. That count is
-//!   currently 0: the generator never produces a dominated *winner*, so the
-//!   differential cannot observe a CDO error on these DAGs. Testing CDO
-//!   correctness against outcomes needs a generator that produces dominated
-//!   winners.
+//!   0 on the regular generator: it never produces a dominated *winner*, so
+//!   the differential cannot observe a CDO error there. `dominated_winner_generator`
+//!   closes that blind spot: it builds DAGs with an auth-invalid dominator and
+//!   reaches a dominated winner on every one (200/200 diverge), exposing the
+//!   CDO's dominator-validity gap.
 //! - **Determinism:** resolve the same DAG twice (fresh caches) and assert
 //!   identical output. This guards the resolution path against any
 //!   platform-dependent divergence (see `determinism_same_input_same_output`).
@@ -124,7 +125,7 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
     let users = ["@u0:x", "@u1:x", "@u2:x", "@u3:x", "@u4:x", "@u5:x"];
     let mut ts = seed_base_ts;
 
-    let create = LeanEvent {
+    let create: LeanEvent = LeanEvent {
         event_id: "$create".to_string(),
         event_type: "m.room.create".to_string(),
         state_key: Some(String::new()),
@@ -153,7 +154,7 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
             pl_users.insert(u.to_string(), serde_json::json!(50));
         }
     }
-    let pl = LeanEvent {
+    let pl: LeanEvent = LeanEvent {
         event_id: "$pl".to_string(),
         event_type: "m.room.power_levels".to_string(),
         state_key: Some(String::new()),
@@ -166,7 +167,7 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         ..Default::default()
     };
     ts += 1;
-    let jr = LeanEvent {
+    let jr: LeanEvent = LeanEvent {
         event_id: "$jr".to_string(),
         event_type: "m.room.join_rules".to_string(),
         state_key: Some(String::new()),
@@ -454,6 +455,178 @@ fn cdo_drop_rate_measured() {
          ({dag_count} DAGs had a non-empty drop set, of {dags_with_conflict} with conflicted candidates); \
          {dropped_winners_total} dropped IDs appeared as winners in the resolved state \
          ({dropped_winner_dags} DAGs)"
+    );
+}
+
+/// An adversarial problem where an **auth-invalid**, structurally-a-ban/kick
+/// admin event (issued by a low-power user) causally dominates an **auth-valid**
+/// join on an independent branch. Full resolution rejects the ban and keeps the
+/// join (a genuine winner), but the CDO drops the join because it trusts the
+/// dominator's structural shape without running auth — the dominator-validity
+/// gap. The regular generator never produces these, so its winner-overlap is 0
+/// and the differential cannot observe the CDO at all.
+#[allow(clippy::too_many_lines)]
+fn gen_dominated_winner_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
+    let mut ts = seed_base_ts;
+    let create: LeanEvent = LeanEvent {
+        event_id: "$create".into(),
+        event_type: "m.room.create".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".into(),
+        origin_server_ts: ts,
+        content: serde_json::json!({ "room_version": "12.1", "creator": "@admin:x" }),
+        ..Default::default()
+    };
+    ts += 1;
+    let admin_join: LeanEvent = LeanEvent {
+        event_id: "$admin_join".into(),
+        event_type: "m.room.member".into(),
+        state_key: Some("@admin:x".into()),
+        sender: "@admin:x".into(),
+        origin_server_ts: ts,
+        prev_events: vec!["$create".into()],
+        auth_events: vec!["$create".into()],
+        depth: 2,
+        ..Default::default()
+    };
+    ts += 1;
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".into(),
+        origin_server_ts: ts,
+        content: serde_json::json!({
+            "users": { "@admin:x": 100 },
+            "users_default": 0,
+            "state_default": 50,
+            "ban": 50
+        }),
+        auth_events: vec!["$create".into(), "$admin_join".into()],
+        prev_events: vec!["$admin_join".into()],
+        depth: 3,
+        ..Default::default()
+    };
+    ts += 1;
+    let jr: LeanEvent = LeanEvent {
+        event_id: "$jr".into(),
+        event_type: "m.room.join_rules".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".into(),
+        origin_server_ts: ts,
+        content: serde_json::json!({ "join_rule": "public" }),
+        auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
+        prev_events: vec!["$pl".into()],
+        depth: 4,
+        ..Default::default()
+    };
+
+    let mut auth_context = HashMap::new();
+    for ev in [&create, &admin_join, &pl, &jr] {
+        auth_context.insert(ev.event_id.clone(), ev.clone());
+    }
+    let mut unconflicted = SharedState::new();
+    for ev in [&create, &admin_join, &pl, &jr] {
+        let sk = ev.state_key.clone().unwrap_or_default();
+        unconflicted.insert(
+            (
+                rezzy::basespec::event_types::EventType::from(ev.event_type.as_str()),
+                sk,
+            ),
+            ev.event_id.clone(),
+        );
+    }
+
+    // A low-power user issues a structural ban/kick at @victim (auth-invalid).
+    let attacker = ["@mallory:x", "@eve:x", "@dave:x"][rng.below(3)];
+    let atk_membership = rng.pick(&["ban", "leave"]);
+    let atk: LeanEvent = LeanEvent {
+        event_id: format!("$atk_{seed_base_ts}"),
+        event_type: "m.room.member".into(),
+        state_key: Some("@victim:x".into()),
+        sender: attacker.to_string(),
+        origin_server_ts: seed_base_ts + 1000,
+        power_level: 100, // higher CDO priority than the victim's join
+        content: serde_json::json!({ "membership": atk_membership }),
+        auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
+        prev_events: vec!["$jr".into()],
+        depth: 5,
+        ..Default::default()
+    };
+    let vic: LeanEvent = LeanEvent {
+        event_id: format!("$vic_{seed_base_ts}"),
+        event_type: "m.room.member".into(),
+        state_key: Some("@victim:x".into()),
+        sender: "@victim:x".into(),
+        origin_server_ts: seed_base_ts + 1100,
+        power_level: 0,
+        content: serde_json::json!({ "membership": "join" }),
+        auth_events: vec![
+            "$create".into(),
+            "$admin_join".into(),
+            "$pl".into(),
+            "$jr".into(),
+        ],
+        prev_events: vec!["$jr".into()],
+        depth: 5,
+        ..Default::default()
+    };
+
+    let mut conflicted = HashMap::new();
+    conflicted.insert(atk.event_id.clone(), atk);
+    conflicted.insert(vic.event_id.clone(), vic);
+
+    Problem {
+        unconflicted,
+        conflicted,
+        auth_context,
+    }
+}
+
+/// The adversarial counterpart to `cdo_drop_rate_measured`: this generator
+/// produces dominated *winners*, so the differential *can* see the CDO — and
+/// does: it diverges on every DAG, and the CDO drops the resolved winner in
+/// every one. That is the dominator-validity soundness gap, characterized
+/// here as reachable and observable. A full fix requires the CDO to run auth on
+/// the dominator before trusting it to drop a candidate; until then this test
+/// documents the current (unsound) behavior.
+#[test]
+fn dominated_winner_generator() {
+    const ITER_COUNT: u64 = 200;
+    let mut diverged = 0u64;
+    let mut dropped_winners = 0u64;
+    let victim_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.member"),
+        "@victim:x".to_string(),
+    );
+    for i in 0u64..ITER_COUNT {
+        let mut rng = iteration_rng(0xABCD_EF01_2345_6789, i);
+        let p = gen_dominated_winner_problem(&mut rng, 5000 + i * 7);
+        let safe = rezzy::cdo::apply_cdo_filter(&p.conflicted, &p.auth_context);
+        let dropped: Vec<String> = p
+            .conflicted
+            .keys()
+            .filter(|k| !safe.contains_key(*k))
+            .cloned()
+            .collect();
+        let r21 = resolve(&p, StateResVersion::V2_1);
+        let r211 = resolve(&p, StateResVersion::V2_1_1);
+        if let Some(w) = r21.get(&victim_key) {
+            if dropped.iter().any(|d| d == w) {
+                dropped_winners += 1;
+            }
+        }
+        if r21 != r211 {
+            diverged += 1;
+        }
+    }
+    eprintln!(
+        "dominated-winner generator: {diverged}/{ITER_COUNT} DAGs diverged; \
+         {dropped_winners} dropped a resolved winner"
+    );
+    assert!(
+        dropped_winners > 0,
+        "adversarial generator must reach dominated winners to close the CDO blind spot"
     );
 }
 
