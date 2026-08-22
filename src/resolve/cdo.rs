@@ -520,12 +520,13 @@ where
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 {
-    let create_event = target_ev.auth_events.iter().find_map(|aid| {
-        conflicted_events
-            .get(aid)
-            .or_else(|| auth_context.get(aid))
-            .filter(|ev| ev.event_type == crate::basespec::event_types::M_ROOM_CREATE)
-    });
+    // For V12+ the spec removes `m.room.create` from `auth_events` (see
+    // spec_audit.md rule 2.4, V1-V11 only), so the create event must be found
+    // from the room/auth context rather than the target's own auth list.
+    let create_event = conflicted_events
+        .values()
+        .chain(auth_context.values())
+        .find(|ev| ev.event_type == crate::basespec::event_types::M_ROOM_CREATE);
 
     let target_membership = target_current_membership(target_ev, conflicted_events, auth_context);
 

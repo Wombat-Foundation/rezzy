@@ -4203,6 +4203,41 @@ fn test_cdo_cycle_skip_ordering() {
     );
 }
 
+/// In V12+ the spec removes `m.room.create` from `auth_events`, so the CDO's
+/// pre-demotion empowerment check must detect the room creator from the
+/// room/auth context rather than the target's own auth list. Here the creator's
+/// avatar event cites only `$pl` (no `$create`), yet the creator must still be
+/// granted implicit max power and survive the independent demotion.
+#[test]
+fn test_cdo_creator_detected_from_context_not_auth_events() {
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@owner:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@owner:a","room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@owner:a","depth":1,"origin_server_ts":1001,"content":{"users":{"@owner:a":0},"state_default":50},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl_demote","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":2,"origin_server_ts":2000,"content":{"users":{"@owner:a":0,"@admin:a":100},"state_default":50},"prev_events":["$pl"],"auth_events":["$create","$pl"]}
+{"event_id":"$owner_avatar","type":"m.room.avatar","state_key":"","sender":"@owner:a","depth":3,"origin_server_ts":2001,"content":{"url":"mxc://x"},"prev_events":["$pl"],"auth_events":["$pl"]}
+"#,
+    );
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in &events {
+        match ev.event_id.as_str() {
+            "$create" | "$pl" => {
+                auth_context.insert(ev.event_id.clone(), ev.clone());
+            }
+            _ => {
+                conflicted.insert(ev.event_id.clone(), ev.clone());
+            }
+        }
+    }
+
+    let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
+    assert!(
+        safe.contains_key("$owner_avatar"),
+        "the creator is detected from context (create not in auth_events) and keeps implicit max power"
+    );
+}
+
 /// Regression coverage for the sorting branch-coverage booster.
 #[test]
 fn test_sorting_coverage() {
