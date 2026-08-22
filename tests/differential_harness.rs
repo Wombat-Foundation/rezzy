@@ -318,12 +318,34 @@ fn resolve(p: &Problem, version: StateResVersion) -> SharedState {
 ///
 /// So this test guarantees:
 /// - any V2.1 vs V2.1.1 divergence is logged to stderr for manual inspection
-///   (passing the run, since the divergence is intended, not a regression).
+///   (passing the run, since the divergence is intended, not a regression), and
+/// - the per-run divergence count stays under a temporary regression bound
+///   (see the assertion below).
 ///
 /// Determinism is not re-checked here — it is covered by
 /// `determinism_same_input_same_output` (each version resolved twice on 1000
 /// DAGs). This test runs only two resolutions per DAG (one per version), so
 /// it is fast even at 2000 iterations.
+///
+/// # The divergence count is not comparable across the parallelization
+///
+/// `69e4a44` changed the seeding scheme from one shared, sequentially-advanced
+/// RNG to an independently-seeded RNG per iteration (`iteration_rng`), so
+/// iteration *i* now generates a *different* DAG than it did before. The
+/// current run reports 61/2000 divergences, whereas `0916121` (old seeding,
+/// same nominal `BASE_SEED`) recorded 73/2000. These two numbers are NOT
+/// comparable; the difference is the generator change, not a semantic one.
+///
+/// # The bound below is temporary scaffolding
+///
+/// The `diverged_total < 150` assertion is a stopgap so the test can fail at
+/// all; it is NOT a correctness invariant (V2.1 vs V2.1.1 divergence is
+/// expected, so a count is not a meaningful signal, and a real over-drop moves
+/// the count by one or two DAGs, far under the bound). It exists only until
+/// the classification experiment replaces it with a set-equality assertion:
+/// the set of diverging iterations is exactly *S*, and every member of *S* is
+/// attributable to the `at.rs` power-phase fallback (it vanishes when the CDO
+/// is disabled and reappears when it is enabled).
 ///
 /// One recorded V2_1-vs-V2_1_1 divergence: the iteration index, both
 /// versions' resolved states, and the conflicted events that produced them.
@@ -391,10 +413,11 @@ fn differential_v21_equals_v211() {
     }
     let diverged_total = diverged.load(Ordering::Relaxed);
 
-    // Regression bound. With this fixed seed the versions diverge on a small
-    // minority of DAGs (the intended V2.1.1 power-phase fallback). A divergence
-    // that explodes — e.g. the CDO pre-filter over-dropping on many DAGs — must
-    // fail the test rather than pass as a logging no-op.
+    // TEMPORARY stopgap bound — see the module doc's "# The bound below is
+    // temporary scaffolding". It only fails on a ~3x divergence explosion; it
+    // is deliberately NOT a correctness invariant (a real over-drop moves the
+    // count by one or two DAGs). It will be replaced by the set-equality
+    // classification assertion once the CDO-disabled experiment lands.
     assert!(
         diverged_total < 150,
         "V2.1 vs V2.1.1 diverged on {diverged_total}/{ITER_COUNT} DAGs, far beyond the intended subset; investigate"
