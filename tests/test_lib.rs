@@ -2211,6 +2211,7 @@ mod tests {
     // into auth_context forces the `while let Some(aid) = queue.pop_front()`
     // loop to iterate and push grandparents. The chain also gives $P3 in-degree
     // 0, exercising the Kahn source promotion (cdo.rs:244, 268).
+    /// Regression coverage for multi-hop auth-chain closure under CDO filtering.
     #[test]
     fn test_cdo_multihop_auth_chain_closure() {
         use serde_json::json;
@@ -2260,6 +2261,7 @@ mod tests {
     // fallback (cdo.rs:277-285). A genuine prev/auth cycle leaves some ids never
     // reaching in-degree 0; the leftover branch must append them in sorted
     // order rather than dropping them from the sweep.
+    /// Regression coverage for cycle-leftover handling during CDO fallback.
     #[test]
     fn test_cdo_cycle_leftover_fallback() {
         use serde_json::json;
@@ -2308,6 +2310,7 @@ mod tests {
     // the loop to walk past the dropped admin (deterministic regardless of the
     // map's iteration order). Also exercises the transitive-dependency
     // propagation (cdo.rs:470-474) via `$dependent` (auths the dropped ban).
+    /// Regression coverage for skipping already-dropped admin events inside a chunk.
     #[test]
     fn test_cdo_skip_already_dropped_admin_in_chunk() {
         use serde_json::json;
@@ -2382,6 +2385,7 @@ mod tests {
     // `chunk_size = WORDS_PER_CHUNK * 64 = 512`. Alice's high-priority ban drops
     // every one of Bob's 513 bans during chunk 1; chunk 2 then re-visits those
     // already-dropped events and must skip them via `continue`.
+    /// Regression coverage for multi-chunk revisits of already-dropped events.
     #[test]
     fn test_cdo_multichunk_revisits_dropped_event() {
         use serde_json::json;
@@ -2425,6 +2429,7 @@ mod tests {
         assert!(safe.contains_key("$alice_ban_bob"));
     }
 
+    /// Regression coverage for the membership-evaporation anomaly fixture.
     #[test]
     fn test_anomaly_06b_mod_membership_evaporation() {
         use serde_json::json;
@@ -4055,27 +4060,36 @@ fn test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action() {
     );
 }
 
+/// Regression coverage for the CDO demotion-empowerment branch matrix.
 #[test]
 fn test_cdo_demotion_empowerment_branch_coverage() {
-    // Exercises every branch of `required_power_level_for` through
-    // `sender_has_pre_demotion_pl`:
-    //   * a member self-join (no PL needed -> i64::MIN) survives,
-    //   * a third-party invite (required = invite level, here 0) survives,
-    //   * a state event with a specific `events` override (topic = 50) is
-    //     dropped because the sender lacks the required PL,
+    // Exercises the branches of `required_power_level_for` through
+    // `sender_has_pre_demotion_pl`, using an independent-branch demotion that
+    // restricts a PL-0 sender:
+    //   * member self-join (i64::MIN) survives,
+    //   * kick uses the kick level (0) -> survives,
+    //   * ban uses the ban level (50) -> dropped,
+    //   * third-party invite uses the invite level (0) -> survives,
+    //   * a state event with an `events` override (topic=50) -> dropped,
+    //   * a state event falling back to state_default (avatar=50) -> dropped,
+    //   * a message event falling back to events_default (0) -> survives,
     //   * the room creator (implicit max PL, i64::MAX) survives regardless.
     let events = utils::parse_jsonl_events(
         r#"
 {"event_id":"$create","type":"m.room.create","state_key":"","sender":"@owner:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@owner:a","room_version":"12"},"prev_events":[],"auth_events":[]}
 {"event_id":"$owner_join","type":"m.room.member","state_key":"@owner:a","sender":"@owner:a","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
 {"event_id":"$admin_join","type":"m.room.member","state_key":"@admin:a","sender":"@admin:a","depth":1,"origin_server_ts":1002,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
-{"event_id":"$pl_init","type":"m.room.power_levels","state_key":"","sender":"@owner:a","depth":2,"origin_server_ts":1003,"content":{"users":{"@owner:a":100,"@admin:a":100},"users_default":0,"invite":0,"events":{"m.room.topic":50},"state_default":50},"prev_events":["$owner_join"],"auth_events":["$create","$owner_join"]}
+{"event_id":"$pl_init","type":"m.room.power_levels","state_key":"","sender":"@owner:a","depth":2,"origin_server_ts":1003,"content":{"users":{"@owner:a":100,"@admin:a":100},"users_default":0,"ban":50,"kick":0,"invite":0,"events_default":0,"state_default":50,"events":{"m.room.topic":50}},"prev_events":["$owner_join"],"auth_events":["$create","$owner_join"]}
 {"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":3,"origin_server_ts":1004,"content":{"membership":"join"},"prev_events":["$pl_init"],"auth_events":["$create","$owner_join","$pl_init"]}
-{"event_id":"$pl_demote","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@owner:a":0,"@admin:a":100,"@bob:b":0},"users_default":0,"invite":0,"events":{"m.room.topic":50},"state_default":50},"prev_events":["$admin_join"],"auth_events":["$create","$owner_join","$admin_join","$pl_init"]}
+{"event_id":"$pl_demote","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@owner:a":0,"@admin:a":100,"@bob:b":0},"users_default":0,"ban":50,"kick":0,"invite":0,"events_default":0,"state_default":50,"events":{"m.room.topic":50}},"prev_events":["$admin_join"],"auth_events":["$create","$owner_join","$admin_join","$pl_init"]}
 {"event_id":"$owner_topic","type":"m.room.topic","state_key":"","sender":"@owner:a","depth":4,"origin_server_ts":2001,"content":{"topic":"hi"},"prev_events":["$owner_join"],"auth_events":["$create","$owner_join","$pl_init"]}
 {"event_id":"$bob_rejoin","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":4,"origin_server_ts":2002,"content":{"membership":"join"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
 {"event_id":"$bob_3pi","type":"m.room.third_party_invite","state_key":"","sender":"@bob:b","depth":4,"origin_server_ts":2003,"content":{"display_name":"x"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
 {"event_id":"$bob_topic","type":"m.room.topic","state_key":"","sender":"@bob:b","depth":4,"origin_server_ts":2004,"content":{"topic":"hi"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
+{"event_id":"$bob_kicks_dave","type":"m.room.member","state_key":"@dave:d","sender":"@bob:b","depth":4,"origin_server_ts":2005,"content":{"membership":"leave"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
+{"event_id":"$bob_bans_carol","type":"m.room.member","state_key":"@carol:c","sender":"@bob:b","depth":4,"origin_server_ts":2006,"content":{"membership":"ban"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
+{"event_id":"$bob_avatar","type":"m.room.avatar","state_key":"","sender":"@bob:b","depth":4,"origin_server_ts":2007,"content":{"url":"mxc://x"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
+{"event_id":"$bob_msg","type":"m.room.message","sender":"@bob:b","depth":4,"origin_server_ts":2008,"content":{"body":"hi"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
 "#,
     );
     let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
@@ -4083,7 +4097,8 @@ fn test_cdo_demotion_empowerment_branch_coverage() {
 
     for ev in &events {
         match ev.event_id.as_str() {
-            "$pl_demote" | "$owner_topic" | "$bob_rejoin" | "$bob_3pi" | "$bob_topic" => {
+            "$pl_demote" | "$owner_topic" | "$bob_rejoin" | "$bob_3pi" | "$bob_topic"
+            | "$bob_kicks_dave" | "$bob_bans_carol" | "$bob_avatar" | "$bob_msg" => {
                 conflicted.insert(ev.event_id.clone(), ev.clone());
             }
             _ => {
@@ -4106,19 +4121,40 @@ fn test_cdo_demotion_empowerment_branch_coverage() {
         safe.contains_key("$bob_rejoin"),
         "a PL-0 sender's self-join is a valid action and is not dominated"
     );
+    // A kick requires only the kick level (here 0), not the ban level.
+    assert!(
+        safe.contains_key("$bob_kicks_dave"),
+        "a kick uses the kick level (0), which the sender meets"
+    );
+    // A ban requires the ban level (50), which a PL-0 sender lacks.
+    assert!(
+        !safe.contains_key("$bob_bans_carol"),
+        "a ban uses the ban level (50), which the sender does not meet"
+    );
     // A third-party invite requires only the invite level (here 0): survives.
     assert!(
         safe.contains_key("$bob_3pi"),
         "the third-party invite requires only invite=0, which the sender meets"
     );
-    // A topic event requires events.m.room.topic = 50, which a PL-0 sender lacks:
-    // not empowered pre-demotion, so the independent demotion dominates it.
+    // A topic event requires events.m.room.topic = 50 (events override).
     assert!(
         !safe.contains_key("$bob_topic"),
         "a PL-0 sender is not empowered to send a topic (requires 50), so it is dropped"
     );
+    // An avatar event has no events override, so it falls back to state_default
+    // (50), which a PL-0 sender lacks.
+    assert!(
+        !safe.contains_key("$bob_avatar"),
+        "an avatar falls back to state_default (50), which the sender does not meet"
+    );
+    // A message event has no state_key, so it falls back to events_default (0).
+    assert!(
+        safe.contains_key("$bob_msg"),
+        "a message falls back to events_default (0), which the sender meets"
+    );
 }
 
+/// Regression coverage for unordered cycle leftovers in the domination sweep.
 #[test]
 fn test_cdo_cycle_skip_ordering() {
     // A deliberately cyclic conflicted graph (a referential-integrity
@@ -4149,6 +4185,7 @@ fn test_cdo_cycle_skip_ordering() {
     );
 }
 
+/// Regression coverage for the sorting branch-coverage booster.
 #[test]
 fn test_sorting_coverage() {
     let events = utils::parse_jsonl_events(
@@ -6960,6 +6997,7 @@ fn test_lean_event_serialize_propagates_write_error() {
     assert!(result.is_err());
 }
 
+/// Regression coverage for conflicted-key derivation before CDO filtering.
 #[test]
 fn test_conflicted_keys_derived_before_cdo() {
     use rezzy::basespec::event_types::EventType;

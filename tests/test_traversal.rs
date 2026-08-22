@@ -927,6 +927,7 @@ fn make_ghost_moderator_events() -> (
     (auth_context, conflicted_events, unconflicted_state)
 }
 
+/// Covers the anomaly where ghost-moderator propagation changes membership resolution.
 #[test]
 fn test_v2_1_1_anomaly_06b_ghost_moderator() {
     // Anomaly 06b: Moderator Membership Evaporation / Ghost Moderator
@@ -976,6 +977,7 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
     assert_eq!(resolved_v211.get(&pl_key), Some(&"$nexy_promo".to_string()));
 }
 
+/// Covers the admin lockout anomaly fixture under V2.1.1 traversal.
 #[test]
 fn test_v2_1_1_anomaly_02_admin_lockout() {
     // Anomaly 02: Admin Lockout / Lockdown Evasion
@@ -1755,11 +1757,12 @@ fn test_v2_1_1_ban_supplementation_return_path() {
     );
 }
 
-/// Verification: V2.1.1 power-phase membership supplementation prevents security bypass.
+/// Verification: a banned sender's power-level event is rejected against the
+/// resolved ban during power-phase authorization.
 ///
-/// Under V2.1.1, the engine supplements membership lookups during the power phase,
-/// so if a user is banned during Step 2, subsequent power-level events from that user
-/// are correctly rejected against the progressive consensus state (where they are banned)
+/// Required membership lookups consult the resolved state first, so if a user
+/// is banned during Step 2, subsequent power-level events from that user are
+/// rejected against the progressive consensus state (where they are banned)
 /// rather than their local `auth_events` (where they are still joined).
 #[test]
 fn test_v2_1_1_power_phase_membership_bypass_prevention() {
@@ -1825,7 +1828,7 @@ fn test_v2_1_1_power_phase_membership_bypass_prevention() {
     assert_eq!(
         resolved.get(&pl_key),
         Some(&"$admin_pl".to_string()),
-        "V2.1.1 with membership supplementation: Mallory's PL event must be rejected (since she is banned)."
+        "V2.1.1: Mallory's PL event must be rejected against the resolved ban (since she is banned)."
     );
 }
 

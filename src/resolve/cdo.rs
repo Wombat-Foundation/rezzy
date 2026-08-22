@@ -50,7 +50,7 @@
 //!   `join_authorised_via_users_server` correctly.
 
 use crate::basespec::event_types::{
-    MEM_INVITE, MEM_JOIN, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
+    MEM_BAN, MEM_INVITE, MEM_JOIN, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
 };
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::HashMap;
@@ -202,6 +202,7 @@ struct AdjacencyStructures<'a, Id, C, K> {
     unordered_ids: BTreeSet<Id>,
 }
 
+/// Builds the adjacency lists and rank maps used by the domination sweep.
 fn build_adjacency_structures<'a, Id, C: Clone, S1, S2, K>(
     conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
     auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
@@ -451,7 +452,11 @@ where
         // Self membership transitions (join/invite/leave, non-ban) need no PL;
         // ban/kick need the ban/kick level.
         if target_ev.is_ban_or_kick() {
-            pl_ev.get_ban().or_else(|| pl_ev.get_kick()).unwrap_or(50)
+            if target_ev.get_membership() == Some(MEM_BAN) {
+                pl_ev.get_ban().unwrap_or(50)
+            } else {
+                pl_ev.get_kick().unwrap_or(50)
+            }
         } else {
             i64::MIN
         }
@@ -468,6 +473,7 @@ where
     }
 }
 
+/// Checks whether the sender was already empowered by the cited power-level state.
 fn sender_has_pre_demotion_pl<Id, C, K, S1, S2>(
     target_ev: &LeanEvent<Id, C, K>,
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
@@ -517,6 +523,7 @@ where
     })
 }
 
+/// Applies direct domination over the sorted conflicted events in chunked form.
 fn process_direct_domination_chunks<
     Id,
     C: crate::basespec::rezzy_types::EventContent + Clone,
