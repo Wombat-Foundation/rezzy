@@ -1,15 +1,17 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-//! Randomized differential + determinism harness for state resolution.
+//! Differential + determinism harness for state resolution.
 //!
 //! Phase B empirical backbone. For each randomly-generated room DAG:
-//! - **Differential:** resolve with `V2_1` and `V2_1_1` and assert identical
-//!   results. Since the CDO and the V2.1.1 semantic deviations were removed,
-//!   the two versions are semantically equivalent, so this is a strong check
-//!   that no divergence crept back in.
+//! - **Differential:** resolve with `V2_1` and `V2_1_1` and compare. The two
+//!   versions are **not** semantically equivalent: V2.1.1 adds the CDO
+//!   pre-filter and a power-phase local-auth fallback guard (`at.rs`), both
+//!   absent from stock V2.1. Divergences are therefore logged for manual
+//!   inspection, and the per-run count is asserted below a regression bound so
+//!   a divergence that explodes (e.g. a CDO over-drop) fails the test instead
+//!   of silently passing as a logging no-op.
 //! - **Determinism:** resolve the same DAG twice (fresh caches) and assert
-//!   identical output. The CDO's `WORDS_PER_CHUNK` build-time SIMD split (the
-//!   old federation split-brain hazard) is gone with the CDO; this guards the
-//!   remaining path against any platform-dependent divergence.
+//!   identical output. This guards the resolution path against any
+//!   platform-dependent divergence (see `determinism_same_input_same_output`).
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -387,11 +389,17 @@ fn differential_v21_equals_v211() {
         eprintln!("  v21   = {r21:?}");
         eprintln!("  v211  = {r211:?}");
     }
-    eprintln!(
-        "differential: {}/{} DAGs diverged between V2.1 and V2.1.1",
-        diverged.load(Ordering::Relaxed),
-        ITER_COUNT
+    let diverged_total = diverged.load(Ordering::Relaxed);
+
+    // Regression bound. With this fixed seed the versions diverge on a small
+    // minority of DAGs (the intended V2.1.1 power-phase fallback). A divergence
+    // that explodes — e.g. the CDO pre-filter over-dropping on many DAGs — must
+    // fail the test rather than pass as a logging no-op.
+    assert!(
+        diverged_total < 150,
+        "V2.1 vs V2.1.1 diverged on {diverged_total}/{ITER_COUNT} DAGs, far beyond the intended subset; investigate"
     );
+    eprintln!("differential: {diverged_total}/{ITER_COUNT} DAGs diverged between V2.1 and V2.1.1");
 }
 
 #[test]
