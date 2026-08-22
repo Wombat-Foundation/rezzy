@@ -538,6 +538,67 @@ pub fn apply_redaction<Id: Clone + AsRef<str>, K: Clone>(
     Some(target.redacted(room_version))
 }
 
+/// Ingest path: turns a batch of raw PDUs into lean events ready for state
+/// resolution, wiring the PDU-boundary checks a homeserver performs on receipt.
+///
+/// For each PDU, in order:
+///
+/// 1. **Content-hash verification** — if the PDU carries a `hashes` dict,
+///    [`verify_content_hash`] is run against it (the unredacted content hash,
+///    `hashes.sha256`). Events without a `hashes` dict are skipped (not every
+///    caller feeds full signed PDUs).
+/// 2. **Parsing** — each PDU is converted to a [`LeanEvent`] with
+///    [`LeanEvent::from_value`], deriving a missing `event_id` from the room
+///    version's reference hash.
+/// 3. **Redaction application** — every `m.room.redaction` event in the batch
+///    is applied to its target when that target is also present in the batch,
+///    via [`apply_redaction`]. Targets outside the batch are left for a later
+///    ingest (the homeserver's store owns them).
+///
+/// The redaction event itself is retained in the returned set (it is a normal
+/// DAG event); only its *target* is replaced by the redacted form.
+///
+/// # Errors
+/// Returns `Err` if a PDU fails content-hash verification, or cannot be parsed
+/// to a `LeanEvent` (including a missing `event_id` for a room version with no
+/// reference hash, i.e. v1/v2).
+pub fn ingest_events(
+    pdus: &[Value],
+    room_version: &str,
+) -> Result<Vec<LeanEvent<String, Value, String>>, alloc::string::String> {
+    use crate::basespec::event_types::M_ROOM_REDACTION;
+
+    for pdu in pdus {
+        if pdu
+            .get(crate::basespec::event_types::FIELD_HASHES)
+            .is_some()
+        {
+            verify_content_hash(pdu, room_version)?;
+        }
+    }
+
+    let mut events: Vec<LeanEvent<String, Value, String>> = Vec::with_capacity(pdus.len());
+    for pdu in pdus {
+        events.push(LeanEvent::from_value(pdu, Some(room_version)).map_err(|e| e.to_string())?);
+    }
+
+    let redactions: Vec<LeanEvent<String, Value, String>> = events
+        .iter()
+        .filter(|e| e.event_type == M_ROOM_REDACTION)
+        .cloned()
+        .collect();
+    for redaction in &redactions {
+        if let Some(target_id) = redaction.get_redacts() {
+            if let Some(pos) = events.iter().position(|e| e.event_id.as_str() == target_id) {
+                if let Some(redacted) = apply_redaction(&events[pos], redaction, room_version) {
+                    events[pos] = redacted;
+                }
+            }
+        }
+    }
+    Ok(events)
+}
+
 impl serde::Serialize for StateResVersion {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

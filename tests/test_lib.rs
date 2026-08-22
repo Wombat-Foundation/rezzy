@@ -3786,6 +3786,52 @@ fn test_content_hash_verification_on_raw_pdu() {
 }
 
 #[test]
+fn test_ingest_events_applies_redaction_and_verifies_hashes() {
+    use rezzy::{compute_content_hash, ingest_events};
+
+    let msg = serde_json::json!({
+        "event_id": "$msg:example.com",
+        "type": "m.room.message",
+        "sender": "@bob:example.com",
+        "origin_server_ts": 10,
+        "depth": 1,
+        "content": { "body": "spam" }
+    });
+    let redaction = serde_json::json!({
+        "event_id": "$r:example.com",
+        "type": "m.room.redaction",
+        "sender": "@alice:example.com",
+        "origin_server_ts": 11,
+        "depth": 2,
+        "redacts": "$msg:example.com",
+        "content": { "redacts": "$msg:example.com" }
+    });
+
+    // Ingest without hashes dicts -> parses both and applies the redaction to
+    // the in-batch target (m.room.message content is stripped to {}).
+    let events = ingest_events(&[msg.clone(), redaction.clone()], "11").unwrap();
+    let redacted = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(redacted.content, serde_json::json!({}));
+    // The redaction event itself is retained.
+    assert!(events.iter().any(|e| e.event_id == "$r:example.com"));
+
+    // A valid content hash on the message -> verification passes at ingest.
+    let mut hashed = msg.clone();
+    let hash = compute_content_hash(&hashed, "11").unwrap();
+    hashed["hashes"] = serde_json::json!({ "sha256": hash });
+    let events = ingest_events(&[hashed.clone(), redaction.clone()], "11").unwrap();
+    assert!(events.iter().any(|e| e.event_id == "$msg:example.com"));
+
+    // A tampered content hash -> ingest rejects the batch.
+    let mut tampered = hashed.clone();
+    tampered["content"] = serde_json::json!({ "body": "evil" });
+    assert!(ingest_events(&[tampered, redaction.clone()], "11").is_err());
+}
+
+#[test]
 fn test_reference_hash_is_redaction_invariant() {
     use rezzy::{redact_json, reference_hash};
 
