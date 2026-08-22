@@ -168,6 +168,7 @@ harness = false
 name = "hamt_audit_bitmap"
 path = "benches/hamt_audit_bitmap.rs"
 harness = false
+required-features = ["std"]
 
 [[test]]
 name = "test_snapshots"

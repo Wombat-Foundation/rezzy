@@ -56,6 +56,7 @@ struct Problem {
     auth_context: HashMap<String, LeanEvent>,
 }
 
+/// Builds a synthetic membership event with optional extra ancestry.
 fn mem_event(
     rng: &mut Rng,
     id: &str,
@@ -233,12 +234,12 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         let m1 = rng.pick(&membership_vals);
         let id1 = format!("${}_cand_a_{}", u.split(':').next().unwrap(), i);
         let depth1 = 2 + rng.below(8) as u64;
-        let ev1 = mem_event(rng, &id1, u, u, m1, ts, depth1, &base, None);
+        let ev1 = mem_event(rng, &id1, u, u, m1, ts, depth1, &base, chain_parent.clone());
         ts += 1;
         let m2 = rng.pick(&membership_vals);
         let id2 = format!("${}_cand_b_{}", u.split(':').next().unwrap(), i);
         let depth2 = 2 + rng.below(8) as u64;
-        let ev2 = mem_event(rng, &id2, u, u, m2, ts, depth2, &base, None);
+        let ev2 = mem_event(rng, &id2, u, u, m2, ts, depth2, &base, chain_parent.clone());
         ts += 1;
         conflicted.insert(id1.clone(), ev1);
         conflicted.insert(id2.clone(), ev2);
@@ -258,6 +259,7 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
     }
 }
 
+/// Resolves a generated problem with the requested state-resolution version.
 fn resolve(p: &Problem, version: StateResVersion) -> SharedState {
     resolve_iterative_sort(
         p.unconflicted.clone(),

@@ -2627,6 +2627,8 @@ mod tests {
         );
     }
 
+    /// Exercises the overlay-state fallback paths for resolved required events
+    /// across all supported state-resolution versions.
     #[test]
     #[allow(clippy::too_many_lines)]
     fn test_overlay_state_coverage_boosters() {
@@ -2792,8 +2794,8 @@ mod tests {
             assert_eq!(res.unwrap().event_id, "$jr");
         }
 
-        // 5. Test case: in V2, a resolved member ban is still returned directly
-        // during power-phase authorization.
+        // 5. Test case: a resolved member ban is returned directly during
+        // power-phase authorization across V2, V2.1, and V2.1.1.
         {
             let mut resolved = imbl::OrdMap::new();
             resolved.insert(
@@ -2808,32 +2810,30 @@ mod tests {
             let mut sort_set = HashMap::new();
             sort_set.insert("$member_ban".to_string(), member_ban_ev.clone());
 
-            let mut local_auth = BTreeMap::new();
-            local_auth.insert(
-                (
-                    EventType::from(crate::basespec::event_types::M_ROOM_MEMBER),
-                    "@bannee:example.com".into(),
-                ),
-                member_ban_ev.clone(),
-            );
+            let candidate_event_type = "m.room.message";
+            for version in [
+                StateResVersion::V2,
+                StateResVersion::V2_1,
+                StateResVersion::V2_1_1,
+            ] {
+                let overlay = OverlayState {
+                    resolved: &resolved,
+                    auth_context: &auth_context,
+                    sort_set: &sort_set,
+                    local_auth: BTreeMap::new(),
+                    create_ev: Some(&create_ev),
+                    version,
+                    is_power_phase: true,
+                    candidate_event_type,
+                };
 
-            let overlay = OverlayState {
-                resolved: &resolved,
-                auth_context: &auth_context,
-                sort_set: &sort_set,
-                local_auth,
-                create_ev: Some(&create_ev),
-                version: StateResVersion::V2,
-                is_power_phase: true,
-                candidate_event_type: crate::basespec::event_types::M_ROOM_MEMBER,
-            };
-
-            let res = overlay.get_event(
-                crate::basespec::event_types::M_ROOM_MEMBER,
-                "@bannee:example.com",
-            );
-            assert!(res.is_some());
-            assert_eq!(res.unwrap().event_id, "$member_ban");
+                let res = overlay.get_event(
+                    crate::basespec::event_types::M_ROOM_MEMBER,
+                    "@bannee:example.com",
+                );
+                assert!(res.is_some());
+                assert_eq!(res.unwrap().event_id, "$member_ban");
+            }
         }
     }
 

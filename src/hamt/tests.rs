@@ -3041,6 +3041,8 @@ fn test_reachability_audit_partitions_universe_and_agrees_with_unreachable_node_
     assert_eq!(via_wrapper, unreachable_set);
 }
 
+/// Confirms the bitmap audit matches the hash-keyed audit on the same inputs
+/// and preserves duplicate-universe length accounting.
 #[test]
 fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
     use std::collections::BTreeSet;
@@ -3138,16 +3140,15 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
     let hash_reachable_set: BTreeSet<StructuralHash> =
         hash_audit.reachable.iter().copied().collect();
     assert_eq!(reachable_via_bitmap, hash_reachable_set);
+    let hash_unreachable: Vec<StructuralHash> = hash_audit.unreachable.clone();
+    assert_eq!(hash_unreachable.len(), expected_orphan_hashes.len());
     assert_eq!(
-        hash_audit
-            .unreachable
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>(),
+        hash_unreachable.iter().copied().collect::<BTreeSet<_>>(),
         expected_orphan_hashes
     );
 }
 
+/// Confirms dense universe indexing is stable and collapses duplicates.
 #[test]
 fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates() {
     let h1: StructuralHash = [1; 16];

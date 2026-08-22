@@ -1833,10 +1833,10 @@ fn test_v2_1_1_power_phase_membership_bypass_prevention() {
 /// is progressively banned and the sender membership is not supplemented during
 /// the power phase.
 ///
-/// This is the *intentional* spec-mandated behavior. Mallory's PL event passes auth because
-/// the engine does not check her progressive ban during the power phase. Federation convergence
-/// requires V2.1 to match other MSC4297 implementations bug-for-bug. Do NOT "fix" this test
-/// by adding membership supplementation to V2.1 — use V2.1.1+ for that.
+/// This is the *intentional* spec-mandated behavior. The resolved progressive ban causes
+/// `$mal_pl` to fail authorization during the power phase. Federation convergence requires
+/// V2.1 to match other MSC4297 implementations bug-for-bug. Do NOT "fix" this test by adding
+/// membership supplementation to V2.1 — use V2.1.1+ for that.
 #[test]
 fn test_v2_1_rejects_pl_from_progressively_banned_sender() {
     let auth_evs = utils::parse_jsonl_events(
