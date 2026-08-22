@@ -582,62 +582,6 @@ where
     dropped_ids
 }
 
-/// Transitively propagate a drop to an event only when the drop truly
-/// invalidates it: an event `F` is dropped only if **all** of its
-/// `auth_events` are themselves dropped. Citing a dropped event is a
-/// *replacement*, not a drop, when `F` has a surviving auth event (an
-/// unconflicted event, or a kept candidate) it could be authorized through —
-/// dropping `F` then would over-drop an event full resolution might accept.
-/// Only when no auth path survives is the drop genuinely propagated.
-///
-/// This is a fixpoint: dropping one event can push a dependent over the
-/// all-auth-dropped threshold on the next pass.
-///
-/// ## Effectively dead on the production path
-///
-/// `dropped_ids` only ever contains *conflicted* event IDs. Every real Matrix
-/// event cites `m.room.create` in `auth_events` (auth rule 1), and `$create`
-/// is never conflicted, so it is never in `dropped_ids`. Consequently
-/// `all(|auth| dropped_ids.contains(auth))` cannot be true for any event with
-/// a real auth chain, and this function never drops anything on a production
-/// DAG. It exists to make the CDO a pure direct-domination filter on real
-/// input; only synthetic fixtures (e.g. a candidate whose entire auth list is
-/// a single dominated ban) can trip it. Do not read it as work the CDO saves
-/// on real rooms — on the production path the CDO is exactly the direct-
-/// domination sweep below.
-fn propagate_transitive_dependencies<Id, C: Clone, S1: core::hash::BuildHasher, K>(
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    mut dropped_ids: BTreeSet<Id>,
-) -> BTreeSet<Id>
-where
-    Id: crate::basespec::rezzy_types::EventId,
-{
-    loop {
-        let mut changed = false;
-        for (id, event) in conflicted_events {
-            if dropped_ids.contains(id) {
-                continue;
-            }
-            // An event with no auth_events is authorized by default and must
-            // never be dropped. Otherwise it is dropped only when every auth
-            // path it cites is gone.
-            if !event.auth_events.is_empty()
-                && event
-                    .auth_events
-                    .iter()
-                    .all(|auth_id| dropped_ids.contains(auth_id))
-            {
-                dropped_ids.insert(id.clone());
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    dropped_ids
-}
-
 /// Cycle-0 Topological Filter: Vectorized Causal Domination Operator (CDO).
 ///
 /// Executes strictly on the conflicted state subgraph. Returns the **safe set**
@@ -650,7 +594,6 @@ where
 ///    and sort all events by priority.
 /// 3. **Chunk-process** — compute ancestor/descendant bitmasks in SWAR chunks
 ///    and mark dominated events.
-/// 4. **Propagate** — transitively drop any event whose auth dependency was dropped.
 // jscpd:ignore-start
 #[must_use]
 pub fn apply_cdo_filter<
@@ -672,12 +615,11 @@ where
     let prioritized = prioritize_events(conflicted_events);
     let dropped_ids =
         process_direct_domination_chunks(&adj, &prioritized, conflicted_events, auth_context);
-    let final_dropped_ids = propagate_transitive_dependencies(conflicted_events, dropped_ids);
 
-    // Return strictly the transitively safe set
+    // Return strictly the safe set
     let mut safe_set = HashMap::new();
     for (id, event) in conflicted_events {
-        if !final_dropped_ids.contains(id) {
+        if !dropped_ids.contains(id) {
             safe_set.insert(id.clone(), event.clone());
         }
     }

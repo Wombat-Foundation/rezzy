@@ -3,16 +3,18 @@
 //!
 //! Phase B empirical backbone. For each randomly-generated room DAG:
 //! - **Differential:** resolve with `V2_1` and `V2_1_1` and assert **identical**
-//!   output. V2.1.1 runs the CDO pre-filter (V2.1 does not); if the CDO ever
-//!   drops a candidate full resolution would keep, the versions diverge and the
-//!   test fails. The CDO is confirmed to actually fire on this generator — see
-//!   `cdo_drop_rate_measured` — so the assertion is real coverage, not vacuous.
-//!   V2.1.1's only other difference (the `at.rs` power-phase fallback) is never
-//!   reached by these DAG shapes, so it does not produce divergence here.
-//! - **Drop-rate:** `cdo_drop_rate_measured` reports total events dropped by
-//!   the CDO and how many DAGs had a non-empty drop set, so a `0/2000`
-//!   divergence count can be read as evidence rather than as the CDO doing no
-//!   work.
+//!   output. V2.1.1 runs the CDO pre-filter (V2.1 does not); the two versions
+//!   must agree on every DAG. Note this only fails if a CDO drop *changes a
+//!   winner*: dropping a candidate that was going to lose its key contest is
+//!   invisible to the resolved state. `cdo_drop_rate_measured` measures how
+//!   observable the CDO is (see below).
+//! - **Drop-rate & winner-overlap:** `cdo_drop_rate_measured` reports how much
+//!   the CDO drops (2087 events / 626 DAGs on 2000) and — the key signal — how
+//!   many dropped IDs appear as *winners* in the resolved state. That count is
+//!   currently 0: the generator never produces a dominated *winner*, so the
+//!   differential cannot observe a CDO error on these DAGs. Testing CDO
+//!   correctness against outcomes needs a generator that produces dominated
+//!   winners.
 //! - **Determinism:** resolve the same DAG twice (fresh caches) and assert
 //!   identical output. This guards the resolution path against any
 //!   platform-dependent divergence (see `determinism_same_input_same_output`).
@@ -314,27 +316,29 @@ fn resolve(p: &Problem, version: StateResVersion) -> SharedState {
 /// Differential coverage over the multi-level random DAG generator.
 ///
 /// Resolves each DAG with `V2_1` and `V2_1_1` and asserts the results are
-/// **identical**. This is a strong invariant, not a bound:
+/// **identical**. V2.1.1 runs the CDO pre-filter; V2.1 does not, so the two
+/// must agree on every DAG.
 ///
-/// - V2.1.1 runs the CDO pre-filter; V2.1 does not. If the CDO ever drops a
-///   candidate that full resolution would keep, the versions diverge and this
-///   test fails. `cdo_drop_rate_measured` confirms the CDO actually fires
-///   (2087 drops over 626/2000 DAGs), so this is real coverage, not vacuous.
-/// - V2.1.1's only other difference is the `at.rs:132` power-phase local-auth
-///   fallback guard. The generator's DAG shapes never reach that guard (it
-///   fires on ban-evasion topologies the generator does not produce), so it is
-///   not a source of divergence here.
+/// Scope of this assertion: it fails only if a CDO drop *changes a resolved
+/// winner*. `cdo_drop_rate_measured` reports that the CDO drops 2087 events
+/// over 626/2000 DAGs, but that **none of them are winners** — the generator
+/// never produces a dominated winner, so this test cannot observe a CDO error.
+/// Equality across these DAGs is therefore a real but weak check on the CDO:
+/// it confirms the CDO never flips an outcome it *can* reach. Exercising CDO
+/// correctness against outcomes requires a generator that produces dominated
+/// winners (a known gap, not closed here).
 ///
 /// Determinism is covered separately by `determinism_same_input_same_output`.
 ///
 /// # Why strict equality, and not a count bound
 ///
 /// `0916121` relaxed this to "log divergences, pass under a bound" on the
-/// premise that V2.1 vs V2.1.1 divergence was *intended* (the `at.rs` fallback).
-/// That premise was wrong on this generator: the fallback is never reached, and
-/// every recorded divergence traced to a CDO over-drop — a bug. With the
-/// over-drop fixed, the two versions agree on all 2000 DAGs, so equality is the
-/// correct, meaningful invariant here.
+/// premise that V2.1 vs V2.1.1 divergence was *intended* (the `at.rs` power-
+/// phase fallback). That premise was wrong on this generator: the fallback is
+/// not observed to produce divergence here, and every recorded divergence
+/// traced to a CDO over-drop — a bug. With the over-drop fixed, the two
+/// versions agree on all 2000 DAGs, so equality is the correct, meaningful
+/// invariant here.
 #[test]
 fn differential_v21_equals_v211() {
     const ITER_COUNT: u64 = 2000;
@@ -363,30 +367,47 @@ fn differential_v21_equals_v211() {
     });
 }
 
-/// Measures how much work the CDO actually does on the generator's DAGs.
+/// Measures how much work the CDO actually does on the generator's DAGs, and
+/// whether any of it is *observable* to the differential.
 ///
-/// `0/2000` V2.1 vs V2.1.1 divergences is only meaningful if the CDO *drops*
-/// a non-trivial number of events: if it drops almost nothing, both versions
-/// agree trivially and the differential result is vacuous evidence about the
-/// direct-domination path. This test answers that directly — total events
-/// dropped by `apply_cdo_filter` across the run, and how many DAGs had a
-/// non-empty drop set — without resolving anything.
+/// `0/2000` V2.1 vs V2.1.1 divergences only means the CDO never *changed the
+/// resolved state* — it does **not** mean every drop was sound. A drop is
+/// invisible to the differential if the dropped candidate was going to lose
+/// its key contest anyway. So this test reports three numbers:
+///
+/// - total events dropped by `apply_cdo_filter` across the run, and how many
+///   DAGs had a non-empty drop set — i.e. is the direct-domination path even
+///   exercised?
+/// - **winner overlap**: how many CDO-dropped event IDs appear as *values* in
+///   the V2.1 resolved state, and how many DAGs that happens on. This is the
+///   iteration-23 failure mode exactly (the CDO dropped `$@u2_cand_b_2`,
+///   which V2.1 had resolved as the winner). A winner-overlap of 0 across the
+///   run is the evidence that no CDO drop flipped an outcome on these DAGs; if
+///   the CDO only ever drops losers, the differential cannot see it at all.
 #[test]
 fn cdo_drop_rate_measured() {
+    use std::collections::HashSet;
+
     const ITER_COUNT: u64 = 2000;
     const BASE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
     let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
 
     let dropped_total = AtomicU64::new(0);
     let dag_count = AtomicU64::new(0);
+    let dropped_winners_total = AtomicU64::new(0);
+    let dropped_winner_dags = AtomicU64::new(0);
 
     std::thread::scope(|s| {
         for t in 0..threads {
             let dropped_total = &dropped_total;
             let dag_count = &dag_count;
+            let dropped_winners_total = &dropped_winners_total;
+            let dropped_winner_dags = &dropped_winner_dags;
             s.spawn(move || {
                 let mut local_dropped = 0u64;
                 let mut local_dags = 0u64;
+                let mut local_dropped_winners = 0u64;
+                let mut local_dropped_winner_dags = 0u64;
                 let mut iter = u64::try_from(t).unwrap_or(0);
                 let stride = u64::try_from(threads).unwrap_or(0);
                 while iter < ITER_COUNT {
@@ -398,21 +419,41 @@ fn cdo_drop_rate_measured() {
                     local_dropped += dropped;
                     if dropped > 0 {
                         local_dags += 1;
+                        // Which dropped IDs ended up as winners in the resolved
+                        // state? Values of the resolved (type, state_key) -> event_id
+                        // map; the two versions resolve identically, so V2.1 suffices.
+                        let resolved = resolve(&problem, StateResVersion::V2_1);
+                        let resolved_values: HashSet<&String> = resolved.values().collect();
+                        let dropped_winners = problem
+                            .conflicted
+                            .keys()
+                            .filter(|id| !safe.contains_key(*id) && resolved_values.contains(id))
+                            .count();
+                        local_dropped_winners += u64::try_from(dropped_winners).unwrap_or(0);
+                        if dropped_winners > 0 {
+                            local_dropped_winner_dags += 1;
+                        }
                     }
                     iter += stride;
                 }
                 dropped_total.fetch_add(local_dropped, Ordering::Relaxed);
                 dag_count.fetch_add(local_dags, Ordering::Relaxed);
+                dropped_winners_total.fetch_add(local_dropped_winners, Ordering::Relaxed);
+                dropped_winner_dags.fetch_add(local_dropped_winner_dags, Ordering::Relaxed);
             });
         }
     });
 
     let dropped_total = dropped_total.load(Ordering::Relaxed);
     let dag_count = dag_count.load(Ordering::Relaxed);
+    let dropped_winners_total = dropped_winners_total.load(Ordering::Relaxed);
+    let dropped_winner_dags = dropped_winner_dags.load(Ordering::Relaxed);
     let dags_with_conflict = ITER_COUNT; // generator always produces conflicted candidates
     eprintln!(
-        "cdo: {dropped_total} events dropped by apply_cdo_filter over {ITER_COUNT} DAGs; \
-         {dag_count} DAGs had a non-empty drop set ({dags_with_conflict} DAGs have conflicted candidates)"
+        "cdo: {dropped_total} events dropped by apply_cdo_filter over {ITER_COUNT} DAGs \
+         ({dag_count} DAGs had a non-empty drop set, of {dags_with_conflict} with conflicted candidates); \
+         {dropped_winners_total} dropped IDs appeared as winners in the resolved state \
+         ({dropped_winner_dags} DAGs)"
     );
 }
 
