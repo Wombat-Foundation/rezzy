@@ -105,8 +105,9 @@ fn mem_event(
 /// Unconflicted base: `m.room.create`, creator join, `m.room.power_levels`
 /// (admin=100, plus some users at random power level), `m.room.join_rules` =
 /// public. Conflicted: for a few users, two candidate membership events
-/// (join/invite/leave/ban) on different forks, plus occasionally a conflicting
-/// `m.room.join_rules` or `m.room.power_levels` candidate.
+/// (join/invite/leave/ban) on different forks. Conflicted candidates are
+/// membership-only — no `m.room.join_rules` or `m.room.power_levels`
+/// candidates are emitted.
 #[allow(clippy::too_many_lines)]
 fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
     let users = ["@u0:x", "@u1:x", "@u2:x", "@u3:x", "@u4:x", "@u5:x"];

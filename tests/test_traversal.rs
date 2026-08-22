@@ -1819,9 +1819,9 @@ fn test_v2_1_1_power_phase_membership_bypass_prevention() {
         String::new(),
     );
 
-    // With V2.1.1's membership supplementation fix, Mallory's PL event must be
-    // rejected because she is progressively banned. Admin's PL event must win.
-    // (Stock V2.1 does not supplement membership, so this protection only applies to V2.1.1+.)
+    // Mallory's PL event must be rejected because she is progressively banned:
+    // the resolved ban is what her membership resolves to, so she fails the
+    // "sender must not be banned" rule. Admin's PL event must win.
     assert_eq!(
         resolved.get(&pl_key),
         Some(&"$admin_pl".to_string()),
@@ -1830,13 +1830,10 @@ fn test_v2_1_1_power_phase_membership_bypass_prevention() {
 }
 
 /// Pin stock V2.1 (MSC4297) behavior: reject a power-level event when the sender
-/// is progressively banned and the sender membership is not supplemented during
-/// the power phase.
+/// is progressively banned.
 ///
 /// This is the *intentional* spec-mandated behavior. The resolved progressive ban causes
-/// `$mal_pl` to fail authorization during the power phase. Federation convergence requires
-/// V2.1 to match other MSC4297 implementations bug-for-bug. Do NOT "fix" this test by adding
-/// membership supplementation to V2.1 — use V2.1.1+ for that.
+/// `$mal_pl` to fail authorization during the power phase, so it must not win its key.
 #[test]
 fn test_v2_1_rejects_pl_from_progressively_banned_sender() {
     let auth_evs = utils::parse_jsonl_events(
