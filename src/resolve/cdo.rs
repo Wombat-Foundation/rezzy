@@ -433,6 +433,41 @@ where
 /// took while validly empowered under the cited power-level state, if that
 /// empowerment is what the action's own `auth_events` actually cite. See
 /// `test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action`.
+///
+/// Returns the power level required to send `target_ev` under the power-level
+/// event `pl_ev`, mirroring the auth engine's `get_required_power_level` rule:
+/// `m.room.member` events are exempt from the generic PL check (auth Rule 4),
+/// though ban/kick still need the ban/kick level; state events fall back to
+/// `state_default`, message events to `events_default`.
+fn required_power_level_for<Id, C, K>(
+    target_ev: &LeanEvent<Id, C, K>,
+    pl_ev: &LeanEvent<Id, C, K>,
+) -> i64
+where
+    C: crate::basespec::rezzy_types::EventContent,
+    K: AsRef<str>,
+{
+    if target_ev.event_type.as_str() == M_ROOM_MEMBER {
+        // Self membership transitions (join/invite/leave, non-ban) need no PL;
+        // ban/kick need the ban/kick level.
+        if target_ev.is_ban_or_kick() {
+            pl_ev.get_ban().or_else(|| pl_ev.get_kick()).unwrap_or(50)
+        } else {
+            i64::MIN
+        }
+    } else if target_ev.event_type.as_str()
+        == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE
+    {
+        pl_ev.get_invite().unwrap_or(0)
+    } else if let Some(pl) = pl_ev.get_event_power_level(target_ev.event_type.as_str()) {
+        pl
+    } else if target_ev.state_key.is_some() {
+        pl_ev.get_state_default().unwrap_or(50)
+    } else {
+        pl_ev.get_events_default().unwrap_or(0)
+    }
+}
+
 fn sender_has_pre_demotion_pl<Id, C, K, S1, S2>(
     target_ev: &LeanEvent<Id, C, K>,
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
@@ -475,10 +510,7 @@ where
                             .or_else(|| ev.get_users_default())
                             .unwrap_or(0)
                     };
-                    let required_pl = ev
-                        .get_event_power_level(M_ROOM_POWER_LEVELS)
-                        .or_else(|| ev.get_state_default())
-                        .unwrap_or(50);
+                    let required_pl = required_power_level_for(target_ev, ev);
                     sender_pl >= required_pl
                 }
             })
