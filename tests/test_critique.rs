@@ -284,9 +284,13 @@ fn test_anomaly_02_admin_lockout() {
     assert_eq!(get_user_power_level(&resolved, &map, "@bob:example.com"), 0);
 }
 
+/// Regression coverage for the phantom join-rules anomaly fixture.
 #[test]
 fn test_anomaly_03_phantom_join_rules() {
     let (resolved, map) = resolve_pathology("03_phantom_join_rules.jsonl");
+    // Per the spec, Charlie's join is auth-checked against the *resolved*
+    // join_rules (which resolves to invite), not the public rules in his own
+    // auth chain. Charlie is not invited, so the join is rejected.
     assert_eq!(
         get_membership(&resolved, &map, "@charlie:example.com"),
         "none"
@@ -329,15 +333,19 @@ fn test_anomaly_06_action_evaporation() {
     assert_eq!(get_user_power_level(&resolved, &map, "@bob:example.com"), 0);
 }
 
+/// Regression coverage for the membership-evaporation anomaly fixture.
 #[test]
 fn test_anomaly_06b_mod_membership_evaporation() {
     let (resolved, map) = resolve_pathology("06b_mod_membership_evaporation.jsonl");
     assert_eq!(get_membership(&resolved, &map, "@nexy:example.com"), "none");
+    // With the CDO gone, nexy's valid ban on spammer (auth'd against the
+    // power_levels granting nexy PL 50) takes effect.
     assert_eq!(
         get_membership(&resolved, &map, "@spammer:example.com"),
-        "join"
+        "ban"
     );
-    // Honest members are unaffected.
+    // nexy's ban on charlie auths against an older power_levels (nexy PL 0),
+    // so it is rejected and charlie remains joined.
     assert_eq!(
         get_membership(&resolved, &map, "@charlie:example.com"),
         "join"
@@ -474,18 +482,15 @@ fn test_anomaly_16_causality_leakage() {
     );
 }
 
+/// Regression coverage for the sliced-DAG membership-desync anomaly fixture.
 #[test]
 fn test_anomaly_17_sliced_dag_membership_desync() {
     let (resolved, map) = resolve_pathology("17_sliced_dag_membership_desync.jsonl");
-    // NOTE: v2.1.1 CDO pre-filter is overly aggressive here.  Cat had a valid
-    // invite and should be allowed to join under invite-only join_rules, so the
-    // correct answer is "join".  v2.1.1 currently produces "invite" because the
-    // Causal Domination filter strips her join event.  This assertion documents
-    // the current (buggy) behavior — fix the CDO and flip this to "join".
-    assert_eq!(
-        get_membership(&resolved, &map, "@cat:maunium.net"),
-        "invite"
-    );
+    // The V2.1.1 CDO pre-filter was removed as unsound: it dropped this join
+    // because an independent-branch join_rules lockdown "dominated" it, even
+    // though Cat had a valid invite and may join under invite-only join_rules
+    // (see reference auth). With the CDO gone, Cat resolves to "join".
+    assert_eq!(get_membership(&resolved, &map, "@cat:maunium.net"), "join");
     assert_eq!(
         get_membership(&resolved, &map, "@reminder:maunium.net"),
         "join"
@@ -505,4 +510,93 @@ fn test_anomaly_17_sliced_dag_membership_desync() {
 fn test_anomaly_18_unauthorized_admin_amplification() {
     let (resolved, map) = resolve_pathology("18_unauthorized_admin_amplification.jsonl");
     assert_eq!(get_membership(&resolved, &map, "@bob:example.com"), "ban");
+}
+
+/// Explores whether the `is_ban_or_kick()` domination path has the same
+/// unsoundness `join_has_prior_authorization`/`sender_has_pre_demotion_pl`
+/// fixed for the lockdown and demotion paths (see `resolve/cdo.rs`): does
+/// an independent-branch ban on Bob cause CDO to drop an action Bob took
+/// on a *different* branch while validly empowered (citing that
+/// empowerment in his own `auth_events`), even though Bob's ban never
+/// entered that branch's causal history at all?
+///
+/// Unlike the lockdown/demotion cases, this compares V2.1 (no CDO) against
+/// V2.1.1 (CDO) directly on a small fixture set with independent branches --
+/// if CDO changes the answer, it's unsound by definition (V2.1.1 must only
+/// ever be a pre-filtering optimization over V2.1's semantics, never a
+/// different algorithm).
+#[test]
+fn test_cdo_ban_domination_benign_convergence() {
+    let fixtures = [
+        (
+            "baseline",
+            r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:example.com","depth":0,"origin_server_ts":1000,"content":{"creator":"@alice:example.com","room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:example.com","sender":"@alice:example.com","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl_init","type":"m.room.power_levels","state_key":"","sender":"@alice:example.com","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:example.com":100},"ban":50,"kick":50},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:example.com","sender":"@bob:example.com","depth":3,"origin_server_ts":1003,"content":{"membership":"join"},"prev_events":["$pl_init"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$charlie_join","type":"m.room.member","state_key":"@charlie:example.com","sender":"@charlie:example.com","depth":4,"origin_server_ts":1004,"content":{"membership":"join"},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$pl_grant_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:example.com","depth":5,"origin_server_ts":1005,"content":{"users":{"@alice:example.com":100,"@bob:example.com":50},"ban":50,"kick":50},"prev_events":["$charlie_join"],"auth_events":["$create","$alice_join","$bob_join","$pl_init"]}
+{"event_id":"$ban_bob","type":"m.room.member","state_key":"@bob:example.com","sender":"@alice:example.com","depth":6,"origin_server_ts":2000,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$bob_bans_charlie","type":"m.room.member","state_key":"@charlie:example.com","sender":"@bob:example.com","depth":6,"origin_server_ts":2001,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$alice_join","$bob_join","$pl_grant_bob"]}
+"#,
+        ),
+        (
+            "extra_branch",
+            r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:example.com","depth":0,"origin_server_ts":1000,"content":{"creator":"@alice:example.com","room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:example.com","sender":"@alice:example.com","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl_init","type":"m.room.power_levels","state_key":"","sender":"@alice:example.com","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:example.com":100},"ban":50,"kick":50},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:example.com","sender":"@bob:example.com","depth":3,"origin_server_ts":1003,"content":{"membership":"join"},"prev_events":["$pl_init"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$charlie_join","type":"m.room.member","state_key":"@charlie:example.com","sender":"@charlie:example.com","depth":4,"origin_server_ts":1004,"content":{"membership":"join"},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$pl_grant_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:example.com","depth":5,"origin_server_ts":1005,"content":{"users":{"@alice:example.com":100,"@bob:example.com":50},"ban":50,"kick":50},"prev_events":["$charlie_join"],"auth_events":["$create","$alice_join","$bob_join","$pl_init"]}
+{"event_id":"$dave_join","type":"m.room.member","state_key":"@dave:example.com","sender":"@dave:example.com","depth":5,"origin_server_ts":1006,"content":{"membership":"join"},"prev_events":["$pl_init"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$alice_bans_dave","type":"m.room.member","state_key":"@dave:example.com","sender":"@alice:example.com","depth":6,"origin_server_ts":2001,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$ban_bob","type":"m.room.member","state_key":"@bob:example.com","sender":"@alice:example.com","depth":6,"origin_server_ts":2002,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$bob_bans_charlie","type":"m.room.member","state_key":"@charlie:example.com","sender":"@bob:example.com","depth":6,"origin_server_ts":2003,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$alice_join","$bob_join","$pl_grant_bob"]}
+"#,
+        ),
+    ];
+
+    for (label, fixture) in fixtures {
+        let events: Vec<LeanEvent> = fixture
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("valid LeanEvent JSONL"))
+            .collect();
+
+        let resolved_v2_1 = resolve_full(&events, StateResVersion::V2_1);
+        let resolved_v2_1_1 = resolve_full(&events, StateResVersion::V2_1_1);
+        let map = to_event_map(&events);
+
+        assert_eq!(
+            get_membership(&resolved_v2_1, &map, "@bob:example.com"),
+            "ban",
+            "{label}: the fixture expects bob to remain banned"
+        );
+        assert_eq!(
+            get_membership(&resolved_v2_1, &map, "@charlie:example.com"),
+            "none",
+            "{label}: the fixture expects charlie to be rejected"
+        );
+        assert_eq!(
+            get_membership(&resolved_v2_1_1, &map, "@bob:example.com"),
+            "ban"
+        );
+        assert_eq!(
+            get_membership(&resolved_v2_1_1, &map, "@charlie:example.com"),
+            "none"
+        );
+
+        assert_eq!(
+            resolved_v2_1_1,
+            resolved_v2_1,
+            "CDO must never change the answer relative to V2.1's full resolution \
+             (fixture {label}: V2.1 bob={}, charlie={}; V2.1.1 bob={}, charlie={})",
+            get_membership(&resolved_v2_1, &map, "@bob:example.com"),
+            get_membership(&resolved_v2_1, &map, "@charlie:example.com"),
+            get_membership(&resolved_v2_1_1, &map, "@bob:example.com"),
+            get_membership(&resolved_v2_1_1, &map, "@charlie:example.com"),
+        );
+    }
 }

@@ -2206,6 +2206,230 @@ mod tests {
         assert!(!filtered.contains_key("$bob_name_change"));
     }
 
+    // Coverage: build_adjacency_structures multi-hop transitive closure
+    // (cdo.rs:212, 215). A conflicted event whose auth chain extends >=2 hops
+    // into auth_context forces the `while let Some(aid) = queue.pop_front()`
+    // loop to iterate and push grandparents. The chain also gives $P3 in-degree
+    // 0, exercising the Kahn source promotion (cdo.rs:244, 268).
+    /// Regression coverage for multi-hop auth-chain closure under CDO filtering.
+    #[test]
+    fn test_cdo_multihop_auth_chain_closure() {
+        use serde_json::json;
+
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let mut auth: HashMap<String, LeanEvent> = HashMap::new();
+
+        let make_pl = |id: &str, parents: Vec<String>| LeanEvent {
+            event_id: id.into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            prev_events: parents.clone(),
+            auth_events: parents,
+            content: json!({ "users": { "@alice:example.com": 100 } }),
+            ..Default::default()
+        };
+
+        let p3 = make_pl("$P3", vec![]);
+        let p2 = make_pl("$P2", vec!["$P3".into()]);
+        let p1 = make_pl("$P1", vec!["$P2".into()]);
+        auth.insert(p3.event_id.clone(), p3);
+        auth.insert(p2.event_id.clone(), p2);
+        auth.insert(p1.event_id.clone(), p1);
+
+        let join: LeanEvent = LeanEvent {
+            event_id: "$join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@bob:example.com".into(),
+            prev_events: vec!["$P1".into()],
+            auth_events: vec!["$P1".into()],
+            content: json!({ "membership": "join" }),
+            ..Default::default()
+        };
+        conflicted.insert(join.event_id.clone(), join);
+
+        // No admin action among the conflicted set, so nothing is dropped; the
+        // deep chain is still pulled in via the multi-hop closure and the
+        // topological sort completes without a leftover cycle fallback.
+        let safe = apply_cdo_filter(&conflicted, &auth);
+        assert_eq!(safe.len(), 1, "only the join survives: {:?}", safe.keys());
+        assert!(safe.contains_key("$join"));
+    }
+
+    // Coverage: sort_cdo_events / build_adjacency_structures defensive cycle
+    // fallback (cdo.rs:277-285). A genuine prev/auth cycle leaves some ids never
+    // reaching in-degree 0; the leftover branch must append them in sorted
+    // order rather than dropping them from the sweep.
+    /// Regression coverage for cycle-leftover handling during CDO fallback.
+    #[test]
+    fn test_cdo_cycle_leftover_fallback() {
+        use serde_json::json;
+
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let auth: HashMap<String, LeanEvent> = HashMap::new();
+
+        let a: LeanEvent = LeanEvent {
+            event_id: "$A".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@bob:example.com".into(),
+            prev_events: vec!["$B".into()],
+            auth_events: vec!["$B".into()],
+            content: json!({ "membership": "join" }),
+            ..Default::default()
+        };
+        let b: LeanEvent = LeanEvent {
+            event_id: "$B".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@carol:example.com".into()),
+            sender: "@carol:example.com".into(),
+            prev_events: vec!["$A".into()],
+            auth_events: vec!["$A".into()],
+            content: json!({ "membership": "join" }),
+            ..Default::default()
+        };
+        conflicted.insert(a.event_id.clone(), a);
+        conflicted.insert(b.event_id.clone(), b);
+
+        // Mutual cycle: neither $A nor $B ever reaches in-degree 0, so the
+        // topological sort falls through to the deterministic leftover append.
+        // No admin action, so both events survive the filter without a panic.
+        let safe = apply_cdo_filter(&conflicted, &auth);
+        assert_eq!(safe.len(), 2, "both events must survive: {:?}", safe.keys());
+        assert!(safe.contains_key("$A"));
+        assert!(safe.contains_key("$B"));
+    }
+
+    // Coverage: process_direct_domination_chunks "already-dropped admin" skip
+    // (cdo.rs:407). A lower-priority admin action (`$bob_ban_carol`) is dropped
+    // by a higher-priority ban (`$alice_ban_bob`). It remains in that chunk's
+    // `chunk_admin_to_pos` map, so when a LATER event (`$dave_join`) is checked
+    // the dropped admin is re-encountered and skipped via `continue`. Dave is a
+    // different sender than the ban target so no admin restricts him, forcing
+    // the loop to walk past the dropped admin (deterministic regardless of the
+    // map's iteration order). Also exercises the transitive-dependency
+    // propagation (cdo.rs:470-474) via `$dependent` (auths the dropped ban).
+    /// Regression coverage for skipping already-dropped admin events inside a chunk.
+    #[test]
+    fn test_cdo_skip_already_dropped_admin_in_chunk() {
+        use serde_json::json;
+
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let auth: HashMap<String, LeanEvent> = HashMap::new();
+
+        let alice_ban_bob: LeanEvent = LeanEvent {
+            event_id: "$alice_ban_bob".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@alice:example.com".into(),
+            power_level: 100,
+            origin_server_ts: 1000,
+            content: json!({ "membership": "ban" }),
+            ..Default::default()
+        };
+        let bob_ban_carol: LeanEvent = LeanEvent {
+            event_id: "$bob_ban_carol".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@carol:example.com".into()),
+            sender: "@bob:example.com".into(),
+            power_level: 0,
+            origin_server_ts: 1100,
+            content: json!({ "membership": "ban" }),
+            ..Default::default()
+        };
+        let dave_join: LeanEvent = LeanEvent {
+            event_id: "$dave_join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@dave:example.com".into()),
+            sender: "@dave:example.com".into(),
+            power_level: 0,
+            origin_server_ts: 1200,
+            content: json!({ "membership": "join" }),
+            ..Default::default()
+        };
+        // Auth-depends on the dropped ban; must itself be dropped only through
+        // transitive propagation (dave/eve are not the ban target).
+        let dependent: LeanEvent = LeanEvent {
+            event_id: "$dependent".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@eve:example.com".into()),
+            sender: "@eve:example.com".into(),
+            power_level: 0,
+            origin_server_ts: 1300,
+            auth_events: vec!["$bob_ban_carol".into()],
+            content: json!({ "membership": "join" }),
+            ..Default::default()
+        };
+
+        conflicted.insert(alice_ban_bob.event_id.clone(), alice_ban_bob);
+        conflicted.insert(bob_ban_carol.event_id.clone(), bob_ban_carol);
+        conflicted.insert(dave_join.event_id.clone(), dave_join);
+        conflicted.insert(dependent.event_id.clone(), dependent);
+
+        let safe = apply_cdo_filter(&conflicted, &auth);
+        assert_eq!(
+            safe.len(),
+            2,
+            "only the surviving ban + dave remain: {:?}",
+            safe.keys()
+        );
+        assert!(safe.contains_key("$alice_ban_bob"));
+        assert!(safe.contains_key("$dave_join"));
+        assert!(!safe.contains_key("$bob_ban_carol"));
+        assert!(!safe.contains_key("$dependent"));
+    }
+
+    // Coverage: process_direct_domination_chunks "already-dropped event" skip
+    // (cdo.rs:401). Requires a second chunk, which needs more admin actions than
+    // `chunk_size = WORDS_PER_CHUNK * 64 = 512`. Alice's high-priority ban drops
+    // every one of Bob's 513 bans during chunk 1; chunk 2 then re-visits those
+    // already-dropped events and must skip them via `continue`.
+    /// Regression coverage for multi-chunk revisits of already-dropped events.
+    #[test]
+    fn test_cdo_multichunk_revisits_dropped_event() {
+        use serde_json::json;
+
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        let auth: HashMap<String, LeanEvent> = HashMap::new();
+
+        let alice_ban_bob: LeanEvent = LeanEvent {
+            event_id: "$alice_ban_bob".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@alice:example.com".into(),
+            power_level: 100,
+            origin_server_ts: 1000,
+            content: json!({ "membership": "ban" }),
+            ..Default::default()
+        };
+        conflicted.insert(alice_ban_bob.event_id.clone(), alice_ban_bob);
+
+        for i in 0..513u64 {
+            let ban: LeanEvent = LeanEvent {
+                event_id: format!("$bob_ban_{i}"),
+                event_type: "m.room.member".into(),
+                state_key: Some(format!("@target_{i}:example.com")),
+                sender: "@bob:example.com".into(),
+                power_level: 0,
+                origin_server_ts: 2000 + i,
+                content: json!({ "membership": "ban" }),
+                ..Default::default()
+            };
+            conflicted.insert(ban.event_id.clone(), ban);
+        }
+
+        let safe = apply_cdo_filter(&conflicted, &auth);
+        assert_eq!(
+            safe.len(),
+            1,
+            "only Alice's surviving ban remains: {:?}",
+            safe.keys()
+        );
+        assert!(safe.contains_key("$alice_ban_bob"));
+    }
+
+    /// Regression coverage for the membership-evaporation anomaly fixture.
     #[test]
     fn test_anomaly_06b_mod_membership_evaporation() {
         use serde_json::json;
@@ -2333,24 +2557,32 @@ mod tests {
             nexy_bans_spammer.clone(),
         );
 
-        // Under v2.1.1, apply_cdo_filter is executed.
-        // 1. $rules_invite (invite lockdown) is concurrent with $nexy_join, and restricts joins, dropping $nexy_join.
-        // 2. $nexy_promo requires $nexy_join in its auth_events. Since $nexy_join was dropped, $nexy_promo is dropped transitively.
-        // 3. $nexy_bans_spammer requires $nexy_promo. Since $nexy_promo was dropped, it is dropped transitively.
+        // Under v2.1.1, apply_cdo_filter is executed. $rules_invite (invite
+        // lockdown) is concurrent with $nexy_join, but must NOT dominate it:
+        // $nexy_join's own auth_events cite $jr_pub, a non-lockdown
+        // (public) join_rules event, which is the state it was actually
+        // authorized against. A lockdown on an unrelated causal branch does
+        // not retroactively invalidate that authorization -- dropping
+        // $nexy_join here (and cascading through $nexy_promo and
+        // $nexy_bans_spammer) was the exact unsoundness
+        // test_anomaly_17_sliced_dag_membership_desync and
+        // test_anomaly_06b_mod_membership_evaporation caught at the
+        // integration level; this is its unit-level counterpart.
         let filtered = apply_cdo_filter(&conflicted, &auth);
 
         assert!(filtered.contains_key("$rules_invite"));
         assert!(
-            !filtered.contains_key("$nexy_join"),
-            "Nexy's join must be dropped by direct invite lockdown"
+            filtered.contains_key("$nexy_join"),
+            "Nexy's join cites a non-lockdown join_rules event in its own auth_events, \
+             so an unrelated-branch lockdown must not dominate it"
         );
         assert!(
-            !filtered.contains_key("$nexy_promo"),
-            "Nexy's promotion must be dropped by auth transitive closure"
+            filtered.contains_key("$nexy_promo"),
+            "Nexy's promotion must survive since $nexy_join was not dropped"
         );
         assert!(
-            !filtered.contains_key("$nexy_bans_spammer"),
-            "Nexy's ban on spammer must be dropped by auth transitive closure cascade"
+            filtered.contains_key("$nexy_bans_spammer"),
+            "Nexy's ban on spammer must survive since $nexy_promo was not dropped"
         );
     }
 
@@ -3647,10 +3879,17 @@ fn test_cdo_is_ancestor() {
     ));
 }
 
-/// Coverage: `is_ancestor` early return when ancestor.depth >= child.depth (cdo.rs:70-72).
-/// An event deeper in the DAG cannot be an ancestor of a shallower one.
+/// Regression coverage for the removed depth-based pruning in
+/// `is_ancestor`: `$and` is a literal `auth_events` parent of `$child` (a
+/// real graph edge), but `$and.depth` (5) is numerically >= `$child.depth`
+/// (3) — an author-forgeable relationship that has nothing to do with the
+/// actual graph. `is_ancestor` must resolve this from `prev_events`/
+/// `auth_events` alone and correctly report `$and` as an ancestor; the old
+/// depth-comparison short-circuit made this come back `false` regardless of
+/// the real edge, which is the exact soundness gap this test now guards
+/// against reintroducing.
 #[test]
-fn test_cdo_is_ancestor_depth_prune_early_return() {
+fn test_cdo_is_ancestor_ignores_forged_depth_relationship() {
     let events = utils::parse_jsonl_events(
         r#"
 {"event_id":"$child","type":"m.room.member","state_key":"@a:x","sender":"@a:x","depth":3,"origin_server_ts":100,"content":{"membership":"join"},"prev_events":["$and"],"auth_events":["$and"]}
@@ -3662,18 +3901,19 @@ fn test_cdo_is_ancestor_depth_prune_early_return() {
         .map(|e| (e.event_id.clone(), e.clone()))
         .collect();
 
-    // ancestor depth(5) >= child depth(3) → immediate false
+    // $and is a genuine auth_events parent of $child, so it IS an ancestor
+    // regardless of the (forged-looking) depth relationship.
     assert!(
-        !rezzy::resolve::cdo::is_ancestor("$child", "$and", &ctx),
-        "deeper event cannot be ancestor of shallower one"
+        rezzy::resolve::cdo::is_ancestor("$child", "$and", &ctx),
+        "a real auth_events edge must be honored even when the depth field disagrees with it"
     );
 }
 
-/// Coverage: `is_ancestor` traversal depth prune when intermediate event
-/// depth <= ancestor depth (cdo.rs:85-87). The DFS skips branches
-/// at or below the ancestor's depth since their parents are even shallower.
+/// Coverage: `is_ancestor` correctly reports `false` for two events on
+/// genuinely disconnected branches, with no real path between them via
+/// `prev_events`/`auth_events` — regardless of their `depth` values.
 #[test]
-fn test_cdo_is_ancestor_depth_prune_traversal() {
+fn test_cdo_is_ancestor_disconnected_branch() {
     let events = utils::parse_jsonl_events(
         r#"
 {"event_id":"$child","type":"m.room.member","state_key":"@a:x","sender":"@a:x","depth":10,"origin_server_ts":100,"content":{"membership":"join"},"prev_events":["$mid"],"auth_events":[]}
@@ -3687,11 +3927,12 @@ fn test_cdo_is_ancestor_depth_prune_traversal() {
         .map(|e| (e.event_id.clone(), e.clone()))
         .collect();
 
-    // Traversal from $child visits $mid. $mid.depth(3) <= $and.depth(5) → prune.
-    // $deep is never explored. $and is on a disconnected branch → false.
+    // Full traversal from $child reaches $mid then $deep via prev_events;
+    // $and has no edge into that chain from either direction, so it's
+    // correctly reported unreachable.
     assert!(
         !rezzy::resolve::cdo::is_ancestor("$child", "$and", &ctx),
-        "depth prune should stop traversal at mid"
+        "$and is on a genuinely disconnected branch"
     );
 }
 
@@ -3758,6 +3999,247 @@ fn test_cdo_apply_filter_cascading_drops() {
     );
 }
 
+/// Mirrors `test_cdo_apply_filter_cascading_drops`' ban scenario, but for
+/// `is_demotion()`'s domination path instead of `is_ban_or_kick()`'s: an
+/// independent-branch `power_levels` event that demotes Bob to 0 must not
+/// dominate a ban Bob issued on a *different* branch while still validly
+/// PL-50, citing that PL grant in its own `auth_events`.
+///
+/// This is the same unsoundness `join_has_prior_authorization()` fixes for
+/// join-rules lockdowns (see `resolve/cdo.rs`), applied to the
+/// `is_demotion()` domination path via `sender_has_pre_demotion_pl()`.
+#[test]
+fn test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action() {
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@alice:a","room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:a","sender":"@alice:a","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl_init","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:a":100},"ban":50,"kick":50},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":3,"origin_server_ts":1003,"content":{"membership":"join"},"prev_events":["$pl_init"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$pl_demote_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100,"@bob:b":0},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$pl_grant_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100,"@bob:b":50},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$bob_join","$pl_init"]}
+{"event_id":"$bob_bans_charlie","type":"m.room.member","state_key":"@charlie:c","sender":"@bob:b","depth":5,"origin_server_ts":2001,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$alice_join","$bob_join","$pl_grant_bob"]}
+{"event_id":"$charlie_bans_dave","type":"m.room.member","state_key":"@dave:d","sender":"@charlie:c","depth":6,"origin_server_ts":2002,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$alice_join","$bob_join","$pl_grant_bob"]}
+"#,
+    );
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+
+    for ev in &events {
+        match ev.event_id.as_str() {
+            "$pl_demote_bob" | "$pl_grant_bob" | "$bob_bans_charlie" | "$charlie_bans_dave" => {
+                conflicted.insert(ev.event_id.clone(), ev.clone());
+            }
+            _ => {
+                auth_context.insert(ev.event_id.clone(), ev.clone());
+            }
+        }
+    }
+
+    let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
+
+    assert!(
+        safe.contains_key("$pl_demote_bob"),
+        "the demotion itself is an admin action and must survive"
+    );
+
+    // $bob_bans_charlie's own auth_events cite $pl_grant_bob (Bob at PL
+    // 50), the state it was actually authorized against -- $pl_demote_bob
+    // exists only on an independent branch and does not invalidate that
+    // authorization, the same way join_has_prior_authorization() protects
+    // an analogous join.
+    assert!(
+        safe.contains_key("$bob_bans_charlie"),
+        "Bob's ban cites its own pre-demotion PL grant, so an independent-branch \
+         demotion must not dominate it"
+    );
+    assert!(
+        !safe.contains_key("$charlie_bans_dave"),
+        "Charlie's ban cites a PL event that does not empower Charlie, so the \
+         independent-branch demotion must still dominate it"
+    );
+}
+
+/// Regression coverage for the CDO demotion-empowerment branch matrix.
+#[test]
+fn test_cdo_demotion_empowerment_branch_coverage() {
+    // Exercises the branches of `required_power_level_for` through
+    // `sender_has_pre_demotion_pl`, using an independent-branch demotion that
+    // restricts a PL-0 sender:
+    //   * member self-join (i64::MIN) survives,
+    //   * kick uses the kick level (0) -> survives,
+    //   * ban uses the ban level (50) -> dropped,
+    //   * third-party invite uses the invite level (0) -> survives,
+    //   * a state event with an `events` override (topic=50) -> dropped,
+    //   * a state event falling back to state_default (avatar=50) -> dropped,
+    //   * a message event falling back to events_default (0) -> survives,
+    //   * the room creator (implicit max PL, i64::MAX) survives regardless.
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@owner:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@owner:a","room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$owner_join","type":"m.room.member","state_key":"@owner:a","sender":"@owner:a","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$admin_join","type":"m.room.member","state_key":"@admin:a","sender":"@admin:a","depth":1,"origin_server_ts":1002,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl_init","type":"m.room.power_levels","state_key":"","sender":"@owner:a","depth":2,"origin_server_ts":1003,"content":{"users":{"@owner:a":100,"@admin:a":100},"users_default":0,"ban":50,"kick":0,"invite":0,"events_default":0,"state_default":50,"events":{"m.room.topic":50}},"prev_events":["$owner_join"],"auth_events":["$create","$owner_join"]}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":3,"origin_server_ts":1004,"content":{"membership":"join"},"prev_events":["$pl_init"],"auth_events":["$create","$owner_join","$pl_init"]}
+{"event_id":"$pl_demote","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@owner:a":0,"@admin:a":100,"@bob:b":0},"users_default":0,"ban":50,"kick":0,"invite":0,"events_default":0,"state_default":50,"events":{"m.room.topic":50}},"prev_events":["$admin_join"],"auth_events":["$create","$owner_join","$admin_join","$pl_init"]}
+{"event_id":"$owner_topic","type":"m.room.topic","state_key":"","sender":"@owner:a","depth":4,"origin_server_ts":2001,"content":{"topic":"hi"},"prev_events":["$owner_join"],"auth_events":["$create","$owner_join","$pl_init"]}
+{"event_id":"$bob_rejoin","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":4,"origin_server_ts":2002,"content":{"membership":"join"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
+{"event_id":"$bob_3pi","type":"m.room.third_party_invite","state_key":"","sender":"@bob:b","depth":4,"origin_server_ts":2003,"content":{"display_name":"x"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
+{"event_id":"$bob_topic","type":"m.room.topic","state_key":"","sender":"@bob:b","depth":4,"origin_server_ts":2004,"content":{"topic":"hi"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
+{"event_id":"$bob_kicks_dave","type":"m.room.member","state_key":"@dave:d","sender":"@bob:b","depth":4,"origin_server_ts":2005,"content":{"membership":"leave"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
+{"event_id":"$bob_bans_carol","type":"m.room.member","state_key":"@carol:c","sender":"@bob:b","depth":4,"origin_server_ts":2006,"content":{"membership":"ban"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
+{"event_id":"$bob_avatar","type":"m.room.avatar","state_key":"","sender":"@bob:b","depth":4,"origin_server_ts":2007,"content":{"url":"mxc://x"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
+{"event_id":"$bob_msg","type":"m.room.message","sender":"@bob:b","depth":4,"origin_server_ts":2008,"content":{"body":"hi"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
+"#,
+    );
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+
+    for ev in &events {
+        match ev.event_id.as_str() {
+            "$pl_demote" | "$owner_topic" | "$bob_rejoin" | "$bob_3pi" | "$bob_topic"
+            | "$bob_kicks_dave" | "$bob_bans_carol" | "$bob_avatar" | "$bob_msg" => {
+                conflicted.insert(ev.event_id.clone(), ev.clone());
+            }
+            _ => {
+                auth_context.insert(ev.event_id.clone(), ev.clone());
+            }
+        }
+    }
+
+    let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
+
+    // The demotion itself is an admin action and must survive.
+    assert!(safe.contains_key("$pl_demote"));
+    // Room creator has implicit max power (i64::MAX branch): survives.
+    assert!(
+        safe.contains_key("$owner_topic"),
+        "the room creator keeps implicit max power and is not dominated"
+    );
+    // A member self-join needs no power level (i64::MIN branch): survives.
+    assert!(
+        safe.contains_key("$bob_rejoin"),
+        "a PL-0 sender's self-join is a valid action and is not dominated"
+    );
+    // A kick requires only the kick level (here 0), not the ban level.
+    assert!(
+        safe.contains_key("$bob_kicks_dave"),
+        "a kick uses the kick level (0), which the sender meets"
+    );
+    // A ban requires the ban level (50), which a PL-0 sender lacks.
+    assert!(
+        !safe.contains_key("$bob_bans_carol"),
+        "a ban uses the ban level (50), which the sender does not meet"
+    );
+    // A third-party invite requires only the invite level (here 0): survives.
+    assert!(
+        safe.contains_key("$bob_3pi"),
+        "the third-party invite requires only invite=0, which the sender meets"
+    );
+    // A topic event requires events.m.room.topic = 50 (events override).
+    assert!(
+        !safe.contains_key("$bob_topic"),
+        "a PL-0 sender is not empowered to send a topic (requires 50), so it is dropped"
+    );
+    // An avatar event has no events override, so it falls back to state_default
+    // (50), which a PL-0 sender lacks.
+    assert!(
+        !safe.contains_key("$bob_avatar"),
+        "an avatar falls back to state_default (50), which the sender does not meet"
+    );
+    // A message event has no state_key, so it falls back to events_default (0).
+    assert!(
+        safe.contains_key("$bob_msg"),
+        "a message falls back to events_default (0), which the sender meets"
+    );
+}
+
+/// Regression coverage for unordered cycle leftovers in the domination sweep.
+#[test]
+fn test_cdo_cycle_skip_ordering() {
+    // A deliberately cyclic conflicted graph (a referential-integrity
+    // violation the CDO defends against) leaves both events in
+    // `unordered_ids` after Kahn's sort. The domination loop's `continue`
+    // guards for unordered events and admin actions both fire, so neither
+    // cyclic event is dominated — both fall through to full resolution.
+    //
+    // A separate, non-cyclic target (`$bob_avatar`, authorized against
+    // `$pl_admin` which grants Bob PL 0) would be dominated by `$demote`
+    // if the unordered-admin guard did not skip it; asserting it survives
+    // proves the cycle guard is what prevents the domination.
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$demote","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":2,"origin_server_ts":1000,"content":{"users":{"@bob:b":0}},"prev_events":["$bob_join"],"auth_events":["$bob_join"]}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$demote"],"auth_events":["$demote"]}
+{"event_id":"$pl_admin","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":1,"origin_server_ts":1500,"content":{"users":{"@bob:b":0},"state_default":50},"prev_events":[],"auth_events":[]}
+{"event_id":"$bob_avatar","type":"m.room.avatar","state_key":"","sender":"@bob:b","depth":3,"origin_server_ts":2000,"content":{"url":"mxc://x"},"prev_events":["$pl_admin"],"auth_events":["$pl_admin"]}
+"#,
+    );
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in &events {
+        match ev.event_id.as_str() {
+            "$pl_admin" => {
+                auth_context.insert(ev.event_id.clone(), ev.clone());
+            }
+            _ => {
+                conflicted.insert(ev.event_id.clone(), ev.clone());
+            }
+        }
+    }
+
+    let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
+    assert!(
+        safe.contains_key("$demote"),
+        "cyclic events are skipped by domination ordering, not dropped"
+    );
+    assert!(
+        safe.contains_key("$bob_join"),
+        "cyclic events are skipped by domination ordering, not dropped"
+    );
+    assert!(
+        safe.contains_key("$bob_avatar"),
+        "the unordered admin is skipped, so it cannot dominate a normally-targeted event"
+    );
+}
+
+/// In V12+ the spec removes `m.room.create` from `auth_events`, so the CDO's
+/// pre-demotion empowerment check must detect the room creator from the
+/// room/auth context rather than the target's own auth list. Here the creator's
+/// avatar event cites only `$pl` (no `$create`), yet the creator must still be
+/// granted implicit max power and survive the independent demotion.
+#[test]
+fn test_cdo_creator_detected_from_context_not_auth_events() {
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@owner:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@owner:a","room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$decoy_create","type":"m.room.create","state_key":"","sender":"@other:x","depth":0,"origin_server_ts":999,"content":{"creator":"@other:x","room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@owner:a","depth":1,"origin_server_ts":1001,"content":{"users":{"@owner:a":0},"state_default":50},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl_demote","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":2,"origin_server_ts":2000,"content":{"users":{"@owner:a":0,"@admin:a":100},"state_default":50},"prev_events":["$pl"],"auth_events":["$create","$pl"]}
+{"event_id":"$owner_avatar","type":"m.room.avatar","state_key":"","sender":"@owner:a","depth":3,"origin_server_ts":2001,"content":{"url":"mxc://x"},"prev_events":["$pl"],"auth_events":["$pl"]}
+"#,
+    );
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in &events {
+        match ev.event_id.as_str() {
+            "$create" | "$decoy_create" | "$pl" => {
+                auth_context.insert(ev.event_id.clone(), ev.clone());
+            }
+            _ => {
+                conflicted.insert(ev.event_id.clone(), ev.clone());
+            }
+        }
+    }
+
+    let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
+    assert!(
+        safe.contains_key("$owner_avatar"),
+        "the room's own create (an ancestor) is selected over the decoy, so the creator keeps implicit max power"
+    );
+}
+
+/// Regression coverage for the sorting branch-coverage booster.
 #[test]
 fn test_sorting_coverage() {
     let events = utils::parse_jsonl_events(
@@ -6569,6 +7051,7 @@ fn test_lean_event_serialize_propagates_write_error() {
     assert!(result.is_err());
 }
 
+/// Regression coverage for conflicted-key derivation before CDO filtering.
 #[test]
 fn test_conflicted_keys_derived_before_cdo() {
     use rezzy::basespec::event_types::EventType;
@@ -6650,9 +7133,14 @@ fn test_conflicted_keys_derived_before_cdo() {
             ("m.room.power_levels".to_string(), String::new()),
         ]
     );
-
-    // Verify $bob_pl_dominated was dropped by CDO and does not appear in resolved or resolution deltas
+    // $bob_pl_dominated is a power_levels event by banned bob; the CDO
+    // causally dominates it via $alice_bans_bob, so it is dropped from the
+    // conflicted set and never wins its key (see the apply_cdo_filter check
+    // above). It therefore produces no delta entry at all.
     assert!(!resolved.values().any(|v| v == "$bob_pl_dominated"));
+    assert!(!deltas
+        .iter()
+        .any(|d| d.event_id == "$bob_pl_dominated" && d.accepted));
     assert!(!deltas.iter().any(|d| d.event_id == "$bob_pl_dominated"));
 
     // Verify deltas for accepted conflicted events
@@ -6673,11 +7161,9 @@ fn test_conflicted_keys_derived_before_cdo() {
         Some(&"$alice_bans_bob".to_string())
     );
 
-    // Critical assertion for regression coverage:
-    // Because conflicted_keys was derived BEFORE CDO dropped $bob_pl_dominated,
-    // (m.room.power_levels, "") was retained in conflicted_keys.
-    // This allows ancestral power level $pl_ancestor (routed by MSC4297) to be decided in resolved state.
-    // If conflicted_keys were derived AFTER CDO, $pl_ancestor would be skipped and power_levels key would be missing.
+    // $bob_pl_dominated (bob's power_levels, rejected since bob is banned) never
+    // wins (m.room.power_levels, ""); the ancestral $pl_ancestor (routed by
+    // MSC4297) is decided in resolved state instead.
     assert_eq!(
         resolved.get(&(EventType::from("m.room.power_levels"), String::new())),
         Some(&"$pl_ancestor".to_string())

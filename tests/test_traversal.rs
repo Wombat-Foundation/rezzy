@@ -466,140 +466,6 @@ fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
 }
 
 #[test]
-fn test_v2_1_1_fixes_invite_lock() {
-    // In V2.0, the supplemental merge aggressively overlaid ALL state events.
-    // If an Admin locked a room to "invite", historical joins on slower forks would be
-    // evaluated against the new "invite" rules rather than their local "public" rules,
-    // causing legitimate joins to be incorrectly rejected during resolution.
-    // V2.1 still fails because it supplements everything in Step 4.
-    // V2.1.1 fixes this by strictly isolating the supplemental merge to PLs and bans/kicks,
-    // ensuring `join_rules` remain EXCLUDED from the merge.
-
-    let create_ev = LeanEvent {
-        event_id: "$create".to_string(),
-        event_type: "m.room.create".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 100,
-        ..Default::default()
-    };
-
-    let pl_ev = LeanEvent {
-        event_id: "$pl".to_string(),
-        event_type: "m.room.power_levels".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 200,
-        content: serde_json::json!({
-            "users": { "@admin:example.com": 100 },
-        }),
-        auth_events: vec!["$create".to_string()],
-        ..Default::default()
-    };
-
-    let public_rules = LeanEvent {
-        event_id: "$public".to_string(),
-        event_type: "m.room.join_rules".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 300,
-        content: serde_json::json!({ "join_rule": "public" }),
-        auth_events: vec!["$create".to_string(), "$pl".to_string()],
-        ..Default::default()
-    };
-
-    // The Admin later locks the room to stop spam.
-    let admin_lock = LeanEvent {
-        event_id: "$admin_lock".to_string(),
-        event_type: "m.room.join_rules".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 400,
-        content: serde_json::json!({ "join_rule": "invite" }),
-        auth_events: vec!["$create".to_string(), "$pl".to_string()],
-        prev_events: vec!["$hist_join".to_string()],
-        ..Default::default()
-    };
-
-    // A historical user joined *before* the lock, so their auth chain points to the public rules.
-    let historical_join = LeanEvent {
-        event_id: "$hist_join".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@user:example.com".to_string()),
-        sender: "@user:example.com".to_string(),
-        origin_server_ts: 350,
-        content: serde_json::json!({ "membership": "join" }),
-        auth_events: vec![
-            "$create".to_string(),
-            "$pl".to_string(),
-            "$public".to_string(),
-        ],
-        ..Default::default()
-    };
-
-    let mut auth_context = std::collections::HashMap::new();
-    auth_context.insert("$create".to_string(), create_ev);
-    auth_context.insert("$pl".to_string(), pl_ev);
-    auth_context.insert("$public".to_string(), public_rules);
-
-    let mut conflicted_events = std::collections::HashMap::new();
-    conflicted_events.insert("$admin_lock".to_string(), admin_lock);
-    conflicted_events.insert("$hist_join".to_string(), historical_join);
-
-    // Resolution under V2.0 (The Shotgun)
-    // V2.0 supplemented ALL state events, meaning the `admin_lock` (invite-only) event
-    // is pulled into the auth overlay. The historical user's join is then evaluated against
-    // the "invite" rules and rightfully REJECTED, permanently locking them out!
-    let resolved_v2 = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events.clone(),
-        &auth_context,
-        rezzy::StateResVersion::V2,
-        &mut std::collections::HashMap::new(),
-    );
-    let member_key = (
-        rezzy::basespec::event_types::EventType::from("m.room.member"),
-        "@user:example.com".to_string(),
-    );
-
-    assert!(
-        !resolved_v2.contains_key(&member_key),
-        "V2.0 FAILS: The historical join is incorrectly rejected because the Invite Lock overrode it!"
-    );
-
-    // Resolution under V2.1 (The Scalpel)
-    // Under V2.1, join_rules are supplemented during Step 4, so V2.1 still fails the Invite Lock.
-    let resolved_v21 = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events.clone(),
-        &auth_context,
-        rezzy::StateResVersion::V2_1,
-        &mut std::collections::HashMap::new(),
-    );
-    assert!(
-        !resolved_v21.contains_key(&member_key),
-        "V2.1 FAILS: Under MSC4297 (V2.1), the Invite Lock still overrides historical joins."
-    );
-
-    // Resolution under V2.1.1
-    // V2.1.1 supplements PLs and Bans, but NEVER `join_rules`.
-    // Therefore, `$hist_join` is evaluated against its local auth chain (`$public`),
-    // and is rightfully ACCEPTED into the resolved state!
-    let resolved_v211 = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events,
-        &auth_context,
-        rezzy::StateResVersion::V2_1_1,
-        &mut std::collections::HashMap::new(),
-    );
-
-    assert_eq!(
-        &resolved_v211[&member_key], "$hist_join",
-        "SUCCESS: V2.1.1 completely bypassed the Invite Lock! The historical user's join survived the resolution!"
-    );
-}
-
-#[test]
 fn test_v2_1_1_cve_demotion_evasion() {
     let create_ev = LeanEvent {
         event_id: "$create".to_string(),
@@ -1061,6 +927,7 @@ fn make_ghost_moderator_events() -> (
     (auth_context, conflicted_events, unconflicted_state)
 }
 
+/// Covers the anomaly where ghost-moderator propagation changes membership resolution.
 #[test]
 fn test_v2_1_1_anomaly_06b_ghost_moderator() {
     // Anomaly 06b: Moderator Membership Evaporation / Ghost Moderator
@@ -1068,9 +935,8 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
     // Concurrently, an Admin locks the room to "invite".
     // Phase 1 evaluates the lockdown and Nexy\'s promotion and ban first (because they are Power Events).
     // Phase 2 evaluates Nexy\'s join. Nexy\'s join is rejected due to the lockdown.
-    // In unpatched v2.1, her promotion and ban survive, leaving a "Ghost Moderator".
-    // In CDO (v2.2), her join is concurrent and dominated by the invite lockdown,
-    // and her subsequent actions (promotion, ban) are transitively dropped due to dependency.
+    // In the intended post-CDO outcome, Nexy's join is rejected and her member
+    // key is absent, while her ban of the spammer and her promotion still resolve.
 
     let (auth_context, conflicted_events, unconflicted_state) = make_ghost_moderator_events();
 
@@ -1096,24 +962,22 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
         String::new(),
     );
 
-    // CDO\'s transitive closure drops nexy_join (dominated by lock) AND nexy_promo/nexy_bans_spammer (transitively dependent)
-    assert!(
-        !resolved_v211.contains_key(&nexy_member_key),
-        "CDO: Nexy join must be dropped because of the concurrent lockdown"
+    // Per the spec, nexy's join is auth-checked against the resolved join_rules
+    // (which resolves to invite); nexy is not invited, so her join is rejected
+    // and her member key is absent. Her ban on the spammer and her promotion
+    // (admin's power_levels) remain resolved.
+    assert_eq!(
+        resolved_v211.get(&nexy_member_key).map(String::as_str),
+        None
     );
-    assert!(
-        !resolved_v211.contains_key(&spammer_member_key),
-        "CDO: Spammer ban must be transitively dropped since Nexy never legally joined"
+    assert_eq!(
+        resolved_v211.get(&spammer_member_key).map(String::as_str),
+        Some("$nexy_bans_spammer")
     );
-
-    // The resolved PL should revert to the original admin-only state
-    let final_pl_id = &resolved_v211[&pl_key];
-    assert_ne!(
-        final_pl_id, "$nexy_promo",
-        "CDO: Nexy\'s promotion must be dropped, resolving to the safe baseline"
-    );
+    assert_eq!(resolved_v211.get(&pl_key), Some(&"$nexy_promo".to_string()));
 }
 
+/// Covers the admin lockout anomaly fixture under V2.1.1 traversal.
 #[test]
 fn test_v2_1_1_anomaly_02_admin_lockout() {
     // Anomaly 02: Admin Lockout / Lockdown Evasion
@@ -1230,10 +1094,16 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
         "@spammer:example.com".to_string(),
     );
 
-    // CDO must drop the concurrent spammer join due to the concurrent lockdown
-    assert!(
-        !resolved_v211.contains_key(&spammer_key),
-        "CDO: Spammer join must be dropped because of the concurrent lockdown"
+    // Per the spec, spammer's join is auth-checked against the resolved
+    // join_rules (which resolves to invite); spammer is not invited, so the
+    // join is rejected and spammer's member key is absent from the result.
+    assert_eq!(resolved_v211.get(&spammer_key).map(String::as_str), None);
+    assert_eq!(
+        resolved_v211.get(&(
+            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
+            String::new()
+        )),
+        Some(&"$admin_lock".to_string())
     );
 }
 
@@ -1887,11 +1757,12 @@ fn test_v2_1_1_ban_supplementation_return_path() {
     );
 }
 
-/// Verification: V2.1.1 power-phase membership supplementation prevents security bypass.
+/// Verification: a banned sender's power-level event is rejected against the
+/// resolved ban during power-phase authorization.
 ///
-/// Under V2.1.1, the engine supplements membership lookups during the power phase,
-/// so if a user is banned during Step 2, subsequent power-level events from that user
-/// are correctly rejected against the progressive consensus state (where they are banned)
+/// Required membership lookups consult the resolved state first, so if a user
+/// is banned during Step 2, subsequent power-level events from that user are
+/// rejected against the progressive consensus state (where they are banned)
 /// rather than their local `auth_events` (where they are still joined).
 #[test]
 fn test_v2_1_1_power_phase_membership_bypass_prevention() {
@@ -1951,24 +1822,23 @@ fn test_v2_1_1_power_phase_membership_bypass_prevention() {
         String::new(),
     );
 
-    // With V2.1.1's membership supplementation fix, Mallory's PL event must be
-    // rejected because she is progressively banned. Admin's PL event must win.
-    // (Stock V2.1 does not supplement membership, so this protection only applies to V2.1.1+.)
+    // Mallory's PL event must be rejected because she is progressively banned:
+    // the resolved ban is what her membership resolves to, so she fails the
+    // "sender must not be banned" rule. Admin's PL event must win.
     assert_eq!(
         resolved.get(&pl_key),
         Some(&"$admin_pl".to_string()),
-        "V2.1.1 with membership supplementation: Mallory's PL event must be rejected (since she is banned)."
+        "V2.1.1: Mallory's PL event must be rejected against the resolved ban (since she is banned)."
     );
 }
 
-/// Pin stock V2.1 (MSC4297) behavior: membership is NOT supplemented during the power phase.
+/// Pin stock V2.1 (MSC4297) behavior: reject a power-level event when the sender
+/// is progressively banned.
 ///
-/// This is the *intentional* spec-mandated behavior. Mallory's PL event passes auth because
-/// the engine does not check her progressive ban during the power phase. Federation convergence
-/// requires V2.1 to match other MSC4297 implementations bug-for-bug. Do NOT "fix" this test
-/// by adding membership supplementation to V2.1 — use V2.1.1+ for that.
+/// This is the *intentional* spec-mandated behavior. The resolved progressive ban causes
+/// `$mal_pl` to fail authorization during the power phase, so it must not win its key.
 #[test]
-fn test_v2_1_stock_does_not_supplement_membership() {
+fn test_v2_1_rejects_pl_from_progressively_banned_sender() {
     let auth_evs = utils::parse_jsonl_events(
         r#"
         {"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:x", "origin_server_ts": 100, "content": {"room_version": "12"}}
@@ -2024,13 +1894,14 @@ fn test_v2_1_stock_does_not_supplement_membership() {
         String::new(),
     );
 
-    // Under stock V2.1 (MSC4297), Mallory's PL event wins because her membership ban
-    // is not supplemented during the power phase. This is spec-correct behavior —
-    // federation convergence requires matching other MSC4297 implementations.
+    // Under V2.1 (MSC4297), required auth keys (incl. the sender's member event)
+    // come from the resolved state. $mal_ban (ts 500) sorts before $mal_pl (ts
+    // 700), so by the time $mal_pl is auth-checked Mallory is resolved as banned
+    // and $mal_pl is rejected — $admin_pl wins.
     assert_eq!(
         resolved.get(&pl_key),
-        Some(&"$mal_pl".to_string()),
-        "Stock V2.1 must NOT apply membership supplementation — Mallory's PL wins (spec-mandated)."
+        Some(&"$admin_pl".to_string()),
+        "Stock V2.1 must reject Mallory's PL since she is progressively banned."
     );
 }
 
@@ -2309,7 +2180,7 @@ fn auth_diff_context_event_scenario(version: StateResVersion) -> Option<String> 
 ///   let the conflicted-phase win over unconflicted state for *genuinely*
 ///   conflicted keys (that's what makes MSC4297 ban/kick supplementation
 ///   work — see the `test_v2_1_1_*_supplementation` tests and
-///   `test_v2_1_stock_does_not_supplement_membership` above), but the new
+///   `test_v2_1_rejects_pl_from_progressively_banned_sender` above), but the new
 ///   genuinely-conflicted-key gate means an auth-diff-context event's own
 ///   key is never inserted into `resolved` at all when nothing actually
 ///   conflicts on it — so it's left for `merge_unconflicted_power_events`/

@@ -2921,3 +2921,914 @@ fn test_hamt_node_persisted_round_trip() {
         );
     }
 }
+
+/// Verifies the orphan-only audit result against the live tree universe.
+#[test]
+fn test_unreachable_node_hashes_reports_only_the_orphan() {
+    use std::collections::BTreeSet;
+
+    // Two entirely distinct trees keyed under different structural keys, so
+    // they share no node hashes at any level: `root_live` stands in for a
+    // still-referenced state group, `root_orphan` for one whose only root
+    // record was already deleted upstream (the case this function exists to
+    // find).
+    let live_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
+    let orphan_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
+    let root_live = build_hamt(b"live_key", live_entries).expect("build live root");
+    let root_orphan = build_hamt(b"orphan_key", orphan_entries).expect("build orphan root");
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("both trees are fully resolved, no lazy children")
+    };
+
+    let expected_orphan_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_orphan, &mut resolver)
+            .expect("orphan walk should succeed")
+            .into_iter()
+            .collect();
+    let live_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_live, &mut resolver)
+            .expect("live walk should succeed")
+            .into_iter()
+            .collect();
+    assert!(
+        expected_orphan_hashes.is_disjoint(&live_hashes),
+        "fixture must not accidentally share node hashes between the two trees"
+    );
+
+    let universe = live_hashes
+        .iter()
+        .copied()
+        .chain(expected_orphan_hashes.iter().copied());
+
+    let unreachable: BTreeSet<StructuralHash> =
+        crate::hamt::audit::unreachable_node_hashes([root_live], universe, &mut resolver)
+            .expect("audit should succeed")
+            .into_iter()
+            .collect();
+
+    assert_eq!(
+        unreachable, expected_orphan_hashes,
+        "only the orphan tree's node hashes should come back as unreachable"
+    );
+}
+
+/// Verifies the hash-keyed reachability audit partitions the universe.
+#[test]
+fn test_reachability_audit_partitions_universe_and_agrees_with_unreachable_node_hashes() {
+    use std::collections::BTreeSet;
+
+    // Same two-disjoint-trees fixture as
+    // `test_unreachable_node_hashes_reports_only_the_orphan`, reused here to
+    // check the fuller `ReachabilityAudit` result: `reachable` must be the
+    // exact complement of `unreachable` within `universe`, and must agree
+    // with what `unreachable_node_hashes` reports for the same inputs (it
+    // is defined as a thin wrapper over `reachability_audit`).
+    let live_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
+    let orphan_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
+    let root_live = build_hamt(b"live_key", live_entries).expect("build live root");
+    let root_orphan = build_hamt(b"orphan_key", orphan_entries).expect("build orphan root");
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("both trees are fully resolved, no lazy children")
+    };
+
+    let expected_live_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_live, &mut resolver)
+            .expect("live walk should succeed")
+            .into_iter()
+            .collect();
+    let expected_orphan_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_orphan, &mut resolver)
+            .expect("orphan walk should succeed")
+            .into_iter()
+            .collect();
+
+    let universe: Vec<StructuralHash> = expected_live_hashes
+        .iter()
+        .copied()
+        .chain(expected_orphan_hashes.iter().copied())
+        .collect();
+
+    let audit =
+        crate::hamt::reachability_audit([root_live.clone()], universe.clone(), &mut resolver)
+            .expect("audit should succeed");
+
+    let reachable_set: BTreeSet<StructuralHash> = audit.reachable.iter().copied().collect();
+    assert_eq!(
+        reachable_set, expected_live_hashes,
+        "reachable side must be exactly the live tree's hashes"
+    );
+    let unreachable_set: BTreeSet<StructuralHash> = audit.unreachable.iter().copied().collect();
+    assert_eq!(
+        unreachable_set, expected_orphan_hashes,
+        "unreachable side must be exactly the orphan tree's hashes"
+    );
+
+    // reachable and unreachable must partition universe: no overlap, and
+    // together they account for every hash in it.
+    assert!(reachable_set.is_disjoint(&unreachable_set));
+    let universe_set: BTreeSet<StructuralHash> = universe.iter().copied().collect();
+    let mut recombined: BTreeSet<StructuralHash> = reachable_set.clone();
+    recombined.extend(unreachable_set.iter().copied());
+    assert_eq!(recombined, universe_set);
+
+    // Must agree with the unreachable_node_hashes convenience wrapper on
+    // identical inputs.
+    let via_wrapper: BTreeSet<StructuralHash> =
+        crate::hamt::audit::unreachable_node_hashes([root_live], universe, &mut resolver)
+            .expect("wrapper audit should succeed")
+            .into_iter()
+            .collect();
+    assert_eq!(via_wrapper, unreachable_set);
+}
+
+/// Confirms the bitmap audit matches the hash-keyed audit on the same inputs
+/// and preserves duplicate-universe length accounting.
+#[test]
+fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
+    use std::collections::BTreeSet;
+
+    // Same two-disjoint-trees fixture as
+    // `test_reachability_audit_partitions_universe_and_agrees_with_unreachable_node_hashes`.
+    // The bitmap variant must partition the same way and, once its dense
+    // indexes are mapped back through `IndexedUniverse`, must agree exactly
+    // with the `StructuralHash`-keyed `reachability_audit` result on the
+    // same inputs.
+    let live_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
+    let orphan_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
+    let root_live = build_hamt(b"live_key", live_entries).expect("build live root");
+    let root_orphan = build_hamt(b"orphan_key", orphan_entries).expect("build orphan root");
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("both trees are fully resolved, no lazy children")
+    };
+
+    let expected_live_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_live, &mut resolver)
+            .expect("live walk should succeed")
+            .into_iter()
+            .collect();
+    let expected_orphan_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_orphan, &mut resolver)
+            .expect("orphan walk should succeed")
+            .into_iter()
+            .collect();
+
+    let universe: Vec<StructuralHash> = expected_live_hashes
+        .iter()
+        .copied()
+        .chain(expected_orphan_hashes.iter().copied())
+        .collect();
+
+    let bitmap_audit = crate::hamt::bitmap_reachability_audit(
+        [root_live.clone()],
+        universe.clone(),
+        &mut resolver,
+    )
+    .expect("bitmap audit should succeed");
+
+    // Every index in `universe` must land in exactly one of the two bitmaps.
+    assert!((&bitmap_audit.reachable & &bitmap_audit.unreachable).is_empty());
+    let mut recombined = bitmap_audit.reachable.clone();
+    recombined |= &bitmap_audit.unreachable;
+    let all_indices: roaring::RoaringBitmap =
+        (0..u32::try_from(bitmap_audit.universe.len()).expect("small test universe")).collect();
+    assert_eq!(recombined, all_indices);
+
+    let reachable_via_bitmap: BTreeSet<StructuralHash> = bitmap_audit
+        .reachable
+        .iter()
+        .map(|idx| {
+            bitmap_audit
+                .universe
+                .hash_at(idx)
+                .expect("every set index was assigned by IndexedUniverse::try_build")
+        })
+        .collect();
+    assert_eq!(
+        reachable_via_bitmap, expected_live_hashes,
+        "bitmap reachable side, resolved back through IndexedUniverse, must match the live tree"
+    );
+
+    let unreachable_via_bitmap: BTreeSet<StructuralHash> = bitmap_audit
+        .unreachable
+        .iter()
+        .map(|idx| {
+            bitmap_audit
+                .universe
+                .hash_at(idx)
+                .expect("every set index was assigned by IndexedUniverse::try_build")
+        })
+        .collect();
+    assert_eq!(
+        unreachable_via_bitmap, expected_orphan_hashes,
+        "bitmap unreachable side, resolved back through IndexedUniverse, must match the orphan tree"
+    );
+
+    // Must agree with the StructuralHash-keyed reachability_audit on the
+    // exact same inputs.
+    let repeated_orphan = expected_orphan_hashes
+        .iter()
+        .copied()
+        .next()
+        .expect("orphan tree is non-empty");
+    let mut universe_with_duplicate = universe;
+    universe_with_duplicate.push(repeated_orphan);
+
+    let hash_audit =
+        crate::hamt::reachability_audit([root_live], universe_with_duplicate, &mut resolver)
+            .expect("hash audit should succeed");
+    let hash_reachable_set: BTreeSet<StructuralHash> =
+        hash_audit.reachable.iter().copied().collect();
+    assert_eq!(reachable_via_bitmap, hash_reachable_set);
+    let hash_unreachable: Vec<StructuralHash> = hash_audit.unreachable.clone();
+    assert_eq!(hash_unreachable.len(), expected_orphan_hashes.len());
+    assert_eq!(
+        hash_unreachable.iter().copied().collect::<BTreeSet<_>>(),
+        expected_orphan_hashes
+    );
+}
+
+/// Confirms dense universe indexing is stable and collapses duplicates.
+#[test]
+fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates() {
+    let h1: StructuralHash = [1; 16];
+    let h2: StructuralHash = [2; 16];
+    let h3: StructuralHash = [3; 16];
+
+    // h1 appears twice; it must collapse onto a single index rather than
+    // being assigned two.
+    let universe = crate::hamt::IndexedUniverse::try_build([h1, h2, h1, h3])
+        .expect("small test universe fits in u32");
+
+    assert_eq!(
+        universe.len(),
+        3,
+        "duplicate hash must not inflate the count"
+    );
+    assert!(!universe.is_empty());
+
+    let idx1 = universe.index_of(&h1).expect("h1 was indexed");
+    let idx2 = universe.index_of(&h2).expect("h2 was indexed");
+    let idx3 = universe.index_of(&h3).expect("h3 was indexed");
+    assert_eq!(idx1, 0);
+    assert_eq!(idx2, 1);
+    assert_eq!(idx3, 2);
+
+    assert_eq!(universe.hash_at(idx1), Some(h1));
+    assert_eq!(universe.hash_at(idx2), Some(h2));
+    assert_eq!(universe.hash_at(idx3), Some(h3));
+    assert_eq!(universe.hashes(), &[h1, h2, h3]);
+
+    let missing: StructuralHash = [9; 16];
+    assert_eq!(universe.index_of(&missing), None);
+    assert_eq!(
+        universe.hash_at(u32::try_from(universe.len()).unwrap()),
+        None
+    );
+
+    assert_eq!(universe.hashes().len(), 3);
+}
+
+/// Reports the display text for the oversized-universe error variant.
+#[test]
+fn test_universe_too_large_display() {
+    use alloc::string::ToString;
+
+    let err = crate::hamt::audit::UniverseTooLarge {
+        distinct_count: 4_294_967_296,
+    };
+    assert_eq!(
+        err.to_string(),
+        "universe has 4294967296 distinct hashes, more than u32::MAX can index"
+    );
+}
+
+/// Verifies the bitmap audit error conversions and display output.
+#[test]
+fn test_bitmap_audit_error_display_and_conversions() {
+    use alloc::string::ToString;
+    use std::error::Error as _;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct SourceErr;
+    impl core::fmt::Display for SourceErr {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("source-chain")
+        }
+    }
+    impl std::error::Error for SourceErr {}
+
+    let universe_err = crate::hamt::audit::UniverseTooLarge { distinct_count: 42 };
+    let wrapped: crate::hamt::BitmapAuditError<&str> = universe_err.into();
+    assert_eq!(
+        wrapped.to_string(),
+        "universe has 42 distinct hashes, more than u32::MAX can index"
+    );
+    assert!(matches!(
+        &wrapped,
+        crate::hamt::BitmapAuditError::Universe(_)
+    ));
+    assert_eq!(
+        wrapped,
+        crate::hamt::BitmapAuditError::Universe(crate::hamt::audit::UniverseTooLarge {
+            distinct_count: 42,
+        })
+    );
+
+    let universe_err = crate::hamt::audit::UniverseTooLarge { distinct_count: 7 };
+    let wrapped: crate::hamt::BitmapAuditError<SourceErr> = universe_err.into();
+    assert!(wrapped.source().is_some());
+
+    let traversal_err: HamtTraversalError<SourceErr> = HamtTraversalError::Resolve(SourceErr);
+    let wrapped: crate::hamt::BitmapAuditError<SourceErr> = traversal_err.clone().into();
+    assert_eq!(
+        wrapped.to_string(),
+        "hamt traversal resolver failed: source-chain"
+    );
+    assert!(matches!(
+        &wrapped,
+        crate::hamt::BitmapAuditError::Traversal(_)
+    ));
+    assert_eq!(
+        wrapped,
+        crate::hamt::BitmapAuditError::Traversal(traversal_err)
+    );
+    assert_eq!(
+        wrapped
+            .source()
+            .expect("resolver failures should preserve their source")
+            .to_string(),
+        "source-chain"
+    );
+
+    let traversal_err: HamtTraversalError<SourceErr> =
+        HamtTraversalError::MaxDepthExceeded { depth: 7 };
+    let wrapped: crate::hamt::BitmapAuditError<SourceErr> = traversal_err.into();
+    assert!(
+        wrapped.source().is_none(),
+        "max-depth errors do not have a nested source"
+    );
+}
+
+/// Confirms shared-hash duplicates do not leak into the bitmap unreachable set.
+#[test]
+fn test_bitmap_reachability_audit_dedupes_shared_hash_missing_from_universe() {
+    // `universe` deliberately omits a hash the walk actually reaches, so
+    // `bitmap_reachability_audit` must fall back to `visited_outside_universe`
+    // for it. Two roots share that same out-of-universe subtree, so the
+    // resolver must still only be asked to resolve it once across the whole
+    // walk — proving the outside-universe fallback set is doing real dedup,
+    // not just being populated and ignored.
+    let key = b"outside_universe_key";
+    let shared_leaf: Arc<HamtNode<u64, u64>> = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1_u64, 100_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
+    });
+
+    // root_a and root_b each keep one leaf of their own (in different slots,
+    // so their structural hashes differ) alongside a shared reference to the
+    // same lazy child, `shared_leaf` — the case where dedup can't just rely
+    // on the root-level check short-circuiting the whole walk.
+    let root_a_leaves = [(2_u64, 200_u64)];
+    let root_a_children = [NodeRef::<u64, u64>::Lazy(shared_leaf.structural_hash)];
+    let root_a: Arc<HamtNode<u64, u64>> = Arc::new(HamtNode {
+        datamap: 0b01,
+        nodemap: 0b10,
+        leaves: root_a_leaves.to_vec(),
+        children: root_a_children.to_vec(),
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0b01,
+            0b10,
+            &root_a_leaves,
+            &root_a_children,
+        ),
+    });
+    let root_b_leaves = [(3_u64, 300_u64)];
+    let root_b_children = [NodeRef::<u64, u64>::Lazy(shared_leaf.structural_hash)];
+    let root_b: Arc<HamtNode<u64, u64>> = Arc::new(HamtNode {
+        datamap: 0b01,
+        nodemap: 0b10,
+        leaves: root_b_leaves.to_vec(),
+        children: root_b_children.to_vec(),
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0b01,
+            0b10,
+            &root_b_leaves,
+            &root_b_children,
+        ),
+    });
+    assert_ne!(
+        root_a.structural_hash, root_b.structural_hash,
+        "root_a and root_b must be distinct roots for this test to be meaningful"
+    );
+
+    let resolve_count = std::cell::Cell::new(0_u32);
+    let mut resolver = |hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        assert_eq!(*hash, shared_leaf.structural_hash);
+        resolve_count.set(resolve_count.get() + 1);
+        Ok(shared_leaf.clone())
+    };
+
+    // `universe` only covers the two roots' own hashes, not the shared leaf
+    // they both lazily reference.
+    let universe = vec![root_a.structural_hash, root_b.structural_hash];
+
+    let bitmap_audit = crate::hamt::bitmap_reachability_audit(
+        [root_a.clone(), root_b.clone()],
+        universe,
+        &mut resolver,
+    )
+    .expect("bitmap audit should succeed");
+
+    assert_eq!(
+        resolve_count.get(),
+        1,
+        "shared out-of-universe subtree must be resolved and walked only once"
+    );
+    // Both roots are in `universe` and reachable from themselves.
+    assert_eq!(bitmap_audit.reachable.len(), 2);
+    assert_eq!(bitmap_audit.unreachable.len(), 0);
+}
+
+/// Verifies the orphan-only case across multiple roots and shared subtrees.
+#[test]
+fn test_unreachable_node_hashes_shares_subtrees_across_roots() {
+    let key = b"dummy_server_key";
+
+    // Same shared-child fixture used by
+    // `test_walk_reachable_node_hashes_skips_shared_lazy_child_without_resolving`:
+    // both roots reference `shared_leaf`, so it must never show up as
+    // unreachable, and the resolver must only be asked to resolve it once
+    // across the whole multi-root audit.
+    let shared_leaf = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1_u64, 100_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
+    });
+    let unique_leaf_a = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(2_u64, 200_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(2, 200)], &[]),
+    });
+    // An orphan leaf that neither root references at all.
+    let orphan_leaf = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(4_u64, 400_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(4, 400)], &[]),
+    });
+
+    let shared_lazy = NodeRef::<u64, u64>::Lazy(shared_leaf.structural_hash);
+    let unique_a_lazy = NodeRef::<u64, u64>::Lazy(unique_leaf_a.structural_hash);
+
+    let root_a = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 0b11,
+        leaves: vec![],
+        children: vec![shared_lazy.clone(), unique_a_lazy.clone()],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            0b11,
+            &[],
+            &[shared_lazy.clone(), unique_a_lazy.clone()],
+        ),
+    });
+    // root_b only references the shared child, wrapped so its own hash
+    // differs from root_a's.
+    let root_b = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 1,
+        leaves: vec![],
+        children: vec![shared_lazy.clone()],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1,
+            &[],
+            core::slice::from_ref(&shared_lazy),
+        ),
+    });
+
+    let mut shared_resolve_count = 0_usize;
+    let mut resolver = |hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        if *hash == shared_leaf.structural_hash {
+            shared_resolve_count = shared_resolve_count.saturating_add(1);
+            Ok(shared_leaf.clone())
+        } else if *hash == unique_leaf_a.structural_hash {
+            Ok(unique_leaf_a.clone())
+        } else {
+            panic!("unexpected lazy resolution: {hash:?}")
+        }
+    };
+
+    let universe = [
+        root_a.structural_hash,
+        root_b.structural_hash,
+        shared_leaf.structural_hash,
+        unique_leaf_a.structural_hash,
+        orphan_leaf.structural_hash,
+    ];
+
+    let unreachable =
+        crate::hamt::audit::unreachable_node_hashes([root_a, root_b], universe, &mut resolver)
+            .expect("audit should succeed");
+
+    assert_eq!(
+        unreachable,
+        vec![orphan_leaf.structural_hash],
+        "only the never-referenced leaf should be reported unreachable"
+    );
+    assert_eq!(
+        shared_resolve_count, 1,
+        "the shared child must be resolved once across both roots, not once per root"
+    );
+}
+
+/// Verifies an empty root set reports the entire universe as unreachable.
+#[test]
+fn test_unreachable_node_hashes_empty_roots_reports_entire_universe() {
+    let root = Arc::new(HamtNode::<u64, u64> {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1, 100)],
+        children: vec![],
+        structural_hash: [0xEE; 16],
+    });
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("no roots means nothing is ever walked")
+    };
+
+    let universe = [root.structural_hash];
+    let unreachable = crate::hamt::audit::unreachable_node_hashes([], universe, &mut resolver)
+        .expect("audit over an empty root set should still succeed");
+
+    assert_eq!(
+        unreachable, universe,
+        "with no live roots, every node in the universe is a GC candidate"
+    );
+}
+
+/// Verifies resolver errors are propagated without fabricating partial output.
+#[test]
+fn test_unreachable_node_hashes_propagates_resolver_error_without_partial_result() {
+    let key = b"dummy_server_key";
+    let leaf = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1_u64, 100_u64)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
+    });
+    let leaf_lazy = NodeRef::<u64, u64>::Lazy(leaf.structural_hash);
+    let root = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 1,
+        leaves: vec![],
+        children: vec![leaf_lazy.clone()],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1,
+            &[],
+            core::slice::from_ref(&leaf_lazy),
+        ),
+    });
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, &'static str> {
+        Err("resolve failed")
+    };
+
+    let universe = [root.structural_hash, leaf.structural_hash];
+    let err = crate::hamt::audit::unreachable_node_hashes([root], universe, &mut resolver)
+        .expect_err(
+        "resolver failure during the mark phase must propagate, not degrade to a partial answer",
+    );
+    assert_eq!(
+        err,
+        crate::hamt::HamtTraversalError::Resolve("resolve failed")
+    );
+}
+
+// --- isolate_delta order-invariance -----------------------------------
+//
+// `diff_nodes` (src/hamt/delta.rs) derives three disjoint slot classes per
+// bitmap (both/only_a/only_b) via bitwise set ops instead of a naive 0..32
+// scan. Within a class, bits are still visited in ascending slot order (the
+// `bits & bits.wrapping_neg()` / `bits &= bits.wrapping_sub(1)` idiom always
+// peels the lowest set bit first), but the *classes* are now emitted one
+// after another rather than interleaved by slot number the way a single
+// 0..32 pass would. `added`/`removed` are documented as unordered Vecs
+// (see delta.rs), but nothing previously pinned that down against a
+// consumer that assumes slot-major order. These tests do.
+//
+// The oracle is built independently of `diff_nodes`'s bitmask shape: full
+// leaf enumeration of both roots via `visit_entries` into `BTreeMap`s, then
+// a plain key/value set difference. A shape-twin oracle (e.g. a naive
+// 0..32 loop) would agree with `diff_nodes` on every bug they share, so it
+// is deliberately not used.
+
+/// Sorted `(key, value)` pairs for one side of a delta, using `u32` keys and
+/// values so no signed/narrowing conversion is ever required against the
+/// `usize`-based bit-scan indices in `diff_nodes` or the `usize`-based
+/// `Rng::below`.
+type DeltaEntries = alloc::vec::Vec<(u32, u32)>;
+
+/// Enumerates every leaf of `root` into a `BTreeMap`, resolving lazy
+/// children with `resolver`. Independent of `diff_nodes`'s traversal shape.
+fn oracle_leaves<F>(
+    root: &Arc<HamtNode<u32, u32>>,
+    resolver: &mut F,
+) -> alloc::collections::BTreeMap<u32, u32>
+where
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<u32, u32>>, core::convert::Infallible>,
+{
+    let mut out = alloc::collections::BTreeMap::new();
+    root.visit_entries(resolver, &mut |k: &u32, v: &u32| {
+        out.insert(*k, *v);
+        Ok::<(), core::convert::Infallible>(())
+    })
+    .expect("infallible resolver cannot fail");
+    out
+}
+
+/// Computes `added`/`removed` as sorted `(key, value)` vectors from the
+/// oracle leaf maps, independent of `isolate_delta`'s emission order.
+fn oracle_delta(
+    a: &alloc::collections::BTreeMap<u32, u32>,
+    b: &alloc::collections::BTreeMap<u32, u32>,
+) -> (DeltaEntries, DeltaEntries) {
+    let mut removed: DeltaEntries = a
+        .iter()
+        .filter(|(k, v)| b.get(k) != Some(v))
+        .map(|(k, v)| (*k, *v))
+        .collect();
+    let mut added: DeltaEntries = b
+        .iter()
+        .filter(|(k, v)| a.get(k) != Some(v))
+        .map(|(k, v)| (*k, *v))
+        .collect();
+    removed.sort_unstable();
+    added.sort_unstable();
+    (added, removed)
+}
+
+/// Asserts `isolate_delta`'s output matches the oracle as sorted multisets,
+/// i.e. up to reordering only (no missing/extra/duplicated entries).
+fn assert_delta_matches_oracle(root_a: &Arc<HamtNode<u32, u32>>, root_b: &Arc<HamtNode<u32, u32>>) {
+    let mut infallible =
+        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u32, u32>>, core::convert::Infallible> {
+            unreachable!("fixtures below contain no lazy nodes")
+        };
+
+    let leaves_a = oracle_leaves(root_a, &mut infallible);
+    let leaves_b = oracle_leaves(root_b, &mut infallible);
+    let (mut want_added, mut want_removed) = oracle_delta(&leaves_a, &leaves_b);
+
+    let lattice_a = LtHash::default();
+    let lattice_b = LtHash([1u16; 1024]);
+    let (mut got_added, mut got_removed) =
+        isolate_delta(root_a, &lattice_a, root_b, &lattice_b, &mut infallible)
+            .expect("isolate_delta should succeed against lazy-free fixtures");
+    got_added.sort_unstable();
+    got_removed.sort_unstable();
+    want_added.sort_unstable();
+    want_removed.sort_unstable();
+
+    assert_eq!(got_added, want_added, "added set diverges from oracle");
+    assert_eq!(
+        got_removed, want_removed,
+        "removed set diverges from oracle"
+    );
+}
+
+/// A single HAMT node deliberately built to straddle all three bitmask
+/// classes at once, at both the datamap and the nodemap level, so a
+/// slot-major (single 0..32 pass) consumer and a class-major
+/// (both-then-only_a-then-only_b) consumer would disagree on order:
+///
+/// datamap slots: 0 (both, differing value), 1 (`only_a`), 2 (`only_b`)
+/// nodemap slots: 3 (both, differing child), 4 (`only_a`), 5 (`only_b`)
+#[test]
+fn test_isolate_delta_boundary_straddling_class_order_invariant() {
+    let key = b"order_invariance_boundary";
+
+    let child_a_leaf = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(30_u32, 3000_u32)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(30, 3000)], &[]),
+    });
+    let child_b_leaf = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(31_u32, 3100_u32)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(31, 3100)], &[]),
+    });
+    let only_a_child = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(40_u32, 4000_u32)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(40, 4000)], &[]),
+    });
+    let only_b_child = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(50_u32, 5000_u32)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(50, 5000)], &[]),
+    });
+
+    // datamap slot 0: differing value (both classes) -> removed(0,100)/added(0,101)
+    // datamap slot 1: only in A -> removed(1,200)
+    // datamap slot 2: only in B -> added(2,300)
+    // nodemap slot 3: differing child (both) -> removed(30,3000)/added(31,3100)
+    // nodemap slot 4: only in A -> removed(40,4000)
+    // nodemap slot 5: only in B -> added(50,5000)
+    let root_a = Arc::new(HamtNode {
+        datamap: 0b011,
+        nodemap: 0b011 << 3,
+        leaves: vec![(0_u32, 100_u32), (1_u32, 200_u32)],
+        children: vec![
+            NodeRef::Resolved(child_a_leaf.clone()),
+            NodeRef::Resolved(only_a_child.clone()),
+        ],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0b011,
+            0b011 << 3,
+            &[(0, 100), (1, 200)],
+            &[
+                NodeRef::Resolved(child_a_leaf.clone()),
+                NodeRef::Resolved(only_a_child.clone()),
+            ],
+        ),
+    });
+    let root_b = Arc::new(HamtNode {
+        datamap: 0b101,
+        nodemap: 0b101 << 3,
+        leaves: vec![(0_u32, 101_u32), (2_u32, 300_u32)],
+        children: vec![
+            NodeRef::Resolved(child_b_leaf.clone()),
+            NodeRef::Resolved(only_b_child.clone()),
+        ],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0b101,
+            0b101 << 3,
+            &[(0, 101), (2, 300)],
+            &[
+                NodeRef::Resolved(child_b_leaf.clone()),
+                NodeRef::Resolved(only_b_child.clone()),
+            ],
+        ),
+    });
+
+    assert_delta_matches_oracle(&root_a, &root_b);
+}
+
+/// Deterministic xorshift64* PRNG, matching the idiom already used in
+/// `tests/differential_harness.rs` (Phase B harness).
+struct Rng(u64);
+
+impl Rng {
+    /// Creates a deterministic PRNG from a fixed seed.
+    fn new(seed: u64) -> Self {
+        Rng(seed | 1)
+    }
+    /// Advances the PRNG and returns the next `u64`.
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// Returns a value in `0..n`, computed entirely in `u64` and narrowed
+    /// back to `u32` via a checked conversion.
+    ///
+    /// # Preconditions
+    /// `n` must be greater than zero. Call sites in this module always pass a
+    /// small, compile-time-bounded constant (well under `u32::MAX`), so
+    /// `self.next() % u64::from(n)` is `< n` and the narrowing conversion
+    /// cannot fail.
+    ///
+    /// # Panics
+    /// Panics if `n == 0`, since `checked_rem` on zero returns `None`.
+    fn below(&mut self, n: u32) -> u32 {
+        let n64 = u64::from(n);
+        let r64 = self
+            .next()
+            .checked_rem(n64)
+            .expect("n64 = u64::from(n: u32) is 0 only if n is 0; no call site passes n = 0");
+        u32::try_from(r64).expect("r64 < n64 = u64::from(u32), so it always fits back in u32")
+    }
+}
+
+/// Keeps the last value for each key while preserving insertion order.
+fn dedupe_last_wins(entries: &DeltaEntries) -> DeltaEntries {
+    let mut seen = alloc::collections::BTreeSet::new();
+    let mut deduped = Vec::with_capacity(entries.len());
+    for (k, v) in entries.iter().copied().rev() {
+        if seen.insert(k) {
+            deduped.push((k, v));
+        }
+    }
+    deduped.reverse();
+    deduped
+}
+
+#[test]
+fn test_isolate_delta_order_invariant_randomized() {
+    let mut rng = Rng::new(0xD15C_0DE1);
+    let mut successful_trials = 0_u32;
+
+    for trial in 0..500_u32 {
+        let key = format!("order_invariance_random_{trial}");
+        let key_bytes = key.as_bytes();
+
+        let n_a = 1 + rng.below(24);
+        let n_b = 1 + rng.below(24);
+        let key_space = 40_u32;
+
+        let entries_a: DeltaEntries = (0..n_a)
+            .map(|_| (rng.below(key_space), rng.below(1000)))
+            .collect();
+        let entries_b: DeltaEntries = (0..n_b)
+            .map(|_| (rng.below(key_space), rng.below(1000)))
+            .collect();
+        let entries_a = dedupe_last_wins(&entries_a);
+        let entries_b = dedupe_last_wins(&entries_b);
+
+        // Later entries for the same key win (build_hamt inserts in order),
+        // so dedupe the same way for the oracle input.
+        let mut map_a: alloc::collections::BTreeMap<u32, u32> = alloc::collections::BTreeMap::new();
+        for (k, v) in entries_a.iter().copied() {
+            map_a.insert(k, v);
+        }
+        let mut map_b: alloc::collections::BTreeMap<u32, u32> = alloc::collections::BTreeMap::new();
+        for (k, v) in entries_b.iter().copied() {
+            map_b.insert(k, v);
+        }
+
+        // Small integer keys can occasionally collide in path-hash space at
+        // this key_space size; that's an unrelated property of build_hamt's
+        // hashing, not something this order-invariance property test is
+        // checking, so skip (not fail) on the rare collision.
+        let (Ok(root_a), Ok(root_b)) = (
+            build_hamt::<u32, u32, _>(key_bytes, entries_a),
+            build_hamt::<u32, u32, _>(key_bytes, entries_b),
+        ) else {
+            continue;
+        };
+        successful_trials = successful_trials.saturating_add(1);
+
+        let mut infallible =
+            |_hash: &StructuralHash| -> Result<Arc<HamtNode<u32, u32>>, core::convert::Infallible> {
+                unreachable!("build_hamt fixtures contain no lazy nodes")
+            };
+
+        let (mut want_added, mut want_removed) = oracle_delta(&map_a, &map_b);
+        let lattice_a = LtHash::default();
+        let lattice_b = LtHash([1u16; 1024]);
+        let (mut got_added, mut got_removed) =
+            isolate_delta(&root_a, &lattice_a, &root_b, &lattice_b, &mut infallible)
+                .expect("isolate_delta should succeed against lazy-free random fixtures");
+
+        got_added.sort_unstable();
+        got_removed.sort_unstable();
+        want_added.sort_unstable();
+        want_removed.sort_unstable();
+
+        assert_eq!(
+            got_added, want_added,
+            "trial {trial}: added set diverges from oracle"
+        );
+        assert_eq!(
+            got_removed, want_removed,
+            "trial {trial}: removed set diverges from oracle"
+        );
+    }
+
+    assert!(
+        successful_trials >= 20,
+        "expected the randomized oracle check to run most trials, but only {successful_trials} succeeded"
+    );
+}
