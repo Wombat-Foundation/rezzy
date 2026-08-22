@@ -386,6 +386,37 @@ where
     (sort_context, power_events, non_power_events, create_ev)
 }
 
+/// Returns `true` if `ev`'s sender is banned in the resolved state.
+///
+/// This is the resolved-state screening pass predicate — the sound replacement
+/// for the retired CDO pre-filter. Bans are established by the power phase: a
+/// sender banned in the power-phase `resolved` is banned throughout the
+/// non-power phase (bans only change via power events, which are complete), so
+/// the non-power iterative auth would reject such an event regardless of any
+/// accepted-event mutations. Dropping these events before the mainline sort is
+/// therefore sound, and it only removes events (never reorders), so the
+/// mainline ordering of the surviving set is unchanged.
+pub(crate) fn is_sender_banned<Id, C, K>(
+    ev: &LeanEvent<Id, C, K>,
+    resolved: &crate::state::at::SharedState<Id, K>,
+    events: &impl crate::basespec::rezzy_types::EventProvider<Id, C, LeanEvent<Id, C, K>>,
+) -> bool
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    K: Ord + Clone + Default + AsRef<str> + 'static,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+{
+    use crate::auth::StateKeyDyn;
+    use crate::basespec::event_types::{MEM_BAN, M_ROOM_MEMBER};
+    let query: &dyn StateKeyDyn = &(M_ROOM_MEMBER, ev.sender.as_str());
+    match resolved.get(query) {
+        Some(member_id) => events
+            .get_event(member_id)
+            .is_some_and(|m| m.get_membership() == Some(MEM_BAN)),
+        None => false,
+    }
+}
 /// Resolves conflicted Matrix room state using the specified algorithm version.
 ///
 /// This is the primary entry point for state resolution. Given the set of
@@ -452,6 +483,14 @@ where
 /// a conflicted event is missing from both `conflicted_events` and
 /// `auth_context`.
 ///
+/// # Resolved-state screening pass
+///
+/// For V2.1+, after the power phase, non-power conflicted events whose sender
+/// is already banned in `resolved` are dropped before the mainline sort (see
+/// [`is_sender_banned`]). This is the sound replacement for the retired CDO
+/// pre-filter: it applies the auth predicate directly against the authoritative
+/// resolved state rather than approximating causal domination.
+///
 /// # Algorithm overview
 ///
 /// 1. Classify conflicted events into **power events** (create, PL, join rules,
@@ -459,7 +498,8 @@ where
 /// 2. Sort power events via [`lean_kahn_sort`] and iteratively auth-check them
 ///    to build the authoritative administrative state.
 /// 3. Sort non-power events via [`mainline_sort`] (by proximity to the resolved
-///    power-levels chain) and iteratively auth-check them.
+///    power-levels chain) and iteratively auth-check them, after the
+///    resolved-state screening pass drops senders already banned in `resolved`.
 /// 4. Merge winners into the unconflicted base.
 #[must_use]
 #[allow(clippy::implicit_hasher)]
@@ -596,8 +636,18 @@ where
     // Step 3: Build the power-level mainline for mainline sort
     let mainline = build_mainline_with_cache(&resolved, &sort_context, mainline_cache);
 
-    // Step 4: Sort non-power events by mainline ordering + iterative auth check
-    let mut non_power_list: Vec<&LeanEvent<Id, C, K>> = non_power_events.values().collect();
+    // Resolved-state screening pass (V2.1+): drop non-power conflicted events
+    // whose sender is already banned in `resolved`, before mainline sort. Sound
+    // because bans are fixed by the power phase (see [`is_sender_banned`]).
+    let mut non_power_list: Vec<&LeanEvent<Id, C, K>> = if version.is_v2_1_plus() {
+        non_power_events
+            .iter()
+            .filter(|(_, ev)| !is_sender_banned(ev, &resolved, &sort_context))
+            .map(|(_, ev)| ev)
+            .collect()
+    } else {
+        non_power_events.values().collect()
+    };
     mainline_sort(&mut non_power_list, &mainline, &sort_context);
 
     for ev in non_power_list {
@@ -860,4 +910,61 @@ where
     };
     drop(conflicted_events);
     (final_resolved, deltas)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::basespec::event_types::{EventType, MEM_BAN, MEM_JOIN, M_ROOM_MEMBER};
+    use crate::basespec::rezzy_types::LeanEvent;
+    use crate::state::at::SharedState;
+    use alloc::string::{String, ToString};
+
+    fn member_ev(id: &str, sender: &str, target: &str, membership: &str) -> LeanEvent {
+        LeanEvent {
+            event_id: id.into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some(target.into()),
+            sender: sender.into(),
+            content: serde_json::json!({ "membership": membership }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn is_sender_banned_detects_banned_sender() {
+        let mut resolved: SharedState<String, String> = SharedState::new();
+        resolved.insert(
+            (EventType::from(M_ROOM_MEMBER), "@bob".to_string()),
+            "$ban".to_string(),
+        );
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
+        events.insert(
+            "$ban".to_string(),
+            member_ev("$ban", "@admin", "@bob", MEM_BAN),
+        );
+
+        let ev = member_ev("$bob_msg", "@bob", "@bob", MEM_JOIN);
+        assert!(is_sender_banned(&ev, &resolved, &events));
+    }
+
+    #[test]
+    fn is_sender_banned_false_when_not_banned() {
+        let mut resolved: SharedState<String, String> = SharedState::new();
+        resolved.insert(
+            (EventType::from(M_ROOM_MEMBER), "@bob".to_string()),
+            "$join".to_string(),
+        );
+        let mut events: HashMap<String, LeanEvent> = HashMap::new();
+        events.insert(
+            "$join".to_string(),
+            member_ev("$join", "@admin", "@bob", MEM_JOIN),
+        );
+
+        let ev = member_ev("$bob_msg", "@bob", "@bob", MEM_JOIN);
+        assert!(!is_sender_banned(&ev, &resolved, &events));
+
+        // No membership event at all -> not banned.
+        assert!(!is_sender_banned(&ev, &SharedState::new(), &HashMap::new()));
+    }
 }
