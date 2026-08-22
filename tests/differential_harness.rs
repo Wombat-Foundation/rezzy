@@ -21,6 +21,8 @@ mod utils;
 
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 /// Deterministic xorshift64* — reproducible across runs (fixed seed).
 struct Rng(u64);
@@ -43,6 +45,15 @@ impl Rng {
     fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
         &xs[self.below(xs.len())]
     }
+}
+
+/// A per-iteration PRNG, seeded deterministically from `base_seed` and the
+/// iteration index. This decouples iterations from the shared sequential
+/// Rng state, so the loop can be split across threads without changing any
+/// single iteration's output (the problem for iteration `i` is fully
+/// determined by `i` alone).
+fn iteration_rng(base_seed: u64, iter: u64) -> Rng {
+    Rng::new(base_seed.wrapping_add(iter.wrapping_mul(0x9E37_79B9_7F4A_7C15)))
 }
 
 type SKey = (rezzy::basespec::event_types::EventType, String);
@@ -307,51 +318,104 @@ fn resolve(p: &Problem, version: StateResVersion) -> SharedState {
 /// - each version is deterministic on the same input (broad invariant), and
 /// - any V2.1 vs V2.1.1 divergence is logged to stderr for manual inspection
 ///   (passing the run, since the divergence is intended, not a regression).
+///
+/// One recorded V2_1-vs-V2_1_1 divergence: the iteration index, both
+/// versions' resolved states, and the conflicted events that produced them.
+type Divergence = (u64, SharedState, SharedState, HashMap<String, LeanEvent>);
+
 #[test]
 fn differential_v21_equals_v211() {
-    let mut rng = Rng::new(0x9E37_79B9_7F4A_7C15u64);
-    let mut diverged = 0u64;
-    for iter in 0u64..2000 {
-        let problem = gen_problem(&mut rng, 1000 + iter * 13);
-        let r21 = resolve(&problem, StateResVersion::V2_1);
-        let r211 = resolve(&problem, StateResVersion::V2_1_1);
+    const ITER_COUNT: u64 = 2000;
+    const BASE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
 
-        // Determinism per version: the strong, always-expected invariant.
-        let r21_b = resolve(&problem, StateResVersion::V2_1);
-        let r211_b = resolve(&problem, StateResVersion::V2_1_1);
-        assert_eq!(r21, r21_b, "V2.1 not deterministic on iteration {iter}");
-        assert_eq!(r211, r211_b, "V2.1.1 not deterministic on iteration {iter}");
+    // (iteration, resolved V2.1, resolved V2.1.1, conflicted map) for every
+    // diverging DAG. Collected during the parallel loop, then printed after it
+    // in iteration order so the output stays deterministic regardless of
+    // thread count.
+    let divergences: Mutex<Vec<Divergence>> = Mutex::new(Vec::new());
+    let diverged = AtomicU64::new(0);
 
-        if r21 != r211 {
-            diverged += 1;
-            eprintln!("V2.1 vs V2.1.1 diverged on iteration {iter}");
-            for (id, ev) in &problem.conflicted {
-                eprintln!(
-                    "  {}: {} by {} sk={:?} ts={} depth={} prev={:?} auth={:?}",
-                    id,
-                    ev.event_type,
-                    ev.sender,
-                    ev.state_key,
-                    ev.origin_server_ts,
-                    ev.depth,
-                    ev.prev_events,
-                    ev.auth_events
-                );
-            }
-            eprintln!("  v21   = {r21:?}");
-            eprintln!("  v211  = {r211:?}");
+    std::thread::scope(|s| {
+        for t in 0..threads {
+            let divergences = &divergences;
+            let diverged = &diverged;
+            s.spawn(move || {
+                let mut local_diverged = 0u64;
+                let mut local_divergences: Vec<Divergence> = Vec::new();
+                let mut iter = u64::try_from(t).unwrap_or(0);
+                let stride = u64::try_from(threads).unwrap_or(0);
+                while iter < ITER_COUNT {
+                    let mut rng = iteration_rng(BASE_SEED, iter);
+                    let problem = gen_problem(&mut rng, 1000 + iter * 13);
+                    let r21 = resolve(&problem, StateResVersion::V2_1);
+                    let r211 = resolve(&problem, StateResVersion::V2_1_1);
+
+                    // Determinism per version: the strong, always-expected invariant.
+                    let r21_b = resolve(&problem, StateResVersion::V2_1);
+                    let r211_b = resolve(&problem, StateResVersion::V2_1_1);
+                    assert_eq!(r21, r21_b, "V2.1 not deterministic on iteration {iter}");
+                    assert_eq!(r211, r211_b, "V2.1.1 not deterministic on iteration {iter}");
+
+                    if r21 != r211 {
+                        local_diverged += 1;
+                        local_divergences.push((iter, r21, r211, problem.conflicted));
+                    }
+                    iter += stride;
+                }
+                diverged.fetch_add(local_diverged, Ordering::Relaxed);
+                divergences.lock().unwrap().extend(local_divergences);
+            });
         }
+    });
+
+    let mut divergences = divergences.into_inner().unwrap_or_default();
+    divergences.sort_unstable_by_key(|(iter, _, _, _)| *iter);
+    for (iter, r21, r211, conflicted) in &divergences {
+        eprintln!("V2.1 vs V2.1.1 diverged on iteration {iter}");
+        for (id, ev) in conflicted {
+            eprintln!(
+                "  {}: {} by {} sk={:?} ts={} depth={} prev={:?} auth={:?}",
+                id,
+                ev.event_type,
+                ev.sender,
+                ev.state_key,
+                ev.origin_server_ts,
+                ev.depth,
+                ev.prev_events,
+                ev.auth_events
+            );
+        }
+        eprintln!("  v21   = {r21:?}");
+        eprintln!("  v211  = {r211:?}");
     }
-    eprintln!("differential: {diverged}/2000 DAGs diverged between V2.1 and V2.1.1");
+    eprintln!(
+        "differential: {}/{} DAGs diverged between V2.1 and V2.1.1",
+        diverged.load(Ordering::Relaxed),
+        ITER_COUNT
+    );
 }
 
 #[test]
 fn determinism_same_input_same_output() {
-    let mut rng = Rng::new(0x243F_6A88_85A3_08D3u64);
-    for iter in 0u64..1000 {
-        let problem = gen_problem(&mut rng, 7000 + iter * 17);
-        let a = resolve(&problem, StateResVersion::V2_1_1);
-        let b = resolve(&problem, StateResVersion::V2_1_1);
-        assert_eq!(a, b, "resolution not deterministic on iteration {iter}");
-    }
+    const ITER_COUNT: u64 = 1000;
+    const BASE_SEED: u64 = 0x243F_6A88_85A3_08D3;
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+
+    std::thread::scope(|s| {
+        for t in 0..threads {
+            s.spawn(move || {
+                let mut iter = u64::try_from(t).unwrap_or(0);
+                let stride = u64::try_from(threads).unwrap_or(0);
+                while iter < ITER_COUNT {
+                    let mut rng = iteration_rng(BASE_SEED, iter);
+                    let problem = gen_problem(&mut rng, 7000 + iter * 17);
+                    let a = resolve(&problem, StateResVersion::V2_1_1);
+                    let b = resolve(&problem, StateResVersion::V2_1_1);
+                    assert_eq!(a, b, "resolution not deterministic on iteration {iter}");
+                    iter += stride;
+                }
+            });
+        }
+    });
 }
