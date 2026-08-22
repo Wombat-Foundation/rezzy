@@ -2922,6 +2922,7 @@ fn test_hamt_node_persisted_round_trip() {
     }
 }
 
+/// Verifies the orphan-only audit result against the live tree universe.
 #[test]
 fn test_unreachable_node_hashes_reports_only_the_orphan() {
     use std::collections::BTreeSet;
@@ -2972,6 +2973,7 @@ fn test_unreachable_node_hashes_reports_only_the_orphan() {
     );
 }
 
+/// Verifies the hash-keyed reachability audit partitions the universe.
 #[test]
 fn test_reachability_audit_partitions_universe_and_agrees_with_unreachable_node_hashes() {
     use std::collections::BTreeSet;
@@ -3189,6 +3191,7 @@ fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates()
     assert_eq!(universe.hashes().len(), 3);
 }
 
+/// Reports the display text for the oversized-universe error variant.
 #[test]
 fn test_universe_too_large_display() {
     use alloc::string::ToString;
@@ -3202,6 +3205,7 @@ fn test_universe_too_large_display() {
     );
 }
 
+/// Verifies the bitmap audit error conversions and display output.
 #[test]
 fn test_bitmap_audit_error_display_and_conversions() {
     use alloc::string::ToString;
@@ -3268,6 +3272,7 @@ fn test_bitmap_audit_error_display_and_conversions() {
     );
 }
 
+/// Confirms shared-hash duplicates do not leak into the bitmap unreachable set.
 #[test]
 fn test_bitmap_reachability_audit_dedupes_shared_hash_missing_from_universe() {
     // `universe` deliberately omits a hash the walk actually reaches, so
@@ -3352,6 +3357,7 @@ fn test_bitmap_reachability_audit_dedupes_shared_hash_missing_from_universe() {
     assert_eq!(bitmap_audit.unreachable.len(), 0);
 }
 
+/// Verifies the orphan-only case across multiple roots and shared subtrees.
 #[test]
 fn test_unreachable_node_hashes_shares_subtrees_across_roots() {
     let key = b"dummy_server_key";
@@ -3451,6 +3457,7 @@ fn test_unreachable_node_hashes_shares_subtrees_across_roots() {
     );
 }
 
+/// Verifies an empty root set reports the entire universe as unreachable.
 #[test]
 fn test_unreachable_node_hashes_empty_roots_reports_entire_universe() {
     let root = Arc::new(HamtNode::<u64, u64> {
@@ -3474,6 +3481,7 @@ fn test_unreachable_node_hashes_empty_roots_reports_entire_universe() {
     );
 }
 
+/// Verifies resolver errors are propagated without fabricating partial output.
 #[test]
 fn test_unreachable_node_hashes_propagates_resolver_error_without_partial_result() {
     let key = b"dummy_server_key";
@@ -3699,9 +3707,11 @@ fn test_isolate_delta_boundary_straddling_class_order_invariant() {
 struct Rng(u64);
 
 impl Rng {
+    /// Creates a deterministic PRNG from a fixed seed.
     fn new(seed: u64) -> Self {
         Rng(seed | 1)
     }
+    /// Advances the PRNG and returns the next `u64`.
     fn next(&mut self) -> u64 {
         let mut x = self.0;
         x ^= x >> 12;
@@ -3718,6 +3728,7 @@ impl Rng {
     /// and the narrowing conversion below cannot fail; `expect` documents
     /// that invariant instead of silently discarding a truncation via a
     /// cast or a clippy allow.
+    /// Returns a value in `0..n` without truncating or panicking.
     fn below(&mut self, n: u32) -> u32 {
         let n64 = u64::from(n);
         let r64 = self
@@ -3728,6 +3739,7 @@ impl Rng {
     }
 }
 
+/// Keeps the last value for each key while preserving insertion order.
 fn dedupe_last_wins(entries: &DeltaEntries) -> DeltaEntries {
     let mut seen = alloc::collections::BTreeSet::new();
     let mut deduped = Vec::with_capacity(entries.len());

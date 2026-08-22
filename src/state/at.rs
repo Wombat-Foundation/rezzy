@@ -97,6 +97,7 @@ where
     K: Ord + Clone + Default + AsRef<str> + 'static,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
+    /// Returns the resolved event or a limited local-auth fallback for the query.
     fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C, K>> {
         use crate::basespec::event_types::{M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
 
