@@ -3593,6 +3593,153 @@ fn test_redaction_preserved_keys_matrix() {
 }
 
 #[test]
+fn test_redaction_application_strips_content() {
+    use rezzy::apply_redaction;
+
+    // A message redacts down to empty content.
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 1000,
+        content: serde_json::json!({ "body": "spam", "msgtype": "m.text" }),
+        ..Default::default()
+    };
+    let redaction: LeanEvent = LeanEvent {
+        event_id: "$redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@alice:example.com".into(),
+        origin_server_ts: 1100,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    let redacted = apply_redaction(&msg, &redaction, "12").expect("valid redaction should apply");
+    assert_eq!(
+        redacted.content,
+        serde_json::json!({}),
+        "m.room.message content is fully stripped"
+    );
+    // Envelope preserved.
+    assert_eq!(redacted.event_id, "$msg:example.com");
+    assert_eq!(redacted.sender, "@bob:example.com");
+    assert_eq!(redacted.event_type, "m.room.message");
+
+    // m.room.member preserves only `membership` (v12).
+    let member: LeanEvent = LeanEvent {
+        event_id: "$join:example.com".into(),
+        event_type: "m.room.member".into(),
+        state_key: Some("@bob:example.com".into()),
+        sender: "@bob:example.com".into(),
+        content: serde_json::json!({ "membership": "join", "displayname": "Bob" }),
+        ..Default::default()
+    };
+    let redact_member: LeanEvent = LeanEvent {
+        event_id: "$rm:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "redacts": "$join:example.com" }),
+        ..Default::default()
+    };
+    let redacted_member =
+        apply_redaction(&member, &redact_member, "12").expect("valid redaction should apply");
+    assert_eq!(
+        redacted_member.content,
+        serde_json::json!({ "membership": "join" }),
+        "only the membership key survives"
+    );
+
+    // m.room.power_levels preserves `users` (v12) — the anti-PL-wipeout invariant.
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({
+            "users": { "@alice:example.com": 100 },
+            "users_default": 0,
+            "state_default": 50,
+            "something_unrelated": true
+        }),
+        ..Default::default()
+    };
+    let redact_pl: LeanEvent = LeanEvent {
+        event_id: "$rp:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "redacts": "$pl:example.com" }),
+        ..Default::default()
+    };
+    let redacted_pl = apply_redaction(&pl, &redact_pl, "12").expect("valid redaction should apply");
+    assert_eq!(
+        redacted_pl.content,
+        serde_json::json!({
+            "users": { "@alice:example.com": 100 },
+            "users_default": 0,
+            "state_default": 50
+        }),
+        "power_levels redaction must preserve the users map and defaults"
+    );
+
+    // v11+ m.room.create would preserve ALL content per the rule matrix, but a
+    // create can never be redacted (apply_redaction rejects it). Exercise the
+    // rule directly via `redacted()`.
+    let create: LeanEvent = LeanEvent {
+        event_id: "$create:example.com".into(),
+        event_type: "m.room.create".into(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "room_version": "12", "creator": "@alice:example.com", "m.federate": true }),
+        ..Default::default()
+    };
+    let redacted_create = create.redacted("12");
+    assert_eq!(
+        redacted_create.content,
+        serde_json::json!({ "room_version": "12", "creator": "@alice:example.com", "m.federate": true }),
+        "v11+ create preserves all content on redaction"
+    );
+}
+
+#[test]
+fn test_redaction_application_guards() {
+    use rezzy::apply_redaction;
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        content: serde_json::json!({ "body": "spam" }),
+        ..Default::default()
+    };
+    // Redaction targeting a DIFFERENT event -> None.
+    let wrong: LeanEvent = LeanEvent {
+        event_id: "$r:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "redacts": "$other:example.com" }),
+        ..Default::default()
+    };
+    assert!(apply_redaction(&msg, &wrong, "12").is_none());
+
+    // Redacting m.room.create is forbidden -> None.
+    let create: LeanEvent = LeanEvent {
+        event_id: "$create:example.com".into(),
+        event_type: "m.room.create".into(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "room_version": "12", "creator": "@alice:example.com" }),
+        ..Default::default()
+    };
+    let redact_create: LeanEvent = LeanEvent {
+        event_id: "$rc:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "redacts": "$create:example.com" }),
+        ..Default::default()
+    };
+    assert!(apply_redaction(&create, &redact_create, "12").is_none());
+}
+
+#[test]
 fn test_types_deserialize_power_level_variants() {
     let json_int =
         r#"{"event_id":"$1","type":"m.room.message","origin_server_ts":1,"power_level":100}"#;

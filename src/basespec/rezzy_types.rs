@@ -15,6 +15,7 @@
 //! Core data types for Matrix state resolution.
 
 use alloc::string::String;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use serde::Deserialize;
@@ -74,10 +75,10 @@ impl<T: Clone + Eq + core::hash::Hash + Ord + AsRef<str> + Default + 'static> St
 /// [MSC4297]: https://github.com/matrix-org/matrix-spec-proposals/pull/4297
 /// [MSC4242]: https://github.com/matrix-org/matrix-spec-proposals/pull/4242
 ///
-/// ## TODO: Redaction preserved keys
+/// ## Redaction preserved keys
 ///
-/// Rezzy does not implement redaction stripping. The spec defines which content
-/// keys survive redaction per event type, evolving across room versions:
+/// The spec defines which content keys survive redaction per event type,
+/// evolving across room versions:
 ///
 /// | Fragment | Room Versions | Delta from previous |
 /// |----------|:---:|---|
@@ -243,6 +244,86 @@ pub fn redaction_preserved_keys(event_type: &str, room_version: &str) -> Redacti
         }
         _ => RedactionRule::None,
     }
+}
+
+/// Filters `content` down to exactly the keys a redaction preserves, per the
+/// given rule. Top-level keys are copied as-is; dotted paths (e.g.
+/// `third_party_invite.signed`) keep only the nested key under the parent
+/// object. `RedactionRule::All` returns the content untouched; `None` yields
+/// an empty object.
+fn redact_content(content: &Value, rule: RedactionRule) -> Value {
+    match rule {
+        RedactionRule::None => Value::Object(serde_json::Map::default()),
+        RedactionRule::All => content.clone(),
+        RedactionRule::Keys(paths) => {
+            let mut out = serde_json::Map::new();
+            for path in paths {
+                if let Some((top, rest)) = path.split_once('.') {
+                    if let Some(Value::Object(inner)) = content.get(top) {
+                        if let Some(v) = inner.get(rest) {
+                            let mut preserved = serde_json::Map::new();
+                            preserved.insert(rest.to_string(), v.clone());
+                            out.insert(top.to_string(), Value::Object(preserved));
+                        }
+                    }
+                } else if let Some(v) = content.get(*path) {
+                    out.insert((*path).to_string(), v.clone());
+                }
+            }
+            Value::Object(out)
+        }
+    }
+}
+
+impl<Id: Clone, K: Clone> LeanEvent<Id, Value, K> {
+    /// Returns a redacted copy of this event: `content` is stripped down to the
+    /// keys preserved by [`redaction_preserved_keys`] for `room_version`.
+    /// The event envelope (`event_id`, `sender`, `type`, `state_key`,
+    /// `origin_server_ts`, `prev_events`, `auth_events`, `depth`) is untouched.
+    #[must_use]
+    pub fn redacted(&self, room_version: &str) -> LeanEvent<Id, Value, K> {
+        let rule = redaction_preserved_keys(&self.event_type, room_version);
+        LeanEvent {
+            event_id: self.event_id.clone(),
+            event_type: self.event_type.clone(),
+            state_key: self.state_key.clone(),
+            power_level: self.power_level,
+            origin_server_ts: self.origin_server_ts,
+            sender: self.sender.clone(),
+            content: redact_content(&self.content, rule),
+            prev_events: self.prev_events.clone(),
+            auth_events: self.auth_events.clone(),
+            depth: self.depth,
+            rejected: self.rejected,
+            soft_fail: self.soft_fail,
+        }
+    }
+}
+
+/// Applies `redaction` to `target`, returning the redacted event.
+///
+/// Returns `None` when the redaction does not actually target `target` (its
+/// `redacts` does not equal `target.event_id`), or when `target` is
+/// `m.room.create` (which the spec forbids redacting). The caller is
+/// responsible for having already auth-checked `redaction` (see
+/// [`crate::auth::check_auth`]) — this function performs the structural
+/// application only.
+///
+/// `room_version` selects the preserved-key rule; obtain it from the room's
+/// `m.room.create` content (`get_room_version`).
+#[must_use]
+pub fn apply_redaction<Id: Clone + AsRef<str>, K: Clone>(
+    target: &LeanEvent<Id, Value, K>,
+    redaction: &LeanEvent<Id, Value, K>,
+    room_version: &str,
+) -> Option<LeanEvent<Id, Value, K>> {
+    if redaction.get_redacts() != Some(target.event_id.as_ref()) {
+        return None;
+    }
+    if target.event_type == crate::basespec::event_types::M_ROOM_CREATE {
+        return None;
+    }
+    Some(target.redacted(room_version))
 }
 
 impl serde::Serialize for StateResVersion {
