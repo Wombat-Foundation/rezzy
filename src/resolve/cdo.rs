@@ -496,15 +496,21 @@ where
     S2: core::hash::BuildHasher,
 {
     let target = target_ev.state_key.as_ref()?.as_ref();
-    conflicted_events
-        .values()
-        .chain(auth_context.values())
-        .filter(|ev| ev.event_id != target_ev.event_id)
-        .find(|ev| {
-            ev.event_type == M_ROOM_MEMBER
-                && ev.state_key.as_ref().map(AsRef::as_ref) == Some(target)
-        })
-        .and_then(|ev| ev.get_membership())
+    // Restrict the lookup to the target's own cited auth events so selection is
+    // deterministic: among multiple candidate membership events for the target,
+    // only the one the leave event is actually authorized against decides
+    // kick-vs-unban. A map-wide scan would be nondeterministic (HashMap order)
+    // and could flip the level between ban and kick.
+    target_ev.auth_events.iter().find_map(|aid| {
+        conflicted_events
+            .get(aid)
+            .or_else(|| auth_context.get(aid))
+            .filter(|ev| {
+                ev.event_type == M_ROOM_MEMBER
+                    && ev.state_key.as_ref().map(AsRef::as_ref) == Some(target)
+            })
+            .and_then(|ev| ev.get_membership())
+    })
 }
 
 /// Checks whether the sender was already empowered by the cited power-level state.

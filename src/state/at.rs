@@ -2840,8 +2840,11 @@ mod tests {
         }
 
         // 6. Test case: no resolved event, but a matching local-auth candidate
-        // for a required type with a power-phase candidate. V2.1 and V2.1.1 must
-        // take the same (gated) fallback and return the identical result.
+        // for a required type, with a NON-power candidate. Under the V2.1+ gate
+        // the unresolved conflicted power-level auth event must be rejected
+        // (None) identically for V2.1 and V2.1.1. This diverges from the old
+        // code, which returned the local-auth event for V2.1 (its gate excluded
+        // V2.1), so the test fails against the previous implementation.
         {
             let resolved = imbl::OrdMap::new();
             let auth_context = HashMap::new();
@@ -2854,7 +2857,6 @@ mod tests {
                 pl_ev.clone(),
             );
 
-            let mut results = Vec::new();
             for version in [StateResVersion::V2_1, StateResVersion::V2_1_1] {
                 let overlay = OverlayState {
                     resolved: &resolved,
@@ -2864,16 +2866,14 @@ mod tests {
                     create_ev: Some(&create_ev),
                     version,
                     is_power_phase: true,
-                    candidate_event_type: M_ROOM_POWER_LEVELS,
+                    candidate_event_type: "m.room.message",
                 };
                 let res = overlay.get_event(M_ROOM_POWER_LEVELS, "");
-                assert!(res.is_some());
-                results.push(res.unwrap().event_id.clone());
+                assert!(
+                    res.is_none(),
+                    "a non-power candidate must not authorize an unresolved conflicted power-level auth event (V2.1 and V2.1.1 alike)"
+                );
             }
-            assert_eq!(
-                results[0], results[1],
-                "V2.1 and V2.1.1 must resolve the fallback identically"
-            );
         }
     }
 
