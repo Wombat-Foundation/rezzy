@@ -122,7 +122,6 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
                 .get("depth")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0),
-            hashes: None,
         });
     }
     events

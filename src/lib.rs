@@ -39,9 +39,12 @@
 //! | `std`       | ✓       | Enables `std::collections::{HashMap, HashSet}` and thread-parallel lattice resolution. |
 //! | `alloc`     | ✓       | Bare `alloc` support for `no_std` targets (implied by `std`). |
 //! | `cli`       | ✗       | Builds the `rezzy` CLI binary and the `merge` module. |
-//! | `hashing`   | ✗       | SHA-256 content-hashing for events missing an `event_id`. |
 //! | `mock-ruma` | ✗       | Enables Ruma SDK interop for upstream parity testing. |
 //! | `regen`     | ✗       | Builds the `regen_oracles` snapshot regeneration binary. |
+//!
+//! Canonical-JSON SHA-256 hashing (reference hash / `hashes.sha256` content
+//! hash) is always compiled in — see [`reference_hash`] and
+//! [`verify_content_hash`].
 //!
 //! ## Spec References
 //!

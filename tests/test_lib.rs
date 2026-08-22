@@ -1976,7 +1976,6 @@ mod tests {
             depth: 1,
             sender: "@user:example.com".into(),
             content: serde_json::Value::Object(serde_json::Map::new()),
-            hashes: None,
         }
     }
 
@@ -3721,7 +3720,8 @@ fn test_redaction_application_guards() {
     };
     assert!(apply_redaction(&msg, &wrong, "12").is_none());
 
-    // Redacting m.room.create is forbidden -> None.
+    // Redacting m.room.create is NOT forbidden. In v11+ all of its content is
+    // preserved; before v11 only `creator` survives.
     let create: LeanEvent = LeanEvent {
         event_id: "$create:example.com".into(),
         event_type: "m.room.create".into(),
@@ -3737,95 +3737,81 @@ fn test_redaction_application_guards() {
         content: serde_json::json!({ "redacts": "$create:example.com" }),
         ..Default::default()
     };
-    assert!(apply_redaction(&create, &redact_create, "12").is_none());
+    let redacted_v12 = apply_redaction(&create, &redact_create, "12").unwrap();
+    assert_eq!(
+        redacted_v12.content,
+        serde_json::json!({ "room_version": "12", "creator": "@alice:example.com" })
+    );
+    // Pre-v11 create redaction preserves only `creator`.
+    let redacted_v10 = apply_redaction(&create, &redact_create, "10").unwrap();
+    assert_eq!(
+        redacted_v10.content,
+        serde_json::json!({ "creator": "@alice:example.com" })
+    );
 }
 
 #[test]
-fn test_hashes_round_trip_and_content_hash_verification() {
-    use rezzy::LeanEvent;
+fn test_content_hash_verification_on_raw_pdu() {
+    use rezzy::{compute_content_hash, verify_content_hash};
 
-    // A PDU carrying a hashes dict retains it through deserialization.
-    let pdu = r#"{
+    // A raw PDU carrying unsigned/signatures; hashes.sha256 covers the
+    // UNREDACTED event with unsigned/signatures/hashes removed.
+    let mut pdu = serde_json::json!({
         "event_id": "$1:example.com",
         "type": "m.room.message",
         "sender": "@bob:example.com",
         "origin_server_ts": 1,
         "depth": 2,
         "content": { "body": "hello" },
-        "hashes": { "sha256": "abc123" },
-        "unsigned": { "age": 5 }
-    }"#;
-    let ev: LeanEvent = serde_json::from_str(pdu).unwrap();
-    assert_eq!(
-        ev.hashes.as_ref().and_then(|h| h["sha256"].as_str()),
-        Some("abc123")
-    );
-    assert!(ev.verify_content_hash().is_err()); // "abc123" is not a real hash.
+        "unsigned": { "age": 5 },
+        "signatures": { "example.com": { "ed25519:1": "sig" } }
+    });
 
-    // Compute a real content hash, stamp it, and verify it passes.
-    let mut signed: LeanEvent = LeanEvent {
-        event_id: "$1:example.com".into(),
-        event_type: "m.room.message".into(),
-        sender: "@bob:example.com".into(),
-        origin_server_ts: 1,
-        depth: 2,
-        content: serde_json::json!({ "body": "hello" }),
-        ..Default::default()
-    };
-    let hash = signed.compute_content_hash().unwrap();
-    signed.hashes = Some(serde_json::json!({ "sha256": hash }));
-    assert!(signed.verify_content_hash().is_ok());
+    // A bogus hash fails.
+    pdu["hashes"] = serde_json::json!({ "sha256": "abc123" });
+    assert!(verify_content_hash(&pdu).is_err());
+
+    // A real content hash passes.
+    let hash = compute_content_hash(&pdu).unwrap();
+    pdu["hashes"] = serde_json::json!({ "sha256": hash });
+    assert!(verify_content_hash(&pdu).is_ok());
 
     // Tampering with content breaks the commitment.
-    let mut tampered = signed.clone();
-    tampered.content = serde_json::json!({ "body": "evil" });
-    assert!(tampered.verify_content_hash().is_err());
+    pdu["content"] = serde_json::json!({ "body": "evil" });
+    assert!(verify_content_hash(&pdu).is_err());
 
-    // No hashes dict -> nothing to verify -> Err.
-    let mut no_hashes = signed.clone();
-    no_hashes.hashes = None;
-    assert!(no_hashes.verify_content_hash().is_err());
-
-    // Serialization emits the hashes dict.
-    let re: LeanEvent = serde_json::from_str(&serde_json::to_string(&signed).unwrap()).unwrap();
-    assert_eq!(re.hashes, signed.hashes);
-    assert!(re.verify_content_hash().is_ok());
+    // Missing hashes dict -> nothing to verify -> Err.
+    pdu.as_object_mut().unwrap().remove("hashes");
+    assert!(verify_content_hash(&pdu).is_err());
 }
 
 #[test]
-fn test_redaction_verification_chain_commits_via_content_hash() {
-    use rezzy::LeanEvent;
+fn test_reference_hash_is_redaction_invariant() {
+    use rezzy::{redact_json, reference_hash};
 
-    // Target event with a valid content-hash commitment.
-    let mut target: LeanEvent = LeanEvent {
-        event_id: "$msg:example.com".into(),
-        event_type: "m.room.message".into(),
-        sender: "@bob:example.com".into(),
-        origin_server_ts: 10,
-        depth: 3,
-        content: serde_json::json!({ "body": "spam" }),
-        ..Default::default()
-    };
-    let hash = target.compute_content_hash().unwrap();
-    target.hashes = Some(serde_json::json!({ "sha256": hash }));
-    assert!(target.verify_content_hash().is_ok());
+    // For room v4+, the event ID is the reference hash of the REDACTED event.
+    // So redaction must not change the reference hash: event_id(e) ==
+    // event_id(redact(e)). This is what lets a redaction be applied to an event
+    // already in the DAG without breaking references to it.
+    let pdu = serde_json::json!({
+        "event_id": "$1:example.com",
+        "type": "m.room.message",
+        "sender": "@bob:example.com",
+        "origin_server_ts": 1000,
+        "depth": 2,
+        "content": { "body": "spam" },
+        "unsigned": { "age": 5 },
+        "signatures": { "example.com": { "ed25519:1": "sig" } }
+    });
 
-    // Redaction verifies/commits the target via its content hash.
-    let redaction: LeanEvent = LeanEvent {
-        event_id: "$r:example.com".into(),
-        event_type: "m.room.redaction".into(),
-        sender: "@alice:example.com".into(),
-        content: serde_json::json!({ "redacts": "$msg:example.com" }),
-        ..Default::default()
-    };
-    assert_eq!(redaction.get_redacts(), Some("$msg:example.com"));
+    let h1 = reference_hash(&pdu, "11").unwrap();
+    let h2 = reference_hash(&redact_json(&pdu, "11"), "11").unwrap();
+    assert_eq!(h1, h2);
 
-    let redacted = rezzy::apply_redaction(&target, &redaction, "12").unwrap();
-    assert_eq!(redacted.content, serde_json::json!({}));
-    // A redacted copy drops the content-hash commitment (no claim of integrity).
-    assert!(redacted.hashes.is_none());
-    // The original target's commitment is still intact and verifiable.
-    assert!(target.verify_content_hash().is_ok());
+    // m.room.message preserves no content keys, so redaction empties it.
+    let redacted = redact_json(&pdu, "11");
+    assert_eq!(redacted["content"], serde_json::json!({}));
+    assert_eq!(redacted["event_id"], "$1:example.com");
 }
 
 #[test]
@@ -4964,7 +4950,6 @@ fn test_lean_event_serialize_roundtrip() {
         depth: 5,
         rejected: true,
         soft_fail: true,
-        hashes: None,
     };
     let json = serde_json::to_string(&ev).unwrap();
     let back: LeanEvent<String> = serde_json::from_str(&json).unwrap();
@@ -5992,7 +5977,6 @@ fn test_lean_event_borrowed_view_roundtrip() {
         depth: 5,
         rejected: true,
         soft_fail: false,
-        hashes: None,
     };
 
     let view = event.as_ref();
@@ -6041,7 +6025,6 @@ fn test_lean_event_borrowed_view_accessors() {
         depth: 5,
         rejected: true,
         soft_fail: false,
-        hashes: None,
     };
 
     let view = event.as_ref();
@@ -7192,7 +7175,6 @@ fn test_lean_event_serialize_propagates_write_error() {
         depth: 1,
         rejected: false,
         soft_fail: false,
-        hashes: None,
     };
 
     let result = serde_json::to_writer(

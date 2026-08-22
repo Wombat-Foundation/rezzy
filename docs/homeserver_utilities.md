@@ -107,25 +107,34 @@ pub fn validate_event_structure<Id>(
 
 ### 6. Redaction Engine
 
-**Status**: ❌ Not implemented
+**Status**: ✅ Implemented
 
-Apply redaction rules per room version. Stripping
-fields that should not survive redaction.
+Redaction rules per room version, stripping fields that should not survive
+redaction.
 
-```rust
-pub fn apply_redaction(
-    event: &LeanEvent<Id>,
-    room_version: StateResVersion,
-) -> LeanEvent<Id>
-```
+Implemented in `src/basespec/rezzy_types.rs`:
+
+- `redaction_preserved_keys(event_type, room_version)` — per-event-type,
+  per-version preserved-key matrix (v1→v11; v12 inherits v11).
+- `redact_json(value, room_version)` — the full spec redaction algorithm on a
+  raw PDU `Value`: drops top-level keys outside the whitelist (v11+ no longer
+  protects `origin`/`membership`/`prev_state`) and strips `content` to the
+  preserved keys.
+- `LeanEvent::redacted(room_version)` — lean-model wrapper over the content half.
+- `apply_redaction(target, redaction, room_version)` — applies a redaction to
+  a target lean event (target mismatch → `None`).
+
+`m.room.create` is redactable like any other event; the spec does not forbid
+it — its content is preserved by the rules (all keys in v11+, `creator`
+before that).
 
 Room versions differ in which fields survive:
 
 - V1-V10: original rules
-- V11+: updated redaction algorithm
+- V11+: updated redaction algorithm (v12 inherits v11)
 
-**Work**: New `src/auth/redact.rs`, ~150 lines.
-Needs careful spec-reading per room version.
+The reference-hash (event ID for room v4+) path uses `redact_json` so that
+redaction never changes an event's ID (`event_id(e) == event_id(redact(e))`).
 
 ---
 

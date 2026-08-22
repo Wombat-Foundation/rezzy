@@ -266,7 +266,6 @@ where
                     power_level: 0,
                     origin_server_ts: 0,
                     depth: 0,
-                    hashes: None,
                 },
             )
         })
@@ -490,7 +489,6 @@ mod tests {
             depth,
             power_level: 0,
             origin_server_ts: depth * 1000,
-            hashes: None,
         }
     }
 
