@@ -110,6 +110,126 @@ fn test_v2_1_vs_v2_1_1_recursive_auth_lookup() {
     run_auth_lookup_scenario(true, false, true);
 }
 
+/// A banned user's message must be **hard-rejected** (never soft-failed) when
+/// the ban is present in the resolved state before the message. This is *not*
+/// the soft-failure mechanism (which is about an event passing auth against
+/// its own local state-at-event but failing against the later resolved
+/// state). Here the ban is genuinely in the state-before, so rejecting the
+/// message is unconditional -- the sender's membership resolves to the ban.
+///
+/// Both V2.1 and V2.1.1 hard-reject here: the ban is a power event that
+/// resolves before the non-power message in either version. The V2.1 vs
+/// V2.1.1 distinction (transitive auth-context gathering for `power_levels` / `join_rules`)
+/// is a separate mechanism, exercised by `run_auth_lookup_scenario`, not this
+/// one.
+#[test]
+fn test_banned_sender_message_is_hard_rejected() {
+    let create_ev = LeanEvent {
+        event_id: "$create".to_string(),
+        event_type: "m.room.create".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".to_string(),
+        origin_server_ts: 100,
+        content: json!({ "room_version": "12.1", "creator": "@admin:example.com" }),
+        ..Default::default()
+    };
+    let admin_join = LeanEvent {
+        event_id: "$admin_join".to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some("@admin:example.com".to_string()),
+        sender: "@admin:example.com".to_string(),
+        origin_server_ts: 200,
+        content: json!({ "membership": "join" }),
+        auth_events: vec!["$create".to_string()],
+        ..Default::default()
+    };
+    let pl_ev = LeanEvent {
+        event_id: "$pl".to_string(),
+        event_type: "m.room.power_levels".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".to_string(),
+        origin_server_ts: 300,
+        content: json!({ "users": { "@admin:example.com": 100 }, "ban": 50, "state_default": 50 }),
+        auth_events: vec!["$create".to_string(), "$admin_join".to_string()],
+        ..Default::default()
+    };
+    let bob_join = LeanEvent {
+        event_id: "$bob_join".to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some("@bob:example.com".to_string()),
+        sender: "@bob:example.com".to_string(),
+        origin_server_ts: 400,
+        content: json!({ "membership": "join" }),
+        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        ..Default::default()
+    };
+    // The ban of bob. Note bob's own message below does NOT cite this ban
+    // directly -- it reaches it transitively via $bob_join -> $pl -> ... so
+    // only the transitive BFS (V2.1.1) can surface it.
+    let ban_bob = LeanEvent {
+        event_id: "$ban_bob".to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some("@bob:example.com".to_string()),
+        sender: "@admin:example.com".to_string(),
+        origin_server_ts: 500,
+        content: json!({ "membership": "ban" }),
+        auth_events: vec![
+            "$create".to_string(),
+            "$admin_join".to_string(),
+            "$bob_join".to_string(),
+            "$pl".to_string(),
+        ],
+        ..Default::default()
+    };
+    // Bob's message. It omits the ban from its own auth_events, so whether the
+    // auth check sees bob as banned depends on transitive context gathering.
+    let bob_msg = LeanEvent {
+        event_id: "$bob_msg".to_string(),
+        event_type: "m.room.message".to_string(),
+        sender: "@bob:example.com".to_string(),
+        origin_server_ts: 600,
+        content: json!({ "body": "hello" }),
+        auth_events: vec!["$create".to_string(), "$bob_join".to_string()],
+        ..Default::default()
+    };
+
+    let mut auth_context = HashMap::new();
+    for ev in [&create_ev, &admin_join, &pl_ev, &bob_join, &ban_bob, &bob_msg] {
+        auth_context.insert(ev.event_id.clone(), ev.clone());
+    }
+
+    let mut conflicted = HashMap::new();
+    conflicted.insert("$ban_bob".to_string(), ban_bob);
+    conflicted.insert("$bob_msg".to_string(), bob_msg);
+
+    for version in [StateResVersion::V2_1, StateResVersion::V2_1_1] {
+        let resolved = resolve_iterative_sort(
+            utils::build_unconflicted_state_test_helper(&auth_context),
+            conflicted.clone(),
+            &auth_context,
+            version,
+            &mut std::collections::HashMap::new(),
+        );
+        // The ban must win the member key...
+        assert_eq!(
+            resolved.get(&(
+                rezzy::basespec::event_types::EventType::from("m.room.member"),
+                "@bob:example.com".to_string()
+            )),
+            Some(&"$ban_bob".to_string()),
+            "ban must be the resolved membership for {version:?}"
+        );
+        // ...and bob's message must be hard-rejected (absent from resolved).
+        assert!(
+            !resolved.contains_key(&(
+                rezzy::basespec::event_types::EventType::from("m.room.message"),
+                String::new()
+            )),
+            "{version:?} must hard-reject the banned sender's message (no soft-fail)"
+        );
+    }
+}
+
 #[test]
 fn test_v2_1_1_xfail_disconnected_auth() {
     // Join event DOES NOT include PL. PL is disconnected from auth graph.
