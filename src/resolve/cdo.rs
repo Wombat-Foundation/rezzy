@@ -60,7 +60,9 @@ use core::cmp::Ordering;
 
 /// Returns `true` if `possible_ancestor_id` is an ancestor of `child_id`.
 ///
-/// Missing event IDs in the lookup context return `false`.
+/// Missing event IDs in the lookup context return `false`, except when
+/// `child_id == possible_ancestor_id`, which is `true` regardless of
+/// context membership.
 #[must_use]
 pub fn is_ancestor<Id, C: Clone, Q, S: core::hash::BuildHasher, K>(
     child_id: &Q,

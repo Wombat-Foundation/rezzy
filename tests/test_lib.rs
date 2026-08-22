@@ -6946,14 +6946,17 @@ fn test_conflicted_keys_derived_before_cdo() {
             ("m.room.member".to_string(), "@bob:example.com".to_string()),
             ("m.room.power_levels".to_string(), String::new()),
         ]
-    );
-
     // With the CDO removed from the normative path, $bob_pl_dominated is
-    // rejected because bob is banned — it never wins its key.
+    // processed (so it appears in deltas) but is rejected because bob is
+    // banned — it never wins its key.
     assert!(!resolved.values().any(|v| v == "$bob_pl_dominated"));
     assert!(!deltas
         .iter()
         .any(|d| d.event_id == "$bob_pl_dominated" && d.accepted));
+    assert!(
+        deltas.iter().any(|d| d.event_id == "$bob_pl_dominated"),
+        "the dominated event must still be processed and reported as a delta"
+    );
 
     // Verify deltas for accepted conflicted events
     assert!(deltas.iter().any(|d| d.event_id == "$alice_bans_bob"
