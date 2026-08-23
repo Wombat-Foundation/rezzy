@@ -277,8 +277,10 @@ pub struct NodeHashDelta {
 ///
 /// Because HAMT nodes are content-addressed by [`StructuralHash`], the two
 /// lists are exactly what a storage backend needs to maintain per-hash
-/// refcounts for garbage collection — but the two halves fire at *different
-/// times*, not in the same transaction as the mutation:
+/// refcounts for garbage collection — see
+/// [`RefcountTable`](super::gc::RefcountTable) for a ready-made incremental
+/// tracker that consumes this output directly. The two halves fire at
+/// *different times*, not in the same transaction as the mutation:
 ///
 /// - Increment every hash in `new_node_hashes` when the new root is
 ///   persisted. This is always safe to do immediately, since `root_a`'s

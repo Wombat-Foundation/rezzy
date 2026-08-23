@@ -4,7 +4,11 @@
 //! - `hash`: keyed structural hashing for subtree identity
 //! - `codec`: dense on-disk encoding for persisted internal nodes
 //! - `delta`: subtree differencing for set isolation
-//! - `audit`: multi-root reachability audit for storage GC
+//! - `audit`: multi-root reachability audit for storage GC (one-time
+//!   bootstrap / verification sweeps -- see `gc` for the incremental path)
+//! - `gc`: incremental refcount-based GC bookkeeping, fed by `delta`'s
+//!   `NodeHashDelta` -- the replacement for periodic `audit` sweeps in the
+//!   common case (see `gc`'s module docs for why)
 //! - `tests`: regression coverage for the generic HAMT core
 
 use alloc::{sync::Arc, vec, vec::Vec};
@@ -17,6 +21,7 @@ use core::{
 pub mod audit;
 pub mod codec;
 pub mod delta;
+pub mod gc;
 pub mod hash;
 
 #[cfg(test)]
@@ -33,6 +38,7 @@ pub use delta::{
     diff_hamt_nodes, diff_node_hashes, isolate_delta, reachable_node_hashes,
     walk_reachable_node_hashes, Delta, DeltaResult, HamtTraversalError, NodeHashDelta,
 };
+pub use gc::{RefcountTable, RefcountUnderflow};
 pub use hash::{state_group_id_from_lthash, RootHandle, StateGroupId, StructuralHash};
 
 use hash::StructuralHashBuilder;

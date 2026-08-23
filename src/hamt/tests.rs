@@ -4180,3 +4180,253 @@ fn test_isolate_delta_order_invariant_randomized() {
         );
     }
 }
+
+#[test]
+fn test_refcount_table_apply_new_increments() {
+    use crate::hamt::gc::RefcountTable;
+
+    let key = b"dummy_server_key";
+    let entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i)).collect();
+    let root = build_hamt(key, entries).expect("build root");
+    let hashes: Vec<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
+
+    let mut table = RefcountTable::new();
+    assert!(table.is_empty());
+    table.apply_new(&hashes);
+
+    for h in &hashes {
+        assert_eq!(table.count(h), 1);
+    }
+    assert_eq!(table.len(), hashes.len());
+
+    // Applying the same new_node_hashes twice (e.g. two roots that happen to
+    // share the same subtree) accumulates, not overwrites.
+    table.apply_new(&hashes);
+    for h in &hashes {
+        assert_eq!(table.count(h), 2);
+    }
+}
+
+#[test]
+fn test_refcount_table_apply_superseded_decrements_and_reports_zeroed() {
+    use crate::hamt::gc::RefcountTable;
+
+    let key = b"dummy_server_key";
+    let entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i)).collect();
+    let root = build_hamt(key, entries).expect("build root");
+    let hashes: Vec<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
+
+    let mut table = RefcountTable::new();
+    table.apply_new(&hashes);
+
+    let zeroed = table
+        .apply_superseded(&hashes)
+        .expect("decrementing exactly what was incremented must succeed");
+
+    let mut zeroed_sorted = zeroed.clone();
+    zeroed_sorted.sort_unstable();
+    let mut hashes_sorted = hashes.clone();
+    hashes_sorted.sort_unstable();
+    assert_eq!(
+        zeroed_sorted, hashes_sorted,
+        "every hash incremented exactly once must reach zero and be reported"
+    );
+    assert!(
+        table.is_empty(),
+        "a fully-decremented table has nothing left tracked"
+    );
+}
+
+#[test]
+fn test_refcount_table_shared_hash_not_zeroed_by_one_of_two_referrers() {
+    use crate::hamt::gc::RefcountTable;
+
+    // Two roots sharing a subtree: incrementing for both, then superseding
+    // only one, must not zero out the shared hash -- the other root still
+    // references it. This is exactly the structural-sharing scenario the
+    // module doc's "branching hazard" note warns about; this test covers the
+    // case that note says a *linear-chain* diff+retire correctly handles
+    // (the shared hash simply never appears in either side's superseded
+    // list unless truly unreferenced).
+    let key = b"dummy_server_key";
+    let shared_entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i)).collect();
+    let root_a = build_hamt(key, shared_entries.clone()).expect("build root_a");
+    let root_b = build_hamt(key, shared_entries).expect("build root_b (identical content)");
+    assert_eq!(
+        root_a.structural_hash, root_b.structural_hash,
+        "identical content must structurally share, matching this test's premise"
+    );
+
+    let hashes: Vec<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_a, &mut panic_resolver).expect("walk");
+
+    let mut table = RefcountTable::new();
+    // Both roots persisted: each contributes its own increments.
+    table.apply_new(&hashes);
+    table.apply_new(&hashes);
+    for h in &hashes {
+        assert_eq!(table.count(h), 2);
+    }
+
+    // root_a retired: decrement once. Nothing should zero -- root_b still
+    // references every one of these hashes.
+    let zeroed = table
+        .apply_superseded(&hashes)
+        .expect("decrementing one of two referrers must succeed");
+    assert!(
+        zeroed.is_empty(),
+        "shared hashes must not be reported as GC candidates while root_b is still live"
+    );
+    for h in &hashes {
+        assert_eq!(table.count(h), 1);
+    }
+}
+
+#[test]
+fn test_refcount_table_apply_superseded_underflow_is_atomic() {
+    use crate::hamt::gc::{RefcountTable, RefcountUnderflow};
+
+    let key = b"dummy_server_key";
+    let entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i)).collect();
+    let root = build_hamt(key, entries).expect("build root");
+    let hashes: Vec<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
+    assert!(hashes.len() >= 2, "need at least 2 hashes for this test");
+
+    let mut table = RefcountTable::new();
+    // Only increment the first hash -- the rest are untracked (count 0).
+    table.apply_new(&hashes[..1]);
+
+    let before = table.clone();
+    let err = table
+        .apply_superseded(&hashes)
+        .expect_err("decrementing untracked hashes must fail, not silently no-op");
+    assert!(matches!(err, RefcountUnderflow { .. }));
+
+    // Atomicity: the tracked hash's count must be untouched, even though it
+    // appeared earlier in `hashes` than the untracked ones that caused the
+    // failure -- apply_superseded validates the whole batch before mutating
+    // anything.
+    assert_eq!(table.count(&hashes[0]), before.count(&hashes[0]));
+    assert_eq!(table.len(), before.len());
+}
+
+#[test]
+fn test_refcount_table_apply_superseded_repeated_hash_in_one_batch() {
+    use crate::hamt::gc::RefcountTable;
+
+    let key = b"dummy_server_key";
+    let entries: Vec<(u64, u64)> = (0_u64..4).map(|i| (i, i)).collect();
+    let root = build_hamt(key, entries).expect("build root");
+    let hash = root.structural_hash;
+
+    let mut table = RefcountTable::new();
+    table.apply_new(&[hash, hash, hash]); // count = 3
+
+    // A batch that repeats the same hash twice should decrement it by 2, not
+    // treat repeats as redundant.
+    let zeroed = table
+        .apply_superseded(&[hash, hash])
+        .expect("2 decrements against a count of 3 must succeed");
+    assert!(
+        zeroed.is_empty(),
+        "count should be 1, not zero, after this batch"
+    );
+    assert_eq!(table.count(&hash), 1);
+
+    let zeroed = table
+        .apply_superseded(&[hash])
+        .expect("final decrement must succeed");
+    assert_eq!(zeroed, vec![hash]);
+    assert_eq!(table.count(&hash), 0);
+}
+
+#[test]
+fn test_refcount_table_bootstrap_seeds_counts_per_occurrence() {
+    use crate::hamt::gc::RefcountTable;
+
+    let key = b"dummy_server_key";
+    let entries: Vec<(u64, u64)> = (0_u64..4).map(|i| (i, i)).collect();
+    let root = build_hamt(key, entries).expect("build root");
+    let hashes: Vec<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
+
+    let mut table = RefcountTable::new();
+    // Bootstrapping from 3 roots that all reference the same tree (as a
+    // real caller would by walking each currently-live root and chaining
+    // the results) must count each hash 3 times, not once.
+    table.bootstrap(hashes.iter().copied());
+    table.bootstrap(hashes.iter().copied());
+    table.bootstrap(hashes.iter().copied());
+
+    for h in &hashes {
+        assert_eq!(table.count(h), 3);
+    }
+}
+
+/// End-to-end: drive a real `RefcountTable` from a real
+/// [`diff_node_hashes`] output across an actual HAMT mutation, and confirm
+/// the result agrees with an independent full reachability walk -- the same
+/// property [`assert_diff_is_gc_safe`] checks for `diff_node_hashes` itself,
+/// now checked through the incremental table a caller would actually use.
+#[test]
+fn test_refcount_table_end_to_end_with_diff_node_hashes_matches_reachability() {
+    use crate::hamt::gc::RefcountTable;
+    use std::collections::BTreeSet;
+
+    let key = b"dummy_server_key";
+    let entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
+    let root_a = build_hamt(key, entries).expect("build root_a");
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("fully resolved tree, no lazy children")
+    };
+
+    let (root_b, _displaced) =
+        insert(&root_a, key, 1000_u64, 9999_u64, &mut resolver).expect("insert should succeed");
+
+    let delta = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
+        .expect("diff should succeed");
+
+    // Bootstrap as if root_a already existed in the store.
+    let root_a_hashes: Vec<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_a, &mut resolver).expect("walk root_a");
+    let mut table = RefcountTable::new();
+    table.bootstrap(root_a_hashes.iter().copied());
+
+    // New root persisted: increment immediately (per the timing contract).
+    table.apply_new(&delta.new_node_hashes);
+
+    // Old root retired later, and root_b is its one and only live successor
+    // here (a strict linear chain -- exactly the case the module doc allows
+    // apply_superseded to be the sole decrement source for).
+    let zeroed = table
+        .apply_superseded(&delta.superseded_node_hashes)
+        .expect("superseding root_a's own spine, which bootstrap seeded, must succeed");
+
+    // Cross-check against an independent full walk: everything the table
+    // reports as zeroed must be unreachable from root_b, and everything
+    // still tracked with a nonzero count must be reachable from root_b.
+    let reachable_b: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_b, &mut resolver)
+            .expect("walk root_b")
+            .into_iter()
+            .collect();
+
+    for hash in &zeroed {
+        assert!(
+            !reachable_b.contains(hash),
+            "a hash the table reports as GC-safe must not be reachable from the live root"
+        );
+    }
+    for hash in &root_a_hashes {
+        if reachable_b.contains(hash) {
+            assert!(
+                table.count(hash) > 0,
+                "a hash still reachable from root_b must still have a positive tracked count"
+            );
+        }
+    }
+}
