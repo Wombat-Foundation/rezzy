@@ -1363,6 +1363,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         prev_events: vec![],
         auth_events: vec![],
         content: serde_json::Value::Null,
+        room_id: None,
     };
     events_map.insert("CREATE", create_ev);
 
@@ -1379,6 +1380,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         prev_events: vec!["CREATE"],
         auth_events: vec!["CREATE"],
         content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
+        room_id: None,
     };
     events_map.insert("PL0", pl0);
 
@@ -1395,6 +1397,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         prev_events: vec!["PL0"],
         auth_events: vec!["PL0"],
         content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
+        room_id: None,
     };
     events_map.insert("PL1", pl1);
 
@@ -1411,6 +1414,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         prev_events: vec!["PL1"],
         auth_events: vec!["PL1"],
         content: serde_json::Value::Null,
+        room_id: None,
     };
     events_map.insert("S_A1", sa1);
 
@@ -1427,6 +1431,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         prev_events: vec!["S_A1"],
         auth_events: vec!["PL1"],
         content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
+        room_id: None,
     };
     events_map.insert("PL2", pl2);
 
@@ -1443,6 +1448,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         prev_events: vec!["PL0"],
         auth_events: vec!["PL0"],
         content: serde_json::Value::Null,
+        room_id: None,
     };
     events_map.insert("S_B1", sb1);
 
@@ -1459,6 +1465,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         prev_events: vec!["S_B1"],
         auth_events: vec!["PL0"],
         content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
+        room_id: None,
     };
     events_map.insert("PL_B", pl_b);
 

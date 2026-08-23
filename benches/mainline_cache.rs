@@ -71,6 +71,7 @@ fn insert_pl_auth_chain(
             depth,
             rejected: false,
             soft_fail: false,
+            room_id: None,
         },
     );
 
@@ -101,6 +102,7 @@ fn insert_pl_auth_chain(
                 depth: depth + hop as u64 + 1,
                 rejected: false,
                 soft_fail: false,
+                room_id: None,
             },
         );
         prev_auth.clone_from(&helper_id);
@@ -136,6 +138,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
             depth: 0,
             rejected: false,
             soft_fail: false,
+            room_id: None,
         },
     );
 
@@ -167,6 +170,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                 depth: pl_depth,
                 rejected: false,
                 soft_fail: false,
+                room_id: None,
             },
         );
         prev_pl = id;
@@ -200,6 +204,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                 depth,
                 rejected: false,
                 soft_fail: false,
+                room_id: None,
             },
         );
         events.insert(
@@ -220,6 +225,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                 depth,
                 rejected: false,
                 soft_fail: false,
+                room_id: None,
             },
         );
         events.insert(
@@ -240,6 +246,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                 depth: depth + 1,
                 rejected: false,
                 soft_fail: false,
+                room_id: None,
             },
         );
         targets.push(merge_id);

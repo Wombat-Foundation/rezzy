@@ -21,7 +21,7 @@
 pub mod roaring;
 pub mod user;
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -68,6 +68,20 @@ pub enum AuthError<Id = String> {
         event_type: String,
         state_key: String,
     },
+    /// Rule 2.5: an `auth_events` entry carries a [`RoomId`](crate::RoomId)
+    /// that doesn't match the citing event's own room. Defense-in-depth
+    /// against a rogue foreign-room event leaking into `auth_context`/the
+    /// event map this check runs over -- only fires when *both* events
+    /// actually have `Some(room_id)` populated; either side being `None`
+    /// (the default, unless a caller explicitly populates it) is not
+    /// treated as a mismatch, so this check is opt-in per the caller's own
+    /// data, not a new hard requirement on every event.
+    ForeignRoomEvent {
+        event_id: Id,
+        auth_event_id: Id,
+        expected: String,
+        actual: String,
+    },
 }
 
 impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
@@ -106,6 +120,18 @@ impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
                 write!(
                     f,
                     "auth_events omits required ({event_type}, {state_key:?})"
+                )
+            }
+            AuthError::ForeignRoomEvent {
+                event_id,
+                auth_event_id,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "{event_id} (room {expected}) cites auth event {auth_event_id} from a \
+                     different room ({actual})"
                 )
             }
         }
@@ -1040,7 +1066,7 @@ fn check_leave_rules<
 
     // Unban: requires ban_pl. Kick: requires kick_pl.
     // Mutually exclusive per spec §10.2.1.
-    let (required, label) = if current_membership == "ban" {
+    let (required, label) = if current_membership == MEM_BAN {
         (get_ban_power_level(state), "unban")
     } else {
         (get_kick_power_level(state), "kick")
@@ -1214,7 +1240,7 @@ fn check_membership_pl_hierarchies<
     version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     // 1. Kick/Ban power vs Target power: ONLY for "leave" (kick) or "ban" transitions.
-    if target_user != event.sender() && (new_membership == "leave" || new_membership == "ban") {
+    if target_user != event.sender() && (new_membership == MEM_LEAVE || new_membership == MEM_BAN) {
         let sender_pl = user::get_sender_power_level(event.sender(), state, version);
         let target_pl = user::get_sender_power_level(target_user, state, version);
 
@@ -1548,6 +1574,29 @@ pub fn check_auth_chain<
             rejected.push((event.event_id.clone(), err));
             rejected_ids.insert(event.event_id.clone());
             continue;
+        }
+
+        // Rule 2.5: reject if any cited auth event carries a room_id that
+        // disagrees with this event's own -- only when both sides actually
+        // have one populated (see ForeignRoomEvent's docs for why `None` on
+        // either side is not a mismatch).
+        if let Some(expected) = &event.room_id {
+            let foreign = event.auth_events.iter().find_map(|auth_id| {
+                let auth_event = event_map.get(auth_id)?;
+                let actual = auth_event.room_id.as_ref()?;
+                (actual != expected).then(|| (auth_id.clone(), actual.clone()))
+            });
+            if let Some((auth_event_id, actual)) = foreign {
+                let err = AuthError::ForeignRoomEvent {
+                    event_id: event.event_id.clone(),
+                    auth_event_id,
+                    expected: expected.to_string(),
+                    actual: actual.to_string(),
+                };
+                rejected.push((event.event_id.clone(), err));
+                rejected_ids.insert(event.event_id.clone());
+                continue;
+            }
         }
 
         match check_auth_with_context(event, &state, version, None, Some(&event_map)) {

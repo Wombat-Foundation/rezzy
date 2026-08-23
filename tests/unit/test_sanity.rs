@@ -74,6 +74,7 @@ fn test_compute_state_at_correctness_and_performance() {
             prev_events,
             auth_events: Vec::new(),
             depth: u_i,
+            room_id: None,
         };
 
         events_map.insert(event_id, ev);
@@ -179,6 +180,7 @@ fn test_compute_state_at_batch() {
             prev_events,
             auth_events: Vec::new(),
             depth: u_i,
+            room_id: None,
         };
 
         events_map.insert(event_id, ev);
@@ -264,6 +266,7 @@ fn test_streaming_correctness_with_branched_dag() {
                 prev_events,
                 auth_events: Vec::new(),
                 depth: i,
+                room_id: None,
             },
         );
     }
@@ -290,6 +293,7 @@ fn test_streaming_correctness_with_branched_dag() {
                 prev_events: vec![prev],
                 auth_events: Vec::new(),
                 depth: i,
+                room_id: None,
             },
         );
     }
@@ -324,6 +328,7 @@ fn test_streaming_correctness_with_branched_dag() {
                 prev_events: vec![prev],
                 auth_events: Vec::new(),
                 depth: i,
+                room_id: None,
             },
         );
     }
@@ -344,6 +349,7 @@ fn test_streaming_correctness_with_branched_dag() {
             prev_events: vec!["$49a".to_string(), "$49b".to_string()],
             auth_events: Vec::new(),
             depth: 50,
+            room_id: None,
         },
     );
 

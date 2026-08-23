@@ -1969,6 +1969,7 @@ mod tests {
             depth: 1,
             sender: "@user:example.com".into(),
             content: serde_json::Value::Object(serde_json::Map::new()),
+            room_id: None,
         }
     }
 
@@ -4989,6 +4990,7 @@ fn test_lean_event_serialize_roundtrip() {
         depth: 5,
         rejected: true,
         soft_fail: true,
+        room_id: None,
     };
     let json = serde_json::to_string(&ev).unwrap();
     let back: LeanEvent<String> = serde_json::from_str(&json).unwrap();
@@ -6016,6 +6018,7 @@ fn test_lean_event_borrowed_view_roundtrip() {
         depth: 5,
         rejected: true,
         soft_fail: false,
+        room_id: None,
     };
 
     let view = event.as_ref();
@@ -6064,6 +6067,7 @@ fn test_lean_event_borrowed_view_accessors() {
         depth: 5,
         rejected: true,
         soft_fail: false,
+        room_id: None,
     };
 
     let view = event.as_ref();
@@ -7214,6 +7218,7 @@ fn test_lean_event_serialize_propagates_write_error() {
         depth: 1,
         rejected: false,
         soft_fail: false,
+        room_id: None,
     };
 
     let result = serde_json::to_writer(

@@ -39,6 +39,7 @@ fn ruma_to_lean_event<E: Event>(ev: &E) -> LeanEvent {
         depth: 0,
         rejected: false,
         soft_fail: false,
+        room_id: None,
     }
 }
 

@@ -510,6 +510,7 @@ impl<Id: Clone, K: Clone> LeanEvent<Id, Value, K> {
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
+            room_id: self.room_id.clone(),
         }
     }
 }
@@ -1123,13 +1124,15 @@ impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
 ///
 /// # Note on Room ID
 ///
-/// `LeanEvent` omits `room_id`. `rezzy` is a specialized algorithmic engine
-/// that expects the host homeserver (e.g., Synapse, Conduit) to perform initial
-/// database-level filtering. The host is responsible for verifying cryptographic
-/// signatures and filtering events by `room_id` *before* passing them to `resolve_iterative_sort`.
-///
-/// TODO: Consider adding optional `room_id` validation or a dedicated `ForeignEvent`
-/// error check, in case rogue "foreign room" events leak into the `auth_context`.
+/// `LeanEvent` carries `room_id` as an optional, cheaply-shared [`RoomId`]
+/// (see [`Self::room_id`]) rather than requiring it. `rezzy` remains a
+/// specialized algorithmic engine that expects the host homeserver (e.g.,
+/// Synapse, Conduit) to perform initial database-level filtering by room --
+/// this field is defense-in-depth for [`check_auth_chain`](crate::auth::check_auth_chain),
+/// not a replacement for that filtering, and every existing caller that
+/// leaves it `None` behaves exactly as before (the field is additive and
+/// opts out of the check entirely when absent on either side of a
+/// comparison — see [`Self::room_id`]'s docs).
 #[derive(Debug, Clone, Default)]
 pub struct LeanEvent<Id = String, C = Value, K = String> {
     /// Unique event identifier (e.g. `$abc123:example.com`).
@@ -1165,6 +1168,71 @@ pub struct LeanEvent<Id = String, C = Value, K = String> {
     /// Whether this event was soft-failed.
     /// TODO: Add dedicated test coverage for soft-failed events to ensure they are handled according to spec (especially vs rejected).
     pub soft_fail: bool,
+    /// The room this event belongs to, if the caller populated it.
+    ///
+    /// Every event ingested together in one call (e.g. [`ingest_events`])
+    /// shares the *same* `RoomId` allocation via `Arc::clone` -- one string,
+    /// cheaply refcounted across
+    /// however many events are in the batch, not duplicated per event.
+    ///
+    /// `None` is the default and is never treated as a mismatch against
+    /// anything: the room-match check in
+    /// [`check_auth_chain`](crate::auth::check_auth_chain) only fires when
+    /// *both* sides of a comparison carry `Some`. This keeps the field
+    /// fully additive -- a caller that never populates it gets identical
+    /// behavior to before this field existed.
+    pub room_id: Option<RoomId>,
+}
+
+/// A room identifier, cheaply shared across every [`LeanEvent`] from the same
+/// ingest batch.
+///
+/// Wraps `Arc<str>` rather than `String` (one allocation, `Arc::clone` is a
+/// refcount bump, not a copy) and rather than `Rc<str>` (this crate uses
+/// `std::thread::scope` for parallel resolution, so anything shared across
+/// events must be `Send + Sync`, which `Rc` is not). Compares by string
+/// value (via `Deref`), not pointer identity, so two `RoomId`s built from
+/// separate allocations still compare equal if their content matches.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RoomId(alloc::sync::Arc<str>);
+
+impl RoomId {
+    /// Builds a `RoomId` from any string-like value, allocating once.
+    #[must_use]
+    pub fn new(id: impl AsRef<str>) -> Self {
+        Self(alloc::sync::Arc::from(id.as_ref()))
+    }
+}
+
+impl AsRef<str> for RoomId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl core::ops::Deref for RoomId {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl core::fmt::Display for RoomId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<&str> for RoomId {
+    fn from(id: &str) -> Self {
+        Self::new(id)
+    }
+}
+
+impl From<String> for RoomId {
+    fn from(id: String) -> Self {
+        Self(alloc::sync::Arc::from(id.as_str()))
+    }
 }
 
 /// Borrowed view over a [`LeanEvent`] that avoids cloning event envelopes.
@@ -1184,6 +1252,7 @@ pub struct LeanEventRef<'a, Id = String, C = Value, K = String> {
     pub prev_events: &'a [Id],
     pub auth_events: &'a [Id],
     pub depth: u64,
+    pub room_id: Option<&'a RoomId>,
     pub rejected: bool,
     pub soft_fail: bool,
 }
@@ -1210,6 +1279,7 @@ impl<Id: EventId, C, K> LeanEventRef<'_, Id, C, K> {
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
+            room_id: self.room_id.cloned(),
         }
     }
 }
@@ -1231,6 +1301,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
+            room_id: self.room_id.as_ref(),
         }
     }
 }
@@ -2266,6 +2337,14 @@ impl LeanEvent<String, Value, String> {
             depth,
             rejected,
             soft_fail,
+            // Deliberately not read from `value`: the whole point of
+            // `room_id` is to check an event against a room the *caller*
+            // already knows and trusts, not to trust whatever room a raw
+            // PDU JSON claims for itself -- deriving it from the same
+            // untrusted payload it's meant to validate would defeat that.
+            // Callers that want it populated do so explicitly (e.g.
+            // `ingest_events`), after this deserialize step.
+            room_id: None,
         })
     }
 }

@@ -522,6 +522,26 @@ fn test_auth_error_display_variants() {
     let err8: AuthError<String> = AuthError::MissingCreate;
     let msg8 = format!("{err8}");
     assert!(msg8.contains("m.room.create"));
+
+    let err9: AuthError<String> = AuthError::IncompleteAuthEvents {
+        event_type: "m.room.power_levels".into(),
+        state_key: String::new(),
+    };
+    let msg9 = format!("{err9}");
+    assert!(msg9.contains("m.room.power_levels"));
+    assert!(msg9.contains("auth_events omits required"));
+
+    let err10: AuthError<String> = AuthError::ForeignRoomEvent {
+        event_id: "$msg".into(),
+        auth_event_id: "$foreign".into(),
+        expected: "!room_a:x.com".into(),
+        actual: "!room_b:x.com".into(),
+    };
+    let msg10 = format!("{err10}");
+    assert!(msg10.contains("$msg"));
+    assert!(msg10.contains("$foreign"));
+    assert!(msg10.contains("!room_a:x.com"));
+    assert!(msg10.contains("!room_b:x.com"));
 }
 
 #[test]
@@ -719,6 +739,119 @@ fn test_iterative_auth_chain() {
         &RoomState::new(),
         rezzy::basespec::rezzy_types::StateResVersion::V2_1,
     );
+    assert_eq!(accepted, vec!["$create", "$join", "$msg"]);
+    assert!(rejected.is_empty());
+}
+
+/// Rule 2.5: a citing event's `auth_events` entry pointing at an event with
+/// a *different* `room_id` must be rejected -- a rogue foreign-room event
+/// that leaked into the event map, defense-in-depth beyond whatever the
+/// caller's own ingest-time filtering already did.
+#[test]
+fn test_iterative_auth_chain_rejects_foreign_room_auth_event() {
+    let room_a = rezzy::RoomId::new("!room_a:example.com");
+    let room_b = rezzy::RoomId::new("!room_b:example.com");
+
+    let mut create = make_event(
+        "$create",
+        "m.room.create",
+        Some(""),
+        "@alice:example.com",
+        json!({}),
+    );
+    create.room_id = Some(room_a.clone());
+
+    // A second, independent m.room.create for a *different* room. Create
+    // events need no auth_events of their own (rule 2.4 doesn't apply to
+    // the create type) and aren't gated on sender membership, so this event
+    // passes its own auth check independently -- isolating the test to
+    // exactly one thing: does citing it from a different-room event trip
+    // rule 2.5.
+    let mut foreign_create = make_event(
+        "$foreign_create",
+        "m.room.create",
+        Some(""),
+        "@mallory:example.com",
+        json!({}),
+    );
+    foreign_create.room_id = Some(room_b);
+
+    let mut msg = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:example.com",
+        json!({"body": "hello"}),
+    );
+    msg.room_id = Some(room_a);
+    msg.auth_events = vec!["$create".into(), "$foreign_create".into()];
+
+    let (accepted, rejected) = check_auth_chain(
+        &[create, foreign_create, msg],
+        &RoomState::new(),
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
+
+    assert_eq!(
+        accepted,
+        vec!["$create", "$foreign_create"],
+        "both independent create events pass their own auth check"
+    );
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected[0].0, "$msg");
+    assert!(
+        matches!(
+            &rejected[0].1,
+            rezzy::auth::AuthError::ForeignRoomEvent { event_id, auth_event_id, .. }
+                if event_id == "$msg" && auth_event_id == "$foreign_create"
+        ),
+        "expected ForeignRoomEvent citing $foreign_create, got {:?}",
+        rejected[0].1
+    );
+}
+
+/// `room_id` being `None` on either side is never treated as a mismatch --
+/// the check is opt-in per the caller's own data, not a new hard
+/// requirement on every event. Same shape as the rejection test above, but
+/// only the citing event has `room_id` populated.
+#[test]
+fn test_iterative_auth_chain_room_id_none_is_never_a_mismatch() {
+    let room_a = rezzy::RoomId::new("!room_a:example.com");
+
+    let create = make_event(
+        "$create",
+        "m.room.create",
+        Some(""),
+        "@alice:example.com",
+        json!({}),
+    );
+    // create.room_id stays None -- caller never populated it for this event.
+
+    let join = make_event(
+        "$join",
+        "m.room.member",
+        Some("@alice:example.com"),
+        "@alice:example.com",
+        json!({"membership": "join"}),
+    );
+    // join.room_id also stays None.
+
+    let mut msg = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:example.com",
+        json!({"body": "hello"}),
+    );
+    msg.room_id = Some(room_a);
+    msg.auth_events = vec!["$join".into()];
+
+    let (accepted, rejected) = check_auth_chain(
+        &[create, join, msg],
+        &RoomState::new(),
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
+
     assert_eq!(accepted, vec!["$create", "$join", "$msg"]);
     assert!(rejected.is_empty());
 }
