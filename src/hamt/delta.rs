@@ -134,18 +134,20 @@ where
                 removed.push((k_a.clone(), v_a.clone()));
                 added.push((k_b.clone(), v_b.clone()));
             }
-        } else if in_a {
+            continue;
+        }
+        if in_a {
             let idx_a = map_index(d_a, slot);
             let (k_a, v_a) = &node_a.leaves[idx_a];
             removed.push((k_a.clone(), v_a.clone()));
-        } else {
-            // `bit` is in `union`, and this arm is reached only when it's
-            // in neither the `in_a && in_b` nor the `in_a`-only arm above, so
-            // `in_b` is guaranteed true here -- no need to re-test it.
-            let idx_b = map_index(d_b, slot);
-            let (k_b, v_b) = &node_b.leaves[idx_b];
-            added.push((k_b.clone(), v_b.clone()));
+            continue;
         }
+        // `bit` is in `union`, and reaching here means it was neither the
+        // `in_a && in_b` nor the `in_a`-only case above, so `in_b` is
+        // guaranteed true -- no need to re-test it.
+        let idx_b = map_index(d_b, slot);
+        let (k_b, v_b) = &node_b.leaves[idx_b];
+        added.push((k_b.clone(), v_b.clone()));
     }
 
     // Traverse nodemaps
@@ -169,20 +171,22 @@ where
                 let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
                 diff_nodes(&res_a, &res_b, added, removed, resolver, next_depth)?;
             }
-        } else if in_a {
+            continue;
+        }
+        if in_a {
             let cidx_a = map_index(n_a, slot);
             let child_a = &node_a.children[cidx_a];
             let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
             collect_all_leaves(&res_a, removed, resolver, next_depth)?;
-        } else {
-            // `bit` is in `union`, and this arm is reached only when it's
-            // in neither the `in_a && in_b` nor the `in_a`-only arm above, so
-            // `in_b` is guaranteed true here -- no need to re-test it.
-            let cidx_b = map_index(n_b, slot);
-            let child_b = &node_b.children[cidx_b];
-            let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-            collect_all_leaves(&res_b, added, resolver, next_depth)?;
+            continue;
         }
+        // `bit` is in `union`, and reaching here means it was neither the
+        // `in_a && in_b` nor the `in_a`-only case above, so `in_b` is
+        // guaranteed true -- no need to re-test it.
+        let cidx_b = map_index(n_b, slot);
+        let child_b = &node_b.children[cidx_b];
+        let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
+        collect_all_leaves(&res_b, added, resolver, next_depth)?;
     }
 
     Ok(())
@@ -414,20 +418,22 @@ where
                 let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
                 diff_node_hashes_rec(&res_a, &res_b, superseded, new, resolver, next_depth)?;
             }
-        } else if in_a {
+            continue;
+        }
+        if in_a {
             let cidx_a = map_index(n_a, slot);
             let child_a = &node_a.children[cidx_a];
             let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
             append_reachable_node_hashes(&res_a, superseded, resolver, next_depth)?;
-        } else {
-            // `bit` is in `union`, and this arm is reached only when it's
-            // in neither the `in_a && in_b` nor the `in_a`-only arm above, so
-            // `in_b` is guaranteed true here -- no need to re-test it.
-            let cidx_b = map_index(n_b, slot);
-            let child_b = &node_b.children[cidx_b];
-            let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-            append_reachable_node_hashes(&res_b, new, resolver, next_depth)?;
+            continue;
         }
+        // `bit` is in `union`, and reaching here means it was neither the
+        // `in_a && in_b` nor the `in_a`-only case above, so `in_b` is
+        // guaranteed true -- no need to re-test it.
+        let cidx_b = map_index(n_b, slot);
+        let child_b = &node_b.children[cidx_b];
+        let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
+        append_reachable_node_hashes(&res_b, new, resolver, next_depth)?;
     }
 
     Ok(())
