@@ -4,7 +4,8 @@
 //! Overwrites `res/expected/oracle_*.json` with the current `resolve_iterative_sort` output.
 //! Run when the algorithm changes intentionally, then review the git diff and commit both.
 //!
-//!   `cargo test --test regen_oracles --features regen`
+//!   `cargo run --bin regen_oracles --features regen`
+#[path = "../utils/mod.rs"]
 mod utils;
 
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};

@@ -9,7 +9,6 @@ authors = ["Shane Jaroch <chown_tee@proton.me>"]
 description = "Lightweight and formally verified: State Res v1, v2, and v2.1 reference implementations in Rust."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/gamesguru/rezzy"
-autotests = false
 default-run = "rezzy"
 exclude = [
     "build.rs",
@@ -54,7 +53,7 @@ required-features = ["cli"]
 
 [[bin]]
 name = "regen_oracles"
-path = "tests/regen_oracles.rs"
+path = "tests/bin/regen_oracles.rs"
 required-features = ["regen"]
 
 [[bin]]
@@ -177,45 +176,9 @@ path = "tests/test_snapshots.rs"
 required-features = ["stress"]
 
 [[test]]
-name = "test_sanity"
-path = "tests/test_sanity.rs"
-
-[[test]]
-name = "test_hashing"
-path = "tests/test_hashing.rs"
-
-[[test]]
-name = "test_merkle"
-path = "tests/test_merkle.rs"
-
-[[test]]
-name = "test_reconcile_algebraic"
-path = "tests/test_reconcile_algebraic.rs"
-
-[[test]]
-name = "test_traversal"
-path = "tests/test_traversal.rs"
-
-[[test]]
 name = "stress_large_rooms"
 path = "tests/stress_large_rooms.rs"
 required-features = ["stress"]
-
-[[test]]
-name = "test_pathologies"
-path = "tests/test_pathologies.rs"
-
-[[test]]
-name = "test_critique"
-path = "tests/test_critique.rs"
-
-[[test]]
-name = "test_auth"
-path = "tests/test_auth.rs"
-
-[[test]]
-name = "test_lib"
-path = "tests/test_lib.rs"
 
 [[test]]
 name = "test_main"
@@ -228,37 +191,9 @@ path = "tests/stress_unredacted_lounge.rs"
 required-features = ["stress"]
 
 [[test]]
-name = "test_integer_keys"
-path = "tests/test_integer_keys.rs"
-
-[[test]]
-name = "test_restricted_joins"
-path = "tests/test_restricted_joins.rs"
-
-[[test]]
-name = "test_utils"
-path = "tests/test_utils.rs"
-
-[[test]]
-name = "test_tombstone"
-path = "tests/test_tombstone.rs"
-
-[[test]]
-name = "test_state_at"
-path = "tests/test_state_at.rs"
-
-[[test]]
 name = "test_resolve"
 path = "tests/test_resolve.rs"
 required-features = ["mock-ruma"]
-
-[[test]]
-name = "test_lattice"
-path = "tests/test_lattice.rs"
-
-[[test]]
-name = "differential_harness"
-path = "tests/differential_harness.rs"
 
 [lints.rust]
 unsafe_code = "deny"
