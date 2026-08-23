@@ -221,10 +221,7 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         let conflict = rng.below(3) == 0;
         if !conflict {
             // single unconflicted-ish join (still passed as conflicted set; fine)
-            let id = format!(
-                "${}_join_{i}_{seed_base_ts}",
-                u.split(':').next().unwrap()
-            );
+            let id = format!("${}_join_{i}_{seed_base_ts}", u.split(':').next().unwrap());
             // Vary depth independently of ancestry: sometimes forge a depth
             // that contradicts the parents' actual order, to exercise
             // depth-independent edge handling.
@@ -678,7 +675,11 @@ fn gen_power_phase_fallback_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem
         sender: "@admin:x".into(),
         origin_server_ts: ts,
         content: serde_json::json!({ "join_rule": "public" }),
-        auth_events: vec!["$create".into(), "$admin_join".into(), pl_a.event_id.clone()],
+        auth_events: vec![
+            "$create".into(),
+            "$admin_join".into(),
+            pl_a.event_id.clone(),
+        ],
         prev_events: vec![pl_a.event_id.clone()],
         depth: 4,
         ..Default::default()
