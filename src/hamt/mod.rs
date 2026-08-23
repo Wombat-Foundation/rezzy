@@ -23,6 +23,8 @@ pub mod hash;
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;
 
+#[cfg(feature = "xor-filter")]
+pub use audit::filter_unreachable_node_hashes;
 pub use audit::{
     bitmap_reachability_audit, reachability_audit, unreachable_node_hashes, BitmapAuditError,
     BitmapReachabilityAudit, IndexedUniverse, ReachabilityAudit, UniverseTooLarge,

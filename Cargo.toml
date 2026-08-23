@@ -86,6 +86,13 @@ mock-ruma = [
 ]
 stress = ["dep:bincode"]
 mimalloc = ["dep:mimalloc"]
+# Xor8-filter-backed HAMT reachability audit (src/hamt/audit.rs): bounds the
+# audit's memory to the *reachable* set (~9-10 bits/entry) instead of the full
+# universe (a HashMap-backed exact index, ~40-50 bytes/entry), at the cost of
+# a small (<0.4%), safe-direction false-positive rate on "reachable" -- see
+# `filter_unreachable_node_hashes`'s doc comment. Depends on `std` for the
+# same reason the roaring-backed audit does (HashSet-based dedup).
+xor-filter = ["std", "dep:xorf"]
 
 [dependencies]
 anyhow = { version = "1.0", optional = true }
@@ -119,6 +126,7 @@ test-log = { version = "0.2.20", optional = true }
 ureq = { version = "2.9", optional = true, default-features = false, features = [
     "json",
 ] }
+xorf = { version = "0.13.0", default-features = false, features = ["rand"], optional = true }
 zeroize = { version = "=1.8.2", optional = true, default-features = false }
 
 [dev-dependencies]
