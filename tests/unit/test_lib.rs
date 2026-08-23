@@ -1,5 +1,4 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-mod utils;
+use crate::utils;
 use std::collections::HashMap;
 extern crate alloc;
 
@@ -8,9 +7,9 @@ extern crate alloc;
 #[allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
 mod tests {
 
+    use super::alloc::string::ToString;
+    use super::alloc::vec;
     use super::utils;
-    use alloc::string::ToString;
-    use alloc::vec;
     use core::cmp::Ordering;
     use rezzy::*;
 
@@ -796,7 +795,7 @@ mod tests {
     fn test_trait_coverage() {
         let v = rezzy::StateResVersion::V2;
         assert_eq!(v, rezzy::StateResVersion::V2);
-        let _ = alloc::format!("{v:?}");
+        let _ = format!("{v:?}");
 
         let e: LeanEvent = LeanEvent {
             event_id: "a".into(),
@@ -810,7 +809,7 @@ mod tests {
             ..Default::default()
         };
         let _ = e.clone();
-        let _ = alloc::format!("{e:?}");
+        let _ = format!("{e:?}");
     }
 
     #[test]
@@ -1115,8 +1114,8 @@ mod tests {
                     power_level: r.1,
                     origin_server_ts: r.2,
                     depth: r.3,
-                    prev_events: r.4.iter().map(alloc::string::ToString::to_string).collect(),
-                    auth_events: r.4.iter().map(alloc::string::ToString::to_string).collect(),
+                    prev_events: r.4.iter().map(ToString::to_string).collect(),
+                    auth_events: r.4.iter().map(ToString::to_string).collect(),
                     ..Default::default()
                 },
             );
@@ -1130,10 +1129,7 @@ mod tests {
         );
         assert_eq!(
             result,
-            expected
-                .iter()
-                .map(alloc::string::ToString::to_string)
-                .collect::<Vec<_>>()
+            expected.iter().map(ToString::to_string).collect::<Vec<_>>()
         );
     }
 
@@ -1206,7 +1202,7 @@ mod tests {
         let v = rezzy::StateResVersion::V2;
         let v2 = v;
         assert_eq!(v, v2);
-        let debug_str = alloc::format!("{v:?}");
+        let debug_str = format!("{v:?}");
         assert!(debug_str.contains("V2"));
     }
 
@@ -1225,7 +1221,7 @@ mod tests {
         };
         let e2 = e.clone();
         assert_eq!(e, e2);
-        let debug_str = alloc::format!("{e:?}");
+        let debug_str = format!("{e:?}");
         assert!(debug_str.contains("event_id"));
     }
 
@@ -1249,7 +1245,7 @@ mod tests {
         };
         let p2 = p;
         assert_eq!(p, p2);
-        let debug_str = alloc::format!("{p:?}");
+        let debug_str = format!("{p:?}");
         assert!(debug_str.contains("version"));
     }
 
@@ -1763,9 +1759,9 @@ mod tests {
         // 1000-event deep chain: ev_0 <- ev_1 <- ev_2 <- ... <- ev_999
         let mut events: HashMap<String, LeanEvent> = HashMap::new();
         for i in 0..1000u32 {
-            let id = alloc::format!("ev_{i}");
+            let id = format!("ev_{i}");
             let auth = if i > 0 {
-                vec![alloc::format!("ev_{}", i - 1)]
+                vec![format!("ev_{}", i - 1)]
             } else {
                 vec![]
             };
@@ -1813,10 +1809,7 @@ mod tests {
                     event_id: id.into(),
                     event_type: "m.room.member".into(),
                     state_key: Some("@alice:example.com".into()),
-                    auth_events: auths
-                        .iter()
-                        .map(alloc::string::ToString::to_string)
-                        .collect(),
+                    auth_events: auths.iter().map(ToString::to_string).collect(),
                     ..Default::default()
                 },
             );

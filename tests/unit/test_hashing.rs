@@ -1,4 +1,3 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 use rezzy::{redact_json, reference_hash, LeanEvent};
 use serde_json::json;
 

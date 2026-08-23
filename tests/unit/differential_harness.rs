@@ -1,4 +1,3 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Differential + determinism harness for state resolution.
 //!
 //! Phase B empirical backbone. For each randomly-generated room DAG:
@@ -25,8 +24,6 @@
     clippy::cast_possible_truncation,
     clippy::too_many_arguments
 )]
-
-mod utils;
 
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use std::collections::HashMap;

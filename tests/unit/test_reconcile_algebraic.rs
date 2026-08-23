@@ -1,4 +1,3 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 use base64::{
     engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD},
     Engine as _,

@@ -1,4 +1,3 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -612,7 +611,7 @@ fn test_state_delta_compression_robustness() {
 
 // ─── Supplemental coverage tests for state/at.rs  ────────────────────
 
-mod utils;
+use crate::utils;
 
 /// Coverage: `compute_merge_base` (at.rs) — diamond DAG.
 /// Tests: empty extremities, single extremity, two-branch merge, disjoint DAGs.

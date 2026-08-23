@@ -1,5 +1,4 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-mod utils;
+use crate::utils;
 use rezzy::auth::*;
 use rezzy::basespec::event_types::{M_ROOM_CREATE, M_ROOM_MEMBER};
 use rezzy::*;
@@ -1597,7 +1596,7 @@ fn test_v1_v11_missing_pl_event_creator_fallback() {
     assert!(
         matches!(
             res,
-            Err(crate::auth::AuthError::InsufficientPowerLevel {
+            Err(self::auth::AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,
                 ..
@@ -3512,7 +3511,7 @@ fn test_pl_validation_users_invalid_key_rejected() {
     );
     let err = res.unwrap_err();
     assert!(
-        matches!(err, crate::auth::AuthError::InvalidSyntax(ref s) if s.contains("not_a_user_id")),
+        matches!(err, self::auth::AuthError::InvalidSyntax(ref s) if s.contains("not_a_user_id")),
         "Error should mention the bad key: {err:?}"
     );
 }
@@ -3786,7 +3785,7 @@ fn test_pl_missing_create_event_returns_error() {
     );
     let result = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
     assert!(
-        matches!(result, Err(crate::auth::AuthError::MissingCreate)),
+        matches!(result, Err(self::auth::AuthError::MissingCreate)),
         "Missing create should return MissingCreate error, got: {result:?}"
     );
     // Exercise Display impl for coverage

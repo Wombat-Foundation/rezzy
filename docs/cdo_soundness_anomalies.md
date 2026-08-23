@@ -7,7 +7,7 @@ lockdown) "causally dominates" on an independent branch. It must never
 change the final answer relative to running full V2.1 resolution with no
 CDO at all — that's the entire point of it being a pre-filter rather than
 a different algorithm. `assert_benign_convergence` in
-`tests/test_critique.rs` encodes that invariant directly: `V2.1 == V2.1.1`
+`tests/unit/test_critique.rs` encodes that invariant directly: `V2.1 == V2.1.1`
 on every fixture that isn't specifically testing a divergence.
 
 Four related bugs/audits came out of restoring CDO's wiring after it had
