@@ -565,10 +565,14 @@ fn bucket_index(hash: &StructuralHash, depth: usize) -> usize {
     );
 
     let mut word = u16::from(hash[byte_index]);
-    if let Some(next_index) = byte_index.checked_add(1) {
-        if let Some(next) = hash.get(next_index) {
-            word |= u16::from(*next) << 8;
-        }
+    // No checked_add: byte_index < hash_len (16, asserted above) always, so
+    // byte_index + 1 <= 16 never overflows usize. A checked_add here can
+    // never observe None -- it's not a real safety margin, just an untestable
+    // dead branch (a coverage tool will flag its closing brace as unreached,
+    // correctly: reaching it would require byte_index near usize::MAX, which
+    // contradicts the precondition this function already asserts).
+    if let Some(next) = hash.get(byte_index.saturating_add(1)) {
+        word |= u16::from(*next) << 8;
     }
     usize::from((word >> bit_shift) & HAMT_BRANCH_MASK)
 }
