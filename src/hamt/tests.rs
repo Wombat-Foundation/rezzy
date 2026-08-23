@@ -2972,6 +2972,76 @@ fn test_collect_all_leaves_recursion() {
 }
 
 #[test]
+fn test_collect_all_leaves_recursion_added_side() {
+    // Mirror of `test_collect_all_leaves_recursion`, but with a and b swapped:
+    // root_a has nothing in slot 0, root_b has a whole subtree there. This is
+    // the `else if in_b` arm of the nodemap loop in `diff_nodes` (a branch that
+    // exists only on the b side), which the removed-side test above never
+    // exercises.
+    let key = b"dummy_server_key";
+
+    let leaf = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1, 100)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
+    });
+
+    let internal = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 1,
+        leaves: vec![],
+        children: vec![NodeRef::Resolved(leaf.clone())],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1,
+            &[],
+            &[NodeRef::Resolved(leaf.clone())],
+        ),
+    });
+
+    let root_b = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 1,
+        leaves: vec![],
+        children: vec![NodeRef::Resolved(internal.clone())],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1,
+            &[],
+            &[NodeRef::Resolved(internal.clone())],
+        ),
+    });
+
+    let root_a = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 0,
+        leaves: vec![],
+        children: vec![],
+        structural_hash: HamtNode::<i32, i32>::compute_structural_hash(key, 0, 0, &[], &[]),
+    });
+
+    let lattice_a = LtHash::default();
+    let lattice_b = LtHash([1u16; 1024]);
+
+    let (added, removed) = isolate_delta(
+        &root_a,
+        &lattice_a,
+        &root_b,
+        &lattice_b,
+        &mut panic_resolver,
+    )
+    .unwrap();
+
+    assert!(removed.is_empty());
+    assert_eq!(added.len(), 1);
+    assert!(added.contains(&(1, 100)));
+}
+
+#[test]
 fn test_structural_hash_builder_hasher() {
     use crate::hamt::hash::StructuralHashBuilder;
     use core::hash::Hasher;

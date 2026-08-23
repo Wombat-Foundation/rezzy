@@ -221,7 +221,10 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         let conflict = rng.below(3) == 0;
         if !conflict {
             // single unconflicted-ish join (still passed as conflicted set; fine)
-            let id = format!("${}_join_{}", u.split(':').next().unwrap(), i);
+            let id = format!(
+                "${}_join_{i}_{seed_base_ts}",
+                u.split(':').next().unwrap()
+            );
             // Vary depth independently of ancestry: sometimes forge a depth
             // that contradicts the parents' actual order, to exercise
             // depth-independent edge handling.
@@ -234,13 +237,19 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         }
         // two candidates for the same user -> genuine conflict
         let m1 = rng.pick(&membership_vals);
-        let id1 = format!("${}_cand_a_{}", u.split(':').next().unwrap(), i);
+        let id1 = format!(
+            "${}_cand_a_{i}_{seed_base_ts}",
+            u.split(':').next().unwrap()
+        );
         let depth1 = if rng.below(4) == 0 { ts / 100 } else { 5 };
         let ev1 = mem_event(rng, &id1, u, u, m1, ts, depth1, &pool);
         ts += 1;
         pool.push(id1.clone());
         let m2 = rng.pick(&membership_vals);
-        let id2 = format!("${}_cand_b_{}", u.split(':').next().unwrap(), i);
+        let id2 = format!(
+            "${}_cand_b_{i}_{seed_base_ts}",
+            u.split(':').next().unwrap()
+        );
         let depth2 = if rng.below(4) == 0 { ts / 100 } else { 5 };
         let ev2 = mem_event(rng, &id2, u, u, m2, ts, depth2, &pool);
         ts += 1;
@@ -253,7 +262,7 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
     match rng.below(3) {
         0 => {
             let jr2 = LeanEvent {
-                event_id: "$jr_conf".to_string(),
+                event_id: format!("$jr_conf_{seed_base_ts}"),
                 event_type: "m.room.join_rules".to_string(),
                 state_key: Some(String::new()),
                 sender: "@admin:x".to_string(),
@@ -268,11 +277,11 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
                 depth: 4,
                 ..Default::default()
             };
-            conflicted.insert("$jr_conf".to_string(), jr2);
+            conflicted.insert(format!("$jr_conf_{seed_base_ts}"), jr2);
         }
         1 => {
             let pl2 = LeanEvent {
-                event_id: "$pl_conf".to_string(),
+                event_id: format!("$pl_conf_{seed_base_ts}"),
                 event_type: "m.room.power_levels".to_string(),
                 state_key: Some(String::new()),
                 sender: "@admin:x".to_string(),
@@ -287,7 +296,7 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
                 depth: 4,
                 ..Default::default()
             };
-            conflicted.insert("$pl_conf".to_string(), pl2);
+            conflicted.insert(format!("$pl_conf_{seed_base_ts}"), pl2);
         }
         _ => {}
     }
@@ -583,6 +592,166 @@ fn gen_dominated_winner_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
     }
 }
 
+/// The generator shape for `at.rs`'s V2.1.1 power-phase local-auth fallback
+/// (`OverlayState::get_event`, see `test_overlay_state_v2_1_vs_v2_1_1_power_phase_fallback_polarity`
+/// and `test_conflicted_auth_event_validation_in_power_phase`): two
+/// conflicting `m.room.power_levels` candidates on the same state slot, left
+/// unresolved during the power phase, plus a *non-power* candidate
+/// (`m.room.message`) that cites one of them in `auth_events`. Reaching that
+/// message's auth check forces `get_event(M_ROOM_POWER_LEVELS, "")` while the
+/// PL slot is still conflicted -- exactly the branch neither version-gate arm
+/// of the regular generator (`gen_problem`) reaches, since it never leaves a
+/// conflicting `power_levels` candidate live at the moment a non-power event's
+/// auth is checked. V2.1 falls back to local auth unconditionally here; V2.1.1
+/// additionally requires the *candidate* to be power-shaped before doing so,
+/// so the message must instead be authed against the resolved PL exclusively.
+/// Both must reach the same accept/reject verdict regardless.
+#[allow(clippy::too_many_lines)]
+fn gen_power_phase_fallback_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
+    let mut ts = seed_base_ts;
+    let create: LeanEvent = LeanEvent {
+        event_id: "$create".into(),
+        event_type: "m.room.create".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".into(),
+        origin_server_ts: ts,
+        content: serde_json::json!({ "room_version": "12.1", "creator": "@admin:x" }),
+        ..Default::default()
+    };
+    ts += 1;
+    let admin_join: LeanEvent = LeanEvent {
+        event_id: "$admin_join".into(),
+        event_type: "m.room.member".into(),
+        state_key: Some("@admin:x".into()),
+        sender: "@admin:x".into(),
+        origin_server_ts: ts,
+        prev_events: vec!["$create".into()],
+        auth_events: vec!["$create".into()],
+        depth: 2,
+        ..Default::default()
+    };
+    ts += 1;
+    // Two conflicting power_levels candidates on the same (type, "") slot --
+    // both cite the same prev/auth chain, so neither dominates the other and
+    // both stay in `conflicted` for the power phase to arbitrate.
+    let u2_power = 30 + u64::try_from(rng.below(40)).unwrap_or(30); // 30..70
+    let pl_a: LeanEvent = LeanEvent {
+        event_id: format!("$pl_a_{seed_base_ts}"),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".into(),
+        origin_server_ts: ts,
+        content: serde_json::json!({
+            "users": { "@admin:x": 100, "@u2:x": u2_power },
+            "users_default": 0,
+            "state_default": 50,
+            "events_default": 0
+        }),
+        auth_events: vec!["$create".into(), "$admin_join".into()],
+        prev_events: vec!["$admin_join".into()],
+        depth: 3,
+        ..Default::default()
+    };
+    ts += 1;
+    let pl_b: LeanEvent = LeanEvent {
+        event_id: format!("$pl_b_{seed_base_ts}"),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".into(),
+        origin_server_ts: ts,
+        content: serde_json::json!({
+            "users": { "@admin:x": 100, "@u2:x": u2_power.saturating_sub(20) },
+            "users_default": 0,
+            "state_default": 50,
+            "events_default": 0
+        }),
+        auth_events: vec!["$create".into(), "$admin_join".into()],
+        prev_events: vec!["$admin_join".into()],
+        depth: 3,
+        ..Default::default()
+    };
+    ts += 1;
+    let jr: LeanEvent = LeanEvent {
+        event_id: "$jr".into(),
+        event_type: "m.room.join_rules".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".into(),
+        origin_server_ts: ts,
+        content: serde_json::json!({ "join_rule": "public" }),
+        auth_events: vec!["$create".into(), "$admin_join".into(), pl_a.event_id.clone()],
+        prev_events: vec![pl_a.event_id.clone()],
+        depth: 4,
+        ..Default::default()
+    };
+    ts += 1;
+    let u2_join: LeanEvent = LeanEvent {
+        event_id: "$u2_join".into(),
+        event_type: "m.room.member".into(),
+        state_key: Some("@u2:x".into()),
+        sender: "@u2:x".into(),
+        origin_server_ts: ts,
+        content: serde_json::json!({ "membership": "join" }),
+        auth_events: vec![
+            "$create".into(),
+            "$admin_join".into(),
+            pl_a.event_id.clone(),
+            "$jr".into(),
+        ],
+        prev_events: vec!["$jr".into()],
+        depth: 5,
+        ..Default::default()
+    };
+    ts += 1;
+
+    let mut auth_context = HashMap::new();
+    for ev in [&create, &admin_join, &pl_a, &pl_b, &jr, &u2_join] {
+        auth_context.insert(ev.event_id.clone(), ev.clone());
+    }
+    let mut unconflicted = SharedState::new();
+    for ev in [&create, &admin_join, &jr, &u2_join] {
+        let sk = ev.state_key.clone().unwrap_or_default();
+        unconflicted.insert(
+            (
+                rezzy::basespec::event_types::EventType::from(ev.event_type.as_str()),
+                sk,
+            ),
+            ev.event_id.clone(),
+        );
+    }
+
+    // The non-power candidate: a plain message from @u2, mid-power-phase,
+    // citing the still-conflicted `$pl_a` in its auth_events. Authing it
+    // forces a power_levels lookup while the slot is unresolved.
+    let msg: LeanEvent = LeanEvent {
+        event_id: format!("$msg_{seed_base_ts}"),
+        event_type: "m.room.message".into(),
+        state_key: None,
+        sender: "@u2:x".into(),
+        origin_server_ts: ts,
+        content: serde_json::json!({ "body": "hi" }),
+        auth_events: vec![
+            "$create".into(),
+            "$admin_join".into(),
+            pl_a.event_id.clone(),
+            "$u2_join".into(),
+        ],
+        prev_events: vec!["$u2_join".into()],
+        depth: 6,
+        ..Default::default()
+    };
+
+    let mut conflicted = HashMap::new();
+    conflicted.insert(pl_a.event_id.clone(), pl_a);
+    conflicted.insert(pl_b.event_id.clone(), pl_b);
+    conflicted.insert(msg.event_id.clone(), msg);
+
+    Problem {
+        unconflicted,
+        conflicted,
+        auth_context,
+    }
+}
+
 /// The adversarial counterpart to `cdo_drop_rate_measured`. This generator
 /// produces dominated *winners* — the shape the regular generator can't reach —
 /// which is what exposed the dominator-validity gap. The unsound CDO pre-filter
@@ -629,6 +798,37 @@ fn dominated_winner_generator() {
         diverged, 0,
         "live V2.1.1 must not diverge from V2.1: the retired CDO pre-filter must \
          not be re-connected"
+    );
+}
+
+/// Closes the last generator-coverage gap noted alongside `dominated_winner_generator`:
+/// the regular generator never leaves a conflicting `m.room.power_levels`
+/// candidate live at the moment a *non-power* event's auth is checked, so it
+/// never reaches the V2.1.1 power-phase local-auth fallback in `at.rs`
+/// (`OverlayState::get_event`) documented by
+/// `test_overlay_state_v2_1_vs_v2_1_1_power_phase_fallback_polarity`.
+/// `gen_power_phase_fallback_problem` forces that shape directly. V2.1 and
+/// V2.1.1 take different internal paths to authorize the message (unconditional
+/// local-auth fallback vs. the additional power-shape gate), but both must land
+/// on the same accept/reject verdict.
+#[test]
+fn power_phase_fallback_generator() {
+    const ITER_COUNT: u64 = 200;
+    let mut diverged = 0u64;
+    for i in 0u64..ITER_COUNT {
+        let mut rng = iteration_rng(0x1357_9BDF_2468_ACE0, i);
+        let p = gen_power_phase_fallback_problem(&mut rng, 6000 + i * 11);
+        let r21 = resolve(&p, StateResVersion::V2_1);
+        let r211 = resolve(&p, StateResVersion::V2_1_1);
+        if r21 != r211 {
+            diverged += 1;
+        }
+    }
+    assert_eq!(
+        diverged, 0,
+        "V2.1 and V2.1.1 must agree even when the power-phase local-auth \
+         fallback is directly exercised (a conflicting power_levels candidate \
+         live while a non-power event's auth is checked)"
     );
 }
 
