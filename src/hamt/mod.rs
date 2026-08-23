@@ -28,8 +28,6 @@ pub use audit::{
     BitmapAuditError, BitmapNodeReachabilityAudit, IndexedUniverse, NodeReachabilityAudit,
     UniverseTooLarge,
 };
-#[cfg(feature = "xor-filter")]
-pub use audit::{filter_unreachable_node_hashes, filter_unreachable_node_hashes_from_handles};
 pub use codec::PersistedInternalNode;
 pub use delta::{
     diff_hamt_nodes, diff_node_hashes, isolate_delta, reachable_node_hashes,
