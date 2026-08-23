@@ -14,48 +14,36 @@
 //! optional deps (`ruma-*`, `clap`/`ureq`, `bincode`) instead of skipping
 //! them by default. They keep their own `[[test]]` entries in `Cargo.toml`.
 //!
-//! Each child lives in `tests/unit/` rather than directly under `tests/` so
-//! Cargo's test autodiscovery (`tests/*.rs`) doesn't *also* independently
-//! claim it as its own target -- autodiscovery only scans files directly in
-//! `tests/`, not subdirectories, the same convention already used for
-//! `tests/utils/` and `tests/bin/regen_oracles.rs`.
+//! This file lives at `tests/unit/main.rs` rather than `tests/unit.rs`
+//! (which would need `#[path = "unit/X.rs"]` on every line below, since a
+//! crate root's bare `mod X;` looks in its *own* directory) so plain
+//! `mod X;` finds each sibling file directly, the same convention
+//! `src/bin/<name>/main.rs` uses for binaries with submodules. Cargo's
+//! `tests/*.rs` autodiscovery doesn't reach into `tests/unit/` at all, so
+//! this target needs one explicit `[[test]]` entry in `Cargo.toml` (the
+//! only one of these 16 files that does).
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 // Declared once here rather than separately by each child module below --
 // they all reference this single instance via `use crate::utils;` instead
 // of each re-declaring their own `mod utils;` (which would compile 9
 // separate copies of the same file as nominally-distinct types).
+#[path = "../utils/mod.rs"]
 mod utils;
 
-#[path = "unit/differential_harness.rs"]
 mod differential_harness;
-#[path = "unit/test_auth.rs"]
 mod test_auth;
-#[path = "unit/test_critique.rs"]
 mod test_critique;
-#[path = "unit/test_hashing.rs"]
 mod test_hashing;
-#[path = "unit/test_integer_keys.rs"]
 mod test_integer_keys;
-#[path = "unit/test_lattice.rs"]
 mod test_lattice;
-#[path = "unit/test_lib.rs"]
 mod test_lib;
-#[path = "unit/test_merkle.rs"]
 mod test_merkle;
-#[path = "unit/test_pathologies.rs"]
 mod test_pathologies;
-#[path = "unit/test_reconcile_algebraic.rs"]
 mod test_reconcile_algebraic;
-#[path = "unit/test_restricted_joins.rs"]
 mod test_restricted_joins;
-#[path = "unit/test_sanity.rs"]
 mod test_sanity;
-#[path = "unit/test_state_at.rs"]
 mod test_state_at;
-#[path = "unit/test_tombstone.rs"]
 mod test_tombstone;
-#[path = "unit/test_traversal.rs"]
 mod test_traversal;
-#[path = "unit/test_utils.rs"]
 mod test_utils;
