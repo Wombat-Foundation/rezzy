@@ -3622,6 +3622,97 @@ fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates()
     assert_eq!(universe.hashes().len(), 3);
 }
 
+/// `bucket_index`'s `hash.get(next_index)` is `None` exactly when
+/// `byte_index` is the hash's last valid index (15, for the 16-byte
+/// `StructuralHash`) -- i.e. at `depth` 24 and 25 (`HAMT_MAX_DEPTH - 2` and
+/// `HAMT_MAX_DEPTH - 1`), where the 5-bit slot window runs past the hash's
+/// available 128 bits. This is not a missing case to panic or early-return
+/// on: it's intentional zero-extension -- the high byte simply isn't OR'd
+/// into `word`, so the slot is computed from whatever low bits remain. It's
+/// exactly what lets `HAMT_MAX_DEPTH` (`ceil(128 / 5)`) be reachable at all
+/// without an out-of-bounds read, since 128 isn't a multiple of 5. Ordinary
+/// (non-adversarial) routing hashes essentially never collide 120+ bits deep,
+/// so this branch doesn't occur under random test data -- hence why it read
+/// as uncovered. This directly exercises it (and depth 23, the last depth
+/// where the high byte read still succeeds, as the contrasting case) rather
+/// than changing behavior at the boundary.
+#[test]
+fn test_bucket_index_zero_extends_past_the_last_hash_byte() {
+    // All-0xFF except the last two bytes, so a wrong zero-extension (e.g. if
+    // it accidentally wrapped and read byte 0 as "next") would show up as a
+    // nonzero high contribution instead of silently matching by coincidence.
+    let mut hash: StructuralHash = [0xFF_u8; 16];
+    hash[14] = 0b1010_1100; // byte_index for depth 23
+    hash[15] = 0b0110_0101; // byte_index for depth 24 and 25 (last valid index)
+
+    // depth 23: bit_offset=115, byte_index=14, bit_shift=3. next_index=15 is
+    // in bounds, so word = hash[14] | (hash[15] << 8), matching the Some arm.
+    let expected_23 = {
+        let word = u16::from(hash[14]) | (u16::from(hash[15]) << 8);
+        usize::from((word >> 3) & HAMT_BRANCH_MASK)
+    };
+    assert_eq!(bucket_index(&hash, 23), expected_23);
+
+    // depth 24: bit_offset=120, byte_index=15, bit_shift=0. next_index=16 is
+    // out of bounds (hash.get(16) is None) -- word is hash[15] alone, no OR.
+    let expected_24 = usize::from(u16::from(hash[15]) & HAMT_BRANCH_MASK);
+    assert_eq!(bucket_index(&hash, 24), expected_24);
+
+    // depth 25 (HAMT_MAX_DEPTH - 1, the deepest depth bucket_index is ever
+    // called at): bit_offset=125, byte_index=15, bit_shift=5. Same None arm,
+    // different shift -- only 3 bits of real hash remain (a StructuralHash
+    // has no byte 16 to supply the rest), the top bits of the slot are 0.
+    let expected_25 = usize::from((u16::from(hash[15]) >> 5) & HAMT_BRANCH_MASK);
+    assert_eq!(bucket_index(&hash, 25), expected_25);
+    assert_eq!(
+        HAMT_MAX_DEPTH - 1,
+        25,
+        "assumption behind this test's depths"
+    );
+}
+
+#[test]
+fn test_indexed_universe_try_build_bounded_reports_true_distinct_count_past_bound() {
+    // Exercises IndexedUniverse::try_build's overflow-counting branch --
+    // "keep counting distinct hashes past the bound" -- without needing
+    // ~4.3 billion real StructuralHash entries to reach it in production:
+    // try_build_bounded runs the exact same code, parameterized on where the
+    // bound sits, so a tiny universe can trip it deterministically.
+    fn hash(n: u8) -> StructuralHash {
+        let mut h = [0_u8; 16];
+        h[0] = n;
+        h
+    }
+
+    // 3 distinct hashes trip a bound of 2. A duplicate of an already-seen
+    // hash appears after the trip point to confirm the post-trip counting
+    // loop dedups via its own `seen` set, not just double-counting whatever
+    // was already in `index_by_hash`.
+    let universe = vec![hash(0), hash(1), hash(2), hash(0), hash(3)];
+
+    let err = crate::hamt::audit::IndexedUniverse::try_build_bounded(universe, 2)
+        .expect_err("5 hashes (4 distinct) must overflow a bound of 2");
+
+    assert_eq!(
+        err.distinct_count, 4,
+        "distinct_count must be the true total (4), not bound+1 (3) and not \
+         double-counting the repeated hash(0)"
+    );
+}
+
+#[test]
+fn test_indexed_universe_try_build_bounded_at_exactly_the_bound_succeeds() {
+    fn hash(n: u8) -> StructuralHash {
+        let mut h = [0_u8; 16];
+        h[0] = n;
+        h
+    }
+    let universe = vec![hash(0), hash(1), hash(2)];
+    let indexed = crate::hamt::audit::IndexedUniverse::try_build_bounded(universe, 3)
+        .expect("exactly at the bound (not past it) must still succeed");
+    assert_eq!(indexed.len(), 3);
+}
+
 #[test]
 fn test_universe_too_large_display() {
     use alloc::string::ToString;

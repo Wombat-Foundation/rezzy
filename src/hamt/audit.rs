@@ -76,21 +76,38 @@ impl IndexedUniverse {
     pub fn try_build(
         universe: impl IntoIterator<Item = StructuralHash>,
     ) -> Result<Self, UniverseTooLarge> {
+        Self::try_build_bounded(universe, u32::MAX as usize)
+    }
+
+    /// [`Self::try_build`], but with the overflow bound as a parameter
+    /// instead of the hard-coded `u32::MAX`.
+    ///
+    /// This is the actual overflow-handling logic; `try_build` is a thin
+    /// wrapper fixing `bound` to `u32::MAX`. The indirection exists purely so
+    /// tests can exercise the "past the bound" branch (the counting loop
+    /// starting at what's now line ~152 below) at a tiny, deterministic
+    /// universe size instead of needing ~4.3 billion actual `StructuralHash`
+    /// entries in memory to reach it -- the two run the identical code, just
+    /// parameterized on where the line is.
+    pub(crate) fn try_build_bounded(
+        universe: impl IntoIterator<Item = StructuralHash>,
+        bound: usize,
+    ) -> Result<Self, UniverseTooLarge> {
         let mut hashes: Vec<StructuralHash> = Vec::new();
         let mut index_by_hash: HashMap<StructuralHash, u32> = HashMap::new();
         let mut iter = universe.into_iter();
         for hash in iter.by_ref() {
             if let std::collections::hash_map::Entry::Vacant(entry) = index_by_hash.entry(hash) {
                 // A new distinct hash needs index `hashes.len()`. If we're
-                // already at `u32::MAX`, the resulting length would be
-                // `u32::MAX + 1`, which no longer fits in `u32` (and would
-                // make the later `u32::try_from(universe.len())` for bitmap
-                // construction panic). Reject here so `len()` is always
-                // representable as a `u32`.
-                if hashes.len() >= u32::MAX as usize {
+                // already at `bound` (`u32::MAX` in production), the
+                // resulting length would be one past what still fits in a
+                // `u32` (and would make the later
+                // `u32::try_from(universe.len())` for bitmap construction
+                // panic). Reject here so `len()` is always representable.
+                if hashes.len() >= bound {
                     // Keep counting distinct hashes past the bound so
                     // `distinct_count` reports the *true* total — the previous
-                    // value was always `u32::MAX + 1` (no information).
+                    // value was always `bound + 1` (no information).
                     let mut seen: HashSet<StructuralHash> = index_by_hash.keys().copied().collect();
                     seen.insert(hash);
                     let mut distinct_count = seen.len();
