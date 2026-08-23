@@ -358,8 +358,8 @@ fn hash_base64_engine(room_version: &str) -> base64::engine::GeneralPurpose {
 
 /// The Matrix redaction algorithm applied to a raw PDU `Value`, both halves:
 ///
-/// 1. Drop every top-level key outside the preserved whitelist (see
-///    [`redact_top_level`]).
+/// 1. Drop every top-level key outside the preserved whitelist (see the
+///    private `redact_top_level` helper below).
 /// 2. Strip `content` down to the keys [`redaction_preserved_keys`] preserves
 ///    for `room_version`.
 ///

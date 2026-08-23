@@ -487,9 +487,10 @@ where
 ///
 /// For V2.1+, after the power phase, non-power conflicted events whose sender
 /// is already banned in `resolved` are dropped before the mainline sort (see
-/// [`is_sender_banned`]). This is the sound replacement for the retired CDO
-/// pre-filter: it applies the auth predicate directly against the authoritative
-/// resolved state rather than approximating causal domination.
+/// the private `is_sender_banned` helper below). This is the sound
+/// replacement for the retired CDO pre-filter: it applies the auth predicate
+/// directly against the authoritative resolved state rather than
+/// approximating causal domination.
 ///
 /// # Algorithm overview
 ///
