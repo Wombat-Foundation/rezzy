@@ -4287,6 +4287,7 @@ fn test_refcount_table_shared_hash_not_zeroed_by_one_of_two_referrers() {
 #[test]
 fn test_refcount_table_apply_superseded_underflow_is_atomic() {
     use crate::hamt::gc::{RefcountTable, RefcountUnderflow};
+    use alloc::string::ToString;
 
     let key = b"dummy_server_key";
     let entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i)).collect();
@@ -4304,6 +4305,11 @@ fn test_refcount_table_apply_superseded_underflow_is_atomic() {
         .apply_superseded(&hashes)
         .expect_err("decrementing untracked hashes must fail, not silently no-op");
     assert!(matches!(err, RefcountUnderflow { .. }));
+    assert_eq!(
+        err.to_string(),
+        "refcount underflow: decremented a hash with no tracked positive count \
+         (missing or out-of-order apply_new, or a double decrement)"
+    );
 
     // Atomicity: the tracked hash's count must be untouched, even though it
     // appeared earlier in `hashes` than the untracked ones that caused the
