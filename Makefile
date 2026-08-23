@@ -86,9 +86,9 @@ rust/doc: ##H Generate rustdoc API documentation
 .PHONY: rust/test
 rust/test: ##H Run Rust tests (p=NAME for specific test, a=ARGS for test binary args)
 ifdef p
-	$(CARGO) test --test $(p) $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
+	$(CARGO) test --timings --test $(p) $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
 else
-	$(CARGO) test --lib --tests $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
+	$(CARGO) test --timings --lib --tests $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
 endif
 
 .PHONY: rust/bench

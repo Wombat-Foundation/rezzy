@@ -3203,10 +3203,10 @@ fn test_reachability_audit_partitions_universe_and_agrees_with_unreachable_node_
 
     // Same two-disjoint-trees fixture as
     // `test_unreachable_node_hashes_reports_only_the_orphan`, reused here to
-    // check the fuller `ReachabilityAudit` result: `reachable` must be the
+    // check the fuller `NodeReachabilityAudit` result: `reachable` must be the
     // exact complement of `unreachable` within `universe`, and must agree
     // with what `unreachable_node_hashes` reports for the same inputs (it
-    // is defined as a thin wrapper over `reachability_audit`).
+    // is defined as a thin wrapper over `node_reachability_audit`).
     let live_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
     let orphan_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
     let root_live = build_hamt(b"live_key", live_entries).expect("build live root");
@@ -3234,7 +3234,7 @@ fn test_reachability_audit_partitions_universe_and_agrees_with_unreachable_node_
         .collect();
 
     let audit =
-        crate::hamt::reachability_audit([root_live.clone()], universe.clone(), &mut resolver)
+        crate::hamt::node_reachability_audit([root_live.clone()], universe.clone(), &mut resolver)
             .expect("audit should succeed");
 
     let reachable_set: BTreeSet<StructuralHash> = audit.reachable.iter().copied().collect();
@@ -3274,7 +3274,7 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
     // `test_reachability_audit_partitions_universe_and_agrees_with_unreachable_node_hashes`.
     // The bitmap variant must partition the same way and, once its dense
     // indexes are mapped back through `IndexedUniverse`, must agree exactly
-    // with the `StructuralHash`-keyed `reachability_audit` result on the
+    // with the `StructuralHash`-keyed `node_reachability_audit` result on the
     // same inputs.
     let live_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
     let orphan_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
@@ -3302,7 +3302,7 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
         .chain(expected_orphan_hashes.iter().copied())
         .collect();
 
-    let bitmap_audit = crate::hamt::bitmap_reachability_audit(
+    let bitmap_audit = crate::hamt::bitmap_node_reachability_audit(
         [root_live.clone()],
         universe.clone(),
         &mut resolver,
@@ -3347,9 +3347,9 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
         "bitmap unreachable side, resolved back through IndexedUniverse, must match the orphan tree"
     );
 
-    // Must agree with the StructuralHash-keyed reachability_audit on the
+    // Must agree with the StructuralHash-keyed node_reachability_audit on the
     // exact same inputs.
-    let hash_audit = crate::hamt::reachability_audit([root_live], universe, &mut resolver)
+    let hash_audit = crate::hamt::node_reachability_audit([root_live], universe, &mut resolver)
         .expect("hash audit should succeed");
     let hash_reachable_set: BTreeSet<StructuralHash> =
         hash_audit.reachable.iter().copied().collect();
@@ -3364,7 +3364,7 @@ fn test_filter_unreachable_node_hashes_agrees_with_reachability_audit() {
     // Same two-disjoint-trees fixture as the bitmap/hash audit agreement
     // tests above. Xor8 has no false negatives and a <0.4% false-positive
     // rate, so on this small a universe (128 hashes) it should agree with
-    // the exact `reachability_audit` result exactly, not just "close."
+    // the exact `node_reachability_audit` result exactly, not just "close."
     let live_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
     let orphan_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
     let root_live = build_hamt(b"live_key", live_entries).expect("build live root");
@@ -3420,7 +3420,7 @@ fn test_filter_unreachable_node_hashes_agrees_with_reachability_audit() {
 #[test]
 fn test_filter_unreachable_node_hashes_dedups_output() {
     // Same duplicate-unreachable-hash regression as
-    // `reachability_audit`/bitmap variants, for the filter-backed path: a
+    // `node_reachability_audit`/bitmap variants, for the filter-backed path: a
     // hash repeated in `universe` must still be emitted exactly once.
     let live_entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i.wrapping_mul(10))).collect();
     let orphan_entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i.wrapping_mul(7))).collect();
@@ -3458,7 +3458,61 @@ fn test_filter_unreachable_node_hashes_dedups_output() {
     assert_eq!(unreachable.len(), orphan_hashes.len());
 }
 
-/// Regression for the duplicate-unreachable dedup: `reachability_audit`'s
+#[cfg(feature = "xor-filter")]
+#[test]
+fn test_filter_unreachable_node_hashes_from_handles_matches_direct() {
+    // filter_unreachable_node_hashes_from_handles (RootHandle in) must agree
+    // exactly with filter_unreachable_node_hashes (Arc<HamtNode> in) on the
+    // same tree, once the handle's structural_hash is resolved back to the
+    // same root.
+    let live_entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i.wrapping_mul(10))).collect();
+    let orphan_entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i.wrapping_mul(7))).collect();
+    let root_live = build_hamt(b"live_key", live_entries).expect("build live root");
+    let root_orphan = build_hamt(b"orphan_key", orphan_entries).expect("build orphan root");
+
+    let root_live_hash = root_live.structural_hash;
+    let root_live_for_resolver = root_live.clone();
+    let mut resolver = move |hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        if *hash == root_live_hash {
+            Ok(root_live_for_resolver.clone())
+        } else {
+            unreachable!("both trees are fully resolved below the root, no lazy children")
+        }
+    };
+
+    let live_hashes: Vec<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_live, &mut resolver)
+            .expect("live walk should succeed");
+    let orphan_hashes: Vec<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_orphan, &mut resolver)
+            .expect("orphan walk should succeed");
+    let universe: Vec<StructuralHash> = live_hashes
+        .iter()
+        .copied()
+        .chain(orphan_hashes.iter().copied())
+        .collect();
+
+    let handle = crate::hamt::RootHandle {
+        structural_hash: root_live_hash,
+        state_group_id: [0_u8; 32],
+    };
+
+    let via_handle = crate::hamt::audit::filter_unreachable_node_hashes_from_handles(
+        [handle],
+        universe.clone(),
+        &mut resolver,
+    )
+    .expect("handle-based filter audit should succeed");
+
+    let via_direct =
+        crate::hamt::audit::filter_unreachable_node_hashes([root_live], universe, &mut resolver)
+            .expect("direct filter audit should succeed");
+
+    assert_eq!(via_handle, via_direct);
+    assert_eq!(via_handle.len(), orphan_hashes.len());
+}
+
+/// Regression for the duplicate-unreachable dedup: `node_reachability_audit`'s
 /// `unreachable` field is a `Vec` that must remain a *partition* of `universe`
 /// (each hash at most once), matching the dedup the bitmap variant's
 /// `IndexedUniverse` provides. When `universe` repeats an unreachable hash,
@@ -3492,7 +3546,7 @@ fn test_reachability_audit_dedups_duplicate_unreachable_hashes() {
     universe.push(orphan); // triplicate
 
     let hash_audit =
-        crate::hamt::reachability_audit([root_live.clone()], universe.clone(), &mut resolver)
+        crate::hamt::node_reachability_audit([root_live.clone()], universe.clone(), &mut resolver)
             .expect("hash audit should succeed");
     // `unreachable` must be a partition: the orphan appears exactly once,
     // not once per occurrence in `universe`.
@@ -3507,8 +3561,9 @@ fn test_reachability_audit_dedups_duplicate_unreachable_hashes() {
     );
 
     // And it must agree with the bitmap variant's dedup.
-    let bitmap_audit = crate::hamt::bitmap_reachability_audit([root_live], universe, &mut resolver)
-        .expect("bitmap audit should succeed");
+    let bitmap_audit =
+        crate::hamt::bitmap_node_reachability_audit([root_live], universe, &mut resolver)
+            .expect("bitmap audit should succeed");
     let bitmap_unreachable: BTreeSet<StructuralHash> = bitmap_audit
         .unreachable
         .iter()
@@ -3665,7 +3720,7 @@ fn test_bitmap_audit_error_source_and_downcast() {
 #[test]
 fn test_bitmap_reachability_audit_dedupes_shared_hash_missing_from_universe() {
     // `universe` deliberately omits a hash the walk actually reaches, so
-    // `bitmap_reachability_audit` must fall back to `visited_outside_universe`
+    // `bitmap_node_reachability_audit` must fall back to `visited_outside_universe`
     // for it. Two roots share that same out-of-universe subtree, so the
     // resolver must still only be asked to resolve it once across the whole
     // walk — proving the outside-universe fallback set is doing real dedup,
@@ -3729,7 +3784,7 @@ fn test_bitmap_reachability_audit_dedupes_shared_hash_missing_from_universe() {
     // they both lazily reference.
     let universe = vec![root_a.structural_hash, root_b.structural_hash];
 
-    let bitmap_audit = crate::hamt::bitmap_reachability_audit(
+    let bitmap_audit = crate::hamt::bitmap_node_reachability_audit(
         [root_a.clone(), root_b.clone()],
         universe,
         &mut resolver,

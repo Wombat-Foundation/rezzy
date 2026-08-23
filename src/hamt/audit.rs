@@ -10,7 +10,7 @@
 //! scan/snapshot consistency (was `universe` collected consistently with the
 //! roots?), and any notion of quarantine, age cutoffs, or hard deletion are
 //! the storage backend's responsibility, not this module's. Treat the
-//! `unreachable` side of a [`ReachabilityAudit`] as a candidate list for
+//! `unreachable` side of a [`NodeReachabilityAudit`] as a candidate list for
 //! further safety checks, never as a delete list on its own.
 
 use std::collections::{HashMap, HashSet};
@@ -148,19 +148,19 @@ impl IndexedUniverse {
 /// [`RoaringBitmap`]s over an [`IndexedUniverse`] rather than as
 /// `StructuralHash` collections.
 ///
-/// Use this instead of [`ReachabilityAudit`] when the caller needs to keep
+/// Use this instead of [`NodeReachabilityAudit`] when the caller needs to keep
 /// many audits in memory, diff them, or intersect/union them repeatedly —
 /// operations `RoaringBitmap` is built for and a `HashSet<StructuralHash>`
 /// is not. `universe` is the only place `StructuralHash` identity lives;
 /// `reachable`/`unreachable` are addressed purely through its dense indexes.
 #[derive(Debug, Clone)]
-pub struct BitmapReachabilityAudit {
+pub struct BitmapNodeReachabilityAudit {
     pub universe: IndexedUniverse,
     pub reachable: RoaringBitmap,
     pub unreachable: RoaringBitmap,
 }
 
-/// Errors from [`bitmap_reachability_audit`]: either the traversal itself
+/// Errors from [`bitmap_node_reachability_audit`]: either the traversal itself
 /// failed, or `universe` could not be given a dense index.
 #[derive(Debug, Clone)]
 pub enum BitmapAuditError<E> {
@@ -207,19 +207,19 @@ impl<E> From<HamtTraversalError<E>> for BitmapAuditError<E> {
 /// Partitions `universe` into reachable/unreachable [`RoaringBitmap`]s over a
 /// freshly built [`IndexedUniverse`].
 ///
-/// Same traversal and semantics as [`reachability_audit`], but marks
+/// Same traversal and semantics as [`node_reachability_audit`], but marks
 /// directly into a `RoaringBitmap` via `universe`'s dense index instead of
 /// accumulating a `HashSet<StructuralHash>` mark set first — this is the
 /// version worth using when the caller actually wants the roaring
-/// representation, not `reachability_audit`'s result reshaped afterward.
+/// representation, not `node_reachability_audit`'s result reshaped afterward.
 /// Hashes the walk reaches that are outside `universe` are marked but never
-/// materialize a bitmap entry, matching `reachability_audit`'s handling of
+/// materialize a bitmap entry, matching `node_reachability_audit`'s handling of
 /// the same case.
 ///
 /// # Errors
 /// Returns [`BitmapAuditError::Universe`] if `universe` has more than
 /// `u32::MAX` distinct hashes, or [`BitmapAuditError::Traversal`] on the
-/// same conditions as [`reachability_audit`].
+/// same conditions as [`node_reachability_audit`].
 ///
 /// # Panics
 /// Does not panic on any caller-controlled input — an oversized `universe`
@@ -228,11 +228,11 @@ impl<E> From<HamtTraversalError<E>> for BitmapAuditError<E> {
 /// `u32` for bitmap construction, which [`IndexedUniverse::try_build`]
 /// (called just above it, and propagated with `?` on failure) already
 /// guarantees fits.
-pub fn bitmap_reachability_audit<K, V, F, E>(
+pub fn bitmap_node_reachability_audit<K, V, F, E>(
     roots: impl IntoIterator<Item = Arc<HamtNode<K, V>>>,
     universe: impl IntoIterator<Item = StructuralHash>,
     resolver: &mut F,
-) -> Result<BitmapReachabilityAudit, BitmapAuditError<E>>
+) -> Result<BitmapNodeReachabilityAudit, BitmapAuditError<E>>
 where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -241,7 +241,7 @@ where
     let mut reachable = RoaringBitmap::new();
     // Hashes outside `universe` still need dedup so a subtree shared across
     // roots (or reachable from inside and outside `universe`) is walked
-    // once, same as `reachability_audit`. `reachable`'s own membership
+    // once, same as `node_reachability_audit`. `reachable`'s own membership
     // check covers dedup for anything actually in `universe`, so this set
     // only ever grows for hashes the caller's `universe` scan missed.
     let mut visited_outside_universe: HashSet<StructuralHash> = HashSet::new();
@@ -265,7 +265,7 @@ where
     let full_range: RoaringBitmap = (0..universe_len).collect();
     let unreachable: RoaringBitmap = std::ops::Sub::sub(full_range, &reachable);
 
-    Ok(BitmapReachabilityAudit {
+    Ok(BitmapNodeReachabilityAudit {
         universe,
         reachable,
         unreachable,
@@ -282,7 +282,7 @@ where
 /// re-deriving it downstream as `universe - unreachable` or re-walking the
 /// roots a second time.
 #[derive(Debug, Clone)]
-pub struct ReachabilityAudit {
+pub struct NodeReachabilityAudit {
     /// Hashes in `universe` reachable from at least one audited root.
     pub reachable: HashSet<StructuralHash>,
     /// Hashes in `universe` reachable from none of the audited roots.
@@ -311,11 +311,11 @@ pub struct ReachabilityAudit {
 /// [`walk_reachable_node_hashes`]'s error-recovery note); this function
 /// discards it and returns the error rather than a partial answer, so a
 /// caller never mistakes a partial reachable set for a complete one.
-pub fn reachability_audit<K, V, F, E>(
+pub fn node_reachability_audit<K, V, F, E>(
     roots: impl IntoIterator<Item = Arc<HamtNode<K, V>>>,
     universe: impl IntoIterator<Item = StructuralHash>,
     resolver: &mut F,
-) -> Result<ReachabilityAudit, HamtTraversalError<E>>
+) -> Result<NodeReachabilityAudit, HamtTraversalError<E>>
 where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -338,7 +338,7 @@ where
         }
     }
 
-    Ok(ReachabilityAudit {
+    Ok(NodeReachabilityAudit {
         reachable,
         unreachable,
     })
@@ -347,12 +347,12 @@ where
 /// Computes the node hashes in `universe` that are not reachable from any of
 /// `roots`.
 ///
-/// Convenience wrapper over [`reachability_audit`] for callers that only
-/// need the candidate list; see [`ReachabilityAudit`] if the reachable side
+/// Convenience wrapper over [`node_reachability_audit`] for callers that only
+/// need the candidate list; see [`NodeReachabilityAudit`] if the reachable side
 /// is also useful (e.g. for a second-pass confirmation check).
 ///
 /// # Errors
-/// See [`reachability_audit`].
+/// See [`node_reachability_audit`].
 pub fn unreachable_node_hashes<K, V, F, E>(
     roots: impl IntoIterator<Item = Arc<HamtNode<K, V>>>,
     universe: impl IntoIterator<Item = StructuralHash>,
@@ -361,7 +361,7 @@ pub fn unreachable_node_hashes<K, V, F, E>(
 where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
-    reachability_audit(roots, universe, resolver).map(|audit| audit.unreachable)
+    node_reachability_audit(roots, universe, resolver).map(|audit| audit.unreachable)
 }
 
 /// Maps a [`StructuralHash`] to the `u64` key [`xorf`]'s filters operate on.
@@ -380,16 +380,16 @@ fn xor_filter_key(hash: &StructuralHash) -> u64 {
 /// [`unreachable_node_hashes`], but with peak memory bounded by the
 /// *reachable* set instead of the full `universe`.
 ///
-/// `reachability_audit`/`bitmap_reachability_audit` both build an exact
+/// `node_reachability_audit`/`bitmap_node_reachability_audit` both build an exact
 /// index over the *entire* `universe` before they can answer anything --
 /// `IndexedUniverse`'s `HashMap<StructuralHash, u32>` (~40-50 bytes/entry) or
-/// `reachability_audit`'s own `marked: HashSet<StructuralHash>`. For a
+/// `node_reachability_audit`'s own `marked: HashSet<StructuralHash>`. For a
 /// storage backend where `universe` is "every node hash ever written,
 /// including long-dead garbage" and `roots` is comparatively small "live"
 /// data, that's paying for the whole history to answer a question about the
 /// live set.
 ///
-/// This version walks `roots` once into an [`Xor8`] filter (~9-10 bits/entry,
+/// This version walks `roots` once into an `Xor8` filter (~9-10 bits/entry,
 /// no false negatives, <0.4% false positive rate) instead of an exact
 /// `HashSet`/dense index, then streams `universe` once, testing each hash
 /// against the filter. A hash the filter reports as reachable is trusted
@@ -402,7 +402,7 @@ fn xor_filter_key(hash: &StructuralHash) -> u64 {
 /// sweep, never wrongly proposes a live hash for removal.
 ///
 /// The `unreachable` side is still deduplicated (a hash repeated in
-/// `universe` is emitted once), which — same as `reachability_audit` — costs
+/// `universe` is emitted once), which — same as `node_reachability_audit` — costs
 /// a `HashSet` sized to the *unreachable* count, not the full universe. For
 /// the intended use (a mostly-live universe, garbage the minority), that's
 /// the actual memory profile improvement over the exact variants; it is not
@@ -410,7 +410,7 @@ fn xor_filter_key(hash: &StructuralHash) -> u64 {
 /// garbage.
 ///
 /// # Errors
-/// Same as [`reachability_audit`]: a failure from `resolver`, or a walk that
+/// Same as [`node_reachability_audit`]: a failure from `resolver`, or a walk that
 /// recurses past the deepest depth a legitimately-built HAMT can have.
 #[cfg(feature = "xor-filter")]
 pub fn filter_unreachable_node_hashes<K, V, F, E>(
@@ -451,4 +451,37 @@ where
     }
 
     Ok(unreachable)
+}
+
+/// [`filter_unreachable_node_hashes`], addressed by [`super::RootHandle`]
+/// instead of an already-resolved `Arc<HamtNode<K, V>>`.
+///
+/// `RootHandle` is the crate's actual public identifier for a resolved root
+/// (`structural_hash` + `state_group_id`) -- the thing a caller's storage
+/// layer would realistically have on hand for "every currently-live state
+/// group," rather than a live `Arc` to each root's node. This resolves each
+/// handle's `structural_hash` through `resolver` (the same lazy-loading path
+/// every other HAMT traversal in this crate uses) before delegating to
+/// [`filter_unreachable_node_hashes`], so a caller doing GC never needs to
+/// touch `HamtNode` directly to drive an audit -- `RootHandle` in, candidate
+/// list out.
+///
+/// # Errors
+/// Same as [`filter_unreachable_node_hashes`], plus `resolver` failing to
+/// resolve one of `roots`' structural hashes.
+#[cfg(feature = "xor-filter")]
+pub fn filter_unreachable_node_hashes_from_handles<K, V, F, E>(
+    roots: impl IntoIterator<Item = super::RootHandle>,
+    universe: impl IntoIterator<Item = StructuralHash>,
+    resolver: &mut F,
+) -> Result<Vec<StructuralHash>, HamtTraversalError<E>>
+where
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    let resolved_roots: Vec<Arc<HamtNode<K, V>>> = roots
+        .into_iter()
+        .map(|handle| resolver(&handle.structural_hash))
+        .collect::<Result<_, E>>()
+        .map_err(HamtTraversalError::Resolve)?;
+    filter_unreachable_node_hashes(resolved_roots, universe, resolver)
 }

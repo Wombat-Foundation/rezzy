@@ -23,12 +23,13 @@ pub mod hash;
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;
 
-#[cfg(feature = "xor-filter")]
-pub use audit::filter_unreachable_node_hashes;
 pub use audit::{
-    bitmap_reachability_audit, reachability_audit, unreachable_node_hashes, BitmapAuditError,
-    BitmapReachabilityAudit, IndexedUniverse, ReachabilityAudit, UniverseTooLarge,
+    bitmap_node_reachability_audit, node_reachability_audit, unreachable_node_hashes,
+    BitmapAuditError, BitmapNodeReachabilityAudit, IndexedUniverse, NodeReachabilityAudit,
+    UniverseTooLarge,
 };
+#[cfg(feature = "xor-filter")]
+pub use audit::{filter_unreachable_node_hashes, filter_unreachable_node_hashes_from_handles};
 pub use codec::PersistedInternalNode;
 pub use delta::{
     diff_hamt_nodes, diff_node_hashes, isolate_delta, reachable_node_hashes,
