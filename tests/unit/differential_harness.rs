@@ -7,7 +7,6 @@
 //!   pre-filter could not establish that, and the differential is how its
 //!   violations were caught.
 //! - **Drop-rate & winner-overlap:** `cdo_drop_rate_measured` reports how much
-//! - **Drop-rate & winner-overlap:** `cdo_drop_rate_measured` reports how much
 //!   the retained `apply_cdo_filter` operator drops and — the key signal — how
 //!   many dropped IDs appear as *winners* in the resolved state. That count is
 //!   0 on the regular generator: it never produces a dominated *winner*, so it

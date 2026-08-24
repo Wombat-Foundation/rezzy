@@ -548,8 +548,12 @@ mod tests {
         jsonl
             .lines()
             .filter(|l| !l.trim().is_empty())
-            .filter_map(|l| serde_json::from_str::<LeanEvent>(l).ok())
-            .map(|e| (e.event_id.clone(), e))
+            .map(|l| {
+                let e: LeanEvent = serde_json::from_str(l).unwrap_or_else(|err| {
+                    panic!("failed to parse JSONL fixture line: {err}\nline: {l}")
+                });
+                (e.event_id.clone(), e)
+            })
             .collect()
     }
 

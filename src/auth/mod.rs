@@ -1692,8 +1692,8 @@ pub fn warn_unexpected_auth_events<
 /// rather than raw `serde_json::Value`, so it works for any event
 /// representation (not just JSON-backed ones).
 ///
-/// Mirrors `auth_types_for_event`'s selection logic exactly; keep the two in
-/// sync if the algorithm changes.
+/// Delegates to the shared selection core [`auth_types_for_event_core`], so it
+/// cannot drift from [`auth_types_for_event`].
 fn required_auth_types_for<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
@@ -1703,49 +1703,32 @@ fn required_auth_types_for<
     event_type: &str,
     version: StateResVersion,
 ) -> Vec<(String, String)> {
-    let mut required = Vec::new();
-
-    if event_type == M_ROOM_CREATE {
-        return required;
-    }
-
-    if !version.is_v2_1_plus() {
-        required.push((String::from(M_ROOM_CREATE), String::new()));
-    }
-    required.push((String::from(M_ROOM_MEMBER), String::from(event.sender())));
-    required.push((String::from(M_ROOM_POWER_LEVELS), String::new()));
-
-    if event_type == M_ROOM_MEMBER {
-        if let Some(sk) = event.state_key().filter(|sk| *sk != event.sender()) {
-            required.push((String::from(M_ROOM_MEMBER), String::from(sk)));
-        }
-
-        let membership = event.get_membership();
-
-        if matches!(membership, Some(MEM_JOIN | MEM_INVITE | MEM_KNOCK)) {
-            required.push((String::from(M_ROOM_JOIN_RULES), String::new()));
-        }
-
-        if let Some(token) = event.content().get_third_party_invite_token() {
-            required.push((String::from(M_ROOM_THIRD_PARTY_INVITE), String::from(token)));
-        }
-
-        if membership == Some(MEM_JOIN) {
-            if let Some(authorising_user) = event.get_join_authorised_via_users_server() {
-                required.push((String::from(M_ROOM_MEMBER), String::from(authorising_user)));
-            }
-        }
-    }
-
-    required
+    auth_types_for_event_core(
+        event_type,
+        event.sender(),
+        event.state_key(),
+        event.get_membership(),
+        event.content().get_third_party_invite_token(),
+        event.get_join_authorised_via_users_server(),
+        version,
+    )
 }
 
-#[must_use]
-pub fn auth_types_for_event(
+/// The single auth-event selection algorithm shared by both the JSON-facing
+/// [`auth_types_for_event`] and the trait-generic [`required_auth_types_for`].
+///
+/// Returns the `(type, state_key)` pairs an event requires in its
+/// `auth_events`, given the event's already-extracted fields. Version checks
+/// route through [`StateResVersion::is_v2_1_plus`] so there is one place the
+/// V2.1 create-omission rule is expressed.
+#[allow(clippy::too_many_arguments)]
+fn auth_types_for_event_core(
     event_type: &str,
     sender: &str,
     state_key: Option<&str>,
-    content: &serde_json::Value,
+    membership: Option<&str>,
+    third_party_invite_token: Option<&str>,
+    join_authorised_via_users_server: Option<&str>,
     version: StateResVersion,
 ) -> Vec<(String, String)> {
     let mut auth_types = Vec::new();
@@ -1755,10 +1738,7 @@ pub fn auth_types_for_event(
     }
 
     // V2.1+ omits m.room.create from auth events (spec change)
-    if !matches!(
-        version,
-        StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
-    ) {
+    if !version.is_v2_1_plus() {
         auth_types.push((M_ROOM_CREATE.into(), String::new()));
     }
     auth_types.push((M_ROOM_MEMBER.into(), sender.into()));
@@ -1769,40 +1749,53 @@ pub fn auth_types_for_event(
             auth_types.push((M_ROOM_MEMBER.into(), sk.into()));
         }
 
-        let membership = content.get(FIELD_MEMBERSHIP).and_then(|v| v.as_str());
-
-        if membership == Some(MEM_JOIN)
-            || membership == Some(MEM_INVITE)
-            || membership == Some(MEM_KNOCK)
-        {
+        if matches!(membership, Some(MEM_JOIN | MEM_INVITE | MEM_KNOCK)) {
             auth_types.push((M_ROOM_JOIN_RULES.into(), String::new()));
         }
 
-        if let Some(tpi) = content
-            .get(FIELD_THIRD_PARTY_INVITE)
-            .and_then(|t| t.as_object())
-        {
-            if let Some(token) = tpi
-                .get(FIELD_SIGNED)
-                .and_then(|s| s.as_object())
-                .and_then(|s| s.get(FIELD_TOKEN))
-                .and_then(|t| t.as_str())
-            {
-                auth_types.push((M_ROOM_THIRD_PARTY_INVITE.into(), token.into()));
-            }
+        if let Some(token) = third_party_invite_token {
+            auth_types.push((M_ROOM_THIRD_PARTY_INVITE.into(), token.into()));
         }
 
         if membership == Some(MEM_JOIN) {
-            if let Some(authorising_user) = content
-                .get(crate::basespec::event_types::FIELD_JOIN_AUTHORISED_VIA_USERS_SERVER)
-                .and_then(|v| v.as_str())
-            {
+            if let Some(authorising_user) = join_authorised_via_users_server {
                 auth_types.push((M_ROOM_MEMBER.into(), authorising_user.into()));
             }
         }
     }
 
     auth_types
+}
+
+#[must_use]
+pub fn auth_types_for_event(
+    event_type: &str,
+    sender: &str,
+    state_key: Option<&str>,
+    content: &serde_json::Value,
+    version: StateResVersion,
+) -> Vec<(String, String)> {
+    let membership = content.get(FIELD_MEMBERSHIP).and_then(|v| v.as_str());
+
+    let third_party_invite_token = content
+        .get(FIELD_THIRD_PARTY_INVITE)
+        .and_then(|t| t.as_object())
+        .and_then(|tpi| tpi.get(FIELD_SIGNED).and_then(|s| s.as_object()))
+        .and_then(|s| s.get(FIELD_TOKEN).and_then(|t| t.as_str()));
+
+    let join_authorised_via_users_server = content
+        .get(crate::basespec::event_types::FIELD_JOIN_AUTHORISED_VIA_USERS_SERVER)
+        .and_then(|v| v.as_str());
+
+    auth_types_for_event_core(
+        event_type,
+        sender,
+        state_key,
+        membership,
+        third_party_invite_token,
+        join_authorised_via_users_server,
+        version,
+    )
 }
 
 #[cfg(test)]

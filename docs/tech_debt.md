@@ -120,16 +120,23 @@ alongside each event through `route_power_events`/`power_events`/
 
 ### `is_sender_banned` only checks bans, not under-powered senders
 
-The CDO-replacement design doc (`src/resolve/cdo.rs`'s module docs) frames the
-sound resolved-state screening predicate as "is this sender banned /
-**under-powered** in `resolved`?" — but the actual implementation
-(`is_sender_banned`, `src/resolve/iterative.rs`) only checks the ban case. A
-sender who was demoted below the power level their conflicted event requires
-(not banned outright) still gets the full mainline-sort + iterative auth
-treatment instead of being screened out early. Not a soundness bug (the same
-"iterative auth would reject it anyway" argument applies — see the commit
-message on `080fd2a`, which explicitly notes this as "not yet [done]"), just an
-incomplete optimization.
+The resolved-state screening pass (`is_sender_banned`, `src/resolve/iterative.rs`)
+is deliberately ban-only: it drops exactly those conflicted events whose sender
+is banned in the power-phase `resolved` state. That is the narrow, sound
+guarantee — the pass rejects only banned senders and never reorders the
+surviving set (a sender banned in the power-phase `resolved` is banned
+throughout the non-power phase, so the iterative auth would reject such an event
+regardless). A sender who was demoted below the power level their conflicted
+event requires (not banned outright) is **not** screened here and still gets
+the full mainline-sort + iterative auth treatment. This is intentional: the
+ban-only predicate is exact (it looks up `MEM_BAN` on the sender's member key),
+whereas distinguishing a pre-demotion-authorized event from a genuinely
+rejected one is not a simple predicate — see
+`test_anomaly_19_demoted_but_still_authorized`, where a demoted Priya's ban
+must still survive because it was authorized against an earlier PL grant that
+her later demotion cannot retroactively invalidate. Screening demoted senders
+out early would require such a predicate, which does not exist yet — an
+incomplete optimization, not a soundness bug.
 
 ### `Warning` channel only wired into `validate_syntactic` so far
 

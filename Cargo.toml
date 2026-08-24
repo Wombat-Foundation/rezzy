@@ -85,6 +85,9 @@ mock-ruma = [
 ]
 stress = ["dep:bincode"]
 mimalloc = ["dep:mimalloc"]
+# Compatibility alias: the `hashing` feature was removed, but downstream
+# manifests that request `rezzy/hashing` must still resolve.
+hashing = []
 
 [dependencies]
 anyhow = { version = "1.0", optional = true }

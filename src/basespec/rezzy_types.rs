@@ -499,6 +499,12 @@ pub fn reference_hash(
         ));
     }
 
+    if StateResVersion::from_room_version(room_version).is_none() {
+        return Err(alloc::format!(
+            "no reference hash for unsupported room version {room_version}: its event ID hash rules are undefined"
+        ));
+    }
+
     let mut redacted = redact_json(value, room_version);
     if let Some(obj) = redacted.as_object_mut() {
         obj.remove(FIELD_UNSIGNED);
@@ -515,14 +521,14 @@ pub fn reference_hash(
 
 /// Computes the Matrix **content hash** of a PDU `Value` (`hashes.sha256`):
 /// SHA-256 of the canonical JSON of the *unredacted* event with `unsigned`,
-/// `signatures`, and `hashes` removed, encoded with the room version's base64
-/// alphabet (STANDARD for v3, URL-safe for v4+).
+/// `signatures`, and `hashes` removed, encoded with standard unpadded base64
+/// for every room version.
 ///
 /// # Errors
 /// Returns `Err` if the canonical JSON cannot be serialized.
 pub fn compute_content_hash(
     value: &Value,
-    room_version: &str,
+    _room_version: &str,
 ) -> Result<alloc::string::String, alloc::string::String> {
     use crate::basespec::event_types::{FIELD_HASHES, FIELD_SIGNATURES, FIELD_UNSIGNED};
     use base64::Engine as _;
@@ -538,7 +544,7 @@ pub fn compute_content_hash(
     let canonical = serde_json::to_string(&v).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
-    Ok(hash_base64_engine(room_version).encode(hasher.finalize()))
+    Ok(base64::engine::general_purpose::STANDARD_NO_PAD.encode(hasher.finalize()))
 }
 
 /// Verifies a raw PDU `Value`'s `hashes.sha256` against its recomputed content
@@ -637,6 +643,14 @@ pub fn apply_redaction<Id: Clone + AsRef<str>, K: Clone>(
 ///
 /// The redaction event itself is retained in the returned set (it is a normal
 /// DAG event); only its *target* is replaced by the redacted form.
+///
+/// **Authorization note:** this function applies every in-batch redaction
+/// after verifying each PDU's content hash, but content-hash verification
+/// does **not** establish that the redaction's sender was permitted to redact
+/// its target. Redaction application must sit behind an authorization-checked
+/// caller (see [`crate::auth::check_auth`]); this ingest helper performs the
+/// structural application only and trusts the caller to have checked the
+/// redaction before calling, or to gate its output on such a check.
 ///
 /// # Errors
 /// Returns `Err` if a PDU fails content-hash verification, or cannot be parsed
@@ -1276,10 +1290,10 @@ pub struct LeanEvent<Id = String, C = Value, K = String> {
     pub soft_fail: bool,
     /// The room this event belongs to, if the caller populated it.
     ///
-    /// Every event ingested together in one call (e.g. [`ingest_events`])
-    /// shares the *same* `RoomId` allocation via `Arc::clone` -- one string,
-    /// cheaply refcounted across
-    /// however many events are in the batch, not duplicated per event.
+    /// When populated, every event ingested together in one call shares the
+    /// *same* `RoomId` allocation via `Arc::clone` -- one string, cheaply
+    /// refcounted across however many events are in the batch, not duplicated
+    /// per event.
     ///
     /// `None` is the default and is never treated as a mismatch against
     /// anything: the room-match check in
@@ -1287,6 +1301,12 @@ pub struct LeanEvent<Id = String, C = Value, K = String> {
     /// *both* sides of a comparison carry `Some`. This keeps the field
     /// fully additive -- a caller that never populates it gets identical
     /// behavior to before this field existed.
+    ///
+    /// Note that [`ingest_events`] does **not** populate this field -- it has
+    /// no room ID parameter, so events it returns always carry `None`. A
+    /// caller that wants the foreign-room check in
+    /// [`check_auth_chain`](crate::auth::check_auth_chain) to fire must set
+    /// `room_id` itself after ingest.
     pub room_id: Option<RoomId>,
 }
 

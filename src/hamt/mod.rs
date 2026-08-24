@@ -10,6 +10,17 @@
 //!   `NodeHashDelta` -- the replacement for periodic `audit` sweeps in the
 //!   common case (see `gc`'s module docs for why)
 //! - `tests`: regression coverage for the generic HAMT core
+//!
+//! # Release notes
+//!
+//! - **0.6.0**: the HAMT storage-GC reachability-audit API was renamed to
+//!   disambiguate it from `resolve::reachability`'s unrelated event-DAG
+//!   concept. `ReachabilityAudit` → [`NodeReachabilityAudit`],
+//!   `reachability_audit` → [`node_reachability_audit`],
+//!   `BitmapReachabilityAudit` → [`BitmapNodeReachabilityAudit`], and
+//!   `bitmap_reachability_audit` → [`bitmap_node_reachability_audit`]. The old
+//!   names were removed (no aliases remain), so downstream code must use the
+//!   new names; at the time of the rename neither had any caller.
 
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{

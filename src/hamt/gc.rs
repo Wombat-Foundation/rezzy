@@ -55,7 +55,7 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::HashMap;
+use crate::{HashMap, HashSet};
 
 use super::StructuralHash;
 
@@ -158,10 +158,22 @@ impl RefcountTable {
             let count = requested.entry(hash).or_insert(0);
             *count = count.saturating_add(1);
         }
-        for (&hash, &need) in &requested {
-            let have = self.counts.get(&hash).copied().unwrap_or(0);
-            if have < need {
-                return Err(RefcountUnderflow { hash });
+        // Validate in `hashes` order (not the unordered `requested` map's
+        // iteration order) so the reported underflow names the first failing
+        // distinct hash as documented. Each distinct hash is checked once;
+        // `validated` dedups repeats of the same hash across `hashes`.
+        let mut validated: HashSet<StructuralHash> = HashSet::default();
+        for &hash in hashes {
+            if !validated.insert(hash) {
+                continue;
+            }
+            // Every hash in `hashes` was tallied into `requested` above, so
+            // this lookup always hits; `if let` keeps it panic-free.
+            if let Some(&need) = requested.get(&hash) {
+                let have = self.counts.get(&hash).copied().unwrap_or(0);
+                if have < need {
+                    return Err(RefcountUnderflow { hash });
+                }
             }
         }
 

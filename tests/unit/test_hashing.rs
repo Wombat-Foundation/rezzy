@@ -196,9 +196,9 @@ fn test_redact_json_drops_room_id_on_v12_create_only() {
     let redacted_v11 = redact_json(&pdu, "11");
     assert_eq!(redacted_v11["room_id"], "!room:example.com");
 
-    // v12+ but NOT a create event: `room_id` still isn't part of the
-    // preserved top-level whitelist regardless (only `is_v12_create`
-    // matters), so this exercises the `event_type != create` short-circuit.
+    // v12+ but NOT a create event: `room_id` is preserved (only an
+    // `m.room.create` event drops it in v12+), so this exercises the
+    // `event_type != create` short-circuit.
     let msg = json!({
         "event_id": "$2:example.com",
         "type": "m.room.message",

@@ -16,7 +16,9 @@
 //!
 //! This module implements the full Matrix state resolution pipeline:
 //!
-//! 1. **CDO pre-filter** (V2.1.1 only): removes causally dominated events.
+//! 1. **Resolved-state screening pass** (V2.1.1+): drops non-power conflicted
+//!    events whose sender is already banned in the resolved state
+//!    (`is_sender_banned`), the sound replacement for the retired CDO pre-filter.
 //! 2. **Power phase**: classifies events as power vs. non-power, expands auth
 //!    chains, then iteratively auth-checks power events in reverse topological order.
 //! 3. **Non-power phase**: sorts remaining events by mainline distance and
@@ -867,8 +869,21 @@ where
     merge_unconflicted_power_events(version, &unconflicted_state, &mut resolved);
 
     let mainline = build_mainline(&resolved, &sort_context);
+    // Same resolved-state screening pass (V2.1.1+) as the main path in
+    // `resolve_iterative_sort_with_all_caches`: drop non-power conflicted
+    // events whose sender is already banned in `resolved` before mainline sort,
+    // so the delta path has the same ban-evasion behavior. See that pass's
+    // comment for the soundness argument and version gating.
     let mut non_power_list: alloc::vec::Vec<&LeanEvent<Id, C, K>> =
-        non_power_events.values().collect();
+        if version.has_ban_evasion_hardening() {
+            non_power_events
+                .iter()
+                .filter(|(_, ev)| !is_sender_banned(ev, &resolved, &sort_context))
+                .map(|(_, ev)| ev)
+                .collect()
+        } else {
+            non_power_events.values().collect()
+        };
     mainline_sort(&mut non_power_list, &mainline, &sort_context);
 
     for ev in non_power_list {

@@ -3448,6 +3448,19 @@ fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates()
     let idx1 = universe.index_of(&h1).expect("h1 was indexed");
     let idx2 = universe.index_of(&h2).expect("h2 was indexed");
     let idx3 = universe.index_of(&h3).expect("h3 was indexed");
+    // Indexes are assigned in first-seen order (input is [h1, h2, h1, h3]):
+    // h1 was first seen at 0, h2 at 1, h3 at 2. The duplicates collapse onto
+    // the first-seen index, so these exact expectations are load-bearing for
+    // the documented first-seen ordering, not just distinctness.
+    assert_eq!(idx1, 0, "h1 is the first hash seen, so it must own index 0");
+    assert_eq!(
+        idx2, 1,
+        "h2 is the second distinct hash seen, so it must own index 1"
+    );
+    assert_eq!(
+        idx3, 2,
+        "h3 is the third distinct hash seen, so it must own index 2"
+    );
     assert_ne!(idx1, idx2);
     assert_ne!(idx1, idx3);
     assert_ne!(idx2, idx3);
@@ -4116,6 +4129,11 @@ impl Rng {
 fn test_isolate_delta_order_invariant_randomized() {
     let mut rng = Rng::new(0xD15C_0DE1);
 
+    // Trials that actually build both roots and run the assertions. Collisions
+    // are skipped *without* counting, so a run where many trials collide does
+    // not trip the floor below.
+    let mut completed = 0_u32;
+
     for trial in 0..500_u32 {
         let key = format!("order_invariance_random_{trial}");
         let key_bytes = key.as_bytes();
@@ -4152,6 +4170,7 @@ fn test_isolate_delta_order_invariant_randomized() {
         ) else {
             continue;
         };
+        completed = completed.saturating_add(1);
 
         let mut infallible =
             |_hash: &StructuralHash| -> Result<Arc<HamtNode<u32, u32>>, core::convert::Infallible> {
@@ -4179,6 +4198,16 @@ fn test_isolate_delta_order_invariant_randomized() {
             "trial {trial}: removed set diverges from oracle"
         );
     }
+
+    // Most trials must actually build both roots and run the assertions
+    // (collisions are skipped without counting). Small integer keys collide
+    // in path-hash space relatively often at this key_space size, so the
+    // floor is deliberately modest -- it only guards against a regression
+    // where the assertions effectively never run.
+    assert!(
+        completed >= 20,
+        "too few completed (non-colliding) trials: {completed} < 20"
+    );
 }
 
 #[test]

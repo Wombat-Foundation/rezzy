@@ -162,9 +162,11 @@ fn test_banned_sender_message_is_hard_rejected() {
         auth_events: vec!["$create".to_string(), "$pl".to_string()],
         ..Default::default()
     };
-    // The ban of bob. Note bob's own message below does NOT cite this ban
-    // directly -- it reaches it transitively via $bob_join -> $pl -> ... so
-    // only the transitive BFS (V2.1.1) can surface it.
+    // The ban of bob. Bob's message does not cite this ban directly: the ban
+    // is not reachable transitively from the message's own auth_events
+    // ($create, $bob_join -> $create, $pl). It surfaces because the required
+    // sender-membership key for the message's auth is supplemented from the
+    // resolved state (MSC4297 in V2.1), where the ban wins over bob's join.
     let ban_bob = LeanEvent {
         event_id: "$ban_bob".to_string(),
         event_type: "m.room.member".to_string(),
@@ -181,10 +183,12 @@ fn test_banned_sender_message_is_hard_rejected() {
         ..Default::default()
     };
     // Bob's message. It omits the ban from its own auth_events, so whether the
-    // auth check sees bob as banned depends on transitive context gathering.
+    // auth check sees bob as banned depends on the resolved state supplying the
+    // required sender-membership key (which resolves to the ban).
     let bob_msg = LeanEvent {
         event_id: "$bob_msg".to_string(),
         event_type: "m.room.message".to_string(),
+        state_key: Some(String::new()),
         sender: "@bob:example.com".to_string(),
         origin_server_ts: 600,
         content: json!({ "body": "hello" }),
@@ -1062,10 +1066,10 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
     // Phase 1 evaluates the lockdown and Nexy\'s promotion and ban first (because they are Power Events).
     // Phase 2 evaluates Nexy\'s join. Nexy\'s join is rejected due to the lockdown.
     // In unpatched v2.1, her promotion and ban survive, leaving a "Ghost Moderator".
-    // Under CDO (v2.1.1) the outcome is the same: Nexy's join is rejected against
-    // the resolved (invite) join rules and her member key is absent, while her ban
-    // of the spammer and her promotion still resolve. Only the join evaporates;
-    // her promotion and ban are not transitively dropped.
+    // Under V2.1.1 resolution the outcome is the same: Nexy's join is rejected
+    // against the resolved (invite) join rules and her member key is absent,
+    // while her ban of the spammer and her promotion still resolve. Only the
+    // join evaporates; her promotion and ban are not transitively dropped.
 
     let (auth_context, conflicted_events, unconflicted_state) = make_ghost_moderator_events();
 

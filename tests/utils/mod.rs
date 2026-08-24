@@ -1,5 +1,6 @@
 use rezzy::auth::RoomState;
 use rezzy::basespec::rezzy_types::LeanEvent;
+use rezzy::basespec::rezzy_types::RoomId;
 use std::collections::HashMap;
 
 /// Builds an initial unconflicted state map containing only the `m.room.create` event
@@ -122,7 +123,10 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
                 .get("depth")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0),
-            room_id: None,
+            room_id: value
+                .get("room_id")
+                .and_then(serde_json::Value::as_str)
+                .map(RoomId::from),
         });
     }
     events

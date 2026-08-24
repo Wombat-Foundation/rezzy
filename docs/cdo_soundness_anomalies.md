@@ -1,14 +1,30 @@
 # CDO domination soundness — anomalies 17–20
 
-The V2.1.1 Causal Domination Operator (`resolve/cdo.rs`) is a pre-filter:
-before full state resolution runs, it drops conflicted events that a
-higher-priority admin action (ban, kick, PL demotion, or join-rules
-lockdown) "causally dominates" on an independent branch. It must never
-change the final answer relative to running full V2.1 resolution with no
-CDO at all — that's the entire point of it being a pre-filter rather than
-a different algorithm. `assert_benign_convergence` in
-`tests/unit/test_critique.rs` encodes that invariant directly: `V2.1 == V2.1.1`
-on every fixture that isn't specifically testing a divergence.
+**This pre-filter is RETIRED design history, not active resolution.** The
+V2.1.1 Causal Domination Operator (`resolve/cdo.rs`) is no longer called by
+the live resolution path. It was removed from `prepare_conflicted_and_keys`
+(see the soundness note there in `src/resolve/iterative.rs`) because it was
+unsound. The decisive failure is the **dominator-validity gap**: the CDO
+dropped conflicted events that a structurally-admin action (ban, kick, PL
+demotion, or join-rules lockdown) "causally dominates" on an independent
+branch, without first verifying that the dominator itself passes auth. An
+auth-invalid, low-power user's forged ban therefore erased legitimate
+memberships on CDO-running servers while non-CDO (Synapse) servers kept them
+— a permanent federation fork. Note that the four anomalies cataloged in this
+doc are **not** the reason the CDO was retired; they are the record of what
+was tried and why it failed, retained alongside the module itself. Its sound
+replacement is a resolved-state screening pass that _applies_ auth predicates
+(`is_sender_banned` in `src/resolve/iterative.rs`) instead of approximating
+domination.
+
+Because the CDO no longer runs, the `V2.1 == V2.1.1` convergence guarantee is
+no longer delivered by pre-filtering. It is instead enforced by
+`resolve_full` in `tests/unit/test_critique.rs`, which runs full V2.1
+resolution (no CDO at all) and asserts the final state directly.
+`assert_benign_convergence` — the harness that every fixture below is run
+through — calls `resolve_full` and checks the surviving member-state outcomes,
+so the convergence invariant holds on every fixture that isn't specifically
+testing a divergence.
 
 Four related bugs/audits came out of restoring CDO's wiring after it had
 been (correctly, but silently) disconnected on `dev` for a time. All four
@@ -26,7 +42,8 @@ are `auth_events` (what each event cites as its authorization).
 **Test:** `test_anomaly_19_demoted_but_still_authorized`
 **Fix:** `sender_has_pre_demotion_pl()` in `resolve/cdo.rs`
 
-![Anomaly 19 DAG](img/anomaly_19_demoted_but_still_authorized.png)
+The DAG diagram is produced by the regeneration script in the
+["Regenerating the diagrams"](#regenerating-the-diagrams) section.
 
 Priya is promoted to PL 50 (`$pl_grant_priya`), then the room forks:
 
@@ -55,7 +72,8 @@ authorized against.
 **Fixture:** `tests/critique_data/20_concurrent_ban_still_holds.jsonl`
 **Test:** `test_anomaly_20_concurrent_ban_still_holds`
 
-![Anomaly 20 DAG](img/anomaly_20_concurrent_ban_still_holds.png)
+The DAG diagram is produced by the regeneration script in the
+["Regenerating the diagrams"](#regenerating-the-diagrams) section.
 
 The structural mirror of anomaly 19, but for `is_ban_or_kick()` instead of
 `is_demotion()`: Bob is banned on one branch (`$ban_bob`) while,

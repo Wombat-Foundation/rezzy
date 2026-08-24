@@ -3684,9 +3684,10 @@ fn test_redaction_application_strips_content() {
         "power_levels redaction must preserve the users map and defaults"
     );
 
-    // v11+ m.room.create would preserve ALL content per the rule matrix, but a
-    // create can never be redacted (apply_redaction rejects it). Exercise the
-    // rule directly via `redacted()`.
+    // v11+ m.room.create preserves ALL content per the rule matrix
+    // (redaction_preserved_keys; see also test_redaction_application_guards,
+    // which shows a create is redactable and its content is preserved).
+    // Exercise the rule directly via `redacted()`.
     let create: LeanEvent = LeanEvent {
         event_id: "$create:example.com".into(),
         event_type: "m.room.create".into(),

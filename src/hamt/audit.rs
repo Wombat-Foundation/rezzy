@@ -111,12 +111,20 @@ impl IndexedUniverse {
             if hashes.len() >= bound {
                 // Keep counting distinct hashes past the bound so
                 // `distinct_count` reports the *true* total — the previous
-                // value was always `bound + 1` (no information).
-                let mut seen: HashSet<StructuralHash> = index_by_hash.keys().copied().collect();
-                seen.insert(hash);
-                let mut distinct_count = seen.len();
+                // value was always `bound + 1` (no information). Every hash
+                // already in `index_by_hash` is a distinct pre-bound hash, so
+                // it is counted without copying all of its keys into a second
+                // set; only hashes discovered *after* the bound need their own
+                // small set for dedup.
+                let mut distinct_count = index_by_hash.len();
+                let mut post_bound: HashSet<StructuralHash> = HashSet::default();
+                post_bound.insert(hash);
+                distinct_count = distinct_count.saturating_add(1);
                 for h in iter {
-                    if seen.insert(h) {
+                    if index_by_hash.contains_key(&h) {
+                        continue;
+                    }
+                    if post_bound.insert(h) {
                         distinct_count = distinct_count.saturating_add(1);
                     }
                 }

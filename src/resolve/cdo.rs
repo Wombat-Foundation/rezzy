@@ -552,16 +552,10 @@ where
             if dropped_ids.contains(*event_id) || adj.unordered_ids.contains(*event_id) {
                 continue;
             }
-            if adj.unordered_ids.contains(*event_id) {
-                continue;
-            }
 
             if let Some(&ev_idx) = adj.id_to_idx.get(*event_id) {
                 for (&admin_id, &orig_idx) in &chunk_admin_to_pos {
                     if dropped_ids.contains(admin_id) {
-                        continue;
-                    }
-                    if adj.unordered_ids.contains(admin_id) {
                         continue;
                     }
                     // Only higher-priority admin actions (occurring earlier in the sorted list) can dominate

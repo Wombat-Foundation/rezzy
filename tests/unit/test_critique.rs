@@ -545,13 +545,13 @@ fn test_anomaly_19_demoted_but_still_authorized() {
 /// concurrently, he (still citing his PL-50 grant) bans Charlie on another.
 /// Unlike the demotion/lockdown cases, `is_ban_or_kick()`'s domination
 /// check (`state_key == sender`) is already exact rather than a coarse
-/// over-approximation, and CDO's early drop of Bob's ban of Charlie here
-/// agrees with what full V2.1 resolution (no CDO at all) independently
-/// arrives at -- Bob really is banned by the time full resolution would
-/// process his own ban of Charlie. This is the audited-and-closed negative
-/// result for the ban/kick domination path (see `resolve/cdo.rs`'s module
-/// doc); cataloged here rather than left as a bare assertion, the same way
-/// the other anomalies are.
+/// over-approximation. `assert_benign_convergence` enforces V2.1 == V2.1.1
+/// parity via `resolve_full` on this fixture: both versions agree that Bob is
+/// already banned in the resolved state by the time his own ban of Charlie is
+/// processed, so the latter must not take effect and Charlie's join (against
+/// public `join_rules`) wins. This is the audited-and-closed negative result for
+/// the ban/kick domination path; cataloged here rather than left as a bare
+/// assertion, the same way the other anomalies are.
 #[test]
 fn test_anomaly_20_concurrent_ban_still_holds() {
     let (resolved, map) = assert_benign_convergence("20_concurrent_ban_still_holds.jsonl");
@@ -569,14 +569,13 @@ fn test_anomaly_20_concurrent_ban_still_holds() {
 /// audit -- `test_anomaly_20` alone was one data point, not a proof.
 /// This one exercises the `MEM_LEAVE`-as-kick branch of `is_ban_or_kick()`
 /// instead of `MEM_BAN` (a different membership value entirely), and uses
-/// real, differing `power_level` fields to drive CDO's priority ordering
-/// (`sort_cdo_events`) instead of falling back to its type-priority
-/// tiebreak the way `test_anomaly_20` did (no `power_level` fields set
-/// there): Alice (PL 100) kicks Bob (PL 100 admin action) on one branch;
+/// real, differing `power_level` fields to drive the priority ordering:
+/// Alice (PL 100) kicks Bob (PL 100 admin action) on one branch;
 /// independently, Bob (PL 50, citing his own grant) kicks Dave on another.
-/// Same result expected: Bob's own kick is already invalid by the time
-/// full resolution reaches his kick of Dave, so CDO's early drop still
-/// agrees with full V2.1 resolution.
+/// Same result expected via `assert_benign_convergence` (V2.1 == V2.1.1
+/// through `resolve_full`): Bob's own kick is already invalid in the
+/// resolved state by the time his kick of Dave is processed, so the latter
+/// must not take effect.
 #[test]
 fn test_anomaly_21_concurrent_kick_still_holds() {
     let (resolved, map) = assert_benign_convergence("21_concurrent_kick_still_holds.jsonl");

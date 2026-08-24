@@ -22,13 +22,14 @@
 //! Every variant has a [`Warning::code`] -- a short, stable string safe to
 //! match on or log across rezzy versions even as a variant's fields grow.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// A non-fatal condition rezzy detected but left to the caller's own policy.
 ///
 /// See the module docs for the distinction from [`crate::auth::AuthError`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Warning<Id> {
+pub enum Warning<Id = String> {
     /// W001: an event's `prev_events` cite one or more IDs not found in the
     /// local DAG. Convertible from [`crate::state::at::BackwardExtremity`],
     /// which groups the same information as a caller-facing backfill-gap

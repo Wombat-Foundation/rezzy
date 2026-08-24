@@ -140,8 +140,8 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
     }
 
     if !args.quiet {
-        let (backward, missing_auth) =
-            utils::report_gaps(&events_map, |id| events_map.contains_key(id));
+        // No external event store is available; every referenced-but-absent event is a gap.
+        let (backward, missing_auth) = utils::report_gaps(&events_map, |_| false);
         let describe = |id: &str| -> String {
             match events_map.get(id) {
                 Some(ev) => {
