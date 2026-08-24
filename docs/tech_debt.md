@@ -76,6 +76,23 @@ auth treatment instead of being screened out early. Not a soundness bug
 the commit message on `080fd2a`, which explicitly notes this as "not yet
 [done]"), just an incomplete optimization.
 
+### `Warning` channel only wired into `validate_syntactic` so far
+
+`src/warnings.rs`'s `Warning<Id>`/`Outcome<T, Id>` (a structured, stably-coded
+channel for spec-undefined/homeserver-policy conditions rezzy detects but
+doesn't decide on) is live end-to-end for exactly one case: pre-v11
+byte-limit overages, via `LeanEvent::validate_syntactic`. `Warning::UnknownPrevEvent`
+exists and converts `From<BackwardExtremity<Id>>`, but nothing in the crate
+actually constructs one that way yet -- `find_backward_extremities` still
+just returns `Vec<BackwardExtremity<Id>>` directly, and `check_auth_chain`/
+`ingest_events`/`resolve_iterative_sort*` don't emit or collect warnings at
+all. Circle back to wire the flagship entry points (`check_auth_chain`
+first, per the original ask) through `Outcome`, and decide whether
+`find_backward_extremities` should also feed into the general channel or
+stay as its own more-detailed opt-in analysis (current lean: keep it
+separate, since `BackwardExtremity` groups multiple missing parents per
+event more richly than the one-line `Warning` variant does).
+
 ### Dead CDO module (`src/resolve/cdo.rs`)
 
 `apply_cdo_filter` is retired from the live resolution path (superseded by

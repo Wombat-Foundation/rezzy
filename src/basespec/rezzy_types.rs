@@ -2067,12 +2067,24 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
     ///
     /// # Errors
     /// Returns an error if the event violates spec invariants (e.g. >20 `prev_events`).
-    pub fn validate_syntactic(&self, room_version: &str) -> Result<(), &'static str>
+    ///
+    /// The `Ok` side carries a [`crate::warnings::Outcome`] rather than a
+    /// bare `()`: the pre-v11 byte-limit case below is not itself a spec
+    /// violation (Synapse only warns pre-v11 too, deliberately, to avoid
+    /// splitting the DAG against legacy oversized fields already baked into
+    /// existing room history) -- it's a condition the caller may want to
+    /// know about and apply its own policy to, not one rezzy hard-fails on.
+    /// See [`crate::warnings`]'s module docs for the full rationale.
+    pub fn validate_syntactic(
+        &self,
+        room_version: &str,
+    ) -> Result<crate::warnings::Outcome<(), Id>, &'static str>
     where
-        Id: core::fmt::Display,
+        Id: core::fmt::Display + Clone,
         C: EventContent,
         K: AsRef<str>,
     {
+        let mut warnings = alloc::vec::Vec::new();
         if StateResVersion::from_room_version(room_version).is_none() {
             return Err("unsupported room_version");
         }
@@ -2135,16 +2147,20 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         let strict_length_limits = room_version_is_v11_or_later(room_version);
         macro_rules! check_length {
             ($field:expr, $name:literal) => {
-                if $field.len() > 255 {
+                let len = $field.len();
+                if len > 255 {
                     if strict_length_limits {
-                        return Err(concat!($name, " exceeds maximum allowed length of 255 bytes"));
+                        return Err(concat!(
+                            $name,
+                            " exceeds maximum allowed length of 255 bytes"
+                        ));
                     }
-                    #[cfg(feature = "std")]
-                    std::eprintln!(
-                        "rezzy::validate_syntactic: {} exceeds 255 bytes in pre-v11 room version {:?}; allowed for backwards compatibility",
-                        $name,
-                        room_version
-                    );
+                    warnings.push(crate::warnings::Warning::OversizedFieldPreV11 {
+                        event_id: self.event_id.clone(),
+                        field: $name,
+                        len,
+                        limit: 255,
+                    });
                 }
             };
         }
@@ -2158,7 +2174,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
             check_length!(state_key.as_ref(), "state_key");
         }
 
-        Ok(())
+        Ok(crate::warnings::Outcome::with_warnings((), warnings))
     }
 
     // --- Typed Content Accessors (delegate to EventContent) ---

@@ -88,11 +88,13 @@ pub mod merkle;
 pub mod reconcile;
 pub mod resolve;
 pub mod state;
+pub mod warnings;
 
 pub use basespec::rezzy_types::*;
 pub use reconcile::*;
 pub use resolve::*;
 pub use state::*;
+pub use warnings::{Outcome, Warning};
 
 /// Selects the presentation shape for resolved room data.
 ///

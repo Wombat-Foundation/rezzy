@@ -3347,10 +3347,20 @@ fn test_types_validate_syntactic() {
         ev.validate_syntactic("11"),
         Err("event_id exceeds maximum allowed length of 255 bytes")
     );
-    assert!(
-        ev.validate_syntactic("10").is_ok(),
-        "pre-v11 rooms only warn on oversized event_id, never hard-fail"
+    let pre_v11 = ev
+        .validate_syntactic("10")
+        .expect("pre-v11 rooms only warn on oversized event_id, never hard-fail");
+    assert_eq!(
+        pre_v11.warnings,
+        vec![rezzy::warnings::Warning::OversizedFieldPreV11 {
+            event_id: ev.event_id.clone(),
+            field: "event_id",
+            len: ev.event_id.len(),
+            limit: 255,
+        }],
+        "the oversized-field condition is now surfaced structurally, not just tolerated"
     );
+    assert_eq!(pre_v11.warnings[0].code(), "W002_OVERSIZED_FIELD_PRE_V11");
     assert_eq!(
         ev.validate_syntactic("12"),
         Err("event_id exceeds maximum allowed length of 255 bytes")
