@@ -1,4 +1,5 @@
-//! Comparative shootout benchmark between `ruma-state-res` and `rezzy` over legit Matrix Room DAGs.
+//! High-scale shootout benchmark comparing `ruma-state-res` vs `rezzy`
+//! over complex multi-way Matrix DAG forks, parallel branches, and large rebuilds.
 
 use std::{
 	collections::HashMap,
@@ -126,15 +127,19 @@ fn make_event(
 	}
 }
 
-struct LegitDag {
+struct MultiForkDag {
 	events: HashMap<OwnedEventId, TestEvent>,
-	fork_a_state: StateMap<OwnedEventId>,
-	fork_b_state: StateMap<OwnedEventId>,
-	fork_a_auth_chain: EventIdSet<OwnedEventId>,
-	fork_b_auth_chain: EventIdSet<OwnedEventId>,
+	fork_states: Vec<StateMap<OwnedEventId>>,
+	fork_auth_chains: Vec<EventIdSet<OwnedEventId>>,
+	total_conflicts: usize,
 }
 
-fn build_legit_matrix_dag(num_members: usize, num_timeline_events: usize, num_conflicts: usize) -> LegitDag {
+fn build_multi_fork_dag(
+	num_members: usize,
+	num_common_timeline: usize,
+	num_forks: usize,
+	conflicts_per_fork: usize,
+) -> MultiForkDag {
 	let mut events = HashMap::new();
 	let mut current_ts = 1_000_000_000u64;
 
@@ -219,14 +224,14 @@ fn build_legit_matrix_dag(num_members: usize, num_timeline_events: usize, num_co
 	}
 
 	// 6. Common timeline events
-	for i in 0..num_timeline_events {
+	for i in 0..num_common_timeline {
 		current_ts += 10;
 		let ev = make_event(
 			&format!("common_msg_{i}"),
 			"alice",
 			TimelineEventType::RoomMessage,
 			None,
-			r#"{"body":"hello"}"#,
+			r#"{"body":"timeline noise"}"#,
 			&[&last_prev.to_string()],
 			&["create", "alice_join", "power_levels"],
 			current_ts,
@@ -245,82 +250,86 @@ fn build_legit_matrix_dag(num_members: usize, num_timeline_events: usize, num_co
 		base_state.insert((StateEventType::RoomMember, format!("@user_{i}:example.com")), j_id.clone());
 	}
 
-	// === FORK A ===
-	let mut fork_a_state = base_state.clone();
-	let mut last_prev_a = last_prev.clone();
-	for c in 0..num_conflicts {
-		current_ts += 10;
-		let target_user = format!("user_{}", c % num_members.max(1));
-		let ev_type = match c % 3 {
-			0 => TimelineEventType::RoomMember,
-			1 => TimelineEventType::RoomTopic,
-			_ => TimelineEventType::RoomPowerLevels,
-		};
-		let state_key = match c % 3 {
-			0 => format!("@{target_user}:example.com"),
-			_ => "".to_string(),
-		};
-		let content = match c % 3 {
-			0 => r#"{"membership":"ban"}"#,
-			1 => r#"{"topic":"Fork A Topic Update"}"#,
-			_ => r#"{"users":{"@alice:example.com":100},"users_default":50,"state_default":50}"#,
-		};
+	// 7. Generate parallel diverging forks
+	let mut fork_states = Vec::with_capacity(num_forks);
+	let mut total_conflicts_set = std::collections::HashSet::new();
 
-		let ev = make_event(
-			&format!("fork_a_ev_{c}"),
+	for f in 0..num_forks {
+		let mut fork_state = base_state.clone();
+		let mut fork_last_prev = last_prev.clone();
+		let fork_admin = if f == 0 { "alice".to_string() } else { format!("user_{}", f - 1) };
+
+		// Fork-specific power level update to allow fork_admin to act
+		current_ts += 100;
+		let fork_pl = make_event(
+			&format!("fork_{f}_pl"),
 			"alice",
-			ev_type.clone(),
-			Some(&state_key),
-			content,
-			&[&last_prev_a.to_string()],
+			TimelineEventType::RoomPowerLevels,
+			Some(""),
+			&format!(
+				r#"{{"users":{{"@alice:example.com":100,"@{fork_admin}:example.com":100}},"users_default":0,"state_default":50}}"#
+			),
+			&[&fork_last_prev.to_string()],
 			&["create", "alice_join", "power_levels"],
 			current_ts,
 		);
-		last_prev_a = ev.event_id.clone();
-		events.insert(ev.event_id.clone(), ev.clone());
-		fork_a_state.insert((StateEventType::from(ev_type.to_string()), state_key), ev.event_id.clone());
+		fork_last_prev = fork_pl.event_id.clone();
+		events.insert(fork_pl.event_id.clone(), fork_pl.clone());
+		fork_state.insert((StateEventType::RoomPowerLevels, "".to_string()), fork_pl.event_id.clone());
+		total_conflicts_set.insert((StateEventType::RoomPowerLevels, "".to_string()));
+
+		// Generate divergent state events in this fork
+		for c in 0..conflicts_per_fork {
+			current_ts += 10;
+			let target_user = format!("user_{}", (c + f * 7) % num_members.max(1));
+			let (ev_type, state_key, content) = match c % 4 {
+				0 => (
+					TimelineEventType::RoomMember,
+					format!("@{target_user}:example.com"),
+					format!(r#"{{"membership":"{}"}}"#, if f % 2 == 0 { "ban" } else { "leave" }),
+				),
+				1 => (
+					TimelineEventType::RoomTopic,
+					"".to_string(),
+					format!(r#"{{"topic":"Fork {f} Topic revision {c}"}}"#),
+				),
+				2 => (
+					TimelineEventType::RoomName,
+					"".to_string(),
+					format!(r#"{{"name":"Fork {f} Room Name {c}"}}"#),
+				),
+				_ => (
+					TimelineEventType::from(format!("org.matrix.custom_state_{c}")),
+					format!("key_{f}"),
+					format!(r#"{{"value":"state_val_{f}_{c}"}}"#),
+				),
+			};
+
+			let ev = make_event(
+				&format!("fork_{f}_ev_{c}"),
+				&fork_admin,
+				ev_type.clone(),
+				Some(&state_key),
+				&content,
+				&[&fork_last_prev.to_string()],
+				&["create", "alice_join", &fork_pl.event_id.to_string()],
+				current_ts,
+			);
+			fork_last_prev = ev.event_id.clone();
+			events.insert(ev.event_id.clone(), ev.clone());
+			let state_ev_type = StateEventType::from(ev_type.to_string());
+			fork_state.insert((state_ev_type.clone(), state_key.clone()), ev.event_id.clone());
+			total_conflicts_set.insert((state_ev_type, state_key));
+		}
+
+		fork_states.push(fork_state);
 	}
 
-	// === FORK B ===
-	let mut fork_b_state = base_state.clone();
-	let mut last_prev_b = last_prev.clone();
-	for c in 0..num_conflicts {
-		current_ts += 10;
-		let target_user = format!("user_{}", c % num_members.max(1));
-		let ev_type = match c % 3 {
-			0 => TimelineEventType::RoomMember,
-			1 => TimelineEventType::RoomTopic,
-			_ => TimelineEventType::RoomPowerLevels,
-		};
-		let state_key = match c % 3 {
-			0 => format!("@{target_user}:example.com"),
-			_ => "".to_string(),
-		};
-		let content = match c % 3 {
-			0 => r#"{"membership":"leave"}"#,
-			1 => r#"{"topic":"Fork B Topic Divergence"}"#,
-			_ => r#"{"users":{"@alice:example.com":100},"users_default":0,"state_default":0}"#,
-		};
-
-		let ev = make_event(
-			&format!("fork_b_ev_{c}"),
-			"alice",
-			ev_type.clone(),
-			Some(&state_key),
-			content,
-			&[&last_prev_b.to_string()],
-			&["create", "alice_join", "power_levels"],
-			current_ts,
-		);
-		last_prev_b = ev.event_id.clone();
-		events.insert(ev.event_id.clone(), ev.clone());
-		fork_b_state.insert((StateEventType::from(ev_type.to_string()), state_key), ev.event_id.clone());
-	}
-
-	// Recursive auth chain collector
-	let collect_auth_chain = |state: &StateMap<OwnedEventId>| -> EventIdSet<OwnedEventId> {
+	// Recursive auth chain collector for each fork
+	let mut fork_auth_chains = Vec::with_capacity(num_forks);
+	for fork_state in &fork_states {
 		let mut chain = EventIdSet::new();
-		let mut stack: Vec<OwnedEventId> = state.values().cloned().collect();
+		let mut stack: Vec<OwnedEventId> = fork_state.values().cloned().collect();
 		while let Some(id) = stack.pop() {
 			if chain.insert(id.clone()) {
 				if let Some(ev) = events.get(&id) {
@@ -330,18 +339,14 @@ fn build_legit_matrix_dag(num_members: usize, num_timeline_events: usize, num_co
 				}
 			}
 		}
-		chain
-	};
+		fork_auth_chains.push(chain);
+	}
 
-	let fork_a_auth_chain = collect_auth_chain(&fork_a_state);
-	let fork_b_auth_chain = collect_auth_chain(&fork_b_state);
-
-	LegitDag {
+	MultiForkDag {
 		events,
-		fork_a_state,
-		fork_b_state,
-		fork_a_auth_chain,
-		fork_b_auth_chain,
+		fork_states,
+		fork_auth_chains,
+		total_conflicts: total_conflicts_set.len(),
 	}
 }
 
@@ -370,25 +375,37 @@ fn to_rezzy_lean(ev: &TestEvent) -> rezzy::LeanEvent {
 	}
 }
 
-fn run_comparison(dag_label: &str, num_members: usize, num_timeline: usize, num_conflicts: usize, runs: u32) {
-	let dag = build_legit_matrix_dag(num_members, num_timeline, num_conflicts);
+fn run_shootout(
+	scenario_name: &str,
+	num_members: usize,
+	num_timeline: usize,
+	num_forks: usize,
+	conflicts_per_fork: usize,
+	runs: u32,
+) {
+	let dag = build_multi_fork_dag(num_members, num_timeline, num_forks, conflicts_per_fork);
 	let events_map = &dag.events;
 
 	let fetch_event = |id: &ruma_common::EventId| -> Option<TestEvent> {
 		events_map.get(id).cloned()
 	};
 
+	let total_auth_chain_nodes: usize = dag.fork_auth_chains.iter().map(|c| c.len()).sum();
+
 	println!("================================================================================");
-	println!("  LEGIT MATRIX DAG BENCHMARK: {dag_label}");
+	println!("  SCENARIO: {scenario_name}");
 	println!(
-		"  Total DAG PDUs: {}, Members: {}, Conflicted Keys: {}, Fork A Chain: {}, Fork B Chain: {}",
+		"  DAG PDUs: {} | Members: {} | Forks: {} | Conflicted Keys: {}",
 		dag.events.len(),
 		num_members,
-		num_conflicts,
-		dag.fork_a_auth_chain.len(),
-		dag.fork_b_auth_chain.len()
+		num_forks,
+		dag.total_conflicts
 	);
-	println!("  Iterations: {runs}");
+	println!(
+		"  Cumulative Auth Chain Elements across forks: {} | Iterations: {}",
+		total_auth_chain_nodes,
+		runs
+	);
 	println!("================================================================================");
 
 	// Pre-convert to Rezzy format
@@ -396,9 +413,18 @@ fn run_comparison(dag_label: &str, num_members: usize, num_timeline: usize, num_
 	let mut conflicted_events: HashMap<String, rezzy::LeanEvent> = HashMap::new();
 	let mut auth_context: HashMap<String, rezzy::LeanEvent> = HashMap::new();
 
-	for (key, id) in &dag.fork_a_state {
-		if let Some(b_id) = dag.fork_b_state.get(key) {
-			if id == b_id {
+	// Find common unconflicted vs conflicted across all N forks
+	let num_maps = dag.fork_states.len();
+	let mut key_id_counts: HashMap<(&(StateEventType, String), &OwnedEventId), usize> = HashMap::new();
+	for map in &dag.fork_states {
+		for (key, id) in map {
+			*key_id_counts.entry((key, id)).or_default() += 1;
+		}
+	}
+
+	for map in &dag.fork_states {
+		for (key, id) in map {
+			if key_id_counts.get(&(key, id)).copied().unwrap_or(0) == num_maps {
 				unconflicted_state.insert(
 					(
 						rezzy::basespec::event_types::EventType::from(key.0.to_string()),
@@ -410,9 +436,6 @@ fn run_comparison(dag_label: &str, num_members: usize, num_timeline: usize, num_
 				if let Some(ev) = dag.events.get(id) {
 					conflicted_events.insert(id.to_string(), to_rezzy_lean(ev));
 				}
-				if let Some(ev) = dag.events.get(b_id) {
-					conflicted_events.insert(b_id.to_string(), to_rezzy_lean(ev));
-				}
 			}
 		}
 	}
@@ -422,14 +445,15 @@ fn run_comparison(dag_label: &str, num_members: usize, num_timeline: usize, num_
 	}
 
 	// 1. Benchmark ruma-state-res
+	let fork_state_refs: Vec<&StateMap<OwnedEventId>> = dag.fork_states.iter().collect();
 	let start_ruma = Instant::now();
 	let mut ruma_result = None;
 	for _ in 0..runs {
 		let res = ruma_state_res::resolve(
 			&AuthorizationRules::V10,
 			&StateResolutionV2Rules::V2_0,
-			[&dag.fork_a_state, &dag.fork_b_state],
-			vec![dag.fork_a_auth_chain.clone(), dag.fork_b_auth_chain.clone()],
+			fork_state_refs.clone(),
+			dag.fork_auth_chains.clone(),
 			&fetch_event,
 			|_| unreachable!(),
 		);
@@ -456,7 +480,7 @@ fn run_comparison(dag_label: &str, num_members: usize, num_timeline: usize, num_
 	let rezzy_elapsed = start_rezzy.elapsed();
 	let rezzy_avg = rezzy_elapsed / runs;
 
-	// Verify parity: ensure both resolved to identical winning state
+	// Verify correctness parity
 	let ruma_resolved = ruma_result.unwrap();
 	let rezzy_resolved = rezzy_result.unwrap();
 	for ((ev_type, state_key), ruma_id) in &ruma_resolved {
@@ -481,14 +505,47 @@ fn run_comparison(dag_label: &str, num_members: usize, num_timeline: usize, num_
 }
 
 fn main() {
-	println!("Starting Matrix State Resolution Shootout: `ruma-state-res` vs `rezzy`\n");
+	println!("================================================================================");
+	println!("  MATRIX STATE RESOLUTION LARGE-SCALE SHOOTOUT: ruma-state-res vs rezzy");
+	println!("================================================================================\n");
 
-	// 1. Moderate Fork (3 Conflicted Keys)
-	run_comparison("Moderate Fork (3 Conflicted Keys, 100 Members)", 100, 200, 3, 5_000);
+	// 1. Nasty 2-Branch Conflict (500 Members, 100 Conflicted Keys, Deep Auth Chains, ~1,600 PDUs)
+	run_shootout(
+		"Nasty 2-Branch Conflict (500 Members, 100 Conflicted Keys, ~1,600 PDUs)",
+		500,
+		1000,
+		2,
+		100,
+		500,
+	);
 
-	// 2. Heavy Divergence Fork (25 Conflicted Keys, 250 Members)
-	run_comparison("Heavy Divergence Fork (25 Conflicted Keys, 250 Members)", 250, 500, 25, 2_000);
+	// 2. 4-Way Federated Partition Fork (500 Members, 200 Conflicted Keys, ~2,500 PDUs)
+	run_shootout(
+		"4-Way Federated Partition (500 Members, 4 Forks, 200 Conflicted Keys, ~2,500 PDUs)",
+		500,
+		1500,
+		4,
+		100,
+		200,
+	);
 
-	// 3. Massive Split-Brain Conflict (75 Conflicted Keys, 500 Members, 1500 Total PDUs)
-	run_comparison("Massive Split-Brain (75 Conflicted Keys, 500 Members, ~1,700 PDUs)", 500, 1000, 75, 500);
+	// 3. 8-Way Split-Brain Chaos (1,000 Members, 8 Forks, 400 Conflicted Keys, ~5,000 PDUs)
+	run_shootout(
+		"8-Way Split-Brain Chaos (1,000 Members, 8 Forks, 400 Conflicted Keys, ~5,000 PDUs)",
+		1000,
+		3000,
+		8,
+		100,
+		50,
+	);
+
+	// 4. Mega Rebuild Stress (2,000 Members, 8 Forks, 800 Conflicted Keys, ~10,000 PDUs)
+	run_shootout(
+		"Mega Rebuild Stress (2,000 Members, 8 Forks, 800 Conflicted Keys, ~10,000 PDUs)",
+		2000,
+		6000,
+		8,
+		200,
+		20,
+	);
 }
