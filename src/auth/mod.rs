@@ -2038,4 +2038,53 @@ mod tests {
             "m.room.create has no required auth types of its own: {required:?}"
         );
     }
+
+    /// Coverage: `required_auth_types_for`'s `m.room.third_party_invite`
+    /// push. Reachable through the public API in principle (unlike the
+    /// create early return above -- `m.room.member` events go through rule
+    /// 2.2's loop normally), just never exercised by an existing scenario:
+    /// no test built a member event with a `third_party_invite.signed.token`
+    /// present in `content`.
+    #[test]
+    fn test_coverage_required_auth_types_for_third_party_invite_token() {
+        let invite_ev = make_test_event(
+            "$invite",
+            M_ROOM_MEMBER,
+            "@alice:x",
+            json!({
+                "membership": "invite",
+                "third_party_invite": { "signed": { "token": "abc123" } }
+            }),
+        );
+        let required = required_auth_types_for(&invite_ev, M_ROOM_MEMBER, StateResVersion::V2_1);
+        assert!(
+            required.contains(&(
+                String::from(M_ROOM_THIRD_PARTY_INVITE),
+                String::from("abc123")
+            )),
+            "expected an (m.room.third_party_invite, \"abc123\") entry: {required:?}"
+        );
+    }
+
+    /// Coverage: `required_auth_types_for`'s `join_authorised_via_users_server`
+    /// push (the restricted-join authorising-member requirement). Same
+    /// reachability note as the third_party_invite test above -- never
+    /// exercised by an existing scenario.
+    #[test]
+    fn test_coverage_required_auth_types_for_join_authorised_via_users_server() {
+        let join_ev = make_test_event(
+            "$join",
+            M_ROOM_MEMBER,
+            "@alice:x",
+            json!({
+                "membership": "join",
+                "join_authorised_via_users_server": "@authoriser:x"
+            }),
+        );
+        let required = required_auth_types_for(&join_ev, M_ROOM_MEMBER, StateResVersion::V2_1);
+        assert!(
+            required.contains(&(String::from(M_ROOM_MEMBER), String::from("@authoriser:x"))),
+            "expected an (m.room.member, \"@authoriser:x\") entry: {required:?}"
+        );
+    }
 }
