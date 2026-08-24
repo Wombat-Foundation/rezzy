@@ -2830,3 +2830,35 @@ impl<
         self.primary.get(id).or_else(|| self.secondary.get(id))
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod redact_content_tests {
+    use super::{redact_content, RedactionRule};
+    use serde_json::json;
+
+    /// Coverage for `redact_content`'s "existing parent" accumulation branch
+    /// (a second dotted-path key merging into a parent object already
+    /// populated by an earlier one): no real `redaction_preserved_keys`
+    /// rule table has two dotted paths sharing a parent today (`Keys`
+    /// exercised through `redact_json` -- see `test_redact_json_preserves_dotted_nested_key`
+    /// in `tests/unit/test_hashing.rs` -- only ever has one:
+    /// `third_party_invite.signed`), so this branch is unreachable through
+    /// the public API. `redact_content` is private but its accumulation
+    /// logic is real, general-purpose behavior independent of what today's
+    /// rule tables happen to use -- exercised directly here with a synthetic
+    /// two-key rule instead of leaving it permanently uncovered.
+    #[test]
+    fn test_redact_content_accumulates_multiple_dotted_keys_under_one_parent() {
+        let content = json!({
+            "parent": {
+                "a": 1,
+                "b": 2,
+                "c": 3,
+            }
+        });
+        let rule = RedactionRule::Keys(&["parent.a", "parent.b"]);
+        let redacted = redact_content(&content, rule);
+        assert_eq!(redacted, json!({ "parent": { "a": 1, "b": 2 } }));
+    }
+}
