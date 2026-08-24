@@ -3474,6 +3474,7 @@ fn test_soft_fail_vs_rejected_events_behavior() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn test_redaction_preserved_keys_matrix() {
     use rezzy::basespec::rezzy_types::{redaction_preserved_keys, RedactionRule};
 

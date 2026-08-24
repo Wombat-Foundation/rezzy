@@ -109,14 +109,24 @@ fn test_pathology_invite_lock() {
     let mut auth_context = HashMap::new();
     let mut conflicted_events = HashMap::new();
     for ev in events {
-        if ev.sender == "@user:B" {
+        if ev.sender == "@nexy:B" {
             conflicted_events.insert(ev.event_id.clone(), ev);
         } else {
             auth_context.insert(ev.event_id.clone(), ev);
         }
     }
 
-    // V2.1 drops the user because the join rule is missing
+    // The "invite-lock" regression: a transient `join_rules: invite` on a fork
+    // (depth 4) must NOT lock out @nexy:B, who joined under the *later* public
+    // `join_rules` (depth 5). The resolved join rule is public, so @nexy:B's
+    // join is valid and must be present in the resolved state. (The filter
+    // targets @nexy:B, the fixture's actual join -- the test previously checked
+    // a @user:B that never existed, making it trivially satisfied.)
+    let user_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.member"),
+        "@nexy:B".to_string(),
+    );
+
     let resolved_v21 = resolve_iterative_sort(
         utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events.clone(),
@@ -124,16 +134,11 @@ fn test_pathology_invite_lock() {
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
     );
-    let user_key = (
-        rezzy::basespec::event_types::EventType::from("m.room.member"),
-        "@user:B".to_string(),
-    );
     assert!(
-        !resolved_v21.contains_key(&user_key),
-        "V2.1 dropped the user due to regression"
+        resolved_v21.contains_key(&user_key),
+        "V2.1 must keep @nexy:B joined: the later public join_rules wins over the invite lock"
     );
 
-    // V2.1.1 degrades gracefully or rejects correctly to prevent CVE
     let resolved_v211 = resolve_iterative_sort(
         utils::build_unconflicted_state_test_helper(&auth_context),
         conflicted_events,
@@ -141,11 +146,9 @@ fn test_pathology_invite_lock() {
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
     );
-    // In this specific DAG, V2.1.1 also drops the user because there's NO valid alternate path.
-    // The test proves V2.1.1 strictly respects auth and doesn't hallucinate missing joins.
     assert!(
-        !resolved_v211.contains_key(&user_key),
-        "V2.1.1 correctly rejects isolated broken topologies"
+        resolved_v211.contains_key(&user_key),
+        "V2.1.1 must also keep @nexy:B joined (no hallucinated missing join)"
     );
 }
 
