@@ -4,3 +4,4 @@ lake-manifest.json
 ruma/
 spec/
 tests/resolve/fixtures/
+.mypy_cache/
