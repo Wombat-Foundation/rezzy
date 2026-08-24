@@ -14,9 +14,11 @@
 //!   blind spot with an auth-invalid dominator, reaching a dominated winner on
 //!   every DAG — which exposed the dominator-validity gap and motivated retiring
 //!   the pre-filter from the live path. It now asserts the live path is sound.
-//! - **Determinism:** resolve the same DAG twice (fresh caches) and assert
-//!   identical output. This guards the resolution path against any
-//!   platform-dependent divergence (see `determinism_same_input_same_output`).
+//! - **Determinism:** resolve the same DAG twice (fresh caches, same thread)
+//!   and assert identical output. Resolution must be a pure function of its
+//!   input, so this guards against non-idempotent or interior-mutable state —
+//!   not cross-platform ordering divergence, which two runs of the *same*
+//!   input cannot distinguish (see `determinism_same_input_same_output`).
 
 #![allow(
     clippy::arithmetic_side_effects,

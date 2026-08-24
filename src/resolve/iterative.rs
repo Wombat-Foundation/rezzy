@@ -36,7 +36,9 @@ use crate::{
 };
 use alloc::vec::Vec;
 
-/// Prepares the conflicted events map and tracks original conflicted keys before CDO pre-filtering.
+/// Prepares the conflicted events map and tracks the original conflicted keys
+/// for the resolved-state screening pass (the CDO pre-filter that formerly ran
+/// here is retired — see the body comment below).
 pub(crate) fn prepare_conflicted_and_keys<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
