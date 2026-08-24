@@ -21,7 +21,7 @@ use core::cmp::Ordering;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER};
+use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER, M_ROOM_REDACTION};
 
 /// Trait alias for types that can serve as event identifiers.
 ///
@@ -2339,6 +2339,18 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         C: EventContent,
     {
         self.content.get_redacts()
+    }
+
+    /// Whether this event is an `m.room.redaction` carrying a `redacts` field.
+    ///
+    /// Callers can use this to cheaply detect that a batch contains redaction
+    /// work before deciding whether to run
+    /// [`crate::auth::apply_authorized_redactions`] against the resolved state.
+    pub fn is_redaction(&self) -> bool
+    where
+        C: EventContent,
+    {
+        self.event_type == M_ROOM_REDACTION && self.get_redacts().is_some()
     }
 
     /// Check if the sender is an additional creator.
