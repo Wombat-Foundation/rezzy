@@ -146,9 +146,15 @@ pub fn expand_v2_power_events_auth_chains<
         if let Some(ev) = sort_set.get(&id) {
             for aid in &ev.auth_events {
                 if !power_events.contains_key(aid) {
-                    if let Some(aev) = sort_set.get(aid) {
+                    // Prefer moving the already-owned copy out of
+                    // non_power_events (avoids deep-cloning the LeanEvent +
+                    // serde_json::Value); fall back to cloning from sort_set
+                    // for events only present there.
+                    if let Some(owned) = non_power_events.remove(aid) {
+                        power_events.insert(aid.clone(), owned);
+                        queue.push_back(aid.clone());
+                    } else if let Some(aev) = sort_set.get(aid) {
                         power_events.insert(aid.clone(), aev.clone());
-                        non_power_events.remove(aid);
                         queue.push_back(aid.clone());
                     }
                 }
@@ -1297,6 +1303,58 @@ mod tests {
             "an id missing from sort_set must be skipped, not dropped"
         );
         assert!(non_power_events.is_empty());
+    }
+
+    #[test]
+    fn expand_v2_promotes_auth_chain_events_moving_owned_copy() {
+        // `$pl` (in sort_set) auth-cites `$member`, present in BOTH
+        // non_power_events and sort_set: the owned copy must be moved into
+        // power_events (and removed from non_power_events), not deep-cloned.
+        let mut pl = member_ev("$pl", "@admin:example.com", "@admin:example.com", MEM_JOIN);
+        pl.auth_events = alloc::vec!["$member".to_string()];
+        let member = member_ev("$member", "@a:example.com", "@a:example.com", MEM_JOIN);
+
+        let mut power_events: HashMap<String, LeanEvent> = HashMap::new();
+        let mut non_power_events: HashMap<String, LeanEvent> = HashMap::new();
+        non_power_events.insert("$member".to_string(), member.clone());
+        let mut sort_set: HashMap<String, LeanEvent> = HashMap::new();
+        sort_set.insert("$pl".to_string(), pl.clone());
+        sort_set.insert("$member".to_string(), member);
+        power_events.insert("$pl".to_string(), pl);
+
+        expand_v2_power_events_auth_chains(&mut power_events, &mut non_power_events, &sort_set);
+
+        assert!(
+            power_events.contains_key("$member"),
+            "the auth-chain state event must be promoted into power_events"
+        );
+        assert!(
+            !non_power_events.contains_key("$member"),
+            "the promoted event must be removed from non_power_events (moved, not cloned)"
+        );
+    }
+
+    #[test]
+    fn expand_v2_promotes_auth_chain_events_from_sort_set_fallback() {
+        // `$member` is present ONLY in sort_set (absent from non_power_events):
+        // the fallback must clone it into power_events rather than dropping it.
+        let mut pl = member_ev("$pl", "@admin:example.com", "@admin:example.com", MEM_JOIN);
+        pl.auth_events = alloc::vec!["$member".to_string()];
+        let member = member_ev("$member", "@a:example.com", "@a:example.com", MEM_JOIN);
+
+        let mut power_events: HashMap<String, LeanEvent> = HashMap::new();
+        let mut non_power_events: HashMap<String, LeanEvent> = HashMap::new();
+        let mut sort_set: HashMap<String, LeanEvent> = HashMap::new();
+        sort_set.insert("$pl".to_string(), pl.clone());
+        sort_set.insert("$member".to_string(), member);
+        power_events.insert("$pl".to_string(), pl);
+
+        expand_v2_power_events_auth_chains(&mut power_events, &mut non_power_events, &sort_set);
+
+        assert!(
+            power_events.contains_key("$member"),
+            "the fallback must clone the event from sort_set when absent from non_power_events"
+        );
     }
 
     #[test]

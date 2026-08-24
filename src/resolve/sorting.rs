@@ -420,24 +420,31 @@ pub fn mainline_sort<Id, C, E>(
     // O(V+E) iterative DFS to find the closest mainline index for all non-power events
     let dist = compute_closest_mainline_positions(events, mainline, auth_context);
 
-    events.sort_by(|a, b| {
-        // Hopefully safe to unwrap. DFS guarantees all events are in `dist`.
-        let pos_a = dist[a.event_id()];
-        let pos_b = dist[b.event_id()];
+    // Schwartzian transform: decorate each event with its precomputed mainline
+    // position so the comparator performs zero hash lookups. This cuts the
+    // `dist` hash lookups from O(N log N) (two per comparison) down to exactly
+    // N. The comparator order is identical to the pre-decoration version.
+    let mut decorated: Vec<(&E, usize)> = events
+        .iter()
+        .map(|&ev| (ev, *dist.get(ev.event_id()).unwrap_or(&mainline.len())))
+        .collect();
 
-        // Larger mainline position = farther from current PL = worse = comes first
-        // (so it gets overwritten by closer events via last-write-wins)
-        match pos_b.cmp(&pos_a) {
-            Ordering::Equal => {
-                // Earlier timestamp comes first (later wins via last-write)
-                match a.origin_server_ts().cmp(&b.origin_server_ts()) {
-                    Ordering::Equal => a.event_id().cmp(b.event_id()),
-                    ord => ord,
-                }
+    // Larger mainline position = farther from current PL = worse = comes first
+    // (so it gets overwritten by closer events via last-write-wins)
+    decorated.sort_by(|(a, pos_a), (b, pos_b)| match pos_b.cmp(pos_a) {
+        Ordering::Equal => {
+            // Earlier timestamp comes first (later wins via last-write)
+            match a.origin_server_ts().cmp(&b.origin_server_ts()) {
+                Ordering::Equal => a.event_id().cmp(b.event_id()),
+                ord => ord,
             }
-            ord => ord,
         }
+        ord => ord,
     });
+
+    for (i, (ev, _)) in decorated.into_iter().enumerate() {
+        events[i] = ev;
+    }
 }
 
 #[cfg(test)]
@@ -561,6 +568,65 @@ mod tests {
         let mut events = alloc::vec![&leaf];
         let dist = compute_closest_mainline_positions(&mut events, &mainline, &ctx);
         assert_eq!(dist["leaf"], 0);
+    }
+
+    /// `mainline_sort` must order events by mainline position (descending),
+    /// then `origin_server_ts` (ascending), then `event_id`. The Schwartzian
+    /// transform must preserve this exact order.
+    #[test]
+    fn test_mainline_sort_orders_by_position_then_time_then_id() {
+        let pl0 = LeanEvent::<String> {
+            event_id: "pl0".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let pl1 = LeanEvent::<String> {
+            event_id: "pl1".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec!["pl0".into()],
+            ..Default::default()
+        };
+        // near: auth chain hits mainline at index 1 (newest) -> position 1.
+        let near = LeanEvent::<String> {
+            event_id: "near".into(),
+            event_type: "m.room.topic".into(),
+            origin_server_ts: 100,
+            auth_events: alloc::vec!["pl1".into()],
+            ..Default::default()
+        };
+        // far_early and far both hit mainline at index 0 -> position 0; tie on
+        // position is broken by earlier timestamp, then by event_id.
+        let far_early = LeanEvent::<String> {
+            event_id: "far_early".into(),
+            event_type: "m.room.topic".into(),
+            origin_server_ts: 50,
+            auth_events: alloc::vec!["pl0".into()],
+            ..Default::default()
+        };
+        let far = LeanEvent::<String> {
+            event_id: "far".into(),
+            event_type: "m.room.topic".into(),
+            origin_server_ts: 200,
+            auth_events: alloc::vec!["pl0".into()],
+            ..Default::default()
+        };
+        let mut ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
+        ctx.insert("pl0".into(), pl0);
+        ctx.insert("pl1".into(), pl1);
+        ctx.insert("near".into(), near.clone());
+        ctx.insert("far_early".into(), far_early.clone());
+        ctx.insert("far".into(), far.clone());
+
+        let mainline = alloc::vec!["pl0".into(), "pl1".into()];
+        let mut events = alloc::vec![&far, &far_early, &near];
+        mainline_sort(&mut events, &mainline, &ctx);
+
+        // Larger mainline position comes first: near (1), then far_early (ts
+        // 50) before far (ts 200).
+        assert_eq!(events[0].event_id, "near");
+        assert_eq!(events[1].event_id, "far_early");
+        assert_eq!(events[2].event_id, "far");
     }
 
     /// Empty mainline: all events should clamp to 0 (`mainline.len()`).
