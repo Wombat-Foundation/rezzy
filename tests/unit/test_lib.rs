@@ -2480,130 +2480,31 @@ mod tests {
 
     #[test]
     fn test_anomaly_06b_mod_membership_evaporation() {
-        use serde_json::json;
+        let auth_evs = utils::parse_jsonl_events(
+            r#"
+            {"event_id": "$root",            "type": "m.room.create",       "state_key": "", "sender": "@alice:example.com", "origin_server_ts": 1000}
+            {"event_id": "$alice_join",      "type": "m.room.member",       "state_key": "@alice:example.com", "sender": "@alice:example.com", "origin_server_ts": 1100, "prev_events": ["$root"], "auth_events": ["$root"], "content": {}}
+            {"event_id": "$jr_pub",          "type": "m.room.join_rules",   "state_key": "", "sender": "@alice:example.com", "origin_server_ts": 1150, "prev_events": ["$alice_join"], "auth_events": ["$root", "$alice_join"], "content": {"join_rule": "public"}}
+            {"event_id": "$pl_init",         "type": "m.room.power_levels", "state_key": "", "sender": "@alice:example.com", "origin_server_ts": 1200, "prev_events": ["$jr_pub"], "auth_events": ["$root", "$alice_join", "$jr_pub"], "content": {"users": {"@alice:example.com": 100}}}
+            "#,
+        );
+        let conflicted_evs = utils::parse_jsonl_events(
+            r#"
+            {"event_id": "$rules_invite",     "type": "m.room.join_rules",   "state_key": "", "sender": "@alice:example.com", "origin_server_ts": 1300, "prev_events": ["$pl_init"], "auth_events": ["$root", "$alice_join", "$pl_init"], "content": {"join_rule": "invite"}}
+            {"event_id": "$nexy_join",        "type": "m.room.member",       "state_key": "@nexy:example.com", "sender": "@nexy:example.com", "origin_server_ts": 1310, "prev_events": ["$pl_init"], "auth_events": ["$root", "$alice_join", "$jr_pub", "$pl_init"], "content": {"membership": "join"}}
+            {"event_id": "$nexy_promo",       "type": "m.room.power_levels", "state_key": "", "sender": "@alice:example.com", "origin_server_ts": 1320, "prev_events": ["$nexy_join"], "auth_events": ["$root", "$alice_join", "$nexy_join", "$pl_init"], "content": {"users": {"@alice:example.com": 100, "@nexy:example.com": 50}}}
+            {"event_id": "$nexy_bans_spammer", "type": "m.room.member",      "state_key": "@spammer:example.com", "sender": "@nexy:example.com", "origin_server_ts": 1330, "prev_events": ["$nexy_promo"], "auth_events": ["$root", "$alice_join", "$nexy_join", "$nexy_promo"], "content": {"membership": "ban"}}
+            "#,
+        );
 
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let mut auth: HashMap<String, LeanEvent> = HashMap::new();
-
-        let root: LeanEvent = LeanEvent {
-            event_id: "$root".into(),
-            event_type: "m.room.create".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:example.com".into(),
-            origin_server_ts: 1000,
-            ..Default::default()
-        };
-        auth.insert(root.event_id.clone(), root.clone());
-
-        let alice_join: LeanEvent = LeanEvent {
-            event_id: "$alice_join".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@alice:example.com".into()),
-            sender: "@alice:example.com".into(),
-            origin_server_ts: 1100,
-            prev_events: vec!["$root".into()],
-            auth_events: vec!["$root".into()],
-            ..Default::default()
-        };
-        auth.insert(alice_join.event_id.clone(), alice_join.clone());
-
-        let jr_pub: LeanEvent = LeanEvent {
-            event_id: "$jr_pub".into(),
-            event_type: "m.room.join_rules".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:example.com".into(),
-            origin_server_ts: 1150,
-            prev_events: vec!["$alice_join".into()],
-            auth_events: vec!["$root".into(), "$alice_join".into()],
-            content: json!({ "join_rule": "public" }),
-            ..Default::default()
-        };
-        auth.insert(jr_pub.event_id.clone(), jr_pub.clone());
-
-        let pl_init: LeanEvent = LeanEvent {
-            event_id: "$pl_init".into(),
-            event_type: "m.room.power_levels".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:example.com".into(),
-            origin_server_ts: 1200,
-            prev_events: vec!["$jr_pub".into()],
-            auth_events: vec!["$root".into(), "$alice_join".into(), "$jr_pub".into()],
-            content: json!({ "users": { "@alice:example.com": 100 } }),
-            ..Default::default()
-        };
-        auth.insert(pl_init.event_id.clone(), pl_init.clone());
-
-        // Fork A: Lockdown to invite
-        let rules_invite: LeanEvent = LeanEvent {
-            event_id: "$rules_invite".into(),
-            event_type: "m.room.join_rules".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:example.com".into(),
-            origin_server_ts: 1300,
-            prev_events: vec!["$pl_init".into()],
-            auth_events: vec!["$root".into(), "$alice_join".into(), "$pl_init".into()],
-            content: json!({ "join_rule": "invite" }),
-            ..Default::default()
-        };
-        conflicted.insert(rules_invite.event_id.clone(), rules_invite.clone());
-
-        // Fork B: Nexy's actions (dependent on public join rules)
-        let nexy_join: LeanEvent = LeanEvent {
-            event_id: "$nexy_join".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@nexy:example.com".into()),
-            sender: "@nexy:example.com".into(),
-            origin_server_ts: 1310,
-            prev_events: vec!["$pl_init".into()],
-            auth_events: vec![
-                "$root".into(),
-                "$alice_join".into(),
-                "$jr_pub".into(),
-                "$pl_init".into(),
-            ],
-            content: json!({ "membership": "join" }),
-            ..Default::default()
-        };
-        conflicted.insert(nexy_join.event_id.clone(), nexy_join.clone());
-
-        let nexy_promo: LeanEvent = LeanEvent {
-            event_id: "$nexy_promo".into(),
-            event_type: "m.room.power_levels".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:example.com".into(),
-            origin_server_ts: 1320,
-            prev_events: vec!["$nexy_join".into()],
-            auth_events: vec![
-                "$root".into(),
-                "$alice_join".into(),
-                "$nexy_join".into(),
-                "$pl_init".into(),
-            ],
-            content: json!({ "users": { "@alice:example.com": 100, "@nexy:example.com": 50 } }),
-            ..Default::default()
-        };
-        conflicted.insert(nexy_promo.event_id.clone(), nexy_promo.clone());
-
-        let nexy_bans_spammer: LeanEvent = LeanEvent {
-            event_id: "$nexy_bans_spammer".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@spammer:example.com".into()),
-            sender: "@nexy:example.com".into(),
-            origin_server_ts: 1330,
-            prev_events: vec!["$nexy_promo".into()],
-            auth_events: vec![
-                "$root".into(),
-                "$alice_join".into(),
-                "$nexy_join".into(),
-                "$nexy_promo".into(),
-            ],
-            content: json!({ "membership": "ban" }),
-            ..Default::default()
-        };
-        conflicted.insert(
-            nexy_bans_spammer.event_id.clone(),
-            nexy_bans_spammer.clone(),
-        );
+        for ev in auth_evs {
+            auth.insert(ev.event_id.clone(), ev);
+        }
+        for ev in conflicted_evs {
+            conflicted.insert(ev.event_id.clone(), ev);
+        }
 
         // Under v2.1.1, apply_cdo_filter is executed. $rules_invite (invite
         // lockdown) is concurrent with $nexy_join, but must NOT dominate it:

@@ -471,121 +471,32 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
 #[test]
 fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
     // Exact same test, but running under V2.1.1 to confirm the outcome is unchanged.
-    let create_ev = LeanEvent {
-        event_id: "$create".to_string(),
-        event_type: "m.room.create".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 100,
-        ..Default::default()
-    };
-
-    let join_rules = LeanEvent {
-        event_id: "$jr".to_string(),
-        event_type: "m.room.join_rules".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 150,
-        content: serde_json::json!({ "join_rule": "public" }),
-        auth_events: vec!["$create".to_string()],
-        ..Default::default()
-    };
-
-    let pl_alice = LeanEvent {
-        event_id: "$pl_alice".to_string(),
-        event_type: "m.room.power_levels".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 200,
-        content: serde_json::json!({
-            "users": { "@alice:example.com": 60, "@bob:example.com": 50 },
-            "events_default": 0,
-            "state_default": 50
-        }),
-        auth_events: vec!["$create".to_string()],
-        ..Default::default()
-    };
-
-    let pl_bob = LeanEvent {
-        event_id: "$pl_bob".to_string(),
-        event_type: "m.room.power_levels".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 200,
-        content: serde_json::json!({
-            "users": { "@alice:example.com": 50, "@bob:example.com": 60 },
-            "events_default": 0,
-            "state_default": 50
-        }),
-        auth_events: vec!["$create".to_string()],
-        ..Default::default()
-    };
-
-    let alice_join = LeanEvent {
-        event_id: "$alice_join".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@alice:example.com".to_string()),
-        sender: "@alice:example.com".to_string(),
-        origin_server_ts: 250,
-        content: serde_json::json!({ "membership": "join" }),
-        auth_events: vec!["$create".to_string(), "$jr".to_string()],
-        ..Default::default()
-    };
-
-    let bob_join = LeanEvent {
-        event_id: "$bob_join".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@bob:example.com".to_string()),
-        sender: "@bob:example.com".to_string(),
-        origin_server_ts: 250,
-        content: serde_json::json!({ "membership": "join" }),
-        auth_events: vec!["$create".to_string(), "$jr".to_string()],
-        ..Default::default()
-    };
-
-    let alice_ban = LeanEvent {
-        event_id: "$A_alice_ban".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@bob:example.com".to_string()),
-        sender: "@alice:example.com".to_string(),
-        origin_server_ts: 300,
-        content: serde_json::json!({ "membership": "ban" }),
-        auth_events: vec![
-            "$create".to_string(),
-            "$pl_alice".to_string(),
-            "$alice_join".to_string(),
-            "$bob_join".to_string(),
-        ],
-        ..Default::default()
-    };
-
-    let bob_ban = LeanEvent {
-        event_id: "$Z_bob_ban".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@alice:example.com".to_string()),
-        sender: "@bob:example.com".to_string(),
-        origin_server_ts: 300,
-        content: serde_json::json!({ "membership": "ban" }),
-        auth_events: vec![
-            "$create".to_string(),
-            "$pl_bob".to_string(),
-            "$alice_join".to_string(),
-            "$bob_join".to_string(),
-        ],
-        ..Default::default()
-    };
+    let auth_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 100}
+        {"event_id": "$jr",         "type": "m.room.join_rules",   "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 150, "content": {"join_rule": "public"}, "auth_events": ["$create"]}
+        {"event_id": "$pl_alice",   "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 200, "content": {"users": {"@alice:example.com": 60, "@bob:example.com": 50}, "events_default": 0, "state_default": 50}, "auth_events": ["$create"]}
+        {"event_id": "$pl_bob",     "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 200, "content": {"users": {"@alice:example.com": 50, "@bob:example.com": 60}, "events_default": 0, "state_default": 50}, "auth_events": ["$create"]}
+        {"event_id": "$alice_join", "type": "m.room.member",       "state_key": "@alice:example.com", "sender": "@alice:example.com", "origin_server_ts": 250, "content": {"membership": "join"}, "auth_events": ["$create", "$jr"]}
+        {"event_id": "$bob_join",   "type": "m.room.member",       "state_key": "@bob:example.com", "sender": "@bob:example.com", "origin_server_ts": 250, "content": {"membership": "join"}, "auth_events": ["$create", "$jr"]}
+        "#,
+    );
+    let conflicted_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$A_alice_ban", "type": "m.room.member", "state_key": "@bob:example.com", "sender": "@alice:example.com", "origin_server_ts": 300, "content": {"membership": "ban"}, "auth_events": ["$create", "$pl_alice", "$alice_join", "$bob_join"]}
+        {"event_id": "$Z_bob_ban",   "type": "m.room.member", "state_key": "@alice:example.com", "sender": "@bob:example.com", "origin_server_ts": 300, "content": {"membership": "ban"}, "auth_events": ["$create", "$pl_bob", "$alice_join", "$bob_join"]}
+        "#,
+    );
 
     let mut auth_context = std::collections::HashMap::new();
-    auth_context.insert(create_ev.event_id.clone(), create_ev.clone());
-    auth_context.insert(join_rules.event_id.clone(), join_rules.clone());
-    auth_context.insert(pl_alice.event_id.clone(), pl_alice);
-    auth_context.insert(pl_bob.event_id.clone(), pl_bob);
-    auth_context.insert(alice_join.event_id.clone(), alice_join.clone());
-    auth_context.insert(bob_join.event_id.clone(), bob_join.clone());
+    for ev in auth_evs {
+        auth_context.insert(ev.event_id.clone(), ev);
+    }
 
     let mut conflicted_events = std::collections::HashMap::new();
-    conflicted_events.insert(alice_ban.event_id.clone(), alice_ban);
-    conflicted_events.insert(bob_ban.event_id.clone(), bob_ban);
+    for ev in conflicted_evs {
+        conflicted_events.insert(ev.event_id.clone(), ev);
+    }
 
     let mut unconflicted = imbl::OrdMap::new();
     unconflicted.insert(
@@ -593,28 +504,28 @@ fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
             rezzy::basespec::event_types::EventType::from("m.room.create"),
             String::new(),
         ),
-        create_ev.event_id.clone(),
+        "$create".to_string(),
     );
     unconflicted.insert(
         (
             rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
             String::new(),
         ),
-        join_rules.event_id.clone(),
+        "$jr".to_string(),
     );
     unconflicted.insert(
         (
             rezzy::basespec::event_types::EventType::from("m.room.member"),
             "@alice:example.com".to_string(),
         ),
-        alice_join.event_id.clone(),
+        "$alice_join".to_string(),
     );
     unconflicted.insert(
         (
             rezzy::basespec::event_types::EventType::from("m.room.member"),
             "@bob:example.com".to_string(),
         ),
-        bob_join.event_id.clone(),
+        "$bob_join".to_string(),
     );
 
     let resolved = rezzy::resolve_iterative_sort(
@@ -1039,128 +950,32 @@ fn make_ghost_moderator_events() -> (
     HashMap<String, LeanEvent>,
     imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
 ) {
-    let create_ev = LeanEvent {
-        event_id: "$create".to_string(),
-        event_type: "m.room.create".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 100,
-        ..Default::default()
-    };
-
-    let pl_ev = LeanEvent {
-        event_id: "$pl".to_string(),
-        event_type: "m.room.power_levels".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 200,
-        content: serde_json::json!({
-            "users": { "@admin:example.com": 100 },
-        }),
-        auth_events: vec!["$create".to_string()],
-        ..Default::default()
-    };
-
-    let jr_pub = LeanEvent {
-        event_id: "$jr_pub".to_string(),
-        event_type: "m.room.join_rules".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 300,
-        content: serde_json::json!({ "join_rule": "public" }),
-        auth_events: vec!["$create".to_string(), "$pl".to_string()],
-        ..Default::default()
-    };
-
-    let charlie_join = LeanEvent {
-        event_id: "$charlie_join".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@charlie:example.com".to_string()),
-        sender: "@charlie:example.com".to_string(),
-        origin_server_ts: 400,
-        content: serde_json::json!({ "membership": "join" }),
-        auth_events: vec![
-            "$create".to_string(),
-            "$pl".to_string(),
-            "$jr_pub".to_string(),
-        ],
-        ..Default::default()
-    };
-
-    // FORK A: Admin locks the room
-    let admin_lock = LeanEvent {
-        event_id: "$admin_lock".to_string(),
-        event_type: "m.room.join_rules".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 500,
-        content: serde_json::json!({ "join_rule": "invite" }),
-        auth_events: vec!["$create".to_string(), "$pl".to_string()],
-        ..Default::default()
-    };
-
-    // FORK B: Nexy joins on public rules, is promoted to Moderator, and bans spammer
-    let nexy_join = LeanEvent {
-        event_id: "$nexy_join".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@nexy:example.com".to_string()),
-        sender: "@nexy:example.com".to_string(),
-        origin_server_ts: 450,
-        content: serde_json::json!({ "membership": "join" }),
-        auth_events: vec![
-            "$create".to_string(),
-            "$pl".to_string(),
-            "$jr_pub".to_string(),
-        ],
-        ..Default::default()
-    };
-
-    let nexy_promo = LeanEvent {
-        event_id: "$nexy_promo".to_string(),
-        event_type: "m.room.power_levels".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 460,
-        content: serde_json::json!({
-            "users": {
-                "@admin:example.com": 100,
-                "@nexy:example.com": 50,
-            }
-        }),
-        auth_events: vec![
-            "$create".to_string(),
-            "$pl".to_string(),
-            "$nexy_join".to_string(),
-        ],
-        ..Default::default()
-    };
-
-    let nexy_bans_spammer = LeanEvent {
-        event_id: "$nexy_bans_spammer".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@spammer:example.com".to_string()),
-        sender: "@nexy:example.com".to_string(),
-        origin_server_ts: 470,
-        content: serde_json::json!({ "membership": "ban" }),
-        auth_events: vec![
-            "$create".to_string(),
-            "$nexy_promo".to_string(),
-            "$nexy_join".to_string(),
-        ],
-        ..Default::default()
-    };
+    let auth_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$create",          "type": "m.room.create",       "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 100}
+        {"event_id": "$pl",              "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 200, "content": {"users": {"@admin:example.com": 100}}, "auth_events": ["$create"]}
+        {"event_id": "$jr_pub",          "type": "m.room.join_rules",   "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 300, "content": {"join_rule": "public"}, "auth_events": ["$create", "$pl"]}
+        {"event_id": "$charlie_join",    "type": "m.room.member",       "state_key": "@charlie:example.com", "sender": "@charlie:example.com", "origin_server_ts": 400, "content": {"membership": "join"}, "auth_events": ["$create", "$pl", "$jr_pub"]}
+        "#,
+    );
+    let conflicted_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$admin_lock",        "type": "m.room.join_rules",   "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 500, "content": {"join_rule": "invite"}, "auth_events": ["$create", "$pl"]}
+        {"event_id": "$nexy_join",         "type": "m.room.member",       "state_key": "@nexy:example.com", "sender": "@nexy:example.com", "origin_server_ts": 450, "content": {"membership": "join"}, "auth_events": ["$create", "$pl", "$jr_pub"]}
+        {"event_id": "$nexy_promo",        "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 460, "content": {"users": {"@admin:example.com": 100, "@nexy:example.com": 50}}, "auth_events": ["$create", "$pl", "$nexy_join"]}
+        {"event_id": "$nexy_bans_spammer", "type": "m.room.member",       "state_key": "@spammer:example.com", "sender": "@nexy:example.com", "origin_server_ts": 470, "content": {"membership": "ban"}, "auth_events": ["$create", "$nexy_promo", "$nexy_join"]}
+        "#,
+    );
 
     let mut auth_context = std::collections::HashMap::new();
-    auth_context.insert("$create".to_string(), create_ev);
-    auth_context.insert("$pl".to_string(), pl_ev);
-    auth_context.insert("$jr_pub".to_string(), jr_pub);
-    auth_context.insert("$charlie_join".to_string(), charlie_join);
+    for ev in auth_evs {
+        auth_context.insert(ev.event_id.clone(), ev);
+    }
 
     let mut conflicted_events = std::collections::HashMap::new();
-    conflicted_events.insert("$admin_lock".to_string(), admin_lock);
-    conflicted_events.insert("$nexy_join".to_string(), nexy_join);
-    conflicted_events.insert("$nexy_promo".to_string(), nexy_promo);
-    conflicted_events.insert("$nexy_bans_spammer".to_string(), nexy_bans_spammer);
+    for ev in conflicted_evs {
+        conflicted_events.insert(ev.event_id.clone(), ev);
+    }
 
     let mut unconflicted_state = imbl::OrdMap::new();
     unconflicted_state.insert(
@@ -1772,7 +1587,11 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
         sender: "@admin:x".to_string(),
         origin_server_ts: 350,
         content: json!({ "join_rule": "public" }),
-        auth_events: vec!["$create".to_string(), "$admin_join".to_string(), "$pl".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$admin_join".to_string(),
+            "$pl".to_string(),
+        ],
         ..Default::default()
     };
     let mallory_join = LeanEvent {
