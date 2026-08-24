@@ -7230,6 +7230,7 @@ fn test_lean_event_serialize_propagates_write_error() {
     assert!(result.is_err());
 }
 
+/// Regression coverage for conflicted-key derivation before CDO filtering.
 #[test]
 fn test_conflicted_keys_derived_before_cdo() {
     use rezzy::basespec::event_types::EventType;

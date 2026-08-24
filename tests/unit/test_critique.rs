@@ -283,6 +283,7 @@ fn test_anomaly_02_admin_lockout() {
     assert_eq!(get_user_power_level(&resolved, &map, "@bob:example.com"), 0);
 }
 
+/// Regression coverage for the phantom join-rules anomaly fixture.
 #[test]
 fn test_anomaly_03_phantom_join_rules() {
     let (resolved, map) = resolve_pathology("03_phantom_join_rules.jsonl");
@@ -331,6 +332,7 @@ fn test_anomaly_06_action_evaporation() {
     assert_eq!(get_user_power_level(&resolved, &map, "@bob:example.com"), 0);
 }
 
+/// Regression coverage for the membership-evaporation anomaly fixture.
 #[test]
 fn test_anomaly_06b_mod_membership_evaporation() {
     let (resolved, map) = resolve_pathology("06b_mod_membership_evaporation.jsonl");
@@ -479,6 +481,7 @@ fn test_anomaly_16_causality_leakage() {
     );
 }
 
+/// Regression coverage for the sliced-DAG membership-desync anomaly fixture.
 #[test]
 fn test_anomaly_17_sliced_dag_membership_desync() {
     let (resolved, map) = resolve_pathology("17_sliced_dag_membership_desync.jsonl");

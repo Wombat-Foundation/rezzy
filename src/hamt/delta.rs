@@ -1,4 +1,5 @@
-use std::{fmt, hash::Hash, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
+use core::{fmt, hash::Hash};
 
 use crate::state::LtHash;
 

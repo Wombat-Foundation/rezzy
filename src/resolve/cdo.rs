@@ -79,10 +79,9 @@ use core::cmp::Ordering;
 
 /// Returns `true` if `possible_ancestor_id` is an ancestor of `child_id`.
 ///
-/// # Panics
-///
-/// Will panic if `child_id` or `possible_ancestor_id` are found in the context's key-value entries
-/// but their corresponding values are missing from the context map (violating graph integrity).
+/// Missing event IDs in the lookup context return `false`, except when
+/// `child_id == possible_ancestor_id`, which is `true` regardless of
+/// context membership.
 #[must_use]
 pub fn is_ancestor<Id, C: Clone, Q, S: core::hash::BuildHasher, K>(
     child_id: &Q,
@@ -234,6 +233,7 @@ struct AdjacencyStructures<'a, Id, C, K> {
     unordered_ids: BTreeSet<Id>,
 }
 
+/// Builds the adjacency lists and rank maps used by the domination sweep.
 fn build_adjacency_structures<'a, Id, C: Clone, S1, S2, K>(
     conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
     auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
@@ -552,10 +552,16 @@ where
             if dropped_ids.contains(*event_id) || adj.unordered_ids.contains(*event_id) {
                 continue;
             }
+            if adj.unordered_ids.contains(*event_id) {
+                continue;
+            }
 
             if let Some(&ev_idx) = adj.id_to_idx.get(*event_id) {
                 for (&admin_id, &orig_idx) in &chunk_admin_to_pos {
                     if dropped_ids.contains(admin_id) {
+                        continue;
+                    }
+                    if adj.unordered_ids.contains(admin_id) {
                         continue;
                     }
                     // Only higher-priority admin actions (occurring earlier in the sorted list) can dominate

@@ -52,8 +52,10 @@
 //! the caller's responsibility to only retire a root through this path when
 //! retirement is a strict linear chain.
 
-use std::collections::HashMap;
-use std::{fmt, vec::Vec};
+use alloc::vec::Vec;
+use core::fmt;
+
+use crate::HashMap;
 
 use super::StructuralHash;
 

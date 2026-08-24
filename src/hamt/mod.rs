@@ -28,9 +28,10 @@ pub mod hash;
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;
 
+#[cfg(feature = "std")]
+pub use audit::{bitmap_node_reachability_audit, BitmapAuditError, BitmapNodeReachabilityAudit};
 pub use audit::{
-    bitmap_node_reachability_audit, node_reachability_audit, unreachable_node_hashes,
-    BitmapAuditError, BitmapNodeReachabilityAudit, IndexedUniverse, NodeReachabilityAudit,
+    node_reachability_audit, unreachable_node_hashes, IndexedUniverse, NodeReachabilityAudit,
     UniverseTooLarge,
 };
 pub use codec::PersistedInternalNode;

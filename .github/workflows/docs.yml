@@ -35,6 +35,16 @@ jobs:
       - name: Build rustdoc
         run: make rust/doc
 
+      - name: Delete stale github-pages artifact
+        # `deploy-pages` requires exactly one `github-pages` artifact; a
+        # leftover from a prior run collides with the fresh upload and aborts
+        # with "Multiple artifacts named github-pages". Remove any before
+        # uploading so every run is idempotent.
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: github-pages
+          failOnError: false
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
