@@ -671,6 +671,21 @@ fn test_v2_1_1_cve_demotion_evasion() {
         ..Default::default()
     };
 
+    // A public join rule, so Eve's self-join is authorized. Without it the
+    // default is `invite`, and Eve (never invited) cannot validly join -- which
+    // would make the demotion-rejection below trivially true for the wrong
+    // reason (Eve never a valid member), not because of the demotion.
+    let join_rules = LeanEvent {
+        event_id: "$join_rules".to_string(),
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".to_string(),
+        origin_server_ts: 250,
+        content: serde_json::json!({ "join_rule": "public" }),
+        auth_events: vec!["$create".to_string(), "$pl_promo".to_string()],
+        ..Default::default()
+    };
+
     // Eve joins (auths against the PL where she is Admin)
     let eve_join = LeanEvent {
         event_id: "$eve_join".to_string(),
@@ -679,7 +694,11 @@ fn test_v2_1_1_cve_demotion_evasion() {
         sender: "@eve:evil.com".to_string(),
         origin_server_ts: 300,
         content: serde_json::json!({ "membership": "join" }),
-        auth_events: vec!["$create".to_string(), "$pl_promo".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl_promo".to_string(),
+            "$join_rules".to_string(),
+        ],
         ..Default::default()
     };
 
@@ -716,13 +735,38 @@ fn test_v2_1_1_cve_demotion_evasion() {
     let mut auth_context = std::collections::HashMap::new();
     auth_context.insert("$create".to_string(), create_ev);
     auth_context.insert("$pl_promo".to_string(), pl_promo.clone());
-    auth_context.insert("$eve_join".to_string(), eve_join);
+    auth_context.insert("$join_rules".to_string(), join_rules);
+    auth_context.insert("$eve_join".to_string(), eve_join.clone());
     auth_context.insert("$pl_demote".to_string(), pl_demote.clone());
 
     let mut conflicted_events = std::collections::HashMap::new();
-    conflicted_events.insert("$pl_promo".to_string(), pl_promo);
+    conflicted_events.insert("$pl_promo".to_string(), pl_promo.clone());
     conflicted_events.insert("$pl_demote".to_string(), pl_demote);
-    conflicted_events.insert("$eve_attack".to_string(), eve_attack);
+    conflicted_events.insert("$eve_attack".to_string(), eve_attack.clone());
+
+    let name_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.name"),
+        String::new(),
+    );
+
+    // Control: with no demotion, Eve (a valid public-rule member at PL 100 from
+    // the promo) CAN change the room name. This proves the rejection below is
+    // caused by the demotion, not by Eve being an invalid member.
+    let mut control_conflicted = std::collections::HashMap::new();
+    control_conflicted.insert("$pl_promo".to_string(), pl_promo);
+    control_conflicted.insert("$eve_join".to_string(), eve_join);
+    control_conflicted.insert("$eve_attack".to_string(), eve_attack);
+    let resolved_control = rezzy::resolve_iterative_sort(
+        utils::build_unconflicted_state_test_helper(&auth_context),
+        control_conflicted,
+        &auth_context,
+        rezzy::StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
+    );
+    assert!(
+        resolved_control.contains_key(&name_key),
+        "control: with Eve promoted (PL 100) and validly joined, the name change must resolve"
+    );
 
     // --- V2.1 SECURELY BLOCKS THE ATTACK ---
     // V2.1 resolves PLs first (picking the demotion). When validating Eve's attack,
@@ -733,10 +777,6 @@ fn test_v2_1_1_cve_demotion_evasion() {
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
-    );
-    let name_key = (
-        rezzy::basespec::event_types::EventType::from("m.room.name"),
-        String::new(),
     );
     assert!(
         !resolved_v21.contains_key(&name_key),
@@ -790,6 +830,21 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
         ..Default::default()
     };
 
+    // A public join rule, so Bob's self-join is authorized. Without it the
+    // default is `invite`, and Bob (never invited) cannot validly join -- which
+    // would make the name-change rejection below trivially true for the wrong
+    // reason (Bob never a valid member), not because of the concurrent ban.
+    let join_rules = LeanEvent {
+        event_id: "$join_rules".to_string(),
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".to_string(),
+        origin_server_ts: 250,
+        content: serde_json::json!({ "join_rule": "public" }),
+        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        ..Default::default()
+    };
+
     let bob_join = LeanEvent {
         event_id: "$bob_join".to_string(),
         event_type: "m.room.member".to_string(),
@@ -797,7 +852,11 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
         sender: "@bob:example.com".to_string(),
         origin_server_ts: 300,
         content: serde_json::json!({ "membership": "join" }),
-        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$join_rules".to_string(),
+        ],
         ..Default::default()
     };
 
@@ -837,11 +896,33 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
     let mut auth_context = std::collections::HashMap::new();
     auth_context.insert("$create".to_string(), create_ev);
     auth_context.insert("$pl".to_string(), pl_ev);
-    auth_context.insert("$bob_join".to_string(), bob_join);
+    auth_context.insert("$join_rules".to_string(), join_rules);
+    auth_context.insert("$bob_join".to_string(), bob_join.clone());
 
     let mut conflicted_events = std::collections::HashMap::new();
     conflicted_events.insert("$alice_bans_bob".to_string(), alice_bans_bob);
-    conflicted_events.insert("$bob_name_change".to_string(), bob_name_change);
+    conflicted_events.insert("$bob_name_change".to_string(), bob_name_change.clone());
+
+    // Control: with no ban, Bob (a valid public-rule member at PL 50) CAN change
+    // the room name. This proves the name rejection below is caused by the
+    // concurrent ban, not by Bob being an invalid member.
+    let mut control_conflicted = std::collections::HashMap::new();
+    control_conflicted.insert("$bob_join".to_string(), bob_join);
+    control_conflicted.insert("$bob_name_change".to_string(), bob_name_change);
+    let resolved_control = rezzy::resolve_iterative_sort(
+        utils::build_unconflicted_state_test_helper(&auth_context),
+        control_conflicted,
+        &auth_context,
+        rezzy::StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
+    );
+    assert!(
+        resolved_control.contains_key(&(
+            rezzy::basespec::event_types::EventType::from("m.room.name"),
+            String::new()
+        )),
+        "control: with Bob validly joined and not banned, the name change must resolve"
+    );
 
     // Run V2.1 Resolution (Stock)
     let resolved_v21 = rezzy::resolve_iterative_sort(
@@ -1320,6 +1401,21 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
         ..Default::default()
     };
 
+    // A public join rule, so Bob's self-join is authorized. Without it the
+    // default is `invite`, and Bob (never invited) cannot validly join -- which
+    // would make the topic rejection below trivially true for the wrong reason
+    // (Bob never a valid member), not because of the concurrent ban.
+    let join_rules = LeanEvent {
+        event_id: "$join_rules".to_string(),
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".to_string(),
+        origin_server_ts: 250,
+        content: serde_json::json!({ "join_rule": "public" }),
+        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        ..Default::default()
+    };
+
     let bob_join = LeanEvent {
         event_id: "$bob_join".to_string(),
         event_type: "m.room.member".to_string(),
@@ -1327,7 +1423,11 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
         sender: "@bob:example.com".to_string(),
         origin_server_ts: 300,
         content: serde_json::json!({ "membership": "join" }),
-        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$join_rules".to_string(),
+        ],
         ..Default::default()
     };
 
@@ -1366,11 +1466,33 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
     let mut auth_context = std::collections::HashMap::new();
     auth_context.insert("$create".to_string(), create_ev);
     auth_context.insert("$pl".to_string(), pl_ev);
-    auth_context.insert("$bob_join".to_string(), bob_join);
+    auth_context.insert("$join_rules".to_string(), join_rules);
+    auth_context.insert("$bob_join".to_string(), bob_join.clone());
 
     let mut conflicted_events = std::collections::HashMap::new();
     conflicted_events.insert("$alice_bans_bob".to_string(), alice_bans_bob);
-    conflicted_events.insert("$bob_topic_change".to_string(), bob_topic_change);
+    conflicted_events.insert("$bob_topic_change".to_string(), bob_topic_change.clone());
+
+    // Control: with no ban, Bob (a valid public-rule member at PL 50) CAN change
+    // the room topic. This proves the topic rejection below is caused by the
+    // concurrent ban, not by Bob being an invalid member.
+    let mut control_conflicted = std::collections::HashMap::new();
+    control_conflicted.insert("$bob_join".to_string(), bob_join);
+    control_conflicted.insert("$bob_topic_change".to_string(), bob_topic_change);
+    let resolved_control = rezzy::resolve_iterative_sort(
+        utils::build_unconflicted_state_test_helper(&auth_context),
+        control_conflicted,
+        &auth_context,
+        rezzy::StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
+    );
+    assert!(
+        resolved_control.contains_key(&(
+            rezzy::basespec::event_types::EventType::from("m.room.topic"),
+            String::new()
+        )),
+        "control: with Bob validly joined and not banned, the topic change must resolve"
+    );
 
     // Run V2.1 Resolution (Fixed & Spec-Compliant)
     let resolved_v21 = rezzy::resolve_iterative_sort(
@@ -1638,6 +1760,21 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
         auth_events: vec!["$create".to_string(), "$admin_join".to_string()],
         ..Default::default()
     };
+    // A public join rule, so Mallory's self-join is a genuinely valid membership
+    // (the default `invite` rule would make her never-a-member). Her ban below is
+    // what rejects her PL event, so this keeps the fixture valid without changing
+    // the assertion -- no separate "control" is possible here, since Mallory also
+    // lacks the power level to send PL events even if unbanned.
+    let join_rules = LeanEvent {
+        event_id: "$join_rules".to_string(),
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".to_string(),
+        origin_server_ts: 350,
+        content: json!({ "join_rule": "public" }),
+        auth_events: vec!["$create".to_string(), "$admin_join".to_string(), "$pl".to_string()],
+        ..Default::default()
+    };
     let mallory_join = LeanEvent {
         event_id: "$mallory_join".to_string(),
         event_type: "m.room.member".to_string(),
@@ -1645,7 +1782,11 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
         sender: "@mallory:x".to_string(),
         origin_server_ts: 400,
         content: json!({"membership": "join"}),
-        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$join_rules".to_string(),
+        ],
         ..Default::default()
     };
 
@@ -1708,6 +1849,7 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
     auth_context.insert("$create".to_string(), create);
     auth_context.insert("$admin_join".to_string(), admin_join);
     auth_context.insert("$pl".to_string(), pl);
+    auth_context.insert("$join_rules".to_string(), join_rules);
     auth_context.insert("$mallory_join".to_string(), mallory_join);
     auth_context.insert("$mallory_ban".to_string(), mallory_ban);
 
