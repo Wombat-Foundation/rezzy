@@ -15,6 +15,7 @@ OUTPUT_FILE = "res/benchmark_1k.json"
 
 
 def sha256_hash(data_str):
+    """Return the hex digest of the SHA-256 hash of a string."""
     return hashlib.sha256(data_str.encode("utf-8")).hexdigest()
 
 
@@ -28,10 +29,10 @@ ROOM_ID = "!benchmark_room:example.com"
 members = [f"@user_{i}:example.com" for i in range(50)]
 
 # Create initial events
-create_event_id = "$00000-m-room-create"
+CREATE_EVENT_ID = "$00000-m-room-create"
 events.append(
     {
-        "event_id": create_event_id,
+        "event_id": CREATE_EVENT_ID,
         "room_id": ROOM_ID,
         "sender": "@creator:example.com",
         "type": "m.room.create",
@@ -45,31 +46,31 @@ events.append(
     }
 )
 
-creator_join_id = "$00000.5-creator-join"
+CREATOR_JOIN_ID = "$00000.5-creator-join"
 events.append(
     {
-        "event_id": creator_join_id,
+        "event_id": CREATOR_JOIN_ID,
         "room_id": ROOM_ID,
         "sender": "@creator:example.com",
         "type": "m.room.member",
         "content": {"membership": "join"},
         "state_key": "@creator:example.com",
         "origin_server_ts": int(time.time() * 1000) - 9500000,
-        "prev_events": [create_event_id],
-        "auth_events": [create_event_id],
+        "prev_events": [CREATE_EVENT_ID],
+        "auth_events": [CREATE_EVENT_ID],
         "power_level": 100,
         "depth": 2,
     }
 )
 
-power_levels_event_id = "$00001-power-levels"
+POWER_LEVELS_EVENT_ID = "$00001-power-levels"
 users_dict = {"@creator:example.com": 100}
 for m in members:
     users_dict[m] = 100
 
 events.append(
     {
-        "event_id": power_levels_event_id,
+        "event_id": POWER_LEVELS_EVENT_ID,
         "room_id": ROOM_ID,
         "sender": "@creator:example.com",
         "type": "m.room.power_levels",
@@ -81,8 +82,8 @@ events.append(
         },
         "state_key": "",
         "origin_server_ts": int(time.time() * 1000) - 9000000,
-        "prev_events": [create_event_id],
-        "auth_events": [create_event_id],
+        "prev_events": [CREATE_EVENT_ID],
+        "auth_events": [CREATE_EVENT_ID],
         "power_level": 100,
         "depth": 3,
     }
@@ -122,7 +123,7 @@ for i in range(3, NUM_EVENTS):
             "state_key": state_key,
             "origin_server_ts": ts,
             "prev_events": [prev_event_id],
-            "auth_events": [create_event_id, creator_join_id, power_levels_event_id],
+            "auth_events": [CREATE_EVENT_ID, CREATOR_JOIN_ID, POWER_LEVELS_EVENT_ID],
             "power_level": 100,
             "depth": i + 1,
         }
@@ -133,15 +134,15 @@ head1 = events[-2]["event_id"]
 head2 = events[-1]["event_id"]
 
 # V2 File
-v2_file = "res/benchmark_1k.json"
-with open(v2_file, "w", encoding="utf-8") as f:
+V2_FILE = "res/benchmark_1k.json"
+with open(V2_FILE, "w", encoding="utf-8") as f:
     output = {"events": events, "heads": [head1, head2]}
     json.dump(output, f, indent=2)
 
-print(f"Success! Generated {NUM_EVENTS} events to {v2_file}", file=sys.stderr)
+print(f"Success! Generated {NUM_EVENTS} events to {V2_FILE}", file=sys.stderr)
 
 # V2.1 File (Room Version 12)
-v2_1_file = "res/benchmark_1k_v2_1.json"
+V2_1_FILE = "res/benchmark_1k_v2_1.json"
 events_v2_1: list[dict[str, Any]] = []
 for ev in events:
     new_ev = ev.copy()
@@ -149,8 +150,8 @@ for ev in events:
         new_ev["content"] = {"creator": ev["content"]["creator"], "room_version": "12"}
     events_v2_1.append(new_ev)
 
-with open(v2_1_file, "w", encoding="utf-8") as f:
+with open(V2_1_FILE, "w", encoding="utf-8") as f:
     output = {"events": events_v2_1, "heads": [head1, head2]}
     json.dump(output, f, indent=2)
 
-print(f"Success! Generated {NUM_EVENTS} events to {v2_1_file}", file=sys.stderr)
+print(f"Success! Generated {NUM_EVENTS} events to {V2_1_FILE}", file=sys.stderr)

@@ -36,6 +36,7 @@ METRIC = re.compile(r"^(.+?):\s+([0-9]+(?:\.[0-9]+)?)\s*ms\b")
 
 
 def extract(path: str) -> dict[str, float]:
+    """Parse the tee'd bench output into {label: milliseconds}."""
     metrics: dict[str, float] = {}
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
@@ -49,6 +50,7 @@ def extract(path: str) -> dict[str, float]:
 
 
 def main() -> int:
+    """Compare current bench metrics against the best and write the running best."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--current", required=True, help="tee'd bench output")
     ap.add_argument("--best", required=True, help="previous best JSON (bench.json)")
@@ -58,7 +60,7 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    if not (0.0 < args.margin < 1.0):
+    if not 0.0 < args.margin < 1.0:
         ap.error("--margin must be in (0, 1)")
 
     current = extract(args.current)

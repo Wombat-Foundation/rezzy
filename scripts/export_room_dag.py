@@ -35,6 +35,8 @@ Usage:
   python3 scripts/export_federation_dag.py '#matrix:matrix.org' --limit 10000
 """
 
+# pylint: disable=duplicate-code
+
 import argparse
 import json
 import os
@@ -77,7 +79,7 @@ def api_get(path, params=None, server=None):
         body = e.read().decode("utf-8", errors="replace")[:200]
         print(f"  HTTP {e.code}: {e.reason} — {body}", file=sys.stderr)
         return None
-    except Exception as e:
+    except urllib.error.URLError as e:
         print(f"  Error: {e}", file=sys.stderr)
         return None
 
@@ -126,7 +128,7 @@ def fetch_context(room_id, event_id, limit=50):
 def export_via_cs_api(room_id, max_events=5000):
     """Export using CS API — gets events but may lack auth/prev fields.
     We compensate by fetching each event individually for federation fields."""
-
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
     events = {}  # event_id -> normalized event
 
     # Step 1: Current state
@@ -290,7 +292,7 @@ def write_output(events, room_id, output_path):
         },
     }
 
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, separators=(",", ":"))
 
     size_kb = os.path.getsize(output_path) // 1024
@@ -314,6 +316,7 @@ def write_output(events, room_id, output_path):
 
 
 def main():
+    """Parse CLI args, resolve aliases, and export the room DAG."""
     parser = argparse.ArgumentParser(
         description="Export a Matrix room DAG for rezzy stress testing"
     )
