@@ -533,6 +533,8 @@ pub fn reference_hash(
         obj.remove("age_ts");
     }
     sort_json_value_keys(&mut redacted);
+    // TODO: defensive `?` — serde of a `Value` is effectively infallible here,
+    // so this branch is dead in coverage; see docs/tech_debt.md.
     let canonical = serde_json::to_string(&redacted).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
@@ -561,6 +563,8 @@ pub fn compute_content_hash(
         obj.remove(FIELD_HASHES);
     }
     sort_json_value_keys(&mut v);
+    // TODO: defensive `?` — serde of a `Value` is effectively infallible here,
+    // so this branch is dead in coverage; see docs/tech_debt.md.
     let canonical = serde_json::to_string(&v).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
@@ -693,6 +697,8 @@ pub fn ingest_events(
 
     let mut events: Vec<LeanEvent<String, Value, String>> = Vec::with_capacity(pdus.len());
     for pdu in pdus {
+        // TODO: `?` here is reachable (malformed PDU) — candidate to soften
+        // into a `Warning` + skip rather than abort the whole batch.
         events.push(LeanEvent::from_value(pdu, Some(room_version)).map_err(|e| e.to_string())?);
     }
 
@@ -1598,6 +1604,8 @@ impl<Id: serde::Serialize, C: serde::Serialize, K: AsRef<str>> serde::Serialize
             FIELD_STATE_KEY, FIELD_TYPE,
         };
         use serde::ser::SerializeStruct;
+        // TODO: trait forces `Result` here, so `?` shows as dead coverage; see
+        // docs/tech_debt.md for the refactor investigation.
         let mut state = serializer.serialize_struct("LeanEvent", 12)?;
         state.serialize_field(FIELD_EVENT_ID, &self.event_id)?;
         state.serialize_field(FIELD_TYPE, &self.event_type)?;
