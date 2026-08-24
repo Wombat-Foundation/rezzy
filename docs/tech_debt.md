@@ -14,9 +14,9 @@ spec_audit.md.
 
 The "assign dense integer indices to an arbitrary ID/hash set, both directions,
 so a `RoaringBitmap` or a plain array can address it" pattern is hand-rolled
-independently at five logical locations (seven distinct implementations once
-the two-in-one files below are counted), with real, meaningful variation
-between copies:
+independently at five logical locations (seven distinct implementations once the
+two-in-one files below are counted), with real, meaningful variation between
+copies:
 
 1. `src/auth/roaring.rs`, `AuthGraph`: `id_to_index: HashMap<Id, u32>` +
    `index_to_id: Vec<Id>` (owned `Id`), feeds
@@ -122,23 +122,23 @@ alongside each event through `route_power_events`/`power_events`/
 
 ### `is_sender_banned` only checks bans, not under-powered senders
 
-The resolved-state screening pass (`is_sender_banned`, `src/resolve/iterative.rs`)
-is deliberately ban-only: it drops exactly those conflicted events whose sender
-is banned in the power-phase `resolved` state. That is the narrow, sound
-guarantee — the pass rejects only banned senders and never reorders the
-surviving set (a sender banned in the power-phase `resolved` is banned
-throughout the non-power phase, so the iterative auth would reject such an event
-regardless). A sender who was demoted below the power level their conflicted
-event requires (not banned outright) is **not** screened here and still gets
-the full mainline-sort + iterative auth treatment. This is intentional: the
-ban-only predicate is exact (it looks up `MEM_BAN` on the sender's member key),
-whereas distinguishing a pre-demotion-authorized event from a genuinely
-rejected one is not a simple predicate — see
-`test_anomaly_19_demoted_but_still_authorized`, where a demoted Priya's ban
-must still survive because it was authorized against an earlier PL grant that
-her later demotion cannot retroactively invalidate. Screening demoted senders
-out early would require such a predicate, which does not exist yet — an
-incomplete optimization, not a soundness bug.
+The resolved-state screening pass (`is_sender_banned`,
+`src/resolve/iterative.rs`) is deliberately ban-only: it drops exactly those
+conflicted events whose sender is banned in the power-phase `resolved` state.
+That is the narrow, sound guarantee — the pass rejects only banned senders and
+never reorders the surviving set (a sender banned in the power-phase `resolved`
+is banned throughout the non-power phase, so the iterative auth would reject
+such an event regardless). A sender who was demoted below the power level their
+conflicted event requires (not banned outright) is **not** screened here and
+still gets the full mainline-sort + iterative auth treatment. This is
+intentional: the ban-only predicate is exact (it looks up `MEM_BAN` on the
+sender's member key), whereas distinguishing a pre-demotion-authorized event
+from a genuinely rejected one is not a simple predicate — see
+`test_anomaly_19_demoted_but_still_authorized`, where a demoted Priya's ban must
+still survive because it was authorized against an earlier PL grant that her
+later demotion cannot retroactively invalidate. Screening demoted senders out
+early would require such a predicate, which does not exist yet — an incomplete
+optimization, not a soundness bug.
 
 ### `Warning` channel only wired into `validate_syntactic` so far
 
@@ -182,18 +182,17 @@ strategy.
 decode and a `low_confidence`-estimate case that still converges. It
 deliberately does **not** cover `retry_or_split_bucket`'s multi-round
 capacity-then-depth escalation end-to-end: a uniformly random delta rarely
-overflows any single auto-sized bucket (so it doesn't reliably force a
-retry), and a hand-constructed "hot bucket" skewed enough to force one
-tended to either overshoot `MAX_RECONCILIATION_ROUNDS` (bailing to
-`ExtremityDiff`) or undershoot it, depending on exact construction --
-turning the assertion into something that would flake rather than reliably
-exercise the path. `benches/reconcile.rs`'s
+overflows any single auto-sized bucket (so it doesn't reliably force a retry),
+and a hand-constructed "hot bucket" skewed enough to force one tended to either
+overshoot `MAX_RECONCILIATION_ROUNDS` (bailing to `ExtremityDiff`) or undershoot
+it, depending on exact construction -- turning the assertion into something that
+would flake rather than reliably exercise the path. `benches/reconcile.rs`'s
 `benchmark_bucket_exchange_from_pool` already runs this path at scale, just
-without assertions (it's a timing harness, not a correctness gate). Circle
-back with a construction that provably lands a chosen delta in exactly one
-prefix range at a chosen depth (rather than approximating it via hash
-clustering) so the round count is an exact, assertable function of the
-inputs instead of an empirical one.
+without assertions (it's a timing harness, not a correctness gate). Circle back
+with a construction that provably lands a chosen delta in exactly one prefix
+range at a chosen depth (rather than approximating it via hash clustering) so
+the round count is an exact, assertable function of the inputs instead of an
+empirical one.
 
 ### Dead CDO module (`src/resolve/cdo.rs`)
 
@@ -205,3 +204,56 @@ compiled, still has its own test suite, and is still exercised by
 path, not because it's live itself). Worth a deliberate decision: keep it as a
 permanent regression fixture, or extract just the invariant the differential
 harness needs and delete the rest.
+
+## CI / benchmark tooling
+
+### `.github/workflows/benches.yml` security & robustness
+
+Found by the CodeRabbit/cubic PR review. The bench workflow has several open
+issues, all valid and worth fixing before it's trusted as a gate:
+
+- **PR runs get `contents: write`.** `permissions: contents: write` is set at
+  workflow level, so a same-repo PR can execute arbitrary build/bench code with
+  a writable repo token. Fix: split into a read-only bench job (contents: read,
+  `persist-credentials: false` on checkout) and a separate publish job
+  (contents: write) gated to main/master only.
+- **Unpinned action tags.** `actions/checkout@v4`,
+  `dtolnay/rust-toolchain@stable`, `Swatinem/rust-cache@v2` are mutable tags;
+  pin to verified commit SHAs.
+- **No `pipefail`.** `cargo bench 2>&1 | tee bench-output.txt` returns `tee`'s
+  exit status, so a bench failure can pass/publish partial metrics. Enable
+  `set -o pipefail`.
+- **Publish always fails after `_metadata/badges` exists.** The fetched
+  `bench.json` (untracked, from
+  `git show _metadata/badges:bench.json > bench.json`) collides with the tracked
+  `bench.json` on that branch, so
+  `git checkout -B _metadata/badges origin/_metadata/badges` refuses. Stash it
+  (e.g. `mv bench.json bench-prev.json`) before the branch switch.
+- **No publish concurrency group.** Two main/master runs race on the
+  `_metadata/badges` push (non-fast-forward rejection). Serialize the publisher.
+
+### `scripts/compare_bench.py` fail-open + label collisions (from cubic review)
+
+- **Empty parse passes CI.** If `bench-output.txt` is empty or the format
+  changes, `current` is `{}` and the script exits 0 — the gate silently passes.
+  Fail with a nonzero exit when no metrics are parsed.
+- **Checkpoint labels collide.** The cumulative benchmark's checkpoint metrics
+  reuse identical labels, so `metrics[label] = value` (last-wins) keeps only the
+  final checkpoint. Preserve checkpoint context or require unique labels so
+  every checkpoint is compared.
+
+## Scripts & docs cleanup (low-risk quick wins)
+
+- `docs/perf_audits.md` pastes raw AI-session transcript blocks ("Thought for
+  Ns", tool-call lines, absolute paths like `/run/media/shane/...`). Strip to
+  the benchmark conclusions / takeaways only.
+- `tests/unit/test_lib.rs:803` stale float-coercion comment (describes
+  `Number::from_f64(...).as_i64()` that the code no longer uses).
+- `scripts/export_room_dag.py` / `scripts/fetch_matrix_state.py`: a 200 response
+  with malformed JSON raises `JSONDecodeError`/`ValueError` uncaught, aborting
+  the fetch; handle it as a per-event failure and return `None`.
+- `scripts/gen_10mil_uuid_sets.py:9` parenthesized `with` requires Python 3.10+
+  (previous comma form worked on 3.7+); revert unless 3.10+ is required.
+- `docs/tech_debt.md` "dense-index" section: reconcile "seven implementations"
+  vs "up to five"/"five call sites" wording; `RoomId` DST note has a
+  non-navigable `../ruma` Slack reference.

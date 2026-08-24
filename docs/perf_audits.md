@@ -7,8 +7,9 @@ showed ~1.05x–1.20x while the bitmap/auth-diff microbenchmarks showed 15x–25
 
 ### 1. The Benchmark Harness Is Dominated by Heap Allocations (String & serde_json)
 
-In `bench_ruma_vs_rezzy.rs`, `lib.rs` takes `conflicted_events: HashMap<String,
-LeanEvent>` and `unconflicted_state` by value.
+In `bench_ruma_vs_rezzy.rs`, `lib.rs` takes
+`conflicted_events: HashMap<String, LeanEvent>` and `unconflicted_state` by
+value.
 
 To run it in a benchmark loop:
 
@@ -167,16 +168,17 @@ massive rebuild scenarios.
 ### Key Takeaways from the Data
 
 1. **Why In-Memory `resolve_iterative_sort` is close to Ruma**:
-    - `ruma_state_res::resolve` operates on borrowed references (`&[&StateMap]`).
+    - `ruma_state_res::resolve` operates on borrowed references
+      (`&[&StateMap]`).
     - `rezzy::resolve_iterative_sort` consumes
       `conflicted_events: HashMap<String, LeanEvent>` and
-      `unconflicted_state: SharedState` by value. In the benchmark loop,
-      cloning 600 `LeanEvent` structures (each containing heap-allocated
+      `unconflicted_state: SharedState` by value. In the benchmark loop, cloning
+      600 `LeanEvent` structures (each containing heap-allocated
       `serde_json::Value`, `String` event IDs, and `Vec<String>` auth vectors)
       costs milliseconds of allocator overhead per run.
 2. **Where the Real Multi-Order-of-Magnitude Speedups Are**:
-    - **Reachability & Transitive Closures**: (rezzy's `forward_reachable_ids` vs
-      standard BFS queue): 1,639x faster (39µs vs 64ms on 250k DAGs).
+    - **Reachability & Transitive Closures**: (rezzy's `forward_reachable_ids`
+      vs standard BFS queue): 1,639x faster (39µs vs 64ms on 250k DAGs).
     - **Auth Difference Set Calculations**: (`RoaringBitmap` bitwise difference
       vs `HashSet`/`BTreeMap` string loops): 23x faster (210µs vs 4.8ms).
     - **Database Caching**: RocksDB `RoaringTreemap` storage reduces hundreds of
@@ -205,9 +207,9 @@ time.
 
 #### 2. Flattened `partition_state_maps` + O(1) identical-map fast path
 
-- The nested `HashMap<(EventType, String), HashMap<Id, usize>>` occurrence
-  table (one inner `HashMap` heap allocation _per state key_, plus a clone of
-  every `String`/`Id` per occurrence) is replaced by a single borrowed-key
+- The nested `HashMap<(EventType, String), HashMap<Id, usize>>` occurrence table
+  (one inner `HashMap` heap allocation _per state key_, plus a clone of every
+  `String`/`Id` per occurrence) is replaced by a single borrowed-key
   `FastMap<&(EventType, String), Occurrence<Id>>`. Zero clones and one
   allocation during the scan; conflict vectors are allocated only on actual
   disagreement.
@@ -257,17 +259,19 @@ Re-examined the `TODO(perf)` at `iterative.rs:89` (re-deriving
 and each conflicted event's key is owned in _two_ places (the `conflicted_keys`
 gate set and `resolved`), so threading a memo does not reduce allocations and
 adds a hash lookup per event. The genuinely effective fix would be making
-`Custom` cheaply cloneable (`Arc<str>`), which is a public `EventType` API
-break — deferred pending that trade-off.
+`Custom` cheaply cloneable (`Arc<str>`), which is a public `EventType` API break
+— deferred pending that trade-off.
 
 ---
 
-# 24 Aug 2026 (optimization status & backlog — full inventory)
+## 24 Aug 2026 (optimization status & backlog — full inventory)
 
 Complete status of every optimization raised this session, so nothing falls
 through the cracks.
 
 ## Landed (committed)
+
+<!-- markdownlint-disable MD013 -->
 
 | Optimization                                                                                                                                                             | Where                                        | Commit    |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- | --------- |
@@ -281,56 +285,63 @@ through the cracks.
 | DAG merge-base traversal + pagination validation → `FastMap`                                                                                                             | `state/`                                     | `346103e` |
 | `RedactionReport` (applied / skipped_unauthorized / target_not_in_batch)                                                                                                 | `auth/mod.rs`                                | `39fb164` |
 
+<!-- markdownlint-enable MD013 -->
+
 ## Not done — with reason
 
 - **In-flight `EventType` threading** (`iterative.rs:89` TODO). Earlier rejected
-  as net-neutral: the memo doesn't cut `Custom` deep-copies because `(EventType, K)`
-  keys are owned in two places (gate set + `resolved`). **Now the calculus changed**:
-  `f418952` made `EventType::Custom` an O(1) `Arc<str>` clone, so a threaded
-  `FastMap<Id, EventType>` is now one derive + cheap clones instead of two
-  derives (and for well-known types, still just a string compare + a lookup).
-  Remains the best concrete in-repo follow-up; the win is bounded by the conflict
-  set size, so it is narrow but real.
-- **Mainline BFS-vs-DFS for v2.1.1+** — **resolved: traversal-order independent**.
-  `mainline_pos(E) = min{i | P_i ∈ auth_chain(E)}` is a min over a set fixed by the
-  DAG (the reachable mainline-ancestor closure), and `min` is associative/
-  commutative, so DFS, BFS, and post-order all yield the same index — the mainline
-  index of each `P_i` is a fixed invariant, unlike hop-count shortest paths. The
-  iterative-DFS implementation in `compute_closest_mainline_positions` is therefore
-  equivalent to a BFS for these purposes, consistent with the 100% ruma parity.
+  as net-neutral: the memo doesn't cut `Custom` deep-copies because
+  `(EventType, K)` keys are owned in two places (gate set + `resolved`). **Now
+  the calculus changed**: `f418952` made `EventType::Custom` an O(1) `Arc<str>`
+  clone, so a threaded `FastMap<Id, EventType>` is now one derive + cheap clones
+  instead of two derives (and for well-known types, still just a string
+  compare + a lookup). Remains the best concrete in-repo follow-up; the win is
+  bounded by the conflict set size, so it is narrow but real.
+- **Mainline BFS-vs-DFS for v2.1.1+** — **resolved: traversal-order
+  independent**. `mainline_pos(E) = min{i | P_i ∈ auth_chain(E)}` is a min over
+  a set fixed by the DAG (the reachable mainline-ancestor closure), and `min` is
+  associative/ commutative, so DFS, BFS, and post-order all yield the same index
+  — the mainline index of each `P_i` is a fixed invariant, unlike hop-count
+  shortest paths. The iterative-DFS implementation in
+  `compute_closest_mainline_positions` is therefore equivalent to a BFS for
+  these purposes, consistent with the 100% ruma parity.
 - **LtHash fast path — Path A vs Path B**.
-    - **Path A (identical-fork fast path): DECIDED & SOUND.** `resolve_merge_fast_path_hashed`
-      (`at.rs:2177`) uses `hash == hash` as an O(1) negative filter + `ptr_eq || ==`
-      as final authority, returning `first.clone()` when all forks are identical.
-      Sound under the trust-the-local-DB model (LtHash collision resistance ~2^200;
-      error-correcting columns / HAMT repair-GC planned). Incremental homomorphic
-      hash update (`at.rs:2199`) maintains the `hash == LtHash(state)` invariant.
-      **Differential harness added** (`test_fast_path_differential_matches_full_resolution_on_identical_forks`)
-      comparing the fast path against uncached `resolve_multiple_prev_states` across
-      fork counts, plus a from-scratch hash-consistency check (guards accumulator
-      drift). Note: true O(1) only when `ptr_eq` holds; independently-converged forks
-      still pay the `==` fallback.
-- **Path B (non-interfering / trivial-only fork skip): REJECTED.** Skipping the
-  topo sort / iterative auth because two forks "share the same power-level/auth
-  roots" or "differ only on non-power keys" is not justified by a digest match:
-  identical roots ≠ non-interference, and the non-power winner is
-  (mainline position, ts, id) + iterative auth — not just ts. Mainline position
-  depends on each candidate's own auth chain, and a sender can be banned/demoted
-  mid-phase by an earlier-applied event. The correct gate (identical power phase
-  ∧ per-key auth against the merged state) costs about as much as the cheap
-  O(|C| log |C|) non-power phase it would skip. Same class of shortcut as the
-  retired CDO pre-filter — not worth the correctness cliff. Path A (identical
-  forks) remains the only skip that pays.
-- **Batched RocksDB MultiGet** for the DAG frontier. Lives in `tuwunel`
-  (storage layer, separate repo) — out of scope for rezzy.
+  - **Path A (identical-fork fast path): DECIDED & SOUND.**
+    `resolve_merge_fast_path_hashed` (`at.rs:2177`) uses `hash == hash` as an
+    O(1) negative filter + `ptr_eq || ==` as final authority, returning
+    `first.clone()` when all forks are identical. Sound under the
+    trust-the-local-DB model (LtHash collision resistance ~2^200;
+    error-correcting columns / HAMT repair-GC planned). Incremental
+    homomorphic hash update (`at.rs:2199`) maintains the
+    `hash == LtHash(state)` invariant. **Differential harness added**
+    (`test_fast_path_differential_matches_full_resolution_on_identical_forks`)
+    comparing the fast path against uncached `resolve_multiple_prev_states`
+    across fork counts, plus a from-scratch hash-consistency check (guards
+    accumulator drift). Note: true O(1) only when `ptr_eq` holds;
+    independently-converged forks still pay the `==` fallback.
+  - **Path B (non-interfering / trivial-only fork skip): REJECTED.** Skipping
+    the topo sort / iterative auth because two forks "share the same
+    power-level/auth roots" or "differ only on non-power keys" is not
+    justified by a digest match: identical roots ≠ non-interference, and the
+    non-power winner is (mainline position, ts, id) + iterative auth — not
+    just ts. Mainline position depends on each candidate's own auth chain, and
+    a sender can be banned/demoted mid-phase by an earlier-applied event. The
+    correct gate (identical power phase ∧ per-key auth against the merged
+    state) costs about as much as the cheap O(|C| log |C|) non-power phase it
+    would skip. Same class of shortcut as the retired CDO pre-filter — not
+    worth the correctness cliff. Path A (identical forks) remains the only
+    skip that pays.
+- **Batched RocksDB MultiGet** for the DAG frontier. Lives in `tuwunel` (storage
+  layer, separate repo) — out of scope for rezzy.
 - **`// membership-only dedup; do NOT iterate` hardening comment** on the
-  `visited` `FastSet` in `compute_local_auth` (`9931e23`): **landed** (`at.rs:286`).
-  The swap is safe only because `visited` is never iterated (foldhash seed is
-  per-process); the comment now makes that invariant explicit.
+  `visited` `FastSet` in `compute_local_auth` (`9931e23`): **landed**
+  (`at.rs:286`). The swap is safe only because `visited` is never iterated
+  (foldhash seed is per-process); the comment now makes that invariant explicit.
 - **Dedicated tests for the zero-copy refactors** (`ee25160`, `9931e23`).
-  Behavior-preserving (borrowed ↔ owned); existing resolution/parity suites cover
-  them. A differential harness for the LtHash fast path (Path A) was added; explicit
-  borrow-semantics tests for the Kahn/BFS refactors remain optional.
+  Behavior-preserving (borrowed ↔ owned); existing resolution/parity suites
+  cover them. A differential harness for the LtHash fast path (Path A) was
+  added; explicit borrow-semantics tests for the Kahn/BFS refactors remain
+  optional.
 
 ## Empirically resolved / rejected
 
@@ -338,9 +349,9 @@ through the cracks.
   benchmark shows the in-tree HAMT is **6–27x SLOWER** than `imbl::OrdMap`
   (282ns vs 7.8µs @ n=16; ~1µs vs ~9–11µs at larger n) for the exact
   clone-and-diverge pattern state resolution uses. This resolves the
-  `state/at.rs:2134` TODO ("swap the state payload over to the HAMT"): **don't**.
-  The real incremental win is LtHash state hashing + `state/delta.rs` delta
-  compaction (already present), not a HAMT swap.
+  `state/at.rs:2134` TODO ("swap the state payload over to the HAMT"):
+  **don't**. The real incremental win is LtHash state hashing + `state/delta.rs`
+  delta compaction (already present), not a HAMT swap.
 - **Persistent mainline depth indexing**: rejected. The mainline is anchored on
   the _winning_ power-level event, only known during resolution, so pre-indexed
   depths aren't a stable static property — and it couples to the storage layer.
@@ -352,9 +363,10 @@ through the cracks.
 - Bench `>>> REZZY SPEEDUP <<<` line still printed (methodology reframed as
   parity oracle but the all-caps number remains).
 - Parity check one-directional (no symmetric key-set diff / length equality).
-- `compare_bench.py` ratchets baseline to the all-time-luckiest run; missing-label
-  and sentinel-regex issues.
+- `compare_bench.py` ratchets baseline to the all-time-luckiest run;
+  missing-label and sentinel-regex issues.
 - CLI `render_timeline` defaults `room_version` to `"1"` (fail-open);
-  `format.rs` reads `redacts` from `content` (v1–10 top-level) not `get_redacts()`.
-- `screened` delta list unordered; `MSC3089` → `MSC3083` typos; `reference_hash`/
-  `compute_content_hash` `Result` + `expect` coexistence.
+  `format.rs` reads `redacts` from `content` (v1–10 top-level) not
+  `get_redacts()`.
+- `screened` delta list unordered; `MSC3089` → `MSC3083` typos;
+  `reference_hash`/ `compute_content_hash` `Result` + `expect` coexistence.

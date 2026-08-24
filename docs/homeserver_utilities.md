@@ -1,9 +1,8 @@
 # Homeserver Utility Roadmap
 
-Pure, synchronous utilities rezzy can expose to simplify
-homeserver implementations. All follow rezzy's philosophy:
-no I/O, no async, `no_std`-compatible, generic over
-`EventId`.
+Pure, synchronous utilities rezzy can expose to simplify homeserver
+implementations. All follow rezzy's philosophy: no I/O, no async,
+`no_std`-compatible, generic over `EventId`.
 
 ---
 
@@ -14,12 +13,11 @@ no I/O, no async, `no_std`-compatible, generic over
 **Status**: ✅ Implemented and public
 
 `compute_auth_chain_diff` exists in `src/state/at.rs`. It computes
-`auth(C) \ auth(U)` — the auth-chain events reachable
-from conflicted state but not from unconflicted state.
+`auth(C) \ auth(U)` — the auth-chain events reachable from conflicted state but
+not from unconflicted state.
 
-This is THE input to state resolution that every
-homeserver must compute. Exposing it as a public API
-saves homeservers from reimplementing the bounded
+This is THE input to state resolution that every homeserver must compute.
+Exposing it as a public API saves homeservers from reimplementing the bounded
 dual-heap traversal.
 
 ---
@@ -28,10 +26,9 @@ dual-heap traversal.
 
 **Status**: ✅ Implemented
 
-`AuthGraph` in `src/auth/roaring.rs` builds roaring
-bitmap auth chains. `AuthGraph::auth_difference` enables O(|bitmap|)
-set-difference on pre-computed bitmaps — the fast path
-homeservers with pre-computed auth chains need.
+`AuthGraph` in `src/auth/roaring.rs` builds roaring bitmap auth chains.
+`AuthGraph::auth_difference` enables O(|bitmap|) set-difference on pre-computed
+bitmaps — the fast path homeservers with pre-computed auth chains need.
 
 ---
 
@@ -42,18 +39,15 @@ homeservers with pre-computed auth chains need.
 `src/auth/user.rs` already exposes:
 
 - `get_sender_power_level`
-- `user_can_invite` / `user_can_ban` / `user_can_kick`
-  / `user_can_redact`
+- `user_can_invite` / `user_can_ban` / `user_can_kick` / `user_can_redact`
 
-These are threshold-only checks. Full auth goes through
-`check_auth`.
+These are threshold-only checks. Full auth goes through `check_auth`.
 
 **Work**: None — already done. Consider adding:
 
-- `user_can_send_event(type, state_key)` — checks
-  the `events` map in power levels.
-- `user_can_set_state(type)` — checks `state_default`
-  or `events` override.
+- `user_can_send_event(type, state_key)` — checks the `events` map in power
+  levels.
+- `user_can_set_state(type)` — checks `state_default` or `events` override.
 
 ---
 
@@ -61,8 +55,8 @@ These are threshold-only checks. Full auth goes through
 
 **Status**: ✅ Implemented
 
-`src/state/diff.rs` produces a typed diff showing what changed between
-two state snapshots. Useful for:
+`src/state/diff.rs` produces a typed diff showing what changed between two state
+snapshots. Useful for:
 
 - Client sync (computing incremental state updates)
 - Admin tooling ("what changed in this fork?")
@@ -120,13 +114,14 @@ Implemented in `src/basespec/rezzy_types.rs`:
   raw PDU `Value`: drops top-level keys outside the whitelist (v11+ no longer
   protects `origin`/`membership`/`prev_state`) and strips `content` to the
   preserved keys.
-- `LeanEvent::redacted(room_version)` — lean-model wrapper over the content half.
-- `apply_redaction(target, redaction, room_version)` — applies a redaction to
-  a target lean event (target mismatch → `None`).
+- `LeanEvent::redacted(room_version)` — lean-model wrapper over the content
+  half.
+- `apply_redaction(target, redaction, room_version)` — applies a redaction to a
+  target lean event (target mismatch → `None`).
 
-`m.room.create` is redactable like any other event; the spec does not forbid
-it — its content is preserved by the rules (all keys in v11+, `creator`
-before that).
+`m.room.create` is redactable like any other event; the spec does not forbid it
+— its content is preserved by the rules (all keys in v11+, `creator` before
+that).
 
 Room versions differ in which fields survive:
 
@@ -168,22 +163,19 @@ pub fn compute_dag_health<Id>(
 
 ### 8. Room Upgrade Validation
 
-Verify that a tombstone → new `m.room.create` chain is
-structurally valid. Checks `replacement_room` field,
-`predecessor` in new room's create event, and room
-version upgrade compatibility.
+Verify that a tombstone → new `m.room.create` chain is structurally valid.
+Checks `replacement_room` field, `predecessor` in new room's create event, and
+room version upgrade compatibility.
 
 ### 9. Restricted Join Rule Evaluation
 
-Given current state, enumerate which rooms allow
-restricted joins, and whether a given user qualifies
-via membership in an allowed room.
+Given current state, enumerate which rooms allow restricted joins, and whether a
+given user qualifies via membership in an allowed room.
 
 ### 10. Canonical JSON Helpers
 
-Deterministic JSON serialization for event signing
-and hashing. May be better in a separate crate
-(`serde_canonical_json` already exists).
+Deterministic JSON serialization for event signing and hashing. May be better in
+a separate crate (`serde_canonical_json` already exists).
 
 ---
 

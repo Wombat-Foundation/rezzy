@@ -6,12 +6,13 @@ authorization rules. Three distinct rule sets exist:
 - **v1**: Room versions 1–2 (`v1-auth-rules.txt`)
 - **v3**: Room versions 3–5 (`v3-auth-rules.txt`) — removes `m.room.redaction`
   auth rule; `m.room.aliases` (Rule 4) still applies
-- **v6**: Room versions 6–7 (`v3-auth-rules.txt`, unchanged otherwise) —
-  removes `m.room.aliases` (Rule 4)
-- **v8**: Room versions 8–11 (`v8-auth-rules.txt`) — adds knock, restricted joins,
-  `join_authorised_via_users_server`
-- **v12**: Room version 12 (`v12.txt`) — removes `m.room.create` from auth_events,
-  adds creators, adds knock_restricted to knock rule, PL validation changes
+- **v6**: Room versions 6–7 (`v3-auth-rules.txt`, unchanged otherwise) — removes
+  `m.room.aliases` (Rule 4)
+- **v8**: Room versions 8–11 (`v8-auth-rules.txt`) — adds knock, restricted
+  joins, `join_authorised_via_users_server`
+- **v12**: Room version 12 (`v12.txt`) — removes `m.room.create` from
+  auth_events, adds creators, adds knock_restricted to knock rule, PL validation
+  changes
 
 ## Auth Rule Compliance Matrix
 
@@ -137,35 +138,36 @@ authorization rules. Three distinct rule sets exist:
 1. ~~**Rule 5.8**: Unknown membership should reject, not allow~~ — FIXED
 2. ~~**Rule 5.4.1**: Third-party invite validation not implemented~~ — FIXED
 3. ~~**Rule 7**: `m.room.third_party_invite` PL check missing~~ — FIXED
-4. ~~**Rule 10.x**: Power level event validation mostly
-   missing (10.1–10.4, 10.6–10.10)~~ — ALL FIXED
+4. ~~**Rule 10.x**: Power level event validation mostly missing (10.1–10.4,
+   10.6–10.10)~~ — ALL FIXED
 
 ### Medium (federation/integrity concerns, not core auth)
 
-1. ~~**Rule 1.2 / 3 / 4**: no domain-parsing utility, so room_id↔sender domain match,
-   `m.federate`, and `m.room.aliases` domain checks are unimplemented~~ — FIXED
+1. ~~**Rule 1.2 / 3 / 4**: no domain-parsing utility, so room_id↔sender domain
+   match, `m.federate`, and `m.room.aliases` domain checks are unimplemented~~ —
+   FIXED
 2. ~~**Rule 1.3**: unrecognised `content.room_version` not rejected~~ — FIXED
-3. ~~**Rule 1.4**: missing `creator` / invalid `additional_creators`
-   on `m.room.create` not checked~~ — FIXED
-4. ~~**Rule 2.1 / 2.3 / 2.4**: `auth_events` duplicate-pair,
-   rejected-ancestor, and missing-`m.room.create` checks~~ — ALL FIXED
+3. ~~**Rule 1.4**: missing `creator` / invalid `additional_creators` on
+   `m.room.create` not checked~~ — FIXED
+4. ~~**Rule 2.1 / 2.3 / 2.4**: `auth_events` duplicate-pair, rejected-ancestor,
+   and missing-`m.room.create` checks~~ — ALL FIXED
 5. ~~**Rule 5.1**: Missing state_key/membership presence check~~ — FIXED
 
 ### Low (version-specific, rarely triggered)
 
-1. ~~**Rule 4 (V1–V5)** and **Rule 11 (V1–V2)**: `m.room.aliases` validation
-   and the `m.room.redaction` auth rule~~ — FIXED / obsolete rule sets handled.
+1. ~~**Rule 4 (V1–V5)** and **Rule 11 (V1–V2)**: `m.room.aliases` validation and
+   the `m.room.redaction` auth rule~~ — FIXED / obsolete rule sets handled.
 
 ## Notes
 
 - **Domain parsing**: Utilities `extract_domain` and `domain_matches` handle
   domain comparison for `m.federate` (Rule 3) and `m.room.aliases` (Rule 4).
-- **Signature verification**: Rule 5.2 (`join_authorised_via_users_server` signature
-  check) is a homeserver networking concern, not a state resolution concern. Correctly
-  excluded.
+- **Signature verification**: Rule 5.2 (`join_authorised_via_users_server`
+  signature check) is a homeserver networking concern, not a state resolution
+  concern. Correctly excluded.
 - **room_id checks**: `LeanEvent.room_id` is `Option<RoomId>` populated only by
-  trusted ingest-time tagging, not omitted by design. Rule 2.5's check (see
-  row 2.5 above) is therefore opt-in — it only fires when the citing event's
-  own `room_id` is `Some`, and never fires for `None`. The V12 room_id checks
-  (rows 1.2 and 2) are not implemented at all: nothing enforces the V12
-  requirement that `room_id` be an accepted `m.room.create` event ID.
+  trusted ingest-time tagging, not omitted by design. Rule 2.5's check (see row
+  2.5 above) is therefore opt-in — it only fires when the citing event's own
+  `room_id` is `Some`, and never fires for `None`. The V12 room_id checks (rows
+  1.2 and 2) are not implemented at all: nothing enforces the V12 requirement
+  that `room_id` be an accepted `m.room.create` event ID.
