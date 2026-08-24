@@ -1,7 +1,7 @@
 //! Matrix Event Type Constants
 
-use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use core::fmt;
 
 pub const M_ROOM_MEMBER: &str = "m.room.member";
@@ -41,9 +41,12 @@ pub const M_EMPTY_STATE_KEY: &str = "";
 /// closed enum: anything outside the known set falls back to `Custom`, which
 /// still round-trips exactly via [`Display`](fmt::Display)/[`EventType::as_str`].
 ///
-/// `Custom` stores a `Box<str>` rather than `String` — event types are
+/// `Custom` stores an `Arc<str>` rather than `String` — event types are
 /// immutable once interned, so the extra `capacity` field a `String` carries
-/// is dead weight here.
+/// is dead weight here. `Arc` (not `Box`) is used so that `EventType::clone`
+/// is an O(1) refcount increment rather than a heap copy; the resolved-state
+/// and gate-set maps clone `(EventType, K)` keys freely without re-copying the
+/// underlying string buffer.
 ///
 /// `Eq`/`Ord`/`Hash` are hand-written against [`Self::as_str`] rather than
 /// derived. A derived `Ord` would order by variant declaration position, not
@@ -76,7 +79,7 @@ pub enum EventType {
     SpaceChild,
     SpaceParent,
     /// Any event type outside the well-known set above, preserved verbatim.
-    Custom(Box<str>),
+    Custom(Arc<str>),
 }
 
 impl EventType {
@@ -133,7 +136,7 @@ impl From<&str> for EventType {
             M_ROOM_ALIASES => Self::RoomAliases,
             M_SPACE_CHILD => Self::SpaceChild,
             M_SPACE_PARENT => Self::SpaceParent,
-            other => Self::Custom(Box::from(other)),
+            other => Self::Custom(Arc::from(other)),
         }
     }
 }
@@ -161,7 +164,7 @@ impl From<String> for EventType {
             M_ROOM_ALIASES => Self::RoomAliases,
             M_SPACE_CHILD => Self::SpaceChild,
             M_SPACE_PARENT => Self::SpaceParent,
-            _ => Self::Custom(s.into_boxed_str()),
+            _ => Self::Custom(Arc::from(s)),
         }
     }
 }
@@ -361,6 +364,16 @@ mod event_type_tests {
         let custom = EventType::from(owned.clone());
         assert_eq!(custom.as_str(), owned.as_str());
         assert!(matches!(custom, EventType::Custom(_)));
+    }
+
+    #[test]
+    fn custom_clone_preserves_round_trip() {
+        // Cloning a Custom event type (backed by Arc<str>) must preserve the
+        // wire string — `Eq`/`Hash`/`Display` all route through `as_str`.
+        let custom = EventType::from("org.matrix.msc9999.custom");
+        let cloned = custom.clone();
+        assert_eq!(cloned, custom);
+        assert_eq!(cloned.as_str(), "org.matrix.msc9999.custom");
     }
 
     #[test]
