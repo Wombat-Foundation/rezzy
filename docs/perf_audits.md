@@ -269,17 +269,17 @@ through the cracks.
 
 ## Landed (committed)
 
-| Optimization | Where | Commit |
-|---|---|---|
-| Zero-copy borrowed resolver (`&SharedState`, `&HashMap`, no per-iteration deep clone) | `resolve/iterative.rs` | `8558224` |
-| `partition_state_maps` flattening (borrowed-key `FastMap` + `Occurrence`) + O(1) `ptr_eq` identical-map fast path | `resolve/multi.rs` | `c79637f` |
-| foldhash `pl_cache` (`Spl: BuildHasher` genericity, std-container + foldhash hasher, non-breaking) | `resolve/sorting.rs`, `resolve/iterative.rs` | `fe9599a` |
-| Schwartzian `mainline_sort` (O(N) instead of O(N log N) `dist` lookups) + clone-free power-event promotion (with `sort_set` fallback) | `resolve/sorting.rs`, `resolve/iterative.rs` | `cb6e874` |
-| `EventType::Custom` `Box<str>` → `Arc<str>` (O(1) clone; pub-API note) | `basespec/event_types.rs` | `f418952` |
-| Zero-copy Kahn graph (`FastMap<&Id, usize>` / `Vec<&Id>`, `get_key_value` borrow) + zero-clone mainline BFS (`VecDeque<&Id>` / `FastSet<&Id>`) + `ptr_eq` diff fast path | `resolve/sorting.rs`, `state/diff.rs` | `ee25160` |
-| Zero-clone transitive-auth BFS in `compute_local_auth` (`(&Id, usize)` queue, `FastSet<&Id>` visited) | `state/at.rs` | `9931e23` |
-| DAG merge-base traversal + pagination validation → `FastMap` | `state/` | `346103e` |
-| `RedactionReport` (applied / skipped_unauthorized / target_not_in_batch) | `auth/mod.rs` | `39fb164` |
+| Optimization                                                                                                                                                             | Where                                        | Commit    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- | --------- |
+| Zero-copy borrowed resolver (`&SharedState`, `&HashMap`, no per-iteration deep clone)                                                                                    | `resolve/iterative.rs`                       | `8558224` |
+| `partition_state_maps` flattening (borrowed-key `FastMap` + `Occurrence`) + O(1) `ptr_eq` identical-map fast path                                                        | `resolve/multi.rs`                           | `c79637f` |
+| foldhash `pl_cache` (`Spl: BuildHasher` genericity, std-container + foldhash hasher, non-breaking)                                                                       | `resolve/sorting.rs`, `resolve/iterative.rs` | `fe9599a` |
+| Schwartzian `mainline_sort` (O(N) instead of O(N log N) `dist` lookups) + clone-free power-event promotion (with `sort_set` fallback)                                    | `resolve/sorting.rs`, `resolve/iterative.rs` | `cb6e874` |
+| `EventType::Custom` `Box<str>` → `Arc<str>` (O(1) clone; pub-API note)                                                                                                   | `basespec/event_types.rs`                    | `f418952` |
+| Zero-copy Kahn graph (`FastMap<&Id, usize>` / `Vec<&Id>`, `get_key_value` borrow) + zero-clone mainline BFS (`VecDeque<&Id>` / `FastSet<&Id>`) + `ptr_eq` diff fast path | `resolve/sorting.rs`, `state/diff.rs`        | `ee25160` |
+| Zero-clone transitive-auth BFS in `compute_local_auth` (`(&Id, usize)` queue, `FastSet<&Id>` visited)                                                                    | `state/at.rs`                                | `9931e23` |
+| DAG merge-base traversal + pagination validation → `FastMap`                                                                                                             | `state/`                                     | `346103e` |
+| `RedactionReport` (applied / skipped_unauthorized / target_not_in_batch)                                                                                                 | `auth/mod.rs`                                | `39fb164` |
 
 ## Not done — with reason
 
@@ -299,23 +299,28 @@ through the cracks.
   iterative-DFS implementation in `compute_closest_mainline_positions` is therefore
   equivalent to a BFS for these purposes, consistent with the 100% ruma parity.
 - **LtHash fast path — Path A vs Path B**.
-  - **Path A (identical-fork fast path): DECIDED & SOUND.** `resolve_merge_fast_path_hashed`
-    (`at.rs:2177`) uses `hash == hash` as an O(1) negative filter + `ptr_eq || ==`
-    as final authority, returning `first.clone()` when all forks are identical.
-    Sound under the trust-the-local-DB model (LtHash collision resistance ~2^200;
-    error-correcting columns / HAMT repair-GC planned). Incremental homomorphic
-    hash update (`at.rs:2199`) maintains the `hash == LtHash(state)` invariant.
-    **Differential harness added** (`test_fast_path_differential_matches_full_resolution_on_identical_forks`)
-    comparing the fast path against uncached `resolve_multiple_prev_states` across
-    fork counts, plus a from-scratch hash-consistency check (guards accumulator
-    drift). Note: true O(1) only when `ptr_eq` holds; independently-converged forks
-    still pay the `==` fallback.
-  - **Path B (non-interfering concurrent-fork skip): OPEN.** Skipping the topo
-    sort / iterative auth because two forks "share the same power-level/auth roots"
-    is NOT justified by a digest match — identical roots ≠ non-interference (forks
-    can conflict on memberships/keys under the same PL). Requires a conservative
-    gate: disjoint differing keys + per-key auth-transition verification. Same class
-    of shortcut as the retired CDO pre-filter; must be proven before use.
+    - **Path A (identical-fork fast path): DECIDED & SOUND.** `resolve_merge_fast_path_hashed`
+      (`at.rs:2177`) uses `hash == hash` as an O(1) negative filter + `ptr_eq || ==`
+      as final authority, returning `first.clone()` when all forks are identical.
+      Sound under the trust-the-local-DB model (LtHash collision resistance ~2^200;
+      error-correcting columns / HAMT repair-GC planned). Incremental homomorphic
+      hash update (`at.rs:2199`) maintains the `hash == LtHash(state)` invariant.
+      **Differential harness added** (`test_fast_path_differential_matches_full_resolution_on_identical_forks`)
+      comparing the fast path against uncached `resolve_multiple_prev_states` across
+      fork counts, plus a from-scratch hash-consistency check (guards accumulator
+      drift). Note: true O(1) only when `ptr_eq` holds; independently-converged forks
+      still pay the `==` fallback.
+- **Path B (non-interfering / trivial-only fork skip): REJECTED.** Skipping the
+    topo sort / iterative auth because two forks "share the same power-level/auth
+    roots" or "differ only on non-power keys" is not justified by a digest match:
+    identical roots ≠ non-interference, and the non-power winner is
+    (mainline position, ts, id) + iterative auth — not just ts. Mainline position
+    depends on each candidate's own auth chain, and a sender can be banned/demoted
+    mid-phase by an earlier-applied event. The correct gate (identical power phase
+    ∧ per-key auth against the merged state) costs about as much as the cheap
+    O(|C| log |C|) non-power phase it would skip. Same class of shortcut as the
+    retired CDO pre-filter — not worth the correctness cliff. Path A (identical
+    forks) remains the only skip that pays.
 - **Batched RocksDB MultiGet** for the DAG frontier. Lives in `tuwunel`
   (storage layer, separate repo) — out of scope for rezzy.
 - **`// membership-only dedup; do NOT iterate` hardening comment** on the
@@ -337,7 +342,7 @@ through the cracks.
   The real incremental win is LtHash state hashing + `state/delta.rs` delta
   compaction (already present), not a HAMT swap.
 - **Persistent mainline depth indexing**: rejected. The mainline is anchored on
-  the *winning* power-level event, only known during resolution, so pre-indexed
+  the _winning_ power-level event, only known during resolution, so pre-indexed
   depths aren't a stable static property — and it couples to the storage layer.
 
 ## Separate (correctness/review) items still open
