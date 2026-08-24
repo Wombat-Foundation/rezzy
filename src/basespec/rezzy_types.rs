@@ -1261,8 +1261,9 @@ impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
 /// # Deserialization
 ///
 /// `LeanEvent<String>` implements `Deserialize` with the following behaviors:
-/// - `event_id`: If absent and the `hashing` feature is enabled, a SHA-256
-///   content hash is computed and used as the ID.
+/// - `event_id`: Required. `Deserialize` parses without a `room_version`, so an
+///   absent `event_id` is an error (no reference/content hash is derived; use
+///   [`LeanEvent::from_value`] with a `room_version` to derive one).
 /// - `power_level`: Accepts integers, unsigned integers, or string-encoded
 ///   integers, clamped to [`MAX_POWER_LEVEL_JSON`].
 /// - `typed_content`: Populated from `content` for auth-relevant events.

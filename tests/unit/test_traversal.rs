@@ -1040,7 +1040,7 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
 
     let (auth_context, conflicted_events, unconflicted_state) = make_ghost_moderator_events();
 
-    // Run V2.2 (CDO Enabled / State Res v2.2)
+    // Run V2.1.1 (State Res v2.2)
     let resolved_v211 = rezzy::resolve_iterative_sort(
         unconflicted_state,
         conflicted_events,
@@ -1085,7 +1085,7 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
     // Concurrently, Bob (Spammer) joins the room under the old "public" join rules.
     // Under stock v2.1, Bob's join is evaluated against Fork B's local public rules and accepted,
     // evading the lock.
-    // Under CDO (v2.1.1), the concurrent lockdown dominates and drops Bob's join.
+    // Under V2.1.1, the concurrent lockdown dominates and drops Bob's join.
 
     let create_ev = LeanEvent {
         event_id: "$create".to_string(),
@@ -1180,7 +1180,7 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
         "$jr_pub".to_string(),
     );
 
-    // Run V2.1.1 Resolution (CDO Enabled)
+    // Run V2.1.1 Resolution
     let resolved_v211 = rezzy::resolve_iterative_sort(
         unconflicted_state,
         conflicted_events,

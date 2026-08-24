@@ -560,8 +560,8 @@ fn test_anomaly_20_concurrent_ban_still_holds() {
         get_membership(&resolved, &map, "@charlie:example.com"),
         "join",
         "Bob's own ban is already invalid by the time full resolution reaches it, \
-         so his ban of Charlie must not take effect -- CDO's early drop agrees, \
-         and Charlie's own join (against public join_rules) wins the conflict cleanly"
+         so his ban of Charlie must not take effect -- V2.1/V2.1.1 full resolution \
+         agrees, and Charlie's own join (against public join_rules) wins cleanly"
     );
 }
 
@@ -584,6 +584,6 @@ fn test_anomaly_21_concurrent_kick_still_holds() {
         get_membership(&resolved, &map, "@dave:example.com"),
         "join",
         "Bob's own kick is already invalid by the time full resolution reaches it, \
-         so his kick of Dave must not take effect -- CDO's early drop agrees"
+         so his kick of Dave must not take effect -- V2.1/V2.1.1 full resolution agrees"
     );
 }

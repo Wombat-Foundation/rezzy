@@ -261,11 +261,12 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, K>(
             version,
             true,
         ) {
-            // Power events are always state events, so a state_key is guaranteed.
-            let sk = event
-                .state_key
-                .as_ref()
-                .expect("power events always carry a state_key");
+            // Power events are usually state events, but malformed or
+            // network-originated input may lack a state_key; skip those
+            // rather than panic.
+            let Some(sk) = event.state_key.as_ref() else {
+                continue;
+            };
             let key = (EventType::from(event.event_type.as_str()), sk.clone());
             // Only a genuinely conflicted key may be decided by the
             // power phase. `power_events` can also contain events
@@ -854,11 +855,12 @@ where
             .get(id)
             .or_else(|| auth_context.get(id))
             .expect("sorted power events are always present in sort_set or auth_context");
-        // Power events are always state events, so a state_key is guaranteed.
-        let sk = event
-            .state_key
-            .as_ref()
-            .expect("power events always carry a state_key");
+        // Power events are usually state events, but malformed or
+        // network-originated input may lack a state_key; skip those rather
+        // than panic.
+        let Some(sk) = event.state_key.as_ref() else {
+            continue;
+        };
         let key = (EventType::from(event.event_type.as_str()), sk.clone());
         let local_auth =
             compute_local_auth(event, auth_context, sort_set, local_auth_cache, version);
@@ -899,17 +901,22 @@ where
     // `resolve_iterative_sort_with_all_caches`: drop non-power conflicted
     // events whose sender is already banned in `resolved` before mainline sort,
     // so the delta path has the same ban-evasion behavior. See that pass's
-    // comment for the soundness argument and version gating.
-    let mut non_power_list: alloc::vec::Vec<&LeanEvent<Id, C, K>> =
-        if version.has_ban_evasion_hardening() {
-            non_power_events
-                .iter()
-                .filter(|(_, ev)| !is_sender_banned(ev, &resolved, &sort_context))
-                .map(|(_, ev)| ev)
-                .collect()
-        } else {
-            non_power_events.values().collect()
-        };
+    // comment for the soundness argument and version gating. Screened events
+    // are collected separately so the per-event delta contract still records
+    // their rejection below.
+    let mut non_power_list: alloc::vec::Vec<&LeanEvent<Id, C, K>> = alloc::vec::Vec::new();
+    let mut screened: alloc::vec::Vec<&LeanEvent<Id, C, K>> = alloc::vec::Vec::new();
+    if version.has_ban_evasion_hardening() {
+        for ev in non_power_events.values() {
+            if is_sender_banned(ev, &resolved, &sort_context) {
+                screened.push(ev);
+            } else {
+                non_power_list.push(ev);
+            }
+        }
+    } else {
+        non_power_list.extend(non_power_events.values());
+    }
     mainline_sort(&mut non_power_list, &mainline, &sort_context);
 
     for ev in non_power_list {
@@ -937,6 +944,22 @@ where
             event_id: ev.event_id.clone(),
             accepted,
             key: key.clone(),
+            replaced,
+            phase: ResolvePhase::NonPower,
+        });
+    }
+
+    // Banned-sender events were screened out before mainline sort above (same
+    // as the main path), but the per-event delta contract still requires a
+    // rejected delta for each one rather than silently omitting it.
+    for ev in screened {
+        let Some(sk) = &ev.state_key else { continue };
+        let key = (EventType::from(ev.event_type.as_str()), sk.clone());
+        let replaced = resolved.get(&key).cloned();
+        deltas.push(ResolutionDelta {
+            event_id: ev.event_id.clone(),
+            accepted: false,
+            key,
             replaced,
             phase: ResolvePhase::NonPower,
         });
@@ -1152,8 +1175,10 @@ mod tests {
             m
         };
 
-        // V2.1.1 (has_ban_evasion_hardening): the screening filter drops bob's
-        // banned-sender message but keeps carol's.
+        // V2.1.1 (has_ban_evasion_hardening): bob's banned-sender message is
+        // screened out of the resolved state but still surfaces as a rejected
+        // per-event delta (the screening pass is part of the delta contract),
+        // while carol's unbanned message survives.
         let (_, deltas) = resolve_iterative_sort_with_cache_and_deltas(
             unconflicted.clone(),
             mk_conflicted(),
@@ -1162,9 +1187,13 @@ mod tests {
             StateResVersion::V2_1_1,
             &mut HashMap::new(),
         );
+        let bob_delta = deltas
+            .iter()
+            .find(|d| d.event_id == "$bob_msg")
+            .expect("a banned sender's non-power event must surface a rejected delta in V2.1.1");
         assert!(
-            !deltas.iter().any(|d| d.event_id == "$bob_msg"),
-            "a banned sender's non-power event must be screened out in V2.1.1"
+            !bob_delta.accepted,
+            "a banned sender's non-power event must be rejected in V2.1.1"
         );
         assert!(
             deltas.iter().any(|d| d.event_id == "$carol_msg"),

@@ -155,13 +155,13 @@ You're pointing at something real, not hand-wavy — it's called arithmetization
 - XOR(a,b) = a + b − 2ab (or just a + b mod 2 over GF(2) — literally addition)
 - Equality (a == b) → (a−b) = 0, and inequality is provable via multiplicative-inverse gadgets
 - Range/threshold checks (PL ≥ level) → bit-decompose both values, then a sum of polynomial identity constraints over the bits
- So yes — the entire boolean circuit of auth checks can be flattened into a system of polynomial constraintsly true, not a stretch.
+ So yes — the entire boolean circuit of auth checks can be flattened into a system of polynomial constraints — provably true, not a stretch.
 
 Where I want to be precise, though: that's a different tool for a different job than what's already in rezzy. LtHash uses modular vector addition because it wants a commutative, order-independent accumulator for set membership (so two forks can compare state without replaying it). PinSketch uses GF(2^64) polynomials because syndrome decoding recovers the symmetric difference between two peers' sets. Neither is arithmetizing predicate evaluation — they're arithmetizing set representation. Arithmetizing the actual auth-check logic (PL comparisons, ban checks, branching) is the SNARK/STARK move, and its payoff is not a faster circuit — the circuit isn't faster to run: field arithmetic per boolean op plus proving-system overhead is almost always slower than just executing the native branch. The payoff is succinct verifiability: a server could prove it ran state resolution correctly on this DAG, and every other server checks the proof instead of redoing the whole graph walk. That's the actual reason this class of technique gets used, and it'd be a legitimately interesting direction for a homeserver — but it's a wholesale different subsystem (circuit definition, a proving/verifying key, either a trusted setup or a transparent one like STARKs), and rezzy has none of that machinery today.
 
-One correction to the premise, though, in rezzy's favor: the PL comparisons themselves (sender_pl < redact_/kick/invite levels) are already plain i64 arithmetic in the current code — no strings involved once you'repast the lookup. The stringly-typed part is purely the (event_type, state_key) → event map indexing layer, which is address/identity, not logic. So the part of your intuition that's "this should just be numbers" — it already is, for the actual predicate math. What's left string-shaped is lookup keys, which is the K: AsRef<str>/interning question from a minute ago, not the arithmetic question.
+One correction to the premise, though, in rezzy's favor: the PL comparisons themselves (sender_pl < redact_/kick/invite levels) are already plain i64 arithmetic in the current code — no strings involved once you're past the lookup. The stringly-typed part is purely the (event_type, state_key) → event map indexing layer, which is address/identity, not logic. So the part of your intuition that's "this should just be numbers" — it already is, for the actual predicate math. What's left string-shaped is lookup keys, which is the K: AsRef<str>/interning question from a minute ago, not the arithmetic question.
 
-Is the direction you're actually after "could rezzy produce a succinctly-verifiable resolution proof," or sing the existing comparisons/lookups to be faster/more uniform?
+Is the direction you're actually after "could rezzy produce a succinctly-verifiable resolution proof," or streamline the existing comparisons/lookups to be faster/more uniform?
 
 
 
@@ -319,7 +319,7 @@ Dropped from the original review — mostly picked up since
 - ✅ differential_harness.rs: stride = unwrap_or(0) — infinite loop, one-character fix (done, b59d40d); per-iteration ID namespacing (done, 27badad). The single-iteration replay hook is still open.
 - ⚠️ HAMT: the generic-index-type fix and the build-vs-remove depth-exhaustion asymmetry. (The distinct_count fix and the bitmap-vs-hashset partition property test are done — see b59d40d and test_bitmap_reachability_audit_agrees_with_reachability_audit, src/hamt/tests.rs:3270.)
 - ✅/⚠️ cdo.rs — retired-module, low stakes; is_ancestor # Panics doc doesn't match the body, public dead code.
-The two the ledger flagged as "do next" were the v1–v3 hash guard (now done) and finding the auto-committer. Want me to hunt the auto-committer, knock out the differential_harness stride fix, or start the screening pass?
+The two the ledger flagged as "do next" were the v1–v3 hash guard (now done) and finding the auto-committer. Want me to hunt the auto-committer or start the screening pass?
 
 
 
