@@ -3491,6 +3491,28 @@ fn test_redaction_preserved_keys_matrix() {
         RedactionRule::Keys(&["join_rule"])
     );
 
+    // Room versions 2-8: distinct `"N" => N` arms in the version-mapping match.
+    // All are pre-v9 / pre-v11, so create keeps `creator` and member keeps only
+    // `membership` -- identical rules to v1, but each version string must be
+    // routed through its own arm (exercises the per-version mapping lines).
+    for v in ["2", "3", "4", "5", "6", "7", "8"] {
+        assert_eq!(
+            redaction_preserved_keys("m.room.create", v),
+            RedactionRule::Keys(&["creator"]),
+            "create redaction for room {v}"
+        );
+        assert_eq!(
+            redaction_preserved_keys("m.room.member", v),
+            RedactionRule::Keys(&["membership"]),
+            "member redaction for room {v}"
+        );
+    }
+    // v10 is its own arm too; it has v9's join_authorised rules but not v11's.
+    assert_eq!(
+        redaction_preserved_keys("m.room.member", "10"),
+        RedactionRule::Keys(&["membership", "join_authorised_via_users_server"])
+    );
+
     // Room version 9 (adds join_authorised_via_users_server & allow)
     assert_eq!(
         redaction_preserved_keys("m.room.member", "9"),
