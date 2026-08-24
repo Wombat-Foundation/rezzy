@@ -670,21 +670,13 @@ pub fn apply_redaction<Id: Clone + AsRef<str>, K: Clone>(
 /// 2. **Parsing** — each PDU is converted to a [`LeanEvent`] with
 ///    [`LeanEvent::from_value`], deriving a missing `event_id` from the room
 ///    version's reference hash.
-/// 3. **Redaction application** — every `m.room.redaction` event in the batch
-///    is applied to its target when that target is also present in the batch,
-///    via [`apply_redaction`]. Targets outside the batch are left for a later
-///    ingest (the homeserver's store owns them).
 ///
-/// The redaction event itself is retained in the returned set (it is a normal
-/// DAG event); only its *target* is replaced by the redacted form.
-///
-/// **Authorization note:** this function applies every in-batch redaction
-/// after verifying each PDU's content hash, but content-hash verification
-/// does **not** establish that the redaction's sender was permitted to redact
-/// its target. Redaction application must sit behind an authorization-checked
-/// caller (see [`crate::auth::check_auth`]); this ingest helper performs the
-/// structural application only and trusts the caller to have checked the
-/// redaction before calling, or to gate its output on such a check.
+/// This function does **not** apply redactions. Applying a redaction requires
+/// authorization against the room's resolved state (the redact power level and
+/// the target's sender), which does not exist at ingest time. Callers that want
+/// in-batch redaction applied must run
+/// [`crate::auth::apply_authorized_redactions`] once they hold the resolved
+/// state.
 ///
 /// # Errors
 /// Returns `Err` if a PDU fails content-hash verification, or cannot be parsed
@@ -694,8 +686,6 @@ pub fn ingest_events(
     pdus: &[Value],
     room_version: &str,
 ) -> Result<Vec<LeanEvent<String, Value, String>>, alloc::string::String> {
-    use crate::basespec::event_types::M_ROOM_REDACTION;
-
     for pdu in pdus {
         if pdu
             .get(crate::basespec::event_types::FIELD_HASHES)
@@ -712,47 +702,6 @@ pub fn ingest_events(
         events.push(LeanEvent::from_value(pdu, Some(room_version)).map_err(|e| e.to_string())?);
     }
 
-    // event_id -> position, built once (O(events)) so the redaction/target
-    // matching pass below is O(events + redactions) total instead of
-    // O(events * redactions) from a `.position()` linear scan per redaction.
-    let position_by_id: crate::HashMap<&str, usize> = events
-        .iter()
-        .enumerate()
-        .map(|(pos, e)| (e.event_id.as_str(), pos))
-        .collect();
-
-    // Collect just (redaction_pos, target_pos) index pairs -- not clones of
-    // the events themselves, which each own a `Value` (arbitrary-sized JSON
-    // content) and would make this an O(redactions) full-event-clone cost
-    // for no reason: every value needed here is recoverable by indexing back
-    // into `events`, so nothing needs to outlive this first pass except two
-    // cheap `usize`s per redaction.
-    let redaction_target_positions: Vec<(usize, usize)> = events
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| e.event_type == M_ROOM_REDACTION)
-        .filter_map(|(redaction_pos, redaction)| {
-            let target_id = redaction.get_redacts()?;
-            let target_pos = *position_by_id.get(target_id)?;
-            (target_pos != redaction_pos).then_some((redaction_pos, target_pos))
-        })
-        .collect();
-
-    for (redaction_pos, target_pos) in redaction_target_positions {
-        // Need simultaneous &LeanEvent (redaction) + &mut LeanEvent (target)
-        // into the same Vec at two different indices -- split_at_mut on
-        // whichever index is lower gets both without cloning either side.
-        let (target, redaction) = if target_pos < redaction_pos {
-            let (left, right) = events.split_at_mut(redaction_pos);
-            (&mut left[target_pos], &right[0])
-        } else {
-            let (left, right) = events.split_at_mut(target_pos);
-            (&mut right[0], &left[redaction_pos])
-        };
-        if let Some(redacted) = apply_redaction(target, redaction, room_version) {
-            *target = redacted;
-        }
-    }
     Ok(events)
 }
 

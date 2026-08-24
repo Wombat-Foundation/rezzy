@@ -32,7 +32,9 @@ use crate::basespec::event_types::{
     M_ROOM_POWER_LEVELS, M_ROOM_REDACTION, M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK,
     RULE_KNOCK_RESTRICTED, RULE_PUBLIC, RULE_RESTRICTED,
 };
-use crate::basespec::rezzy_types::{is_valid_mxid, EventLike, LeanEvent, StateResVersion};
+use crate::basespec::rezzy_types::{
+    apply_redaction, domain_matches, is_valid_mxid, EventLike, LeanEvent, StateResVersion,
+};
 
 /// An error indicating why an event failed authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1013,6 +1015,98 @@ pub(crate) fn get_redact_power_level<
         }
     }
     DEFAULT_PL_REDACT
+}
+
+/// Whether `redaction` is authorized to redact `target`, given the room state.
+///
+/// Mirrors the spec's redaction rule:
+/// - the target's own sender may always redact their own event;
+/// - a sender whose power level is at least the `redact` level may redact
+///   others' events;
+/// - room versions 1–2 additionally allow a redaction whose sender shares a
+///   domain with the target's sender (federation rule 11).
+fn redaction_is_authorized<Id, C, E, K>(
+    redaction: &LeanEvent<Id, C, K>,
+    target: &LeanEvent<Id, C, K>,
+    state: &impl StateProvider<Id, C, E>,
+    version: StateResVersion,
+    room_version: &str,
+) -> bool
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+    K: crate::basespec::rezzy_types::StateKey,
+{
+    if redaction.sender() == target.sender() {
+        return true;
+    }
+    let sender_pl = user::get_sender_power_level(redaction.sender(), state, version);
+    if sender_pl >= get_redact_power_level(state) {
+        return true;
+    }
+    if matches!(room_version, "1" | "2") {
+        return domain_matches(target.sender(), redaction.sender());
+    }
+    false
+}
+
+/// Apply each `m.room.redaction` event to its in-set target, but only when the
+/// redaction is **authorized** against the provided room state.
+///
+/// This is the authorization-checked redaction step that belongs *after* state
+/// resolution: unlike [`crate::basespec::rezzy_types::ingest_events`] (which
+/// parses and verifies content hashes only and must not strip content), this
+/// function has the resolved state needed to check the redact power level and
+/// the target's sender. Unauthorized redactions leave the target untouched.
+///
+/// Targets whose redaction event is absent from `events` (e.g. the redaction
+/// arrived in an earlier ingest batch) are left for a later pass; only the
+/// in-set `redacts` references are applied here.
+pub fn apply_authorized_redactions<Id, E, K>(
+    events: &mut [LeanEvent<Id, serde_json::Value, K>],
+    state: &impl StateProvider<Id, serde_json::Value, E>,
+    version: StateResVersion,
+    room_version: &str,
+) where
+    Id: crate::basespec::rezzy_types::EventId + Clone + AsRef<str>,
+    E: EventLike<Id = Id, Content = serde_json::Value>,
+    K: crate::basespec::rezzy_types::StateKey + Clone,
+{
+    let pos_by_id: alloc::collections::BTreeMap<&str, usize> = events
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.event_id.as_ref(), i))
+        .collect();
+
+    // Collect (redaction_pos, target_pos) pairs first so we can mutate `events`
+    // in place without aliasing the two slots we are about to touch.
+    let pairs: Vec<(usize, usize)> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.event_type == M_ROOM_REDACTION)
+        .filter_map(|(rp, redaction)| {
+            let target_id = redaction.get_redacts()?;
+            let tp = *pos_by_id.get(target_id)?;
+            (tp != rp).then_some((rp, tp))
+        })
+        .collect();
+
+    for (rp, tp) in pairs {
+        if !redaction_is_authorized(&events[rp], &events[tp], state, version, room_version) {
+            continue;
+        }
+        let (target, redaction) = if tp < rp {
+            let (left, right) = events.split_at_mut(rp);
+            (&mut left[tp], &right[0])
+        } else {
+            let (left, right) = events.split_at_mut(tp);
+            (&mut right[0], &left[rp])
+        };
+        if let Some(redacted) = apply_redaction(target, redaction, room_version) {
+            *target = redacted;
+        }
+    }
 }
 
 /// Get the required power level to send an event based on room state.

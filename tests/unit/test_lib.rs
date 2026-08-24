@@ -3775,7 +3775,7 @@ fn test_content_hash_verification_on_raw_pdu() {
 }
 
 #[test]
-fn test_ingest_events_applies_redaction_and_verifies_hashes() {
+fn test_ingest_events_verifies_hashes_and_preserves_content() {
     use rezzy::{compute_content_hash, ingest_events};
 
     let msg = serde_json::json!({
@@ -3796,14 +3796,15 @@ fn test_ingest_events_applies_redaction_and_verifies_hashes() {
         "content": { "redacts": "$msg:example.com" }
     });
 
-    // Ingest without hashes dicts -> parses both and applies the redaction to
-    // the in-batch target (m.room.message content is stripped to {}).
+    // Ingest without hashes dicts -> parses both. The target content is
+    // preserved: ingest does not apply redactions (that is an
+    // authorization-checked step against the resolved state).
     let events = ingest_events(&[msg.clone(), redaction.clone()], "11").unwrap();
-    let redacted = events
+    let target = events
         .iter()
         .find(|e| e.event_id == "$msg:example.com")
         .unwrap();
-    assert_eq!(redacted.content, serde_json::json!({}));
+    assert_eq!(target.content, serde_json::json!({ "body": "spam" }));
     // The redaction event itself is retained.
     assert!(events.iter().any(|e| e.event_id == "$r:example.com"));
 
@@ -3818,42 +3819,6 @@ fn test_ingest_events_applies_redaction_and_verifies_hashes() {
     let mut tampered = hashed.clone();
     tampered["content"] = serde_json::json!({ "body": "evil" });
     assert!(ingest_events(&[tampered, redaction.clone()], "11").is_err());
-}
-
-/// Coverage: `ingest_events`'s redaction-application `split_at_mut` branch
-/// where the target's position is *after* the redaction's (the redaction
-/// appears first in the batch) -- the test above only ever puts the target
-/// first, exercising the opposite branch.
-#[test]
-fn test_coverage_ingest_events_applies_redaction_when_redaction_precedes_target() {
-    use rezzy::ingest_events;
-
-    let redaction = serde_json::json!({
-        "event_id": "$r:example.com",
-        "type": "m.room.redaction",
-        "sender": "@alice:example.com",
-        "origin_server_ts": 10,
-        "depth": 1,
-        "redacts": "$msg:example.com",
-        "content": { "redacts": "$msg:example.com" }
-    });
-    let msg = serde_json::json!({
-        "event_id": "$msg:example.com",
-        "type": "m.room.message",
-        "sender": "@bob:example.com",
-        "origin_server_ts": 11,
-        "depth": 2,
-        "content": { "body": "spam" }
-    });
-
-    // Redaction is at index 0, its target at index 1 -- target_pos > redaction_pos.
-    let events = ingest_events(&[redaction, msg], "11").unwrap();
-    let redacted = events
-        .iter()
-        .find(|e| e.event_id == "$msg:example.com")
-        .unwrap();
-    assert_eq!(redacted.content, serde_json::json!({}));
-    assert!(events.iter().any(|e| e.event_id == "$r:example.com"));
 }
 
 /// Coverage: `ingest_events`'s per-PDU parse-error branch (the `?` on
@@ -3877,6 +3842,142 @@ fn test_coverage_ingest_events_parse_error_aborts_batch() {
     assert!(
         err.contains("event_type"),
         "unexpected ingest parse error: {err}"
+    );
+}
+
+/// Regression: `ingest_events` must NOT apply redactions. It runs pre-state-
+/// resolution and has no room state, so it cannot authorize a redaction. A
+/// redaction from a user with no permission must never strip a target's content
+/// during ingest; application is an authorization-checked step the caller runs
+/// against the resolved room state.
+#[test]
+fn test_ingest_events_does_not_apply_unauthorized_redaction() {
+    use rezzy::ingest_events;
+
+    let msg = serde_json::json!({
+        "event_id": "$msg:example.com",
+        "type": "m.room.message",
+        "sender": "@bob:example.com",
+        "origin_server_ts": 10,
+        "depth": 1,
+        "content": { "body": "spam" }
+    });
+    // Mallory (no power, not the target's sender) attempts to redact Bob's message.
+    let redaction = serde_json::json!({
+        "event_id": "$r:example.com",
+        "type": "m.room.redaction",
+        "sender": "@mallory:example.com",
+        "origin_server_ts": 11,
+        "depth": 2,
+        "redacts": "$msg:example.com",
+        "content": { "redacts": "$msg:example.com" }
+    });
+
+    let events = ingest_events(&[msg, redaction], "11").unwrap();
+    let target = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(
+        target.content,
+        serde_json::json!({ "body": "spam" }),
+        "ingest_events must preserve target content: it has no room state to \
+         authorize this (unauthorized) redaction against"
+    );
+}
+
+/// The authorization boundary for redaction application. `apply_authorized_redactions`
+/// must strip a target only when the redaction's sender is authorized: the target's
+/// own sender, or a sender with the `redact` power level (v1/v2 also allow same-domain).
+/// An unrelated sender with no power must NOT strip anything.
+#[test]
+fn test_apply_authorized_redactions_only_strips_authorized_targets() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use rezzy::StateResVersion;
+
+    // Room state: redact level 50, mallory PL 0, bob PL 0 (but bob redacts his
+    // own message, which the spec always permits).
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": {
+                "@admin:example.com": 100,
+                "@bob:example.com": 0,
+                "@mallory:example.com": 0
+            },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut state = RoomState::new();
+    state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        content: serde_json::json!({ "body": "secret" }),
+        ..Default::default()
+    };
+    let mallory_redact: LeanEvent = LeanEvent {
+        event_id: "$mallory_redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@mallory:example.com".into(),
+        origin_server_ts: 11,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    let self_redact: LeanEvent = LeanEvent {
+        event_id: "$self_redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 12,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+
+    // Unauthorized: mallory (PL 0 < redact 50, not the target's sender) must NOT strip.
+    let mut events = vec![msg.clone(), mallory_redact.clone()];
+    apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    let target = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(
+        target.content,
+        serde_json::json!({ "body": "secret" }),
+        "an unauthorized redaction must not strip the target"
+    );
+
+    // Authorized: Bob redacts his own message -> content is stripped.
+    let mut events = vec![msg.clone(), self_redact.clone()];
+    apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    let target = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(
+        target.content,
+        serde_json::json!({}),
+        "a self-redaction must strip the target content"
+    );
+
+    // Order-invariance: the redaction preceding its target (the opposite
+    // `split_at_mut` branch) must strip identically.
+    let mut events = vec![self_redact.clone(), msg.clone()];
+    apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    let target = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(
+        target.content,
+        serde_json::json!({}),
+        "redaction order within the set must not change the outcome"
     );
 }
 
