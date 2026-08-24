@@ -535,13 +535,26 @@ fn test_auth_error_display_variants() {
         event_id: "$msg".into(),
         auth_event_id: "$foreign".into(),
         expected: "!room_a:x.com".into(),
-        actual: "!room_b:x.com".into(),
+        actual: Some("!room_b:x.com".into()),
     };
     let msg10 = format!("{err10}");
     assert!(msg10.contains("$msg"));
     assert!(msg10.contains("$foreign"));
     assert!(msg10.contains("!room_a:x.com"));
     assert!(msg10.contains("!room_b:x.com"));
+
+    // `actual: None` (the cited auth event carries no room_id at all).
+    let err11: AuthError<String> = AuthError::ForeignRoomEvent {
+        event_id: "$msg".into(),
+        auth_event_id: "$untagged".into(),
+        expected: "!room_a:x.com".into(),
+        actual: None,
+    };
+    let msg11 = format!("{err11}");
+    assert!(msg11.contains("$msg"));
+    assert!(msg11.contains("$untagged"));
+    assert!(msg11.contains("!room_a:x.com"));
+    assert!(msg11.contains("no room_id"));
 }
 
 #[test]
@@ -810,12 +823,14 @@ fn test_iterative_auth_chain_rejects_foreign_room_auth_event() {
     );
 }
 
-/// `room_id` being `None` on either side is never treated as a mismatch --
-/// the check is opt-in per the caller's own data, not a new hard
-/// requirement on every event. Same shape as the rejection test above, but
-/// only the citing event has `room_id` populated.
+/// Once the citing event opts in (`Some(room_id)`), an `auth_events` entry
+/// with no `room_id` at all is *not* a free pass -- it's exactly the "leaked
+/// in without ever being tagged" case rule 2.5 exists to catch, so it must
+/// be rejected the same as a populated-but-different one. (This was
+/// previously the fail-open bypass: an untagged auth event sailed through
+/// silently, since the check only compared populated pairs.)
 #[test]
-fn test_iterative_auth_chain_room_id_none_is_never_a_mismatch() {
+fn test_iterative_auth_chain_rejects_untagged_auth_event_once_citing_side_populated() {
     let room_a = rezzy::RoomId::new("!room_a:example.com");
 
     let create = make_event(
@@ -834,7 +849,8 @@ fn test_iterative_auth_chain_room_id_none_is_never_a_mismatch() {
         "@alice:example.com",
         json!({"membership": "join"}),
     );
-    // join.room_id also stays None.
+    // join.room_id also stays None -- untagged, e.g. leaked in without ever
+    // going through trusted ingest-time room_id assignment for this room.
 
     let mut msg = make_event(
         "$msg",
@@ -852,7 +868,76 @@ fn test_iterative_auth_chain_room_id_none_is_never_a_mismatch() {
         rezzy::basespec::rezzy_types::StateResVersion::V2_1,
     );
 
-    assert_eq!(accepted, vec!["$create", "$join", "$msg"]);
+    assert_eq!(
+        accepted,
+        vec!["$create", "$join"],
+        "the untagged $join event still passes its own (unrelated) auth check"
+    );
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected[0].0, "$msg");
+    assert!(
+        matches!(
+            &rejected[0].1,
+            rezzy::auth::AuthError::ForeignRoomEvent { event_id, auth_event_id, actual: None, .. }
+                if event_id == "$msg" && auth_event_id == "$join"
+        ),
+        "expected ForeignRoomEvent{{actual: None}} citing $join, got {:?}",
+        rejected[0].1
+    );
+}
+
+/// `room_id` being `None` on the *citing* event's own side is never treated
+/// as a mismatch, even against a genuinely foreign-room auth event -- the
+/// check is opt-in per the citing event's own data, not a new hard
+/// requirement on every event that never populates `room_id` at all.
+#[test]
+fn test_iterative_auth_chain_room_id_none_on_citing_side_is_never_checked() {
+    let room_b = rezzy::RoomId::new("!room_b:example.com");
+
+    let create = make_event(
+        "$create",
+        "m.room.create",
+        Some(""),
+        "@alice:example.com",
+        json!({}),
+    );
+    // create.room_id stays None -- caller never populated it for this event.
+
+    // A foreign-room power_levels event, not a create -- citing *any*
+    // m.room.create in auth_events is independently forbidden under V2.1+
+    // (v12+ drops create from auth_events entirely), which would trip that
+    // unrelated rule first and defeat this test's isolation. Sender is
+    // alice (not a fresh mallory) so the implicit-creator-is-joined rule
+    // (matched against the *local* $create's sender) lets it pass its own
+    // auth check without needing a separate join event -- only `room_id`
+    // needs to be foreign for this test.
+    let mut foreign_pl = make_event(
+        "$foreign_pl",
+        "m.room.power_levels",
+        Some(""),
+        "@alice:example.com",
+        json!({}),
+    );
+    foreign_pl.room_id = Some(room_b);
+
+    let mut msg = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:example.com",
+        json!({"body": "hello"}),
+    );
+    // msg.room_id stays None -- caller never populated it, so rule 2.5
+    // never activates for this event regardless of what it cites.
+    msg.auth_events = vec!["$foreign_pl".into()];
+
+    let (accepted, rejected) = check_auth_chain(
+        &[create, foreign_pl, msg],
+        &RoomState::new(),
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
+
+    assert_eq!(accepted, vec!["$create", "$foreign_pl", "$msg"]);
     assert!(rejected.is_empty());
 }
 

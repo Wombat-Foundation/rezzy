@@ -69,18 +69,26 @@ pub enum AuthError<Id = String> {
         state_key: String,
     },
     /// Rule 2.5: an `auth_events` entry carries a [`RoomId`](crate::RoomId)
-    /// that doesn't match the citing event's own room. Defense-in-depth
-    /// against a rogue foreign-room event leaking into `auth_context`/the
-    /// event map this check runs over -- only fires when *both* events
-    /// actually have `Some(room_id)` populated; either side being `None`
-    /// (the default, unless a caller explicitly populates it) is not
-    /// treated as a mismatch, so this check is opt-in per the caller's own
-    /// data, not a new hard requirement on every event.
+    /// that doesn't match the citing event's own room, OR carries no
+    /// `room_id` at all. Defense-in-depth against a rogue foreign-room event
+    /// leaking into `auth_context`/the event map this check runs over.
+    ///
+    /// Opt-in only on the *citing* side: this only fires when the citing
+    /// event itself has `Some(room_id)` populated -- a citing event with
+    /// `None` (the default, unless a caller explicitly populates it) never
+    /// triggers this check, so it's not a new hard requirement on every
+    /// event. But once the citing side opts in, an `auth_events` entry with
+    /// `None` is treated the same as a mismatch (`actual: None`), not given
+    /// a free pass: a foreign event that leaked in without ever being
+    /// tagged is exactly the case this check exists to catch, and letting
+    /// an absent tag silently skip the check would defeat it entirely.
     ForeignRoomEvent {
         event_id: Id,
         auth_event_id: Id,
         expected: String,
-        actual: String,
+        /// `None` if the cited auth event carries no `room_id` at all
+        /// (rather than a populated, differing one).
+        actual: Option<String>,
     },
 }
 
@@ -127,13 +135,18 @@ impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
                 auth_event_id,
                 expected,
                 actual,
-            } => {
-                write!(
+            } => match actual {
+                Some(actual) => write!(
                     f,
                     "{event_id} (room {expected}) cites auth event {auth_event_id} from a \
                      different room ({actual})"
-                )
-            }
+                ),
+                None => write!(
+                    f,
+                    "{event_id} (room {expected}) cites auth event {auth_event_id}, which \
+                     carries no room_id at all"
+                ),
+            },
         }
     }
 }
@@ -1577,21 +1590,25 @@ pub fn check_auth_chain<
         }
 
         // Rule 2.5: reject if any cited auth event carries a room_id that
-        // disagrees with this event's own -- only when both sides actually
-        // have one populated (see ForeignRoomEvent's docs for why `None` on
-        // either side is not a mismatch).
+        // disagrees with this event's own, OR carries no room_id at all --
+        // opt-in only on this (citing) event's side (see ForeignRoomEvent's
+        // docs for why a `None` here never triggers the check, but a `None`
+        // on the auth event's side, once triggered, is not a free pass).
         if let Some(expected) = &event.room_id {
             let foreign = event.auth_events.iter().find_map(|auth_id| {
                 let auth_event = event_map.get(auth_id)?;
-                let actual = auth_event.room_id.as_ref()?;
-                (actual != expected).then(|| (auth_id.clone(), actual.clone()))
+                match &auth_event.room_id {
+                    Some(actual) if actual == expected => None,
+                    Some(actual) => Some((auth_id.clone(), Some(actual.clone()))),
+                    None => Some((auth_id.clone(), None)),
+                }
             });
             if let Some((auth_event_id, actual)) = foreign {
                 let err = AuthError::ForeignRoomEvent {
                     event_id: event.event_id.clone(),
                     auth_event_id,
                     expected: expected.to_string(),
-                    actual: actual.to_string(),
+                    actual: actual.map(|a| a.to_string()),
                 };
                 rejected.push((event.event_id.clone(), err));
                 rejected_ids.insert(event.event_id.clone());
