@@ -46,8 +46,17 @@ pub use triage::{
     StrataEstimate, MAX_BUCKETED_SKETCH_CAPACITY,
 };
 
+// These are cross-module invariant checks, not dead asserts on a literal --
+// each catches independent constants silently drifting apart across the
+// pinsketch/resident/triage submodules. clippy::assertions_on_constants
+// only sees the current (agreeing) values and flags them as always-true.
+#[allow(clippy::assertions_on_constants)]
 const _: () = assert!(MAX_SKETCH_CAPACITY == 32);
+#[allow(clippy::assertions_on_constants)]
 const _: () = assert!(resident::STRATA_COUNT == 32);
+#[allow(clippy::assertions_on_constants)]
 const _: () = assert!(resident::STRATUM_CAPACITY == 8);
+#[allow(clippy::assertions_on_constants)]
 const _: () = assert!(triage::MAX_BUCKET_SKETCH_CAPACITY == 32);
+#[allow(clippy::assertions_on_constants)]
 const _: () = assert!(triage::MAX_BUCKETED_SKETCH_CAPACITY == 4_096);

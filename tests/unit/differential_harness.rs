@@ -347,7 +347,7 @@ fn resolve(p: &Problem, version: StateResVersion) -> SharedState {
 fn differential_v21_equals_v211() {
     const ITER_COUNT: u64 = 2000;
     const BASE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
-    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
 
     std::thread::scope(|s| {
         for t in 0..threads {
@@ -394,7 +394,7 @@ fn cdo_drop_rate_measured() {
 
     const ITER_COUNT: u64 = 2000;
     const BASE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
-    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
 
     let dropped_total = AtomicU64::new(0);
     let dag_count = AtomicU64::new(0);
@@ -834,7 +834,7 @@ fn power_phase_fallback_generator() {
 fn determinism_same_input_same_output() {
     const ITER_COUNT: u64 = 1000;
     const BASE_SEED: u64 = 0x243F_6A88_85A3_08D3;
-    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
 
     std::thread::scope(|s| {
         for t in 0..threads {

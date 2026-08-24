@@ -4775,7 +4775,6 @@ fn test_rule_4_aliases_missing_state_key_rejected() {
 
 /// Builds room state (v1 by default) with a creator and a joined `@bob:domain1.com`.
 fn rule_11_base_state(room_version: &str) -> RoomState {
-    use rezzy::basespec::event_types::M_ROOM_MEMBER;
     let mut state = RoomState::new();
     state.insert(
         (M_ROOM_CREATE.into(), String::new()),
