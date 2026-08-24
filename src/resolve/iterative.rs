@@ -637,10 +637,14 @@ where
     // Step 3: Build the power-level mainline for mainline sort
     let mainline = build_mainline_with_cache(&resolved, &sort_context, mainline_cache);
 
-    // Resolved-state screening pass (V2.1+): drop non-power conflicted events
+    // Resolved-state screening pass (V2.1.1+): drop non-power conflicted events
     // whose sender is already banned in `resolved`, before mainline sort. Sound
-    // because bans are fixed by the power phase (see [`is_sender_banned`]).
-    let mut non_power_list: Vec<&LeanEvent<Id, C, K>> = if version.is_v2_1_plus() {
+    // because bans are fixed by the power phase (see [`is_sender_banned`]). This
+    // is the sound replacement for the retired CDO pre-filter, which itself was
+    // gated to `V2_1_1` only (never `V2_1`) before its retirement -- V2.1 does
+    // not get this hardening by default; see `StateResVersion`'s docs.
+    let is_v2_1_1_or_above = matches!(version, StateResVersion::V2_1_1 | StateResVersion::V2_2);
+    let mut non_power_list: Vec<&LeanEvent<Id, C, K>> = if is_v2_1_1_or_above {
         non_power_events
             .iter()
             .filter(|(_, ev)| !is_sender_banned(ev, &resolved, &sort_context))
