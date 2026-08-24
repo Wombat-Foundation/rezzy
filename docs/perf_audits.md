@@ -259,3 +259,83 @@ gate set and `resolved`), so threading a memo does not reduce allocations and
 adds a hash lookup per event. The genuinely effective fix would be making
 `Custom` cheaply cloneable (`Arc<str>`), which is a public `EventType` API
 break — deferred pending that trade-off.
+
+---
+
+# 24 Aug 2026 (optimization status & backlog — full inventory)
+
+Complete status of every optimization raised this session, so nothing falls
+through the cracks.
+
+## Landed (committed)
+
+| Optimization | Where | Commit |
+|---|---|---|
+| Zero-copy borrowed resolver (`&SharedState`, `&HashMap`, no per-iteration deep clone) | `resolve/iterative.rs` | `8558224` |
+| `partition_state_maps` flattening (borrowed-key `FastMap` + `Occurrence`) + O(1) `ptr_eq` identical-map fast path | `resolve/multi.rs` | `c79637f` |
+| foldhash `pl_cache` (`Spl: BuildHasher` genericity, std-container + foldhash hasher, non-breaking) | `resolve/sorting.rs`, `resolve/iterative.rs` | `fe9599a` |
+| Schwartzian `mainline_sort` (O(N) instead of O(N log N) `dist` lookups) + clone-free power-event promotion (with `sort_set` fallback) | `resolve/sorting.rs`, `resolve/iterative.rs` | `cb6e874` |
+| `EventType::Custom` `Box<str>` → `Arc<str>` (O(1) clone; pub-API note) | `basespec/event_types.rs` | `f418952` |
+| Zero-copy Kahn graph (`FastMap<&Id, usize>` / `Vec<&Id>`, `get_key_value` borrow) + zero-clone mainline BFS (`VecDeque<&Id>` / `FastSet<&Id>`) + `ptr_eq` diff fast path | `resolve/sorting.rs`, `state/diff.rs` | `ee25160` |
+| Zero-clone transitive-auth BFS in `compute_local_auth` (`(&Id, usize)` queue, `FastSet<&Id>` visited) | `state/at.rs` | `9931e23` |
+| DAG merge-base traversal + pagination validation → `FastMap` | `state/` | `346103e` |
+| `RedactionReport` (applied / skipped_unauthorized / target_not_in_batch) | `auth/mod.rs` | `39fb164` |
+
+## Not done — with reason
+
+- **In-flight `EventType` threading** (`iterative.rs:89` TODO). Earlier rejected
+  as net-neutral: the memo doesn't cut `Custom` deep-copies because `(EventType, K)`
+  keys are owned in two places (gate set + `resolved`). **Now the calculus changed**:
+  `f418952` made `EventType::Custom` an O(1) `Arc<str>` clone, so a threaded
+  `FastMap<Id, EventType>` is now one derive + cheap clones instead of two
+  derives (and for well-known types, still just a string compare + a lookup).
+  Remains the best concrete in-repo follow-up; the win is bounded by the conflict
+  set size, so it is narrow but real.
+- **Mainline BFS-vs-DFS for v2.1.1+** (`compute_closest_mainline_positions`
+  uses iterative DFS + min-index). Correctness question, unresolved: whether
+  v2.1.1/MSC4297 requires a BFS (hop-distance) definition. The ruma parity
+  oracle passes 100% today, so either the DFS matches ruma or the bench doesn't
+  exercise the divergent case. Needs a differential test (DFS vs BFS on
+  branching DAGs) against the parity oracle before any change.
+- **LtHash fast-forward merge (skip state res for non-interfering forks)**.
+  `resolve_merge_fast_path_hashed` exists; the soundness of skipping the topo
+  sort / iterative auth on a digest match alone is unproven. Needs a formal
+  gate or a differential fuzz harness — same class of shortcut as the retired
+  CDO pre-filter. High value, must be proven.
+- **Batched RocksDB MultiGet** for the DAG frontier. Lives in `tuwunel`
+  (storage layer, separate repo) — out of scope for rezzy.
+- **`// membership-only dedup; do NOT iterate` hardening comment** on the
+  `visited` `FastSet` in `compute_local_auth` (`9931e23`). The swap is safe only
+  because `visited` is never iterated (foldhash seed is per-process); a future
+  edit iterating it would introduce cross-process nondeterminism. Comment not
+  yet added.
+- **Dedicated tests for the zero-copy refactors** (`ee25160`, `9931e23`).
+  Behavior-preserving (borrowed ↔ owned); existing resolution/parity suites
+  cover them, but explicit borrow-semantics tests were not added.
+
+## Empirically resolved / rejected
+
+- **HAMT as `SharedState` backend**: `benches/state_backend.rs` fork-and-diverge
+  benchmark shows the in-tree HAMT is **6–27x SLOWER** than `imbl::OrdMap`
+  (282ns vs 7.8µs @ n=16; ~1µs vs ~9–11µs at larger n) for the exact
+  clone-and-diverge pattern state resolution uses. This resolves the
+  `state/at.rs:2134` TODO ("swap the state payload over to the HAMT"): **don't**.
+  The real incremental win is LtHash state hashing + `state/delta.rs` delta
+  compaction (already present), not a HAMT swap.
+- **Persistent mainline depth indexing**: rejected. The mainline is anchored on
+  the *winning* power-level event, only known during resolution, so pre-indexed
+  depths aren't a stable static property — and it couples to the storage layer.
+
+## Separate (correctness/review) items still open
+
+- `coerce_json_to_i64` float path ungated by room version (v10+ rejects
+  non-integers) — silent auth-semantics deviation.
+- Bench `>>> REZZY SPEEDUP <<<` line still printed (methodology reframed as
+  parity oracle but the all-caps number remains).
+- Parity check one-directional (no symmetric key-set diff / length equality).
+- `compare_bench.py` ratchets baseline to the all-time-luckiest run; missing-label
+  and sentinel-regex issues.
+- CLI `render_timeline` defaults `room_version` to `"1"` (fail-open);
+  `format.rs` reads `redacts` from `content` (v1–10 top-level) not `get_redacts()`.
+- `screened` delta list unordered; `MSC3089` → `MSC3083` typos; `reference_hash`/
+  `compute_content_hash` `Result` + `expect` coexistence.
