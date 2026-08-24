@@ -662,18 +662,45 @@ pub fn ingest_events(
         events.push(LeanEvent::from_value(pdu, Some(room_version)).map_err(|e| e.to_string())?);
     }
 
-    let redactions: Vec<LeanEvent<String, Value, String>> = events
+    // event_id -> position, built once (O(events)) so the redaction/target
+    // matching pass below is O(events + redactions) total instead of
+    // O(events * redactions) from a `.position()` linear scan per redaction.
+    let position_by_id: crate::HashMap<&str, usize> = events
         .iter()
-        .filter(|e| e.event_type == M_ROOM_REDACTION)
-        .cloned()
+        .enumerate()
+        .map(|(pos, e)| (e.event_id.as_str(), pos))
         .collect();
-    for redaction in &redactions {
-        if let Some(target_id) = redaction.get_redacts() {
-            if let Some(pos) = events.iter().position(|e| e.event_id.as_str() == target_id) {
-                if let Some(redacted) = apply_redaction(&events[pos], redaction, room_version) {
-                    events[pos] = redacted;
-                }
-            }
+
+    // Collect just (redaction_pos, target_pos) index pairs -- not clones of
+    // the events themselves, which each own a `Value` (arbitrary-sized JSON
+    // content) and would make this an O(redactions) full-event-clone cost
+    // for no reason: every value needed here is recoverable by indexing back
+    // into `events`, so nothing needs to outlive this first pass except two
+    // cheap `usize`s per redaction.
+    let redaction_target_positions: Vec<(usize, usize)> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.event_type == M_ROOM_REDACTION)
+        .filter_map(|(redaction_pos, redaction)| {
+            let target_id = redaction.get_redacts()?;
+            let target_pos = *position_by_id.get(target_id)?;
+            (target_pos != redaction_pos).then_some((redaction_pos, target_pos))
+        })
+        .collect();
+
+    for (redaction_pos, target_pos) in redaction_target_positions {
+        // Need simultaneous &LeanEvent (redaction) + &mut LeanEvent (target)
+        // into the same Vec at two different indices -- split_at_mut on
+        // whichever index is lower gets both without cloning either side.
+        let (target, redaction) = if target_pos < redaction_pos {
+            let (left, right) = events.split_at_mut(redaction_pos);
+            (&mut left[target_pos], &right[0])
+        } else {
+            let (left, right) = events.split_at_mut(target_pos);
+            (&mut right[0], &left[redaction_pos])
+        };
+        if let Some(redacted) = apply_redaction(target, redaction, room_version) {
+            *target = redacted;
         }
     }
     Ok(events)

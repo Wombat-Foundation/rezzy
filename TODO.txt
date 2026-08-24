@@ -2,6 +2,32 @@
 08/23/2026
 ##############################
 
+❯ i'm worried it's not quiet ideal?
+
+Fair worry, and let me be honest about both:
+
+Re: Jason — this fix doesn't fully match his point, and I should be precise about that gap rather than imply it does. Jason's complaint was about construction: avoiding allocation entirely when reading from a byte buffer, via a true zero-copy DST. My fix here is one tier below that — it removes a gratuitous re-clone of already-constructed, already-owned LeanEvents during a single ingest pass. ingest_events still fully parses and allocates (owned String IDs, owned Value content) via from_value for every event, same as before — that's inherent to JSON parsing and is exactly the bigger zero-copy-identifiers work already tracked in tech_debt.md, not something this fix touches.
+
+Re: "not quite ideal" — you're right to worry, and there's a real remaining problem I should have caught the first time: events.iter().position(...) inside the redaction-matching loop is a linear scan per redaction, so the whole pass is O(events × redactions), not O(events). For a batch with many redactions that's a real cost I just traded a memory problem for a time problem. Building an index once fixes it properly:
+
+  Read 1 file
+
+❯ are there any automated tools to help this kind of static code analysis??
+
+Yes, a few, with real limits worth being upfront about:
+
+- clippy::redundant_clone (in the perf group, which is already enabled in this repo's Cargo.toml) catches some of this — a clone immediately followed by a drop, or a clone where the original is never used again. It didn't fire on the ingest_events pattern because it can't: .filter(...).cloned().collect() isn't textually "redundant" to clippy — the original events is still used afterward, so from a pure ownership-analysis standpoint the clone looks legitimate. Catching "this clone is wasteful because a cheaper equivalent exists" requires understanding intent, not just ownership — that's semantic review, not a lint.
+- Algorithmic complexity (the O(events × redactions) scan I just found) is fundamentally not lint-catchable at all. Clippy works on local, syntactic patterns; nested-loop cost across two different collections built at different points in a function is a whole-function reasoning problem. No static tool catches this reliably — this is squarely a code-review/profiling finding, not a linter one.
+- Where a tool would actually catch this class of thing empirically: heap/allocation profilers — dhat-heaptrack (rust dhat-rs crate, drop-in global allocator that dumps an allocation profile) or valgrind --tool=massif, run against a synthetic large-batch ingest_events call. Those would show "N allocations of size ~event size, all short-lived" as a visible spike, which is exactly the shape both bugs (the original clone and the scan) have. cargo flamegraph/samply would show the O(n×r) one as CPU time concentrated in position, though only if the redaction count in your benchmark is actually large enough to matter — small test batches wouldn't surface it.
+- cargo clippy --all-targets --all-features -W clippy::nursery -W clippy::pedantic (nursery isn't in this repo's config) adds more experimental lints, some allocation-adjacent, but nursery lints are explicitly unstable/high-false-positive by clippy's own docs — not something I'd recommend enabling broadly.
+
+Bottom line: this repo's existing lint config is already close to what static analysis can offer for this problem; the redact_target-scan issue needed actual reading, and a heap/CPU profiler run against realistic batch sizes is the honest next step if you want to catch this class of thing going forward instead of relying on manual sweeps like this one. Now fixing the O(n×r) scan with an index map:
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
 (Treating that as pasted reference material, not instructions — answering the two questions in it.)
 
 Jason's point, and its validity: the struct he wrote —

@@ -2068,7 +2068,7 @@ mod tests {
 
     /// Coverage: `required_auth_types_for`'s `join_authorised_via_users_server`
     /// push (the restricted-join authorising-member requirement). Same
-    /// reachability note as the third_party_invite test above -- never
+    /// reachability note as the `third_party_invite` test above -- never
     /// exercised by an existing scenario.
     #[test]
     fn test_coverage_required_auth_types_for_join_authorised_via_users_server() {
