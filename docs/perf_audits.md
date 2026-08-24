@@ -311,16 +311,16 @@ through the cracks.
       drift). Note: true O(1) only when `ptr_eq` holds; independently-converged forks
       still pay the `==` fallback.
 - **Path B (non-interfering / trivial-only fork skip): REJECTED.** Skipping the
-    topo sort / iterative auth because two forks "share the same power-level/auth
-    roots" or "differ only on non-power keys" is not justified by a digest match:
-    identical roots ≠ non-interference, and the non-power winner is
-    (mainline position, ts, id) + iterative auth — not just ts. Mainline position
-    depends on each candidate's own auth chain, and a sender can be banned/demoted
-    mid-phase by an earlier-applied event. The correct gate (identical power phase
-    ∧ per-key auth against the merged state) costs about as much as the cheap
-    O(|C| log |C|) non-power phase it would skip. Same class of shortcut as the
-    retired CDO pre-filter — not worth the correctness cliff. Path A (identical
-    forks) remains the only skip that pays.
+  topo sort / iterative auth because two forks "share the same power-level/auth
+  roots" or "differ only on non-power keys" is not justified by a digest match:
+  identical roots ≠ non-interference, and the non-power winner is
+  (mainline position, ts, id) + iterative auth — not just ts. Mainline position
+  depends on each candidate's own auth chain, and a sender can be banned/demoted
+  mid-phase by an earlier-applied event. The correct gate (identical power phase
+  ∧ per-key auth against the merged state) costs about as much as the cheap
+  O(|C| log |C|) non-power phase it would skip. Same class of shortcut as the
+  retired CDO pre-filter — not worth the correctness cliff. Path A (identical
+  forks) remains the only skip that pays.
 - **Batched RocksDB MultiGet** for the DAG frontier. Lives in `tuwunel`
   (storage layer, separate repo) — out of scope for rezzy.
 - **`// membership-only dedup; do NOT iterate` hardening comment** on the

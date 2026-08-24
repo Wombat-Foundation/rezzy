@@ -4033,7 +4033,14 @@ fn test_apply_authorized_redactions_only_strips_authorized_targets() {
 
     // Unauthorized: mallory (PL 0 < redact 50, not the target's sender) must NOT strip.
     let mut events = vec![msg.clone(), mallory_redact.clone()];
-    apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    assert!(
+        report.skipped_unauthorized.contains(&(
+            "$mallory_redact:example.com".into(),
+            "$msg:example.com".into()
+        )),
+        "unauthorized redaction must be reported as skipped"
+    );
     let target = events
         .iter()
         .find(|e| e.event_id == "$msg:example.com")
@@ -4046,7 +4053,13 @@ fn test_apply_authorized_redactions_only_strips_authorized_targets() {
 
     // Authorized: Bob redacts his own message -> content is stripped.
     let mut events = vec![msg.clone(), self_redact.clone()];
-    apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    assert!(
+        report
+            .applied
+            .contains(&("$self_redact:example.com".into(), "$msg:example.com".into())),
+        "authorized self-redaction must be reported as applied"
+    );
     let target = events
         .iter()
         .find(|e| e.event_id == "$msg:example.com")
@@ -4060,7 +4073,7 @@ fn test_apply_authorized_redactions_only_strips_authorized_targets() {
     // Order-invariance: the redaction preceding its target (the opposite
     // `split_at_mut` branch) must strip identically.
     let mut events = vec![self_redact.clone(), msg.clone()];
-    apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    let _report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
     let target = events
         .iter()
         .find(|e| e.event_id == "$msg:example.com")

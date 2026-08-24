@@ -1045,34 +1045,17 @@ where
     if sender_pl >= get_redact_power_level(state) {
         return true;
     }
+    // Legacy rule 11 (room v1/v2): allowed if the domain of the redacted
+    // event (its `redacts` target) matches the domain of the redaction's own
+    // event_id — matching `check_auth`'s rule, NOT the senders' domains.
     if matches!(room_version, "1" | "2") {
-        return domain_matches(target.sender(), redaction.sender());
+        return redaction.get_redacts().is_some_and(|target| {
+            domain_matches(target, &alloc::format!("{}", redaction.event_id))
+        });
     }
     false
 }
 
-/// Apply each `m.room.redaction` event to its in-set target, but only when the
-/// redaction is **authorized** against the provided room state.
-///
-/// This is the authorization-checked redaction step that belongs *after* state
-/// resolution: unlike [`crate::basespec::rezzy_types::ingest_events`] (which
-/// parses and verifies content hashes only and must not strip content), this
-/// function has the resolved state needed to check the redact power level and
-/// the target's sender. Unauthorized redactions leave the target untouched.
-///
-/// # Memory contract
-/// This is a pure, in-memory transform — it performs no I/O and owns no state.
-/// The caller must already hold, in memory:
-/// - `events`: the slice of events to redact, including both the redaction
-///   events and their targets. Targets outside `events` are left for a later
-///   pass (a redaction and its target may arrive in different batches).
-/// - `state`: the resolved room state used to authorize each redaction.
-///
-/// The function mutates `events` in place, replacing each authorized target
-/// with its redacted form. Callers can use
-/// [`LeanEvent::is_redaction`](crate::basespec::rezzy_types::LeanEvent::is_redaction)
-/// to cheaply detect whether a batch contains any redaction work before
-/// calling this.
 /// The outcome of applying redactions to a batch of events.
 ///
 /// Reports, for each `m.room.redaction` event in the batch, what happened to
@@ -1103,6 +1086,31 @@ impl<Id> Default for RedactionReport<Id> {
     }
 }
 
+/// Apply each `m.room.redaction` event to its in-set target, but only when the
+/// redaction is **authorized** against the provided room state.
+///
+/// This is the authorization-checked redaction step that belongs *after* state
+/// resolution: unlike [`crate::basespec::rezzy_types::ingest_events`] (which
+/// parses and verifies content hashes only and must not strip content), this
+/// function has the resolved state needed to check the redact power level and
+/// the target's sender. Unauthorized redactions leave the target untouched.
+///
+/// # Memory contract
+/// This is a pure, in-memory transform — it performs no I/O and owns no state.
+/// The caller must already hold, in memory:
+/// - `events`: the slice of events to redact, including both the redaction
+///   events and their targets. Targets outside `events` are left for a later
+///   pass (a redaction and its target may arrive in different batches).
+/// - `state`: the resolved room state used to authorize each redaction.
+///
+/// The function mutates `events` in place, replacing each authorized target
+/// with its redacted form. Callers can use
+/// [`LeanEvent::is_redaction`](crate::basespec::rezzy_types::LeanEvent::is_redaction)
+/// to cheaply detect whether a batch contains any redaction work before
+/// calling this.
+///
+/// Rejected or soft-failed redaction events are never applied.
+#[must_use]
 pub fn apply_authorized_redactions<Id, E, K>(
     events: &mut [LeanEvent<Id, serde_json::Value, K>],
     state: &impl StateProvider<Id, serde_json::Value, E>,
@@ -1126,7 +1134,12 @@ where
     let redaction_positions: Vec<usize> = events
         .iter()
         .enumerate()
-        .filter(|(_, e)| e.event_type == M_ROOM_REDACTION)
+        // A rejected redaction is categorically invalid (failed auth against
+        // its own auth_events) and must never strip content. Soft-failed
+        // redactions are NOT excluded: soft-fail is a stale arrival-time
+        // verdict, and authorization is re-checked below against the resolved
+        // state via `redaction_is_authorized`.
+        .filter(|(_, e)| e.event_type == M_ROOM_REDACTION && !e.rejected)
         .map(|(i, _)| i)
         .collect();
 

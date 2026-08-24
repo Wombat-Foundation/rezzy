@@ -518,9 +518,19 @@ fn run_shootout(
     let rezzy_elapsed = start_rezzy.elapsed();
     let rezzy_avg = rezzy_elapsed / runs;
 
-    // Verify correctness parity
+    // Verify correctness parity symmetrically: every ruma key must match in
+    // rezzy AND rezzy must not carry extra keys (equal cardinality). A
+    // one-directional subset check would print "VERIFIED" even if rezzy
+    // kept a losing conflicted event ruma dropped.
     let ruma_resolved = ruma_result.unwrap();
     let rezzy_resolved = rezzy_result.unwrap();
+    assert_eq!(
+        ruma_resolved.len(),
+        rezzy_resolved.len(),
+        "resolved state cardinality differs (ruma {} vs rezzy {})",
+        ruma_resolved.len(),
+        rezzy_resolved.len()
+    );
     for ((ev_type, state_key), ruma_id) in &ruma_resolved {
         let rezzy_key = (
             rezzy::basespec::event_types::EventType::from(ev_type.to_string()),
@@ -535,13 +545,35 @@ fn run_shootout(
             "State mismatch for {ev_type:?}, {state_key:?}"
         );
     }
+    // Symmetric pass: no extra keys on the rezzy side.
+    for (rezzy_key, rezzy_id) in &rezzy_resolved {
+        let ruma_key = (
+            StateEventType::from(rezzy_key.0.as_str()),
+            rezzy_key.1.clone(),
+        );
+        let ruma_id = ruma_resolved.get(&ruma_key).expect("Key present in ruma");
+        assert_eq!(
+            ruma_id.as_str(),
+            rezzy_id.as_str(),
+            "extra state in rezzy for {:?}, {:?}",
+            rezzy_key.0,
+            rezzy_key.1
+        );
+    }
 
     let speedup = ruma_elapsed.as_nanos() as f64 / rezzy_elapsed.as_nanos() as f64;
 
     println!("  ruma-state-res (original):  {ruma_elapsed:?} (avg: {ruma_avg:?})");
     println!("  rezzy (bitmap accelerated): {rezzy_elapsed:?} (avg: {rezzy_avg:?})");
     println!("  CORRECTNESS PARITY:         VERIFIED (100% Identical Resolution)");
-    println!("  >>> REZZY SPEEDUP:          {speedup:.2}x FASTER <<<\n");
+    if speedup >= 1.0 {
+        println!("  >>> REZZY SPEEDUP:          {speedup:.2}x FASTER <<<\n");
+    } else {
+        println!(
+            "  >>> REZZY SLOWDOWN:         {:.2}x SLOWER <<<\n",
+            1.0 / speedup
+        );
+    }
 }
 
 fn main() {

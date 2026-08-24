@@ -51,7 +51,7 @@ use crate::basespec::rezzy_types::{
     EventContent, EventId, EventProvider, LeanEvent, StateResVersion,
 };
 use crate::state::at::SharedState;
-use crate::{FastMap, HashMap};
+use crate::{FastMap, FastSet, HashMap};
 use alloc::vec::Vec;
 
 /// Partitions N state maps into unconflicted state (agreed by all) and a set
@@ -113,12 +113,20 @@ where
                     occ.count = occ.count.saturating_add(1);
                     if occ.first_id != id {
                         // Seed the conflict vector with the first id so the
-                        // tail pass emits every distinct id as conflicted.
-                        let conflicts = occ
-                            .conflicts
-                            .get_or_insert_with(|| alloc::vec![occ.first_id]);
-                        if !conflicts.contains(&id) {
-                            conflicts.push(id);
+                        // tail pass emits every distinct id as conflicted. The
+                        // membership set keeps dedup amortized O(1).
+                        match &mut occ.conflicts {
+                            None => {
+                                let mut set = FastSet::default();
+                                set.insert(occ.first_id);
+                                set.insert(id);
+                                occ.conflicts = Some((alloc::vec![occ.first_id, id], set));
+                            }
+                            Some((ids, seen)) => {
+                                if seen.insert(id) {
+                                    ids.push(id);
+                                }
+                            }
                         }
                     }
                 }
@@ -133,7 +141,7 @@ where
         if occ.count == num_maps && occ.conflicts.is_none() {
             // Unanimous: seen in every map with a single, consistent id.
             unconflicted_state.insert(key.clone(), occ.first_id.clone());
-        } else if let Some(conflicts) = occ.conflicts {
+        } else if let Some((conflicts, _)) = occ.conflicts {
             // Disagreement: emit every distinct id as conflicted.
             for id in conflicts {
                 conflicted_ids.push(id.clone());
@@ -155,7 +163,10 @@ where
 struct Occurrence<'a, Id> {
     first_id: &'a Id,
     count: usize,
-    conflicts: Option<Vec<&'a Id>>,
+    /// Distinct conflicting ids in first-seen order, plus an O(1) membership
+    /// set so dedup stays amortized O(1) instead of a linear scan per id
+    /// (which would be quadratic for a slot with many distinct ids).
+    conflicts: Option<(Vec<&'a Id>, FastSet<&'a Id>)>,
 }
 
 /// Resolves N parent state maps into a single deterministic state map.
