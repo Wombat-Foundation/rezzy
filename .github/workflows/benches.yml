@@ -1,0 +1,75 @@
+---
+name: Benchmarks
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+# `contents: write` is needed only to push the updated best-metric JSON to the
+# `_metadata/badges` branch; it is only exercised on main/master pushes.
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: bench
+
+      - name: Run benchmarks (tee to file)
+        # `make rust/bench` (cargo bench --profile release --benches) drives the
+        # custom wall-clock harness in benches/. Tee the output so the metric
+        # extraction step below can parse it.
+        run: cargo bench --profile release --benches 2>&1 | tee bench-output.txt
+
+      - name: Fetch previous best metrics
+        # Previous best is tracked as bench.json on the `_metadata/badges` branch.
+        run: |
+          set -e
+          if git ls-remote --heads origin _metadata/badges | grep -q '_metadata/badges'; then
+            git fetch origin _metadata/badges:_metadata/badges
+            git show _metadata/badges:bench.json > bench.json 2>/dev/null || echo '{}' > bench.json
+          else
+            echo '{}' > bench.json
+          fi
+
+      - name: Compare against previous best (10% margin)
+        run: |
+          python3 scripts/compare_bench.py \
+            --current bench-output.txt \
+            --best bench.json \
+            --out bench-new.json \
+            --margin 0.10
+
+      - name: Publish new best to _metadata/badges (main/master only)
+        # Only the default branch updates the recorded best; PR runs compare only.
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # bench-new.json is untracked, so it survives the branch switch below.
+          git fetch origin _metadata/badges 2>/dev/null || true
+          git checkout -B _metadata/badges origin/_metadata/badges 2>/dev/null || git checkout -b _metadata/badges
+          cp bench-new.json bench.json
+          git add bench.json
+          if git diff --cached --quiet; then
+            echo "no metric change to publish"
+          else
+            git commit -m "bench: update best metrics"
+            git push origin _metadata/badges
+          fi
