@@ -394,14 +394,14 @@ fn redact_content(content: &Value, rule: RedactionRule) -> Value {
 /// `org.matrix.msc4242.12` swapping `auth_events` for `prev_state_events`) are
 /// unrecognized and fail closed.
 #[must_use]
-fn redact_top_level(value: &Value, room_version: &str) -> Value {
+fn redact_top_level(value: &Value, room_version: &str) -> serde_json::Map<String, Value> {
     use crate::basespec::event_types::{
         FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_HASHES,
         FIELD_ORIGIN_SERVER_TS, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_SIGNATURES, FIELD_STATE_KEY,
         FIELD_TYPE,
     };
     let Value::Object(obj) = value else {
-        return Value::Object(serde_json::Map::default());
+        return serde_json::Map::new();
     };
     // MSC4291 (room IDs as hashes, room v12+): the create event carries no
     // room_id, so it must not be preserved on redaction.
@@ -433,7 +433,7 @@ fn redact_top_level(value: &Value, room_version: &str) -> Value {
         take("membership", &mut out);
         take("prev_state", &mut out);
     }
-    Value::Object(out)
+    out
 }
 /// The base64 engine used for Matrix hash encodings, derived from the room
 /// version. Room v3 uses the STANDARD alphabet; room v4+ uses URL-safe. Both
@@ -472,19 +472,17 @@ pub fn redact_json(value: &Value, room_version: &str) -> Value {
         .unwrap_or("");
     let rule = redaction_preserved_keys(event_type, room_version);
     let mut out = redact_top_level(value, room_version);
-    if let Value::Object(ref mut obj) = out {
-        let content = obj
-            .get(crate::basespec::event_types::FIELD_CONTENT)
-            .map_or_else(
-                || Value::Object(serde_json::Map::default()),
-                |c| redact_content(c, rule),
-            );
-        obj.insert(
-            String::from(crate::basespec::event_types::FIELD_CONTENT),
-            content,
+    let content = out
+        .get(crate::basespec::event_types::FIELD_CONTENT)
+        .map_or_else(
+            || Value::Object(serde_json::Map::default()),
+            |c| redact_content(c, rule),
         );
-    }
-    out
+    out.insert(
+        String::from(crate::basespec::event_types::FIELD_CONTENT),
+        content,
+    );
+    Value::Object(out)
 }
 
 /// Computes the Matrix **reference hash** of a PDU `Value` — the event ID for

@@ -740,12 +740,50 @@ mod tests {
     }
 
     #[test]
+    fn test_serialization_roundtrip_state_key_none() {
+        // A LeanEvent with no state_key: the Serialize impl's
+        // `if let Some(state_key)` branch is skipped, exercising the None
+        // fall-through.
+        let event: LeanEvent = LeanEvent {
+            event_id: "$abc".into(),
+            event_type: "m.room.message".into(),
+            state_key: None,
+            power_level: 100,
+            origin_server_ts: 12345,
+            prev_events: vec![],
+            auth_events: vec![],
+            depth: 5,
+            ..Default::default()
+        };
+        let serialized = serde_json::to_string(&event).unwrap();
+        let deserialized: LeanEvent = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(event, deserialized);
+        assert_eq!(deserialized.state_key, None);
+    }
+
+    #[test]
     fn test_redacts_top_level_is_promoted_into_content() {
         let event_json = r#"{
             "event_id": "$redact",
             "type": "m.room.redaction",
             "sender": "@alice:example.com",
             "content": {},
+            "redacts": "$target:example.com"
+        }"#;
+        let event: LeanEvent = serde_json::from_str(event_json).unwrap();
+        assert_eq!(event.get_redacts(), Some("$target:example.com"));
+    }
+
+    #[test]
+    fn test_redaction_accepts_matching_top_level_and_content_redacts() {
+        // Both the top-level `redacts` field and `content.redacts` are present
+        // and agree: `from_value` takes the equality fall-through rather than
+        // the mismatch error branch.
+        let event_json = r#"{
+            "event_id": "$redact",
+            "type": "m.room.redaction",
+            "sender": "@alice:example.com",
+            "content": { "redacts": "$target:example.com" },
             "redacts": "$target:example.com"
         }"#;
         let event: LeanEvent = serde_json::from_str(event_json).unwrap();
