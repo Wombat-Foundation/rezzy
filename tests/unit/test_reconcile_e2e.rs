@@ -21,7 +21,6 @@
 //! `benchmark_bucket_exchange_from_pool` (which already runs multi-round
 //! exchanges at scale) than forced into an always-pass unit test. See
 //! `docs/tech_debt.md` for the follow-up.
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 use rezzy::reconcile::client::{
     BucketExchange, ClientAction, ReconciliationClient, RemoteDigest, MAX_BUCKETS_PER_ROUND,
