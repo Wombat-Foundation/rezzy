@@ -3796,6 +3796,30 @@ fn test_coverage_ingest_events_applies_redaction_when_redaction_precedes_target(
     assert!(events.iter().any(|e| e.event_id == "$r:example.com"));
 }
 
+/// Coverage: `ingest_events`'s per-PDU parse-error branch (the `?` on
+/// `LeanEvent::from_value`). A malformed PDU that cannot be parsed into a lean
+/// event aborts the whole batch with an `Err` instead of being silently
+/// skipped.
+#[test]
+fn test_coverage_ingest_events_parse_error_aborts_batch() {
+    use rezzy::ingest_events;
+
+    // No "type" field -> `from_value` sees an empty event_type and returns
+    // Err, surfacing through ingest_events' `map_err(|e| e.to_string())?`.
+    let malformed = serde_json::json!({
+        "event_id": "$bad:example.com",
+        "sender": "@bob:example.com",
+        "origin_server_ts": 10,
+        "depth": 1,
+        "content": {}
+    });
+    let err = ingest_events(&[malformed], "11").unwrap_err();
+    assert!(
+        err.contains("event_type"),
+        "unexpected ingest parse error: {err}"
+    );
+}
+
 #[test]
 fn test_reference_hash_is_redaction_invariant() {
     use rezzy::{redact_json, reference_hash};
