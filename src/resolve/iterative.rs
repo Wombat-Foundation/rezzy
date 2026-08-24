@@ -59,9 +59,11 @@ where
     // CDO could not establish at this (pre-auth) point.
     //
     // The pre-filter is retired from the live path (see src/resolve/cdo.rs,
-    // retained as design history) pending a resolved-state screening pass that
-    // applies auth predicates directly instead of approximating domination.
-    // Do NOT restore this call without that soundness guarantee.
+    // retained as design history). Its sound replacement -- a resolved-state
+    // screening pass that applies auth predicates (is the sender banned?)
+    // directly instead of approximating domination -- lives in
+    // `is_sender_banned` below, applied after the power phase, not here.
+    // Do NOT restore this call without an equivalent soundness guarantee.
     conflicted_events.keys().cloned().collect()
 }
 
