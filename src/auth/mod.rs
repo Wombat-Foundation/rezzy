@@ -1060,9 +1060,19 @@ where
 /// function has the resolved state needed to check the redact power level and
 /// the target's sender. Unauthorized redactions leave the target untouched.
 ///
-/// Targets whose redaction event is absent from `events` (e.g. the redaction
-/// arrived in an earlier ingest batch) are left for a later pass; only the
-/// in-set `redacts` references are applied here.
+/// # Memory contract
+/// This is a pure, in-memory transform — it performs no I/O and owns no state.
+/// The caller must already hold, in memory:
+/// - `events`: the slice of events to redact, including both the redaction
+///   events and their targets. Targets outside `events` are left for a later
+///   pass (a redaction and its target may arrive in different batches).
+/// - `state`: the resolved room state used to authorize each redaction.
+///
+/// The function mutates `events` in place, replacing each authorized target
+/// with its redacted form. Callers can use
+/// [`LeanEvent::is_redaction`](crate::basespec::rezzy_types::LeanEvent::is_redaction)
+/// to cheaply detect whether a batch contains any redaction work before
+/// calling this.
 pub fn apply_authorized_redactions<Id, E, K>(
     events: &mut [LeanEvent<Id, serde_json::Value, K>],
     state: &impl StateProvider<Id, serde_json::Value, E>,
