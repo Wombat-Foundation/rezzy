@@ -2025,7 +2025,7 @@ mod tests {
     /// of its own to check) -- called out explicitly rather than left
     /// permanently uncovered.
     #[test]
-    fn test_required_auth_types_for_create_returns_empty() {
+    fn test_coverage_required_auth_types_for_create_returns_empty() {
         let create_ev = make_test_event(
             "$create",
             M_ROOM_CREATE,

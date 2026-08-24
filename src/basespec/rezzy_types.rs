@@ -2849,7 +2849,7 @@ mod redact_content_tests {
     /// rule tables happen to use -- exercised directly here with a synthetic
     /// two-key rule instead of leaving it permanently uncovered.
     #[test]
-    fn test_redact_content_accumulates_multiple_dotted_keys_under_one_parent() {
+    fn test_coverage_redact_content_accumulates_multiple_dotted_keys_under_one_parent() {
         let content = json!({
             "parent": {
                 "a": 1,
