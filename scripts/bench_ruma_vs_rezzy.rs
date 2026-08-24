@@ -1,5 +1,19 @@
 //! High-scale shootout benchmark comparing `ruma-state-res` vs `rezzy`
 //! over complex multi-way Matrix DAG forks, parallel branches, and large rebuilds.
+//!
+//! # What this measures
+//!
+//! This harness is an **algorithmic correctness-parity oracle**, not a
+//! performance claim. The 100% identical-resolution check against
+//! `ruma-state-res` across nasty fork/rebuild topologies is the primary
+//! output. The speedup column is secondary and, for this particular
+//! in-memory `String`-ID fixture, is not where rezzy's performance advantage
+//! lives: rezzy's large speedups are in bitwise auth-difference and Roaring
+//! reachability/transitive-closure, measured by `run_bench_auth_difference.sh`
+//! and `cargo bench --bench resolve`. Both engines here resolve a pre-computed
+//! in-memory DAG with no database I/O, and rezzy uses its zero-copy borrowed
+//! entry point so the timed loop does not pay a per-iteration `serde_json`
+//! deep clone.
 
 use std::{collections::HashMap, hint::black_box, sync::Arc, time::Instant};
 
@@ -485,15 +499,16 @@ fn run_shootout(
     let ruma_elapsed = start_ruma.elapsed();
     let ruma_avg = ruma_elapsed / runs;
 
-    // 2. Benchmark rezzy
+    // 2. Benchmark rezzy (borrowed entry point: no per-iteration deep clone of the
+    //    LeanEvent/serde_json contents; the resolver reads the maps by reference).
     let start_rezzy = Instant::now();
     let mut rezzy_result = None;
     let mut pl_cache = HashMap::new();
     for _ in 0..runs {
         pl_cache.clear();
         let res = rezzy::resolve_iterative_sort(
-            unconflicted_state.clone(),
-            conflicted_events.clone(),
+            &unconflicted_state,
+            &conflicted_events,
             &auth_context,
             rezzy::StateResVersion::V2,
             &mut pl_cache,
@@ -532,6 +547,8 @@ fn run_shootout(
 fn main() {
     println!("================================================================================");
     println!("  MATRIX STATE RESOLUTION LARGE-SCALE SHOOTOUT: ruma-state-res vs rezzy");
+    println!("  (correctness-parity oracle; perf claims belong in run_bench_auth_difference.sh");
+    println!("   and cargo bench --bench resolve, not this in-memory String-ID fixture)");
     println!("================================================================================\n");
 
     // 1. Nasty 2-Branch Conflict (500 Members, 100 Conflicted Keys, Deep Auth Chains, ~1,600 PDUs)

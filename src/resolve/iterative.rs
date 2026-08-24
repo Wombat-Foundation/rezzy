@@ -46,7 +46,7 @@ pub(crate) fn prepare_conflicted_and_keys<
     S2: core::hash::BuildHasher,
     K,
 >(
-    conflicted_events: &mut HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
     _auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     _version: StateResVersion,
 ) -> alloc::collections::BTreeSet<Id>
@@ -475,7 +475,7 @@ where
 /// let auth_ctx: HashMap<String, LeanEvent> = /* auth chain for new_events */
 /// # HashMap::new();
 ///
-/// let resolved = resolve_iterative_sort(checkpoint, new_events, &auth_ctx, StateResVersion::V2, &mut std::collections::HashMap::new());
+/// let resolved = resolve_iterative_sort(&checkpoint, &new_events, &auth_ctx, StateResVersion::V2, &mut std::collections::HashMap::new());
 /// ```
 ///
 /// # Auth Chain Safety
@@ -526,8 +526,8 @@ pub fn resolve_iterative_sort<
     S2: core::hash::BuildHasher,
     K,
 >(
-    unconflicted_state: crate::state::at::SharedState<Id, K>,
-    conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    unconflicted_state: &crate::state::at::SharedState<Id, K>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64>,
@@ -557,8 +557,8 @@ pub fn resolve_iterative_sort_with_cache<
     S2: core::hash::BuildHasher,
     K,
 >(
-    unconflicted_state: crate::state::at::SharedState<Id, K>,
-    conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    unconflicted_state: &crate::state::at::SharedState<Id, K>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
     version: StateResVersion,
@@ -568,7 +568,7 @@ where
     K: crate::basespec::rezzy_types::StateKey,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    let conflicted_keys = derive_all_conflicted_keys(&conflicted_events);
+    let conflicted_keys = derive_all_conflicted_keys(conflicted_events);
     resolve_iterative_sort_with_all_caches::<Id, C, S1, S2, K>(
         unconflicted_state,
         conflicted_events,
@@ -595,8 +595,8 @@ pub(crate) fn resolve_iterative_sort_with_all_caches<
     S2: core::hash::BuildHasher,
     K,
 >(
-    unconflicted_state: crate::state::at::SharedState<Id, K>,
-    mut conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    unconflicted_state: &crate::state::at::SharedState<Id, K>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
     version: StateResVersion,
@@ -609,14 +609,14 @@ where
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let original_conflicted_keys =
-        prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
+        prepare_conflicted_and_keys(conflicted_events, auth_context, version);
 
     // MSC4297 (v2.1+): The algorithm starts from an empty set of state.
-    let mut resolved = get_initial_resolved_state(&unconflicted_state, version);
+    let mut resolved = get_initial_resolved_state(unconflicted_state, version);
 
     let (sort_context, power_events, non_power_events, create_ev) = execute_power_phase(
-        &unconflicted_state,
-        &conflicted_events,
+        unconflicted_state,
+        conflicted_events,
         auth_context,
         &original_conflicted_keys,
         version,
@@ -637,7 +637,7 @@ where
         &power_events,
         &sort_context,
         auth_context,
-        &conflicted_events,
+        conflicted_events,
         version,
         local_auth_cache,
         create_ev,
@@ -647,7 +647,7 @@ where
 
     let sort_set = &conflicted_events;
 
-    merge_unconflicted_power_events(version, &unconflicted_state, &mut resolved);
+    merge_unconflicted_power_events(version, unconflicted_state, &mut resolved);
 
     // Step 3: Build the power-level mainline for mainline sort
     let mainline = build_mainline_with_cache(&resolved, &sort_context, mainline_cache);
@@ -716,8 +716,9 @@ where
     //   auth diff must be able to override a stale "unconflicted" join,
     //   and federation convergence requires matching other MSC4297
     //   implementations here. So `resolved` must win.
-    let final_resolved = if version.is_v2_1_plus() {
-        let mut f = unconflicted_state;
+
+    if version.is_v2_1_plus() {
+        let mut f = unconflicted_state.clone();
         for (k, v) in resolved {
             f.insert(k, v);
         }
@@ -725,12 +726,10 @@ where
     } else {
         let mut f = resolved;
         for (k, v) in unconflicted_state {
-            f.insert(k, v);
+            f.insert(k.clone(), v.clone());
         }
         f
-    };
-    drop(conflicted_events);
-    final_resolved
+    }
 }
 
 /// Like [`resolve_iterative_sort`], but also returns per-event
@@ -802,7 +801,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
     K,
 >(
     unconflicted_state: crate::state::at::SharedState<Id, K>,
-    mut conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
     version: StateResVersion,
@@ -819,7 +818,7 @@ where
 
     let conflicted_keys = derive_all_conflicted_keys(&conflicted_events);
     let original_conflicted_keys =
-        prepare_conflicted_and_keys(&mut conflicted_events, auth_context, version);
+        prepare_conflicted_and_keys(&conflicted_events, auth_context, version);
 
     let mut resolved = get_initial_resolved_state(&unconflicted_state, version);
     let mut deltas = alloc::vec::Vec::new();

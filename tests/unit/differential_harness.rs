@@ -310,8 +310,8 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
 
 fn resolve(p: &Problem, version: StateResVersion) -> SharedState {
     resolve_iterative_sort(
-        p.unconflicted.clone(),
-        p.conflicted.clone(),
+        &p.unconflicted,
+        &p.conflicted,
         &p.auth_context,
         version,
         &mut HashMap::new(),

@@ -335,7 +335,7 @@ pub fn resolve_lattice_fold<
     S2: core::hash::BuildHasher + Sync + Send,
 >(
     unconflicted_state: crate::state::at::SharedState<Id>,
-    mut conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
+    conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     version: StateResVersion,
 ) -> crate::state::at::SharedState<Id>
@@ -348,8 +348,8 @@ where
 
     if version.is_v2_1_plus() {
         return crate::resolve::iterative::resolve_iterative_sort(
-            unconflicted_state,
-            conflicted_events,
+            &unconflicted_state,
+            &conflicted_events,
             auth_context,
             version,
             &mut pl_cache,
@@ -363,7 +363,7 @@ where
     let conflicted_keys = crate::resolve::iterative::derive_all_conflicted_keys(&conflicted_events);
 
     let original_conflicted_keys = crate::resolve::iterative::prepare_conflicted_and_keys(
-        &mut conflicted_events,
+        &conflicted_events,
         auth_context,
         version,
     );

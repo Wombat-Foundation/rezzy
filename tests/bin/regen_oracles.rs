@@ -44,8 +44,8 @@ fn write_oracle(fixture_path: &str, oracle_path: &str, version: StateResVersion)
     let events = load_fixture(fixture_path);
     let map = to_event_map(&events);
     let resolved = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map),
-        map.clone(),
+        &utils::build_unconflicted_state_test_helper(&map),
+        &map,
         &map,
         version,
         &mut std::collections::HashMap::new(),

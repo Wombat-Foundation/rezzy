@@ -425,8 +425,8 @@ pub fn partition_and_resolve_state(
 
     let mut pl_cache = HashMap::new();
     let final_state_map = rezzy::resolve_iterative_sort(
-        unconflicted_state,
-        conflicted_events,
+        &unconflicted_state,
+        &conflicted_events,
         events_map,
         version,
         &mut pl_cache,

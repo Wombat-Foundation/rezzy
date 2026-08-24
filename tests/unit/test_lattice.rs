@@ -153,8 +153,8 @@ fn test_lattice_fold_parity_with_iterative() {
         StateResVersion::V2,
     );
     let iterative = rezzy::resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &map,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),

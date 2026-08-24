@@ -216,8 +216,8 @@ where
 
     let mut pl_cache = HashMap::new();
     crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
-        unconflicted_state,
-        conflicted_events,
+        &unconflicted_state,
+        &conflicted_events,
         event_context,
         None,
         version,
@@ -445,8 +445,8 @@ where
 
     let mut pl_cache = HashMap::new();
     crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
-        unconflicted_state,
-        conflicted_events,
+        &unconflicted_state,
+        &conflicted_events,
         &auth_context,
         None,
         version,

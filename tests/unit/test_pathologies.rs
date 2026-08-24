@@ -43,15 +43,15 @@ fn test_pathology_duplicate_auth_poisoning() {
     // Warm up the code and caches
     for _ in 0..10 {
         let _ = resolve_iterative_sort(
-            utils::build_unconflicted_state_test_helper(&auth_context),
-            conflicted_events.clone(),
+            &utils::build_unconflicted_state_test_helper(&auth_context),
+            &conflicted_events,
             &auth_context,
             StateResVersion::V2_1,
             &mut std::collections::HashMap::new(),
         );
         let _ = resolve_iterative_sort(
-            utils::build_unconflicted_state_test_helper(&auth_context),
-            conflicted_events.clone(),
+            &utils::build_unconflicted_state_test_helper(&auth_context),
+            &conflicted_events,
             &auth_context,
             StateResVersion::V2_1_1,
             &mut std::collections::HashMap::new(),
@@ -63,8 +63,8 @@ fn test_pathology_duplicate_auth_poisoning() {
     for _ in 0..50 {
         let start = std::time::Instant::now();
         let _ = resolve_iterative_sort(
-            utils::build_unconflicted_state_test_helper(&auth_context),
-            conflicted_events.clone(),
+            &utils::build_unconflicted_state_test_helper(&auth_context),
+            &conflicted_events,
             &auth_context,
             StateResVersion::V2_1,
             &mut std::collections::HashMap::new(),
@@ -80,8 +80,8 @@ fn test_pathology_duplicate_auth_poisoning() {
     for _ in 0..50 {
         let start = std::time::Instant::now();
         let _ = resolve_iterative_sort(
-            utils::build_unconflicted_state_test_helper(&auth_context),
-            conflicted_events.clone(),
+            &utils::build_unconflicted_state_test_helper(&auth_context),
+            &conflicted_events,
             &auth_context,
             StateResVersion::V2_1_1,
             &mut std::collections::HashMap::new(),
@@ -128,8 +128,8 @@ fn test_pathology_invite_lock() {
     );
 
     let resolved_v21 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events.clone(),
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
@@ -140,8 +140,8 @@ fn test_pathology_invite_lock() {
     );
 
     let resolved_v211 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events,
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),

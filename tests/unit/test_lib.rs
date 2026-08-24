@@ -435,8 +435,8 @@ mod tests {
         // In V2.1, A should win because B (higher PL=100) is applied first and then
         // overwritten by A (lower PL=50) — lower PL pops last and wins for same-key conflicts.
         let resolved = resolve_iterative_sort(
-            unconflicted,
-            conflicted.clone(),
+            &unconflicted,
+            &conflicted,
             &conflicted,
             rezzy::StateResVersion::V2_1,
             &mut std::collections::HashMap::new(),
@@ -984,13 +984,104 @@ mod tests {
         );
         let conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let resolved = resolve_iterative_sort(
-            unconflicted.clone(),
-            conflicted.clone(),
+            &unconflicted,
+            &conflicted,
             &conflicted,
             rezzy::StateResVersion::V2,
             &mut std::collections::HashMap::new(),
         );
         assert_eq!(resolved, unconflicted);
+    }
+
+    /// `resolve_iterative_sort` reads its inputs by reference (zero-copy): it
+    /// must not mutate them, so the same borrowed maps can be resolved
+    /// repeatedly and reused afterward.
+    #[test]
+    fn test_resolve_iterative_sort_borrows_inputs() {
+        use serde_json::json;
+
+        let mk = |id: &str, typ: &str, sk: Option<&str>, sender: &str| -> LeanEvent {
+            LeanEvent {
+                event_id: id.to_string(),
+                event_type: typ.to_string(),
+                state_key: sk.map(std::string::ToString::to_string),
+                sender: sender.to_string(),
+                origin_server_ts: 100,
+                content: json!({ "body": "x" }),
+                ..Default::default()
+            }
+        };
+
+        let create = mk("$create", "m.room.create", Some(""), "@alice:x");
+        let alice_join = mk("$aj", "m.room.member", Some("@alice:x"), "@alice:x");
+        let pl = mk("$pl", "m.room.power_levels", Some(""), "@alice:x");
+        let jr = mk("$jr", "m.room.join_rules", Some(""), "@alice:x");
+        let bob_join = mk("$bj", "m.room.member", Some("@bob:x"), "@bob:x");
+
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        conflicted.insert("$bj".into(), bob_join.clone());
+        let mut auth: HashMap<String, LeanEvent> = HashMap::new();
+        for ev in [&create, &alice_join, &pl, &jr, &bob_join] {
+            auth.insert(ev.event_id.clone(), ev.clone());
+        }
+
+        let mut unconflicted = imbl::OrdMap::new();
+        unconflicted.insert(("m.room.create".into(), String::new()), "$create".into());
+        unconflicted.insert(("m.room.member".into(), "@alice:x".into()), "$aj".into());
+        unconflicted.insert(("m.room.power_levels".into(), String::new()), "$pl".into());
+        unconflicted.insert(("m.room.join_rules".into(), String::new()), "$jr".into());
+
+        let version = rezzy::StateResVersion::V2;
+
+        // Same borrowed inputs, resolved twice: identical results, and the
+        // inputs are intact afterward (proving the resolver didn't clone/consume).
+        let a = resolve_iterative_sort(
+            &unconflicted,
+            &conflicted,
+            &auth,
+            version,
+            &mut HashMap::new(),
+        );
+        let b = resolve_iterative_sort(
+            &unconflicted,
+            &conflicted,
+            &auth,
+            version,
+            &mut HashMap::new(),
+        );
+        assert_eq!(
+            a, b,
+            "repeated resolution over the same borrowed inputs must agree"
+        );
+        assert_eq!(
+            conflicted.len(),
+            1,
+            "borrowed conflicted map must be untouched"
+        );
+        assert!(unconflicted.contains_key(&("m.room.power_levels".into(), String::new())));
+
+        // V2.1 exercises the empty-set / MSC4297 overlay path, which starts
+        // resolved from scratch rather than from a clone of the unconflicted
+        // base -- the two algorithm generations must both borrow without
+        // mutating the inputs.
+        let v21 = resolve_iterative_sort(
+            &unconflicted,
+            &conflicted,
+            &auth,
+            rezzy::StateResVersion::V2_1,
+            &mut HashMap::new(),
+        );
+        let v21_again = resolve_iterative_sort(
+            &unconflicted,
+            &conflicted,
+            &auth,
+            rezzy::StateResVersion::V2_1,
+            &mut HashMap::new(),
+        );
+        assert_eq!(
+            v21, v21_again,
+            "V2.1 overlay must be reusable over borrowed inputs"
+        );
     }
 
     #[test]
@@ -1135,8 +1226,8 @@ mod tests {
         );
 
         let resolved = resolve_iterative_sort(
-            unconflicted.clone(),
-            conflicted,
+            &unconflicted,
+            &conflicted,
             &auth_context,
             rezzy::StateResVersion::V2_1,
             &mut std::collections::HashMap::new(),
@@ -2469,15 +2560,15 @@ mod tests {
         // someone re-connects the unsound pre-filter, this test fails loudly.
         let bob_key = (EventType::from("m.room.member"), "@bob:x".to_string());
         let r21 = resolve_iterative_sort(
-            unconflicted.clone(),
-            conflicted.clone(),
+            &unconflicted,
+            &conflicted,
             &auth_context,
             rezzy::StateResVersion::V2_1,
             &mut std::collections::HashMap::new(),
         );
         let r211 = resolve_iterative_sort(
-            unconflicted.clone(),
-            conflicted.clone(),
+            &unconflicted,
+            &conflicted,
             &auth_context,
             rezzy::StateResVersion::V2_1_1,
             &mut std::collections::HashMap::new(),
@@ -2946,8 +3037,8 @@ mod tests {
         );
         // This will run kahn sort on power_events, detect a cycle, and print/handle it safely.
         let resolved = resolve_iterative_sort(
-            unconflicted,
-            conflicted,
+            &unconflicted,
+            &conflicted,
             &auth,
             rezzy::StateResVersion::V2,
             &mut std::collections::HashMap::new(),
@@ -3131,8 +3222,8 @@ mod tests {
         // Resolve using V2_1 (MSC4297). This starts with an empty state.
         // It must successfully route and validate `$pl_alice` in order to authorize Bob's PL events.
         let resolved = resolve_iterative_sort(
-            utils::build_unconflicted_state_test_helper(&auth_context),
-            conflicted_events,
+            &utils::build_unconflicted_state_test_helper(&auth_context),
+            &conflicted_events,
             &auth_context,
             rezzy::StateResVersion::V2_1,
             &mut std::collections::HashMap::new(),
@@ -4761,8 +4852,8 @@ fn test_resolve_iterative_sort_with_deltas_parity() {
 
     // resolve_iterative_sort
     let resolved_plain = resolve_iterative_sort(
-        unconflicted.clone(),
-        conflicted.clone(),
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
@@ -5398,8 +5489,8 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
 
     // Resolve with V2
     let state_v2 = resolve_iterative_sort(
-        unconflicted.clone(),
-        conflicted.clone(),
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
@@ -5407,8 +5498,8 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
 
     // Resolve with V2.1
     let state_v2_1 = resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
@@ -5679,8 +5770,8 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         "123".into(),
     );
     let v1_resolved = rezzy::resolve::resolve_iterative_sort(
-        unconf.clone(),
-        HashMap::<String, LeanEvent<String>>::new(),
+        &unconf,
+        &HashMap::<String, LeanEvent<String>>::new(),
         &HashMap::<String, LeanEvent<String>>::new(),
         StateResVersion::V1,
         &mut std::collections::HashMap::new(),
@@ -6443,8 +6534,8 @@ fn test_local_auth_cache_version_invalidation() {
     assert!(!cache.map.is_empty(), "cache should have stale entry");
 
     let _result = rezzy::resolve_iterative_sort_with_cache(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         Some(&mut cache),
         StateResVersion::V2_1,
@@ -6923,8 +7014,8 @@ fn test_msc4297_problem_b_resolve_state_maps_parity() {
         conflicted_events.insert(id, ev);
     }
     let resolved_manual = rezzy::resolve_iterative_sort(
-        unconflicted,
-        conflicted_events,
+        &unconflicted,
+        &conflicted_events,
         &events_map,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
@@ -7280,8 +7371,8 @@ fn test_performance_and_correctness_dense_bifurcations() {
     }
     // V2.1 parity
     let resolved_manual = rezzy::resolve_iterative_sort(
-        unconflicted.clone(),
-        conflicted_events.clone(),
+        &unconflicted,
+        &conflicted_events,
         &events_map,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
@@ -7292,8 +7383,8 @@ fn test_performance_and_correctness_dense_bifurcations() {
     );
     // V2.1.1 parity
     let resolved_manual_v2_1_1 = rezzy::resolve_iterative_sort(
-        unconflicted,
-        conflicted_events,
+        &unconflicted,
+        &conflicted_events,
         &events_map,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),

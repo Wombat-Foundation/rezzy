@@ -24,8 +24,8 @@
 //!
 //! // Resolve the winning state.
 //! let resolved = resolve_iterative_sort(
-//!     unconflicted_state,
-//!     conflicted_subgraph,
+//!     &unconflicted_state,
+//!     &conflicted_subgraph,
 //!     &auth_context,
 //!     StateResVersion::V2,
 //!     &mut HashMap::new(),

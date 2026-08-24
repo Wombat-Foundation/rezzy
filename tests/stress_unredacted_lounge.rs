@@ -64,8 +64,8 @@ fn resolve_v2_1_from_subgraph(
     let unconflicted = utils::build_unconflicted_state_test_helper(&auth_context);
 
     resolve_iterative_sort(
-        unconflicted,
-        v2_1_conflicted,
+        &unconflicted,
+        &v2_1_conflicted,
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
@@ -396,8 +396,8 @@ fn test_checkpoint_partial_join_resolution() {
 
     // Resolve from checkpoint
     let checkpoint_resolved = resolve_iterative_sort(
-        checkpoint_state,
-        v2_1_conflicted,
+        &checkpoint_state,
+        &v2_1_conflicted,
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),

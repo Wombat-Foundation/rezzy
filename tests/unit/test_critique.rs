@@ -191,8 +191,8 @@ fn resolve_full(events: &[LeanEvent], version: StateResVersion) -> ResolvedState
         .collect();
 
     let resolved = resolve_iterative_sort(
-        unconflicted_state_typed,
-        conflicted_events,
+        &unconflicted_state_typed,
+        &conflicted_events,
         &events_map,
         version,
         &mut std::collections::HashMap::new(),

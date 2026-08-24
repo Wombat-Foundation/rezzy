@@ -82,15 +82,15 @@ fn test_benchmark_1k_resolution_determinism() {
 
     // Run resolution twice and verify determinism
     let resolved1 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
-        to_event_map(&events),
+        &utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
+        &to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
     );
     let resolved2 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
-        to_event_map(&events),
+        &utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
+        &to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
@@ -167,15 +167,15 @@ fn test_large_room_10k_v2_1_sort() {
 fn test_large_room_10k_resolution_determinism() {
     let events = load_large_room();
     let r1 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
-        to_event_map(&events),
+        &utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
+        &to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
     );
     let r2 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
-        to_event_map(&events),
+        &utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
+        &to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
@@ -189,15 +189,15 @@ fn test_large_room_10k_v2_vs_v2_1_divergence() {
     let events = load_large_room();
     let map = to_event_map(&events);
     let v2 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map),
-        map.clone(),
+        &utils::build_unconflicted_state_test_helper(&map),
+        &map,
         &map,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
     );
     let v2_1 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map),
-        map.clone(),
+        &utils::build_unconflicted_state_test_helper(&map),
+        &map,
         &map,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
@@ -388,8 +388,8 @@ fn test_real_dag_52k_room_resolution() {
     let events = load_real_dag("res/real_dag_52k_room.json");
     let map = to_event_map(&events);
     let resolved = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map),
-        map.clone(),
+        &utils::build_unconflicted_state_test_helper(&map),
+        &map,
         &map,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
@@ -399,8 +399,8 @@ fn test_real_dag_52k_room_resolution() {
     let events2 = load_real_dag("res/real_dag_52k_room.json");
     let map2 = to_event_map(&events2);
     let resolved2 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map2),
-        map2.clone(),
+        &utils::build_unconflicted_state_test_helper(&map2),
+        &map2,
         &map2,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
@@ -447,8 +447,8 @@ fn test_real_dag_nheko_room_106_heads() {
 
     // Resolution must still complete on this messy DAG
     let resolved = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&event_map),
-        event_map.clone(),
+        &utils::build_unconflicted_state_test_helper(&event_map),
+        &event_map,
         &event_map,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
@@ -563,8 +563,8 @@ fn test_unredacted_spam_storm_v2_1_1() {
 
     let start_v2 = std::time::Instant::now();
     let resolved_v2 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map),
-        map.clone(),
+        &utils::build_unconflicted_state_test_helper(&map),
+        &map,
         &map,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
@@ -578,8 +578,8 @@ fn test_unredacted_spam_storm_v2_1_1() {
 
     let start_v21 = std::time::Instant::now();
     let resolved_v21 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map),
-        map.clone(),
+        &utils::build_unconflicted_state_test_helper(&map),
+        &map,
         &map,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
@@ -593,8 +593,8 @@ fn test_unredacted_spam_storm_v2_1_1() {
 
     let start_v211 = std::time::Instant::now();
     let resolved_v211 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map),
-        map.clone(),
+        &utils::build_unconflicted_state_test_helper(&map),
+        &map,
         &map,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),

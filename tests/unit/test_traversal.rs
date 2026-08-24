@@ -69,8 +69,8 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
     // V2.1: Should FAIL to resolve the name change.
     // It doesn't see the PL event, so it uses default PL 0 for Alice.
     let resolved_v21 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events.clone(),
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
@@ -85,8 +85,8 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
     );
 
     let resolved_v211 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events,
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
@@ -243,8 +243,8 @@ fn test_banned_sender_message_is_hard_rejected() {
         control_conflicted.insert("$bob_join".to_string(), bob_join.clone());
         control_conflicted.insert("$bob_msg".to_string(), bob_msg.clone());
         let resolved = resolve_iterative_sort(
-            utils::build_unconflicted_state_test_helper(&auth_context),
-            control_conflicted.clone(),
+            &utils::build_unconflicted_state_test_helper(&auth_context),
+            &control_conflicted,
             &auth_context,
             version,
             &mut std::collections::HashMap::new(),
@@ -264,8 +264,8 @@ fn test_banned_sender_message_is_hard_rejected() {
 
     for version in [StateResVersion::V2_1, StateResVersion::V2_1_1] {
         let resolved = resolve_iterative_sort(
-            utils::build_unconflicted_state_test_helper(&auth_context),
-            conflicted.clone(),
+            &utils::build_unconflicted_state_test_helper(&auth_context),
+            &conflicted,
             &auth_context,
             version,
             &mut std::collections::HashMap::new(),
@@ -365,8 +365,8 @@ fn test_v2_1_1_ancient_prev_event_allowed() {
     conflicted_events.insert(alice_name.event_id.clone(), alice_name);
 
     let resolved_v211 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events,
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
@@ -470,8 +470,8 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
     conflicted_events.insert(bob_join.event_id.clone(), bob_join);
 
     let resolved = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events,
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
@@ -549,8 +549,8 @@ fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
     );
 
     let resolved = rezzy::resolve_iterative_sort(
-        unconflicted,
-        conflicted_events,
+        &unconflicted,
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
@@ -688,8 +688,8 @@ fn test_v2_1_1_cve_demotion_evasion() {
     control_conflicted.insert("$eve_join".to_string(), eve_join);
     control_conflicted.insert("$eve_attack".to_string(), eve_attack);
     let resolved_control = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        control_conflicted,
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &control_conflicted,
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
@@ -703,8 +703,8 @@ fn test_v2_1_1_cve_demotion_evasion() {
     // V2.1 resolves PLs first (picking the demotion). When validating Eve's attack,
     // V2.1 overlays the consensus PL (demotion). Eve is PL 0. Name change requires 50. REJECTED.
     let resolved_v21 = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events.clone(),
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
@@ -718,8 +718,8 @@ fn test_v2_1_1_cve_demotion_evasion() {
     // V2.1.1 strictly enforces 1-hop security and supplements the demotion.
     // Therefore, Eve is caught and her attack is rightfully rejected!
     let resolved_v211 = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events,
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
@@ -841,8 +841,8 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
     control_conflicted.insert("$bob_join".to_string(), bob_join);
     control_conflicted.insert("$bob_name_change".to_string(), bob_name_change);
     let resolved_control = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        control_conflicted,
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &control_conflicted,
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
@@ -857,8 +857,8 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
 
     // Run V2.1 Resolution (Stock)
     let resolved_v21 = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events.clone(),
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
@@ -885,8 +885,8 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
 
     // Run V2.1.1 Resolution (The V3 Fix)
     let resolved_v211 = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events,
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
@@ -944,8 +944,8 @@ fn test_v2_1_strictness_future_v2_2_should_pass() {
     conflicted_events.insert("$bob_join".to_string(), bob_join);
 
     let resolved_v21 = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events.clone(),
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
@@ -1042,8 +1042,8 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
 
     // Run V2.1.1 (State Res v2.2)
     let resolved_v211 = rezzy::resolve_iterative_sort(
-        unconflicted_state,
-        conflicted_events,
+        &unconflicted_state,
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
@@ -1182,8 +1182,8 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
 
     // Run V2.1.1 Resolution
     let resolved_v211 = rezzy::resolve_iterative_sort(
-        unconflicted_state,
-        conflicted_events,
+        &unconflicted_state,
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
@@ -1316,8 +1316,8 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
     control_conflicted.insert("$bob_join".to_string(), bob_join);
     control_conflicted.insert("$bob_topic_change".to_string(), bob_topic_change);
     let resolved_control = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        control_conflicted,
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &control_conflicted,
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
@@ -1332,8 +1332,8 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
 
     // Run V2.1 Resolution (Fixed & Spec-Compliant)
     let resolved_v21 = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events,
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
@@ -1702,8 +1702,8 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
     let unconflicted = utils::build_unconflicted_state_test_helper(&auth_context);
 
     let resolved = resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
@@ -1760,8 +1760,8 @@ fn test_v2_2_event_id_tiebreak() {
 
     // Resolve with V2.2
     let resolved = resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2_2,
         &mut std::collections::HashMap::new(),
@@ -1811,8 +1811,8 @@ fn test_v2_1_1_creator_in_users_map_rejected() {
 
     let unconflicted = utils::build_unconflicted_state_test_helper(&auth_context);
     let resolved = resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
@@ -1906,8 +1906,8 @@ fn test_v2_1_1_ban_supplementation_return_path() {
     );
 
     let resolved = resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
@@ -1980,8 +1980,8 @@ fn test_v2_1_1_power_phase_membership_bypass_prevention() {
     }
 
     let resolved = resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
@@ -2052,8 +2052,8 @@ fn test_v2_1_rejects_pl_from_progressively_banned_sender() {
     }
 
     let resolved = resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
