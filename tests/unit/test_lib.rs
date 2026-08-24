@@ -5574,7 +5574,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         event_id: "$bogus_pl".into(),
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
-        sender: "@bob:x.com".into(), // PL 0
+        sender: "@bob:x.com".into(), // not a member (no join): rejected for non-membership
         content: serde_json::json!({"users": {"@bob:x.com": 100}}),
         auth_events: vec!["$create".into(), "$pl".into()],
         ..Default::default()
@@ -5584,7 +5584,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         event_id: "$bogus_topic".into(),
         event_type: "m.room.topic".into(),
         state_key: Some(String::new()),
-        sender: "@bob:x.com".into(), // PL 0
+        sender: "@bob:x.com".into(), // not a member (no join): rejected for non-membership
         auth_events: vec!["$create".into(), "$pl".into()],
         ..Default::default()
     };
