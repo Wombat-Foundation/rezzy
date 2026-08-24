@@ -212,6 +212,7 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
         resolved_state_list: &resolved_state_list,
         auth_chain_ids: &auth_chain_ids,
         version,
+        room_version: room_version.as_deref(),
         duration,
         event_count,
     };

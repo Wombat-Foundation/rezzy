@@ -27,6 +27,7 @@ pub struct FormattingContext<'a> {
     pub resolved_state_list: &'a [String],
     pub auth_chain_ids: &'a [String],
     pub version: StateResVersion,
+    pub room_version: Option<&'a str>,
     pub duration: std::time::Duration,
     pub event_count: usize,
 }
@@ -463,16 +464,65 @@ pub fn format_timeline_output(ctx: &FormattingContext) -> serde_json::Value {
         }
     }
 
+    // Apply redactions resolvable within the input set: for each redaction,
+    // redact its target when present. A redaction whose target is absent is
+    // left for the homeserver (partial input is expected) and reported as a
+    // warning rather than failing the whole view.
+    let room_version = ctx.room_version.unwrap_or("1");
+    let mut redacted: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in &sorted_events {
+        if ev.event_type != "m.room.redaction" {
+            continue;
+        }
+        let Some(target_id) = ev.content.get("redacts").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        match ctx.events_map.get(target_id) {
+            Some(target) => {
+                let kind = if target.state_key.is_some() {
+                    "state event"
+                } else {
+                    "message"
+                };
+                eprintln!(
+                    "[INFO] redaction {} applies to {target_id} ({kind})",
+                    ev.event_id
+                );
+                redacted.insert(target_id.to_string(), target.redacted(room_version));
+            }
+            None => eprintln!(
+                "[WARN] redaction {} targets {target_id}, which is absent from the input set; redaction not applied",
+                ev.event_id
+            ),
+        }
+    }
+
     let mut output = String::new();
     let mut last_date = String::new();
 
     for ev in &sorted_events {
-        let sender = get_user_displayname(&ev.sender, &displaynames);
-        let Some(desc) = format_event_description(ev, &sender, &displaynames) else {
+        let eff = redacted.get(&ev.event_id).unwrap_or(ev);
+        let sender = get_user_displayname(&eff.sender, &displaynames);
+        let Some(desc) = format_event_description(eff, &sender, &displaynames) else {
             continue;
         };
+        let desc = if eff.soft_fail {
+            // Hide soft-failed and rejected events from the default timeline;
+            // only surface them under --debug, flagged, as they're diagnostic.
+            if !ctx.args.debug {
+                continue;
+            }
+            format!("[SOFT-FAIL] {desc}")
+        } else if eff.rejected {
+            if !ctx.args.debug {
+                continue;
+            }
+            format!("[REJECTED] {desc}")
+        } else {
+            desc
+        };
 
-        let ts_ms = ev.origin_server_ts;
+        let ts_ms = eff.origin_server_ts;
         let ts_secs = i64::try_from(ts_ms / 1000).unwrap();
         let time_of_day =
             u64::try_from((ts_secs.wrapping_rem(86_400).wrapping_add(86_400)).wrapping_rem(86_400))
@@ -621,6 +671,7 @@ mod tests {
             resolved_state_list: &resolved_state_list,
             auth_chain_ids: &auth_chain_ids,
             version: StateResVersion::V2,
+            room_version: Some("11"),
             duration: std::time::Duration::from_millis(0),
             event_count: 2,
         };
