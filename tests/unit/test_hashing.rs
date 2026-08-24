@@ -54,6 +54,28 @@ fn test_reference_hash_rejects_v1_v2() {
 }
 
 #[test]
+fn test_reference_hash_rejects_unsupported_room_version() {
+    // A room version with major > 2 (so it is not the opaque-ID v1/v2 case) but
+    // unrecognized by `from_room_version` has undefined event-ID hash rules and
+    // must fail closed rather than producing a hash.
+    let pdu = json!({
+        "event_id": "$13:example.com",
+        "type": "m.room.message",
+        "sender": "@user:example.com",
+        "origin_server_ts": 1000,
+        "content": { "body": "x" }
+    });
+    let err = reference_hash(&pdu, "13").unwrap_err();
+    assert!(
+        err.contains("unsupported room version 13"),
+        "expected an unsupported-version error, got: {err}"
+    );
+    assert!(reference_hash(&pdu, "999").is_err());
+    // Supported versions still hash.
+    assert!(reference_hash(&pdu, "11").is_ok());
+}
+
+#[test]
 fn test_reference_hash_is_redaction_invariant_and_keeps_hashes() {
     // Reference hash (room v4+) = SHA-256 of the canonical JSON of the REDACTED
     // event, with `signatures`/`unsigned` removed but `hashes` retained. Because
