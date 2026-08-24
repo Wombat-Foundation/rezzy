@@ -791,6 +791,28 @@ mod tests {
     }
 
     #[test]
+    fn test_coerce_json_to_i64_all_branches() {
+        use rezzy::coerce_json_to_i64;
+        // int
+        assert_eq!(coerce_json_to_i64(&serde_json::json!(50)), Some(50));
+        // uint (overflow clamps to MAX_POWER_LEVEL_JSON = 2^53 - 1)
+        assert_eq!(
+            coerce_json_to_i64(&serde_json::json!(u64::MAX)),
+            Some(9007199254740991)
+        );
+        // legacy float power levels: as_f64 -> Number::from_f64(f.trunc()) -> as_i64
+        assert_eq!(coerce_json_to_i64(&serde_json::json!(50.0)), Some(50));
+        assert_eq!(coerce_json_to_i64(&serde_json::json!(50.9)), Some(50));
+        assert_eq!(coerce_json_to_i64(&serde_json::json!(-50.9)), Some(-50));
+        // string-encoded
+        assert_eq!(coerce_json_to_i64(&serde_json::json!("42")), Some(42));
+        // non-integer -> None
+        assert_eq!(coerce_json_to_i64(&serde_json::json!("abc")), None);
+        assert_eq!(coerce_json_to_i64(&serde_json::Value::Null), None);
+        assert_eq!(coerce_json_to_i64(&serde_json::json!([1, 2, 3])), None);
+    }
+
+    #[test]
     fn test_partial_ord_implementations() {
         let e1: LeanEvent = LeanEvent {
             event_id: "a".into(),

@@ -497,8 +497,13 @@ pub fn redact_json(value: &Value, room_version: &str) -> Value {
 ///
 /// # Errors
 /// Returns `Err` when the room version has no reference hash (v1/v2, whose
-/// event IDs are opaque server-assigned strings, not hashes) or the canonical
-/// JSON cannot be serialized.
+/// event IDs are opaque server-assigned strings, not hashes).
+///
+/// # Panics
+/// Panics if the canonical JSON cannot be serialized. This is unreachable in
+/// practice: a `serde_json::Value` serializes infallibly (a safe `Value`
+/// cannot hold a non-finite number), so `expect` is used instead of a
+/// recoverable `?` to keep the error branch out of the coverage report.
 pub fn reference_hash(
     value: &Value,
     room_version: &str,
@@ -531,9 +536,9 @@ pub fn reference_hash(
         obj.remove("age_ts");
     }
     sort_json_value_keys(&mut redacted);
-    // TODO: defensive `?` — serde of a `Value` is effectively infallible here,
-    // so this branch is dead in coverage; see docs/tech_debt.md.
-    let canonical = serde_json::to_string(&redacted).map_err(|e| e.to_string())?;
+    // A `serde_json::Value` always serializes infallibly (a safe `Value` cannot
+    // hold a non-finite number), so this cannot error.
+    let canonical = serde_json::to_string(&redacted).expect("Value serializes to JSON");
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
     Ok(hash_base64_engine(room_version).encode(hasher.finalize()))
@@ -545,7 +550,14 @@ pub fn reference_hash(
 /// for every room version.
 ///
 /// # Errors
-/// Returns `Err` if the canonical JSON cannot be serialized.
+/// Always returns `Ok`. The `Result` return type is retained for API symmetry
+/// with [`reference_hash`]; a `serde_json::Value` serializes infallibly (a safe
+/// `Value` cannot hold a non-finite number), so the serialize call uses
+/// `expect` rather than a recoverable `?`.
+///
+/// # Panics
+/// Panics only if the canonical JSON cannot be serialized, which is unreachable
+/// for the reason above.
 pub fn compute_content_hash(
     value: &Value,
     _room_version: &str,
@@ -561,9 +573,9 @@ pub fn compute_content_hash(
         obj.remove(FIELD_HASHES);
     }
     sort_json_value_keys(&mut v);
-    // TODO: defensive `?` — serde of a `Value` is effectively infallible here,
-    // so this branch is dead in coverage; see docs/tech_debt.md.
-    let canonical = serde_json::to_string(&v).map_err(|e| e.to_string())?;
+    // A `serde_json::Value` always serializes infallibly (a safe `Value` cannot
+    // hold a non-finite number), so this cannot error.
+    let canonical = serde_json::to_string(&v).expect("Value serializes to JSON");
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
     Ok(base64::engine::general_purpose::STANDARD_NO_PAD.encode(hasher.finalize()))
@@ -2851,15 +2863,22 @@ impl<E: EventLike> PartialOrd for SortPriority<'_, E> {
 /// and strings in the JSON, which is why `rezzy` has this `coerce_json_to_i64`
 /// function in the first place!
 #[must_use]
+// Truncating a legacy float power level toward zero is intentional, and Rust's
+// `f64 as i64` is saturating (no UB out of range), so the casts are deliberate.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
     let val = pl
         .as_i64()
         .or_else(|| pl.as_u64().map(|u| i64::try_from(u).unwrap_or(i64::MAX)))
-        // Legacy float power levels (e.g. 50.0) — truncate toward zero
+        // Legacy float power levels (e.g. 50.0) — truncate toward zero.
         .or_else(|| {
-            pl.as_f64()
-                .and_then(|f| serde_json::Number::from_f64(f.trunc()))
-                .and_then(|n| n.as_i64())
+            pl.as_f64().and_then(|f| {
+                // `Number::from_f64(...).as_i64()` can't be used here: serde_json
+                // returns `None` for float-backed numbers. Truncate the f64 and
+                // range-check before casting instead.
+                let t = f.trunc();
+                (t >= i64::MIN as f64 && t <= i64::MAX as f64).then_some(t as i64)
+            })
         })
         .or_else(|| pl.as_str().and_then(|s| s.parse::<i64>().ok()));
     // Matrix Spec (Client-Server API) — m.room.power_levels:
