@@ -4172,6 +4172,187 @@ fn test_apply_authorized_redactions_redaction_of_redaction_order() {
     );
 }
 
+/// A redactor who is NOT the target's sender but holds PL >= redact level must
+/// be authorized (the power-level branch of `redaction_is_authorized`).
+#[test]
+fn test_apply_authorized_redactions_redactor_with_power_level() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use rezzy::StateResVersion;
+
+    // Admin PL 100 >= redact 50, and admin is NOT bob (the target's sender).
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": {
+                "@admin:example.com": 100,
+                "@bob:example.com": 0
+            },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut state = RoomState::new();
+    state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        content: serde_json::json!({ "body": "secret" }),
+        ..Default::default()
+    };
+    let admin_redact: LeanEvent = LeanEvent {
+        event_id: "$admin_redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@admin:example.com".into(),
+        origin_server_ts: 11,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+
+    let mut events = vec![msg.clone(), admin_redact.clone()];
+    let report =
+        apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    assert!(
+        report.applied.contains(&(
+            "$admin_redact:example.com".into(),
+            "$msg:example.com".into()
+        )),
+        "a non-sender redactor with PL >= redact must be authorized: {report:?}"
+    );
+    let m = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(m.content, serde_json::json!({}));
+}
+
+/// Legacy room-v1/v2 rule 11: a redactor (even low-PL, non-sender) is allowed
+/// if the redacted target's domain (from `redacts`) matches the redaction's own
+/// event-id domain. Cross-domain is rejected.
+#[test]
+fn test_apply_authorized_redactions_v1_v2_domain_rule() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use rezzy::StateResVersion;
+
+    // Mallory PL 0, not bob, redact level 50.
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": {
+                "@admin:example.com": 100,
+                "@mallory:example.com": 0
+            },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut state = RoomState::new();
+    state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        content: serde_json::json!({ "body": "secret" }),
+        ..Default::default()
+    };
+
+    // Same domain (example.com): rule 11 allows it.
+    let same_domain: LeanEvent = LeanEvent {
+        event_id: "$redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@mallory:example.com".into(),
+        origin_server_ts: 11,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    let mut events = vec![msg.clone(), same_domain.clone()];
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V1, "1");
+    assert!(
+        report.applied.contains(&("$redact:example.com".into(), "$msg:example.com".into())),
+        "same-domain v1 redaction must be authorized via rule 11: {report:?}"
+    );
+
+    // Cross-domain: target on example.com, redaction on other.com -> rejected.
+    let cross_domain: LeanEvent = LeanEvent {
+        event_id: "$redact:other.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@mallory:example.com".into(),
+        origin_server_ts: 12,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    let mut events = vec![msg.clone(), cross_domain.clone()];
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V1, "1");
+    assert!(
+        report.skipped_unauthorized.contains(&("$redact:other.com".into(), "$msg:example.com".into())),
+        "cross-domain v1 redaction must be rejected: {report:?}"
+    );
+}
+
+/// A redaction event with no `redacts` field is skipped (the `continue` in the
+/// pair-building loop), leaving the target untouched and the report empty.
+#[test]
+fn test_apply_authorized_redactions_ignores_redaction_without_redacts() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use rezzy::StateResVersion;
+
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": { "@admin:example.com": 100, "@bob:example.com": 0 },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut state = RoomState::new();
+    state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        content: serde_json::json!({ "body": "secret" }),
+        ..Default::default()
+    };
+    let no_redacts: LeanEvent = LeanEvent {
+        event_id: "$no_redacts:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 11,
+        content: serde_json::json!({}),
+        ..Default::default()
+    };
+
+    let mut events = vec![msg.clone(), no_redacts.clone()];
+    let report =
+        apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    assert!(
+        report.applied.is_empty()
+            && report.skipped_unauthorized.is_empty()
+            && report.target_not_in_batch.is_empty(),
+        "a redaction without redacts must be silently skipped: {report:?}"
+    );
+    let m = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(m.content, serde_json::json!({ "body": "secret" }));
+}
+
 /// `apply_authorized_redactions` returns a [`RedactionReport`] that tells the
 /// caller what happened to each redaction: applied (authorized + stripped),
 /// skipped (unauthorized), or deferred (target absent from the batch). This is
