@@ -1245,6 +1245,84 @@ impl From<String> for RoomId {
     }
 }
 
+// TODO: this is a standalone opt-in type, not yet the default `K` anywhere,
+// nor threaded through resolution/HAMT/auth call sites or exposed via any
+// crate convenience alias. Circle back for the full generic refactor: wire
+// this (or something like it) through as an actual default/recommended `K`
+// for callers that want it, add conversions to/from the plain-`String` wire
+// format at the ingest/checkpoint boundary, and benchmark the win before
+// recommending it broadly -- see the `StateKey` trait docs above for the
+// contract any replacement `K` must uphold.
+/// A lighter-weight, cheaply-cloneable [`StateKey`] for the `state_key` half
+/// of a Matrix `(event_type, state_key)` tuple, for callers who want to avoid
+/// `String`'s per-clone allocation.
+///
+/// Same rationale and tradeoffs as [`RoomId`] (`Arc<str>` over `String` for
+/// O(1) clones, over `Rc<str>` for `Send + Sync` under `std::thread::scope`
+/// parallel resolution) -- see its docs for the full explanation. Unlike
+/// `RoomId`, this is meant to be used as the `K` type parameter of
+/// [`LeanEvent`] itself (`LeanEvent<Id, C, InternedKey>`), not as a
+/// standalone field.
+///
+/// This is *not* the same kind of interning [`crate::basespec::event_types::EventType`]
+/// does: `EventType` is a small, closed, compile-time-known set, so its
+/// `as_str()` returns `&'static str` constants with zero allocation and no
+/// shared pool. `state_key` values (MXIDs, server names, arbitrary strings)
+/// are open-ended, so there is no fixed enum to match on here -- this only
+/// gets you a single shared allocation per distinct key value (via `Arc`'s
+/// refcount), not a flat integer id backed by a shared intern pool. A true
+/// numeric intern id would need a shared table threaded through every call
+/// site (since `AsRef<str>` takes no external context to resolve an id back
+/// to its string), which is real new plumbing, not a drop-in type swap.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InternedKey(alloc::sync::Arc<str>);
+
+impl InternedKey {
+    /// Builds an `InternedKey` from any string-like value, allocating once.
+    #[must_use]
+    pub fn new(key: impl AsRef<str>) -> Self {
+        Self(alloc::sync::Arc::from(key.as_ref()))
+    }
+}
+
+impl Default for InternedKey {
+    /// The empty key, matching `StateKey`'s `K::default().as_ref() == ""` contract.
+    fn default() -> Self {
+        Self(alloc::sync::Arc::from(""))
+    }
+}
+
+impl AsRef<str> for InternedKey {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl core::ops::Deref for InternedKey {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl core::fmt::Display for InternedKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<&str> for InternedKey {
+    fn from(key: &str) -> Self {
+        Self::new(key)
+    }
+}
+
+impl From<String> for InternedKey {
+    fn from(key: String) -> Self {
+        Self(alloc::sync::Arc::from(key.as_str()))
+    }
+}
+
 /// Borrowed view over a [`LeanEvent`] that avoids cloning event envelopes.
 ///
 /// This is useful for host adapters that already own native event storage and

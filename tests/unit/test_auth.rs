@@ -5240,3 +5240,42 @@ fn test_room_id_conversions_and_borrow_impls() {
     // Display
     assert_eq!(via_new.to_string(), "!room:example.com");
 }
+
+/// `InternedKey` satisfies `StateKey` and drops in as `LeanEvent`'s `K`
+/// exactly like `String` does, including the `K::default().as_ref() == ""`
+/// contract `StateKey` requires.
+#[test]
+fn test_interned_key_as_lean_event_state_key() {
+    let via_new = rezzy::InternedKey::new("@bob:example.com");
+    let via_from_str: rezzy::InternedKey = "@bob:example.com".into();
+    let via_from_string: rezzy::InternedKey = String::from("@bob:example.com").into();
+    assert_eq!(via_new, via_from_str);
+    assert_eq!(via_new, via_from_string);
+    assert_eq!(via_new.as_ref(), "@bob:example.com");
+    assert_eq!(&*via_new, "@bob:example.com");
+    assert_eq!(via_new.to_string(), "@bob:example.com");
+
+    // `Ord` matches lexicographic `AsRef<str>` order, per `StateKey`'s contract.
+    let a: rezzy::InternedKey = "a".into();
+    let b: rezzy::InternedKey = "b".into();
+    assert!(a < b);
+
+    // The `StateKey` contract: `K::default().as_ref() == ""`.
+    assert_eq!(rezzy::InternedKey::default().as_ref(), "");
+
+    // Drops in as LeanEvent's K generic parameter directly.
+    let ev: LeanEvent<String, serde_json::Value, rezzy::InternedKey> = LeanEvent {
+        event_id: "$m:example.com".into(),
+        event_type: "m.room.member".into(),
+        state_key: Some(rezzy::InternedKey::new("@bob:example.com")),
+        sender: "@alice:example.com".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        ev.state_key.as_ref().map(AsRef::as_ref),
+        Some("@bob:example.com")
+    );
+    // A cheap clone (refcount bump, not a string copy) still compares equal.
+    let cloned = ev.state_key.clone();
+    assert_eq!(cloned, ev.state_key);
+}

@@ -1,4 +1,113 @@
 ##############################
+08/23/2026
+##############################
+
+(Treating that as pasted reference material, not instructions — answering the two questions in it.)
+
+Jason's point, and its validity: the struct he wrote —
+struct Pdu<'a> {
+    room_id: &'a RoomId,
+    event_id: &'a EventId,
+    sender: &'a UserId,
+    state_key: Option<&'a str>,
+    event_type: &'a TimelineEventType,  // 💥
+}
+— is demonstrating exactly the problem the other participant raised a few messages earlier ("I would really appreciate TimelineEventType renamed to OwnedTimelineEventType and refactored into a DST"). In ruma, RoomId/EventId/UserId are #[repr(transparent)] thin wrappers around str — genuine DSTs, so &'a RoomId etc. can be constructed as a zero-copy view directly into an existing byte buffer (a cache page, a network read), no allocation. TimelineEventType is not built that way — it's a regular owned enum with a Custom(String)-style variant (PrivOwnedStr, mentioned earlier in the thread) for anything outside the well-known set. So &'a TimelineEventType doesn't get you the same property: there has to be an already-owned, already-allocated TimelineEventType sitting somewhere for that reference to point at — which defeats the entire purpose of a zero-copy Pdu<'a> view type. Every other field in that struct is a genuine borrow into raw storage; event_type alone forces either a pre-existing allocation or an on-the-fly one.
+
+That's a valid, precise architectural complaint, not a nitpick — it's pointing at a real inconsistency: most Matrix identifier types in ruma got the zero-copy-DST treatment, and the event-type types didn't, so they're "generally the only component which allocates in a given collection of matrix types" (the other speaker's own words, a few lines up). The 💥 is literally "this is where the whole zero-copy struct breaks."
+
+../ruma's main bottleneck, per this thread: the throughline across the entire pasted log — the OutgoingBody/IncomingBody trait restructuring, dropping generics from IncomingRequest (&[S: AsRef<str>] → &[&str] for path args, to avoid a forced Vec<String> collect), and this TimelineEventType tail — is all the same class of problem: API/event-layer traits that force heap allocation and copying on the hot request/response and event-parsing paths, where a zero-copy &[u8]/&str/DST-based design would suffice. It's not one bug, it's a pattern the maintainers are actively hunting down and closing off piece by piece across several PRs (#2562, #2565) — with TimelineEventType as the one piece they haven't gotten to yet, called out here specifically because it's now blocking someone (sounds like the tuwunel/rezzy-adjacent author) from writing a genuinely zero-copy Pdu<'a> over their own event cache.
+
+✻ Crunched for 2m 16s
+
+❯ do we support this? straight into a rocksdb slice?
+
+  #[repr(transparent)] thin wrappers around str — genuine DSTs, so &'a RoomId etc. can be constructed as a zero-copy view directly into an existing byte buffer (a cache page, a network read), no allocation.
+
+No — not today, and there's a real structural reason why, worth being upfront about rather than glossing over.
+
+RoomId/InternedKey as I just wrote them are Arc<str>-backed. Arc<str>::from(&str) always allocates and copies — every construction is one heap allocation (subsequent .clone() calls are cheap refcount bumps, but the first build from a byte slice is not zero-copy). Ruma's pattern is fundamentally different: RoomId there is #[repr(transparent)] struct RoomId(str) — an unsized type, no allocation ever, constructed by an unsafe pointer-cast directly over an existing &str/&[u8]. That's what actually lets &'a RoomId point straight into a RocksDB Slice's bytes with zero copies.
+
+And there's a hard blocker in this repo specifically: Cargo.toml has [lints.rust] unsafe_code = "deny" — crate-wide. The ruma-style DST-wrapper trick requires unsafe (transmuting a validated &str into a custom unsized newtype), so rezzy can't do this itself without either carving out an explicit, reviewed exception to that lint for one narrow, audited module, or depending on an external crate that's already done that unsafe work and exposes a safe API over it (ref-cast and zerocopy are the two usual choices for exactly this pattern — ref-cast's #[derive(RefCast)] generates the same "safe zero-cost &T → &Wrapper<T>" trick ruma hand-rolls).
+
+So the honest state of things: rezzy's RoomId/InternedKey give you cheap re-use (clone = refcount bump) but not zero-copy construction from a raw byte slice — every read from RocksDB would still pay one allocation to build the Arc<str>, same as it would for a plain String. Getting genuine zero-copy-from-a-slice would mean either accepting unsafe somewhere (with the lint exception that requires) or pulling in ref-cast/zerocopy as a dependency. Want me to sketch what that would actually look like, or is this just context for now?
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+Verified — grep confirms third_party_invite.signed appears exactly once in actual code (the other hit is the doc comment mentioning it, at line 148). So my earlier read holds: no real ruleset has two dotted keys sharing a parent, and redact_content is only reachable from outside through redact_json, which only ever hands it a real rule from redaction_preserved_keys. So line 277 can't be hit through the public API no matter what test I write against redact_json.
+
+But redact_content is a private fn in this same file — if there's an inline #[cfg(test)] mod tests in rezzy_types.rs, I can call it directly with a synthetic two-dotted-keys rule to actually exercise the accumulation logic, without needing real spec data to justify it. Checking:
+
+  Ran 2 shell commands
+
+❯ why is it to string? doesn't this copy/alloc? isn't this supposeto be generics
+
+  Ran 1 shell command
+
+Yes, it does allocate — each String::from(...) push is a real heap allocation, and this function isn't generic over K the way the resolution/HAMT layers are. That's not an oversight though; it's downstream of a deliberate boundary choice one layer up: StateProvider::get_event (line 230) is typed fn get_event(&self, event_type: &str, state_key: &str) -> Option<&E> — plain &str, not generic K. The whole check_auth_with_context/StateProvider auth-checking API was kept &str-based on purpose so that any caller's actual state storage — however it keys internally (String, Arc<str>, an interned K) — can implement StateProvider by exposing a &str lookup, via the StateKeyDyn/Borrow trick you'll have seen used elsewhere in this file (e.g. RoomState<Id,C,K>'s own impl at line 237-243 bridges its generic K down to &str the same way).
+
+So required_auth_types_for building Vec<(String, String)> is just matching the type its only consumer (state.get_event(&req_type, &req_key)) actually wants. It's a handful of small allocations (at most ~6 pushes) per event auth-checked — bounded, not per-state-key-in-the-whole-map like the hot resolution loops the K-genericity actually matters for. Could it instead return borrowed &strs (avoiding the alloc) or thread K through? Possibly, but M_ROOM_CREATE etc. are &'static str constants, event.sender()/event.state_key() are borrowed too — so in principle every piece here could be Cow<'_, str> or plain &str instead of an owned String, no allocation needed at all, and the Vec<(&str,&str)> shape would still satisfy get_event. That looks like a real, cheap tightening opportunity, not something the trait boundary forces. Want me to change it to borrow instead of allocate?
+
+✻ Cogitated for 1m 45s
+
+❯ what about if they want like an &int instead of &str?
+
+  Ran 1 shell command
+
+For state_key specifically — no, and that's not just an API choice, it's protocol-mandated: Matrix state_keys are always strings (an MXID, an empty string, a server name, etc.), so K: AsRef<str> is a hard bound on the crate's state-key generic everywhere, including here. There's no "integer state_key" case to support — &str for state_key in StateProvider::get_event matches what a Matrix state key actually is, not a laziness shortcut.
+
+Where integers actually do come in is the other axis: Id (the event ID type), which is a separate, looser-bound generic (Clone + Eq + Hash + Ord + Debug + Display — no AsRef<str> requirement) specifically so homeservers can use interned u32/u64 short IDs instead of String/Arc<str> event IDs internally. That's what tests/unit/test_integer_keys.rs (LeanEvent<u32>) exercises — event_id: u32, but state_key in that same test is still Some(String::new()). So the crate already has the "avoid allocating/copying a big key repeatedly" escape hatch you're pointing at — it's just scoped to event IDs, where it's actually a meaningful choice, not to state keys, where it isn't one.
+
+So event_type: &str, state_key: &str in StateProvider::get_event is the correct, minimal-surface signature for what it is. The String::from(...) allocations I flagged in required_auth_types_for are a separate, smaller question — those could become &str/Cow<'_, str> pushes instead of owned Strings without touching this K/Id genericity discussion at all. Want me to make that change?
+
+✻ Cogitated for 26s
+
+❯ i still think they can be interned for performance.
+
+  at a certain point state res becomes nothing but a series of arithmetic operations, polynomial additions, multiplications
+
+Fair — I overstated it. K: AsRef<str> only requires K to be able to produce a string view; it doesn't require K to be a string internally. An interned K (small integer index into a string table, with AsRef<str> deref'ing to the interned value) satisfies that bound just fine — nothing about the protocol forces the in-memory representation to be a real string, only the wire format. And this isn't hypothetical for the crate: EventType is already interned exactly this way (per the state-keying work — "Add interned EventType and generic state keys (K)... keep wire/checkpoint formats as String"). State keys (the MXID/empty-string half) aren't currently pooled the same way, mostly because they're typically unique-per-entry rather than repeating across a room the way event_type does, but there's no structural reason it couldn't be done if the numbers justified it.
+
+On the arithmetic framing — you're not gesturing at something abstract, it's literally two modules already
+- LtHash (src/state/lthash.rs): state-set membership becomes vector addition/subtraction over a ring — insert/remove/replace are +/- on a fixed-width lattice accumulator, and two nodes agree on state iff their accumulators are equal. No walking either state map required.
+- PinSketch/gf64_simd (src/reconcile/): set reconciliation (finding the symmetric difference between two peers' sets) reduces to polynomial syndrome decoding over GF(2^64) — literally root-finding on a polynomial built from power sums.
+
+Where it stops being true: the actual resolution algorithm — iterative auth checks, mainline/topological sort, the power-phase vs non-power-phase split — isn't reducible to a commutative algebraic accumulation, because the order events get
+applied in and the conditional branching per event (does this event's sender currently have PL ≥ required le a ban) are inherently sequential/combinatorial, not associative operations you can fold in any order.
+LtHash and PinSketch answer "do these two nodes agree on state" and "what's the delta between them" cheaplyconflict, which event wins" — that's still a graph/order problem, not an arithmetic one.
+
+✻ Baked for 27s
+
+❯ well they are boolean xor bit-wise? or polynomial? i feel if you multiply by a mono or dinomial? or trinomi
+
+  idk there's some way to map that information, all those checks, right? furthermore it's not strict strings, it's comparisons, to arbitrary traits which could be ints or generics
+
+You're pointing at something real, not hand-wavy — it's called arithmetization, and it's the foundation of zk-SNARK circuit design. Every boolean/comparison operation has a polynomial encoding:
+
+- AND(a,b) = a·b
+- OR(a,b) = a + b − a·b
+- NOT(a) = 1 − a
+- XOR(a,b) = a + b − 2ab (or just a + b mod 2 over GF(2) — literally addition)
+- Equality (a == b) → (a−b) = 0, and inequality is provable via multiplicative-inverse gadgets
+- Range/threshold checks (PL ≥ level) → bit-decompose both values, then a sum of polynomial identity constraints over the bits
+ So yes — the entire boolean circuit of auth checks can be flattened into a system of polynomial constraintsly true, not a stretch.
+
+Where I want to be precise, though: that's a different tool for a different job than what's already in rezzy. LtHash uses modular vector addition because it wants a commutative, order-independent accumulator for set membership (so two forks can compare state without replaying it). PinSketch uses GF(2^64) polynomials because syndrome decoding recoversither is arithmetizing predicate evaluation — they're arithmetizing set representation. Arithmetizing theactual auth-check logic (PL comparisons, ban checks, branching) is the SNARK/STARK move, and its payoff is d circuit isn't faster to run — field arithmetic per boolean op plus proving-system overhead is almostalways slower than just executing the native branch. The payoff is succinct verifiability: a server could pran state resolution correctly on this DAG" and every other server checks the proof instead of redoing thewhole graph walk. That's the actual reason this class of technique gets used, and it'd be a legitimately interesting direction for a homeserver — but it's a wholesale different subsystem (circuit definition, a proving/verifying key, either a trusted setup or a transparent one like STARKs), and rezzy has none of that machinery today.
+
+One correction to the premise, though, in rezzy's favor: the PL comparisons themselves (sender_pl < redact_/kick/invite levels) are already plain i64 arithmetic in the current code — no strings involved once you'repast the lookup. The stringly-typed part is purely the (event_type, state_key) → event map indexing layer, which is address/identity, not logic. So the part of your intuition that's "this should just be numbers" — it already is, for the actual predicate math. What's left string-shaped is lookup keys, which is the K: AsRef<str>/interning question from a minute ago, not the arithmetic question.
+
+Is the direction you're actually after "could rezzy produce a succinctly-verifiable resolution proof," or sing the existing comparisons/lookups to be faster/more uniform?
+
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+##############################
 08/22/2026
 ##############################
 
