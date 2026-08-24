@@ -53,7 +53,7 @@ def run_ruma_lean(file_path):
     if result.returncode == 0:
         try:
             return json.loads(result.stdout)
-        except:
+        except Exception:
             print(f"Failed to parse JSON output from rezzy for {file_path}")
             return None
     else:

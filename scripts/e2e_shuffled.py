@@ -71,10 +71,10 @@ def main():
         os.remove(tmp_name)
 
     if output1 == output2:
-        print(f"✓ Order independence verified! Outputs are identical.")
+        print("✓ Order independence verified! Outputs are identical.")
         sys.exit(0)
     else:
-        print(f"Error: Order independence failed! Outputs differ.")
+        print("Error: Order independence failed! Outputs differ.")
         sys.exit(1)
 
 

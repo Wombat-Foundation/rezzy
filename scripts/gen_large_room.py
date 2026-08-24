@@ -17,7 +17,6 @@ Output: res/realistic_large_room.json
 import hashlib
 import json
 import random
-import sys
 
 random.seed(42)  # Deterministic for reproducibility
 

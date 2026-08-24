@@ -128,7 +128,6 @@ def export_via_cs_api(room_id, max_events=5000):
     We compensate by fetching each event individually for federation fields."""
 
     events = {}  # event_id -> normalized event
-    seen_ids = set()
 
     # Step 1: Current state
     print(f"[1/4] Fetching current state of {room_id}...")
@@ -295,14 +294,14 @@ def write_output(events, room_id, output_path):
         json.dump(output, f, separators=(",", ":"))
 
     size_kb = os.path.getsize(output_path) // 1024
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Exported {len(events)} events from {room_id}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Events with auth_events: {has_auth}/{len(events)}")
     print(f"Events with prev_events: {has_prev}/{len(events)}")
     print(f"DAG heads: {len(heads)}")
     print(f"Unique senders: {output['metadata']['unique_senders']}")
-    print(f"Event types:")
+    print("Event types:")
     for t in sorted(types, key=lambda x: -types[x])[:10]:
         print(f"  {t}: {types[t]}")
     print(f"\nOutput: {output_path} ({size_kb}KB)")

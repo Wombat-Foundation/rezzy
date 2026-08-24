@@ -271,9 +271,9 @@ def write_output(events, room_id, output_path):
         json.dump(output, f, separators=(",", ":"))
 
     size_kb = os.path.getsize(output_path) // 1024
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Exported {len(events)} REAL events from {room_id}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Events with auth_events: {has_auth}/{len(events)}")
     print(f"Events with prev_events: {has_prev}/{len(events)}")
     print(f"DAG heads: {len(heads)}")
