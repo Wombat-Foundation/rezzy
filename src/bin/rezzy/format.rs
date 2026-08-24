@@ -467,38 +467,29 @@ fn render_timeline(ctx: &FormattingContext) -> String {
         }
     }
 
-    // Diagnostics only: report which redactions target an in-set event. The
-    // actual stripping happens below, and only when the redaction is
-    // authorized against `room_state`.
-    for ev in &sorted_events {
-        if !ev.is_redaction() {
-            continue;
-        }
-        let Some(target_id) = ev.content.get("redacts").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        match ctx.events_map.get(target_id) {
-            Some(target) => {
-                let kind = if target.state_key.is_some() {
-                    "state event"
-                } else {
-                    "message"
-                };
-                eprintln!("[INFO] redaction {} targets {target_id} ({kind})", ev.event_id);
-            }
-            None => eprintln!(
-                "[WARN] redaction {} targets {target_id}, which is absent from the input set; redaction not applied",
-                ev.event_id
-            ),
-        }
-    }
-
     // Apply redactions resolvable within the input set, but only when the
     // sender is authorized: the target's own sender, a sender holding the
     // `redact` power level, or (room v1/v2) a same-domain sender. An
-    // unauthorized redaction leaves the target untouched.
-    if sorted_events.iter().any(LeanEvent::is_redaction) {
-        apply_authorized_redactions(&mut sorted_events, &room_state, ctx.version, room_version);
+    // unauthorized redaction leaves the target untouched. The returned report
+    // drives the --debug diagnostics below.
+    let redaction_report = if sorted_events.iter().any(LeanEvent::is_redaction) {
+        apply_authorized_redactions(&mut sorted_events, &room_state, ctx.version, room_version)
+    } else {
+        Default::default()
+    };
+
+    if ctx.args.debug {
+        for (rid, tid) in &redaction_report.applied {
+            eprintln!("[INFO] redaction {rid} stripped {tid}");
+        }
+        for (rid, tid) in &redaction_report.skipped_unauthorized {
+            eprintln!("[WARN] redaction {rid} rejected for {tid}: sender lacks authorization");
+        }
+        for (rid, tid) in &redaction_report.target_not_in_batch {
+            eprintln!(
+                "[WARN] redaction {rid} targets {tid}, absent from the input set; redaction deferred"
+            );
+        }
     }
 
     sorted_events.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.event_id.cmp(&b.event_id)));

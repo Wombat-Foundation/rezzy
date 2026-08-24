@@ -1073,12 +1073,43 @@ where
 /// [`LeanEvent::is_redaction`](crate::basespec::rezzy_types::LeanEvent::is_redaction)
 /// to cheaply detect whether a batch contains any redaction work before
 /// calling this.
+/// The outcome of applying redactions to a batch of events.
+///
+/// Reports, for each `m.room.redaction` event in the batch, what happened to
+/// its target so callers can surface or re-drive the redaction work without
+/// re-deriving the authorization decision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RedactionReport<Id> {
+    /// `(redaction_id, target_id)` pairs whose redaction was authorized and the
+    /// target stripped in place.
+    pub applied: Vec<(Id, Id)>,
+    /// `(redaction_id, target_id)` pairs rejected because the redaction's
+    /// sender was not authorized to redact the target.
+    pub skipped_unauthorized: Vec<(Id, Id)>,
+    /// `(redaction_id, target_id)` pairs whose target was absent from the
+    /// current batch, so the redaction was deferred. The target is kept as a
+    /// `String` because an out-of-batch target may not be representable as
+    /// `Id` (e.g. an interned/numeric id that can only be resolved in storage).
+    pub target_not_in_batch: Vec<(Id, String)>,
+}
+
+impl<Id> Default for RedactionReport<Id> {
+    fn default() -> Self {
+        RedactionReport {
+            applied: Vec::new(),
+            skipped_unauthorized: Vec::new(),
+            target_not_in_batch: Vec::new(),
+        }
+    }
+}
+
 pub fn apply_authorized_redactions<Id, E, K>(
     events: &mut [LeanEvent<Id, serde_json::Value, K>],
     state: &impl StateProvider<Id, serde_json::Value, E>,
     version: StateResVersion,
     room_version: &str,
-) where
+) -> RedactionReport<Id>
+where
     Id: crate::basespec::rezzy_types::EventId + Clone + AsRef<str>,
     E: EventLike<Id = Id, Content = serde_json::Value>,
     K: crate::basespec::rezzy_types::StateKey + Clone,
@@ -1089,21 +1120,35 @@ pub fn apply_authorized_redactions<Id, E, K>(
         .map(|(i, e)| (e.event_id.as_ref(), i))
         .collect();
 
-    // Collect (redaction_pos, target_pos) pairs first so we can mutate `events`
-    // in place without aliasing the two slots we are about to touch.
-    let pairs: Vec<(usize, usize)> = events
+    // Collect (redaction_pos, target_pos) pairs and deferred (out-of-batch)
+    // targets BEFORE any mutable borrow, so `pos_by_id`'s borrow of `events`
+    // ends before the in-place split below.
+    let redaction_positions: Vec<usize> = events
         .iter()
         .enumerate()
         .filter(|(_, e)| e.event_type == M_ROOM_REDACTION)
-        .filter_map(|(rp, redaction)| {
-            let target_id = redaction.get_redacts()?;
-            let tp = *pos_by_id.get(target_id)?;
-            (tp != rp).then_some((rp, tp))
-        })
+        .map(|(i, _)| i)
         .collect();
+
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut deferred: Vec<(usize, alloc::string::String)> = Vec::new();
+    for &rp in &redaction_positions {
+        let Some(target_id) = events[rp].get_redacts() else {
+            continue;
+        };
+        match pos_by_id.get(target_id) {
+            Some(&tp) if tp != rp => pairs.push((rp, tp)),
+            _ => deferred.push((rp, target_id.to_string())),
+        }
+    }
+
+    let mut report = RedactionReport::default();
 
     for (rp, tp) in pairs {
         if !redaction_is_authorized(&events[rp], &events[tp], state, version, room_version) {
+            report
+                .skipped_unauthorized
+                .push((events[rp].event_id.clone(), events[tp].event_id.clone()));
             continue;
         }
         let (target, redaction) = if tp < rp {
@@ -1113,10 +1158,24 @@ pub fn apply_authorized_redactions<Id, E, K>(
             let (left, right) = events.split_at_mut(tp);
             (&mut right[0], &left[rp])
         };
+        let redaction_id = redaction.event_id.clone();
+        let target_id = target.event_id.clone();
         if let Some(redacted) = apply_redaction(target, redaction, room_version) {
             *target = redacted;
+            report.applied.push((redaction_id, target_id));
         }
     }
+
+    // Redactions whose target is absent from this batch are deferred, not
+    // applied; surface them so the caller can re-drive them once the target
+    // arrives (or reject them) rather than silently dropping the redaction.
+    for (rp, target_id) in deferred {
+        report
+            .target_not_in_batch
+            .push((events[rp].event_id.clone(), target_id));
+    }
+
+    report
 }
 
 /// Get the required power level to send an event based on room state.

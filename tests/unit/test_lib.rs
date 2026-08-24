@@ -4072,6 +4072,137 @@ fn test_apply_authorized_redactions_only_strips_authorized_targets() {
     );
 }
 
+/// `apply_authorized_redactions` returns a [`RedactionReport`] that tells the
+/// caller what happened to each redaction: applied (authorized + stripped),
+/// skipped (unauthorized), or deferred (target absent from the batch). This is
+/// the "cleanly letting the caller know" contract analogous to how
+/// `validate_forward_extremity` reports soft-fail/reject outcomes.
+#[test]
+fn test_apply_authorized_redactions_report() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use rezzy::StateResVersion;
+
+    // Room state: redact level 50, bob PL 0, mallory PL 0.
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": {
+                "@admin:example.com": 100,
+                "@bob:example.com": 0,
+                "@mallory:example.com": 0
+            },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut state = RoomState::new();
+    state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        content: serde_json::json!({ "body": "secret" }),
+        ..Default::default()
+    };
+    let mallory_redact: LeanEvent = LeanEvent {
+        event_id: "$mallory_redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@mallory:example.com".into(),
+        origin_server_ts: 11,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    let self_redact: LeanEvent = LeanEvent {
+        event_id: "$self_redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 12,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    // A redaction whose target is absent from this batch -> deferred.
+    let deferred_redact: LeanEvent = LeanEvent {
+        event_id: "$deferred_redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 13,
+        content: serde_json::json!({ "redacts": "$not_here:example.com" }),
+        ..Default::default()
+    };
+
+    let mut events = vec![
+        msg.clone(),
+        mallory_redact.clone(),
+        self_redact.clone(),
+        deferred_redact.clone(),
+    ];
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+
+    assert!(
+        report
+            .applied
+            .contains(&("$self_redact:example.com".into(), "$msg:example.com".into())),
+        "authorized self-redaction must be reported as applied"
+    );
+    assert!(
+        report.skipped_unauthorized.contains(&(
+            "$mallory_redact:example.com".into(),
+            "$msg:example.com".into()
+        )),
+        "unauthorized redaction must be reported as skipped"
+    );
+    assert_eq!(
+        report.target_not_in_batch,
+        vec![(
+            "$deferred_redact:example.com".to_string(),
+            "$not_here:example.com".to_string()
+        )],
+        "out-of-batch redaction must be reported as deferred with its string target"
+    );
+
+    // Strip behavior still holds: only the authorized self-redaction stripped $msg.
+    let target = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(target.content, serde_json::json!({}));
+}
+
+/// `LeanEvent::is_redaction()` must return true only for `m.room.redaction`
+/// events that carry a resolvable `redacts` field. Both the event-type check
+/// and the `get_redacts().is_some()` conjunct need coverage.
+#[test]
+fn test_lean_event_is_redaction() {
+    // A redaction with a valid `redacts` target -> true.
+    let redaction: LeanEvent = LeanEvent {
+        event_type: "m.room.redaction".into(),
+        content: serde_json::json!({ "redacts": "$x:example.com" }),
+        ..Default::default()
+    };
+    assert!(redaction.is_redaction());
+
+    // A non-redaction event -> false (event_type mismatch).
+    let msg: LeanEvent = LeanEvent {
+        event_type: "m.room.message".into(),
+        content: serde_json::json!({ "body": "hi" }),
+        ..Default::default()
+    };
+    assert!(!msg.is_redaction());
+
+    // A redaction lacking `redacts` -> false (get_redacts() is None).
+    let no_target: LeanEvent = LeanEvent {
+        event_type: "m.room.redaction".into(),
+        content: serde_json::json!({}),
+        ..Default::default()
+    };
+    assert!(!no_target.is_redaction());
+}
+
 #[test]
 fn test_reference_hash_is_redaction_invariant() {
     use rezzy::{redact_json, reference_hash};
