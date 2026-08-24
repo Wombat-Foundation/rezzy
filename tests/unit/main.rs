@@ -41,6 +41,7 @@ mod test_lib;
 mod test_merkle;
 mod test_pathologies;
 mod test_reconcile_algebraic;
+mod test_reconcile_e2e;
 mod test_restricted_joins;
 mod test_sanity;
 mod test_state_at;
