@@ -60,6 +60,11 @@ required-features = ["regen"]
 name = "bench_files"
 path = "scripts/bench_files.rs"
 
+[[bin]]
+name = "bench_ruma_vs_rezzy"
+path = "scripts/bench_ruma_vs_rezzy.rs"
+required-features = ["mock-ruma"]
+
 [features]
 default = ["std"]
 std = ["alloc", "serde_json/std", "serde/std", "dep:roaring"]
