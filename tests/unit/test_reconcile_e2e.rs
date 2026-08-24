@@ -102,6 +102,40 @@ fn build_pair(
     (local, remote, local_h64, remote_h64)
 }
 
+/// The sorted symmetric difference of two sorted `h64` lists.
+fn symmetric_difference(local: &[u64], remote: &[u64]) -> Vec<u64> {
+    let mut out = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < local.len() || j < remote.len() {
+        match (local.get(i), remote.get(j)) {
+            (Some(x), Some(y)) => match x.cmp(y) {
+                core::cmp::Ordering::Equal => {
+                    i = i.saturating_add(1);
+                    j = j.saturating_add(1);
+                }
+                core::cmp::Ordering::Less => {
+                    out.push(*x);
+                    i = i.saturating_add(1);
+                }
+                core::cmp::Ordering::Greater => {
+                    out.push(*y);
+                    j = j.saturating_add(1);
+                }
+            },
+            (Some(x), None) => {
+                out.push(*x);
+                i = i.saturating_add(1);
+            }
+            (None, Some(y)) => {
+                out.push(*y);
+                j = j.saturating_add(1);
+            }
+            (None, None) => break,
+        }
+    }
+    out
+}
+
 fn remote_digest(remote: &ResidentKernel) -> RemoteDigest {
     RemoteDigest {
         digest: remote.accumulator().digest(),
@@ -113,26 +147,28 @@ fn remote_digest(remote: &ResidentKernel) -> RemoteDigest {
 }
 
 /// Drives the full bucket-exchange loop to completion (or bails to
-/// `ExtremityDiff`), returning `(round_trip_count, resolved_root_count,
-/// terminal_action_kind)`.
+/// `ExtremityDiff`), returning `(round_trip_count, resolved_roots,
+/// terminal_action_kind)`. Resolved roots carry the actual identities, so
+/// callers can assert them against the true symmetric difference rather than
+/// trusting only a count.
 fn run_round_trip(
     local: &ResidentKernel,
     local_h64: &[u64],
     remote_h64: &[u64],
     remote: &ResidentKernel,
-) -> (usize, usize, &'static str) {
+) -> (usize, Vec<u64>, &'static str) {
     let client = ReconciliationClient::default().allow_unlimited_delta();
     let digest = remote_digest(remote);
     let initial = client.select_action(local, digest, 0);
 
     let (mut current_requests, accumulated_roots) = match initial {
-        ClientAction::Synchronized => return (0, 0, "Synchronized"),
-        ClientAction::ExtremityDiff => return (0, 0, "ExtremityDiff"),
+        ClientAction::Synchronized => return (0, Vec::new(), "Synchronized"),
+        ClientAction::ExtremityDiff => return (0, Vec::new(), "ExtremityDiff"),
         ClientAction::BucketSketches {
             requests,
             accumulated_roots,
         } => (requests, accumulated_roots),
-        ClientAction::ResolveRoots { roots } => return (1, roots.len(), "ResolveRoots"),
+        ClientAction::ResolveRoots { roots } => return (1, roots, "ResolveRoots"),
     };
 
     let estimated_delta = estimate_strata(local.strata(), remote.strata())
@@ -177,10 +213,10 @@ fn run_round_trip(
                 round_trips = round_trips.saturating_add(1);
             }
             ClientAction::ResolveRoots { roots } => {
-                return (round_trips, roots.len(), "ResolveRoots");
+                return (round_trips, roots, "ResolveRoots");
             }
-            ClientAction::ExtremityDiff => return (round_trips, 0, "ExtremityDiff"),
-            ClientAction::Synchronized => return (round_trips, 0, "Synchronized"),
+            ClientAction::ExtremityDiff => return (round_trips, Vec::new(), "ExtremityDiff"),
+            ClientAction::Synchronized => return (round_trips, Vec::new(), "Synchronized"),
         }
     }
 }
@@ -191,37 +227,50 @@ fn run_round_trip(
 #[test]
 fn small_delta_resolves_in_one_round_trip() {
     let (local, remote, local_h64, remote_h64) = build_pair(1, 5_000, 6, 6);
-    let (round_trips, resolved, terminal) =
-        run_round_trip(&local, &local_h64, &remote_h64, &remote);
+    let (round_trips, roots, terminal) = run_round_trip(&local, &local_h64, &remote_h64, &remote);
     assert_eq!(terminal, "ResolveRoots", "expected a clean decode");
     assert_eq!(
         round_trips, 1,
         "well-provisioned delta should not need a retry round"
     );
     assert_eq!(
-        resolved, 12,
+        roots.len(),
+        12,
         "should recover exactly the injected symmetric difference"
     );
+    let mut resolved = roots;
+    resolved.sort_unstable();
+    assert_eq!(
+        resolved,
+        symmetric_difference(&local_h64, &remote_h64),
+        "resolved roots must be exactly the symmetric difference, not just the right count"
+    );
 }
-
-/// Builds a pair whose low strata are saturated (forcing
-/// `estimate_strata`'s `low_confidence` fallback -- see
-/// `triage.rs::low_confidence_estimate_uses_lowest_decoded_stratum`) but
-/// whose true delta is still small enough to resolve. Confirms
-/// `low_confidence` only degrades the capacity *estimate* rather than
-/// blocking convergence: the client is expected to retry into a correct
-/// answer even when its first guess is a poor one.
+/// Builds a pair with a large identical shared base plus a small, real
+/// difference. The shared base cancels out of `estimate_strata`'s per-stratum
+/// residuals entirely; the injected differences concentrate in the low strata
+/// (a hash's stratum is the trailing-zero count of its `h128`, so most hashes
+/// land in stratum 0), which overflows a stratum and forces the
+/// `low_confidence` fallback. Confirms `low_confidence` only degrades the
+/// capacity *estimate* rather than blocking convergence: even with a poor
+/// first guess the small delta still resolves in a single round (the
+/// provisioned buckets hold it), so no escalation round is needed here.
+///
+/// Genuinely forcing the multi-round `retry_or_split_bucket` escalation (a
+/// difference large enough to overflow the *provisioned* capacity, not just a
+/// stratum) is deferred to `benches/reconcile.rs` -- see the module docs.
 #[test]
-fn low_confidence_estimate_still_converges_via_retry() {
+fn low_confidence_estimate_still_converges() {
     let mut generator = Xorshift128::new(3);
     let mut local = ResidentKernel::new();
     let mut remote = ResidentKernel::new();
     let mut local_h64 = Vec::new();
     let mut remote_h64 = Vec::new();
 
-    // Saturate the low strata with many distinct elements so the raw
-    // stratum-0 syndrome fails to decode, forcing estimate_strata to fall
-    // back to a scaled lowest-decoded-stratum estimate (low_confidence).
+    // A large shared base, identical on both sides. These never contribute to
+    // the strata residual (they XOR to zero), so they neither saturate a
+    // stratum nor distort the estimate -- the estimate sees only the genuine
+    // differences injected below.
     for _ in 0..200 {
         let hash = generator.hash();
         local.insert(hash).unwrap();
@@ -229,11 +278,6 @@ fn low_confidence_estimate_still_converges_via_retry() {
         local_h64.push(hash.h64);
         remote_h64.push(hash.h64);
     }
-    let estimate = estimate_strata(local.strata(), remote.strata()).unwrap();
-    assert!(
-        !estimate.low_confidence,
-        "identical strata should still report a confident (zero) delta"
-    );
 
     // Now inject a genuine, small, real difference on top.
     for _ in 0..8 {
@@ -249,16 +293,34 @@ fn low_confidence_estimate_still_converges_via_retry() {
     local_h64.sort_unstable();
     remote_h64.sort_unstable();
 
-    let (round_trips, resolved, terminal) =
-        run_round_trip(&local, &local_h64, &remote_h64, &remote);
+    // The injected differences cluster in the low strata (stratum == trailing
+    // zeros of h128), overflowing one and forcing the low_confidence fallback.
+    let estimate = estimate_strata(local.strata(), remote.strata()).unwrap();
+    assert!(
+        estimate.low_confidence,
+        "a genuine per-stratum difference must force the low_confidence fallback"
+    );
+
+    let (round_trips, roots, terminal) = run_round_trip(&local, &local_h64, &remote_h64, &remote);
     assert_eq!(
         terminal, "ResolveRoots",
-        "small real delta atop a large shared base must still converge"
+        "a low-confidence first guess must still converge to the correct roots"
     );
-    assert!(round_trips >= 1);
     assert_eq!(
-        resolved, 16,
+        round_trips, 1,
+        "the provisioned buckets hold the small delta, so low_confidence does not force a retry round"
+    );
+    assert_eq!(
+        roots.len(),
+        16,
         "should recover exactly the injected symmetric difference"
+    );
+    let mut resolved = roots;
+    resolved.sort_unstable();
+    assert_eq!(
+        resolved,
+        symmetric_difference(&local_h64, &remote_h64),
+        "resolved roots must be exactly the symmetric difference, not just the right count"
     );
 }
 
@@ -267,8 +329,8 @@ fn low_confidence_estimate_still_converges_via_retry() {
 #[test]
 fn identical_sets_synchronize_without_a_round_trip() {
     let (local, remote, local_h64, remote_h64) = build_pair(4, 500, 0, 0);
-    let (round_trips, _resolved, terminal) =
-        run_round_trip(&local, &local_h64, &remote_h64, &remote);
+    let (round_trips, roots, terminal) = run_round_trip(&local, &local_h64, &remote_h64, &remote);
     assert_eq!(terminal, "Synchronized");
     assert_eq!(round_trips, 0);
+    assert!(roots.is_empty(), "identical sets resolve no roots");
 }

@@ -14,8 +14,9 @@ spec_audit.md.
 
 The "assign dense integer indices to an arbitrary ID/hash set, both directions,
 so a `RoaringBitmap` or a plain array can address it" pattern is hand-rolled
-independently in at least five places, with real, meaningful variation between
-copies:
+independently at five logical locations (seven distinct implementations once
+the two-in-one files below are counted), with real, meaningful variation
+between copies:
 
 1. `src/auth/roaring.rs`, `AuthGraph`: `id_to_index: HashMap<Id, u32>` +
    `index_to_id: Vec<Id>` (owned `Id`), feeds
@@ -44,9 +45,9 @@ copies:
    graph construction respectively.
 
 None of these are wrong in isolation, but the duplication means: the
-overflow-handling fix only exists in one of the five (`IndexedUniverse`), any
+overflow-handling fix only exists in one of the seven (`IndexedUniverse`), any
 future bugfix to the dense-indexing logic itself has to be found and applied up
-to five times, and each copy independently made its own ownership (`Id` vs
+to seven times, and each copy independently made its own ownership (`Id` vs
 `&Id`) and width (`u32` vs `usize`) choice without a documented reason to prefer
 one over another at a given call site.
 
@@ -56,15 +57,15 @@ fix given the size): extract a single generic primitive -- something like
 can replace `StructuralHash`-specific `IndexedUniverse` too) and the index width
 `Idx` (so `state/at.rs`'s `usize`-indexed, overflow-free use case doesn't get
 forced into `u32`) -- with `IndexedUniverse`'s `Result`-based overflow handling
-as the baseline, since it's the only one of the five that actually gets this
+as the baseline, since it's the only one of the seven that actually gets this
 right. Offer both an owned and a borrowed (`&T`) construction path, since
-(1)/(2)/(3) need to own and (4) needs to borrow. Migrate each of the five call
-sites onto it one at a time rather than in one sweeping change, verifying no
-behavioral change at each step (this touches auth/hamt/resolve/state/bin -- a
-real multi-module refactor, not a small follow-up). Do NOT copy any one of the
-five implementations directly into another's call site as a shortcut -- the
-ownership/width mismatches make that actively wrong at at least the (1)-into-(4)
-and (4)-into-(1) directions.
+(1)/(2)/(3) need to own and (4) needs to borrow. Migrate each of the seven
+implementations onto it one at a time rather than in one sweeping change,
+verifying no behavioral change at each step (this touches auth/hamt/resolve/
+state/bin -- a real multi-module refactor, not a small follow-up). Do NOT copy
+any one of the seven implementations directly into another's call site as a
+shortcut -- the ownership/width mismatches make that actively wrong at at least
+the (1)-into-(4) and (4)-into-(1) directions.
 
 ### `K` genericity: `InternedKey` isn't threaded through yet
 
@@ -84,10 +85,11 @@ broadly. (See the `TODO` comment directly above `InternedKey`'s definition.)
 _construct_ — `Arc<str>::from(&str)` always allocates and copies once. A
 homeserver reading events straight out of a RocksDB (or similar) slice can't get
 a genuinely zero-allocation `&'a RoomId` view into that buffer the way ruma's
-`#[repr(transparent)] struct RoomId(str)` DST pattern allows (see the `../ruma`
-Slack thread on `TimelineEventType`/`Pdu<'a>` for the motivating example — their
-event-type enum has the identical problem: everything else in a borrowed
-`Pdu<'a>` is a genuine zero-copy DST view, event type isn't).
+`#[repr(transparent)] struct RoomId(str)` DST pattern allows. Ruma's
+`TimelineEventType`/`Pdu<'a>` is the motivating example for the same shape: in a
+borrowed `Pdu<'a>` every field is a genuine zero-copy DST view except the event
+type, which (like a `RoomId`) would otherwise have to copy -- the identical
+problem a DST-backed identifier type solves.
 
 Blocked by `Cargo.toml`'s `[lints.rust] unsafe_code = "deny"` — the DST pattern
 needs an `unsafe` pointer-cast (or a crate like `ref-cast` / `zerocopy` that's
