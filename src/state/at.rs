@@ -283,6 +283,9 @@ where
     for aid in &event.auth_events {
         queue.push_back((aid, 1));
     }
+    // Membership-only dedup; do NOT iterate (foldhash seed is per-process,
+    // so iteration order is non-deterministic). Traversal order is strictly
+    // driven by the FIFO VecDeque queue.
     let mut visited = crate::FastSet::default();
 
     while let Some((aid, current_depth)) = queue.pop_front() {
