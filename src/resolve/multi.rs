@@ -51,7 +51,7 @@ use crate::basespec::rezzy_types::{
     EventContent, EventId, EventProvider, LeanEvent, StateResVersion,
 };
 use crate::state::at::SharedState;
-use crate::HashMap;
+use crate::{FastMap, HashMap};
 use alloc::vec::Vec;
 
 /// Partitions N state maps into unconflicted state (agreed by all) and a set
@@ -76,8 +76,7 @@ use alloc::vec::Vec;
 ///
 /// # Panics
 ///
-/// This function will not panic under normal use. Internal `unwrap()` calls
-/// are guarded by a `len() == 1` check on the occurrence map.
+/// This function does not panic.
 #[must_use]
 pub fn partition_state_maps<'a, Id, I, Iter>(
     state_maps: I,
@@ -89,34 +88,74 @@ where
     Iter: IntoIterator<Item = (&'a (EventType, alloc::string::String), &'a Id)>,
     Id: 'a,
 {
-    let mut occurrences: HashMap<(EventType, alloc::string::String), HashMap<Id, usize>> =
-        HashMap::new();
+    // Flattened borrowed-key scan: a single `FastMap` allocation instead of a
+    // nested `HashMap` per `(event_type, state_key)` slot, zero `String`/`Id`
+    // clones during the pass, and one hash lookup per `(key, id)` pair (no
+    // double hashing). Conflict vectors are allocated only on actual
+    // disagreement. `foldhash` (hashbrown's default hasher) hashes the
+    // attacker-chosen state keys faster than SipHash while staying randomized
+    // enough for these internal-only maps.
+    let mut occurrences: FastMap<&'a (EventType, alloc::string::String), Occurrence<'a, Id>> =
+        FastMap::default();
+
     for map in state_maps {
         for (key, id) in map {
-            let val = occurrences
-                .entry(key.clone())
-                .or_default()
-                .entry(id.clone())
-                .or_insert(0);
-            *val = val.saturating_add(1);
+            match occurrences.entry(key) {
+                hashbrown::hash_map::Entry::Vacant(e) => {
+                    e.insert(Occurrence {
+                        first_id: id,
+                        count: 1,
+                        conflicts: None,
+                    });
+                }
+                hashbrown::hash_map::Entry::Occupied(mut e) => {
+                    let occ = e.get_mut();
+                    occ.count = occ.count.saturating_add(1);
+                    if occ.first_id != id {
+                        // Seed the conflict vector with the first id so the
+                        // tail pass emits every distinct id as conflicted.
+                        let conflicts = occ
+                            .conflicts
+                            .get_or_insert_with(|| alloc::vec![occ.first_id]);
+                        if !conflicts.contains(&id) {
+                            conflicts.push(id);
+                        }
+                    }
+                }
+            }
         }
     }
 
     let mut unconflicted_state = SharedState::new();
     let mut conflicted_ids = Vec::new();
 
-    for (key, ids) in occurrences {
-        if ids.len() == 1 && ids.values().next().unwrap() == &num_maps {
-            let id = ids.into_keys().next().unwrap();
-            unconflicted_state.insert(key, id);
-        } else {
-            for id in ids.into_keys() {
-                conflicted_ids.push(id);
+    for (key, occ) in occurrences {
+        if occ.count == num_maps && occ.conflicts.is_none() {
+            // Unanimous: seen in every map with a single, consistent id.
+            unconflicted_state.insert(key.clone(), occ.first_id.clone());
+        } else if let Some(conflicts) = occ.conflicts {
+            // Disagreement: emit every distinct id as conflicted.
+            for id in conflicts {
+                conflicted_ids.push(id.clone());
             }
+        } else {
+            // Seen in fewer than `num_maps` maps (absent from some forks) with
+            // no disagreement among the maps that do contain it.
+            conflicted_ids.push(occ.first_id.clone());
         }
     }
 
     (unconflicted_state, conflicted_ids)
+}
+
+/// Per-`(event_type, state_key)` occurrence tally accumulated during the
+/// partition scan. Borrows from the input state maps so the scan performs zero
+/// clones; owned values are produced only when a `(key, id)` is written to the
+/// output `SharedState`/`Vec`.
+struct Occurrence<'a, Id> {
+    first_id: &'a Id,
+    count: usize,
+    conflicts: Option<Vec<&'a Id>>,
 }
 
 /// Resolves N parent state maps into a single deterministic state map.
@@ -169,8 +208,13 @@ where
         "resolve_state_maps requires at least one state map"
     );
 
-    // Fast path: all maps identical
+    // Fast path: all maps identical. Check pointer identity first (O(1)):
+    // sibling forks derived from a common ancestor often share the same
+    // `imbl::OrdMap` root, so a full structural `==` comparison is wasted.
     let first = &state_maps[0];
+    if state_maps.len() == 2 && first.ptr_eq(&state_maps[1]) {
+        return first.clone();
+    }
     let all_identical = state_maps[1..].iter().all(|m| m == first);
     if all_identical {
         return first.clone();
@@ -545,6 +589,43 @@ mod tests {
         assert_eq!(unconflicted.len(), 1);
         assert!(unconflicted.contains_key(&("m.room.create".into(), "".into())));
         assert_eq!(conflicted.len(), 2); // $join_a and $join_b
+    }
+
+    #[test]
+    fn test_partition_absent_from_some_forks() {
+        // Two forks share no keys: every slot appears in only one of the two
+        // maps, so nothing is unanimous. Each single-id slot must still be
+        // reported as conflicted (it is absent from the other fork) — this is
+        // the `count < num_maps` tail of the flattened Occurrence scan.
+        let mut map_a = StateMap::new();
+        map_a.insert(("m.room.member".into(), "@alice:x".into()), "$join".into());
+        let mut map_b = StateMap::new();
+        map_b.insert(("m.room.create".into(), "".into()), "$create".into());
+
+        let (unconflicted, conflicted) =
+            partition_state_maps([map_a.iter(), map_b.iter()].into_iter(), 2);
+
+        assert_eq!(unconflicted.len(), 0);
+        assert_eq!(conflicted.len(), 2);
+        assert!(conflicted.contains(&"$join".into()));
+        assert!(conflicted.contains(&"$create".into()));
+    }
+
+    #[test]
+    fn test_resolve_identical_maps_ptr_eq_fast_path() {
+        let mut map = StateMap::new();
+        map.insert(("m.room.create".into(), "".into()), "$create".into());
+
+        // A clone of an imbl::OrdMap shares its root, so `ptr_eq` is true and
+        // resolve_state_maps takes the O(1) identity fast path rather than a
+        // full structural `==` comparison.
+        let fork_a = map.clone();
+        let fork_b = map.clone();
+        assert!(fork_a.ptr_eq(&fork_b));
+
+        let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        let result = resolve_state_maps(&[fork_a, fork_b], &events, StateResVersion::V2);
+        assert_eq!(result, map);
     }
 
     #[test]
