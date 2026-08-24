@@ -132,3 +132,95 @@ fn test_hash_base64_alphabet_differs_v3_vs_v4() {
         .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/'));
     assert_ne!(v3, v4);
 }
+
+/// Coverage: `redact_content`'s dotted-path accumulation branch. v11+
+/// `m.room.member` preserves `third_party_invite.signed` -- a nested key
+/// under a parent object -- which is the only path in `redact_json` that
+/// exercises `inner.get(rest)` and builds a fresh parent object in `out`.
+#[test]
+fn test_redact_json_preserves_dotted_nested_key() {
+    let pdu = json!({
+        "event_id": "$1:example.com",
+        "type": "m.room.member",
+        "state_key": "@bob:example.com",
+        "sender": "@alice:example.com",
+        "origin_server_ts": 1000,
+        "content": {
+            "membership": "invite",
+            "third_party_invite": {
+                "signed": { "mxid": "@bob:example.com", "token": "abc" },
+                "display_name": "Bob"
+            }
+        }
+    });
+    let redacted = redact_json(&pdu, "11");
+    // `membership` (top-level key) and `third_party_invite.signed` (nested)
+    // both survive; the sibling `display_name` under the same parent does not.
+    assert_eq!(
+        redacted["content"]["third_party_invite"],
+        json!({ "signed": { "mxid": "@bob:example.com", "token": "abc" } })
+    );
+    assert_eq!(redacted["content"]["membership"], "invite");
+}
+
+/// Coverage: `redact_top_level`'s non-`Value::Object` early return. A
+/// non-object top-level value (e.g. a JSON array or scalar) has no keys to
+/// preserve at all, so `redact_json` must produce an empty object rather
+/// than panicking on `.get()`.
+#[test]
+fn test_redact_json_non_object_top_level_yields_empty_object() {
+    let redacted = redact_json(&json!([1, 2, 3]), "11");
+    assert_eq!(redacted, json!({ "content": {} }));
+    let redacted = redact_json(&json!("not an object"), "11");
+    assert_eq!(redacted, json!({ "content": {} }));
+}
+
+/// Coverage: MSC4291 (room IDs as hashes, v12+) drops `room_id` from a
+/// redacted `m.room.create`, but only for v12+ -- exercises both the
+/// `is_v12_create` short-circuit and `room_version_is_v12_or_later` itself.
+#[test]
+fn test_redact_json_drops_room_id_on_v12_create_only() {
+    let pdu = json!({
+        "event_id": "$1:example.com",
+        "type": "m.room.create",
+        "room_id": "!room:example.com",
+        "state_key": "",
+        "sender": "@creator:example.com",
+        "origin_server_ts": 1000,
+        "content": { "room_version": "12" }
+    });
+    let redacted_v12 = redact_json(&pdu, "12");
+    assert!(redacted_v12.get("room_id").is_none());
+
+    // Pre-v12, `room_id` is a normal top-level key and survives.
+    let redacted_v11 = redact_json(&pdu, "11");
+    assert_eq!(redacted_v11["room_id"], "!room:example.com");
+
+    // v12+ but NOT a create event: `room_id` still isn't part of the
+    // preserved top-level whitelist regardless (only `is_v12_create`
+    // matters), so this exercises the `event_type != create` short-circuit.
+    let msg = json!({
+        "event_id": "$2:example.com",
+        "type": "m.room.message",
+        "room_id": "!room:example.com",
+        "sender": "@alice:example.com",
+        "origin_server_ts": 1000,
+        "content": { "body": "hi" }
+    });
+    let redacted_msg = redact_json(&msg, "12");
+    assert_eq!(redacted_msg["room_id"], "!room:example.com");
+}
+
+/// Coverage: `redact_json`'s fallback when `content` is entirely absent from
+/// the input PDU -- must yield an empty object rather than panicking.
+#[test]
+fn test_redact_json_missing_content_yields_empty_object() {
+    let pdu = json!({
+        "event_id": "$1:example.com",
+        "type": "m.room.message",
+        "sender": "@alice:example.com",
+        "origin_server_ts": 1000
+    });
+    let redacted = redact_json(&pdu, "11");
+    assert_eq!(redacted["content"], json!({}));
+}

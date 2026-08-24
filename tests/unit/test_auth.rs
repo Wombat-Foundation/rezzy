@@ -5218,3 +5218,25 @@ fn test_event_content_default_get_m_federate() {
     let dummy = DummyContent;
     assert_eq!(dummy.get_m_federate(), None);
 }
+
+/// Coverage: `RoomId`'s `AsRef<str>`, `Deref<Target = str>`, and
+/// `From<&str>`/`From<String>` impls -- exercised via `RoomId::new` elsewhere
+/// in this file, but never through these specific trait entry points.
+#[test]
+fn test_room_id_conversions_and_borrow_impls() {
+    let via_new = rezzy::RoomId::new("!room:example.com");
+    let via_from_str: rezzy::RoomId = "!room:example.com".into();
+    let via_from_string: rezzy::RoomId = String::from("!room:example.com").into();
+
+    // All three construction paths compare equal (content, not identity).
+    assert_eq!(via_new, via_from_str);
+    assert_eq!(via_new, via_from_string);
+
+    // AsRef<str>
+    assert_eq!(via_new.as_ref(), "!room:example.com");
+    // Deref<Target = str>
+    assert_eq!(&*via_new, "!room:example.com");
+    assert!(via_new.starts_with('!'));
+    // Display
+    assert_eq!(via_new.to_string(), "!room:example.com");
+}
