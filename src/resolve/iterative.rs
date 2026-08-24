@@ -235,40 +235,48 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, K>(
 {
     let sorted_power_ids = lean_kahn_sort(power_events, sort_context, create_ev, version, pl_cache);
     for id in &sorted_power_ids {
-        if let Some(event) = conflicted_events.get(id).or_else(|| auth_context.get(id)) {
-            let local_auth = compute_local_auth(
-                event,
-                auth_context,
-                conflicted_events,
-                local_auth_cache,
-                version,
-            );
-            if iterative_auth_ok(
-                event,
-                resolved,
-                auth_context,
-                conflicted_events,
-                local_auth,
-                create_ev,
-                version,
-                true,
-            ) {
-                if let Some(sk) = &event.state_key {
-                    let key = (EventType::from(event.event_type.as_str()), sk.clone());
-                    // Only a genuinely conflicted key may be decided by the
-                    // power phase. `power_events` can also contain events
-                    // pulled in purely as auth-chain context (the
-                    // `auth(C) \ auth(U)` supplement, or the MSC4297
-                    // conflicted subgraph) — those exist so *other*, actually
-                    // conflicting events' auth chains can be validated, not
-                    // so their own (possibly stale, superseded) key can win
-                    // over a value every merge parent already agreed on.
-                    if !conflicted_keys.contains(&key) {
-                        continue;
-                    }
-                    resolved.insert(key, event.event_id.clone());
-                }
+        // Every power event is drawn from the conflicted set or the auth
+        // context (route_power_events + expand_v2 + route_msc4297), so a sorted
+        // id is always resolvable here.
+        let event = conflicted_events
+            .get(id)
+            .or_else(|| auth_context.get(id))
+            .expect("sorted power events are always present in conflicted_events or auth_context");
+        let local_auth = compute_local_auth(
+            event,
+            auth_context,
+            conflicted_events,
+            local_auth_cache,
+            version,
+        );
+        if iterative_auth_ok(
+            event,
+            resolved,
+            auth_context,
+            conflicted_events,
+            local_auth,
+            create_ev,
+            version,
+            true,
+        ) {
+            // Power events are always state events, so a state_key is guaranteed.
+            let sk = event
+                .state_key
+                .as_ref()
+                .expect("power events always carry a state_key");
+            let key = (EventType::from(event.event_type.as_str()), sk.clone());
+            // Only a genuinely conflicted key may be decided by the
+            // power phase. `power_events` can also contain events
+            // pulled in purely as auth-chain context (the
+            // `auth(C) \ auth(U)` supplement, or the MSC4297
+            // conflicted subgraph) — those exist so *other*, actually
+            // conflicting events' auth chains can be validated, not
+            // so their own (possibly stale, superseded) key can win
+            // over a value every merge parent already agreed on.
+            if !conflicted_keys.contains(&key) {
+                continue;
             }
+            resolved.insert(key, event.event_id.clone());
         }
     }
 }
@@ -772,6 +780,14 @@ where
 
 /// Internal helper combining the functionality of [`resolve_iterative_sort_with_deltas`] and
 /// [`resolve_iterative_sort_with_cache`].
+///
+/// # Panics
+/// Panics (with a descriptive message) if an invariant of the power phase is
+/// violated: a topologically-sorted power event id is missing from both
+/// `conflicted_events` and `auth_context`, or a power event lacks a
+/// `state_key`. Both are structural guarantees — power events are always
+/// drawn from those two maps and are always state events — so these panics
+/// indicate a routing bug rather than a caller-input condition.
 #[must_use]
 #[allow(clippy::type_complexity, clippy::too_many_lines)]
 #[allow(clippy::implicit_hasher)]
@@ -830,37 +846,45 @@ where
     let sorted_power_ids =
         lean_kahn_sort(&power_events, &sort_context, create_ev, version, pl_cache);
     for id in &sorted_power_ids {
-        if let Some(event) = sort_set.get(id).or_else(|| auth_context.get(id)) {
-            let Some(sk) = &event.state_key else { continue };
-            let key = (EventType::from(event.event_type.as_str()), sk.clone());
-            let local_auth =
-                compute_local_auth(event, auth_context, sort_set, local_auth_cache, version);
-            let accepted = iterative_auth_ok(
-                event,
-                &resolved,
-                auth_context,
-                sort_set,
-                local_auth,
-                create_ev,
-                version,
-                true,
-            );
-            let replaced = if accepted && conflicted_keys.contains(&key) {
-                let old = resolved.get(&key).cloned();
-                resolved.insert(key.clone(), event.event_id.clone());
-                old
-            } else {
-                resolved.get(&key).cloned()
-            };
-            if original_conflicted_keys.contains(&event.event_id) {
-                deltas.push(ResolutionDelta {
-                    event_id: event.event_id.clone(),
-                    accepted,
-                    key: key.clone(),
-                    replaced,
-                    phase: ResolvePhase::Power,
-                });
-            }
+        // Same invariant as the non-delta power phase: every power event is
+        // drawn from the conflicted set or the auth context.
+        let event = sort_set
+            .get(id)
+            .or_else(|| auth_context.get(id))
+            .expect("sorted power events are always present in sort_set or auth_context");
+        // Power events are always state events, so a state_key is guaranteed.
+        let sk = event
+            .state_key
+            .as_ref()
+            .expect("power events always carry a state_key");
+        let key = (EventType::from(event.event_type.as_str()), sk.clone());
+        let local_auth =
+            compute_local_auth(event, auth_context, sort_set, local_auth_cache, version);
+        let accepted = iterative_auth_ok(
+            event,
+            &resolved,
+            auth_context,
+            sort_set,
+            local_auth,
+            create_ev,
+            version,
+            true,
+        );
+        let replaced = if accepted && conflicted_keys.contains(&key) {
+            let old = resolved.get(&key).cloned();
+            resolved.insert(key.clone(), event.event_id.clone());
+            old
+        } else {
+            resolved.get(&key).cloned()
+        };
+        if original_conflicted_keys.contains(&event.event_id) {
+            deltas.push(ResolutionDelta {
+                event_id: event.event_id.clone(),
+                accepted,
+                key: key.clone(),
+                replaced,
+                phase: ResolvePhase::Power,
+            });
         }
     }
 
@@ -990,5 +1014,63 @@ mod tests {
 
         // No membership event at all -> not banned.
         assert!(!is_sender_banned(&ev, &SharedState::new(), &HashMap::new()));
+    }
+
+    #[test]
+    fn expand_v2_skips_power_ids_absent_from_sort_set() {
+        // A power event whose id is not present in `sort_set`: the loop's
+        // `sort_set.get(id)` returns `None` and the event is left untouched
+        // rather than having its auth chain expanded.
+        let mut power_events: HashMap<String, LeanEvent> = HashMap::new();
+        power_events.insert(
+            "$orphan".to_string(),
+            member_ev("$orphan", "@a:example.com", "@a:example.com", MEM_JOIN),
+        );
+        let mut non_power_events: HashMap<String, LeanEvent> = HashMap::new();
+        let sort_set: HashMap<String, LeanEvent> = HashMap::new();
+
+        expand_v2_power_events_auth_chains(&mut power_events, &mut non_power_events, &sort_set);
+
+        assert!(
+            power_events.contains_key("$orphan"),
+            "an id missing from sort_set must be skipped, not dropped"
+        );
+        assert!(non_power_events.is_empty());
+    }
+
+    #[test]
+    fn route_msc4297_skips_ancestry_ids_absent_from_auth_context() {
+        // A power event whose auth chain cites `$missing`, which is absent from
+        // `auth_context`: the ancestry walk reaches it and `auth_context.get`
+        // returns `None`, so nothing is added to `power_events`.
+        let mut power_events: HashMap<String, LeanEvent> = HashMap::new();
+        power_events.insert(
+            "$pl".to_string(),
+            LeanEvent {
+                event_id: "$pl".into(),
+                event_type: "m.room.power_levels".into(),
+                state_key: Some(String::new()),
+                sender: "@a:example.com".into(),
+                content: serde_json::json!({ "users": { "@a:example.com": 100 } }),
+                auth_events: alloc::vec!["$missing".to_string()],
+                ..Default::default()
+            },
+        );
+        let auth_context: HashMap<String, LeanEvent> = HashMap::new();
+        let original_conflicted_keys = alloc::collections::BTreeSet::new();
+
+        route_msc4297_ancestral_power_events(
+            &mut power_events,
+            &auth_context,
+            &original_conflicted_keys,
+            StateResVersion::V2_1,
+        );
+
+        assert_eq!(
+            power_events.len(),
+            1,
+            "an ancestry id absent from auth_context must add nothing"
+        );
+        assert!(power_events.contains_key("$pl"));
     }
 }
