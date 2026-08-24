@@ -1018,6 +1018,226 @@ mod tests {
         assert!(!is_sender_banned(&ev, &SharedState::new(), &HashMap::new()));
     }
 
+    /// A shared room for the resolved-state screening tests below: create,
+    /// power levels (admin only), public join rule, two joins, and a ban of bob.
+    /// Returns `(unconflicted, auth_context)` with only create agreed-upon.
+    fn screening_room_fixture() -> (SharedState<String, String>, HashMap<String, LeanEvent>) {
+        let create = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:example.com".into(),
+            content: serde_json::json!({"room_version": "12.1", "creator": "@admin:example.com"}),
+            ..Default::default()
+        };
+        let admin_join = member_ev(
+            "$admin_join",
+            "@admin:example.com",
+            "@admin:example.com",
+            MEM_JOIN,
+        );
+        let pl = LeanEvent {
+            event_id: "$pl".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:example.com".into(),
+            content: serde_json::json!({
+                "users": { "@admin:example.com": 100 },
+                "ban": 50,
+                "state_default": 50
+            }),
+            auth_events: alloc::vec!["$create".to_string(), "$admin_join".to_string()],
+            ..Default::default()
+        };
+        let join_rules = LeanEvent {
+            event_id: "$jr".into(),
+            event_type: "m.room.join_rules".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:example.com".into(),
+            content: serde_json::json!({"join_rule": "public"}),
+            auth_events: alloc::vec![
+                "$create".to_string(),
+                "$admin_join".to_string(),
+                "$pl".to_string()
+            ],
+            ..Default::default()
+        };
+        let bob_join = member_ev(
+            "$bob_join",
+            "@bob:example.com",
+            "@bob:example.com",
+            MEM_JOIN,
+        );
+        let carol_join = member_ev(
+            "$carol_join",
+            "@carol:example.com",
+            "@carol:example.com",
+            MEM_JOIN,
+        );
+        let ban_bob = LeanEvent {
+            event_id: "$ban_bob".into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some("@bob:example.com".into()),
+            sender: "@admin:example.com".into(),
+            content: serde_json::json!({"membership": MEM_BAN}),
+            auth_events: alloc::vec![
+                "$create".to_string(),
+                "$admin_join".to_string(),
+                "$bob_join".to_string(),
+                "$pl".to_string()
+            ],
+            ..Default::default()
+        };
+
+        let mut ac = HashMap::new();
+        for e in [
+            &create,
+            &admin_join,
+            &pl,
+            &join_rules,
+            &bob_join,
+            &carol_join,
+            &ban_bob,
+        ] {
+            ac.insert(e.event_id.clone(), e.clone());
+        }
+        let mut unconflicted = SharedState::new();
+        unconflicted.insert(
+            (EventType::from("m.room.create"), String::new()),
+            "$create".to_string(),
+        );
+        (unconflicted, ac)
+    }
+
+    /// Covers the V2.1.1+ resolved-state screening filter in the delta path
+    /// (`resolve_iterative_sort_with_cache_and_deltas`): the
+    /// `!is_sender_banned(...)` predicate must drop a non-power event whose
+    /// sender is already banned in `resolved` (fixed by the power phase), while
+    /// keeping an unbanned sender's event. V2.1 must NOT apply the filter.
+    #[test]
+    fn non_power_screening_filter_drops_banned_sender_in_v2_1_1() {
+        let (unconflicted, ac) = screening_room_fixture();
+        let bob_msg = LeanEvent {
+            event_id: "$bob_msg".into(),
+            event_type: "m.room.message".into(),
+            state_key: Some(String::new()),
+            sender: "@bob:example.com".into(),
+            content: serde_json::json!({"body": "spam"}),
+            auth_events: alloc::vec![
+                "$create".to_string(),
+                "$bob_join".to_string(),
+                "$pl".to_string()
+            ],
+            ..Default::default()
+        };
+        let carol_msg = LeanEvent {
+            event_id: "$carol_msg".into(),
+            event_type: "m.room.message".into(),
+            state_key: Some(String::new()),
+            sender: "@carol:example.com".into(),
+            content: serde_json::json!({"body": "hello"}),
+            auth_events: alloc::vec![
+                "$create".to_string(),
+                "$carol_join".to_string(),
+                "$pl".to_string()
+            ],
+            ..Default::default()
+        };
+
+        let mk_conflicted = || {
+            let mut m = HashMap::new();
+            m.insert("$ban_bob".to_string(), ac["$ban_bob"].clone());
+            m.insert("$bob_msg".to_string(), bob_msg.clone());
+            m.insert("$carol_msg".to_string(), carol_msg.clone());
+            m
+        };
+
+        // V2.1.1 (has_ban_evasion_hardening): the screening filter drops bob's
+        // banned-sender message but keeps carol's.
+        let (_, deltas) = resolve_iterative_sort_with_cache_and_deltas(
+            unconflicted.clone(),
+            mk_conflicted(),
+            &ac,
+            None,
+            StateResVersion::V2_1_1,
+            &mut HashMap::new(),
+        );
+        assert!(
+            !deltas.iter().any(|d| d.event_id == "$bob_msg"),
+            "a banned sender's non-power event must be screened out in V2.1.1"
+        );
+        assert!(
+            deltas.iter().any(|d| d.event_id == "$carol_msg"),
+            "an unbanned sender's non-power event must survive the V2.1.1 screening filter"
+        );
+
+        // V2.1 predates the hardening: bob's message is processed, not screened.
+        let (_, deltas) = resolve_iterative_sort_with_cache_and_deltas(
+            unconflicted,
+            mk_conflicted(),
+            &ac,
+            None,
+            StateResVersion::V2_1,
+            &mut HashMap::new(),
+        );
+        assert!(
+            deltas.iter().any(|d| d.event_id == "$bob_msg"),
+            "V2.1 must not apply the ban-evasion screening filter"
+        );
+    }
+
+    /// Covers the `let Some(sk) = &ev.state_key else { continue }` guard in the
+    /// delta path: a non-power event with no `state_key` is skipped (no delta,
+    /// no insert) rather than panicking or polluting the resolved state.
+    #[test]
+    fn non_power_event_without_state_key_is_skipped() {
+        let (unconflicted, ac) = screening_room_fixture();
+        let alice_join = member_ev(
+            "$alice_join",
+            "@alice:example.com",
+            "@alice:example.com",
+            MEM_JOIN,
+        );
+        let stateless = LeanEvent {
+            event_id: "$stateless".into(),
+            event_type: "m.room.message".into(),
+            state_key: None,
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({"body": "hi"}),
+            auth_events: alloc::vec![
+                "$create".to_string(),
+                "$alice_join".to_string(),
+                "$pl".to_string()
+            ],
+            ..Default::default()
+        };
+        let mut ac = ac;
+        for e in [&alice_join, &stateless] {
+            ac.insert(e.event_id.clone(), e.clone());
+        }
+
+        let mut conflicted = HashMap::new();
+        conflicted.insert("$alice_join".to_string(), alice_join);
+        conflicted.insert("$stateless".to_string(), stateless);
+
+        let (_, deltas) = resolve_iterative_sort_with_cache_and_deltas(
+            unconflicted,
+            conflicted,
+            &ac,
+            None,
+            StateResVersion::V2_1,
+            &mut HashMap::new(),
+        );
+        assert!(
+            deltas.iter().any(|d| d.event_id == "$alice_join"),
+            "the stateful non-power event should still be processed"
+        );
+        assert!(
+            !deltas.iter().any(|d| d.event_id == "$stateless"),
+            "a non-power event without a state_key must be skipped (continue), not inserted"
+        );
+    }
+
     #[test]
     fn expand_v2_skips_power_ids_absent_from_sort_set() {
         // A power event whose id is not present in `sort_set`: the loop's
