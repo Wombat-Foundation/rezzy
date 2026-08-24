@@ -281,21 +281,18 @@ where
     let mut local_auth: BTreeMap<(EventType, K), LocalAuthEntry<Id, C, K>> = BTreeMap::new();
     let mut queue = alloc::collections::VecDeque::new();
     for aid in &event.auth_events {
-        queue.push_back((aid.clone(), 1));
+        queue.push_back((aid, 1));
     }
-    let mut visited = BTreeSet::new();
+    let mut visited = crate::FastSet::default();
 
     while let Some((aid, current_depth)) = queue.pop_front() {
-        if !visited.insert(aid.clone()) {
+        if !visited.insert(aid) {
             continue;
         }
 
-        if let Some(cached_ancestor) = cache.map.get(&aid) {
+        if let Some(cached_ancestor) = cache.map.get(aid) {
             // The cache only contains the parents of `aid`. We must also insert `aid` itself!
-            if let Some(aev) = auth_context
-                .get(&aid)
-                .or_else(|| conflicted_events.get(&aid))
-            {
+            if let Some(aev) = auth_context.get(aid).or_else(|| conflicted_events.get(aid)) {
                 update_local_auth(&mut local_auth, aev, current_depth);
             }
 
@@ -325,17 +322,14 @@ where
             continue;
         }
 
-        if let Some(aev) = auth_context
-            .get(&aid)
-            .or_else(|| conflicted_events.get(&aid))
-        {
+        if let Some(aev) = auth_context.get(aid).or_else(|| conflicted_events.get(aid)) {
             update_local_auth(&mut local_auth, aev, current_depth);
 
             // TODO: confirm the V2.2 auth traversal rule remains aligned with V2.1.1.
             // For V2.1 and below, we only check the immediate auth_events.
             if matches!(version, StateResVersion::V2_1_1 | StateResVersion::V2_2) {
                 for parent_id in &aev.auth_events {
-                    queue.push_back((parent_id.clone(), current_depth.saturating_add(1)));
+                    queue.push_back((parent_id, current_depth.saturating_add(1)));
                 }
             }
         }
