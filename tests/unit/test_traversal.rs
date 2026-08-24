@@ -900,7 +900,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
 }
 
 #[test]
-fn test_v2_1_strictness_future_v3_should_pass() {
+fn test_v2_1_strictness_future_v2_2_should_pass() {
     let create_ev = LeanEvent {
         event_id: "$create".to_string(),
         event_type: "m.room.create".to_string(),
@@ -961,8 +961,9 @@ fn test_v2_1_strictness_future_v3_should_pass() {
         "V2.1 rightfully rejected the event because the 1-hop auth list was incomplete."
     );
 
-    // A future State DAG (MSC4242) algorithm could theoretically pass this by validating
-    // the room state via `prev_state_events` instead of relying on the fragile string array.
+    // A future State-DAGs algorithm (reserved as `StateResVersion::V2_2`, MSC4242)
+    // could theoretically pass this by validating the room state via
+    // `prev_state_events` instead of relying on the fragile string array.
 }
 
 fn make_ghost_moderator_events() -> (
