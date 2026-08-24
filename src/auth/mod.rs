@@ -2014,4 +2014,28 @@ mod tests {
             "Invite must reject flagged join_rules auth state: {result:?}"
         );
     }
+
+    /// Coverage: `required_auth_types_for`'s `m.room.create` early return.
+    /// Unreachable through the public API -- `check_auth_with_context`
+    /// authorizes `m.room.create` and returns `Ok(())` before ever reaching
+    /// rule 2.2's loop (creates are "always authorized if they're first"),
+    /// so this function is never actually called with `event_type ==
+    /// M_ROOM_CREATE` in practice. Exercised directly since it's still real,
+    /// intentional behavior (an `m.room.create` has no required auth types
+    /// of its own to check) -- called out explicitly rather than left
+    /// permanently uncovered.
+    #[test]
+    fn test_required_auth_types_for_create_returns_empty() {
+        let create_ev = make_test_event(
+            "$create",
+            M_ROOM_CREATE,
+            "@creator:x",
+            json!({"room_version": "11"}),
+        );
+        let required = required_auth_types_for(&create_ev, M_ROOM_CREATE, StateResVersion::V2);
+        assert!(
+            required.is_empty(),
+            "m.room.create has no required auth types of its own: {required:?}"
+        );
+    }
 }
