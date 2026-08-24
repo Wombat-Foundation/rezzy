@@ -105,18 +105,18 @@ where
 {
     pl_cache.clear();
 
-    let mut in_degree: FastMap<Id, usize> = FastMap::default();
-    let mut adjacency: FastMap<Id, Vec<Id>> = FastMap::default();
+    let mut in_degree: FastMap<&Id, usize> = FastMap::default();
+    let mut adjacency: FastMap<&Id, Vec<&Id>> = FastMap::default();
 
     for (id, event) in events {
-        in_degree.entry(id.clone()).or_insert(0);
+        in_degree.entry(id).or_insert(0);
         for auth in event.auth_events() {
-            if events.contains_key(auth) {
+            if let Some((auth_key, _)) = events.get_key_value(auth) {
                 // Topological sort: ancestors come BEFORE descendants.
                 // But we want a REVERSE topological sort: descendants BEFORE ancestors.
                 // So we add edges from ancestors to descendants.
-                adjacency.entry(auth.clone()).or_default().push(id.clone());
-                let val = in_degree.entry(id.clone()).or_insert(0);
+                adjacency.entry(auth_key).or_default().push(id);
+                let val = in_degree.entry(id).or_insert(0);
                 *val = val.saturating_add(1);
             }
         }
@@ -136,23 +136,23 @@ where
     let mut queue: BinaryHeap<SortPriority<'_, E>> = BinaryHeap::new();
     for (id, &degree) in &in_degree {
         if degree == 0 {
-            if let Some(event) = events.get(id) {
+            if let Some(event) = events.get(*id) {
                 queue.push(SortPriority {
                     event,
-                    power_level: pl_cache.get(id).copied().unwrap_or(0),
+                    power_level: pl_cache.get(*id).copied().unwrap_or(0),
                     version,
                 });
             }
         }
     }
 
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity(events.len());
     while let Some(priority) = queue.pop() {
         let event = priority.event;
 
         result.push(event.event_id().clone());
         if let Some(neighbors) = adjacency.get(event.event_id()) {
-            for next_id in neighbors {
+            for &next_id in neighbors {
                 let degree = in_degree.get_mut(next_id).unwrap();
                 *degree = degree.saturating_sub(1);
                 if *degree == 0 {
@@ -169,12 +169,13 @@ where
 
     // Detect cycles: events that never reached in-degree 0.
     if result.len() != events.len() {
-        let sorted_set: alloc::collections::BTreeSet<&Id> = result.iter().collect();
+        let sorted_set: crate::FastSet<&Id> = result.iter().collect();
         let stuck: Vec<Id> = events
             .keys()
             .filter(|id| !sorted_set.contains(id))
             .cloned()
             .collect();
+        drop(sorted_set);
         return KahnSortResult::CycleDetected {
             sorted: result,
             stuck,
@@ -292,22 +293,19 @@ where
         // BFS to find the nearest PL ancestor
         let mut found = None;
         if let Some(ev) = auth_context.get_event(&eid) {
-            let mut queue = VecDeque::new();
-            for auth_id in ev.auth_events() {
-                queue.push_back(auth_id.clone());
-            }
+            let mut queue: VecDeque<&Id> = ev.auth_events().iter().collect();
             let mut visited = crate::FastSet::default();
             while let Some(q_id) = queue.pop_front() {
-                if !visited.insert(q_id.clone()) {
+                if !visited.insert(q_id) {
                     continue;
                 }
-                if let Some(auth_ev) = auth_context.get_event(&q_id) {
+                if let Some(auth_ev) = auth_context.get_event(q_id) {
                     if auth_ev.event_type().as_ref() == M_ROOM_POWER_LEVELS {
-                        found = Some(q_id);
+                        found = Some(q_id.clone());
                         break;
                     }
                     for aid in auth_ev.auth_events() {
-                        queue.push_back(aid.clone());
+                        queue.push_back(aid);
                     }
                 }
             }
