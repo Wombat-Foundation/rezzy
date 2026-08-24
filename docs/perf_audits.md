@@ -306,31 +306,32 @@ through the cracks.
   `compute_closest_mainline_positions` is therefore equivalent to a BFS for
   these purposes, consistent with the 100% ruma parity.
 - **LtHash fast path — Path A vs Path B**.
-  - **Path A (identical-fork fast path): DECIDED & SOUND.**
-    `resolve_merge_fast_path_hashed` (`at.rs:2177`) uses `hash == hash` as an
-    O(1) negative filter + `ptr_eq || ==` as final authority, returning
-    `first.clone()` when all forks are identical. Sound under the
-    trust-the-local-DB model (LtHash collision resistance ~2^200;
-    error-correcting columns / HAMT repair-GC planned). Incremental
-    homomorphic hash update (`at.rs:2199`) maintains the
-    `hash == LtHash(state)` invariant. **Differential harness added**
-    (`test_fast_path_differential_matches_full_resolution_on_identical_forks`)
-    comparing the fast path against uncached `resolve_multiple_prev_states`
-    across fork counts, plus a from-scratch hash-consistency check (guards
-    accumulator drift). Note: true O(1) only when `ptr_eq` holds;
-    independently-converged forks still pay the `==` fallback.
-  - **Path B (non-interfering / trivial-only fork skip): REJECTED.** Skipping
-    the topo sort / iterative auth because two forks "share the same
-    power-level/auth roots" or "differ only on non-power keys" is not
-    justified by a digest match: identical roots ≠ non-interference, and the
-    non-power winner is (mainline position, ts, id) + iterative auth — not
-    just ts. Mainline position depends on each candidate's own auth chain, and
-    a sender can be banned/demoted mid-phase by an earlier-applied event. The
-    correct gate (identical power phase ∧ per-key auth against the merged
-    state) costs about as much as the cheap O(|C| log |C|) non-power phase it
-    would skip. Same class of shortcut as the retired CDO pre-filter — not
-    worth the correctness cliff. Path A (identical forks) remains the only
-    skip that pays.
+- **Path A (identical-fork fast path): DECIDED & SOUND.**
+  `resolve_merge_fast_path_hashed` (`at.rs:2177`) uses `hash == hash` as an
+  O(1) negative filter + `ptr_eq || ==` as final authority, returning
+  `first.clone()` when all forks are identical. Sound under the
+  trust-the-local-DB model (LtHash collision resistance ~2^200;
+  error-correcting columns / HAMT repair-GC planned). Incremental
+  homomorphic hash update (`at.rs:2199`) maintains the
+  `hash == LtHash(state)` invariant. **Differential harness added**
+  (`test_fast_path_differential_matches_full_resolution_on_identical_forks`)
+  comparing the fast path against uncached `resolve_multiple_prev_states`
+  across fork counts, plus a from-scratch hash-consistency check (guards
+  accumulator drift). Note: true O(1) only when `ptr_eq` holds;
+  independently-converged forks still pay the `==` fallback.
+- **Path B (non-interfering / trivial-only fork skip): REJECTED.** Skipping
+  the topo sort / iterative auth because two forks "share the same
+  power-level/auth roots" or "differ only on non-power keys" is not
+  justified by a digest match: identical roots ≠ non-interference, and the
+  non-power winner is (mainline position, ts, id) + iterative auth — not
+  just ts. Mainline position depends on each candidate's own auth chain, and
+  a sender can be banned/demoted mid-phase by an earlier-applied event. The
+  correct gate (identical power phase ∧ per-key auth against the merged
+  state) costs about as much as the cheap O(|C| log |C|) non-power phase it
+  would skip. Same class of shortcut as the retired CDO pre-filter — not
+  worth the correctness cliff. Path A (identical forks) remains the only
+  skip that pays.
+
 - **Batched RocksDB MultiGet** for the DAG frontier. Lives in `tuwunel` (storage
   layer, separate repo) — out of scope for rezzy.
 - **`// membership-only dedup; do NOT iterate` hardening comment** on the
