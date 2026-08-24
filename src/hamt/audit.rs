@@ -210,7 +210,7 @@ where
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Universe(err) => Some(err),
-            Self::Traversal(err) => <HamtTraversalError<E> as std::error::Error>::source(err),
+            Self::Traversal(err) => Some(err),
         }
     }
 }
