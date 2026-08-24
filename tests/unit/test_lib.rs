@@ -3835,6 +3835,42 @@ fn test_ingest_events_applies_redaction_and_verifies_hashes() {
     assert!(ingest_events(&[tampered, redaction.clone()], "11").is_err());
 }
 
+/// Coverage: `ingest_events`'s redaction-application `split_at_mut` branch
+/// where the target's position is *after* the redaction's (the redaction
+/// appears first in the batch) -- the test above only ever puts the target
+/// first, exercising the opposite branch.
+#[test]
+fn test_coverage_ingest_events_applies_redaction_when_redaction_precedes_target() {
+    use rezzy::ingest_events;
+
+    let redaction = serde_json::json!({
+        "event_id": "$r:example.com",
+        "type": "m.room.redaction",
+        "sender": "@alice:example.com",
+        "origin_server_ts": 10,
+        "depth": 1,
+        "redacts": "$msg:example.com",
+        "content": { "redacts": "$msg:example.com" }
+    });
+    let msg = serde_json::json!({
+        "event_id": "$msg:example.com",
+        "type": "m.room.message",
+        "sender": "@bob:example.com",
+        "origin_server_ts": 11,
+        "depth": 2,
+        "content": { "body": "spam" }
+    });
+
+    // Redaction is at index 0, its target at index 1 -- target_pos > redaction_pos.
+    let events = ingest_events(&[redaction, msg], "11").unwrap();
+    let redacted = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(redacted.content, serde_json::json!({}));
+    assert!(events.iter().any(|e| e.event_id == "$r:example.com"));
+}
+
 #[test]
 fn test_reference_hash_is_redaction_invariant() {
     use rezzy::{redact_json, reference_hash};

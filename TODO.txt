@@ -2,6 +2,42 @@
 08/23/2026
 ##############################
 
+❯ so are we actually collecting? or streaming?
+
+We're collecting, and it's a necessary collect this time, not a style choice — here's why:
+
+redaction_target_positions has to be fully materialized into an owned Vec<(usize, usize)> before the second loop starts, because that second loop calls events.split_at_mut(...) — a mutable borrow of events — while the first pass (events.iter().enumerate().filter_map(...)) holds an immutable borrow of events for its entire duration. Rust's aliasing rules forbid those overlapping; you can't be mid-iteration over events and mutate events in the same breath. Collecting into the small Vec<(usize, usize)> is exactly what ends the immutable borrow before the mutable one begins.
+
+The difference from the original bug is what gets collected, not whether something does: before, it collected full LeanEvent clones (each owning a Value — arbitrarily large); now it collects a pair of usizes per redaction — negligible, fixed-size, no heap content copied. position_by_id (the HashMap<&str, usize>) is also a genuine, deliberate collect — it needs random-access lookup by ID, which is inherently a build-the-index-once structure, not something a streaming pass could replace.
+
+Could this be made fully streaming (zero intermediate collection)? Not without unsafe (e.g. raw pointers to sidestep the borrow checker) — and this crate has unsafe_code = "deny" — so given that constraint, "collect the minimum cheap data needed, then mutate" is the correct, idiomatic-safe-Rust shape here, not a shortcut. Committing this now:
+
+  Committed 045973a
+
+Committed. Working tree clean, all 386 + 427 + 9 tests still passing, fmt/clippy clean. That resolves your original concern precisely: ingest_events now collects only cheap index pairs (structurally required by the borrow checker, not a style choice), looks up targets in O(1) via a prebuilt map instead of scanning, and never clones a full event just to iterate it.
+
+✻ Worked for 3m 58s
+
+❯ what about the general event ingestion? that's a bigger concern right?
+
+  what about auth chain sorting, etc? that one is generic across roaring/u32 right? at least
+
+  Ran 2 shell commands
+
+Good instinct — checking further. First, confirming AuthGraph is indeed properly designed (generic Id, u32/RoaringBitmap purely internal):
+
+  Ran 1 shell command
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 2 new messages ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+AuthGraph checks out — it IS properly Id-generic (u32/RoaringBitmap are purely the internal dense-index representation, same "index-then-bitmap" pattern as hamt::audit's IndexedUniverse from earlier this session), so your instinct was right. One minor thing I noticed but wouldn't rush to fix: build() clones id twice per event (id_to_index.insert(id.clone(), ...) + index_to_id.push(id.clone())) — but that's structurally required (a HashMap and a Vec each need their own owned copy) and its cost is entirely determined by the caller's Id choice (free for u32, a refcount bump for Arc<str>, an allocation for String) — same "genericity puts the cost decision in the caller's hands" philosophy as the rest of the crate, not a bug.
+
+Now checking the bigger "general event ingestion" question — is ingest_events the only batch-processing surface, or are there others with the same class of issue:
+
+
+---
+
+
 ❯ i'm worried it's not quiet ideal?
 
 Fair worry, and let me be honest about both:
