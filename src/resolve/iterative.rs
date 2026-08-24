@@ -642,9 +642,11 @@ where
     // because bans are fixed by the power phase (see [`is_sender_banned`]). This
     // is the sound replacement for the retired CDO pre-filter, which itself was
     // gated to `V2_1_1` only (never `V2_1`) before its retirement -- V2.1 does
-    // not get this hardening by default; see `StateResVersion`'s docs.
-    let is_v2_1_1_or_above = matches!(version, StateResVersion::V2_1_1 | StateResVersion::V2_2);
-    let mut non_power_list: Vec<&LeanEvent<Id, C, K>> = if is_v2_1_1_or_above {
+    // not get this hardening by default. Goes through the shared
+    // `has_ban_evasion_hardening` method (not a local `matches!` copy) so
+    // this can't silently drift from `state::at`'s `get_event` gate again --
+    // see `StateResVersion::has_ban_evasion_hardening`'s docs.
+    let mut non_power_list: Vec<&LeanEvent<Id, C, K>> = if version.has_ban_evasion_hardening() {
         non_power_events
             .iter()
             .filter(|(_, ev)| !is_sender_banned(ev, &resolved, &sort_context))

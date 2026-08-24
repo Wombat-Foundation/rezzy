@@ -127,18 +127,15 @@ where
             let is_required_type = event_type == M_ROOM_POWER_LEVELS
                 || event_type == crate::basespec::event_types::M_ROOM_JOIN_RULES;
 
-            // Gate the power-phase fallback behind V2.1.1+ only: per this
-            // crate's own `StateResVersion` documentation, the "ban evasion
-            // fix: restricts power-phase state supplementation" is V2.1.1's
-            // defining delta over V2.1, not something V2.1 also does. Stock
-            // V2.1 falls through to the unconditional `Some(ev)` below.
-            let is_v2_1_1_or_above = matches!(
-                self.version,
-                StateResVersion::V2_1_1 | StateResVersion::V2_2
-            );
-
+            // Gate the power-phase fallback behind V2.1.1+ only: per
+            // `StateResVersion::has_ban_evasion_hardening`'s documentation,
+            // this is rezzy-internal hardening V2.1.1 adds over stock V2.1,
+            // not something V2.1 also does. Stock V2.1 falls through to the
+            // unconditional `Some(ev)` below. Go through the shared method
+            // (not a local `matches!` copy) so this can't silently drift
+            // from `resolve::iterative`'s `is_sender_banned` gate again.
             if self.is_power_phase
-                && is_v2_1_1_or_above
+                && self.version.has_ban_evasion_hardening()
                 && is_required_type
                 && self.sort_set.contains_key(&ev.event_id)
             {

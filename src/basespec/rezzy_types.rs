@@ -133,10 +133,79 @@ impl StateResVersion {
 
     /// Returns `true` for V2.1 and above (MSC4297+).
     ///
-    /// Use this instead of manually matching `V2_1 | V2_1_1 | V2_2`.
+    /// Use this instead of manually matching `V2_1 | V2_1_1 | V2_2`. This is
+    /// for MSC4297-scoped behavior (empty initial state, ban/kick
+    /// supplementation direction, rule 2.4's create-citation exemption,
+    /// v12+ create/`auth_events` rules, ...) that genuinely applies starting
+    /// at stock V2.1. For rezzy-internal hardening that V2.1 predates, use
+    /// [`Self::has_ban_evasion_hardening`] instead -- conflating the two is
+    /// exactly the bug class this distinction exists to prevent (see
+    /// `docs/tech_debt.md` / the `state/at.rs` and `resolve/iterative.rs`
+    /// commits that fixed a silent merge widening the latter to match the
+    /// former).
     #[must_use]
     pub const fn is_v2_1_plus(&self) -> bool {
         matches!(self, Self::V2_1 | Self::V2_1_1 | Self::V2_2)
+    }
+
+    /// Returns `true` for V2.1.1 and above.
+    ///
+    /// This is **not** an MSC4297 requirement -- "V2.1.1" is a rezzy-internal
+    /// designation (it appears nowhere in the Matrix spec) for hardening
+    /// beyond what stock V2.1 does: dropping non-power conflicted events
+    /// whose sender is already banned/under-powered in the resolved state
+    /// before mainline sort (the sound replacement for the retired CDO
+    /// pre-filter, which itself was gated `== V2_1_1` strictly, never
+    /// `V2_1`), and narrowing `OverlayState::get_event`'s power-phase
+    /// local-auth fallback. `V2_1` and `V2_1_1` are separate enum variants
+    /// specifically because `V2_1_1` does this and `V2_1` doesn't -- every
+    /// call site gating this behavior must go through this one function
+    /// (not its own `matches!`/`is_v2_1_plus` copy) so there is exactly one
+    /// place a future merge (or anyone) can get this polarity wrong, and one
+    /// place a test pins it. See `has_ban_evasion_hardening_table` below.
+    #[must_use]
+    pub const fn has_ban_evasion_hardening(&self) -> bool {
+        matches!(self, Self::V2_1_1 | Self::V2_2)
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod state_res_version_gate_tests {
+    use super::StateResVersion;
+
+    /// Pins the gate-polarity table for every `StateResVersion` variant, for
+    /// both `is_v2_1_plus` (real MSC4297 scope) and
+    /// `has_ban_evasion_hardening` (rezzy-internal scope). This is the
+    /// safeguard `docs/tech_debt.md` calls for: a silent 3-way merge that
+    /// widens/narrows either gate's scope (no conflict marker raised,
+    /// because the changed side hadn't touched those exact lines) fails this
+    /// test immediately, whether or not the change is otherwise observable
+    /// in any behavioral test's output -- which a purely optimization-scoped
+    /// gate (like `has_ban_evasion_hardening`'s use in the resolved-state
+    /// screening pass) never is.
+    #[test]
+    fn test_gate_polarity_table() {
+        let table = [
+            // (version, is_v2_1_plus, has_ban_evasion_hardening)
+            (StateResVersion::V1, false, false),
+            (StateResVersion::V2, false, false),
+            (StateResVersion::V2_1, true, false),
+            (StateResVersion::V2_1_1, true, true),
+            (StateResVersion::V2_2, true, true),
+        ];
+        for (version, expect_v2_1_plus, expect_ban_evasion) in table {
+            assert_eq!(
+                version.is_v2_1_plus(),
+                expect_v2_1_plus,
+                "{version:?}.is_v2_1_plus() polarity changed"
+            );
+            assert_eq!(
+                version.has_ban_evasion_hardening(),
+                expect_ban_evasion,
+                "{version:?}.has_ban_evasion_hardening() polarity changed"
+            );
+        }
     }
 }
 
