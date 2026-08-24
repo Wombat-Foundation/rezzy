@@ -2122,6 +2122,7 @@ fn test_auth_types_for_event() {
         Some(""),
         &json!({}),
         StateResVersion::V2_1,
+        "11",
     );
     assert!(types.is_empty());
 
@@ -2131,6 +2132,7 @@ fn test_auth_types_for_event() {
         None,
         &json!({}),
         StateResVersion::V2,
+        "11",
     );
     assert!(types.contains(&("m.room.create".to_string(), String::new())));
     assert!(types.contains(&("m.room.member".to_string(), "@alice:x.com".to_string())));
@@ -2142,6 +2144,7 @@ fn test_auth_types_for_event() {
         None,
         &json!({}),
         StateResVersion::V2_1,
+        "11",
     );
     assert!(!types.contains(&("m.room.create".to_string(), String::new())));
 
@@ -2159,6 +2162,7 @@ fn test_auth_types_for_event() {
         Some("@bob:x.com"),
         &content,
         StateResVersion::V2_1,
+        "11",
     );
     assert!(types.contains(&("m.room.member".to_string(), "@bob:x.com".to_string())));
     assert!(types.contains(&("m.room.join_rules".to_string(), String::new())));
@@ -2184,6 +2188,7 @@ fn test_auth_types_for_event() {
         Some("@bob:x.com"),
         &invite_content,
         StateResVersion::V2_1,
+        "11",
     );
     assert!(types.contains(&(
         "m.room.third_party_invite".to_string(),
@@ -2197,6 +2202,7 @@ fn test_auth_types_for_event() {
         Some("@alice:x.com"),
         &json!({"membership": "knock"}),
         StateResVersion::V2,
+        "11",
     );
     assert!(
         types.contains(&("m.room.join_rules".to_string(), String::new())),
@@ -4581,6 +4587,7 @@ fn test_auth_types_for_event_join_authorised_via_users_server() {
         Some("@alice:x.com"),
         &content,
         StateResVersion::V2_1,
+        "11",
     );
     assert!(types.contains(&("m.room.member".to_string(), "@admin:x.com".to_string())));
 }

@@ -4069,7 +4069,6 @@ fn test_apply_authorized_redactions_only_strips_authorized_targets() {
         serde_json::json!({}),
         "a self-redaction must strip the target content"
     );
-
     // Order-invariance: the redaction preceding its target (the opposite
     // `split_at_mut` branch) must strip identically.
     let mut events = vec![self_redact.clone(), msg.clone()];
@@ -4082,6 +4081,94 @@ fn test_apply_authorized_redactions_only_strips_authorized_targets() {
         target.content,
         serde_json::json!({}),
         "redaction order within the set must not change the outcome"
+    );
+}
+
+/// Redaction-of-redaction: a redaction that is itself the target of another
+/// in-batch redaction must be spent as a redactor before it is replaced as a
+/// target. The naive in-place order can replace R1 (R2's target) before R1
+/// redacts M; R1's `redacts` field is then stripped, `apply_redaction` returns
+/// None, and M is silently left unredacted.
+#[test]
+fn test_apply_authorized_redactions_redaction_of_redaction_order() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use rezzy::StateResVersion;
+
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": {
+                "@admin:example.com": 100,
+                "@bob:example.com": 0
+            },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut state = RoomState::new();
+    state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        content: serde_json::json!({ "body": "secret" }),
+        ..Default::default()
+    };
+    let r1: LeanEvent = LeanEvent {
+        event_id: "$r1:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 11,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    let r2: LeanEvent = LeanEvent {
+        event_id: "$r2:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 12,
+        content: serde_json::json!({ "redacts": "$r1:example.com" }),
+        ..Default::default()
+    };
+
+    // Batch order puts R2 before R1, which would break the naive in-place order.
+    let mut events = vec![msg.clone(), r2.clone(), r1.clone()];
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+
+    let m = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(
+        m.content,
+        serde_json::json!({}),
+        "M must be redacted by R1 (R1 spent as redactor before R2 replaces it)"
+    );
+    let r1_ev = events
+        .iter()
+        .find(|e| e.event_id == "$r1:example.com")
+        .unwrap();
+    assert_eq!(
+        r1_ev.content,
+        serde_json::json!({ "redacts": "$msg:example.com" }),
+        "R1's redacted form preserves its `redacts` key (it must still be usable)"
+    );
+    assert!(
+        report
+            .applied
+            .contains(&("$r1:example.com".into(), "$msg:example.com".into())),
+        "R1's redaction of M must be reported as applied"
+    );
+    assert!(
+        report
+            .applied
+            .contains(&("$r2:example.com".into(), "$r1:example.com".into())),
+        "R2's redaction of R1 must be reported as applied"
     );
 }
 
