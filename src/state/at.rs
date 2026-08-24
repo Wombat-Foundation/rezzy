@@ -127,15 +127,18 @@ where
             let is_required_type = event_type == M_ROOM_POWER_LEVELS
                 || event_type == crate::basespec::event_types::M_ROOM_JOIN_RULES;
 
-            // Gate the power-phase fallback behind V2.1+ (MSC4297) so it
-            // behaves consistently across V2.1 and V2.1.1: in the power
-            // phase, a required auth key in the conflicted set is only used
-            // via the local-auth fallback under the narrow conditions below,
-            // rather than being trusted unconditionally.
-            let is_v2_1_plus = self.version.is_v2_1_plus();
+            // Gate the power-phase fallback behind V2.1.1+ only: per this
+            // crate's own `StateResVersion` documentation, the "ban evasion
+            // fix: restricts power-phase state supplementation" is V2.1.1's
+            // defining delta over V2.1, not something V2.1 also does. Stock
+            // V2.1 falls through to the unconditional `Some(ev)` below.
+            let is_v2_1_1_or_above = matches!(
+                self.version,
+                StateResVersion::V2_1_1 | StateResVersion::V2_2
+            );
 
             if self.is_power_phase
-                && is_v2_1_plus
+                && is_v2_1_1_or_above
                 && is_required_type
                 && self.sort_set.contains_key(&ev.event_id)
             {
@@ -2632,17 +2635,16 @@ mod tests {
 
     /// Direct `V2.1` vs `V2.1.1` comparison for `OverlayState::get_event`'s
     /// power-phase local-auth fallback (lines ~122-168): confirms the *real*
-    /// polarity of the version gate, since a first-pass reading of just the
-    /// comments here ("gate the power-phase fallback behind V2.1.1+ only")
-    /// suggested V2.1.1 is strictly more permissive than V2.1. Tracing the
-    /// actual control flow (and `test_overlay_state_coverage_boosters` case 3
-    /// below) shows the opposite: when the gate is *false* (V2.1, or any
-    /// non-power-phase/non-required-type/non-power-candidate case), the code
-    /// falls through to an unconditional `Some(ev)` -- V2.1 is the more
-    /// permissive one. The gate only *narrows* things further, for V2.1.1+,
-    /// when the query is a required type (`PL/join_rules`) mid-power-phase: it
-    /// then additionally requires the candidate itself to be a power-shaped
-    /// event before falling back to local auth, returning `None` otherwise.
+    /// polarity of the version gate. Per this crate's own `StateResVersion`
+    /// documentation, the "ban evasion fix: restricts power-phase state
+    /// supplementation" is V2.1.1's defining delta over V2.1 -- not
+    /// something V2.1 also does, and not an MSC4297 requirement (MSC4297
+    /// only changes which events are selected for replay; it explicitly
+    /// does not touch the iterative auth checks). So V2.1 has no
+    /// power-phase gate at all here -- it falls back to local auth
+    /// unconditionally, regardless of what kind of event is asking -- while
+    /// V2.1.1 is the version that narrows the fallback to the conditions
+    /// checked below.
     #[test]
     fn test_overlay_state_v2_1_vs_v2_1_1_power_phase_fallback_polarity() {
         let create_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
@@ -2922,11 +2924,13 @@ mod tests {
         }
 
         // 6. Test case: no resolved event, but a matching local-auth candidate
-        // for a required type, with a NON-power candidate. Under the V2.1+ gate
-        // the unresolved conflicted power-level auth event must be rejected
-        // (None) identically for V2.1 and V2.1.1. This diverges from the old
-        // code, which returned the local-auth event for V2.1 (its gate excluded
-        // V2.1), so the test fails against the previous implementation.
+        // for a required type, with a NON-power candidate. The V2.1.1+ gate
+        // (V2.1.1's own defining "ban evasion fix", per `StateResVersion`'s
+        // docs) rejects the unresolved conflicted power-level auth event
+        // (None); stock V2.1 predates that gate and falls back to the
+        // local-auth candidate unconditionally (Some) -- see
+        // `test_overlay_state_v2_1_vs_v2_1_1_power_phase_fallback_polarity`
+        // for the direct comparison.
         {
             let resolved = imbl::OrdMap::new();
             let auth_context = HashMap::new();
@@ -2939,7 +2943,10 @@ mod tests {
                 pl_ev.clone(),
             );
 
-            for version in [StateResVersion::V2_1, StateResVersion::V2_1_1] {
+            for (version, expect_some) in [
+                (StateResVersion::V2_1, true),
+                (StateResVersion::V2_1_1, false),
+            ] {
                 let overlay = OverlayState {
                     resolved: &resolved,
                     auth_context: &auth_context,
@@ -2951,9 +2958,12 @@ mod tests {
                     candidate_event_type: "m.room.message",
                 };
                 let res = overlay.get_event(M_ROOM_POWER_LEVELS, "");
-                assert!(
-                    res.is_none(),
-                    "a non-power candidate must not authorize an unresolved conflicted power-level auth event (V2.1 and V2.1.1 alike)"
+                assert_eq!(
+                    res.is_some(),
+                    expect_some,
+                    "{version:?}: a non-power candidate's access to an unresolved \
+                     conflicted power-level auth event must match V2.1.1's gate \
+                     (rejected) vs V2.1's unconditional fallback (allowed)"
                 );
             }
         }
