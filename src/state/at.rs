@@ -775,10 +775,10 @@ where
 
     // Max-heap: (depth, &Id) — highest depth pops first.
     let mut queue: BinaryHeap<(u64, &Id)> = BinaryHeap::new();
-    let mut masks: HashMap<&Id, u8> = HashMap::new();
+    let mut masks: FastMap<&Id, u8> = FastMap::default();
 
     // Track the highest-depth (closest to tips) junction found per mask.
-    let mut best_junction: HashMap<u8, (&Id, u64)> = HashMap::new();
+    let mut best_junction: FastMap<u8, (&Id, u64)> = FastMap::default();
 
     for (i, &head) in extremities.iter().enumerate() {
         if let Some((k, ev)) = events_map.get_key_value(head) {
@@ -939,7 +939,7 @@ where
     // Max-heap: (depth, &Id) — highest depth pops first, ensuring a parent
     // is never processed until all of its descendants have propagated bits.
     let mut queue: BinaryHeap<(u64, &Id)> = BinaryHeap::new();
-    let mut masks: HashMap<&Id, RoaringBitmap> = HashMap::new();
+    let mut masks: FastMap<&Id, RoaringBitmap> = FastMap::default();
 
     for (i, &head) in extremities.iter().enumerate() {
         if let Some((k, ev)) = events_map.get_key_value(head) {
@@ -1172,7 +1172,7 @@ where
         unconflicted_state.remove(k);
     }
 
-    let mut conflicted_events = HashMap::new();
+    let mut conflicted_events = HashMap::with_capacity(conflicted_state_set.len());
     for id_val in &conflicted_state_set {
         if let Some(event) = events_map.get(id_val) {
             conflicted_events.insert(id_val.clone(), event.clone());
@@ -1877,7 +1877,7 @@ where
     let mut violations = Vec::new();
 
     // 1. Check for duplicates
-    let mut seen: HashMap<&Id, usize> = HashMap::new();
+    let mut seen: FastMap<&Id, usize> = FastMap::default();
     for (page_idx, page) in pages.iter().enumerate() {
         for id in page {
             if let Some(&first_page) = seen.get(id) {
