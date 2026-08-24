@@ -1022,6 +1022,34 @@ fn test_auth_error_display() {
     assert!(msg.contains("bob"));
 }
 
+/// Cover rule 10.8's notification-change branch: a notification key present in
+/// both the previous and new `m.room.power_levels` with a *different* value, set
+/// above the sender's PL.
+#[test]
+fn test_notifications_change_above_sender_pl_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@admin:x.com", "content": {"creator": "@admin:x.com"}}
+{"event_id": "$j1", "type": "m.room.member", "state_key": "@alice:x.com", "sender": "@alice:x.com", "content": {"membership": "join"}}
+{"event_id": "$j2", "type": "m.room.member", "state_key": "@admin:x.com", "sender": "@admin:x.com", "content": {"membership": "join"}}
+{"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x.com", "content": {"users": {"@admin:x.com": 100, "@alice:x.com": 50}, "notifications": {"room": 50}}}
+"#,
+    );
+    // Alice (PL 50) raises notifications.room from 50 -> 80 (above her PL):
+    // the key exists in both old and new, so the `|&ov| ov != new_val` closure
+    // runs and the rule-10.8 "exceeds sender PL" branch fires.
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl2", "type": "m.room.power_levels", "state_key": "", "sender": "@alice:x.com", "content": {"users": {"@admin:x.com": 100, "@alice:x.com": 50}, "notifications": {"room": 80}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("cannot set notifications[room]")),
+        "expected rule-10.8 notifications rejection, got: {res:?}"
+    );
+}
+
 /// Cover `get_required_power_level` → `get_event_power_level` return path:
 /// when the PL event has an `events` map with an override for the event type.
 #[test]
