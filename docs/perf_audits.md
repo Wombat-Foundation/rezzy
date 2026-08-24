@@ -291,27 +291,41 @@ through the cracks.
   derives (and for well-known types, still just a string compare + a lookup).
   Remains the best concrete in-repo follow-up; the win is bounded by the conflict
   set size, so it is narrow but real.
-- **Mainline BFS-vs-DFS for v2.1.1+** (`compute_closest_mainline_positions`
-  uses iterative DFS + min-index). Correctness question, unresolved: whether
-  v2.1.1/MSC4297 requires a BFS (hop-distance) definition. The ruma parity
-  oracle passes 100% today, so either the DFS matches ruma or the bench doesn't
-  exercise the divergent case. Needs a differential test (DFS vs BFS on
-  branching DAGs) against the parity oracle before any change.
-- **LtHash fast-forward merge (skip state res for non-interfering forks)**.
-  `resolve_merge_fast_path_hashed` exists; the soundness of skipping the topo
-  sort / iterative auth on a digest match alone is unproven. Needs a formal
-  gate or a differential fuzz harness — same class of shortcut as the retired
-  CDO pre-filter. High value, must be proven.
+- **Mainline BFS-vs-DFS for v2.1.1+** — **resolved: traversal-order independent**.
+  `mainline_pos(E) = min{i | P_i ∈ auth_chain(E)}` is a min over a set fixed by the
+  DAG (the reachable mainline-ancestor closure), and `min` is associative/
+  commutative, so DFS, BFS, and post-order all yield the same index — the mainline
+  index of each `P_i` is a fixed invariant, unlike hop-count shortest paths. The
+  iterative-DFS implementation in `compute_closest_mainline_positions` is therefore
+  equivalent to a BFS for these purposes, consistent with the 100% ruma parity.
+- **LtHash fast path — Path A vs Path B**.
+  - **Path A (identical-fork fast path): DECIDED & SOUND.** `resolve_merge_fast_path_hashed`
+    (`at.rs:2177`) uses `hash == hash` as an O(1) negative filter + `ptr_eq || ==`
+    as final authority, returning `first.clone()` when all forks are identical.
+    Sound under the trust-the-local-DB model (LtHash collision resistance ~2^200;
+    error-correcting columns / HAMT repair-GC planned). Incremental homomorphic
+    hash update (`at.rs:2199`) maintains the `hash == LtHash(state)` invariant.
+    **Differential harness added** (`test_fast_path_differential_matches_full_resolution_on_identical_forks`)
+    comparing the fast path against uncached `resolve_multiple_prev_states` across
+    fork counts, plus a from-scratch hash-consistency check (guards accumulator
+    drift). Note: true O(1) only when `ptr_eq` holds; independently-converged forks
+    still pay the `==` fallback.
+  - **Path B (non-interfering concurrent-fork skip): OPEN.** Skipping the topo
+    sort / iterative auth because two forks "share the same power-level/auth roots"
+    is NOT justified by a digest match — identical roots ≠ non-interference (forks
+    can conflict on memberships/keys under the same PL). Requires a conservative
+    gate: disjoint differing keys + per-key auth-transition verification. Same class
+    of shortcut as the retired CDO pre-filter; must be proven before use.
 - **Batched RocksDB MultiGet** for the DAG frontier. Lives in `tuwunel`
   (storage layer, separate repo) — out of scope for rezzy.
 - **`// membership-only dedup; do NOT iterate` hardening comment** on the
-  `visited` `FastSet` in `compute_local_auth` (`9931e23`). The swap is safe only
-  because `visited` is never iterated (foldhash seed is per-process); a future
-  edit iterating it would introduce cross-process nondeterminism. Comment not
-  yet added.
+  `visited` `FastSet` in `compute_local_auth` (`9931e23`): **landed** (`at.rs:286`).
+  The swap is safe only because `visited` is never iterated (foldhash seed is
+  per-process); the comment now makes that invariant explicit.
 - **Dedicated tests for the zero-copy refactors** (`ee25160`, `9931e23`).
-  Behavior-preserving (borrowed ↔ owned); existing resolution/parity suites
-  cover them, but explicit borrow-semantics tests were not added.
+  Behavior-preserving (borrowed ↔ owned); existing resolution/parity suites cover
+  them. A differential harness for the LtHash fast path (Path A) was added; explicit
+  borrow-semantics tests for the Kahn/BFS refactors remain optional.
 
 ## Empirically resolved / rejected
 

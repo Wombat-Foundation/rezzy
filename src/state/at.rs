@@ -4036,6 +4036,75 @@ mod tests {
         );
     }
 
+    /// Differential guard for Path A (identical-fork fast path): for a set of
+    /// identical parent states, `resolve_merge_fast_path_hashed` must produce
+    /// exactly the state the uncached full-resolution entry point
+    /// `resolve_multiple_prev_states` would, and the carried `LtHash` must
+    /// equal a from-scratch hash of the result (guards accumulator drift).
+    #[test]
+    fn test_fast_path_differential_matches_full_resolution_on_identical_forks() {
+        use crate::basespec::event_types::EventType;
+
+        let entries: Vec<((EventType, String), String)> = alloc::vec![
+            (("m.room.topic".into(), String::new()), "t1".to_string()),
+            (("m.room.name".into(), String::new()), "r1".to_string()),
+            (("m.room.avatar".into(), String::new()), "a1".to_string()),
+        ];
+        let base: SharedState<String> = entries.iter().cloned().collect();
+
+        for forks in [2usize, 3, 5] {
+            let mut prev_states: Vec<HashedState<String>> = Vec::new();
+            let mut prev_plain: Vec<SharedState<String>> = Vec::new();
+            for i in 0..forks {
+                // First two forks share the base root (ptr_eq true); the rest
+                // are independently built (ptr_eq false) with identical
+                // content, so both fast-path branches (ptr_eq and the full
+                // equality fallback) are exercised.
+                let state: SharedState<String> = if i <= 1 {
+                    base.clone()
+                } else {
+                    entries.iter().cloned().collect()
+                };
+                let hash = crate::state::lthash::LtHash::from_state(&state);
+                prev_states.push(HashedState {
+                    state: state.clone(),
+                    hash,
+                });
+                prev_plain.push(state);
+            }
+
+            let events_map: HashMap<String, LeanEvent> = HashMap::new();
+            let mut fast_cache = LocalAuthCache::new(crate::StateResVersion::V2);
+            let fast = resolve_merge_fast_path_hashed(
+                &prev_states,
+                &events_map,
+                &mut fast_cache,
+                crate::StateResVersion::V2,
+            );
+
+            let mut full_cache = LocalAuthCache::new(crate::StateResVersion::V2);
+            let mut mainline_cache: crate::FastMap<String, Option<String>> =
+                crate::FastMap::default();
+            let full = resolve_multiple_prev_states(
+                &prev_plain,
+                &events_map,
+                &mut full_cache,
+                &mut mainline_cache,
+                crate::StateResVersion::V2,
+            );
+
+            assert_eq!(
+                fast.state, full,
+                "fast path must agree with full resolution for identical forks (forks={forks})"
+            );
+            assert_eq!(
+                fast.hash,
+                crate::state::lthash::LtHash::from_state(&fast.state),
+                "carried LtHash must match a from-scratch hash (forks={forks})"
+            );
+        }
+    }
+
     /// Coverage: the deterministic sort comparator in `find_depth_divergences`
     /// only runs when there are 2+ divergences to order.
     #[test]
