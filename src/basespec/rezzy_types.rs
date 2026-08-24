@@ -62,15 +62,25 @@ impl<T: Clone + Eq + core::hash::Hash + Ord + AsRef<str> + Default + 'static> St
 
 /// Selects which state resolution algorithm to use.
 ///
-/// Each variant corresponds to a set of Matrix room versions and spec behaviors:
+/// Only [`V1`](Self::V1), [`V2`](Self::V2), and [`V2_1`](Self::V2_1) correspond
+/// to actual Matrix spec / MSC content. [`V2_1_1`](Self::V2_1_1) and
+/// [`V2_2`](Self::V2_2) are rezzy-internal designations for hardening beyond
+/// what MSC4297 itself specifies -- MSC4297's text covers only two changes
+/// (starting iterative auth checks from an empty state map, and widening the
+/// full conflicted set to include the conflicted-state subgraph) and
+/// explicitly does not touch the iterative auth checks or event sorting
+/// themselves; it says nothing about CDO, power-phase local-auth fallback
+/// gating, or ban-evasion screening. Those are rezzy's own choices, encoded
+/// as separate variants specifically because they are *not* uniformly part
+/// of stock V2.1:
 ///
 /// | Variant | Room Versions | Key Change |
 /// |---------|:---:|---|
 /// | [`V1`](Self::V1) | 1 | Depth-based topological sort, all `m.room.member` events are power events. |
 /// | [`V2`](Self::V2) | 2–11 | Reverse topological power ordering via Kahn's algorithm, mainline sort. |
-/// | [`V2_1`](Self::V2_1) | 12+ ([MSC4297]) | Empty initial state, conflicted subgraph extraction, CDO filtering. |
-/// | [`V2_1_1`](Self::V2_1_1) | — | Ban evasion fix: restricts power-phase state supplementation. |
-/// | [`V2_2`](Self::V2_2) | — | Reserved for State DAGs ([MSC4242]). |
+/// | [`V2_1`](Self::V2_1) | 12+ ([MSC4297]) | Empty initial state for iterative auth checks; full conflicted set widened to include the conflicted state subgraph. |
+/// | [`V2_1_1`](Self::V2_1_1) | — (rezzy-internal) | Ban evasion fix: resolved-state screening pass + power-phase local-auth gating, beyond what V2.1/MSC4297 itself specifies. |
+/// | [`V2_2`](Self::V2_2) | — (rezzy-internal) | Reserved for State DAGs ([MSC4242]). |
 ///
 /// [MSC4297]: https://github.com/matrix-org/matrix-spec-proposals/pull/4297
 /// [MSC4242]: https://github.com/matrix-org/matrix-spec-proposals/pull/4242
