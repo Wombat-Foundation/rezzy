@@ -4215,8 +4215,7 @@ fn test_apply_authorized_redactions_redactor_with_power_level() {
     };
 
     let mut events = vec![msg.clone(), admin_redact.clone()];
-    let report =
-        apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
     assert!(
         report.applied.contains(&(
             "$admin_redact:example.com".into(),
@@ -4278,7 +4277,9 @@ fn test_apply_authorized_redactions_v1_v2_domain_rule() {
     let mut events = vec![msg.clone(), same_domain.clone()];
     let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V1, "1");
     assert!(
-        report.applied.contains(&("$redact:example.com".into(), "$msg:example.com".into())),
+        report
+            .applied
+            .contains(&("$redact:example.com".into(), "$msg:example.com".into())),
         "same-domain v1 redaction must be authorized via rule 11: {report:?}"
     );
 
@@ -4294,7 +4295,9 @@ fn test_apply_authorized_redactions_v1_v2_domain_rule() {
     let mut events = vec![msg.clone(), cross_domain.clone()];
     let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V1, "1");
     assert!(
-        report.skipped_unauthorized.contains(&("$redact:other.com".into(), "$msg:example.com".into())),
+        report
+            .skipped_unauthorized
+            .contains(&("$redact:other.com".into(), "$msg:example.com".into())),
         "cross-domain v1 redaction must be rejected: {report:?}"
     );
 }
@@ -4338,8 +4341,7 @@ fn test_apply_authorized_redactions_ignores_redaction_without_redacts() {
     };
 
     let mut events = vec![msg.clone(), no_redacts.clone()];
-    let report =
-        apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
     assert!(
         report.applied.is_empty()
             && report.skipped_unauthorized.is_empty()
@@ -4351,6 +4353,21 @@ fn test_apply_authorized_redactions_ignores_redaction_without_redacts() {
         .find(|e| e.event_id == "$msg:example.com")
         .unwrap();
     assert_eq!(m.content, serde_json::json!({ "body": "secret" }));
+}
+
+/// `StateResVersion::has_join_authorised_via_users_server` is a coarse
+/// "not V1" gate: the `V2` enum collapses v2–11 and cannot express "v8+", so
+/// auth selection gates restricted-join on the actual room-version string
+/// instead. Pin its polarity here (it is excluded from the coverage report when
+/// exercised only from the `coverage(off)` gate-polarity unit test).
+#[test]
+fn test_state_res_version_has_join_authorised_via_users_server() {
+    use rezzy::StateResVersion;
+    assert!(!StateResVersion::V1.has_join_authorised_via_users_server());
+    assert!(StateResVersion::V2.has_join_authorised_via_users_server());
+    assert!(StateResVersion::V2_1.has_join_authorised_via_users_server());
+    assert!(StateResVersion::V2_1_1.has_join_authorised_via_users_server());
+    assert!(StateResVersion::V2_2.has_join_authorised_via_users_server());
 }
 
 /// `apply_authorized_redactions` returns a [`RedactionReport`] that tells the
