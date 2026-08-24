@@ -148,8 +148,26 @@ fn test_banned_sender_message_is_hard_rejected() {
         state_key: Some(String::new()),
         sender: "@admin:example.com".to_string(),
         origin_server_ts: 300,
-        content: json!({ "users": { "@admin:example.com": 100 }, "ban": 50, "state_default": 50 }),
+        content: json!({ "users": { "@admin:example.com": 100, "@bob:example.com": 50 }, "ban": 50, "state_default": 50 }),
         auth_events: vec!["$create".to_string(), "$admin_join".to_string()],
+        ..Default::default()
+    };
+    // A public join rule, so bob's self-join is authorized. Without it the
+    // default is `invite`, and bob (never invited) cannot validly join -- which
+    // would make the hard-reject below trivially true for the wrong reason
+    // (bob never a valid member), not because of the ban.
+    let join_rules = LeanEvent {
+        event_id: "$join_rules".to_string(),
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".to_string(),
+        origin_server_ts: 350,
+        content: json!({ "join_rule": "public" }),
+        auth_events: vec![
+            "$create".to_string(),
+            "$admin_join".to_string(),
+            "$pl".to_string(),
+        ],
         ..Default::default()
     };
     let bob_join = LeanEvent {
@@ -159,7 +177,11 @@ fn test_banned_sender_message_is_hard_rejected() {
         sender: "@bob:example.com".to_string(),
         origin_server_ts: 400,
         content: json!({ "membership": "join" }),
-        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$join_rules".to_string(),
+        ],
         ..Default::default()
     };
     // The ban of bob. Bob's message does not cite this ban directly: the ban
@@ -192,7 +214,11 @@ fn test_banned_sender_message_is_hard_rejected() {
         sender: "@bob:example.com".to_string(),
         origin_server_ts: 600,
         content: json!({ "body": "hello" }),
-        auth_events: vec!["$create".to_string(), "$bob_join".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$bob_join".to_string(),
+            "$pl".to_string(),
+        ],
         ..Default::default()
     };
 
@@ -201,6 +227,7 @@ fn test_banned_sender_message_is_hard_rejected() {
         &create_ev,
         &admin_join,
         &pl_ev,
+        &join_rules,
         &bob_join,
         &ban_bob,
         &bob_msg,
@@ -208,9 +235,32 @@ fn test_banned_sender_message_is_hard_rejected() {
         auth_context.insert(ev.event_id.clone(), ev.clone());
     }
 
+    // Control: with no ban, bob is a valid public-rule member and his message
+    // must resolve. This proves the hard-reject below is caused by the ban,
+    // not by an otherwise-invalid fixture.
+    for version in [StateResVersion::V2_1, StateResVersion::V2_1_1] {
+        let mut control_conflicted = HashMap::new();
+        control_conflicted.insert("$bob_join".to_string(), bob_join.clone());
+        control_conflicted.insert("$bob_msg".to_string(), bob_msg.clone());
+        let resolved = resolve_iterative_sort(
+            utils::build_unconflicted_state_test_helper(&auth_context),
+            control_conflicted.clone(),
+            &auth_context,
+            version,
+            &mut std::collections::HashMap::new(),
+        );
+        assert!(
+            resolved.contains_key(&(
+                rezzy::basespec::event_types::EventType::from("m.room.message"),
+                String::new()
+            )),
+            "{version:?} control must accept bob's message when he is joined and not banned"
+        );
+    }
+
     let mut conflicted = HashMap::new();
     conflicted.insert("$ban_bob".to_string(), ban_bob);
-    conflicted.insert("$bob_msg".to_string(), bob_msg);
+    conflicted.insert("$bob_msg".to_string(), bob_msg.clone());
 
     for version in [StateResVersion::V2_1, StateResVersion::V2_1_1] {
         let resolved = resolve_iterative_sort(

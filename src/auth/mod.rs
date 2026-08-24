@@ -1753,11 +1753,19 @@ fn auth_types_for_event_core(
             auth_types.push((M_ROOM_JOIN_RULES.into(), String::new()));
         }
 
-        if let Some(token) = third_party_invite_token {
-            auth_types.push((M_ROOM_THIRD_PARTY_INVITE.into(), token.into()));
+        // The `m.room.third_party_invite` auth event only applies to invite
+        // memberships carrying a token (mirrors the accept-side gating in the
+        // flagged-auth-state check); a token on any other membership is ignored.
+        if membership == Some(MEM_INVITE) {
+            if let Some(token) = third_party_invite_token {
+                auth_types.push((M_ROOM_THIRD_PARTY_INVITE.into(), token.into()));
+            }
         }
 
-        if membership == Some(MEM_JOIN) {
+        // The authorising member is only a required auth event for
+        // restricted-join memberships, which is a room-version-8+ (MSC3089)
+        // feature; pre-v8 joins never carry the field.
+        if membership == Some(MEM_JOIN) && version.has_join_authorised_via_users_server() {
             if let Some(authorising_user) = join_authorised_via_users_server {
                 auth_types.push((M_ROOM_MEMBER.into(), authorising_user.into()));
             }
@@ -2078,6 +2086,49 @@ mod tests {
         assert!(
             required.contains(&(String::from(M_ROOM_MEMBER), String::from("@authoriser:x"))),
             "expected an (m.room.member, \"@authoriser:x\") entry: {required:?}"
+        );
+    }
+
+    /// Regression: a pre-v8 (V1) join carrying `join_authorised_via_users_server`
+    /// must NOT add the authorising member to its required auth events -- the
+    /// field is a room-version-8+ (MSC3089) feature and pre-v8 rooms never
+    /// honor it, even if a malformed event forges the field.
+    #[test]
+    fn test_pre_v8_join_authorised_via_users_server_omitted() {
+        let join_ev = make_test_event(
+            "$join",
+            M_ROOM_MEMBER,
+            "@alice:x",
+            json!({
+                "membership": "join",
+                "join_authorised_via_users_server": "@authoriser:x"
+            }),
+        );
+        let required = required_auth_types_for(&join_ev, M_ROOM_MEMBER, StateResVersion::V1);
+        assert!(
+            !required.contains(&(String::from(M_ROOM_MEMBER), String::from("@authoriser:x"))),
+            "a pre-v8 join must not require the authorising member as an auth event: {required:?}"
+        );
+    }
+
+    /// Regression: a non-invite membership carrying a `third_party_invite`
+    /// token must NOT add the third-party invite auth event -- that auth type
+    /// applies only to `membership: invite` events.
+    #[test]
+    fn test_non_invite_membership_third_party_token_omitted() {
+        let join_ev = make_test_event(
+            "$join",
+            M_ROOM_MEMBER,
+            "@alice:x",
+            json!({
+                "membership": "join",
+                "third_party_invite": { "signed": { "token": "abc123" } }
+            }),
+        );
+        let required = required_auth_types_for(&join_ev, M_ROOM_MEMBER, StateResVersion::V2_1);
+        assert!(
+            !required.contains(&(String::from(M_ROOM_THIRD_PARTY_INVITE), String::from("abc123"))),
+            "a non-invite membership's token must not require the third-party invite auth event: {required:?}"
         );
     }
 }

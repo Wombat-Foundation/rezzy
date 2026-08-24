@@ -2134,6 +2134,29 @@ fn test_auth_types_for_event() {
     );
     assert!(types.contains(&("m.room.member".to_string(), "@bob:x.com".to_string())));
     assert!(types.contains(&("m.room.join_rules".to_string(), String::new())));
+    // A join membership's token must NOT pull in the third-party invite auth
+    // event -- that auth type applies only to `membership: invite`.
+    assert!(!types.contains(&(
+        "m.room.third_party_invite".to_string(),
+        "token123".to_string()
+    )));
+
+    // An invite membership carrying a token DOES require the third-party invite.
+    let invite_content = json!({
+        "membership": "invite",
+        "third_party_invite": {
+            "signed": {
+                "token": "token123"
+            }
+        }
+    });
+    let types = auth_types_for_event(
+        "m.room.member",
+        "@alice:x.com",
+        Some("@bob:x.com"),
+        &invite_content,
+        StateResVersion::V2_1,
+    );
     assert!(types.contains(&(
         "m.room.third_party_invite".to_string(),
         "token123".to_string()

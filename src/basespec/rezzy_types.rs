@@ -167,6 +167,20 @@ impl StateResVersion {
     pub const fn has_ban_evasion_hardening(&self) -> bool {
         matches!(self, Self::V2_1_1 | Self::V2_2)
     }
+
+    /// Returns `true` for room versions that support the
+    /// `join_authorised_via_users_server` restricted-join field (MSC3089, room
+    /// version 8+).
+    ///
+    /// The enum collapses room versions 2–11 into [`Self::V2`], so "v8+"
+    /// cannot be expressed precisely here: this returns `true` for every `V2`
+    /// and above. That is safe in practice because pre-v8 members of `V2`
+    /// never carry the field (it did not exist before v8), so the field's
+    /// presence is an additional guard on top of this predicate.
+    #[must_use]
+    pub const fn has_join_authorised_via_users_server(&self) -> bool {
+        !matches!(self, Self::V1)
+    }
 }
 
 #[cfg(test)]
@@ -187,14 +201,15 @@ mod state_res_version_gate_tests {
     #[test]
     fn test_gate_polarity_table() {
         let table = [
-            // (version, is_v2_1_plus, has_ban_evasion_hardening)
-            (StateResVersion::V1, false, false),
-            (StateResVersion::V2, false, false),
-            (StateResVersion::V2_1, true, false),
-            (StateResVersion::V2_1_1, true, true),
-            (StateResVersion::V2_2, true, true),
+            // (version, is_v2_1_plus, has_ban_evasion_hardening,
+            //  has_join_authorised_via_users_server)
+            (StateResVersion::V1, false, false, false),
+            (StateResVersion::V2, false, false, true),
+            (StateResVersion::V2_1, true, false, true),
+            (StateResVersion::V2_1_1, true, true, true),
+            (StateResVersion::V2_2, true, true, true),
         ];
-        for (version, expect_v2_1_plus, expect_ban_evasion) in table {
+        for (version, expect_v2_1_plus, expect_ban_evasion, expect_join_authorised) in table {
             assert_eq!(
                 version.is_v2_1_plus(),
                 expect_v2_1_plus,
@@ -204,6 +219,11 @@ mod state_res_version_gate_tests {
                 version.has_ban_evasion_hardening(),
                 expect_ban_evasion,
                 "{version:?}.has_ban_evasion_hardening() polarity changed"
+            );
+            assert_eq!(
+                version.has_join_authorised_via_users_server(),
+                expect_join_authorised,
+                "{version:?}.has_join_authorised_via_users_server() polarity changed"
             );
         }
     }
@@ -1295,18 +1315,25 @@ pub struct LeanEvent<Id = String, C = Value, K = String> {
     /// refcounted across however many events are in the batch, not duplicated
     /// per event.
     ///
-    /// `None` is the default and is never treated as a mismatch against
-    /// anything: the room-match check in
-    /// [`check_auth_chain`](crate::auth::check_auth_chain) only fires when
-    /// *both* sides of a comparison carry `Some`. This keeps the field
-    /// fully additive -- a caller that never populates it gets identical
-    /// behavior to before this field existed.
+    /// `None` is the default and means the foreign-room check is *not*
+    /// exercised from this event's side: [`check_auth_chain`](crate::auth::check_auth_chain)
+    /// only inspects room IDs on an event that itself carries `Some`. A caller
+    /// that never populates the field gets identical behavior to before it
+    /// existed.
+    ///
+    /// Once a citing event carries `Some`, *every* event it cites must also
+    /// carry `Some` with the same value: a cited auth event with a different
+    /// `Some`, or with `None` at all, is a `ForeignRoomEvent` rejection. A
+    /// `None` on the *cited* side is not a free pass -- it is exactly the
+    /// "untagged" leak rule 2.5 exists to catch. So the field is opt-in on the
+    /// citing side, but it is not additive to the cited side.
     ///
     /// Note that [`ingest_events`] does **not** populate this field -- it has
     /// no room ID parameter, so events it returns always carry `None`. A
     /// caller that wants the foreign-room check in
     /// [`check_auth_chain`](crate::auth::check_auth_chain) to fire must set
-    /// `room_id` itself after ingest.
+    /// `room_id` on the citing event itself after ingest, and must populate it
+    /// on every cited auth event too (or those citations are rejected).
     pub room_id: Option<RoomId>,
 }
 
