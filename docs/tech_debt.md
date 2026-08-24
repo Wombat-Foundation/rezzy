@@ -148,6 +148,23 @@ opt-in analysis (current lean: keep it separate, since `BackwardExtremity`
 groups multiple missing parents per event more richly than the one-line
 `Warning` variant does).
 
+### `RefcountTable`/`hamt::gc` has no live caller either
+
+Same shape as the dead CDO module below, checked while answering "does anything
+still need a similar 'is this actually wired in' check": nothing in the crate
+outside `src/hamt/gc.rs` itself and its own tests calls
+`apply_new`/`apply_superseded`/`bootstrap`. It's a complete, tested, documented
+incremental-GC primitive (the replacement for periodic `hamt::audit` sweeps)
+that no ingest/resolution lifecycle actually invokes yet -- `delta.rs`'s doc
+comment points to it as "a ready-made incremental [...]" but nothing follows
+that pointer. Not a correctness problem (it's inert, not wrong), but it means
+the crate doesn't yet have an actual GC story end-to-end -- a caller adopting
+rezzy today gets `hamt::audit`'s one-shot sweep only, unless they hand-wire
+`RefcountTable` themselves. Circle back to either wire it into a real call site
+(state group retirement is the obvious candidate) or document it explicitly as a
+BYO-integration primitive rather than implying it's already the crate's GC
+strategy.
+
 ### Dead CDO module (`src/resolve/cdo.rs`)
 
 `apply_cdo_filter` is retired from the live resolution path (superseded by
