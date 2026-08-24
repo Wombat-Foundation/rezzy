@@ -89,16 +89,17 @@ where
 /// Will panic if graph invariants are violated during topological sorting (specifically, if
 /// the in-degree map lacks an entry for a child event during the queue processing phase).
 #[allow(clippy::implicit_hasher)]
-pub fn lean_kahn_sort_with_cycle_diagnostics<Id, C, E, S1>(
+pub fn lean_kahn_sort_with_cycle_diagnostics<Id, C, E, S1, Spl>(
     events: &HashMap<Id, E, S1>,
     sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
     create_ev: Option<&E>,
     version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64>,
+    pl_cache: &mut HashMap<Id, i64, Spl>,
 ) -> KahnSortResult<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
     S1: core::hash::BuildHasher,
+    Spl: core::hash::BuildHasher,
     C: Clone + crate::basespec::rezzy_types::EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
@@ -193,16 +194,17 @@ where
 // jscpd:ignore-start
 #[must_use]
 #[allow(clippy::implicit_hasher)]
-pub fn lean_kahn_sort<Id, C, E, S1>(
+pub fn lean_kahn_sort<Id, C, E, S1, Spl>(
     events: &HashMap<Id, E, S1>,
     sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
     create_ev: Option<&E>,
     version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64>,
+    pl_cache: &mut HashMap<Id, i64, Spl>,
 ) -> Vec<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
     S1: core::hash::BuildHasher,
+    Spl: core::hash::BuildHasher,
     C: Clone + crate::basespec::rezzy_types::EventContent,
     E: EventLike<Id = Id, Content = C>,
 {

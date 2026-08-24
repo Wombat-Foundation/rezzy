@@ -215,7 +215,7 @@ pub(crate) fn route_msc4297_ancestral_power_events<
 
 /// Runs the sequential power phase iterative auth checks to establish the authoritative administrative framework.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, K>(
+pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, Spl, K>(
     resolved: &mut crate::state::at::SharedState<Id, K>,
     power_events: &HashMap<Id, LeanEvent<Id, C, K>, S4>,
     sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, LeanEvent<Id, C, K>>,
@@ -224,13 +224,14 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, K>(
     version: StateResVersion,
     local_auth_cache: &mut LocalAuthCache<Id, C, K>,
     create_ev: Option<&LeanEvent<Id, C, K>>,
-    pl_cache: &mut HashMap<Id, i64>,
+    pl_cache: &mut HashMap<Id, i64, Spl>,
     conflicted_keys: &crate::FastSet<(EventType, K)>,
 ) where
     Id: crate::basespec::rezzy_types::EventId,
     S2: core::hash::BuildHasher,
     S3: core::hash::BuildHasher,
     S4: core::hash::BuildHasher,
+    Spl: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
     K: crate::basespec::rezzy_types::StateKey,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
@@ -524,19 +525,21 @@ pub fn resolve_iterative_sort<
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
+    Spl,
     K,
 >(
     unconflicted_state: &crate::state::at::SharedState<Id, K>,
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64>,
+    pl_cache: &mut HashMap<Id, i64, Spl>,
 ) -> crate::state::at::SharedState<Id, K>
 where
     K: crate::basespec::rezzy_types::StateKey,
+    Spl: core::hash::BuildHasher,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    resolve_iterative_sort_with_cache::<Id, C, S1, S2, K>(
+    resolve_iterative_sort_with_cache::<Id, C, S1, S2, Spl, K>(
         unconflicted_state,
         conflicted_events,
         auth_context,
@@ -555,6 +558,7 @@ pub fn resolve_iterative_sort_with_cache<
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
+    Spl,
     K,
 >(
     unconflicted_state: &crate::state::at::SharedState<Id, K>,
@@ -562,14 +566,15 @@ pub fn resolve_iterative_sort_with_cache<
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
     version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64>,
+    pl_cache: &mut HashMap<Id, i64, Spl>,
 ) -> crate::state::at::SharedState<Id, K>
 where
     K: crate::basespec::rezzy_types::StateKey,
+    Spl: core::hash::BuildHasher,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let conflicted_keys = derive_all_conflicted_keys(conflicted_events);
-    resolve_iterative_sort_with_all_caches::<Id, C, S1, S2, K>(
+    resolve_iterative_sort_with_all_caches::<Id, C, S1, S2, Spl, K>(
         unconflicted_state,
         conflicted_events,
         auth_context,
@@ -593,6 +598,7 @@ pub(crate) fn resolve_iterative_sort_with_all_caches<
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
+    Spl,
     K,
 >(
     unconflicted_state: &crate::state::at::SharedState<Id, K>,
@@ -600,12 +606,13 @@ pub(crate) fn resolve_iterative_sort_with_all_caches<
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
     version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64>,
+    pl_cache: &mut HashMap<Id, i64, Spl>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     conflicted_keys: &crate::FastSet<(EventType, K)>,
 ) -> crate::state::at::SharedState<Id, K>
 where
     K: crate::basespec::rezzy_types::StateKey,
+    Spl: core::hash::BuildHasher,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let original_conflicted_keys =
@@ -755,22 +762,24 @@ pub fn resolve_iterative_sort_with_deltas<
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
+    Spl,
     K,
 >(
     unconflicted_state: crate::state::at::SharedState<Id, K>,
     conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64>,
+    pl_cache: &mut HashMap<Id, i64, Spl>,
 ) -> (
     crate::state::at::SharedState<Id, K>,
     alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
 )
 where
     K: crate::basespec::rezzy_types::StateKey,
+    Spl: core::hash::BuildHasher,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    resolve_iterative_sort_with_cache_and_deltas::<Id, C, S1, S2, K>(
+    resolve_iterative_sort_with_cache_and_deltas::<Id, C, S1, S2, Spl, K>(
         unconflicted_state,
         conflicted_events,
         auth_context,
@@ -798,6 +807,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
     C: crate::basespec::rezzy_types::EventContent + Clone,
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
+    Spl,
     K,
 >(
     unconflicted_state: crate::state::at::SharedState<Id, K>,
@@ -805,13 +815,14 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
     version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64>,
+    pl_cache: &mut HashMap<Id, i64, Spl>,
 ) -> (
     crate::state::at::SharedState<Id, K>,
     alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
 )
 where
     K: crate::basespec::rezzy_types::StateKey,
+    Spl: core::hash::BuildHasher,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     use crate::state::delta::{ResolutionDelta, ResolvePhase};

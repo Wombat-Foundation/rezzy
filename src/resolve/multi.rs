@@ -258,7 +258,7 @@ where
         }
     }
 
-    let mut pl_cache = HashMap::new();
+    let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
     crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
         &unconflicted_state,
         &conflicted_events,
@@ -487,7 +487,7 @@ where
         auth_context.entry(id.clone()).or_insert_with(|| ev.clone());
     }
 
-    let mut pl_cache = HashMap::new();
+    let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
     crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
         &unconflicted_state,
         &conflicted_events,

@@ -344,7 +344,7 @@ where
     C: crate::basespec::rezzy_types::EventContent + Sync + Send + Clone,
 {
     // jscpd:ignore-end
-    let mut pl_cache = HashMap::new();
+    let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
 
     if version.is_v2_1_plus() {
         return crate::resolve::iterative::resolve_iterative_sort(
