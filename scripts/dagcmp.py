@@ -13,6 +13,16 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypedDict
+
+
+class ChainResult(TypedDict):
+    server: str
+    joined: int
+    left: int
+    ban: int
+    chain_len: int
+    partners: list[str]
 
 
 @dataclass
@@ -128,7 +138,7 @@ def get_member_event_ids(
     summary: dict,
 ) -> dict[str, dict[str, str]]:
     """Map category -> {user_id: event_id}."""
-    result = {}
+    result: dict[str, dict[str, str]] = {}
     for cat in ("join", "leave", "ban", "invite", "knock"):
         result[cat] = {}
         cat_data = summary.get("membership", {}).get(cat, {})
@@ -359,7 +369,7 @@ def analyze(
     for cat in ("join", "leave", "ban", "invite"):
         target_eids.update(gt_member_eids.get(cat, {}).values())
 
-    chain_results = []
+    chain_results: list[ChainResult] = []
 
     for start in sorted(domain_files.keys()):
         current_chain = [start]
@@ -386,7 +396,7 @@ def analyze(
             uncovered -= best_added
 
         # State-res on the chain
-        chain_files = []
+        chain_files: list[str] = []
         for d in current_chain:
             chain_files.extend(str(f) for f in domain_files[d])
 

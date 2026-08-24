@@ -17,6 +17,7 @@ Output: res/realistic_large_room.json
 import hashlib
 import json
 import random
+from typing import Any
 
 random.seed(42)  # Deterministic for reproducibility
 
@@ -31,11 +32,11 @@ BOTS = [f"@bot{i}:bridge.matrix.org" for i in range(20)]
 SPAMMERS = [f"@spam{i}:evil.example" for i in range(10)]
 ALL_USERS = ADMINS + MODS + REGULARS + BOTS + SPAMMERS
 
-events = []
-event_ids = []
-state = {}  # (type, state_key) -> event_id
+events: list[dict[str, Any]] = []
+event_ids: list[str] = []
+state: dict[tuple[str, str], str] = {}  # (type, state_key) -> event_id
 joined_users = set()
-power_levels = {}
+power_levels: dict[str, int] = {}
 current_ts = 1700000000000
 event_counter = 0
 
@@ -269,7 +270,7 @@ print("Phase 4: Federation forks...")
 fork_point = event_ids[-1]
 
 # Fork A: Server 1 sees these events
-fork_a_ids = []
+fork_a_ids: list[str] = []
 for i in range(200):
     user = random.choice(list(joined_users - set(ADMINS)))
     eid = add_event(
@@ -284,7 +285,7 @@ for i in range(200):
     fork_a_ids.append(eid)
 
 # Fork B: Server 2 sees different events (concurrent with fork A)
-fork_b_ids = []
+fork_b_ids: list[str] = []
 for i in range(200):
     user = random.choice(list(joined_users - set(ADMINS)))
     eid = add_event(
@@ -379,7 +380,7 @@ for i in range(remaining):
 # ============================================================================
 # Compute stats
 # ============================================================================
-types = {}
+types: dict[str, int] = {}
 for e in events:
     t = e["type"]
     types[t] = types.get(t, 0) + 1

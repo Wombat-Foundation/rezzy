@@ -8,6 +8,7 @@ import os
 import random
 import sys
 import time
+from typing import Any
 
 NUM_EVENTS = 1000
 OUTPUT_FILE = "res/benchmark_1k.json"
@@ -22,7 +23,7 @@ if not os.path.exists("res"):
 
 print(f"Generating {NUM_EVENTS} synthetic Matrix state events...", file=sys.stderr)
 
-events = []
+events: list[dict[str, Any]] = []
 ROOM_ID = "!benchmark_room:example.com"
 members = [f"@user_{i}:example.com" for i in range(50)]
 
@@ -99,7 +100,7 @@ for i in range(3, NUM_EVENTS):
 
     prev_event_id = events[-1]["event_id"]
 
-    content = {}
+    content: dict[str, Any] = {}
     state_key = ""
     if ev_type == "m.room.member":
         content = {"membership": random.choice(["invite", "leave"])}
@@ -141,7 +142,7 @@ print(f"Success! Generated {NUM_EVENTS} events to {v2_file}", file=sys.stderr)
 
 # V2.1 File (Room Version 12)
 v2_1_file = "res/benchmark_1k_v2_1.json"
-events_v2_1 = []
+events_v2_1: list[dict[str, Any]] = []
 for ev in events:
     new_ev = ev.copy()
     if ev["type"] == "m.room.create":
