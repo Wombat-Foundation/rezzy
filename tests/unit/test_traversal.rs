@@ -416,6 +416,21 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
         ..Default::default()
     };
 
+    // A public join rule, so Bob's self-join is authorized. Without it the
+    // default is `invite`, and Bob (never invited) cannot validly join -- which
+    // would make the ban-win assertion below trivially true for the wrong
+    // reason (Bob never a valid member), not because of the power tie-break.
+    let join_rules = LeanEvent {
+        event_id: "$join_rules".to_string(),
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".to_string(),
+        origin_server_ts: 250,
+        content: json!({ "join_rule": "public" }),
+        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        ..Default::default()
+    };
+
     // Alice (PL 100) bans Bob.
     let alice_ban = LeanEvent {
         event_id: "$alice_ban".to_string(),
@@ -437,13 +452,18 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
         sender: "@bob:example.com".to_string(),
         origin_server_ts: 300,
         content: json!({ "membership": "join" }),
-        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$join_rules".to_string(),
+        ],
         ..Default::default()
     };
 
     let mut auth_context = HashMap::new();
     auth_context.insert(create_ev.event_id.clone(), create_ev);
     auth_context.insert(pl_ev.event_id.clone(), pl_ev);
+    auth_context.insert(join_rules.event_id.clone(), join_rules);
 
     let mut conflicted_events = HashMap::new();
     conflicted_events.insert(alice_ban.event_id.clone(), alice_ban);
