@@ -396,9 +396,10 @@ fn redact_content(content: &Value, rule: RedactionRule) -> Value {
 ///
 /// The unstable-version deviations are intentionally not modeled — rezzy
 /// handles the stable v1-v12 set, and their redaction identifiers
-/// (`org.matrix.msc3389.10` preserving `m.relates_to.{rel_type,event_id}`;
-/// `org.matrix.msc4242.12` swapping `auth_events` for `prev_state_events`) are
-/// unrecognized and fail closed.
+/// (`org.matrix.msc3389.10` preserving `m.relates_to.{rel_type,event_id}`)
+/// are unrecognized and fail closed. `org.matrix.msc4242.12`'s swap of
+/// `auth_events` for `prev_state_events` is modeled in `redact_top_level`:
+/// the swapped-in field is preserved alongside `auth_events`.
 #[must_use]
 fn redact_top_level(value: &Value, room_version: &str) -> serde_json::Map<String, Value> {
     use crate::basespec::event_types::{
@@ -434,6 +435,14 @@ fn redact_top_level(value: &Value, room_version: &str) -> serde_json::Map<String
     take(FIELD_PREV_EVENTS, &mut out);
     take(FIELD_AUTH_EVENTS, &mut out);
     take(FIELD_ORIGIN_SERVER_TS, &mut out);
+    // MSC4242 (org.matrix.msc4242.12, room v11+/v12) swaps `auth_events`
+    // for `prev_state_events`. Preserve the swapped-in field so events signed
+    // under that format survive redaction with their hashes/signatures intact.
+    // `take` is a no-op when the field is absent, so stable v11/v12 events
+    // (which never carry it) are unaffected.
+    if room_version_is_v11_or_later(room_version) {
+        take("prev_state_events", &mut out);
+    }
     if !room_version_is_v11_or_later(room_version) {
         take("origin", &mut out);
         take("membership", &mut out);
@@ -3001,6 +3010,48 @@ mod redact_content_tests {
         let rule = RedactionRule::Keys(&["parent.a", "parent.b"]);
         let redacted = redact_content(&content, rule);
         assert_eq!(redacted, json!({ "parent": { "a": 1, "b": 2 } }));
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod redact_top_level_tests {
+    use super::redact_top_level;
+    use serde_json::json;
+
+    /// MSC4242's unstable `org.matrix.msc4242.12` room version swaps
+    /// `auth_events` for `prev_state_events`. Redaction must preserve the
+    /// swapped-in field so events signed under that format keep their
+    /// hashes/signatures valid; stable v11/v12 events (which never carry it)
+    /// must remain unaffected.
+    #[test]
+    fn preserves_prev_state_events_for_msc4242_room_version() {
+        let ev = json!({
+            "type": "m.room.message",
+            "content": { "body": "hi" },
+            "auth_events": ["$A"],
+            "prev_state_events": ["$B"],
+            "depth": 5,
+            "foo": "dropped",
+        });
+        let redacted = redact_top_level(&ev, "org.matrix.msc4242.12");
+        assert_eq!(redacted.get("prev_state_events"), Some(&json!(["$B"])));
+        assert_eq!(redacted.get("auth_events"), Some(&json!(["$A"])));
+        assert!(redacted.get("foo").is_none());
+    }
+
+    #[test]
+    fn stable_v12_events_are_unaffected() {
+        let ev = json!({
+            "type": "m.room.message",
+            "content": { "body": "hi" },
+            "auth_events": ["$A"],
+            "foo": "dropped",
+        });
+        let redacted = redact_top_level(&ev, "12");
+        assert_eq!(redacted.get("auth_events"), Some(&json!(["$A"])));
+        assert!(redacted.get("prev_state_events").is_none());
+        assert!(redacted.get("foo").is_none());
     }
 }
 
