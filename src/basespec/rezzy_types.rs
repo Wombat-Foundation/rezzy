@@ -2073,6 +2073,25 @@ pub fn extract_domain(id: &str) -> Option<&str> {
     id.split_once(':').map(|(_, domain)| domain)
 }
 
+/// Assign every event a dense `usize` index keyed by its `event_id`, in
+/// iteration order.
+///
+/// Shared by the CLI formatter and the stress tests, which previously
+/// copy-pasted this exact loop. Indices are assigned in iteration order, so a
+/// caller that also collects the same events in the same order can address the
+/// events directly by index.
+#[must_use]
+pub fn index_by_event_id<'a>(
+    events: impl IntoIterator<Item = &'a LeanEvent>,
+) -> crate::HashMap<&'a str, usize> {
+    let iter = events.into_iter();
+    let mut index = crate::HashMap::with_capacity(iter.size_hint().0);
+    for (i, ev) in iter.enumerate() {
+        index.insert(ev.event_id.as_str(), i);
+    }
+    index
+}
+
 /// Returns `true` if `id1` and `id2` have matching domains (ASCII case-insensitive match).
 ///
 /// If a string lacks a `:` prefix (e.g. `"example.com"` as in `m.room.aliases` state keys),

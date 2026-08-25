@@ -149,12 +149,8 @@ pub fn compute_component_roots(
     let mut component_roots = Vec::new();
     if !events_map.is_empty() {
         let mut parent: Vec<usize> = (0..events_map.len()).collect();
-        let mut id_to_index: HashMap<&str, usize> = HashMap::with_capacity(events_map.len());
-        let mut index_to_ev: Vec<&LeanEvent> = Vec::with_capacity(events_map.len());
-        for (i, ev) in events_map.values().enumerate() {
-            id_to_index.insert(ev.event_id.as_str(), i);
-            index_to_ev.push(ev);
-        }
+        let index_to_ev: Vec<&LeanEvent> = events_map.values().collect();
+        let id_to_index = rezzy::index_by_event_id(index_to_ev.iter().copied());
         let find_root = |mut node: usize, parent: &mut Vec<usize>| -> usize {
             while parent[node] != node {
                 parent[node] = parent[parent[node]];

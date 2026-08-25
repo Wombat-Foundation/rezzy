@@ -707,10 +707,7 @@ fn verify_spam_storm_results(
         }
 
         let mut parent: Vec<usize> = (0..events.len()).collect();
-        let mut id_to_index = std::collections::HashMap::with_capacity(events.len());
-        for (i, ev) in events.iter().enumerate() {
-            id_to_index.insert(ev.event_id.as_str(), i);
-        }
+        let id_to_index = rezzy::index_by_event_id(events.iter());
 
         for (i, ev) in events.iter().enumerate() {
             for prev in &ev.prev_events {
