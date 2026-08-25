@@ -94,7 +94,15 @@ impl<T: Eq + Clone + core::hash::Hash, Idx: Copy + TryFrom<usize> + DenseIndexWi
     /// Returns [`IndexTooLarge`] if `universe` contains more distinct items
     /// than `Idx` can address (`Idx::MAX`).
     pub fn try_build(universe: impl IntoIterator<Item = T>) -> Result<Self, IndexTooLarge> {
-        Self::try_build_bounded(universe, Idx::MAX)
+        // `Idx::MAX` (e.g. `u8::MAX` = 255) is itself a representable index
+        // value, so the number of addressable slots is `Idx::MAX + 1` (256),
+        // not `Idx::MAX`. Passing `Idx::MAX` as `bound` would reject a
+        // universe of exactly that many distinct items on its last one, even
+        // though its highest assigned index (`Idx::MAX`) fits. `saturating_add`
+        // only matters for `Idx = usize`, where `usize::MAX + 1` would
+        // overflow; saturating keeps the bound at `usize::MAX`, which no real
+        // universe reaches anyway.
+        Self::try_build_bounded(universe, Idx::MAX.saturating_add(1))
     }
 
     /// [`Self::try_build`], but with the overflow bound as a parameter instead
@@ -268,6 +276,24 @@ mod tests {
             err.to_string(),
             "index has 3 distinct items, more than the index width can address"
         );
+    }
+
+    #[test]
+    fn try_build_accepts_exactly_idx_max_plus_one_items() {
+        // Regression: `try_build` used to pass `Idx::MAX` (255 for u8)
+        // straight through as `bound`, rejecting the 256th distinct item even
+        // though its index (255) is representable in `u8`. A universe of
+        // exactly `Idx::MAX + 1` (256) distinct items must succeed, with the
+        // last item assigned index 255.
+        let idx: DenseIndex<u32, u8> = DenseIndex::try_build(0u32..256).unwrap();
+        assert_eq!(idx.len(), 256);
+        assert_eq!(idx.index_of(&255), Some(255));
+        assert_eq!(idx.item_at(255), Some(&255));
+
+        // One more distinct item genuinely overflows `u8`.
+        let err = DenseIndex::<u32, u8>::try_build(0u32..257)
+            .expect_err("257 distinct items cannot fit in a u8 index");
+        assert_eq!(err.distinct_count, 257);
     }
 
     #[test]

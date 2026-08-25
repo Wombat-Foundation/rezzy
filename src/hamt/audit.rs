@@ -87,7 +87,12 @@ impl IndexedUniverse {
     pub fn try_build(
         universe: impl IntoIterator<Item = StructuralHash>,
     ) -> Result<Self, UniverseTooLarge> {
-        Self::try_build_bounded(universe, u32::MAX as usize)
+        // `u32::MAX` is itself a representable index, so the number of
+        // addressable slots is `u32::MAX + 1`, not `u32::MAX` (same off-by-one
+        // `DenseIndex::try_build` had — see its doc comment). `saturating_add`
+        // guards a 32-bit `usize` target, where `u32::MAX as usize + 1` would
+        // overflow.
+        Self::try_build_bounded(universe, (u32::MAX as usize).saturating_add(1))
     }
 
     /// [`Self::try_build`], but with the overflow bound as a parameter
