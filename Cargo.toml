@@ -68,7 +68,7 @@ path = "scripts/bench_ruma_vs_rezzy.rs"
 required-features = ["mock-ruma"]
 
 [features]
-default = ["std", "signing"]
+default = ["std", "signing", "simd-json"]
 std = ["alloc", "serde_json/std", "serde/std", "dep:roaring"]
 alloc = []
 cli = [
@@ -90,6 +90,11 @@ regen = ["std"]
 signing = ["signing-dalek"]
 signing-consensus = ["alloc", "dep:ed25519-consensus"]
 signing-dalek = ["alloc", "dep:ed25519-dalek"]
+# Fast JSON parsing (simd-json) — a production dependency. Its `serde` feature
+# (serde_json interop) is intentionally NOT enabled here; it is pulled only by
+# `simd-json-serde` for dev/bench.
+simd-json = ["dep:simd-json"]
+simd-json-serde = ["simd-json", "simd-json/serde"]
 mock-ruma = [
     "dep:insta",
     "dep:ruma-common",
@@ -138,6 +143,7 @@ serde = { version = "1.0", default-features = false, features = [
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }
 sha3 = { version = "0.10", default-features = false }
+simd-json = { version = "0.18", optional = true, default-features = false }
 test-log = { version = "0.2.20", optional = true }
 ureq = { version = "2.9", optional = true, default-features = false, features = [
     "json",

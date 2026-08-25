@@ -662,29 +662,48 @@ impl core::fmt::Write for ShaWriter<'_> {
 }
 
 /// Writes a JSON string with `serde_json`-identical escaping.
-fn write_json_string(out: &mut dyn core::fmt::Write, s: &str) -> core::fmt::Result {
+///
+/// Non-special runs are emitted in bulk (one `write_str` per escaped char
+/// boundary) instead of per character, matching `serde_json`'s fragment
+/// batching.
+fn write_json_string<W: core::fmt::Write>(out: &mut W, s: &str) -> core::fmt::Result {
     out.write_str("\"")?;
-    for c in s.chars() {
-        match c {
-            '"' => out.write_str("\\\"")?,
-            '\\' => out.write_str("\\\\")?,
-            '\u{08}' => out.write_str("\\b")?,
-            '\u{09}' => out.write_str("\\t")?,
-            '\u{0a}' => out.write_str("\\n")?,
-            '\u{0c}' => out.write_str("\\f")?,
-            '\u{0d}' => out.write_str("\\r")?,
-            c if (c as u32) < 0x20 => write!(out, "\\u{:04x}", c as u32)?,
-            c => {
-                let mut buf = [0_u8; 4];
-                out.write_str(c.encode_utf8(&mut buf))?;
-            }
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        let escape = matches!(b, b'"' | b'\\' | 0x00..=0x1f);
+        if !escape {
+            i = i.saturating_add(1);
+            continue;
         }
+        if i > start {
+            // ASCII bytes (the only escaped ones) never occur inside a UTF-8
+            // multibyte sequence, so this is a valid char boundary.
+            out.write_str(&s[start..i])?;
+        }
+        match b {
+            b'"' => out.write_str("\\\"")?,
+            b'\\' => out.write_str("\\\\")?,
+            0x08 => out.write_str("\\b")?,
+            0x09 => out.write_str("\\t")?,
+            0x0a => out.write_str("\\n")?,
+            0x0c => out.write_str("\\f")?,
+            0x0d => out.write_str("\\r")?,
+            _ => write!(out, "\\u{b:04x}")?,
+        }
+        i = i.saturating_add(1);
+        start = i;
+    }
+    if start < bytes.len() {
+        out.write_str(&s[start..])?;
     }
     out.write_str("\"")
 }
 
 /// Recursively writes a JSON value in canonical (key-sorted) form.
-fn write_json_value(out: &mut dyn core::fmt::Write, v: &Value) -> core::fmt::Result {
+fn write_json_value<W: core::fmt::Write>(out: &mut W, v: &Value) -> core::fmt::Result {
     match v {
         Value::Null => out.write_str("null"),
         Value::Bool(true) => out.write_str("true"),
@@ -722,8 +741,8 @@ fn write_json_value(out: &mut dyn core::fmt::Write, v: &Value) -> core::fmt::Res
 
 /// Writes the canonical JSON of an **unredacted** event with the top-level
 /// `unsigned`, `signatures`, and `hashes` keys omitted — the content-hash input.
-fn write_content_hash_canonical(
-    out: &mut dyn core::fmt::Write,
+fn write_content_hash_canonical<W: core::fmt::Write>(
+    out: &mut W,
     value: &Value,
 ) -> core::fmt::Result {
     let Value::Object(obj) = value else {
@@ -750,8 +769,8 @@ fn write_content_hash_canonical(
 /// omitted — the reference-hash and PDU-signature input. Mirrors
 /// [`redact_top_level`] + [`redact_content`] exactly, emitting only preserved
 /// keys in `BTreeMap` (sorted) order without building an intermediate `Value`.
-fn write_redacted_canonical(
-    out: &mut dyn core::fmt::Write,
+fn write_redacted_canonical<W: core::fmt::Write>(
+    out: &mut W,
     value: &Value,
     room_version: &str,
 ) -> core::fmt::Result {
@@ -3329,17 +3348,45 @@ mod canonical_parity_tests {
     #[test]
     fn redacted_writer_is_byte_identical_to_serde() {
         let cases = [
-            (json!({ "type":"m.room.message","room_id":"!r:x","sender":"@a:x","origin_server_ts":1,"content":{"body":"hi","extra":"x"},"hashes":{"sha256":"abc"},"unsigned":{"age_ts":5},"signatures":{"x":{"ed25519:0":"sig"}},"unknown_key":9 }), "10"),
-            (json!({ "type":"m.room.member","sender":"@a:x","state_key":"@a:x","content":{"membership":"join","foo":"bar","third_party_invite":{"signed":{"x":1}}},"membership":"top" }), "10"),
-            (json!({ "type":"m.room.create","room_id":"!r:x","sender":"@a:x","content":{"creator":"@a:x","x":1} }), "11"),
-            (json!({ "type":"m.room.join_rules","content":{"join_rule":"invite","allow":[]} }), "9"),
-            (json!({ "type":"m.room.power_levels","content":{"users":{"@a:x":100},"ban":50,"extra":1} }), "11"),
-            (json!({ "type":"m.room.message","prev_state_events":["$B"],"auth_events":["$A"],"content":{} }), "org.matrix.msc4242.12"),
-            (json!({ "type":"m.room.message","origin":"x","membership":"join","prev_state":["$P"],"content":{} }), "5"),
-            (json!({ "type":"m.room.redaction","content":{"redacts":"$X"},"sender":"@a:x" }), "11"),
+            (
+                json!({ "type":"m.room.message","room_id":"!r:x","sender":"@a:x","origin_server_ts":1,"content":{"body":"hi","extra":"x"},"hashes":{"sha256":"abc"},"unsigned":{"age_ts":5},"signatures":{"x":{"ed25519:0":"sig"}},"unknown_key":9 }),
+                "10",
+            ),
+            (
+                json!({ "type":"m.room.member","sender":"@a:x","state_key":"@a:x","content":{"membership":"join","foo":"bar","third_party_invite":{"signed":{"x":1}}},"membership":"top" }),
+                "10",
+            ),
+            (
+                json!({ "type":"m.room.create","room_id":"!r:x","sender":"@a:x","content":{"creator":"@a:x","x":1} }),
+                "11",
+            ),
+            (
+                json!({ "type":"m.room.join_rules","content":{"join_rule":"invite","allow":[]} }),
+                "9",
+            ),
+            (
+                json!({ "type":"m.room.power_levels","content":{"users":{"@a:x":100},"ban":50,"extra":1} }),
+                "11",
+            ),
+            (
+                json!({ "type":"m.room.message","prev_state_events":["$B"],"auth_events":["$A"],"content":{} }),
+                "org.matrix.msc4242.12",
+            ),
+            (
+                json!({ "type":"m.room.message","origin":"x","membership":"join","prev_state":["$P"],"content":{} }),
+                "5",
+            ),
+            (
+                json!({ "type":"m.room.redaction","content":{"redacts":"$X"},"sender":"@a:x" }),
+                "11",
+            ),
         ];
         for (c, rv) in cases {
-            assert_eq!(redacted_writer(&c, rv), redacted_serde(&c, rv), "case: {c} rv={rv}");
+            assert_eq!(
+                redacted_writer(&c, rv),
+                redacted_serde(&c, rv),
+                "case: {c} rv={rv}"
+            );
         }
     }
 }
