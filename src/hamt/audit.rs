@@ -79,11 +79,8 @@ impl IndexedUniverse {
     ///
     /// # Errors
     /// Returns [`UniverseTooLarge`] if `universe` contains more than
-    /// `u32::MAX` distinct hashes.
-    ///
-    /// # Panics
-    /// Never — the internal `u32::try_from` index assignment is guaranteed
-    /// to fit by the same `UniverseTooLarge` guard above it.
+    /// `u32::MAX + 1` distinct hashes (the number of addressable slots;
+    /// exactly `u32::MAX + 1` distinct hashes succeeds).
     pub fn try_build(
         universe: impl IntoIterator<Item = StructuralHash>,
     ) -> Result<Self, UniverseTooLarge> {
@@ -96,15 +93,13 @@ impl IndexedUniverse {
     }
 
     /// [`Self::try_build`], but with the overflow bound as a parameter
-    /// instead of the hard-coded `u32::MAX`.
+    /// instead of the hard-coded `u32::MAX + 1`.
     ///
     /// This is the actual overflow-handling logic; `try_build` is a thin
-    /// wrapper fixing `bound` to `u32::MAX`. The indirection exists purely so
-    /// tests can exercise the "past the bound" branch (the counting loop
-    /// starting at what's now line ~152 below) at a tiny, deterministic
-    /// universe size instead of needing ~4.3 billion actual `StructuralHash`
-    /// entries in memory to reach it -- the two run the identical code, just
-    /// parameterized on where the line is.
+    /// wrapper fixing `bound` to `u32::MAX + 1`. The indirection exists purely
+    /// so tests can exercise the "past the bound" counting branch at a tiny,
+    /// deterministic universe size instead of needing ~4.3 billion
+    /// `StructuralHash` entries in memory to reach it.
     pub(crate) fn try_build_bounded(
         universe: impl IntoIterator<Item = StructuralHash>,
         bound: usize,

@@ -92,7 +92,8 @@ impl<T: Eq + Clone + core::hash::Hash, Idx: Copy + TryFrom<usize> + DenseIndexWi
     ///
     /// # Errors
     /// Returns [`IndexTooLarge`] if `universe` contains more distinct items
-    /// than `Idx` can address (`Idx::MAX`).
+    /// than `Idx` can address (`Idx::MAX + 1` addressable slots — exactly
+    /// `Idx::MAX + 1` distinct items succeeds; only a larger universe fails).
     pub fn try_build(universe: impl IntoIterator<Item = T>) -> Result<Self, IndexTooLarge> {
         // `Idx::MAX` (e.g. `u8::MAX` = 255) is itself a representable index
         // value, so the number of addressable slots is `Idx::MAX + 1` (256),

@@ -312,8 +312,37 @@ fn build_conflicting_room(conflict_count: usize) -> (HashMap<String, LeanEvent>,
         },
     );
 
-    let mut tip = pl_id.clone();
-    let mut depth: u64 = 2;
+    // Branch A below is a self-join (`sender == state_key`, `membership:
+    // "join"`), which `check_join_rules` only admits for a non-creator
+    // sender when the room's join rule is public -- the default (no
+    // `m.room.join_rules` event in state) is `invite`, which would reject
+    // every branch-A event and collapse the intended two-way conflict into
+    // a one-sided ban. Publish the room so both branches actually compete.
+    let join_rules_id = "$join_rules".to_string();
+    events.insert(
+        join_rules_id.clone(),
+        LeanEvent {
+            event_id: join_rules_id.clone(),
+            event_type: "m.room.join_rules".to_string(),
+            state_key: Some(String::new()),
+            power_level: 100,
+            origin_server_ts: {
+                ts += 1;
+                ts
+            },
+            sender: "@creator:example.org".to_string(),
+            content: serde_json::json!({ "join_rule": "public" }),
+            prev_events: vec![pl_id.clone()],
+            auth_events: vec![create_id.clone(), pl_id.clone()],
+            depth: 2,
+            rejected: false,
+            soft_fail: false,
+            room_id: None,
+        },
+    );
+
+    let mut tip = join_rules_id.clone();
+    let mut depth: u64 = 3;
     let mut targets = Vec::new();
     for i in 0..conflict_count {
         let user = format!("@user{i}:example.org");
@@ -321,10 +350,10 @@ fn build_conflicting_room(conflict_count: usize) -> (HashMap<String, LeanEvent>,
         let b_id = format!("$member_{i}_b");
         let merge_id = format!("$merge_{i}");
 
-        let branch_auth = if tip == pl_id {
-            vec![pl_id.clone()]
+        let branch_auth = if tip == join_rules_id {
+            vec![pl_id.clone(), join_rules_id.clone()]
         } else {
-            vec![pl_id.clone(), tip.clone()]
+            vec![pl_id.clone(), join_rules_id.clone(), tip.clone()]
         };
 
         events.insert(
