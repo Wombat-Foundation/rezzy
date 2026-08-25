@@ -311,4 +311,69 @@ mod tests {
         let q: (&str, &str) = ("m.room.member", "@a:x");
         assert!(room_state.contains_key(&q as &dyn crate::auth::StateKeyDyn));
     }
+
+    #[test]
+    fn intern_id_intern_builds_key_during_mutable_phase() {
+        let mut i = Interner::new();
+        let key = InternId::intern(&mut i, "alpha");
+        assert_eq!(key.as_ref(), "alpha");
+        assert_eq!(key.index(), i.id_of("alpha").unwrap());
+    }
+
+    #[test]
+    fn intern_id_empty_is_reserved_slot_zero() {
+        let mut i = Interner::new();
+        i.intern("alpha");
+        let key = InternId::empty(&i);
+        assert_eq!(key.index(), 0);
+        assert_eq!(key.as_ref(), "");
+    }
+
+    #[test]
+    fn intern_id_interner_getter_roundtrips() {
+        let mut i = Interner::new();
+        let idx = i.intern("alpha");
+        let interner = &i;
+        let key = InternId::from_index(interner, idx);
+        // The returned reference is the same interner the key was built from,
+        // so resolving through it yields the same string.
+        assert_eq!(key.interner().get(idx), "alpha");
+    }
+
+    #[test]
+    fn intern_id_eq_is_index_based() {
+        let mut i = Interner::new();
+        let a = i.intern("alpha");
+        let b = i.intern("beta");
+        let interner = &i;
+        let a1 = InternId::from_index(interner, a);
+        let a2 = InternId::from_index(interner, a);
+        let b1 = InternId::from_index(interner, b);
+        assert_eq!(a1, a2, "same index -> equal");
+        assert_ne!(a1, b1, "distinct index -> not equal");
+    }
+
+    #[test]
+    fn intern_id_hash_matches_eq_for_equal_keys() {
+        use core::hash::BuildHasher;
+
+        // A single fixed BuildHasher shared across both calls: RandomState is
+        // seeded per-instance, so two independent `default()`s would produce
+        // different hashes even for equal inputs and say nothing about the
+        // Eq/Hash contract.
+        let build_hasher = crate::HashSet::<()>::default().hasher().clone();
+        let hash_of = |v: &InternId<'_>| build_hasher.hash_one(v);
+
+        let mut i = Interner::new();
+        let a = i.intern("alpha");
+        let interner = &i;
+        let a1 = InternId::from_index(interner, a);
+        let a2 = InternId::from_index(interner, a);
+        assert_eq!(a1, a2);
+        assert_eq!(
+            hash_of(&a1),
+            hash_of(&a2),
+            "equal InternIds must hash identically (Eq/Hash contract)"
+        );
+    }
 }
