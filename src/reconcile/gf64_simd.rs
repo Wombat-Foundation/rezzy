@@ -188,17 +188,7 @@ pub fn get_evaluator() -> EvaluatorBackend {
     *BACKEND.get_or_init(get_evaluator_internal)
 }
 
-#[cfg(all(feature = "std", not(target_arch = "x86_64")))]
-pub fn get_evaluator() -> EvaluatorBackend {
-    EvaluatorBackend::Scalar
-}
-
-#[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
-pub fn get_evaluator() -> EvaluatorBackend {
-    EvaluatorBackend::Scalar
-}
-
-#[cfg(all(not(feature = "std"), not(target_arch = "x86_64")))]
+#[cfg(any(not(feature = "std"), not(target_arch = "x86_64")))]
 pub fn get_evaluator() -> EvaluatorBackend {
     EvaluatorBackend::Scalar
 }
@@ -222,7 +212,7 @@ fn get_evaluator_features() -> (bool, bool) {
     (has_avx512, has_pclmul)
 }
 
-#[cfg(all(target_arch = "x86_64", has_avx512_support))]
+#[cfg(all(feature = "std", target_arch = "x86_64", has_avx512_support))]
 fn select_evaluator_backend(has_avx512: bool, has_pclmul: bool) -> EvaluatorBackend {
     if has_avx512 {
         EvaluatorBackend::Avx512
@@ -233,19 +223,13 @@ fn select_evaluator_backend(has_avx512: bool, has_pclmul: bool) -> EvaluatorBack
     }
 }
 
-#[cfg(all(target_arch = "x86_64", not(has_avx512_support)))]
+#[cfg(all(feature = "std", target_arch = "x86_64", not(has_avx512_support)))]
 fn select_evaluator_backend(_has_avx512: bool, has_pclmul: bool) -> EvaluatorBackend {
     if has_pclmul {
         EvaluatorBackend::Sse
     } else {
         EvaluatorBackend::Scalar
     }
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-#[allow(dead_code)]
-fn select_evaluator_backend(_has_avx512: bool, _has_pclmul: bool) -> EvaluatorBackend {
-    EvaluatorBackend::Scalar
 }
 
 #[cfg(test)]
@@ -255,7 +239,7 @@ mod tests {
     use super::*;
     use alloc::vec::Vec;
 
-    #[cfg(any(not(target_arch = "x86_64"), not(has_avx512_support)))]
+    #[cfg(all(feature = "std", target_arch = "x86_64", not(has_avx512_support)))]
     #[test]
     fn select_evaluator_backend_prefers_sse_then_scalar() {
         assert_eq!(select_evaluator_backend(true, true), EvaluatorBackend::Sse);
@@ -266,7 +250,7 @@ mod tests {
         );
     }
 
-    #[cfg(all(target_arch = "x86_64", has_avx512_support))]
+    #[cfg(all(feature = "std", target_arch = "x86_64", has_avx512_support))]
     #[test]
     fn select_evaluator_backend_prefers_avx512_when_available() {
         assert_eq!(

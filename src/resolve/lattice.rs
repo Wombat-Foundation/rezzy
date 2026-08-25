@@ -178,21 +178,6 @@ where
     thread_res
 }
 
-#[cfg(feature = "std")]
-fn merge_lattice_winners<'a, Id, C>(
-    key_winners: &mut HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
-    thread_res: HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
-    mainline_distances: &HashMap<Id, usize>,
-    mainline_len: usize,
-) where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent,
-{
-    for (key, ev) in thread_res {
-        update_winner_if_better(key_winners, key, ev, mainline_distances, mainline_len);
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn compute_lattice_coordinatized_winners<
     'a,
@@ -253,7 +238,9 @@ fn compute_lattice_coordinatized_winners<
             for handle in handles {
                 let thread_res = handle.join().unwrap();
                 let mut guard = winners.lock().unwrap();
-                merge_lattice_winners(&mut guard, thread_res, mainline_distances, mainline_len);
+                for (key, ev) in thread_res {
+                    update_winner_if_better(&mut guard, key, ev, mainline_distances, mainline_len);
+                }
             }
         });
         *key_winners = winners.into_inner().unwrap();
