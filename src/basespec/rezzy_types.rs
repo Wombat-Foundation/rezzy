@@ -273,7 +273,7 @@ pub fn redaction_preserved_keys(event_type: &str, room_version: &str) -> Redacti
         "10" => 10,
         // v12 inherits v11's redaction rules verbatim (v12.txt includes the
         // v11-redactions spec fragment rather than defining its own).
-        "11" | "12" | "12.1" => 11,
+        "11" | "12" | "12.1" | "org.matrix.msc4242.12" => 11,
         _ => return RedactionRule::None,
     };
     match event_type {
@@ -2947,6 +2947,28 @@ impl<
 {
     fn get_event(&self, id: &Id) -> Option<&E> {
         self.primary.get(id).or_else(|| self.secondary.get(id))
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod redaction_preserved_keys_tests {
+    use super::{redaction_preserved_keys, RedactionRule};
+
+    /// `org.matrix.msc4242.12` is one of the unstable room-version identifiers
+    /// recognized by [`RoomVersion::from_str`] (mapped to `V2_2`, whose
+    /// serialization format is v12's). Its redaction rules must therefore
+    /// match v12's (i.e. v11's, verbatim) rather than falling through to the
+    /// fail-closed `RedactionRule::None` default for unrecognized versions.
+    #[test]
+    fn test_redaction_preserved_keys_recognizes_msc4242_12_as_v11_rules() {
+        assert_eq!(
+            redaction_preserved_keys(
+                crate::basespec::event_types::M_ROOM_CREATE,
+                "org.matrix.msc4242.12"
+            ),
+            RedactionRule::All
+        );
     }
 }
 

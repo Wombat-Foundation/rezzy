@@ -22,10 +22,19 @@ use crate::auth::StateProvider;
 use crate::basespec::rezzy_types::LeanEvent;
 
 /// Owns the string arena + `string -> id` map. Slot 0 reserved for "".
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Interner {
     id_to_str: alloc::vec::Vec<alloc::string::String>,
     str_to_id: crate::HashMap<alloc::string::String, u32>,
+}
+
+impl Default for Interner {
+    /// Delegates to [`Self::new`] so slot 0 is always reserved for "" —
+    /// `#[derive(Default)]` would instead produce an empty interner,
+    /// breaking the invariant every other constructor upholds.
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Interner {
@@ -187,6 +196,16 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use core::hash::BuildHasher;
+
+    /// `Default` must uphold the same "slot 0 is the empty string" invariant
+    /// as `new()` — a derived `Default` would instead produce an empty
+    /// interner with no reserved slot.
+    #[test]
+    fn test_default_reserves_empty_string_at_slot_0() {
+        let interner = Interner::default();
+        assert_eq!(interner.id_of(""), Some(0));
+        assert_eq!(interner.id_to_str, Interner::new().id_to_str);
+    }
 
     /// Empirically confirms a NON-'static, per-call interner works as a
     /// `StateProvider` key: no `'static` bound, no `for<'q>`, no
