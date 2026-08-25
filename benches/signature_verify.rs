@@ -119,6 +119,22 @@ fn main() {
     // Batch vs sequential at two scales.
     bench_batch(&value, &keys, 64, 1_000);
     bench_batch(&value, &keys, 5_000, 20);
+
+    // Parse: bytes -> Value, serde_json vs simd-json.
+    let event_bytes = serde_json::to_vec(&value).expect("serialize");
+    let parse_iters = 10_000;
+    println!("\nparse bytes -> Value (event JSON)");
+    let pj = time("serde_json parse", parse_iters, || {
+        let _ = black_box(serde_json::from_slice::<Value>(&event_bytes));
+    });
+    let ps = time("simd-json parse", parse_iters, || {
+        let mut buf = event_bytes.clone();
+        let _ = black_box(simd_json::serde::from_slice::<Value>(&mut buf));
+    });
+    println!(
+        "serde_json / simd-json = {:.2}x",
+        pj.as_secs_f64() / ps.as_secs_f64()
+    );
 }
 
 /// Times verifying `n` distinct signed PDUs (same server key) one-at-a-time vs

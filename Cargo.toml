@@ -90,11 +90,11 @@ regen = ["std"]
 signing = ["signing-dalek"]
 signing-consensus = ["alloc", "dep:ed25519-consensus"]
 signing-dalek = ["alloc", "dep:ed25519-dalek"]
-# Fast JSON parsing (simd-json) — a production dependency. Its `serde` feature
-# (serde_json interop) is intentionally NOT enabled here; it is pulled only by
-# `simd-json-serde` for dev/bench.
+# Fast JSON parsing (simd-json) — a production dependency. Keep the SIMD
+# parsing/`runtime-detection` speed features, but NOT `serde_impl` (serde JSON
+# interop); that is pulled only by `simd-json-serde` for dev/bench.
 simd-json = ["dep:simd-json"]
-simd-json-serde = ["simd-json", "simd-json/serde"]
+simd-json-serde = ["simd-json", "simd-json/serde_impl"]
 mock-ruma = [
     "dep:insta",
     "dep:ruma-common",
@@ -143,7 +143,10 @@ serde = { version = "1.0", default-features = false, features = [
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }
 sha3 = { version = "0.10", default-features = false }
-simd-json = { version = "0.18", optional = true, default-features = false }
+simd-json = { version = "0.18", optional = true, default-features = false, features = [
+    "swar-number-parsing",
+    "runtime-detection",
+] }
 test-log = { version = "0.2.20", optional = true }
 ureq = { version = "2.9", optional = true, default-features = false, features = [
     "json",
@@ -161,7 +164,7 @@ harness = false
 name = "signature_verify"
 path = "benches/signature_verify.rs"
 harness = false
-required-features = ["signing", "mock-ruma"]
+required-features = ["signing", "mock-ruma", "simd-json-serde"]
 
 [[bench]]
 name = "resolve"
