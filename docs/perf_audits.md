@@ -269,7 +269,7 @@ adds a hash lookup per event. The genuinely effective fix would be making
 Complete status of every optimization raised this session, so nothing falls
 through the cracks.
 
-## Landed (committed)
+### Landed (committed)
 
 <!-- markdownlint-disable MD013 -->
 
@@ -287,7 +287,7 @@ through the cracks.
 
 <!-- markdownlint-enable MD013 -->
 
-## Not done — with reason
+### Not done — with reason
 
 - **In-flight `EventType` threading** (`iterative.rs:89` TODO). Earlier rejected
   as net-neutral: the memo doesn't cut `Custom` deep-copies because
@@ -344,7 +344,7 @@ through the cracks.
   added; explicit borrow-semantics tests for the Kahn/BFS refactors remain
   optional.
 
-## Empirically resolved / rejected
+### Empirically resolved / rejected
 
 - **HAMT as `SharedState` backend**: `benches/state_backend.rs` fork-and-diverge
   benchmark shows the in-tree HAMT is **6–27x SLOWER** than `imbl::OrdMap`
@@ -357,7 +357,7 @@ through the cracks.
   the _winning_ power-level event, only known during resolution, so pre-indexed
   depths aren't a stable static property — and it couples to the storage layer.
 
-## Separate (correctness/review) items still open
+### Separate (correctness/review) items still open
 
 - `coerce_json_to_i64` float path ungated by room version (v10+ rejects
   non-integers) — silent auth-semantics deviation.
