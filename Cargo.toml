@@ -7,6 +7,8 @@ resolver = "2"
 autobins = false
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
 description = "Lightweight and formally verified: State Res v1, v2, and v2.1 reference implementations in Rust."
+keywords = ["matrix", "state-resolution", "federation", "verification"]
+categories = ["algorithms", "mathematics"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/gamesguru/rezzy"
 default-run = "rezzy"
@@ -221,6 +223,7 @@ complexity = { level = "warn", priority = -1 }
 style = { level = "warn", priority = -1 }
 correctness = { level = "warn", priority = -1 }
 suspicious = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 similar_names = "allow"
 
