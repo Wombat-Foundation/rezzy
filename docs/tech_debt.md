@@ -97,17 +97,6 @@ already done that unsafe work behind a safe API). Decide: carve out a narrow,
 audited exception to the lint for one module, or take on one of those crates as
 a dependency, before attempting this.
 
-### `required_auth_types_for` allocates per push
-
-`src/auth/mod.rs`'s `required_auth_types_for` builds `Vec<(String, String)>` via
-`String::from(...)` for every entry (`M_ROOM_CREATE`/`M_ROOM_MEMBER` constants
-are already `&'static str`; `event.sender()`/`event.state_key()` are already
-borrowed) — a handful of small allocations per event auth-checked. Not hot-path
-(bounded by the conflicted set, not the full resolved-state size), but could
-return borrowed `&str`/`Cow<'_, str>` pairs instead with no loss of correctness,
-since its only consumer (`state.get_event(&req_type, &req_key)`) just wants
-`&str` anyway.
-
 ### `derive_all_conflicted_keys` double-derives `EventType`
 
 `src/resolve/iterative.rs:83` (pre-existing `TODO(perf)`): calls

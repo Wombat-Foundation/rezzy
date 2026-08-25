@@ -647,13 +647,13 @@ pub fn check_auth_with_context<
             .unwrap_or("1");
         for (req_type, req_key) in required_auth_types_for(event, event_type, version, room_version)
         {
-            if state.get_event(&req_type, &req_key).is_none() {
+            if state.get_event(req_type, req_key).is_none() {
                 continue;
             }
-            if !seen_tuples.contains(&(req_type.clone(), req_key.clone())) {
+            if !seen_tuples.contains(&(req_type.to_string(), req_key.to_string())) {
                 return Err(AuthError::IncompleteAuthEvents {
-                    event_type: req_type,
-                    state_key: req_key,
+                    event_type: req_type.to_string(),
+                    state_key: req_key.to_string(),
                 });
             }
         }
@@ -1899,15 +1899,16 @@ pub fn warn_unexpected_auth_events<
 /// Delegates to the shared selection core [`auth_types_for_event_core`], so it
 /// cannot drift from [`auth_types_for_event`].
 fn required_auth_types_for<
+    'a,
     Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent,
+    C: crate::basespec::rezzy_types::EventContent + 'a,
     E: EventLike<Id = Id, Content = C>,
 >(
-    event: &E,
-    event_type: &str,
+    event: &'a E,
+    event_type: &'a str,
     version: StateResVersion,
-    room_version: &str,
-) -> Vec<(String, String)> {
+    room_version: &'a str,
+) -> Vec<(&'a str, &'a str)> {
     auth_types_for_event_core(
         event_type,
         event.sender(),
@@ -1928,16 +1929,16 @@ fn required_auth_types_for<
 /// route through [`StateResVersion::is_v2_1_plus`] so there is one place the
 /// V2.1 create-omission rule is expressed.
 #[allow(clippy::too_many_arguments)]
-fn auth_types_for_event_core(
-    event_type: &str,
-    sender: &str,
-    state_key: Option<&str>,
-    membership: Option<&str>,
-    third_party_invite_token: Option<&str>,
-    join_authorised_via_users_server: Option<&str>,
+fn auth_types_for_event_core<'a>(
+    event_type: &'a str,
+    sender: &'a str,
+    state_key: Option<&'a str>,
+    membership: Option<&'a str>,
+    third_party_invite_token: Option<&'a str>,
+    join_authorised_via_users_server: Option<&'a str>,
     version: StateResVersion,
-    room_version: &str,
-) -> Vec<(String, String)> {
+    room_version: &'a str,
+) -> Vec<(&'a str, &'a str)> {
     let mut auth_types = Vec::new();
 
     if event_type == M_ROOM_CREATE {
@@ -1946,18 +1947,18 @@ fn auth_types_for_event_core(
 
     // V2.1+ omits m.room.create from auth events (spec change)
     if !version.is_v2_1_plus() {
-        auth_types.push((M_ROOM_CREATE.into(), String::new()));
+        auth_types.push((M_ROOM_CREATE, ""));
     }
-    auth_types.push((M_ROOM_MEMBER.into(), sender.into()));
-    auth_types.push((M_ROOM_POWER_LEVELS.into(), String::new()));
+    auth_types.push((M_ROOM_MEMBER, sender));
+    auth_types.push((M_ROOM_POWER_LEVELS, ""));
 
     if event_type == M_ROOM_MEMBER {
         if let Some(sk) = state_key.filter(|sk| *sk != sender) {
-            auth_types.push((M_ROOM_MEMBER.into(), sk.into()));
+            auth_types.push((M_ROOM_MEMBER, sk));
         }
 
         if matches!(membership, Some(MEM_JOIN | MEM_INVITE | MEM_KNOCK)) {
-            auth_types.push((M_ROOM_JOIN_RULES.into(), String::new()));
+            auth_types.push((M_ROOM_JOIN_RULES, ""));
         }
 
         // The `m.room.third_party_invite` auth event only applies to invite
@@ -1965,7 +1966,7 @@ fn auth_types_for_event_core(
         // flagged-auth-state check); a token on any other membership is ignored.
         if membership == Some(MEM_INVITE) {
             if let Some(token) = third_party_invite_token {
-                auth_types.push((M_ROOM_THIRD_PARTY_INVITE.into(), token.into()));
+                auth_types.push((M_ROOM_THIRD_PARTY_INVITE, token));
             }
         }
 
@@ -1983,7 +1984,7 @@ fn auth_types_for_event_core(
                 .is_some_and(|major| major >= 8)
         {
             if let Some(authorising_user) = join_authorised_via_users_server {
-                auth_types.push((M_ROOM_MEMBER.into(), authorising_user.into()));
+                auth_types.push((M_ROOM_MEMBER, authorising_user));
             }
         }
     }
@@ -2022,6 +2023,9 @@ pub fn auth_types_for_event(
         version,
         room_version,
     )
+    .into_iter()
+    .map(|(event_type, state_key)| (event_type.to_string(), state_key.to_string()))
+    .collect()
 }
 
 #[cfg(test)]
@@ -2279,10 +2283,7 @@ mod tests {
         let required =
             required_auth_types_for(&invite_ev, M_ROOM_MEMBER, StateResVersion::V2_1, "11");
         assert!(
-            required.contains(&(
-                String::from(M_ROOM_THIRD_PARTY_INVITE),
-                String::from("abc123")
-            )),
+            required.contains(&(M_ROOM_THIRD_PARTY_INVITE, "abc123")),
             "expected an (m.room.third_party_invite, \"abc123\") entry: {required:?}"
         );
     }
@@ -2305,7 +2306,7 @@ mod tests {
         let required =
             required_auth_types_for(&join_ev, M_ROOM_MEMBER, StateResVersion::V2_1, "11");
         assert!(
-            required.contains(&(String::from(M_ROOM_MEMBER), String::from("@authoriser:x"))),
+            required.contains(&(M_ROOM_MEMBER, "@authoriser:x")),
             "expected an (m.room.member, \"@authoriser:x\") entry: {required:?}"
         );
     }
@@ -2327,7 +2328,7 @@ mod tests {
         );
         let required = required_auth_types_for(&join_ev, M_ROOM_MEMBER, StateResVersion::V1, "1");
         assert!(
-            !required.contains(&(String::from(M_ROOM_MEMBER), String::from("@authoriser:x"))),
+            !required.contains(&(M_ROOM_MEMBER, "@authoriser:x")),
             "a pre-v8 join must not require the authorising member as an auth event: {required:?}"
         );
     }
@@ -2351,13 +2352,13 @@ mod tests {
 
         let pre_v8 = required_auth_types_for(&join_ev, M_ROOM_MEMBER, StateResVersion::V2, "6");
         assert!(
-            !pre_v8.contains(&(String::from(M_ROOM_MEMBER), String::from("@authoriser:x"))),
+            !pre_v8.contains(&(M_ROOM_MEMBER, "@authoriser:x")),
             "a v6 join must not require the authorising member: {pre_v8:?}"
         );
 
         let v8 = required_auth_types_for(&join_ev, M_ROOM_MEMBER, StateResVersion::V2, "8");
         assert!(
-            v8.contains(&(String::from(M_ROOM_MEMBER), String::from("@authoriser:x"))),
+            v8.contains(&(M_ROOM_MEMBER, "@authoriser:x")),
             "a v8+ join with the field must require the authorising member: {v8:?}"
         );
     }
@@ -2379,7 +2380,7 @@ mod tests {
         let required =
             required_auth_types_for(&join_ev, M_ROOM_MEMBER, StateResVersion::V2_1, "11");
         assert!(
-            !required.contains(&(String::from(M_ROOM_THIRD_PARTY_INVITE), String::from("abc123"))),
+            !required.contains(&(M_ROOM_THIRD_PARTY_INVITE, "abc123")),
             "a non-invite membership's token must not require the third-party invite auth event: {required:?}"
         );
     }
