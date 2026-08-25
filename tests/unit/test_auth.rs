@@ -64,7 +64,7 @@ fn test_self_ban_rejected() {
 }
 
 #[test]
-fn test_flagged_events_are_not_auth_checked() {
+fn test_rejected_events_skip_auth_but_soft_failed_events_are_checked() {
     let mut state = RoomState::new();
     state.insert(
         (M_ROOM_CREATE.into(), String::new()),
