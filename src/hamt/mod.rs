@@ -513,8 +513,7 @@ impl fmt::Display for HamtBuildError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for HamtBuildError {}
+impl core::error::Error for HamtBuildError {}
 
 fn key_path_hash<K: Hash + ?Sized>(structural_key: &[u8], key: &K) -> StructuralHash {
     let mut hasher = StructuralHashBuilder::new(structural_key);
@@ -786,12 +785,11 @@ where
     }
 }
 
-#[cfg(feature = "std")]
-impl<E> std::error::Error for HamtMutateError<E>
+impl<E> core::error::Error for HamtMutateError<E>
 where
-    E: std::error::Error + 'static,
+    E: core::error::Error + 'static,
 {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::HashCollision { .. } => None,
             Self::Resolve(err) => Some(err),

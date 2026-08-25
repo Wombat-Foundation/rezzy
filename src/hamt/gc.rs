@@ -93,8 +93,7 @@ impl fmt::Display for RefcountUnderflow {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for RefcountUnderflow {}
+impl core::error::Error for RefcountUnderflow {}
 
 impl RefcountTable {
     /// An empty table, tracking nothing.

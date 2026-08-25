@@ -243,12 +243,11 @@ where
     }
 }
 
-#[cfg(feature = "std")]
-impl<E> std::error::Error for HamtTraversalError<E>
+impl<E> core::error::Error for HamtTraversalError<E>
 where
-    E: std::error::Error + 'static,
+    E: core::error::Error + 'static,
 {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Resolve(err) => Some(err),
             Self::MaxDepthExceeded { .. } => None,

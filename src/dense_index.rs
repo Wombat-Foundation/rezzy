@@ -59,8 +59,7 @@ impl fmt::Display for IndexTooLarge {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for IndexTooLarge {}
+impl core::error::Error for IndexTooLarge {}
 
 /// A set of `T` assigned dense `Idx` indexes, in first-seen order.
 ///

@@ -46,8 +46,7 @@ impl fmt::Display for UniverseTooLarge {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for UniverseTooLarge {}
+impl core::error::Error for UniverseTooLarge {}
 
 /// A `universe` of node hashes assigned dense `u32` indexes, in the order the
 /// hashes were given.
@@ -162,11 +161,11 @@ impl<E: fmt::Display> fmt::Display for BitmapAuditError<E> {
 }
 
 #[cfg(feature = "std")]
-impl<E> std::error::Error for BitmapAuditError<E>
+impl<E> core::error::Error for BitmapAuditError<E>
 where
-    E: std::error::Error + fmt::Debug + 'static,
+    E: core::error::Error + fmt::Debug + 'static,
 {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Universe(err) => Some(err),
             Self::Traversal(err) => Some(err),

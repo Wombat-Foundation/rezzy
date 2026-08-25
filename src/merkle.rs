@@ -49,8 +49,7 @@ impl fmt::Display for MerkleError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for MerkleError {}
+impl core::error::Error for MerkleError {}
 
 /// One named metadata value. The value is Matrix Canonical JSON encoded before hashing.
 #[derive(Debug, Clone, PartialEq, Eq)]

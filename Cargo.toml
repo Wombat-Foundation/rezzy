@@ -2,7 +2,7 @@
 name = "rezzy"
 version = "0.6.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.81"
 resolver = "2"
 autobins = false
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
@@ -44,7 +44,7 @@ exclude = [
 [package.metadata.cargo-machete]
 ignored = [
     # Direct optional anchors for transitive CLI dependency versions that still
-    # parse and build on the Rust 1.75 MSRV.
+    # parse and build on the Rust 1.81 MSRV.
     "idna_adapter",
 ]
 
@@ -111,7 +111,7 @@ imbl = { version = "3.0", default-features = false, features = ["serde"] }
 insta = { version = "1.47.2", optional = true }
 mimalloc = { version = "0.1.52", optional = true }
 
-roaring = { version = "0.10", optional = true } # compatible with the Rust 1.75 MSRV
+roaring = { version = "0.10", optional = true } # compatible with the Rust 1.81 MSRV
 ruma-common = { version = "0.19.0", optional = true }
 ruma-events = { version = "0.34.0", optional = true }
 ruma-state-res = { version = "0.17.0", optional = true, features = [

@@ -182,6 +182,7 @@ pub enum EvaluatorBackend {
 }
 
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
+#[must_use]
 pub fn get_evaluator() -> EvaluatorBackend {
     use core::sync::atomic::{AtomicU8, Ordering};
     static BACKEND: AtomicU8 = AtomicU8::new(0);
@@ -209,6 +210,7 @@ pub fn get_evaluator() -> EvaluatorBackend {
 }
 
 #[cfg(any(not(feature = "std"), not(target_arch = "x86_64")))]
+#[must_use]
 pub fn get_evaluator() -> EvaluatorBackend {
     EvaluatorBackend::Scalar
 }

@@ -490,8 +490,7 @@ impl<E: core::fmt::Display> core::fmt::Display for StateComputationError<E> {
     }
 }
 
-#[cfg(feature = "std")]
-impl<E: core::fmt::Debug + core::fmt::Display> std::error::Error for StateComputationError<E> {}
+impl<E: core::fmt::Debug + core::fmt::Display> core::error::Error for StateComputationError<E> {}
 
 /// Same as [`compute_state_at_batch`] but yields each resolved room state
 /// to a callback (as soon as it is ready).
