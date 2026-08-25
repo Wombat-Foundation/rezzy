@@ -94,7 +94,7 @@ impl<
         K,
     > crate::auth::StateProvider<Id, C, LeanEvent<Id, C, K>> for OverlayState<'_, Id, C, S1, S2, K>
 where
-    K: Ord + Clone + Default + AsRef<str>,
+    K: Ord + Clone + Default + AsRef<str> + 'static,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     /// Returns the resolved event or a limited local-auth fallback for the query.

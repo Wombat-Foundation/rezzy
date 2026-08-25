@@ -426,7 +426,7 @@ pub(crate) fn is_sender_banned<Id, C, K>(
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + AsRef<str>,
+    K: Ord + Clone + Default + AsRef<str> + 'static,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     use crate::auth::StateKeyDyn;
