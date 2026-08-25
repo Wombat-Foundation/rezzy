@@ -13,7 +13,8 @@
 //! `unreachable` side of a [`NodeReachabilityAudit`] as a candidate list for
 //! further safety checks, never as a delete list on its own.
 
-use crate::{HashMap, HashSet};
+use crate::dense_index::{DenseIndex, IndexTooLarge};
+use crate::HashSet;
 use alloc::{sync::Arc, vec::Vec};
 use core::fmt;
 
@@ -57,11 +58,19 @@ impl std::error::Error for UniverseTooLarge {}
 /// stable position instead. Identity always resolves back through
 /// [`Self::hash_at`]/`hashes` to the full hash — the dense index is a
 /// local, single-call addressing scheme, not an identifier of its own.
+///
+/// Backed by the crate-wide generic [`DenseIndex`] primitive (indexed type
+/// `StructuralHash`, `u32` width); this wrapper keeps the hash-specific
+/// [`hash_at`](Self::hash_at) naming and the [`UniverseTooLarge`] error type.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IndexedUniverse {
-    /// `hashes[i]` is the `StructuralHash` assigned to dense index `i`.
-    hashes: Vec<StructuralHash>,
-    index_by_hash: HashMap<StructuralHash, u32>,
+pub struct IndexedUniverse(DenseIndex<StructuralHash>);
+
+impl From<IndexTooLarge> for UniverseTooLarge {
+    fn from(err: IndexTooLarge) -> Self {
+        Self {
+            distinct_count: err.distinct_count,
+        }
+    }
 }
 
 impl IndexedUniverse {
@@ -95,80 +104,39 @@ impl IndexedUniverse {
         universe: impl IntoIterator<Item = StructuralHash>,
         bound: usize,
     ) -> Result<Self, UniverseTooLarge> {
-        let mut hashes: Vec<StructuralHash> = Vec::new();
-        let mut index_by_hash: HashMap<StructuralHash, u32> = HashMap::default();
-        let mut iter = universe.into_iter();
-        for hash in iter.by_ref() {
-            if index_by_hash.contains_key(&hash) {
-                continue;
-            }
-            // A new distinct hash needs index `hashes.len()`. If we're
-            // already at `bound` (`u32::MAX` in production), the
-            // resulting length would be one past what still fits in a
-            // `u32` (and would make the later
-            // `u32::try_from(universe.len())` for bitmap construction
-            // panic). Reject here so `len()` is always representable.
-            if hashes.len() >= bound {
-                // Keep counting distinct hashes past the bound so
-                // `distinct_count` reports the *true* total — the previous
-                // value was always `bound + 1` (no information). Every hash
-                // already in `index_by_hash` is a distinct pre-bound hash, so
-                // it is counted without copying all of its keys into a second
-                // set; only hashes discovered *after* the bound need their own
-                // small set for dedup.
-                let mut distinct_count = index_by_hash.len();
-                let mut post_bound: HashSet<StructuralHash> = HashSet::default();
-                post_bound.insert(hash);
-                distinct_count = distinct_count.saturating_add(1);
-                for h in iter {
-                    if index_by_hash.contains_key(&h) {
-                        continue;
-                    }
-                    if post_bound.insert(h) {
-                        distinct_count = distinct_count.saturating_add(1);
-                    }
-                }
-                return Err(UniverseTooLarge { distinct_count });
-            }
-            let idx = u32::try_from(hashes.len())
-                .expect("hashes.len() < u32::MAX, guaranteed by the check above");
-            index_by_hash.insert(hash, idx);
-            hashes.push(hash);
-        }
-        Ok(Self {
-            hashes,
-            index_by_hash,
-        })
+        DenseIndex::try_build_bounded(universe, bound)
+            .map(Self)
+            .map_err(Into::into)
     }
 
     /// The number of distinct hashes indexed.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.hashes.len()
+        self.0.len()
     }
 
     /// True if no hashes are indexed.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.hashes.is_empty()
+        self.0.is_empty()
     }
 
     /// The dense index assigned to `hash`, if it was part of `universe`.
     #[must_use]
     pub fn index_of(&self, hash: &StructuralHash) -> Option<u32> {
-        self.index_by_hash.get(hash).copied()
+        self.0.index_of(hash)
     }
 
     /// The full hash assigned to dense index `idx`, if in range.
     #[must_use]
     pub fn hash_at(&self, idx: u32) -> Option<StructuralHash> {
-        self.hashes.get(idx as usize).copied()
+        self.0.item_at(idx as usize).copied()
     }
 
     /// All indexed hashes, in dense-index order.
     #[must_use]
     pub fn hashes(&self) -> &[StructuralHash] {
-        &self.hashes
+        self.0.items()
     }
 }
 

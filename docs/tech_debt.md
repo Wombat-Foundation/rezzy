@@ -23,26 +23,25 @@ copies:
    `auth_bitmaps: Vec<RoaringBitmap>`. Overflow handling:
    `u32::try_from(idx).unwrap()` -- **panics** past `u32::MAX` entries, doesn't
    return an error.
-2. `src/hamt/audit.rs`, `IndexedUniverse`: `hashes: Vec<StructuralHash>` +
-   `index_by_hash: HashMap<StructuralHash, u32>` -- hardcoded to
-   `StructuralHash`, not generic over an arbitrary `Id`. Feeds
-   `bitmap_node_reachability_audit`'s `RoaringBitmap`s. **The one correct copy
-   on overflow**: `try_build`/`try_build_bounded` return
-   `Result<_, UniverseTooLarge>` instead of panicking, and keep counting the
-   _true_ distinct count past the bound rather than reporting a content-free
-   `bound + 1`.
+2. `src/hamt/audit.rs`, `IndexedUniverse`: **migrated onto the shared
+   [`DenseIndex`](crate::DenseIndex) primitive** (`src/dense_index.rs`) — now a
+   thin wrapper over `DenseIndex<StructuralHash>` (generic indexed type, `u32`
+   width). `IndexedUniverse`/`UniverseTooLarge` public API is unchanged; the
+   overflow handling (the one correct, `Result`-based copy) now lives once in
+   the generic engine.
 3. `src/resolve/reachability.rs`: **two separate versions in the same file** --
    a standalone `index_topology()` (owned `Id`, `FastMap<Id, u32>`) and a struct
    at lines ~400-404 with its own `id_to_index`/`index_to_id` pair, both
-   `u32`-indexed like (1).
+   `u32`-indexed like (1). Not yet migrated.
 4. `src/state/at.rs`, `collect_ancestor_short_ids_batch`:
    `FastMap<&Id, usize>` + `Vec<&Id>` -- **borrowed** `&Id` (not owned),
    **`usize`** indices (not `u32`, so no overflow risk in practice). Used at 8+
    call sites within that one file (topological sort / depth computation
-   helpers).
+   helpers). A queue/BFS order rather than plain first-seen, so it's the least
+   natural fit for the `DenseIndex` engine. Not yet migrated.
 5. `src/bin/rezzy/format.rs` and `tests/stress_large_rooms.rs`: two more ad hoc
    versions, `HashMap<&str, usize>`, for display/formatting and stress-test
-   graph construction respectively.
+   graph construction respectively. Not yet migrated.
 
 None of these are wrong in isolation, but the duplication means: the
 overflow-handling fix only exists in one of the seven (`IndexedUniverse`), any
@@ -51,19 +50,18 @@ to seven times, and each copy independently made its own ownership (`Id` vs
 `&Id`) and width (`u32` vs `usize`) choice without a documented reason to prefer
 one over another at a given call site.
 
-**Recommended approach** (not started, deliberately not attempted as a drive-by
-fix given the size): extract a single generic primitive -- something like
-`DenseIndex<T, Idx = u32>`, parameterized over both the indexed type `T` (so it
-can replace `StructuralHash`-specific `IndexedUniverse` too) and the index width
-`Idx` (so `state/at.rs`'s `usize`-indexed, overflow-free use case doesn't get
-forced into `u32`) -- with `IndexedUniverse`'s `Result`-based overflow handling
-as the baseline, since it's the only one of the seven that actually gets this
-right. Offer both an owned and a borrowed (`&T`) construction path, since
-(1)/(2)/(3) need to own and (4) needs to borrow. Migrate each of the seven
-implementations onto it one at a time rather than in one sweeping change,
-verifying no behavioral change at each step (this touches auth/hamt/resolve/
-state/bin -- a real multi-module refactor, not a small follow-up). Do NOT copy
-any one of the seven implementations directly into another's call site as a
+**Status:** the shared primitive [`DenseIndex<T, Idx = u32>`](crate::DenseIndex)
+now exists (`src/dense_index.rs`) with `Result`-based overflow handling (from
+`IndexedUniverse`'s corrected counting) as the baseline, generic over both the
+indexed type `T` and the index width `Idx`, with owned and borrowed (`&T`)
+construction paths. **Done so far:** `IndexedUniverse` (item 2) migrated onto
+it, preserving its public API and behavior (895 tests pass; clippy clean).
+**Remaining (do one at a time, verifying no behavioral change at each step):**
+migrate items 1 (`AuthGraph`), 3 (`reachability`'s `index_topology` + the
+`~400` struct), and 5 (`format.rs`/`stress_large_rooms.rs`) onto `DenseIndex`;
+item 4 (`at.rs` BFS) is the weakest fit and should only be migrated if the
+borrowed/`usize` path proves clean, otherwise leave as-is. Do NOT copy any one
+of the remaining implementations directly into another's call site as a
 shortcut -- the ownership/width mismatches make that actively wrong at at least
 the (1)-into-(4) and (4)-into-(1) directions.
 

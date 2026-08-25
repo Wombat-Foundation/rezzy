@@ -83,6 +83,7 @@ use alloc::vec::Vec;
 pub mod auth;
 pub mod basespec;
 pub mod cuckoo_verify;
+pub mod dense_index;
 pub mod hamt;
 pub mod merkle;
 pub mod reconcile;
@@ -91,6 +92,7 @@ pub mod state;
 pub mod warnings;
 
 pub use basespec::rezzy_types::*;
+pub use dense_index::{DenseIndex, IndexTooLarge};
 pub use reconcile::*;
 pub use resolve::*;
 pub use state::*;
