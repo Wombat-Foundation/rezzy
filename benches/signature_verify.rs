@@ -115,4 +115,34 @@ fn main() {
 
     let speedup = rm.as_secs_f64() / rz.as_secs_f64();
     println!("\nruma / rezzy = {speedup:.2}x");
+
+    // Batch vs sequential: N distinct signed PDUs from one server (same key).
+    let n = 64;
+    let sk = ed25519_dalek::SigningKey::from_bytes(&[42_u8; 32]);
+    let events: Vec<Value> = (0..n)
+        .map(|i| {
+            let mut v = value.clone();
+            v["origin_server_ts"] = json!(i);
+            let canonical = rezzy::basespec::rezzy_types::canonical_redacted_json(&v, ROOM_VERSION);
+            let sig = sk.sign(canonical.as_bytes());
+            let sig_b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(sig.to_bytes());
+            v["signatures"] = json!({ "example.com": { "ed25519:0": sig_b64 } });
+            v
+        })
+        .collect();
+
+    let batch_iters = 1_000;
+    println!("\nbatch vs sequential: {n} signed PDUs, 1 server sig each");
+    let seq = time("sequential xN", batch_iters, || {
+        for e in &events {
+            let _ = black_box(verify_event_signatures(e, ROOM_VERSION, &keys));
+        }
+    });
+    let bat = time("verify_batch xN", batch_iters, || {
+        let _ = black_box(rezzy::signing::verify_batch(&events, ROOM_VERSION, &keys));
+    });
+    println!(
+        "sequential / batch = {:.2}x",
+        seq.as_secs_f64() / bat.as_secs_f64()
+    );
 }
