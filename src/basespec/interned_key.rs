@@ -154,6 +154,14 @@ impl<'a, Id, C> InternedRoomState<'a, Id, C> {
     /// Builds a room state directly from an already-interned map. `benches/`
     /// uses this to construct a realistic room for the `get_event` micro-bench
     /// without reaching into private fields.
+    ///
+    /// # Panics
+    /// `InternId`'s `Eq`/`Ord`/`Hash` compare only the dense index, not which
+    /// `Interner` produced it (see the note beside those impls) -- so a map
+    /// keyed by `InternId`s from a DIFFERENT arena than `interner` would let
+    /// `get_event` resolve a query through `interner` and silently return the
+    /// wrong event for it. Panics if any key or state-key value in `map` was
+    /// not produced by `interner`.
     #[must_use]
     pub fn new(
         interner: &'a Interner,
@@ -162,6 +170,17 @@ impl<'a, Id, C> InternedRoomState<'a, Id, C> {
             LeanEvent<Id, C, InternId<'a>>,
         >,
     ) -> Self {
+        for ((et, sk), ev) in &map {
+            assert!(
+                core::ptr::eq(et.interner(), interner)
+                    && core::ptr::eq(sk.interner(), interner)
+                    && ev
+                        .state_key
+                        .map_or(true, |k| core::ptr::eq(k.interner(), interner)),
+                "InternedRoomState::new: map contains InternId(s) from a \
+                 different Interner than the one supplied"
+            );
+        }
         Self { interner, map }
     }
 }
@@ -205,6 +224,47 @@ mod tests {
         let interner = Interner::default();
         assert_eq!(interner.id_of(""), Some(0));
         assert_eq!(interner.id_to_str, Interner::new().id_to_str);
+    }
+
+    /// `InternId`'s `Eq`/`Ord` compare only the dense index (see the note
+    /// beside those impls), so a map built from a DIFFERENT `Interner` than
+    /// the one `InternedRoomState::new` is given would let `get_event`
+    /// resolve queries against the wrong arena's strings. `new` must reject
+    /// that at construction rather than let it silently return wrong events.
+    #[test]
+    #[should_panic(expected = "different Interner")]
+    fn test_new_rejects_cross_arena_intern_ids() {
+        let mut arena_a = Interner::new();
+        arena_a.intern("m.room.member");
+        arena_a.intern("@a:x");
+
+        let mut arena_b = Interner::new();
+        arena_b.intern("m.room.member");
+        arena_b.intern("@a:x");
+
+        // Keyed with InternIds from arena_a, but constructed with arena_b.
+        let et = InternId::from_index(&arena_a, arena_a.id_of("m.room.member").unwrap());
+        let sk = InternId::from_index(&arena_a, arena_a.id_of("@a:x").unwrap());
+        let map = alloc::collections::BTreeMap::from([(
+            (et, sk),
+            LeanEvent::<alloc::string::String, serde_json::Value, InternId<'_>> {
+                event_id: "$a".to_string(),
+                event_type: "m.room.member".to_string(),
+                state_key: Some(sk),
+                power_level: 0,
+                origin_server_ts: 0,
+                sender: "@a:x".to_string(),
+                content: serde_json::Value::Null,
+                prev_events: Vec::new(),
+                auth_events: Vec::new(),
+                depth: 0,
+                rejected: false,
+                soft_fail: false,
+                room_id: None,
+            },
+        )]);
+
+        let _ = InternedRoomState::new(&arena_b, map);
     }
 
     /// Empirically confirms a NON-'static, per-call interner works as a
