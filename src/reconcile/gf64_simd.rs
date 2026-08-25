@@ -181,38 +181,58 @@ pub enum EvaluatorBackend {
     Avx512,
 }
 
-#[cfg(all(feature = "std", target_arch = "x86_64"))]
+#[cfg(target_arch = "x86_64")]
 pub fn get_evaluator() -> EvaluatorBackend {
-    use std::sync::OnceLock;
-    static BACKEND: OnceLock<EvaluatorBackend> = OnceLock::new();
-    *BACKEND.get_or_init(get_evaluator_internal)
+    use core::sync::atomic::{AtomicU8, Ordering};
+    static BACKEND: AtomicU8 = AtomicU8::new(0);
+
+    let val = BACKEND.load(Ordering::Relaxed);
+    if val != 0 {
+        return match val {
+            1 => EvaluatorBackend::Scalar,
+            2 => EvaluatorBackend::Sse,
+            #[cfg(has_avx512_support)]
+            3 => EvaluatorBackend::Avx512,
+            _ => EvaluatorBackend::Scalar,
+        };
+    }
+
+    let backend = get_evaluator_internal();
+    let encoded = match backend {
+        EvaluatorBackend::Scalar => 1,
+        EvaluatorBackend::Sse => 2,
+        #[cfg(has_avx512_support)]
+        EvaluatorBackend::Avx512 => 3,
+    };
+    BACKEND.store(encoded, Ordering::Relaxed);
+    backend
 }
 
-#[cfg(any(not(feature = "std"), not(target_arch = "x86_64")))]
+#[cfg(not(target_arch = "x86_64"))]
 pub fn get_evaluator() -> EvaluatorBackend {
     EvaluatorBackend::Scalar
 }
 
-#[cfg(all(feature = "std", target_arch = "x86_64"))]
+#[cfg(target_arch = "x86_64")]
 fn get_evaluator_internal() -> EvaluatorBackend {
     let (has_avx512, has_pclmul) = get_evaluator_features();
     select_evaluator_backend(has_avx512, has_pclmul)
 }
 
-#[cfg(all(feature = "std", target_arch = "x86_64"))]
+#[cfg(target_arch = "x86_64")]
 #[cfg_attr(all(coverage_nightly, not(has_avx512_host_support)), coverage(off))]
 fn get_evaluator_features() -> (bool, bool) {
     #[cfg(has_avx512_support)]
-    let has_avx512 = std::is_x86_feature_detected!("avx512f")
-        && std::is_x86_feature_detected!("avx512bw")
-        && std::is_x86_feature_detected!("vpclmulqdq");
+    let has_avx512 = core::arch::x86_64::is_x86_feature_detected!("avx512f")
+        && core::arch::x86_64::is_x86_feature_detected!("avx512bw")
+        && core::arch::x86_64::is_x86_feature_detected!("vpclmulqdq");
     #[cfg(not(has_avx512_support))]
     let has_avx512 = false;
-    let has_pclmul = std::is_x86_feature_detected!("pclmulqdq");
+    let has_pclmul = core::arch::x86_64::is_x86_feature_detected!("pclmulqdq");
     (has_avx512, has_pclmul)
 }
 
-#[cfg(all(feature = "std", target_arch = "x86_64", has_avx512_support))]
+#[cfg(all(target_arch = "x86_64", has_avx512_support))]
 fn select_evaluator_backend(has_avx512: bool, has_pclmul: bool) -> EvaluatorBackend {
     if has_avx512 {
         EvaluatorBackend::Avx512
@@ -223,7 +243,7 @@ fn select_evaluator_backend(has_avx512: bool, has_pclmul: bool) -> EvaluatorBack
     }
 }
 
-#[cfg(all(feature = "std", target_arch = "x86_64", not(has_avx512_support)))]
+#[cfg(all(target_arch = "x86_64", not(has_avx512_support)))]
 fn select_evaluator_backend(_has_avx512: bool, has_pclmul: bool) -> EvaluatorBackend {
     if has_pclmul {
         EvaluatorBackend::Sse
