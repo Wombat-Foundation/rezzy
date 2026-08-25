@@ -28,7 +28,7 @@
 
 use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
-use crate::{FastMap, HashMap};
+use crate::{DenseIndex, FastMap, HashMap};
 use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::string::String;
@@ -571,23 +571,22 @@ where
     }
 
     let target_refs: Vec<&Id> = actual_target_ids.iter().collect();
-    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&target_refs, events_map);
+    let index = collect_ancestor_short_ids_batch(&target_refs, events_map);
 
-    let mut is_target = alloc::vec![false; index_to_id.len()];
+    let mut is_target = alloc::vec![false; index.len()];
     for tid in &actual_target_ids {
-        if let Some(&idx) = id_to_index.get(tid) {
+        if let Some(idx) = index.index_of(&tid) {
             is_target[idx] = true;
         }
     }
 
     run_state_pipeline_streaming(
-        &index_to_id,
-        &id_to_index,
+        &index,
         &is_target,
         events_map,
         version,
         |idx, shared_state| {
-            let id = index_to_id[idx].clone();
+            let id = index.items()[idx].clone();
             on_target_resolved(id, shared_state)
         },
     )
@@ -597,9 +596,8 @@ where
 ///
 /// Topologically sorts all reachable ancestors, incrementally merges state at forks,
 /// and yields the target states as they are completed.
-fn run_state_pipeline_streaming<'a, Id, C, S, F, E, K>(
-    index_to_id: &[&'a Id],
-    id_to_index: &FastMap<&'a Id, usize>,
+fn run_state_pipeline_streaming<Id, C, S, F, E, K>(
+    index: &DenseIndex<&Id, usize>,
     is_target: &[bool],
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
@@ -613,27 +611,25 @@ where
     K: crate::basespec::rezzy_types::StateKey,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    let (sorted_ancestors, mut out_degree) =
-        topological_sort_short_ids(index_to_id, id_to_index, events_map);
+    let (sorted_ancestors, mut out_degree) = topological_sort_short_ids(index, events_map);
 
-    if sorted_ancestors.len() != index_to_id.len() {
+    if sorted_ancestors.len() != index.len() {
         return Err(StateComputationError::CycleDetected);
     }
 
     let mut global_auth_cache = LocalAuthCache::new(version);
     let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
 
-    let mut state_after_map: Vec<Option<SharedState<Id, K>>> = core::iter::repeat_with(|| None)
-        .take(index_to_id.len())
-        .collect();
+    let mut state_after_map: Vec<Option<SharedState<Id, K>>> =
+        core::iter::repeat_with(|| None).take(index.len()).collect();
 
     for idx in sorted_ancestors {
-        let id_val = index_to_id[idx];
+        let id_val = index.items()[idx];
         let ev = events_map.get(id_val).unwrap();
 
         let mut prev_states = Vec::with_capacity(ev.prev_events.len());
         for pe in &ev.prev_events {
-            let Some(&pe_idx) = id_to_index.get(pe) else {
+            let Some(pe_idx) = index.index_of(&pe) else {
                 continue;
             };
             if out_degree[pe_idx] == 0 {
@@ -992,20 +988,18 @@ where
 fn collect_ancestor_short_ids_batch<'a, Id, C, S, K>(
     target_event_ids: &[&'a Id],
     events_map: &'a HashMap<Id, LeanEvent<Id, C, K>, S>,
-) -> (FastMap<&'a Id, usize>, Vec<&'a Id>)
+) -> DenseIndex<&'a Id, usize>
 where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: Clone,
 {
-    let mut id_to_index: FastMap<&Id, usize> = FastMap::default();
-    let mut index_to_id: Vec<&Id> = Vec::new();
+    let mut index_to_id: Vec<&'a Id> = Vec::new();
+    let mut seen: crate::FastSet<&'a Id> = crate::FastSet::default();
     let mut queue = Vec::new();
 
     for &tid in target_event_ids {
-        if !id_to_index.contains_key(tid) {
-            let next_idx = index_to_id.len();
-            id_to_index.insert(tid, next_idx);
+        if seen.insert(tid) {
             index_to_id.push(tid);
             queue.push(tid);
         }
@@ -1020,24 +1014,22 @@ where
             continue;
         };
         for pe in &ev.prev_events {
-            if events_map.contains_key(pe) && !id_to_index.contains_key(pe) {
-                let next_idx = index_to_id.len();
-                id_to_index.insert(pe, next_idx);
+            if events_map.contains_key(pe) && seen.insert(pe) {
                 index_to_id.push(pe);
                 queue.push(pe);
             }
         }
     }
 
-    (id_to_index, index_to_id)
+    DenseIndex::try_build(index_to_id)
+        .expect("ancestor short-id index exceeds the usize address space")
 }
 
 /// Performs a topological sort of the graph represented by short `usize` indexes.
 /// Performs Kahn's topological sort on the collected ancestor graph.
 /// Returns the events sorted such that parents always appear before their children.
 fn topological_sort_short_ids<Id, C, S, K>(
-    index_to_id: &[&Id],
-    id_to_index: &FastMap<&Id, usize>,
+    index: &DenseIndex<&Id, usize>,
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
 ) -> (Vec<usize>, Vec<usize>)
 where
@@ -1045,12 +1037,12 @@ where
     S: core::hash::BuildHasher,
     C: Clone,
 {
-    let num_reachable = index_to_id.len();
+    let num_reachable = index.len();
     let mut in_degree = alloc::vec![0usize; num_reachable];
     let mut adjacency = alloc::vec![Vec::new(); num_reachable];
     let mut out_degree = alloc::vec![0usize; num_reachable];
 
-    for (i, id) in index_to_id.iter().enumerate() {
+    for (i, id) in index.items().iter().enumerate() {
         let Some(ev) = events_map.get(*id) else {
             continue;
         };
@@ -1060,7 +1052,7 @@ where
             None
         };
         for parent in &ev.prev_events {
-            if let Some(&parent_idx) = id_to_index.get(parent) {
+            if let Some(parent_idx) = index.index_of(&parent) {
                 // Dedup: only count each parent edge once, even if prev_events has duplicates.
                 if let Some(seen_set) = &mut seen {
                     if !seen_set.insert(parent_idx) {
@@ -1534,12 +1526,12 @@ where
     }
 
     let all_ids: Vec<&Id> = events_map.keys().collect();
-    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&all_ids, events_map);
-    let (sorted, _) = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
+    let index = collect_ancestor_short_ids_batch(&all_ids, events_map);
+    let (sorted, _) = topological_sort_short_ids(&index, events_map);
 
     debug_assert_eq!(
         sorted.len(),
-        index_to_id.len(),
+        index.len(),
         "compute_topo_positions: Kahn sort returned fewer nodes than expected — \
          the input graph contains a cycle"
     );
@@ -1547,15 +1539,15 @@ where
     // Kahn sort gives a valid topological order; apply tiebreak within
     // each topological level for deterministic output.
     // First compute parent-max depths to identify levels.
-    let mut depth_by_idx = alloc::vec![0u64; index_to_id.len()];
+    let mut depth_by_idx = alloc::vec![0u64; index.len()];
     for &idx in &sorted {
-        let id = index_to_id[idx];
+        let id = index.items()[idx];
         if let Some(ev) = events_map.get(id) {
             let max_parent = ev
                 .prev_events
                 .iter()
-                .filter_map(|pe| id_to_index.get(pe))
-                .map(|&pi| depth_by_idx[pi])
+                .filter_map(|pe| index.index_of(&pe))
+                .map(|pi| depth_by_idx[pi])
                 .max()
                 .unwrap_or(0);
             depth_by_idx[idx] = max_parent.saturating_add(1);
@@ -1563,11 +1555,14 @@ where
     }
 
     // Sort by depth ascending (parents first), tiebreak within level.
-    let mut result: Vec<Id> = sorted.iter().map(|&idx| index_to_id[idx].clone()).collect();
+    let mut result: Vec<Id> = sorted
+        .iter()
+        .map(|&idx| index.items()[idx].clone())
+        .collect();
 
     result.sort_by(|a, b| {
-        let da = id_to_index.get(a).map_or(0, |&i| depth_by_idx[i]);
-        let db = id_to_index.get(b).map_or(0, |&i| depth_by_idx[i]);
+        let da = index.index_of(&a).map_or(0, |i| depth_by_idx[i]);
+        let db = index.index_of(&b).map_or(0, |i| depth_by_idx[i]);
         da.cmp(&db).then_with(|| tiebreak(a, b))
     });
 
@@ -1607,26 +1602,26 @@ where
     }
 
     let all_ids: Vec<&Id> = events_map.keys().collect();
-    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&all_ids, events_map);
-    let (sorted, _) = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
+    let index = collect_ancestor_short_ids_batch(&all_ids, events_map);
+    let (sorted, _) = topological_sort_short_ids(&index, events_map);
 
-    let mut depths = alloc::vec![0u64; index_to_id.len()];
+    let mut depths = alloc::vec![0u64; index.len()];
 
     for idx in &sorted {
-        let id = index_to_id[*idx];
+        let id = index.items()[*idx];
         let ev = events_map.get(id).unwrap();
         let max_parent_depth = ev
             .prev_events
             .iter()
-            .filter_map(|pe| id_to_index.get(pe))
-            .map(|&pi| depths[pi])
+            .filter_map(|pe| index.index_of(&pe))
+            .map(|pi| depths[pi])
             .max()
             .unwrap_or(0);
         depths[*idx] = max_parent_depth.saturating_add(1);
     }
 
-    let mut result = HashMap::with_capacity(index_to_id.len());
-    for (i, &id) in index_to_id.iter().enumerate() {
+    let mut result = HashMap::with_capacity(index.len());
+    for (i, &id) in index.items().iter().enumerate() {
         result.insert(id.clone(), depths[i]);
     }
     result
@@ -1792,19 +1787,19 @@ where
     };
 
     let targets = [tip_key];
-    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&targets, events_map);
-    let (sorted, _) = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
+    let index = collect_ancestor_short_ids_batch(&targets, events_map);
+    let (sorted, _) = topological_sort_short_ids(&index, events_map);
 
     // Compute depths inline using the index arrays
-    let mut depth_by_idx = alloc::vec![0u64; index_to_id.len()];
+    let mut depth_by_idx = alloc::vec![0u64; index.len()];
     for &idx in &sorted {
-        let id = index_to_id[idx];
+        let id = index.items()[idx];
         if let Some(ev) = events_map.get(id.borrow()) {
             let max_parent = ev
                 .prev_events
                 .iter()
-                .filter_map(|pe| id_to_index.get(pe))
-                .map(|&pi| depth_by_idx[pi])
+                .filter_map(|pe| index.index_of(&pe))
+                .map(|pi| depth_by_idx[pi])
                 .max()
                 .unwrap_or(0);
 
@@ -1817,12 +1812,12 @@ where
     let mut result: Vec<Id> = sorted
         .iter()
         .rev()
-        .map(|&idx| index_to_id[idx].clone())
+        .map(|&idx| index.items()[idx].clone())
         .collect();
 
     result.sort_by(|a, b| {
-        let da = id_to_index.get(a).map_or(0, |&i| depth_by_idx[i]);
-        let db = id_to_index.get(b).map_or(0, |&i| depth_by_idx[i]);
+        let da = index.index_of(&a).map_or(0, |i| depth_by_idx[i]);
+        let db = index.index_of(&b).map_or(0, |i| depth_by_idx[i]);
         db.cmp(&da).then_with(|| tiebreak(a, b))
     });
 
@@ -2232,8 +2227,7 @@ where
 }
 
 fn run_state_pipeline_streaming_optimized<'a, Id, C, S, F, E, K>(
-    index_to_id: &[&'a Id],
-    id_to_index: &FastMap<&'a Id, usize>,
+    index: &DenseIndex<&'a Id, usize>,
     is_target: &[bool],
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
@@ -2247,22 +2241,20 @@ where
     K: crate::basespec::rezzy_types::StateKey,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    let (sorted_ancestors, mut out_degree) =
-        topological_sort_short_ids(index_to_id, id_to_index, events_map);
+    let (sorted_ancestors, mut out_degree) = topological_sort_short_ids(index, events_map);
 
-    if sorted_ancestors.len() != index_to_id.len() {
+    if sorted_ancestors.len() != index.len() {
         return Err(StateComputationError::CycleDetected);
     }
 
     let mut global_auth_cache = LocalAuthCache::new(version);
     let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
 
-    let mut state_after_map: Vec<Option<HashedState<Id, K>>> = core::iter::repeat_with(|| None)
-        .take(index_to_id.len())
-        .collect();
+    let mut state_after_map: Vec<Option<HashedState<Id, K>>> =
+        core::iter::repeat_with(|| None).take(index.len()).collect();
 
     for idx in sorted_ancestors {
-        let id_val = index_to_id[idx];
+        let id_val = index.items()[idx];
         let ev = events_map.get(id_val).unwrap();
 
         let mut prev_states = Vec::with_capacity(ev.prev_events.len());
@@ -2272,7 +2264,7 @@ where
             None
         };
         for pe in &ev.prev_events {
-            let Some(&pe_idx) = id_to_index.get(pe) else {
+            let Some(pe_idx) = index.index_of(&pe) else {
                 continue;
             };
             // Dedup: adversarial events may carry duplicate prev_events.
@@ -2307,8 +2299,10 @@ where
                         parent_event_id: ev
                             .prev_events
                             .iter()
-                            .find(|pe| id_to_index.contains_key(*pe))
-                            .expect("has_single_parent implies at least one prev_event is in id_to_index"),
+                            .find(|pe| index.index_of(pe).is_some())
+                            .expect(
+                                "has_single_parent implies at least one prev_event is in the index",
+                            ),
                         hash: &parent_state.hash,
                     },
                 )
@@ -2401,23 +2395,22 @@ where
     }
 
     let target_refs: Vec<&Id> = actual_target_ids.iter().collect();
-    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&target_refs, events_map);
+    let index = collect_ancestor_short_ids_batch(&target_refs, events_map);
 
-    let mut is_target = alloc::vec![false; index_to_id.len()];
+    let mut is_target = alloc::vec![false; index.len()];
     for tid in &actual_target_ids {
-        if let Some(&idx) = id_to_index.get(tid) {
+        if let Some(idx) = index.index_of(&tid) {
             is_target[idx] = true;
         }
     }
 
     run_state_pipeline_streaming_optimized(
-        &index_to_id,
-        &id_to_index,
+        &index,
         &is_target,
         events_map,
         version,
         |idx, update| {
-            let id = index_to_id[idx].clone();
+            let id = index.items()[idx].clone();
             on_target_resolved(id, update)
         },
     )
@@ -3957,17 +3950,16 @@ mod tests {
         let ghost = "ghost".to_string();
         let targets: Vec<&String> = alloc::vec![&ghost];
 
-        let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&targets, &events_map);
+        let index = collect_ancestor_short_ids_batch(&targets, &events_map);
         assert_eq!(
-            index_to_id.len(),
+            index.len(),
             1,
             "the unresolvable target still gets a short id"
         );
-        assert!(id_to_index.contains_key(&ghost));
+        assert!(index.index_of(&&ghost).is_some());
 
         // Must not panic when the topological sort walks an id absent from events_map.
-        let (sorted, out_degree) =
-            topological_sort_short_ids(&index_to_id, &id_to_index, &events_map);
+        let (sorted, out_degree) = topological_sort_short_ids(&index, &events_map);
         assert_eq!(sorted.len(), 1);
         assert_eq!(out_degree.len(), 1);
     }
