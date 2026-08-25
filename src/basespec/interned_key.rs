@@ -159,11 +159,14 @@ where
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::auth::StateProvider;
+    use alloc::string::ToString;
     use alloc::vec;
     use alloc::vec::Vec;
+    use core::hash::BuildHasher;
 
     /// Empirically confirms a NON-'static, per-call interner works as a
     /// `StateProvider` key: no `'static` bound, no `for<'q>`, no
@@ -234,5 +237,45 @@ mod tests {
             .expect("must find @a via owned-key lookup");
         assert_eq!(found.event_id, "$a");
         assert!(StateProvider::get_event(&map, "m.room.member", "@nope:x").is_none());
+    }
+
+    /// Covers the `InternId` accessors and trait impls not exercised by the
+    /// state-provider lookup: the `intern` idempotent early-return, `index()`,
+    /// `interner()`, `AsRef<str>`, `Display`, `PartialOrd` (the `<` path, which
+    /// `BTreeMap` never uses — it calls `Ord::cmp`), and `Hash`.
+    #[test]
+    fn intern_id_accessors_and_trait_impls() {
+        let mut interner = Interner::new();
+        let idx1 = interner.intern("@alice:x");
+        let idx2 = interner.intern("@alice:x"); // idempotent -> early `return id`
+        let idx_bob = interner.intern("@bob:x");
+        assert_eq!(idx1, idx2, "intern is idempotent");
+
+        let interner_ref = &interner;
+        let key = InternId::from_index(interner_ref, idx1);
+        let key2 = InternId::from_index(interner_ref, idx2);
+        let other = InternId::from_index(interner_ref, idx_bob);
+
+        // Accessors.
+        assert_eq!(key.index(), idx1);
+        assert_eq!(key.interner().get(idx1), "@alice:x");
+
+        // AsRef<str> + Display.
+        assert_eq!(key.as_ref(), "@alice:x");
+        assert_eq!(key.to_string(), "@alice:x");
+
+        // PartialEq / Eq.
+        assert_eq!(key, key2);
+        // PartialOrd: the `<` operator routes through `partial_cmp`, which the
+        // BTreeMap state-provider path never exercises (it uses `Ord::cmp`).
+        assert!(key < other, "rank order: @alice:x < @bob:x");
+
+        // Hash agrees with Eq under one BuildHasher.
+        let build_hasher = crate::HashSet::<()>::default().hasher().clone();
+        assert_eq!(
+            build_hasher.hash_one(key),
+            build_hasher.hash_one(key2),
+            "equal InternIds must hash identically"
+        );
     }
 }
