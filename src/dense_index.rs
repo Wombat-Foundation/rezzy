@@ -30,6 +30,10 @@ impl DenseIndexWidth for u32 {
     const MAX: usize = u32::MAX as usize;
 }
 
+impl DenseIndexWidth for u8 {
+    const MAX: usize = u8::MAX as usize;
+}
+
 impl DenseIndexWidth for usize {
     const MAX: usize = usize::MAX;
 }
@@ -190,6 +194,7 @@ impl<T: Eq + Clone + core::hash::Hash, Idx: Copy + TryFrom<usize> + DenseIndexWi
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
 
     #[test]
     fn first_seen_order_and_dedup() {
@@ -240,5 +245,38 @@ mod tests {
         assert_eq!(idx.index_of(&&20), Some(1));
         assert_eq!(idx.index_of(&&30), Some(2));
         assert_eq!(idx.item_at(2), Some(&&30));
+    }
+
+    #[test]
+    fn partial_eq_covers_same_and_different_indexes() {
+        let a: DenseIndex<u32> = DenseIndex::try_build([1, 2, 3]).unwrap();
+        let b: DenseIndex<u32> = DenseIndex::try_build([1, 2, 3]).unwrap();
+        let c: DenseIndex<u32> = DenseIndex::try_build([1, 2]).unwrap();
+        let d: DenseIndex<u32> = DenseIndex::try_build([3, 2, 1]).unwrap();
+        assert_eq!(a, b, "same items in the same order are equal");
+        assert_ne!(a, c, "a different item set is not equal");
+        assert_ne!(
+            a, d,
+            "same items in a different first-seen order are not equal"
+        );
+    }
+
+    #[test]
+    fn index_too_large_displays_distinct_count() {
+        let err = IndexTooLarge { distinct_count: 3 };
+        assert_eq!(
+            err.to_string(),
+            "index has 3 distinct items, more than the index width can address"
+        );
+    }
+
+    #[test]
+    fn width_smaller_than_bound_trips_tryfrom() {
+        // Idx = u8 (MAX 255) with bound 300: the `items.len() >= bound` guard
+        // never trips before the item count overflows u8, so the
+        // `Idx::try_from` fallback error is the branch that fires.
+        let err = DenseIndex::<u32, u8>::try_build_bounded(0..300u32, 300)
+            .expect_err("256 distinct items cannot fit in a u8 index");
+        assert_eq!(err.distinct_count, 256);
     }
 }
