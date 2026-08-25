@@ -134,9 +134,21 @@ depending on run). That number measured the string-compare `Ord` shortcut, not a
 proper sort-once-per-call `Ord` — so it is not yet the honest answer to whether
 `u32` interning wins in production.
 
-**Status: performance-justified, parked on the `'static` lifetime bound.** The
-only confirmed structural blocker is the `'static` lifetime requirement (point
-2). The sort-once redo was run: the current `u32`-rank variant in
+**Status: performance-justified, parked on a lifetime bound.** The `'static`
+requirement described in point 2 as coming from the `StateKey` trait itself no
+longer applies verbatim — the trait bound was dropped (see commit
+`58c9a5c`/`2a29da0`). The residual blocker moved, not away: the resolution
+entry points (`compute_state_at`/`_batch`/`_streaming` and their auth
+call-through) still carry a function-level
+`for<'q> (String, K): Borrow<dyn StateKeyDyn + 'q>` bound on every `K`-generic
+signature (`src/auth/mod.rs`, `src/state/at.rs`, `src/resolve/iterative.rs`),
+which independently forces `K: 'static` via the universally-quantified `'q`.
+A borrowing `InternId<'a>` still can't satisfy it without either relaxing that
+bound to a concrete lifetime or replacing the `Borrow<dyn StateKeyDyn>` lookup
+with a `K`-generic query seam (id-lookup for `InternId`, unchanged borrowed
+lookup for `String`) — see `src/basespec/interned_key.rs`'s `InternedRoomState`
+spike, which sidesteps the shared blanket impl entirely rather than relaxing
+it. The sort-once redo was run: the current `u32`-rank variant in
 `benches/interned_key.rs` (collect every `state_key` in the call's `events_map`,
 sort once, assign rank ids — `Ord` genuinely `u32`-cheap) reproduces **-13% to
 -21%** against `String` across room sizes 100/1000/5000, batch and serial, with
@@ -145,8 +157,10 @@ question is whether threading a `'static` interner (or a lifetime/redesigned
 `Borrow<dyn StateKeyDyn>` bound) through the public API is worth that cost.
 Revisit if either lands. The Phase 1 prototype work (`8bf6680`, `99d1cfb`,
 `9fa73b3`, `39dd517`) was reverted from `dev`; `benches/interned_key.rs` still
-carries the `String` vs `InternedKey` (`Arc<str>`) comparison from `fdddb31`,
-whose `u32`-rank variant produces the -13% to -21% figure above.
+carries both variants from `fdddb31` side by side: `InternedKey` (`Arc<str>`),
+whose win over `String` reverses at 5000 members (+3% to +16%, the erosion
+described above), and the separate `InternId` (`u32`-rank) variant, whose
+-13% to -21% figure is the one quoted above and does not reverse.
 
 ### No true zero-copy identifiers (RocksDB-slice-backed views)
 
