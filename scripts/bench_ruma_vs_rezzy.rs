@@ -86,35 +86,38 @@ impl Event for TestEvent {
     }
 }
 
-fn make_event(
-    id: &str,
-    sender: &str,
+struct EventInit<'a> {
+    id: &'a str,
+    sender: &'a str,
     ev_type: TimelineEventType,
-    state_key: Option<&str>,
-    content_json: &str,
-    prev_events: &[&str],
-    auth_events: &[&str],
+    state_key: Option<&'a str>,
+    content_json: &'a str,
+    prev_events: &'a [&'a str],
+    auth_events: &'a [&'a str],
     ts: u64,
-) -> TestEvent {
-    let event_id: OwnedEventId = if id.starts_with('$') {
-        id.try_into().unwrap()
+}
+
+fn make_event(init: EventInit<'_>) -> TestEvent {
+    let event_id: OwnedEventId = if init.id.starts_with('$') {
+        init.id.try_into().unwrap()
     } else {
-        format!("${id}:example.com").try_into().unwrap()
+        format!("${}:example.com", init.id).try_into().unwrap()
     };
     let room_id: OwnedRoomId = "!benchmark_room:example.com".try_into().unwrap();
-    let sender_id: OwnedUserId = format!("@{sender}:example.com").try_into().unwrap();
+    let sender_id: OwnedUserId = format!("@{}:example.com", init.sender).try_into().unwrap();
 
     TestEvent {
         event_id,
         room_id,
         sender: sender_id,
-        origin_server_ts: MilliSecondsSinceUnixEpoch(ts.try_into().unwrap()),
-        event_type: ev_type,
-        state_key: state_key.map(ToOwned::to_owned),
-        content: RawJsonValue::from_string(content_json.to_string())
+        origin_server_ts: MilliSecondsSinceUnixEpoch(init.ts.try_into().unwrap()),
+        event_type: init.ev_type,
+        state_key: init.state_key.map(ToOwned::to_owned),
+        content: RawJsonValue::from_string(init.content_json.to_string())
             .unwrap()
             .into(),
-        prev_events: prev_events
+        prev_events: init
+            .prev_events
             .iter()
             .map(|s| {
                 if s.starts_with('$') {
@@ -124,7 +127,8 @@ fn make_event(
                 }
             })
             .collect(),
-        auth_events: auth_events
+        auth_events: init
+            .auth_events
             .iter()
             .map(|s| {
                 if s.starts_with('$') {
@@ -144,6 +148,7 @@ struct MultiForkDag {
     total_conflicts: usize,
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_multi_fork_dag(
     num_members: usize,
     num_common_timeline: usize,
@@ -154,61 +159,61 @@ fn build_multi_fork_dag(
     let mut current_ts = 1_000_000_000u64;
 
     // 1. Root Create Event
-    let create = make_event(
-        "create",
-        "alice",
-        TimelineEventType::RoomCreate,
-        Some(""),
-        r#"{"creator":"@alice:example.com","room_version":"10"}"#,
-        &[],
-        &[],
-        current_ts,
-    );
+    let create = make_event(EventInit {
+        id: "create",
+        sender: "alice",
+        ev_type: TimelineEventType::RoomCreate,
+        state_key: Some(""),
+        content_json: r#"{"creator":"@alice:example.com","room_version":"10"}"#,
+        prev_events: &[],
+        auth_events: &[],
+        ts: current_ts,
+    });
     let create_id = create.event_id.clone();
     events.insert(create_id.clone(), create);
 
     // 2. Alice Join
-    current_ts += 10;
-    let alice_join = make_event(
-        "alice_join",
-        "alice",
-        TimelineEventType::RoomMember,
-        Some("@alice:example.com"),
-        r#"{"membership":"join"}"#,
-        &["create"],
-        &["create"],
-        current_ts,
-    );
+    current_ts = current_ts.saturating_add(10);
+    let alice_join = make_event(EventInit {
+        id: "alice_join",
+        sender: "alice",
+        ev_type: TimelineEventType::RoomMember,
+        state_key: Some("@alice:example.com"),
+        content_json: r#"{"membership":"join"}"#,
+        prev_events: &["create"],
+        auth_events: &["create"],
+        ts: current_ts,
+    });
     let alice_join_id = alice_join.event_id.clone();
     events.insert(alice_join_id.clone(), alice_join);
 
     // 3. Power Levels
-    current_ts += 10;
-    let power_levels = make_event(
-        "power_levels",
-        "alice",
-        TimelineEventType::RoomPowerLevels,
-        Some(""),
-        r#"{"users":{"@alice:example.com":100},"users_default":0,"state_default":50}"#,
-        &["alice_join"],
-        &["create", "alice_join"],
-        current_ts,
-    );
+    current_ts = current_ts.saturating_add(10);
+    let power_levels = make_event(EventInit {
+        id: "power_levels",
+        sender: "alice",
+        ev_type: TimelineEventType::RoomPowerLevels,
+        state_key: Some(""),
+        content_json: r#"{"users":{"@alice:example.com":100},"users_default":0,"state_default":50}"#,
+        prev_events: &["alice_join"],
+        auth_events: &["create", "alice_join"],
+        ts: current_ts,
+    });
     let pl_id = power_levels.event_id.clone();
     events.insert(pl_id.clone(), power_levels);
 
     // 4. Join Rules
-    current_ts += 10;
-    let join_rules = make_event(
-        "join_rules",
-        "alice",
-        TimelineEventType::RoomJoinRules,
-        Some(""),
-        r#"{"join_rule":"public"}"#,
-        &["power_levels"],
-        &["create", "alice_join", "power_levels"],
-        current_ts,
-    );
+    current_ts = current_ts.saturating_add(10);
+    let join_rules = make_event(EventInit {
+        id: "join_rules",
+        sender: "alice",
+        ev_type: TimelineEventType::RoomJoinRules,
+        state_key: Some(""),
+        content_json: r#"{"join_rule":"public"}"#,
+        prev_events: &["power_levels"],
+        auth_events: &["create", "alice_join", "power_levels"],
+        ts: current_ts,
+    });
     let jr_id = join_rules.event_id.clone();
     events.insert(jr_id.clone(), join_rules);
 
@@ -216,18 +221,20 @@ fn build_multi_fork_dag(
     let mut member_join_ids = Vec::new();
     let mut last_prev = jr_id.clone();
     for i in 0..num_members {
-        current_ts += 10;
+        current_ts = current_ts.saturating_add(10);
         let name = format!("user_{i}");
-        let ev = make_event(
-            &format!("join_{i}"),
-            &name,
-            TimelineEventType::RoomMember,
-            Some(&format!("@{name}:example.com")),
-            r#"{"membership":"join"}"#,
-            &[&last_prev.to_string()],
-            &["create", "join_rules", "power_levels"],
-            current_ts,
-        );
+        let join_id = format!("join_{i}");
+        let state_key = format!("@{name}:example.com");
+        let ev = make_event(EventInit {
+            id: &join_id,
+            sender: &name,
+            ev_type: TimelineEventType::RoomMember,
+            state_key: Some(&state_key),
+            content_json: r#"{"membership":"join"}"#,
+            prev_events: &[last_prev.as_ref()],
+            auth_events: &["create", "join_rules", "power_levels"],
+            ts: current_ts,
+        });
         last_prev = ev.event_id.clone();
         member_join_ids.push(ev.event_id.clone());
         events.insert(ev.event_id.clone(), ev);
@@ -235,17 +242,18 @@ fn build_multi_fork_dag(
 
     // 6. Common timeline events
     for i in 0..num_common_timeline {
-        current_ts += 10;
-        let ev = make_event(
-            &format!("common_msg_{i}"),
-            "alice",
-            TimelineEventType::RoomMessage,
-            None,
-            r#"{"body":"timeline noise"}"#,
-            &[&last_prev.to_string()],
-            &["create", "alice_join", "power_levels"],
-            current_ts,
-        );
+        current_ts = current_ts.saturating_add(10);
+        let msg_id = format!("common_msg_{i}");
+        let ev = make_event(EventInit {
+            id: &msg_id,
+            sender: "alice",
+            ev_type: TimelineEventType::RoomMessage,
+            state_key: None,
+            content_json: r#"{"body":"timeline noise"}"#,
+            prev_events: &[last_prev.as_ref()],
+            auth_events: &["create", "alice_join", "power_levels"],
+            ts: current_ts,
+        });
         last_prev = ev.event_id.clone();
         events.insert(ev.event_id.clone(), ev);
     }
@@ -253,15 +261,15 @@ fn build_multi_fork_dag(
     // Common base state map
     let mut base_state: StateMap<OwnedEventId> = StateMap::new();
     base_state.insert(
-        (StateEventType::RoomCreate, "".to_string()),
+        (StateEventType::RoomCreate, String::new()),
         create_id.clone(),
     );
     base_state.insert(
-        (StateEventType::RoomPowerLevels, "".to_string()),
+        (StateEventType::RoomPowerLevels, String::new()),
         pl_id.clone(),
     );
     base_state.insert(
-        (StateEventType::RoomJoinRules, "".to_string()),
+        (StateEventType::RoomJoinRules, String::new()),
         jr_id.clone(),
     );
     base_state.insert(
@@ -285,35 +293,42 @@ fn build_multi_fork_dag(
         let fork_admin = if f == 0 {
             "alice".to_string()
         } else {
-            format!("user_{}", f - 1)
+            format!("user_{}", f.saturating_sub(1))
         };
 
         // Fork-specific power level update to allow fork_admin to act
-        current_ts += 100;
-        let fork_pl = make_event(
-            &format!("fork_{f}_pl"),
-            "alice",
-            TimelineEventType::RoomPowerLevels,
-            Some(""),
-            &format!(
-                r#"{{"users":{{"@alice:example.com":100,"@{fork_admin}:example.com":100}},"users_default":0,"state_default":50}}"#
-            ),
-            &[&fork_last_prev.to_string()],
-            &["create", "alice_join", "power_levels"],
-            current_ts,
+        current_ts = current_ts.saturating_add(100);
+        let fork_pl_id = format!("fork_{f}_pl");
+        let fork_pl_content = format!(
+            r#"{{"users":{{"@alice:example.com":100,"@{fork_admin}:example.com":100}},"users_default":0,"state_default":50}}"#
         );
+        let fork_pl = make_event(EventInit {
+            id: &fork_pl_id,
+            sender: "alice",
+            ev_type: TimelineEventType::RoomPowerLevels,
+            state_key: Some(""),
+            content_json: &fork_pl_content,
+            prev_events: &[fork_last_prev.as_ref()],
+            auth_events: &["create", "alice_join", "power_levels"],
+            ts: current_ts,
+        });
         fork_last_prev = fork_pl.event_id.clone();
         events.insert(fork_pl.event_id.clone(), fork_pl.clone());
         fork_state.insert(
-            (StateEventType::RoomPowerLevels, "".to_string()),
+            (StateEventType::RoomPowerLevels, String::new()),
             fork_pl.event_id.clone(),
         );
-        total_conflicts_set.insert((StateEventType::RoomPowerLevels, "".to_string()));
+        total_conflicts_set.insert((StateEventType::RoomPowerLevels, String::new()));
 
         // Generate divergent state events in this fork
         for c in 0..conflicts_per_fork {
-            current_ts += 10;
-            let target_user = format!("user_{}", (c + f * 7) % num_members.max(1));
+            current_ts = current_ts.saturating_add(10);
+            let member_mod = num_members.max(1);
+            let target_idx = c
+                .saturating_add(f.saturating_mul(7))
+                .checked_rem(member_mod)
+                .unwrap_or(0);
+            let target_user = format!("user_{target_idx}");
             let (ev_type, state_key, content) = match c % 4 {
                 0 => (
                     TimelineEventType::RoomMember,
@@ -325,12 +340,12 @@ fn build_multi_fork_dag(
                 ),
                 1 => (
                     TimelineEventType::RoomTopic,
-                    "".to_string(),
+                    String::new(),
                     format!(r#"{{"topic":"Fork {f} Topic revision {c}"}}"#),
                 ),
                 2 => (
                     TimelineEventType::RoomName,
-                    "".to_string(),
+                    String::new(),
                     format!(r#"{{"name":"Fork {f} Room Name {c}"}}"#),
                 ),
                 _ => (
@@ -340,16 +355,17 @@ fn build_multi_fork_dag(
                 ),
             };
 
-            let ev = make_event(
-                &format!("fork_{f}_ev_{c}"),
-                &fork_admin,
-                ev_type.clone(),
-                Some(&state_key),
-                &content,
-                &[&fork_last_prev.to_string()],
-                &["create", "alice_join", &fork_pl.event_id.to_string()],
-                current_ts,
-            );
+            let fork_ev_id = format!("fork_{f}_ev_{c}");
+            let ev = make_event(EventInit {
+                id: &fork_ev_id,
+                sender: &fork_admin,
+                ev_type: ev_type.clone(),
+                state_key: Some(&state_key),
+                content_json: &content,
+                prev_events: &[fork_last_prev.as_ref()],
+                auth_events: &["create", "alice_join", fork_pl.event_id.as_ref()],
+                ts: current_ts,
+            });
             fork_last_prev = ev.event_id.clone();
             events.insert(ev.event_id.clone(), ev.clone());
             let state_ev_type = StateEventType::from(ev_type.to_string());
@@ -413,6 +429,7 @@ fn to_rezzy_lean(ev: &TestEvent) -> rezzy::LeanEvent {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_shootout(
     scenario_name: &str,
     num_members: usize,
@@ -427,7 +444,11 @@ fn run_shootout(
     let fetch_event =
         |id: &ruma_common::EventId| -> Option<TestEvent> { events_map.get(id).cloned() };
 
-    let total_auth_chain_nodes: usize = dag.fork_auth_chains.iter().map(|c| c.len()).sum();
+    let total_auth_chain_nodes: usize = dag
+        .fork_auth_chains
+        .iter()
+        .map(ruma_state_res::utils::event_id_set::EventIdSet::len)
+        .sum();
 
     println!("================================================================================");
     println!("  SCENARIO: {scenario_name}");
@@ -439,8 +460,7 @@ fn run_shootout(
         dag.total_conflicts
     );
     println!(
-        "  Cumulative Auth Chain Elements across forks: {} | Iterations: {}",
-        total_auth_chain_nodes, runs
+        "  Cumulative Auth Chain Elements across forks: {total_auth_chain_nodes} | Iterations: {runs}"
     );
     println!("================================================================================");
 
@@ -455,7 +475,8 @@ fn run_shootout(
         HashMap::new();
     for map in &dag.fork_states {
         for (key, id) in map {
-            *key_id_counts.entry((key, id)).or_default() += 1;
+            let count = key_id_counts.entry((key, id)).or_default();
+            *count = count.saturating_add(1);
         }
     }
 
@@ -469,10 +490,8 @@ fn run_shootout(
                     ),
                     id.to_string(),
                 );
-            } else {
-                if let Some(ev) = dag.events.get(id) {
-                    conflicted_events.insert(id.to_string(), to_rezzy_lean(ev));
-                }
+            } else if let Some(ev) = dag.events.get(id) {
+                conflicted_events.insert(id.to_string(), to_rezzy_lean(ev));
             }
         }
     }
@@ -497,7 +516,7 @@ fn run_shootout(
         ruma_result = Some(black_box(res.unwrap()));
     }
     let ruma_elapsed = start_ruma.elapsed();
-    let ruma_avg = ruma_elapsed / runs;
+    let ruma_avg = ruma_elapsed.checked_div(runs).unwrap_or(ruma_elapsed);
 
     // 2. Benchmark rezzy (borrowed entry point: no per-iteration deep clone of the
     //    LeanEvent/serde_json contents; the resolver reads the maps by reference).
@@ -516,7 +535,7 @@ fn run_shootout(
         rezzy_result = Some(black_box(res));
     }
     let rezzy_elapsed = start_rezzy.elapsed();
-    let rezzy_avg = rezzy_elapsed / runs;
+    let rezzy_avg = rezzy_elapsed.checked_div(runs).unwrap_or(rezzy_elapsed);
 
     // Verify correctness parity symmetrically: every ruma key must match in
     // rezzy AND rezzy must not carry extra keys (equal cardinality). A
@@ -561,7 +580,13 @@ fn run_shootout(
         );
     }
 
-    let speedup = ruma_elapsed.as_nanos() as f64 / rezzy_elapsed.as_nanos() as f64;
+    let ruma_secs = ruma_elapsed.as_secs_f64();
+    let rezzy_secs = rezzy_elapsed.as_secs_f64();
+    let speedup = if rezzy_secs > 0.0 {
+        ruma_secs / rezzy_secs
+    } else {
+        1.0
+    };
 
     println!("  ruma-state-res (original):  {ruma_elapsed:?} (avg: {ruma_avg:?})");
     println!("  rezzy (bitmap accelerated): {rezzy_elapsed:?} (avg: {rezzy_avg:?})");
@@ -569,10 +594,8 @@ fn run_shootout(
     if speedup >= 1.0 {
         println!("  >>> REZZY SPEEDUP:          {speedup:.2}x FASTER <<<\n");
     } else {
-        println!(
-            "  >>> REZZY SLOWDOWN:         {:.2}x SLOWER <<<\n",
-            1.0 / speedup
-        );
+        let slowdown = if speedup > 0.0 { 1.0 / speedup } else { 1.0 };
+        println!("  >>> REZZY SLOWDOWN:         {slowdown:.2}x SLOWER <<<\n");
     }
 }
 
