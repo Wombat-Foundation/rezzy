@@ -218,7 +218,14 @@ pub fn get_evaluator() -> EvaluatorBackend {
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 fn get_evaluator_internal() -> EvaluatorBackend {
     let (has_avx512, has_pclmul) = get_evaluator_features();
-    select_evaluator_backend(has_avx512, has_pclmul)
+    let backend = select_evaluator_backend(has_avx512, has_pclmul);
+    if matches!(backend, EvaluatorBackend::Scalar) {
+        std::eprintln!(
+            "rezzy: WARN: GF64 non-SIMD (scalar) evaluator in use; \
+             PCLMULQDQ/AVX-512 not detected on this CPU"
+        );
+    }
+    backend
 }
 
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
