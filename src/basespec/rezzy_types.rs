@@ -524,7 +524,6 @@ pub fn reference_hash(
     value: &Value,
     room_version: &str,
 ) -> Result<alloc::string::String, alloc::string::String> {
-    use crate::basespec::event_types::{FIELD_SIGNATURES, FIELD_UNSIGNED};
     use base64::Engine as _;
     use sha2::{Digest, Sha256};
 
@@ -544,20 +543,12 @@ pub fn reference_hash(
         ));
     }
 
-    let mut redacted = redact_json(value, room_version);
-    if let Some(obj) = redacted.as_object_mut() {
-        obj.remove(FIELD_UNSIGNED);
-        obj.remove(FIELD_SIGNATURES);
-        // Legacy top-level field Synapse strips before hashing.
-        obj.remove("age_ts");
-    }
-    // serde_json::Map is a BTreeMap, so serialization is already key-sorted;
-    // no explicit sort is needed for canonical JSON.
-    // A `serde_json::Value` always serializes infallibly (a safe `Value` cannot
-    // hold a non-finite number), so this cannot error.
-    let canonical = serde_json::to_string(&redacted).expect("Value serializes to JSON");
     let mut hasher = Sha256::new();
-    hasher.update(canonical.as_bytes());
+    {
+        let mut w = ShaWriter(&mut hasher);
+        write_redacted_canonical(&mut w, value, room_version)
+            .expect("writing canonical JSON into the hasher is infallible");
+    }
     Ok(hash_base64_engine(room_version).encode(hasher.finalize()))
 }
 
@@ -579,20 +570,15 @@ pub fn compute_content_hash(
     value: &Value,
     _room_version: &str,
 ) -> Result<alloc::string::String, alloc::string::String> {
-    use crate::basespec::event_types::{FIELD_HASHES, FIELD_SIGNATURES, FIELD_UNSIGNED};
     use base64::Engine as _;
     use sha2::{Digest, Sha256};
 
-    let mut v = value.clone();
-    if let Some(obj) = v.as_object_mut() {
-        obj.remove(FIELD_UNSIGNED);
-        obj.remove(FIELD_SIGNATURES);
-        obj.remove(FIELD_HASHES);
-    }
-    // serde_json::Map is a BTreeMap, so serialization is already key-sorted.
-    let canonical = serde_json::to_string(&v).expect("Value serializes to JSON");
     let mut hasher = Sha256::new();
-    hasher.update(canonical.as_bytes());
+    {
+        let mut w = ShaWriter(&mut hasher);
+        write_content_hash_canonical(&mut w, value)
+            .expect("writing canonical JSON into the hasher is infallible");
+    }
     Ok(base64::engine::general_purpose::STANDARD_NO_PAD.encode(hasher.finalize()))
 }
 
@@ -642,14 +628,183 @@ pub fn verify_content_hash(value: &Value, room_version: &str) -> Result<(), allo
 /// for a `serde_json::Value` (a safe `Value` cannot hold a non-finite number).
 #[must_use]
 pub fn canonical_redacted_json(value: &Value, room_version: &str) -> alloc::string::String {
-    use crate::basespec::event_types::{FIELD_SIGNATURES, FIELD_UNSIGNED};
-    let mut redacted = redact_json(value, room_version);
-    if let Some(obj) = redacted.as_object_mut() {
-        obj.remove(FIELD_UNSIGNED);
-        obj.remove(FIELD_SIGNATURES);
+    let mut out = alloc::string::String::new();
+    write_redacted_canonical(&mut out, value, room_version)
+        .expect("writing canonical JSON into a String is infallible");
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Zero-copy canonical JSON writer.
+//
+// `serde_json::Map` is a `BTreeMap`, so object keys are already sorted. This
+// writer emits canonical JSON by descending the tree directly into a
+// `core::fmt::Write` sink — skipping the intermediate `Value` clone + re-sort
+// that `redact_json`/`value.clone()` + `serde_json::to_string` would pay, and
+// feeding bytes straight into the hasher or a `String`.
+//
+// Byte-parity with `serde_json` is load-bearing (hashes/signatures cover these
+// exact bytes), so it is pinned by `canonical_parity_tests` and every
+// reference-hash vector. Number formatting is delegated to
+// `serde_json::Number::to_string` (identical to what serde_json emits, incl.
+// ryu float formatting), which removes any float/`-0`/exponent divergence risk.
+// ---------------------------------------------------------------------------
+
+/// A `core::fmt::Write` sink that feeds bytes straight into a SHA-256 hasher.
+struct ShaWriter<'a>(&'a mut sha2::Sha256);
+
+impl core::fmt::Write for ShaWriter<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        use sha2::Digest as _;
+        self.0.update(s.as_bytes());
+        Ok(())
     }
-    // serde_json::Map is a BTreeMap, so serialization is already key-sorted.
-    serde_json::to_string(&redacted).expect("Value serializes to JSON")
+}
+
+/// Writes a JSON string with `serde_json`-identical escaping.
+fn write_json_string(out: &mut dyn core::fmt::Write, s: &str) -> core::fmt::Result {
+    out.write_str("\"")?;
+    for c in s.chars() {
+        match c {
+            '"' => out.write_str("\\\"")?,
+            '\\' => out.write_str("\\\\")?,
+            '\u{08}' => out.write_str("\\b")?,
+            '\u{09}' => out.write_str("\\t")?,
+            '\u{0a}' => out.write_str("\\n")?,
+            '\u{0c}' => out.write_str("\\f")?,
+            '\u{0d}' => out.write_str("\\r")?,
+            c if (c as u32) < 0x20 => write!(out, "\\u{:04x}", c as u32)?,
+            c => {
+                let mut buf = [0_u8; 4];
+                out.write_str(c.encode_utf8(&mut buf))?;
+            }
+        }
+    }
+    out.write_str("\"")
+}
+
+/// Recursively writes a JSON value in canonical (key-sorted) form.
+fn write_json_value(out: &mut dyn core::fmt::Write, v: &Value) -> core::fmt::Result {
+    match v {
+        Value::Null => out.write_str("null"),
+        Value::Bool(true) => out.write_str("true"),
+        Value::Bool(false) => out.write_str("false"),
+        Value::Number(n) => out.write_str(&n.to_string()),
+        Value::String(s) => write_json_string(out, s),
+        Value::Array(items) => {
+            out.write_str("[")?;
+            let mut first = true;
+            for item in items {
+                if !first {
+                    out.write_str(",")?;
+                }
+                first = false;
+                write_json_value(out, item)?;
+            }
+            out.write_str("]")
+        }
+        Value::Object(map) => {
+            out.write_str("{")?;
+            let mut first = true;
+            for (k, val) in map {
+                if !first {
+                    out.write_str(",")?;
+                }
+                first = false;
+                write_json_string(out, k)?;
+                out.write_str(":")?;
+                write_json_value(out, val)?;
+            }
+            out.write_str("}")
+        }
+    }
+}
+
+/// Writes the canonical JSON of an **unredacted** event with the top-level
+/// `unsigned`, `signatures`, and `hashes` keys omitted — the content-hash input.
+fn write_content_hash_canonical(
+    out: &mut dyn core::fmt::Write,
+    value: &Value,
+) -> core::fmt::Result {
+    let Value::Object(obj) = value else {
+        return out.write_str("{}");
+    };
+    out.write_str("{")?;
+    let mut first = true;
+    for (key, v) in obj {
+        if matches!(key.as_str(), "unsigned" | "signatures" | "hashes") {
+            continue;
+        }
+        if !first {
+            out.write_str(",")?;
+        }
+        first = false;
+        write_json_string(out, key)?;
+        out.write_str(":")?;
+        write_json_value(out, v)?;
+    }
+    out.write_str("}")
+}
+
+/// Writes the canonical JSON of a redacted event with `unsigned`/`signatures`
+/// omitted — the reference-hash and PDU-signature input. Mirrors
+/// [`redact_top_level`] + [`redact_content`] exactly, emitting only preserved
+/// keys in `BTreeMap` (sorted) order without building an intermediate `Value`.
+fn write_redacted_canonical(
+    out: &mut dyn core::fmt::Write,
+    value: &Value,
+    room_version: &str,
+) -> core::fmt::Result {
+    use crate::basespec::event_types::{
+        FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_HASHES,
+        FIELD_ORIGIN_SERVER_TS, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_STATE_KEY, FIELD_TYPE,
+        M_ROOM_CREATE,
+    };
+
+    let Value::Object(obj) = value else {
+        return out.write_str("{}");
+    };
+    let event_type = obj.get(FIELD_TYPE).and_then(Value::as_str).unwrap_or("");
+    let rule = redaction_preserved_keys(event_type, room_version);
+    let is_v12_create = event_type == M_ROOM_CREATE && room_version_is_v12_or_later(room_version);
+    let v11 = room_version_is_v11_or_later(room_version);
+
+    out.write_str("{")?;
+    let mut first = true;
+    for (key, v) in obj {
+        let keep = match key.as_str() {
+            FIELD_EVENT_ID
+            | FIELD_TYPE
+            | FIELD_SENDER
+            | FIELD_STATE_KEY
+            | FIELD_HASHES
+            | FIELD_DEPTH
+            | FIELD_PREV_EVENTS
+            | FIELD_AUTH_EVENTS
+            | FIELD_ORIGIN_SERVER_TS
+            | FIELD_CONTENT => true,
+            "room_id" => !is_v12_create,
+            "prev_state_events" => v11,
+            "origin" | "membership" | "prev_state" => !v11,
+            // `unsigned`, `signatures`, and any unrecognized key are dropped.
+            _ => false,
+        };
+        if !keep {
+            continue;
+        }
+        if !first {
+            out.write_str(",")?;
+        }
+        first = false;
+        write_json_string(out, key)?;
+        out.write_str(":")?;
+        if key == FIELD_CONTENT {
+            write_json_value(out, &redact_content(v, rule))?;
+        } else {
+            write_json_value(out, v)?;
+        }
+    }
+    out.write_str("}")
 }
 
 impl<Id: Clone, K: Clone> LeanEvent<Id, Value, K> {
@@ -3114,5 +3269,77 @@ mod index_by_event_id_tests {
         assert_eq!(index.len(), 2);
         assert_eq!(index.get("$a:example"), Some(&1));
         assert_eq!(index.get("$b:example"), Some(&2));
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod canonical_parity_tests {
+    use super::*;
+    use alloc::string::String;
+    use serde_json::json;
+
+    fn content_hash_writer(v: &Value) -> String {
+        let mut out = String::new();
+        write_content_hash_canonical(&mut out, v).expect("infallible");
+        out
+    }
+
+    fn content_hash_serde(v: &Value) -> String {
+        let mut c = v.clone();
+        if let Some(o) = c.as_object_mut() {
+            o.remove("unsigned");
+            o.remove("signatures");
+            o.remove("hashes");
+        }
+        serde_json::to_string(&c).expect("infallible")
+    }
+
+    fn redacted_writer(v: &Value, rv: &str) -> String {
+        let mut out = String::new();
+        write_redacted_canonical(&mut out, v, rv).expect("infallible");
+        out
+    }
+
+    fn redacted_serde(v: &Value, rv: &str) -> String {
+        let mut r = redact_json(v, rv);
+        if let Some(o) = r.as_object_mut() {
+            o.remove("unsigned");
+            o.remove("signatures");
+        }
+        serde_json::to_string(&r).expect("infallible")
+    }
+
+    /// The zero-copy writers must be byte-identical to what `serde_json` emits
+    /// for the same logical canonical form — hashes/signatures cover these exact
+    /// bytes, so any divergence is a federation-breaking bug.
+    #[test]
+    fn content_hash_writer_is_byte_identical_to_serde() {
+        let cases = [
+            json!({ "type":"m.room.message","room_id":"!r:x","sender":"@a:x","origin_server_ts":1,"content":{"body":"hi"},"hashes":{"sha256":"abc"},"unsigned":{"age_ts":5},"signatures":{"x":{"ed25519:0":"sig"}} }),
+            json!({ "a":1,"b":{"c":[1,2,3],"d":"x\ny\tz\u{0001}"},"e":1.5,"f":null,"g":true }),
+            json!({ "s":"unicode \u{e9}\u{fc} \u{1F600}","ctrl":"\u{0000}\u{001f}","q":"\"quoted\"","bs":"a\\b" }),
+            json!({ "negative":-42,"big":9_007_199_254_740_993_u64,"float":-0.0,"arr":[true,false,null,1] }),
+        ];
+        for c in cases {
+            assert_eq!(content_hash_writer(&c), content_hash_serde(&c), "case: {c}");
+        }
+    }
+
+    #[test]
+    fn redacted_writer_is_byte_identical_to_serde() {
+        let cases = [
+            (json!({ "type":"m.room.message","room_id":"!r:x","sender":"@a:x","origin_server_ts":1,"content":{"body":"hi","extra":"x"},"hashes":{"sha256":"abc"},"unsigned":{"age_ts":5},"signatures":{"x":{"ed25519:0":"sig"}},"unknown_key":9 }), "10"),
+            (json!({ "type":"m.room.member","sender":"@a:x","state_key":"@a:x","content":{"membership":"join","foo":"bar","third_party_invite":{"signed":{"x":1}}},"membership":"top" }), "10"),
+            (json!({ "type":"m.room.create","room_id":"!r:x","sender":"@a:x","content":{"creator":"@a:x","x":1} }), "11"),
+            (json!({ "type":"m.room.join_rules","content":{"join_rule":"invite","allow":[]} }), "9"),
+            (json!({ "type":"m.room.power_levels","content":{"users":{"@a:x":100},"ban":50,"extra":1} }), "11"),
+            (json!({ "type":"m.room.message","prev_state_events":["$B"],"auth_events":["$A"],"content":{} }), "org.matrix.msc4242.12"),
+            (json!({ "type":"m.room.message","origin":"x","membership":"join","prev_state":["$P"],"content":{} }), "5"),
+            (json!({ "type":"m.room.redaction","content":{"redacts":"$X"},"sender":"@a:x" }), "11"),
+        ];
+        for (c, rv) in cases {
+            assert_eq!(redacted_writer(&c, rv), redacted_serde(&c, rv), "case: {c} rv={rv}");
+        }
     }
 }

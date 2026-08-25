@@ -50,7 +50,7 @@ pub use consensus::ConsensusVerifier;
 #[cfg(feature = "signing-dalek")]
 mod dalek;
 #[cfg(feature = "signing-dalek")]
-pub use dalek::DalekVerifier;
+pub use dalek::{verify_batch, DalekVerifier};
 
 /// A backend able to verify one Ed25519 signature over a message.
 ///
@@ -375,6 +375,8 @@ mod tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod dalek_tests {
     use super::*;
+    use alloc::format;
+    use alloc::vec::Vec;
     use base64::Engine as _;
     use ed25519_dalek::{Signer as _, SigningKey};
     use serde_json::json;
@@ -447,5 +449,39 @@ mod dalek_tests {
         keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
             .unwrap();
         assert!(verify_event_signatures(&raw, "10", &keys).is_err());
+    }
+
+    #[test]
+    fn dalek_batch_verifies_many_events_at_once() {
+        let sk = SigningKey::from_bytes(&[9_u8; 32]);
+        let vk = sk.verifying_key();
+        let mut keys = DalekVerifier::new();
+        keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
+            .unwrap();
+
+        let events: Vec<Value> = (0..8)
+            .map(|i| {
+                signed_event(
+                    json!({
+                        "type": "m.room.message",
+                        "room_id": "!r:example.com",
+                        "sender": "@a:example.com",
+                        "origin_server_ts": i,
+                        "content": { "body": format!("msg {i}") },
+                    }),
+                    "10",
+                    "example.com",
+                    "ed25519:0",
+                    &sk,
+                )
+            })
+            .collect();
+
+        verify_batch(&events, "10", &keys).unwrap();
+
+        // Tampering with one event's preserved field must fail the whole batch.
+        let mut tampered = events.clone();
+        tampered[3]["origin_server_ts"] = json!(999);
+        assert!(verify_batch(&tampered, "10", &keys).is_err());
     }
 }

@@ -113,6 +113,7 @@ clap = { version = "=4.5.48", optional = true, features = ["derive", "env"] }
 ed25519-consensus = { version = "2.1", optional = true, default-features = false }
 ed25519-dalek = { version = "2", optional = true, default-features = false, features = [
     "std",
+    "batch",
 ] }
 hashbrown = { version = "0.15", default-features = false, features = [
     "default-hasher",
