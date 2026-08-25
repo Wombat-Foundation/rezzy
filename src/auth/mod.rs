@@ -279,11 +279,21 @@ where
     let Some(create) = state.get_event(M_ROOM_CREATE, "") else {
         return Err(AuthError::MissingCreate);
     };
-    Ok(create
-        .content()
-        .get_room_version()
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(1)) // V1 rooms didn't have a room_version field
+    if let Some(v) = create.content().get_room_version() {
+        if let Ok(num) = v.parse::<u32>() {
+            return Ok(num);
+        }
+        if let Some(res_ver) = StateResVersion::from_room_version(v) {
+            match res_ver {
+                StateResVersion::V1 => return Ok(1),
+                StateResVersion::V2 => return Ok(2),
+                StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2 => {
+                    return Ok(12)
+                }
+            }
+        }
+    }
+    Ok(1) // V1 rooms didn't have a room_version field
 }
 
 fn reject_if_flagged_auth_state<
@@ -1977,11 +1987,13 @@ fn auth_types_for_event_core<'a>(
         // pre-v8 join that (maliciously or erroneously) carries the field must
         // not be made to require an authorising member the v2–7 rules don't.
         if membership == Some(MEM_JOIN)
-            && room_version
+            && (room_version
                 .split('.')
                 .next()
                 .and_then(|m| m.parse::<u32>().ok())
                 .is_some_and(|major| major >= 8)
+                || StateResVersion::from_room_version(room_version)
+                    .is_some_and(|v| v.is_v2_1_plus()))
         {
             if let Some(authorising_user) = join_authorised_via_users_server {
                 auth_types.push((M_ROOM_MEMBER, authorising_user));
