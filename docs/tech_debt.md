@@ -76,6 +76,65 @@ Circle back for the full generic refactor: thread it through call sites, add the
 wire-format conversions, and benchmark the actual win before recommending it
 broadly. (See the `TODO` comment directly above `InternedKey`'s definition.)
 
+`benches/interned_key.rs` also carries a `K = InternedKey` (`Arc<str>`) variant
+alongside plain `String`, benchmarked across room sizes 100/1000/5000: it wins
+at small N (-9 to -11%) but the atomic refcount's cross-core cache-line
+contention under the parallel `thread::scope` fold erodes and then reverses the
+win at 5000 members (+3 to +16%). So `InternedKey`'s value is real but
+size-dependent — don't default to it without checking the target workload's
+room sizes.
+
+#### Investigated and rejected: `u32`-arena-interned `K` (`InternId`)
+
+A no-atomics, `Copy` `u32` index into a string arena (`InternId`, prototyped in
+`benches/interned_key.rs` at commit `fdddb31`) was investigated as a genuinely
+C-style alternative to `InternedKey`'s `Arc<str>` — the motivating idea being
+that integer compare/copy should beat both allocation (`String`) and atomic
+refcounting (`Arc<str>`) regardless of key collisions. The prototype (sorted
+first-seen ids, no lifetime constraint) confirmed the hypothesis: -17% to -23%
+across all three room sizes, unlike `InternedKey`'s reversal at 5000.
+
+That result does not survive contact with the real pipeline, for two
+independent, structural reasons — both confirmed against actual code, not just
+argued:
+
+1. **Ordering soundness.** `RoomState`'s `BTreeMap` lookups are sound only
+   because every `K` used as a key agrees with lexicographic string `Ord` (see
+   [`StateKeyDyn`](../src/auth/mod.rs) and its `Borrow<dyn StateKeyDyn>` impl).
+   A production `InternId` can't keep the prototype's sorted-once integer
+   `Ord` — a live homeserver's state-key set grows incrementally (new members
+   joining), so ids can't be assigned in final sorted order up front. `Ord`
+   has to resolve through the interner (string compare) instead, which gives
+   back exactly the cost (`str` comparison) the integer key was meant to
+   avoid.
+2. **Lifetime soundness.** Any borrowing `InternId<'a>` fails to satisfy the
+   resolution entry points' existing bound
+   `for<'q> (String, K): Borrow<dyn StateKeyDyn + 'q>` (`src/auth/mod.rs`):
+   the blanket `Borrow` impl requires `K: 'a` for the *same* `'a` on every
+   invocation, and satisfying that `for<'q>` universally-quantified bound
+   forces `K: 'static`. A per-resolution-run, stack-borrowed interner is
+   therefore not viable as `K` under the current signatures without also
+   threading a `'static` requirement through every consumer.
+
+With `Ord` forced through the interner (string compare) *and* the interner
+forced `'static` (leaked, for the bench), re-benchmarking the real lib type
+against `String` reproduced the erosion directly: the win shrinks from small
+to mid room sizes and disappears or reverses at 5000 members (repeated runs:
+roughly -12% → -4% → anywhere from -0.1% to +31% depending on run — i.e. no
+longer a reliable win at scale, sometimes a clear loss). This is the same
+atomics-avoidance idea that motivated the investigation, but the very
+soundness contract that makes `RoomState` lookups safe removes the mechanism
+(cheap integer `Ord`) that made the u32 approach win in the first place.
+
+**Verdict: rejected.** Do not revisit `u32`-interned state keys without new
+evidence that changes one of the two structural blockers above (e.g. a
+resolution-path redesign that doesn't need `BTreeMap`-ordered `K`, or a
+crate-wide `'static`-interner design accepted for other reasons). The Phase 1
+prototype work (`8bf6680`, `99d1cfb`, `9fa73b3`, `39dd517`) was reverted from
+`dev`; `benches/interned_key.rs` still carries the original `String` vs
+`InternedKey` (`Arc<str>`) comparison from `fdddb31` as a live artifact of the
+size-dependent tradeoff documented above.
+
 ### No true zero-copy identifiers (RocksDB-slice-backed views)
 
 `RoomId`/`InternedKey` (and any future identifier type built the same way) are
