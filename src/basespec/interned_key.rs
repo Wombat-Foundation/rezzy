@@ -141,6 +141,22 @@ pub struct InternedRoomState<'a, Id = alloc::string::String, C = serde_json::Val
     map: alloc::collections::BTreeMap<(InternId<'a>, InternId<'a>), LeanEvent<Id, C, InternId<'a>>>,
 }
 
+impl<'a, Id, C> InternedRoomState<'a, Id, C> {
+    /// Builds a room state directly from an already-interned map. `benches/`
+    /// uses this to construct a realistic room for the `get_event` micro-bench
+    /// without reaching into private fields.
+    #[must_use]
+    pub fn new(
+        interner: &'a Interner,
+        map: alloc::collections::BTreeMap<
+            (InternId<'a>, InternId<'a>),
+            LeanEvent<Id, C, InternId<'a>>,
+        >,
+    ) -> Self {
+        Self { interner, map }
+    }
+}
+
 impl<'a, Id, C> StateProvider<Id, C, LeanEvent<Id, C, InternId<'a>>>
     for InternedRoomState<'a, Id, C>
 where
