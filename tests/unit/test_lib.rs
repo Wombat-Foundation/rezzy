@@ -3287,7 +3287,10 @@ mod tests {
         assert_eq!(clamped_neg, None);
     }
 }
-use rezzy::{compute_state_at, KahnSortResult, LeanEvent, StateResVersion};
+use rezzy::{
+    compute_state_at, compute_state_at_streaming_optimized, KahnSortResult, LeanEvent,
+    StateResVersion,
+};
 
 #[test]
 fn test_types_kahn_sort_result_methods() {
@@ -8027,4 +8030,70 @@ fn test_conflicted_keys_derived_before_cdo() {
         resolved.get(&(EventType::from("m.room.power_levels"), String::new())),
         Some(&"$pl_ancestor".to_string())
     );
+}
+
+#[test]
+fn test_soft_fail_and_rejected_state_events_excluded_on_linear_chain() {
+    use std::collections::HashMap;
+    let mut em: HashMap<String, LeanEvent> = HashMap::new();
+    em.insert(
+        "A".into(),
+        LeanEvent {
+            event_id: "A".into(),
+            event_type: "m.room.message".into(),
+            prev_events: vec![],
+            ..Default::default()
+        },
+    );
+
+    let mut soft = LeanEvent {
+        event_id: "B".into(),
+        event_type: "m.room.name".into(),
+        state_key: Some(String::new()),
+        prev_events: vec!["A".into()],
+        ..Default::default()
+    };
+    soft.soft_fail = true;
+    em.insert("B".into(), soft);
+
+    let mut rej = LeanEvent {
+        event_id: "R".into(),
+        event_type: "m.room.topic".into(),
+        state_key: Some(String::new()),
+        prev_events: vec!["B".into()],
+        ..Default::default()
+    };
+    rej.rejected = true;
+    em.insert("R".into(), rej);
+
+    em.insert(
+        "C".into(),
+        LeanEvent {
+            event_id: "C".into(),
+            event_type: "m.room.message".into(),
+            prev_events: vec!["R".into()],
+            ..Default::default()
+        },
+    );
+
+    let st = compute_state_at("C", &em, StateResVersion::V2).unwrap();
+    assert!(
+        !st.contains_key(&(
+            rezzy::basespec::event_types::EventType::from("m.room.name"),
+            String::new()
+        )),
+        "soft-failed state event leaked into resolved state"
+    );
+    assert!(
+        !st.contains_key(&(
+            rezzy::basespec::event_types::EventType::from("m.room.topic"),
+            String::new()
+        )),
+        "rejected state event leaked into resolved state"
+    );
+
+    let _ = compute_state_at_streaming_optimized(&["C"], &em, StateResVersion::V2, |_, upd| {
+        assert!(matches!(upd, rezzy::StateUpdate::Unchanged { .. }),
+            "linear chain should emit only Unchanged updates once soft-fail/rejected state is dropped");
+    });
 }

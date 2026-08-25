@@ -658,7 +658,7 @@ where
             )
         };
 
-        if ev.state_key.is_some() {
+        if ev.state_key.is_some() && !ev.rejected && !ev.soft_fail {
             state_before.insert(
                 (
                     EventType::from(ev.event_type.as_str()),
@@ -2325,7 +2325,7 @@ where
             )
         };
 
-        if is_state {
+        if is_state && !ev.rejected && !ev.soft_fail {
             let key = (
                 EventType::from(ev.event_type.as_str()),
                 ev.state_key.clone().unwrap_or_default(),
