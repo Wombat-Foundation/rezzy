@@ -3529,45 +3529,22 @@ fn test_bucket_index_zero_extends_past_the_last_hash_byte() {
 }
 
 #[test]
-fn test_indexed_universe_try_build_bounded_reports_true_distinct_count_past_bound() {
-    // Exercises IndexedUniverse::try_build's overflow-counting branch --
-    // "keep counting distinct hashes past the bound" -- without needing
-    // ~4.3 billion real StructuralHash entries to reach it in production:
-    // try_build_bounded runs the exact same code, parameterized on where the
-    // bound sits, so a tiny universe can trip it deterministically.
-    fn hash(n: u8) -> StructuralHash {
-        let mut h = [0_u8; 16];
-        h[0] = n;
-        h
+fn test_universe_too_large_from_index_too_large_preserves_distinct_count() {
+    // The overflow-counting logic itself ("keep counting distinct items past
+    // the bound") belongs to, and is already tested directly on,
+    // `DenseIndex::try_build_bounded` (see `dense_index.rs`'s
+    // `bounded_reports_true_distinct_count` /
+    // `bounded_allows_exactly_bound_distinct_items`). The only thing
+    // `IndexedUniverse` adds on top is this error-type conversion, which is
+    // what's actually worth a dedicated test.
+    use crate::dense_index::IndexTooLarge;
+    use crate::hamt::audit::UniverseTooLarge;
+
+    let err: UniverseTooLarge = IndexTooLarge {
+        distinct_count: 4_294_967_297,
     }
-
-    // 3 distinct hashes trip a bound of 2. A duplicate of an already-seen
-    // hash appears after the trip point to confirm the post-trip counting
-    // loop dedups via its own `seen` set, not just double-counting whatever
-    // was already in `index_by_hash`.
-    let universe = vec![hash(0), hash(1), hash(2), hash(0), hash(3)];
-
-    let err = crate::hamt::audit::IndexedUniverse::try_build_bounded(universe, 2)
-        .expect_err("5 hashes (4 distinct) must overflow a bound of 2");
-
-    assert_eq!(
-        err.distinct_count, 4,
-        "distinct_count must be the true total (4), not bound+1 (3) and not \
-         double-counting the repeated hash(0)"
-    );
-}
-
-#[test]
-fn test_indexed_universe_try_build_bounded_at_exactly_the_bound_succeeds() {
-    fn hash(n: u8) -> StructuralHash {
-        let mut h = [0_u8; 16];
-        h[0] = n;
-        h
-    }
-    let universe = vec![hash(0), hash(1), hash(2)];
-    let indexed = crate::hamt::audit::IndexedUniverse::try_build_bounded(universe, 3)
-        .expect("exactly at the bound (not past it) must still succeed");
-    assert_eq!(indexed.len(), 3);
+    .into();
+    assert_eq!(err.distinct_count, 4_294_967_297);
 }
 
 #[test]

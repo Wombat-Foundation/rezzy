@@ -92,24 +92,6 @@ impl IndexedUniverse {
             .map_err(Into::into)
     }
 
-    /// [`Self::try_build`], but with the overflow bound as a parameter
-    /// instead of the hard-coded `u32::MAX + 1`.
-    ///
-    /// Test-only: `try_build` delegates to [`DenseIndex::try_build`], which
-    /// already fixes the bound to the addressable slot count; the parameterized
-    /// form exists purely so tests can exercise the "past the bound" counting
-    /// branch at a tiny, deterministic universe size instead of needing ~4.3
-    /// billion `StructuralHash` entries in memory to reach it.
-    #[cfg(test)]
-    pub(crate) fn try_build_bounded(
-        universe: impl IntoIterator<Item = StructuralHash>,
-        bound: usize,
-    ) -> Result<Self, UniverseTooLarge> {
-        DenseIndex::try_build_bounded(universe, bound)
-            .map(Self)
-            .map_err(Into::into)
-    }
-
     /// The number of distinct hashes indexed.
     #[must_use]
     pub fn len(&self) -> usize {
