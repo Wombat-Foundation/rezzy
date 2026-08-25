@@ -127,6 +127,7 @@ impl StateResVersion {
             "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" => Some(Self::V2),
             "12" => Some(Self::V2_1),
             "12.1" => Some(Self::V2_1_1),
+            "org.matrix.msc4242.12" => Some(Self::V2_2),
             _ => None,
         }
     }
@@ -2062,6 +2063,7 @@ fn room_version_is_v11_or_later(room_version: &str) -> bool {
         .next()
         .and_then(|major| major.parse::<u32>().ok())
         .is_some_and(|major| major >= 11)
+        || StateResVersion::from_room_version(room_version).is_some_and(|v| v.is_v2_1_plus())
 }
 
 /// Returns `true` if `room_version`'s major version is 12 or later (the
@@ -2072,6 +2074,7 @@ fn room_version_is_v12_or_later(room_version: &str) -> bool {
         .next()
         .and_then(|major| major.parse::<u32>().ok())
         .is_some_and(|major| major >= 12)
+        || StateResVersion::from_room_version(room_version).is_some_and(|v| v.is_v2_1_plus())
 }
 
 /// Returns `true` if `id` is a syntactically valid Matrix user ID: `@` prefix,

@@ -6114,6 +6114,14 @@ fn test_state_res_version_from_room_version() {
         StateResVersion::from_room_version("12.1"),
         Some(StateResVersion::V2_1_1)
     );
+    assert_eq!(
+        StateResVersion::from_room_version("org.matrix.msc4242.12"),
+        Some(StateResVersion::V2_2)
+    );
+    assert_eq!(
+        StateResVersion::from_room_version("org.matrix.msc4242"),
+        None
+    );
     assert_eq!(StateResVersion::from_room_version("0"), None);
     assert_eq!(StateResVersion::from_room_version("99"), None);
     assert_eq!(StateResVersion::from_room_version(""), None);
