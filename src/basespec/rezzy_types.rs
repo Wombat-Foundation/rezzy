@@ -57,8 +57,8 @@ impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Disp
 /// - Any implementor's `Ord` ordering **must** match the lexicographic byte ordering of
 ///   its `AsRef<str>` representation. This contract is required for `Borrow`-based
 ///   `BTreeMap` lookups to function correctly.
-pub trait StateKey: Clone + Eq + core::hash::Hash + Ord + AsRef<str> + Default + 'static {}
-impl<T: Clone + Eq + core::hash::Hash + Ord + AsRef<str> + Default + 'static> StateKey for T {}
+pub trait StateKey: Clone + Eq + core::hash::Hash + Ord + AsRef<str> + Default {}
+impl<T: Clone + Eq + core::hash::Hash + Ord + AsRef<str> + Default> StateKey for T {}
 
 /// Selects which state resolution algorithm to use.
 ///
