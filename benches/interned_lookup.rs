@@ -36,7 +36,8 @@
     clippy::too_many_lines,
     clippy::doc_markdown,
     clippy::explicit_counter_loop,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    clippy::type_complexity
 )]
 
 use std::borrow::Borrow;
