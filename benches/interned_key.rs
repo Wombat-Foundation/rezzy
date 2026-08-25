@@ -252,6 +252,163 @@ fn build_room(member_count: usize) -> (HashMap<String, LeanEvent>, Vec<String>) 
     (events, targets)
 }
 
+/// Builds `create -> power_levels` followed by `conflict_count` genuine
+/// two-way conflicts: for each target user, two independent `m.room.member`
+/// branch events (join vs. ban) both cite the same prior tip, then a merge
+/// event with `prev_events: [branch_a, branch_b]` picks up both and becomes
+/// the tip for the next conflict. Unlike `build_room`'s pure linear chain
+/// (deferred in `14b5488` as a bench-fidelity gap: it never exercises real
+/// conflict resolution), every target user here has two competing state
+/// events at the same `(m.room.member, state_key)`, forcing the resolver's
+/// real power-comparison / mainline-ordering auth-check machinery on every
+/// key -- not just structural dedup.
+fn build_conflicting_room(conflict_count: usize) -> (HashMap<String, LeanEvent>, Vec<String>) {
+    let mut events = HashMap::new();
+    let mut ts: u64 = 0;
+
+    let create_id = "$create".to_string();
+    events.insert(
+        create_id.clone(),
+        LeanEvent {
+            event_id: create_id.clone(),
+            event_type: "m.room.create".to_string(),
+            state_key: Some(String::new()),
+            power_level: 100,
+            origin_server_ts: {
+                ts += 1;
+                ts
+            },
+            sender: "@creator:example.org".to_string(),
+            content: serde_json::json!({ "creator": "@creator:example.org" }),
+            prev_events: Vec::new(),
+            auth_events: Vec::new(),
+            depth: 0,
+            rejected: false,
+            soft_fail: false,
+            room_id: None,
+        },
+    );
+
+    let pl_id = "$power_levels".to_string();
+    events.insert(
+        pl_id.clone(),
+        LeanEvent {
+            event_id: pl_id.clone(),
+            event_type: "m.room.power_levels".to_string(),
+            state_key: Some(String::new()),
+            power_level: 100,
+            origin_server_ts: {
+                ts += 1;
+                ts
+            },
+            sender: "@creator:example.org".to_string(),
+            content: serde_json::json!({ "users_default": 50 }),
+            prev_events: vec![create_id.clone()],
+            auth_events: Vec::new(),
+            depth: 1,
+            rejected: false,
+            soft_fail: false,
+            room_id: None,
+        },
+    );
+
+    let mut tip = pl_id.clone();
+    let mut depth: u64 = 2;
+    let mut targets = Vec::new();
+    for i in 0..conflict_count {
+        let user = format!("@user{i}:example.org");
+        let a_id = format!("$member_{i}_a");
+        let b_id = format!("$member_{i}_b");
+        let merge_id = format!("$merge_{i}");
+
+        let branch_auth = if tip == pl_id {
+            vec![pl_id.clone()]
+        } else {
+            vec![pl_id.clone(), tip.clone()]
+        };
+
+        events.insert(
+            a_id.clone(),
+            LeanEvent {
+                event_id: a_id.clone(),
+                event_type: "m.room.member".to_string(),
+                state_key: Some(user.clone()),
+                power_level: 0,
+                origin_server_ts: {
+                    ts += 1;
+                    ts
+                },
+                sender: user.clone(),
+                content: serde_json::json!({ "membership": "join" }),
+                prev_events: vec![tip.clone()],
+                auth_events: branch_auth.clone(),
+                depth,
+                rejected: false,
+                soft_fail: false,
+                room_id: None,
+            },
+        );
+        events.insert(
+            b_id.clone(),
+            LeanEvent {
+                event_id: b_id.clone(),
+                event_type: "m.room.member".to_string(),
+                state_key: Some(user.clone()),
+                power_level: 0,
+                origin_server_ts: {
+                    ts += 1;
+                    ts
+                },
+                sender: "@creator:example.org".to_string(),
+                content: serde_json::json!({ "membership": "ban" }),
+                prev_events: vec![tip.clone()],
+                auth_events: branch_auth,
+                depth,
+                rejected: false,
+                soft_fail: false,
+                room_id: None,
+            },
+        );
+
+        depth += 1;
+        events.insert(
+            merge_id.clone(),
+            LeanEvent {
+                event_id: merge_id.clone(),
+                event_type: "m.room.member".to_string(),
+                // Distinct state key from the conflict itself so the merge
+                // event doesn't overwrite the very key it's meant to
+                // reconcile -- it just threads the DAG forward.
+                state_key: Some(format!("@merge{i}:example.org")),
+                power_level: 0,
+                origin_server_ts: {
+                    ts += 1;
+                    ts
+                },
+                sender: "@creator:example.org".to_string(),
+                content: serde_json::json!({ "membership": "join" }),
+                prev_events: vec![a_id.clone(), b_id.clone()],
+                auth_events: vec![pl_id.clone()],
+                depth,
+                rejected: false,
+                soft_fail: false,
+                room_id: None,
+            },
+        );
+
+        if i == 0
+            || i == conflict_count / 3
+            || i == conflict_count * 2 / 3
+            || i == conflict_count - 1
+        {
+            targets.push(merge_id.clone());
+        }
+        tip = merge_id;
+        depth += 1;
+    }
+    (events, targets)
+}
+
 fn measure(label: &str, reps: usize, f: impl Fn()) -> Duration {
     f(); // warmup
     f();
@@ -285,7 +442,23 @@ fn main() {
             (n, events, targets)
         })
         .collect();
-    let room_maps: Vec<&HashMap<String, LeanEvent>> = rooms.iter().map(|(_, e, _)| e).collect();
+    let conflict_sizes = [50usize, 500, 2_000];
+    let conflict_rooms: Vec<(usize, HashMap<String, LeanEvent>, Vec<String>)> = conflict_sizes
+        .iter()
+        .map(|&n| {
+            let (events, targets) = build_conflicting_room(n);
+            (n, events, targets)
+        })
+        .collect();
+
+    // One shared arena for every room (linear and conflict) so `InternId`
+    // (which reads the single global `INTERN`) can be used consistently
+    // across both benches below.
+    let room_maps: Vec<&HashMap<String, LeanEvent>> = rooms
+        .iter()
+        .map(|(_, e, _)| e)
+        .chain(conflict_rooms.iter().map(|(_, e, _)| e))
+        .collect();
     init_interner(&room_maps);
     let str_to_id = str_to_id();
 
@@ -414,6 +587,72 @@ fn main() {
         println!(
             "  serial u32 InternId vs String: {ser_delta_u32:+.1}ms total ({:+.1}%)",
             ser_delta_u32 / ser_str.as_secs_f64() * 100.0
+        );
+    }
+
+    println!();
+    println!(
+        "=== conflict-heavy room bench (real power-comparison / mainline auth-checks, not just linear-chain dedup) ==="
+    );
+    for (n, events, targets) in &conflict_rooms {
+        let u32_events = to_u32_events(events, &str_to_id);
+        let last = targets.last().unwrap();
+
+        // Correctness gate, same discipline as the linear-room bench above:
+        // the interned-u32 path must resolve to the same winners as String.
+        let str_state = compute_state_at::<String, serde_json::Value, String, _, String>(
+            last,
+            events,
+            StateResVersion::V2_1,
+        )
+        .expect("last merge event must resolve (String)");
+        let u32_state = compute_state_at::<String, serde_json::Value, String, _, InternId>(
+            last,
+            &u32_events,
+            StateResVersion::V2_1,
+        )
+        .expect("last merge event must resolve (u32)");
+        let str_keyed: std::collections::BTreeMap<(String, String), String> = str_state
+            .into_iter()
+            .map(|((et, k), id)| ((et.to_string(), k), id))
+            .collect();
+        let u32_keyed: std::collections::BTreeMap<(String, String), String> = u32_state
+            .into_iter()
+            .map(|((et, k), id)| ((et.to_string(), k.as_ref().to_string()), id))
+            .collect();
+        assert_eq!(
+            u32_keyed, str_keyed,
+            "u32-interned conflict resolution must match String resolution"
+        );
+
+        println!("--- {n} conflicts ({} events) ---", events.len());
+        let reps = match n {
+            50 => 500,
+            500 => 50,
+            _ => 10,
+        };
+        let str_dur = measure("conflict String    ", reps, || {
+            let state = compute_state_at::<String, serde_json::Value, str, _, String>(
+                last,
+                events,
+                StateResVersion::V2_1,
+            )
+            .expect("must resolve");
+            std::hint::black_box(state.len());
+        });
+        let u32_dur = measure("conflict u32 InternId", reps, || {
+            let state = compute_state_at::<String, serde_json::Value, str, _, InternId>(
+                last,
+                &u32_events,
+                StateResVersion::V2_1,
+            )
+            .expect("must resolve");
+            std::hint::black_box(state.len());
+        });
+        let delta = u32_dur.as_secs_f64() - str_dur.as_secs_f64();
+        println!(
+            "  conflict u32 InternId vs String: {delta:+.1}ms total ({:+.1}%)",
+            delta / str_dur.as_secs_f64() * 100.0
         );
     }
 }
