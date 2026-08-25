@@ -68,7 +68,7 @@ path = "scripts/bench_ruma_vs_rezzy.rs"
 required-features = ["mock-ruma"]
 
 [features]
-default = ["std"]
+default = ["std", "signing"]
 std = ["alloc", "serde_json/std", "serde/std", "dep:roaring"]
 alloc = []
 cli = [
@@ -82,12 +82,20 @@ cli = [
     "dep:zeroize",
 ]
 regen = ["std"]
-signing = []
+# Event signature verification. `signing` defaults to the RFC-8032 (ed25519-
+# dalek) backend, which shares rezzy's sha2 0.10 (no duplicate sha2 crate).
+# The consensus-strict (ZIP-215, ed25519-consensus) backend is available via
+# `signing-consensus` for callers that need Synapse/Dendrite parity; it pulls
+# its own sha2 0.9 chain.
+signing = ["signing-dalek"]
+signing-consensus = ["alloc", "dep:ed25519-consensus"]
+signing-dalek = ["alloc", "dep:ed25519-dalek"]
 mock-ruma = [
     "dep:insta",
     "dep:ruma-common",
     "dep:ruma-events",
     "dep:ruma-state-res",
+    "dep:ruma-signatures",
     "dep:test-log",
 ]
 stress = ["dep:bincode"]
@@ -102,6 +110,10 @@ base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 bincode = { version = "1", optional = true }
 blake2 = { version = "0.10", default-features = false }
 clap = { version = "=4.5.48", optional = true, features = ["derive", "env"] }
+ed25519-consensus = { version = "2.1", optional = true, default-features = false }
+ed25519-dalek = { version = "2", optional = true, default-features = false, features = [
+    "std",
+] }
 hashbrown = { version = "0.15", default-features = false, features = [
     "default-hasher",
     "inline-more",
@@ -114,6 +126,7 @@ mimalloc = { version = "0.1.52", optional = true }
 roaring = { version = "0.10", optional = true } # compatible with the Rust 1.81 MSRV
 ruma-common = { version = "0.19.0", optional = true }
 ruma-events = { version = "0.34.0", optional = true }
+ruma-signatures = { version = "0.21", optional = true }
 ruma-state-res = { version = "0.17.0", optional = true, features = [
     "__criterion",
 ] }
@@ -136,6 +149,12 @@ similar = "2.7.0"
 [[bench]]
 name = "reconcile"
 harness = false
+
+[[bench]]
+name = "signature_verify"
+path = "benches/signature_verify.rs"
+harness = false
+required-features = ["signing", "mock-ruma"]
 
 [[bench]]
 name = "resolve"
@@ -236,6 +255,10 @@ suspicious = { level = "warn", priority = -1 }
 cargo = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 similar_names = "allow"
+# Build-time proc-macro duplication only: curve25519-dalek-derive uses syn 3.0
+# while most of the graph is on syn 2.0. This is unavoidable, benign, and does
+# not affect the runtime binary.
+multiple_crate_versions = "allow"
 
 # High-Value Security & Robustness restrictions
 arithmetic_side_effects = "warn"

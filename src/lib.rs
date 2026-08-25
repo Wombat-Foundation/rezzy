@@ -89,6 +89,8 @@ pub mod hamt;
 pub mod merkle;
 pub mod reconcile;
 pub mod resolve;
+#[cfg(feature = "signing")]
+pub mod signing;
 pub mod state;
 pub mod warnings;
 

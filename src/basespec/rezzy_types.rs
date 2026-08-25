@@ -507,8 +507,9 @@ pub fn redact_json(value: &Value, room_version: &str) -> Value {
 /// v3, URL-safe for v4+; no `$` prefix).
 ///
 /// Canonicalization is tolerant of out-of-range integers (like Synapse's
-/// `relaxed` mode): `sort_json_value_keys` + `serde_json::to_string` serialize
-/// whatever numbers are present rather than rejecting them.
+/// `relaxed` mode): `serde_json::to_string` serializes whatever numbers are
+/// present rather than rejecting them. Keys are already lexicographically
+/// sorted because `serde_json::Map` is a `BTreeMap`.
 ///
 /// # Errors
 /// Returns `Err` when the room version has no reference hash (v1/v2, whose
@@ -550,7 +551,8 @@ pub fn reference_hash(
         // Legacy top-level field Synapse strips before hashing.
         obj.remove("age_ts");
     }
-    sort_json_value_keys(&mut redacted);
+    // serde_json::Map is a BTreeMap, so serialization is already key-sorted;
+    // no explicit sort is needed for canonical JSON.
     // A `serde_json::Value` always serializes infallibly (a safe `Value` cannot
     // hold a non-finite number), so this cannot error.
     let canonical = serde_json::to_string(&redacted).expect("Value serializes to JSON");
@@ -587,9 +589,7 @@ pub fn compute_content_hash(
         obj.remove(FIELD_SIGNATURES);
         obj.remove(FIELD_HASHES);
     }
-    sort_json_value_keys(&mut v);
-    // A `serde_json::Value` always serializes infallibly (a safe `Value` cannot
-    // hold a non-finite number), so this cannot error.
+    // serde_json::Map is a BTreeMap, so serialization is already key-sorted.
     let canonical = serde_json::to_string(&v).expect("Value serializes to JSON");
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
@@ -621,6 +621,35 @@ pub fn verify_content_hash(value: &Value, room_version: &str) -> Result<(), allo
         ));
     }
     Ok(())
+}
+
+/// Produces the canonical JSON bytes an ed25519 PDU signature covers: the
+/// redacted event with `unsigned` and `signatures` stripped and object keys
+/// recursively sorted (the Matrix "Signing Events" canonicalization).
+///
+/// This is the string that [`reference_hash`] hashes to form an event ID and
+/// that signature verification signs — so it must be redacted first, otherwise
+/// a redaction-vs-signer mismatch (like the MSC4242 `prev_state_events` bug)
+/// makes verification fail.
+///
+/// # Errors
+/// Returns `Err` when the redacted `Value` cannot be serialized (unreachable
+/// for a safe `Value`), or when `room_version` is unsupported and `redact_json`
+/// fails closed to an empty object.
+///
+/// # Panics
+/// Panics only if the canonical JSON cannot be serialized, which is unreachable
+/// for a `serde_json::Value` (a safe `Value` cannot hold a non-finite number).
+#[must_use]
+pub fn canonical_redacted_json(value: &Value, room_version: &str) -> alloc::string::String {
+    use crate::basespec::event_types::{FIELD_SIGNATURES, FIELD_UNSIGNED};
+    let mut redacted = redact_json(value, room_version);
+    if let Some(obj) = redacted.as_object_mut() {
+        obj.remove(FIELD_UNSIGNED);
+        obj.remove(FIELD_SIGNATURES);
+    }
+    // serde_json::Map is a BTreeMap, so serialization is already key-sorted.
+    serde_json::to_string(&redacted).expect("Value serializes to JSON")
 }
 
 impl<Id: Clone, K: Clone> LeanEvent<Id, Value, K> {
@@ -2426,28 +2455,6 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         C: EventContent,
     {
         self.content.has_additional_creator(sender)
-    }
-}
-
-fn sort_json_value_keys(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            let mut sorted = alloc::collections::BTreeMap::new();
-            let taken = core::mem::take(map);
-            for (k, mut v) in taken {
-                sort_json_value_keys(&mut v);
-                sorted.insert(k, v);
-            }
-            for (k, v) in sorted {
-                map.insert(k, v);
-            }
-        }
-        Value::Array(arr) => {
-            for v in arr {
-                sort_json_value_keys(v);
-            }
-        }
-        _ => {}
     }
 }
 
