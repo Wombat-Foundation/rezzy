@@ -193,7 +193,11 @@ fn build_room(member_count: usize) -> (HashMap<String, LeanEvent>, Vec<String>) 
             sender: "@creator:example.org".to_string(),
             content: serde_json::json!({ "users_default": 50 }),
             prev_events: vec![create_id.clone()],
-            auth_events: vec![create_id.clone()],
+            // V2.1+ (this bench uses `StateResVersion::V2_1` throughout)
+            // forbids citing `m.room.create` in `auth_events` (rule 2.4) --
+            // create is implicit, not cited. Citing it here made this fixture
+            // invalid under the version the bench actually resolves against.
+            auth_events: Vec::new(),
             depth: 1,
             rejected: false,
             soft_fail: false,
@@ -221,7 +225,16 @@ fn build_room(member_count: usize) -> (HashMap<String, LeanEvent>, Vec<String>) 
                 sender: user,
                 content: serde_json::json!({ "membership": "join" }),
                 prev_events: vec![prev.clone()],
-                auth_events: vec![pl_id.clone(), prev.clone()],
+                // For `i == 0`, `prev` is `pl_id` itself (the loop's initial
+                // value) -- `vec![pl_id.clone(), prev.clone()]` would cite the
+                // same event twice. Dedup so the first member only cites
+                // power_levels once, and later members cite power_levels plus
+                // the previous member event.
+                auth_events: if prev == pl_id {
+                    vec![pl_id.clone()]
+                } else {
+                    vec![pl_id.clone(), prev.clone()]
+                },
                 depth,
                 rejected: false,
                 soft_fail: false,
