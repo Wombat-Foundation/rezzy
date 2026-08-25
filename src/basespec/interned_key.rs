@@ -5,9 +5,15 @@
 //! The shared blanket impl routes lookups through `Borrow<dyn StateKeyDyn>`
 //! (zero-alloc `&str` queries against an arbitrary `K`), which forces `K:
 //! 'static`. This module instead builds a wrapper that holds `&'a Interner`
-//! and converts the query `&str` into an OWNED `(String, InternId<'a>)` key on
-//! the spot — the same type as the map's key — so no borrowed trait-object
-//! lookup, no `for<'q>`, no `'static` is involved.
+//! and converts the query `&str` into an OWNED key on the spot via the
+//! interner — no borrowed trait-object lookup, no `for<'q>`, no `'static`.
+//!
+//! The map key is `(InternId<'a>, InternId<'a>)` — BOTH halves are `Copy` and
+//! ranked from a single arena interned in sorted string order, so `get_event`
+//! resolves both `&str` halves through `id_of` with ZERO allocation (the same
+//! cost profile as the `Borrow<dyn StateKeyDyn>` path it replaces), and the
+//! tuple's rank `Ord` agrees with the `StateKeyDyn` `(ev_type, state_key)`
+//! lexicographic ordering contract.
 
 use alloc::borrow::ToOwned;
 use core::fmt;
@@ -127,15 +133,12 @@ impl fmt::Display for InternId<'_> {
     }
 }
 
-/// A room-state map keyed by owned `(String, InternId<'a>)`, whose
-/// `StateProvider` impl converts a `&str` query into the owned key via the
-/// interner — no `Borrow<dyn StateKeyDyn>`, no `'static`.
+/// A room-state map keyed by `(InternId<'a>, InternId<'a>)` — both halves
+/// `Copy` — whose `StateProvider` impl converts a `&str` query into the key via
+/// the interner with no allocation. No `Borrow<dyn StateKeyDyn>`, no `'static`.
 pub struct InternedRoomState<'a, Id = alloc::string::String, C = serde_json::Value> {
     interner: &'a Interner,
-    map: alloc::collections::BTreeMap<
-        (alloc::string::String, InternId<'a>),
-        LeanEvent<Id, C, InternId<'a>>,
-    >,
+    map: alloc::collections::BTreeMap<(InternId<'a>, InternId<'a>), LeanEvent<Id, C, InternId<'a>>>,
 }
 
 impl<'a, Id, C> StateProvider<Id, C, LeanEvent<Id, C, InternId<'a>>>
@@ -149,10 +152,11 @@ where
         event_type: &str,
         state_key: &str,
     ) -> Option<&LeanEvent<Id, C, InternId<'a>>> {
-        let idx = self.interner.id_of(state_key)?;
+        let et = self.interner.id_of(event_type)?;
+        let sk = self.interner.id_of(state_key)?;
         let key = (
-            event_type.to_owned(),
-            InternId::from_index(self.interner, idx),
+            InternId::from_index(self.interner, et),
+            InternId::from_index(self.interner, sk),
         );
         self.map.get(&key)
     }
@@ -175,17 +179,18 @@ mod tests {
     #[test]
     fn spike_dedicated_state_provider_avoids_static_wall() {
         let mut interner = Interner::new();
-        // Sort-once rank ids: "" < "@a:x" < "@b:x" → ranks 0,1,2.
-        let mut keys = vec!["@b:x", "@a:x"];
+        // Single arena, rank-sorted: "" < "@a:x" < "@b:x" < "m.room.member"
+        // → ranks 0,1,2,3. Both the event-type and state-key halves resolve
+        // through the same ranked arena, so the `(rank, rank)` key preserves
+        // the `(ev_type, state_key)` lexicographic ordering contract.
+        let mut keys = vec!["m.room.member", "@b:x", "@a:x"];
         keys.sort_unstable();
-        let mut rank = 0;
         for k in keys {
             interner.intern(k);
-            rank += 1;
         }
-        let _ = rank;
 
         let interner_ref = &interner; // borrows for 'a; NOT 'static
+        let et = InternId::from_index(interner_ref, interner.id_of("m.room.member").unwrap());
         let a = InternId::from_index(interner_ref, interner.id_of("@a:x").unwrap());
         let b = InternId::from_index(interner_ref, interner.id_of("@b:x").unwrap());
 
@@ -193,7 +198,7 @@ mod tests {
             interner: interner_ref,
             map: alloc::collections::BTreeMap::from([
                 (
-                    (alloc::string::String::from("m.room.member"), a),
+                    (et, a),
                     LeanEvent {
                         event_id: alloc::string::String::from("$a"),
                         event_type: alloc::string::String::from("m.room.member"),
@@ -211,7 +216,7 @@ mod tests {
                     },
                 ),
                 (
-                    (alloc::string::String::from("m.room.member"), b),
+                    (et, b),
                     LeanEvent {
                         event_id: alloc::string::String::from("$b"),
                         event_type: alloc::string::String::from("m.room.member"),
@@ -231,12 +236,15 @@ mod tests {
             ]),
         };
 
-        // Query via the trait's &str boundary; resolves through the interner
-        // to the owned key. No 'static anywhere.
+        // Query via the trait's &str boundary; resolves both halves through the
+        // interner (id_of) to the owned key with zero allocation. No 'static.
         let found = StateProvider::get_event(&map, "m.room.member", "@a:x")
             .expect("must find @a via owned-key lookup");
         assert_eq!(found.event_id, "$a");
         assert!(StateProvider::get_event(&map, "m.room.member", "@nope:x").is_none());
+        // The `(rank, rank)` ordering agrees with the lexicographic contract:
+        // "@a:x" < "@b:x" even though "@b:x" was sorted after "@a:x".
+        assert!(a < b);
     }
 
     /// Covers the `InternId` accessors and trait impls not exercised by the
