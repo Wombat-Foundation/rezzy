@@ -158,6 +158,11 @@ path = "benches/interned_key.rs"
 harness = false
 
 [[bench]]
+name = "interned_lookup"
+path = "benches/interned_lookup.rs"
+harness = false
+
+[[bench]]
 name = "persistence"
 path = "benches/persistence.rs"
 harness = false
