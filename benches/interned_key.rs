@@ -51,8 +51,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use rezzy::auth::{RoomState, StateProvider};
-use rezzy::basespec::interned_key::{InternedRoomState, Interner};
 use rezzy::{compute_state_at, compute_state_at_batch, InternedKey, LeanEvent, StateResVersion};
 
 /// A flat `u32` index into an interned string arena — the C-style key: `Copy`,
@@ -270,121 +268,14 @@ fn measure(label: &str, reps: usize, f: impl Fn()) -> Duration {
     elapsed
 }
 
-/// Isolates `StateProvider::get_event` cost alone, apples-to-apples between
-/// the current zero-alloc `String`/`Borrow<dyn StateKeyDyn>` path
-/// (`RoomState<_, _, String>`) and the fixed zero-alloc `InternId` path
-/// (`InternedRoomState`, see `src/basespec/interned_key.rs`). Both paths do
-/// zero allocation per lookup today, so this measures the actual mechanism
-/// cost difference (trait-object dispatch + `String`/`&str` compare vs. two
-/// `HashMap<&str,u32>` gets + `u32` compare) with resolution, sorting, and
-/// auth-check overhead entirely excluded — a fair test of the map-lookup
-/// slice of the earlier allocation-parity concern.
-fn bench_get_event_isolated(member_count: usize, lookups: usize) {
-    let (events, _targets) = build_room(member_count);
-
-    // Build the String-keyed RoomState (today's zero-alloc path).
-    let mut str_room: RoomState<String, serde_json::Value, String> = RoomState::new();
-    let mut all_keys: Vec<(String, String)> = Vec::new();
-    for ev in events.values() {
-        let key = (
-            ev.event_type.clone(),
-            ev.state_key.clone().unwrap_or_default(),
-        );
-        all_keys.push(key.clone());
-        str_room.insert(key, ev.clone());
-    }
-
-    // Build the matching InternId-keyed InternedRoomState.
-    let mut interner = Interner::new();
-    for (et, sk) in &all_keys {
-        interner.intern(et);
-        interner.intern(sk);
-    }
-    let mut interned_map = std::collections::BTreeMap::new();
-    // O(n): drive the build off `events` directly (one entry per distinct
-    // key, since `build_room` never repeats a `(type, state_key)` pair)
-    // instead of re-scanning `all_keys` with `.find()`, which was O(n^2) and
-    // made 100k-key rooms impractical.
-    for ev in events.values() {
-        let et = &ev.event_type;
-        let sk = ev.state_key.clone().unwrap_or_default();
-        let et_id = rezzy::basespec::interned_key::InternId::from_index(
-            &interner,
-            interner.id_of(et).unwrap(),
-        );
-        let sk_id = rezzy::basespec::interned_key::InternId::from_index(
-            &interner,
-            interner.id_of(&sk).unwrap(),
-        );
-        interned_map.insert(
-            (et_id, sk_id),
-            LeanEvent {
-                event_id: ev.event_id.clone(),
-                event_type: ev.event_type.clone(),
-                state_key: Some(sk_id),
-                power_level: ev.power_level,
-                origin_server_ts: ev.origin_server_ts,
-                sender: ev.sender.clone(),
-                content: ev.content.clone(),
-                prev_events: ev.prev_events.clone(),
-                auth_events: ev.auth_events.clone(),
-                depth: ev.depth,
-                rejected: ev.rejected,
-                soft_fail: ev.soft_fail,
-                room_id: ev.room_id.clone(),
-            },
-        );
-    }
-    let interned_room = InternedRoomState::new(&interner, interned_map);
-
-    // Correctness gate: every key must resolve identically on both paths.
-    for (et, sk) in &all_keys {
-        let a = StateProvider::get_event(&str_room, et, sk).map(|e| e.event_id.clone());
-        let b = StateProvider::get_event(&interned_room, et, sk).map(|e| e.event_id.clone());
-        assert_eq!(a, b, "get_event must agree for ({et}, {sk})");
-    }
-
-    // Cycle through all keys repeatedly for `lookups` total lookups on each
-    // path, so both are compared under identical access patterns.
-    let key_refs: Vec<(&str, &str)> = all_keys
-        .iter()
-        .map(|(et, sk)| (et.as_str(), sk.as_str()))
-        .collect();
-
-    let str_dur = measure(
-        "get_event String  ",
-        lookups / key_refs.len().max(1),
-        || {
-            for &(et, sk) in &key_refs {
-                let found = StateProvider::get_event(&str_room, et, sk);
-                std::hint::black_box(found);
-            }
-        },
-    );
-    let interned_dur = measure(
-        "get_event InternId",
-        lookups / key_refs.len().max(1),
-        || {
-            for &(et, sk) in &key_refs {
-                let found = StateProvider::get_event(&interned_room, et, sk);
-                std::hint::black_box(found);
-            }
-        },
-    );
-    let delta = interned_dur.as_secs_f64() - str_dur.as_secs_f64();
-    println!(
-        "  get_event InternId vs String: {delta:+.1}ms total ({:+.1}%)",
-        delta / str_dur.as_secs_f64() * 100.0
-    );
-}
+// The isolated get_event lookup micro-bench (String Borrow<dyn StateKeyDyn>
+// vs zero-alloc InternId) that used to live here was superseded by
+// `benches/interned_lookup.rs`, which covers the same measurement plus a
+// type-count sweep (1 vs 16 event types) -- removed to avoid two benches
+// answering the same question. Run `cargo bench --bench interned_lookup`
+// for that comparison.
 
 fn main() {
-    println!("=== isolated get_event micro-bench ===");
-    for &n in &[100usize, 1_000, 5_000, 100_000] {
-        println!("--- room size: {n} distinct (type, state_key) keys ---");
-        bench_get_event_isolated(n, 200_000);
-    }
-    println!();
     println!("=== full resolution bench (compute_state_at / compute_state_at_batch) ===");
     let sizes = [100usize, 1_000, 5_000];
     let rooms: Vec<(usize, HashMap<String, LeanEvent>, Vec<String>)> = sizes
