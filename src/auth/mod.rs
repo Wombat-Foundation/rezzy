@@ -21,6 +21,7 @@
 pub mod roaring;
 pub mod user;
 
+use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
@@ -1183,17 +1184,51 @@ where
     // the redactor used by pair A, A must run first; otherwise the in-place
     // `*target = redacted` replaces the redaction source before it's used, and
     // `apply_redaction` returns None (its `redacts` field was stripped),
-    // silently losing the outer redaction. Pick first any pair whose target is
-    // not the redactor of a remaining pair (fall back to original order on a
-    // genuine cycle, which is pathological).
-    let mut remaining = core::mem::take(&mut pairs);
-    while !remaining.is_empty() {
-        let idx = remaining
-            .iter()
-            .position(|(_, tp)| !remaining.iter().any(|(rp, _)| rp == tp))
-            .unwrap_or(0);
-        pairs.push(remaining.remove(idx));
+    // silently losing the outer redaction.
+    //
+    // Each pair's redactor position (`rp`) is unique -- `redaction_positions`
+    // draws from distinct event indices -- so at most one other pair can
+    // block a given pair (the one whose `rp` equals this pair's `tp`). That
+    // makes the dependency graph a forest (plus, pathologically, cycles): a
+    // linear-time topological sort (Kahn's algorithm) reproduces the same
+    // order the old O(n^2)/O(n^3) repeated-scan (`position` + nested `any`
+    // over the shrinking `remaining` list, once per pair) computed, without
+    // rescanning on every pair. A genuine cycle (pathological: a redaction
+    // chain that loops back on itself) leaves its members with a permanently
+    // nonzero in-degree; append them in original order, matching the old
+    // code's `unwrap_or(0)` fallback of just taking the next one when stuck.
+    let blocked_by: alloc::collections::BTreeMap<usize, usize> = pairs
+        .iter()
+        .enumerate()
+        .map(|(i, &(rp, _))| (rp, i))
+        .collect();
+    let mut children: Vec<Vec<usize>> = alloc::vec![Vec::new(); pairs.len()];
+    let mut in_degree: Vec<u8> = alloc::vec![0; pairs.len()];
+    for (i, &(_, tp)) in pairs.iter().enumerate() {
+        if let Some(&parent) = blocked_by.get(&tp) {
+            children[parent].push(i);
+            in_degree[i] = 1;
+        }
     }
+    let mut queue: VecDeque<usize> = (0..pairs.len()).filter(|&i| in_degree[i] == 0).collect();
+    let mut order: Vec<usize> = Vec::with_capacity(pairs.len());
+    let mut emitted = alloc::vec![false; pairs.len()];
+    while let Some(i) = queue.pop_front() {
+        order.push(i);
+        emitted[i] = true;
+        for &c in &children[i] {
+            // Each child has exactly one parent (its unique `blocked_by`
+            // predecessor), so this can only run once per child and never
+            // underflows below 0.
+            in_degree[c] = in_degree[c].saturating_sub(1);
+            if in_degree[c] == 0 {
+                queue.push_back(c);
+            }
+        }
+    }
+    order.extend((0..pairs.len()).filter(|&i| !emitted[i]));
+    let ordered_pairs = order.into_iter().map(|i| pairs[i]).collect();
+    pairs = ordered_pairs;
 
     for (rp, tp) in pairs {
         if !redaction_is_authorized(&events[rp], &events[tp], state, version, room_version) {

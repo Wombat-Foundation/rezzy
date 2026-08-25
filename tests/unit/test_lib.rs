@@ -4186,6 +4186,96 @@ fn test_apply_authorized_redactions_redaction_of_redaction_order() {
     );
 }
 
+/// A longer redaction-of-redaction-of-redaction chain (R3 redacts R2 redacts
+/// R1 redacts M), fed in fully reversed batch order, to exercise the
+/// linear-time topological ordering's multi-hop path (not just the 2-hop
+/// case above).
+#[test]
+fn test_apply_authorized_redactions_long_chain_reverse_order() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use rezzy::StateResVersion;
+
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": { "@admin:example.com": 100, "@bob:example.com": 0 },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut state = RoomState::new();
+    state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        content: serde_json::json!({ "body": "secret" }),
+        ..Default::default()
+    };
+    let r1: LeanEvent = LeanEvent {
+        event_id: "$r1:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 11,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    let r2: LeanEvent = LeanEvent {
+        event_id: "$r2:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 12,
+        content: serde_json::json!({ "redacts": "$r1:example.com" }),
+        ..Default::default()
+    };
+    let r3: LeanEvent = LeanEvent {
+        event_id: "$r3:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 13,
+        content: serde_json::json!({ "redacts": "$r2:example.com" }),
+        ..Default::default()
+    };
+
+    // Fully reversed batch order: R3, R2, R1, M.
+    let mut events = vec![r3.clone(), r2.clone(), r1.clone(), msg.clone()];
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+
+    let m = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(
+        m.content,
+        serde_json::json!({}),
+        "M must be redacted by R1 despite the fully reversed batch order"
+    );
+    let r1_ev = events
+        .iter()
+        .find(|e| e.event_id == "$r1:example.com")
+        .unwrap();
+    assert_eq!(
+        r1_ev.content,
+        serde_json::json!({ "redacts": "$msg:example.com" }),
+        "R1 must be spent as a redactor (on M) before being replaced as a target (by R2)"
+    );
+    let r2_ev = events
+        .iter()
+        .find(|e| e.event_id == "$r2:example.com")
+        .unwrap();
+    assert_eq!(
+        r2_ev.content,
+        serde_json::json!({ "redacts": "$r1:example.com" }),
+        "R2 must be spent as a redactor (on R1) before being replaced as a target (by R3)"
+    );
+    assert_eq!(report.applied.len(), 3, "all three redactions must apply");
+}
+
 /// A redactor who is NOT the target's sender but holds PL >= redact level must
 /// be authorized (the power-level branch of `redaction_is_authorized`).
 #[test]
