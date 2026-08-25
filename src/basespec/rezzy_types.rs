@@ -1432,6 +1432,37 @@ impl From<String> for InternedKey {
     }
 }
 
+impl<Id, C> LeanEvent<Id, C, String> {
+    /// Converts this event's `state_key` half to an [`InternedKey`], yielding a
+    /// `LeanEvent` that is usable as `K = InternedKey` in the resolution
+    /// pipeline (`compute_state_at` / `SharedState<Id, InternedKey>`).
+    ///
+    /// This is the ingest-boundary bridge between the plain-`String` wire
+    /// format and the interned representation: `state_key` is rebuilt once via
+    /// [`InternedKey::from`], so repeated clones during resolution share a
+    /// single `Arc` allocation instead of copying the string. Every other field
+    /// is moved through unchanged, so the conversion is a pure type change with
+    /// no behavioral difference.
+    #[must_use]
+    pub fn into_interned_state_key(self) -> LeanEvent<Id, C, InternedKey> {
+        LeanEvent {
+            event_id: self.event_id,
+            event_type: self.event_type,
+            state_key: self.state_key.map(InternedKey::from),
+            power_level: self.power_level,
+            origin_server_ts: self.origin_server_ts,
+            sender: self.sender,
+            content: self.content,
+            prev_events: self.prev_events,
+            auth_events: self.auth_events,
+            depth: self.depth,
+            rejected: self.rejected,
+            soft_fail: self.soft_fail,
+            room_id: self.room_id,
+        }
+    }
+}
+
 /// Borrowed view over a [`LeanEvent`] that avoids cloning event envelopes.
 ///
 /// This is useful for host adapters that already own native event storage and

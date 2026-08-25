@@ -934,3 +934,48 @@ fn test_resolve_merge_fast_path_hashed_update_arm() {
         "the auth-invalid first topic must lose to the creator's topic"
     );
 }
+
+/// `InternedKey` is a drop-in `K` for the resolution pipeline: converting
+/// events at the ingest boundary via `into_interned_state_key` and resolving
+/// with `SharedStateInterned` produces identical state to the plain-`String`
+/// path, so the interned representation is purely an allocation tradeoff with
+/// no behavioral difference.
+#[test]
+fn test_interned_key_matches_string_path() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.message","sender":"@x:x","depth":50,"prev_events":["A"],"auth_events":[]}
+{"event_id":"C","type":"m.room.message","sender":"@x:x","depth":2,"prev_events":["A"],"auth_events":[]}
+{"event_id":"D","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B","C"],"auth_events":[]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    let interned_map: HashMap<
+        String,
+        rezzy::LeanEvent<String, serde_json::Value, rezzy::InternedKey>,
+    > = events_map
+        .iter()
+        .map(|(id, ev)| (id.clone(), ev.clone().into_interned_state_key()))
+        .collect();
+
+    let str_state = rezzy::compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    let interned_state = rezzy::compute_state_at("D", &interned_map, StateResVersion::V2).unwrap();
+
+    let str_keyed: std::collections::BTreeMap<(String, String), String> = str_state
+        .into_iter()
+        .map(|((et, k), id)| ((et.to_string(), k), id))
+        .collect();
+    let interned_keyed: std::collections::BTreeMap<(String, String), String> = interned_state
+        .into_iter()
+        .map(|((et, k), id)| ((et.to_string(), k.as_ref().to_string()), id))
+        .collect();
+
+    assert_eq!(interned_keyed, str_keyed);
+    assert_eq!(
+        str_keyed.get(&("m.room.create".to_string(), String::new())),
+        Some(&"A".to_string()),
+        "resolved state at D must include the create event from A"
+    );
+}
