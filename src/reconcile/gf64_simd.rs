@@ -243,6 +243,7 @@ fn select_evaluator_backend(_has_avx512: bool, has_pclmul: bool) -> EvaluatorBac
 }
 
 #[cfg(not(target_arch = "x86_64"))]
+#[allow(dead_code)]
 fn select_evaluator_backend(_has_avx512: bool, _has_pclmul: bool) -> EvaluatorBackend {
     EvaluatorBackend::Scalar
 }

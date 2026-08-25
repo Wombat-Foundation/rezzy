@@ -178,6 +178,7 @@ where
     thread_res
 }
 
+#[cfg(feature = "std")]
 fn merge_lattice_winners<'a, Id, C>(
     key_winners: &mut HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
     thread_res: HashMap<(EventType, String), &'a LeanEvent<Id, C>>,

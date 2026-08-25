@@ -78,6 +78,11 @@ lint: ##H Run all linters
 rust/build: ##H Compile Rust binary (release)
 	$(CARGO) build --locked --release --timings --features cli
 
+.PHONY: rust/so
+rust/so: ##H Compile shared object (librezzy.so) from the library
+	$(CARGO) rustc --locked --release --lib --crate-type cdylib $(CARGO_FEATURE_ARGS)
+	@echo "Built: target/release/librezzy.so"
+
 .PHONY: rust/doc
 rust/doc: ##H Generate rustdoc API documentation
 	$(CARGO) doc --no-deps
@@ -144,13 +149,14 @@ rust/publish: ##H Preview package and simulate dry-run publish
 	$(CARGO) publish --dry-run
 
 # Convenience aliases
-.PHONY: build test bench install clean uninstall
+.PHONY: build test bench install clean uninstall so
 build:   rust/build   ##H Alias for rust/build
 test:    rust/test    ##H Alias for rust/test
 bench:   rust/bench   ##H Alias for rust/bench
 cov:     rust/coverage ##H Alias for rust/coverage
 install: rust/install ##H Alias for rust/install
 uninstall: rust/uninstall ##H Alias for rust/uninstall
+so:      rust/so      ##H Alias for rust/so
 
 .PHONY: clean
 clean:   rust/clean	##H Remove all build artifacts
