@@ -116,8 +116,14 @@ fn main() {
     let speedup = rm.as_secs_f64() / rz.as_secs_f64();
     println!("\nruma / rezzy = {speedup:.2}x");
 
-    // Batch vs sequential: N distinct signed PDUs from one server (same key).
-    let n = 64;
+    // Batch vs sequential at two scales.
+    bench_batch(&value, &keys, 64, 1_000);
+    bench_batch(&value, &keys, 5_000, 20);
+}
+
+/// Times verifying `n` distinct signed PDUs (same server key) one-at-a-time vs
+/// a single `verify_batch` call.
+fn bench_batch(value: &Value, keys: &DalekVerifier, n: usize, iters: u32) {
     let sk = ed25519_dalek::SigningKey::from_bytes(&[42_u8; 32]);
     let events: Vec<Value> = (0..n)
         .map(|i| {
@@ -131,15 +137,14 @@ fn main() {
         })
         .collect();
 
-    let batch_iters = 1_000;
     println!("\nbatch vs sequential: {n} signed PDUs, 1 server sig each");
-    let seq = time("sequential xN", batch_iters, || {
+    let seq = time("sequential xN", iters, || {
         for e in &events {
-            let _ = black_box(verify_event_signatures(e, ROOM_VERSION, &keys));
+            let _ = black_box(verify_event_signatures(e, ROOM_VERSION, keys));
         }
     });
-    let bat = time("verify_batch xN", batch_iters, || {
-        let _ = black_box(rezzy::signing::verify_batch(&events, ROOM_VERSION, &keys));
+    let bat = time("verify_batch xN", iters, || {
+        let _ = black_box(rezzy::signing::verify_batch(&events, ROOM_VERSION, keys));
     });
     println!(
         "sequential / batch = {:.2}x",
