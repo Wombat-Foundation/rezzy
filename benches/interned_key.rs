@@ -47,10 +47,106 @@
     clippy::cast_precision_loss
 )]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use rezzy::{compute_state_at, compute_state_at_batch, InternedKey, LeanEvent, StateResVersion};
+
+/// A flat `u32` index into an interned string arena — the C-style key: `Copy`,
+/// no atomic refcount, no per-clone allocation, integer compare/hash. Ids are
+/// assigned in lexicographic string order so that `InternId`'s numeric `Ord`
+/// agrees with the resolver's `Borrow<dyn StateKeyDyn>` string ordering (see
+/// the soundness note beside that impl in `src/auth/mod.rs`); `default()` is
+/// the empty-string key, matching how the pipeline builds keys from carried
+/// `state_key` values (`unwrap_or_default`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+struct InternId(u32);
+
+impl InternId {
+    fn of(idx: usize) -> Self {
+        InternId(idx as u32)
+    }
+}
+
+impl AsRef<str> for InternId {
+    fn as_ref(&self) -> &str {
+        // `INTERN` is a 'static `OnceLock<Vec<String>>`, so the returned
+        // reference is 'static and coerces to `&self`'s lifetime; the table is
+        // immutable during resolution, so this is a lock-free shared read even
+        // under the parallel `thread::scope` fold.
+        &INTERN.get().expect("interner initialized")[self.0 as usize]
+    }
+}
+
+impl std::fmt::Display for InternId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_ref())
+    }
+}
+
+/// The interned string arena: `INTERN[idx]` is the string for `InternId(idx)`.
+static INTERN: OnceLock<Vec<String>> = OnceLock::new();
+
+/// Interns the union of every distinct `state_key` across all rooms, sorted, so
+/// one shared arena serves every room size and id order == string order.
+fn init_interner(rooms: &[&HashMap<String, LeanEvent>]) {
+    let mut keys: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
+    for room in rooms {
+        for ev in room.values() {
+            if let Some(k) = &ev.state_key {
+                if seen.insert(k.clone()) {
+                    keys.push(k.clone());
+                }
+            }
+        }
+    }
+    keys.sort();
+    INTERN
+        .set(keys)
+        .expect("interner must be initialized exactly once");
+}
+
+fn str_to_id() -> HashMap<String, InternId> {
+    INTERN
+        .get()
+        .expect("interner initialized")
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.clone(), InternId::of(i)))
+        .collect()
+}
+
+/// Rebuilds a room with `K = InternId`, interning each `state_key` through the
+/// shared arena. Field-for-field copy; only the `state_key` representation
+/// changes.
+fn to_u32_events(
+    events: &HashMap<String, LeanEvent>,
+    str_to_id: &HashMap<String, InternId>,
+) -> HashMap<String, LeanEvent<String, serde_json::Value, InternId>> {
+    events
+        .iter()
+        .map(|(id, ev)| {
+            let converted = LeanEvent {
+                event_id: ev.event_id.clone(),
+                event_type: ev.event_type.clone(),
+                state_key: ev.state_key.as_ref().map(|k| str_to_id[k]),
+                power_level: ev.power_level,
+                origin_server_ts: ev.origin_server_ts,
+                sender: ev.sender.clone(),
+                content: ev.content.clone(),
+                prev_events: ev.prev_events.clone(),
+                auth_events: ev.auth_events.clone(),
+                depth: ev.depth,
+                rejected: ev.rejected,
+                soft_fail: ev.soft_fail,
+                room_id: ev.room_id.clone(),
+            };
+            (id.clone(), converted)
+        })
+        .collect()
+}
 
 /// Builds `create -> power_levels` followed by a linear chain of `member_count`
 /// `m.room.member` events, each with a distinct `state_key` (the target user).
@@ -160,14 +256,56 @@ fn measure(label: &str, reps: usize, f: impl Fn()) -> Duration {
 }
 
 fn main() {
-    for &n in &[100usize, 1_000, 5_000] {
-        let (events, targets) = build_room(n);
+    let sizes = [100usize, 1_000, 5_000];
+    let rooms: Vec<(usize, HashMap<String, LeanEvent>, Vec<String>)> = sizes
+        .iter()
+        .map(|&n| {
+            let (events, targets) = build_room(n);
+            (n, events, targets)
+        })
+        .collect();
+    let room_maps: Vec<&HashMap<String, LeanEvent>> = rooms.iter().map(|(_, e, _)| e).collect();
+    init_interner(&room_maps);
+    let str_to_id = str_to_id();
+
+    for (n, events, targets) in &rooms {
         let target_refs: Vec<&str> = targets.iter().map(String::as_str).collect();
 
         let interned: HashMap<String, LeanEvent<String, serde_json::Value, InternedKey>> = events
             .iter()
             .map(|(id, ev)| (id.clone(), ev.clone().into_interned_state_key()))
             .collect();
+        let u32_events: HashMap<String, LeanEvent<String, serde_json::Value, InternId>> =
+            to_u32_events(events, &str_to_id);
+
+        // Correctness gate: the interned-u32 path must resolve to the *same*
+        // state as String (keyed back to strings), so the perf number isn't
+        // measuring a silently-wrong ordering/default() path.
+        let last = targets.last().unwrap();
+        let str_state = compute_state_at::<String, serde_json::Value, String, _, String>(
+            last,
+            events,
+            StateResVersion::V2_1,
+        )
+        .expect("last member must resolve (String)");
+        let u32_state = compute_state_at::<String, serde_json::Value, String, _, InternId>(
+            last,
+            &u32_events,
+            StateResVersion::V2_1,
+        )
+        .expect("last member must resolve (u32)");
+        let str_keyed: std::collections::BTreeMap<(String, String), String> = str_state
+            .into_iter()
+            .map(|((et, k), id)| ((et.to_string(), k), id))
+            .collect();
+        let u32_keyed: std::collections::BTreeMap<(String, String), String> = u32_state
+            .into_iter()
+            .map(|((et, k), id)| ((et.to_string(), k.as_ref().to_string()), id))
+            .collect();
+        assert_eq!(
+            u32_keyed, str_keyed,
+            "u32-interned resolution must match String resolution"
+        );
 
         println!("--- room size: {n} members, {} targets ---", targets.len());
         // Fewer reps at larger sizes to keep wall-clock bounded.
@@ -179,7 +317,7 @@ fn main() {
 
         // Batch path (engages the parallel lattice fold under default `std`).
         let batch_str = measure("batch  String    ", reps, || {
-            let result = compute_state_at_batch(&target_refs, &events, StateResVersion::V2_1);
+            let result = compute_state_at_batch(&target_refs, events, StateResVersion::V2_1);
             assert_eq!(
                 result.len(),
                 target_refs.len(),
@@ -196,13 +334,22 @@ fn main() {
             );
             std::hint::black_box(&result);
         });
+        let batch_u32 = measure("batch  u32 InternId", reps, || {
+            let result = compute_state_at_batch(&target_refs, &u32_events, StateResVersion::V2_1);
+            assert_eq!(
+                result.len(),
+                target_refs.len(),
+                "all batch targets must resolve"
+            );
+            std::hint::black_box(&result);
+        });
 
         // Serial (cache-free) control at the last (deepest) member.
         let last = target_refs.last().copied().unwrap();
         let ser_str = measure("serial String    ", reps, || {
             let state = compute_state_at::<String, serde_json::Value, str, _, String>(
                 last,
-                &events,
+                events,
                 StateResVersion::V2_1,
             )
             .expect("last member must resolve");
@@ -217,16 +364,35 @@ fn main() {
             .expect("last member must resolve");
             std::hint::black_box(state.len());
         });
+        let ser_u32 = measure("serial u32 InternId", reps, || {
+            let state = compute_state_at::<String, serde_json::Value, str, _, InternId>(
+                last,
+                &u32_events,
+                StateResVersion::V2_1,
+            )
+            .expect("last member must resolve");
+            std::hint::black_box(state.len());
+        });
 
         let batch_delta = batch_interned.as_secs_f64() - batch_str.as_secs_f64();
+        let batch_delta_u32 = batch_u32.as_secs_f64() - batch_str.as_secs_f64();
         let ser_delta = ser_interned.as_secs_f64() - ser_str.as_secs_f64();
+        let ser_delta_u32 = ser_u32.as_secs_f64() - ser_str.as_secs_f64();
         println!(
-            "  batch delta: {batch_delta:+.1}ms total ({:+.1}%)",
+            "  batch  InternedKey vs String: {batch_delta:+.1}ms total ({:+.1}%)",
             batch_delta / batch_str.as_secs_f64() * 100.0
         );
         println!(
-            "  serial delta: {ser_delta:+.1}ms total ({:+.1}%)",
+            "  batch  u32 InternId vs String: {batch_delta_u32:+.1}ms total ({:+.1}%)",
+            batch_delta_u32 / batch_str.as_secs_f64() * 100.0
+        );
+        println!(
+            "  serial InternedKey vs String: {ser_delta:+.1}ms total ({:+.1}%)",
             ser_delta / ser_str.as_secs_f64() * 100.0
+        );
+        println!(
+            "  serial u32 InternId vs String: {ser_delta_u32:+.1}ms total ({:+.1}%)",
+            ser_delta_u32 / ser_str.as_secs_f64() * 100.0
         );
     }
 }
