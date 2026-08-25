@@ -70,6 +70,7 @@ pub struct Args {
 }
 
 /// Run the CLI application.
+#[allow(clippy::too_many_lines)]
 fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
     let input_val = load_or_fetch_input_value(args)?;
     let (raw_events, heads) = parse_and_extract_heads(&input_val)?;
@@ -204,7 +205,7 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
             auth_graph
                 .index
                 .item_at(idx as usize)
-                .map(|id| id.clone())
+                .cloned()
                 .expect("auth-chain index came from this graph")
         })
         .collect();

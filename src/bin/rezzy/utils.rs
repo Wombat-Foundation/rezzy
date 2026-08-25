@@ -403,7 +403,7 @@ pub fn partition_and_resolve_state(
                 auth_graph
                     .index
                     .item_at(idx as usize)
-                    .map(|id| id.clone())
+                    .cloned()
                     .expect("auth-chain index came from this graph"),
             );
         }

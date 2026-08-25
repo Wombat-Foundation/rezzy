@@ -14,7 +14,7 @@
 
 use crate::utils::{compute_state_hash, epoch_days_to_ymd, resolve_parent_states, SharedStateMap};
 use crate::{Args, OutputFormat};
-use rezzy::auth::{apply_authorized_redactions, RoomState};
+use rezzy::auth::{apply_authorized_redactions, RedactionReport, RoomState};
 use rezzy::basespec::event_types::EventType;
 use rezzy::{resolved_state_entries, LeanEvent, StateResVersion};
 use std::collections::HashMap;
@@ -475,7 +475,7 @@ fn render_timeline(ctx: &FormattingContext) -> String {
     let redaction_report = if sorted_events.iter().any(LeanEvent::is_redaction) {
         apply_authorized_redactions(&mut sorted_events, &room_state, ctx.version, room_version)
     } else {
-        Default::default()
+        RedactionReport::default()
     };
 
     if ctx.args.debug {
