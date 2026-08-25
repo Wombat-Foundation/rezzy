@@ -6,6 +6,7 @@
 //!
 //! This is used for fast auth-chain difference computations in state resolution.
 
+use crate::DenseIndex;
 use crate::FastMap;
 use crate::HashMap;
 use crate::LeanEvent;
@@ -21,10 +22,8 @@ use roaring::RoaringBitmap;
 /// full auth chain is represented as a `RoaringBitmap`. Checking whether
 /// event A is in event B's auth chain is a single `bitmap.contains(idx)` call.
 pub struct AuthGraph<Id = String> {
-    /// Maps event IDs to their dense topological index.
-    pub id_to_index: HashMap<Id, u32>,
-    /// Maps dense indices back to event IDs.
-    pub index_to_id: Vec<Id>,
+    /// Dense index over event IDs (first-seen order = topological order).
+    pub index: DenseIndex<Id>,
     /// Per-event bitmaps: `auth_bitmaps[i]` contains the indices of all
     /// transitive auth ancestors of event `i`.
     pub auth_bitmaps: Vec<RoaringBitmap>,
@@ -78,19 +77,15 @@ where
             }
         }
 
-        let mut id_to_index = HashMap::with_capacity(sorted.len());
-        let mut index_to_id = Vec::with_capacity(sorted.len());
-        for (idx, &id) in sorted.iter().enumerate() {
-            id_to_index.insert(id.clone(), u32::try_from(idx).unwrap());
-            index_to_id.push(id.clone());
-        }
+        let index = DenseIndex::try_build(sorted.iter().map(|&id| id.clone()))
+            .expect("auth graph event count fits in a u32 index");
 
         let mut auth_bitmaps = vec![RoaringBitmap::new(); sorted.len()];
         for (idx, &id) in sorted.iter().enumerate() {
             let mut bitmap = RoaringBitmap::new();
             if let Some(ev) = sort_context.get(id) {
                 for auth_id in &ev.auth_events {
-                    if let Some(&p_idx) = id_to_index.get(auth_id) {
+                    if let Some(p_idx) = index.index_of(auth_id) {
                         bitmap |= &auth_bitmaps[p_idx as usize];
                         bitmap.insert(p_idx);
                     }
@@ -100,8 +95,7 @@ where
         }
 
         Self {
-            id_to_index,
-            index_to_id,
+            index,
             auth_bitmaps,
         }
     }
@@ -119,12 +113,18 @@ where
     ///
     /// Unknown IDs (not in the graph) are silently
     /// skipped.
+    ///
+    /// # Panics
+    /// Panics if a resolved index is out of this graph's own index range. This
+    /// cannot happen for a graph built over the event set its bitmaps address —
+    /// every index in the difference originated from [`Self::index`]'s
+    /// `index_of`, which never returns an out-of-range index.
     #[must_use]
     pub fn auth_difference(&self, unconflicted_ids: &[Id], conflicted_ids: &[Id]) -> Vec<Id> {
         // Union of all unconflicted auth chains
         let mut u_bitmap = RoaringBitmap::new();
         for id in unconflicted_ids {
-            if let Some(&idx) = self.id_to_index.get(id) {
+            if let Some(idx) = self.index.index_of(id) {
                 u_bitmap |= &self.auth_bitmaps[idx as usize];
                 u_bitmap.insert(idx);
             }
@@ -133,7 +133,7 @@ where
         // Union of all conflicted auth chains
         let mut c_bitmap = RoaringBitmap::new();
         for id in conflicted_ids {
-            if let Some(&idx) = self.id_to_index.get(id) {
+            if let Some(idx) = self.index.index_of(id) {
                 c_bitmap |= &self.auth_bitmaps[idx as usize];
                 c_bitmap.insert(idx);
             }
@@ -143,7 +143,12 @@ where
         let diff = core::ops::Sub::sub(c_bitmap, u_bitmap);
 
         diff.iter()
-            .map(|idx| self.index_to_id[idx as usize].clone())
+            .map(|idx| {
+                self.index
+                    .item_at(idx as usize)
+                    .cloned()
+                    .expect("diff index came from this graph's index")
+            })
             .collect()
     }
 
@@ -153,10 +158,10 @@ where
     /// Returns `false` if either ID is unknown.
     #[must_use]
     pub fn is_in_auth_chain(&self, ancestor: &Id, descendant: &Id) -> bool {
-        let Some(&a_idx) = self.id_to_index.get(ancestor) else {
+        let Some(a_idx) = self.index.index_of(ancestor) else {
             return false;
         };
-        let Some(&d_idx) = self.id_to_index.get(descendant) else {
+        let Some(d_idx) = self.index.index_of(descendant) else {
             return false;
         };
         self.auth_bitmaps[d_idx as usize].contains(a_idx)
@@ -202,12 +207,11 @@ mod tests {
 
         let graph = AuthGraph::build(&sort_context);
 
-        assert_eq!(graph.id_to_index.len(), 3);
-        assert_eq!(graph.index_to_id.len(), 3);
+        assert_eq!(graph.index.len(), 3);
 
-        let idx_a = graph.id_to_index["A"];
-        let idx_b = graph.id_to_index["B"];
-        let idx_c = graph.id_to_index["C"];
+        let idx_a = graph.index.index_of(&"A".to_string()).expect("A indexed");
+        let idx_b = graph.index.index_of(&"B".to_string()).expect("B indexed");
+        let idx_c = graph.index.index_of(&"C".to_string()).expect("C indexed");
 
         // Verify topological sorting holds (A is parent, so it should be processed before B, B before C)
         assert!(idx_a < idx_b);

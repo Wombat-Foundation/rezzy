@@ -142,12 +142,11 @@ fn test_auth_graph_u32_build() {
 
     let graph = AuthGraph::build(&ctx);
 
-    assert_eq!(graph.id_to_index.len(), 3);
-    assert_eq!(graph.index_to_id.len(), 3);
+    assert_eq!(graph.index.len(), 3);
 
-    let idx_1 = graph.id_to_index[&1];
-    let idx_2 = graph.id_to_index[&2];
-    let idx_3 = graph.id_to_index[&3];
+    let idx_1 = graph.index.index_of(&1).unwrap();
+    let idx_2 = graph.index.index_of(&2).unwrap();
+    let idx_3 = graph.index.index_of(&3).unwrap();
 
     // Topological order: 1 before 2 before 3
     assert!(idx_1 < idx_2);
@@ -189,8 +188,8 @@ fn test_auth_graph_u32_diamond() {
 
     let graph = AuthGraph::build(&ctx);
 
-    let idx_1 = graph.id_to_index[&1];
-    let idx_4 = graph.id_to_index[&4];
+    let idx_1 = graph.index.index_of(&1).unwrap();
+    let idx_4 = graph.index.index_of(&4).unwrap();
 
     // Event 4's auth chain should contain 1, 2, and 3 (all ancestors)
     let bitmap_4 = &graph.auth_bitmaps[idx_4 as usize];

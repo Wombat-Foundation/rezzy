@@ -381,7 +381,7 @@ pub fn partition_and_resolve_state(
         let mut first = true;
 
         for head_id in heads {
-            if let Some(&idx) = auth_graph.id_to_index.get(head_id) {
+            if let Some(idx) = auth_graph.index.index_of(head_id) {
                 let chain_bitmap = &auth_graph.auth_bitmaps[idx as usize];
                 if first {
                     union.clone_from(chain_bitmap);
@@ -399,7 +399,13 @@ pub fn partition_and_resolve_state(
             &intersection,
         );
         for idx in diff {
-            auth_difference.insert(auth_graph.index_to_id[idx as usize].clone());
+            auth_difference.insert(
+                auth_graph
+                    .index
+                    .item_at(idx as usize)
+                    .map(|id| id.clone())
+                    .expect("auth-chain index came from this graph"),
+            );
         }
     }
 

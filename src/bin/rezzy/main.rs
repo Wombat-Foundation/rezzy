@@ -194,13 +194,19 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
     let resolved_state_list: Vec<String> = final_state_map.values().cloned().collect();
     let mut auth_chain_bitmap = roaring::RoaringBitmap::new();
     for id in &resolved_state_list {
-        if let Some(&idx) = auth_graph.id_to_index.get(id) {
+        if let Some(idx) = auth_graph.index.index_of(id) {
             auth_chain_bitmap |= &auth_graph.auth_bitmaps[idx as usize];
         }
     }
     let auth_chain_ids: Vec<String> = auth_chain_bitmap
         .into_iter()
-        .map(|idx| auth_graph.index_to_id[idx as usize].clone())
+        .map(|idx| {
+            auth_graph
+                .index
+                .item_at(idx as usize)
+                .map(|id| id.clone())
+                .expect("auth-chain index came from this graph")
+        })
         .collect();
 
     let ctx = FormattingContext {
