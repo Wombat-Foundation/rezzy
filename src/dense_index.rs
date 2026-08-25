@@ -116,8 +116,9 @@ impl<T: Eq + Clone + core::hash::Hash, Idx: Copy + TryFrom<usize> + DenseIndexWi
     /// items in memory.
     ///
     /// # Errors
-    /// Returns [`IndexTooLarge`] if `universe` contains `bound` or more
-    /// distinct items.
+    /// Returns [`IndexTooLarge`] if `universe` contains more than `bound`
+    /// distinct items (exactly `bound` distinct items succeeds; the bound is
+    /// the highest index the width can address plus one).
     pub fn try_build_bounded(
         universe: impl IntoIterator<Item = T>,
         bound: usize,
@@ -237,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn bounded_allows_exactly_bound_minus_one() {
+    fn bounded_allows_exactly_bound_distinct_items() {
         let idx = DenseIndex::<u32>::try_build_bounded([1, 2, 3], 3).unwrap();
         assert_eq!(idx.len(), 3);
         let err = DenseIndex::<u32>::try_build_bounded([1, 2, 3, 4], 3)

@@ -79,6 +79,12 @@ pub enum EventType {
     SpaceChild,
     SpaceParent,
     /// Any event type outside the well-known set above, preserved verbatim.
+    ///
+    /// The payload is an `Arc<str>` (commit `f418952`; previously `Box<str>`),
+    /// so constructing `Custom` from an owned string now clones the `Arc`
+    /// rather than allocating a fresh `Box`. Pattern-matching
+    /// `EventType::Custom(inner)` binds `inner: Arc<str>` (not `Box<str>`);
+    /// the `From<&str>` and `From<String>` conversions remain available.
     Custom(Arc<str>),
 }
 

@@ -29,6 +29,15 @@
 //! helps or hurts the AUTH-HOT-PATH lookup specifically, once the String path's
 //! zero-alloc borrowed lookup is matched. It is NOT a test of map
 //! BUILDING/cloning (the full bench covers that separately).
+//!
+//! The fixture assigns `InternId`s from a SORTED union of the event-type and
+//! state-key strings (slot 0 = `""`, then lexicographic), matching the
+//! production `Interner`'s rank-sorted arena — so the integer `(id, id)` key
+//! ordering/tree shape reflects the proposed path, not first-seen insertion
+//! order. Each config is measured over guaranteed HITS and over a HIT/MISS mix
+//! (empty + unknown keys probing absent state), because `InternId` skips the
+//! tree on a missing `id_of` while the String path always descends to conclude a
+//! miss.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -124,7 +133,17 @@ fn measure(label: &str, reps: usize, f: impl Fn()) -> f64 {
 }
 
 /// Builds both maps (String and InternId) from `m` entries spread across
-/// `type_count` event types, plus the query list `(event_type, state_key)`.
+/// `type_count` event types.
+///
+/// IDs are assigned from the SORTED union of every distinct event-type and
+/// state-key string, with slot 0 reserved for `""` — exactly the production
+/// `Interner`'s rank-sorted arena (`Interner::new` reserves slot 0, then keys
+/// are interned in sorted order). Using first-seen IDs instead would change
+/// the integer `BTreeMap` ordering and tree shape away from the proposed path.
+///
+/// Returns the two maps, the string→id arena, the list of guaranteed HIT keys
+/// `(event_type, state_key)`, and a list of MISS keys (empty + unknown strings
+/// probing absent state — the auth traffic the resolver actually sees).
 fn build(
     m: usize,
     type_count: usize,
@@ -133,73 +152,107 @@ fn build(
     BTreeMap<(u32, u32), usize>,
     HashMap<String, u32>,
     Vec<(String, String)>,
+    Vec<(String, String)>,
 ) {
     let et_strings: Vec<String> = (0..type_count).map(|i| format!("m.room.type{i}")).collect();
 
-    let mut str_map = BTreeMap::new();
-    let mut str_to_id = HashMap::new();
-    let mut next_id = 0u32;
-    let mut intern = |s: &str| {
-        *str_to_id.entry(s.to_string()).or_insert_with(|| {
-            let id = next_id;
-            next_id += 1;
-            id
-        })
-    };
+    // Rank every distinct key: slot 0 reserved for "" (like `Interner::new`),
+    // then all event types and state keys in lexicographic order.
+    let mut arena: Vec<String> = Vec::with_capacity(m + 1);
+    arena.push(String::new());
+    for i in 0..m {
+        arena.push(et_strings[i % type_count].clone());
+        arena.push(format!("@user{i}:example.org"));
+    }
+    arena.sort();
+    arena.dedup();
+    let mut str_to_id = HashMap::with_capacity(arena.len());
+    for (id, s) in arena.into_iter().enumerate() {
+        str_to_id.insert(s, id as u32);
+    }
 
-    let mut queries = Vec::with_capacity(m);
+    let mut str_map = BTreeMap::new();
+    let mut id_map = BTreeMap::new();
+    let mut hits = Vec::with_capacity(m);
     for i in 0..m {
         let et = &et_strings[i % type_count];
         let sk = format!("@user{i}:example.org");
         str_map.insert((et.clone(), sk.clone()), i);
-        intern(et);
-        intern(&sk);
-        queries.push((et.clone(), sk));
+        id_map.insert((str_to_id[et], str_to_id[&sk]), i);
+        hits.push((et.clone(), sk));
     }
 
-    let id_map: BTreeMap<(u32, u32), usize> = str_map
-        .iter()
-        .map(|((et, sk), &v)| ((str_to_id[et], str_to_id[sk]), v))
-        .collect();
+    // Representative absent-state probes: empty and unknown keys. Some miss on
+    // the first `id_of` hashmap lookup (InternId skips the tree) and some only
+    // on the tree descent (both paths descend).
+    let misses: Vec<(String, String)> = vec![
+        ("m.room.type0".into(), String::new()),
+        ("m.room.type0".into(), "@ghost:example.org".into()),
+        ("m.room.ghosttype".into(), "@user0:example.org".into()),
+        ("m.room.ghosttype".into(), String::new()),
+    ];
 
-    (str_map, id_map, str_to_id, queries)
+    (str_map, id_map, str_to_id, hits, misses)
 }
 
 fn main() {
     for &type_count in &[1usize, 16] {
         println!("--- {type_count} event type(s) ---");
         for &m in &[100usize, 1_000, 5_000] {
-            let (str_map, id_map, str_to_id, queries) = build(m, type_count);
+            let (str_map, id_map, str_to_id, hits, misses) = build(m, type_count);
 
-            // Correctness gate: both paths must agree on every query.
-            for (et, sk) in &queries {
+            // Correctness gate: both paths must agree on every HIT and MISS.
+            for (et, sk) in hits.iter().chain(misses.iter()) {
                 assert_eq!(
                     string_get(&str_map, et, sk),
                     intern_get(&id_map, &str_to_id, et, sk),
-                    "lookup paths must agree"
+                    "lookup paths must agree on {et:?}/{sk:?}"
                 );
             }
 
-            let q = queries.len().max(1);
+            let q = hits.len().max(1);
+            let q_mix = (hits.len() + misses.len()).max(1);
             let reps = (2_000_000usize / q).max(4);
-            println!("  room: {m} entries, {q} queries x{reps}");
+            let reps_mix = (2_000_000usize / q_mix).max(4);
+            println!(
+                "  room: {m} entries, {} hits x{reps} + {} misses (mix x{reps_mix})",
+                hits.len(),
+                misses.len()
+            );
 
-            let str_ms = measure("  lookup String   ", reps, || {
+            let str_ms = measure("  lookup String   (hit only) ", reps, || {
                 let mut acc = 0usize;
-                for (et, sk) in &queries {
-                    acc = acc.wrapping_add(string_get(&str_map, et, sk).unwrap());
+                for (et, sk) in &hits {
+                    acc = acc.wrapping_add(string_get(&str_map, et, sk).unwrap_or(0));
                 }
                 std::hint::black_box(acc);
             });
-            let int_ms = measure("  lookup InternId ", reps, || {
+            let int_ms = measure("  lookup InternId (hit only) ", reps, || {
                 let mut acc = 0usize;
-                for (et, sk) in &queries {
-                    acc = acc.wrapping_add(intern_get(&id_map, &str_to_id, et, sk).unwrap());
+                for (et, sk) in &hits {
+                    acc = acc.wrapping_add(intern_get(&id_map, &str_to_id, et, sk).unwrap_or(0));
                 }
                 std::hint::black_box(acc);
             });
             let delta = (int_ms - str_ms) / str_ms * 100.0;
-            println!("  InternId vs String: {delta:+.1}%");
+            println!("  InternId vs String (hits): {delta:+.1}%");
+
+            let str_mix = measure("  lookup String   (hit+miss)  ", reps_mix, || {
+                let mut acc = 0usize;
+                for (et, sk) in hits.iter().chain(misses.iter()) {
+                    acc = acc.wrapping_add(string_get(&str_map, et, sk).unwrap_or(0));
+                }
+                std::hint::black_box(acc);
+            });
+            let int_mix = measure("  lookup InternId (hit+miss)  ", reps_mix, || {
+                let mut acc = 0usize;
+                for (et, sk) in hits.iter().chain(misses.iter()) {
+                    acc = acc.wrapping_add(intern_get(&id_map, &str_to_id, et, sk).unwrap_or(0));
+                }
+                std::hint::black_box(acc);
+            });
+            let delta_mix = (int_mix - str_mix) / str_mix * 100.0;
+            println!("  InternId vs String (hit+miss): {delta_mix:+.1}%");
         }
     }
 }

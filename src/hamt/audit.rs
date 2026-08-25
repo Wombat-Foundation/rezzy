@@ -84,22 +84,23 @@ impl IndexedUniverse {
     pub fn try_build(
         universe: impl IntoIterator<Item = StructuralHash>,
     ) -> Result<Self, UniverseTooLarge> {
-        // `u32::MAX` is itself a representable index, so the number of
-        // addressable slots is `u32::MAX + 1`, not `u32::MAX` (same off-by-one
-        // `DenseIndex::try_build` had — see its doc comment). `saturating_add`
-        // guards a 32-bit `usize` target, where `u32::MAX as usize + 1` would
-        // overflow.
-        Self::try_build_bounded(universe, (u32::MAX as usize).saturating_add(1))
+        // `DenseIndex::try_build` already bounds at the addressable slot count
+        // (`Idx::MAX + 1` = `u32::MAX + 1` for a `u32` index), so delegate
+        // rather than recompute that bound here; only the error type differs.
+        DenseIndex::try_build(universe)
+            .map(Self)
+            .map_err(Into::into)
     }
 
     /// [`Self::try_build`], but with the overflow bound as a parameter
     /// instead of the hard-coded `u32::MAX + 1`.
     ///
-    /// This is the actual overflow-handling logic; `try_build` is a thin
-    /// wrapper fixing `bound` to `u32::MAX + 1`. The indirection exists purely
-    /// so tests can exercise the "past the bound" counting branch at a tiny,
-    /// deterministic universe size instead of needing ~4.3 billion
-    /// `StructuralHash` entries in memory to reach it.
+    /// Test-only: `try_build` delegates to [`DenseIndex::try_build`], which
+    /// already fixes the bound to the addressable slot count; the parameterized
+    /// form exists purely so tests can exercise the "past the bound" counting
+    /// branch at a tiny, deterministic universe size instead of needing ~4.3
+    /// billion `StructuralHash` entries in memory to reach it.
+    #[cfg(test)]
     pub(crate) fn try_build_bounded(
         universe: impl IntoIterator<Item = StructuralHash>,
         bound: usize,
