@@ -333,7 +333,10 @@ fn build_conflicting_room(conflict_count: usize) -> (HashMap<String, LeanEvent>,
             sender: "@creator:example.org".to_string(),
             content: serde_json::json!({ "join_rule": "public" }),
             prev_events: vec![pl_id.clone()],
-            auth_events: vec![create_id.clone(), pl_id.clone()],
+            // V2.1+ (this bench uses `StateResVersion::V2_1` throughout)
+            // forbids citing `m.room.create` in `auth_events` (rule 2.4) --
+            // matching the power_levels event above, which likewise omits it.
+            auth_events: vec![pl_id.clone()],
             depth: 2,
             rejected: false,
             soft_fail: false,
