@@ -346,6 +346,11 @@ where
     // jscpd:ignore-end
     let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
 
+    // Empty-key sentinel for the `(EventType, K)` lookups below (the
+    // "" state key used for singleton events like power_levels/create).
+    // `K = String` throughout this exploratory path.
+    let empty_key = alloc::string::String::new();
+
     if version.is_v2_1_plus() {
         return crate::resolve::iterative::resolve_iterative_sort(
             &unconflicted_state,
@@ -353,6 +358,7 @@ where
             auth_context,
             version,
             &mut pl_cache,
+            &empty_key,
         );
     }
 
@@ -360,7 +366,8 @@ where
     // `conflicted_events` beyond what its own caller supplied, so every
     // entry is treated as genuinely conflicted (matching the pre-existing
     // behavior of this experimental resolver).
-    let conflicted_keys = crate::resolve::iterative::derive_all_conflicted_keys(&conflicted_events);
+    let conflicted_keys =
+        crate::resolve::iterative::derive_all_conflicted_keys(&conflicted_events, &empty_key);
 
     let original_conflicted_keys = crate::resolve::iterative::prepare_conflicted_and_keys(
         &conflicted_events,
@@ -378,6 +385,7 @@ where
             auth_context,
             &original_conflicted_keys,
             version,
+            &empty_key,
         );
 
     // Initialize local auth cache for power-phase checks
@@ -399,7 +407,7 @@ where
     let sort_set = &conflicted_events;
 
     // Coordinate Projection Phase (Mainline distance mapping)
-    let mainline = build_mainline(&resolved, &sort_context);
+    let mainline = build_mainline(&resolved, &sort_context, &empty_key);
     let mut target_events: alloc::vec::Vec<&LeanEvent<Id, C>> = non_power_events.values().collect();
     let mainline_distances =
         compute_closest_mainline_positions(&mut target_events, &mainline, &sort_context);

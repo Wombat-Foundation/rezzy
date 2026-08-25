@@ -440,6 +440,7 @@ mod tests {
             &conflicted,
             rezzy::StateResVersion::V2_1,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
         assert_eq!(
             resolved.get(&(
@@ -989,6 +990,7 @@ mod tests {
             &conflicted,
             rezzy::StateResVersion::V2,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
         assert_eq!(resolved, unconflicted);
     }
@@ -1041,6 +1043,7 @@ mod tests {
             &auth,
             version,
             &mut HashMap::new(),
+            &String::new(),
         );
         let b = resolve_iterative_sort(
             &unconflicted,
@@ -1048,6 +1051,7 @@ mod tests {
             &auth,
             version,
             &mut HashMap::new(),
+            &String::new(),
         );
         assert_eq!(
             a, b,
@@ -1070,6 +1074,7 @@ mod tests {
             &auth,
             rezzy::StateResVersion::V2_1,
             &mut HashMap::new(),
+            &String::new(),
         );
         let v21_again = resolve_iterative_sort(
             &unconflicted,
@@ -1077,6 +1082,7 @@ mod tests {
             &auth,
             rezzy::StateResVersion::V2_1,
             &mut HashMap::new(),
+            &String::new(),
         );
         assert_eq!(
             v21, v21_again,
@@ -1231,6 +1237,7 @@ mod tests {
             &auth_context,
             rezzy::StateResVersion::V2_1,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
 
         assert_eq!(
@@ -2565,6 +2572,7 @@ mod tests {
             &auth_context,
             rezzy::StateResVersion::V2_1,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
         let r211 = resolve_iterative_sort(
             &unconflicted,
@@ -2572,6 +2580,7 @@ mod tests {
             &auth_context,
             rezzy::StateResVersion::V2_1_1,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
         assert_eq!(r21.get(&bob_key), Some(&"$victim_join".to_string()));
         assert_eq!(
@@ -3042,6 +3051,7 @@ mod tests {
             &auth,
             rezzy::StateResVersion::V2,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
         assert!(!resolved.is_empty());
         // INITIAL_PL wins, not the cyclic A/B pair. A and B mutually auth each
@@ -3120,7 +3130,7 @@ mod tests {
         events.insert("A".into(), a);
 
         // compute_state_at A must run cleanly and return A's state without panicking on missing event B!
-        let state = compute_state_at("A", &events, StateResVersion::V2);
+        let state = compute_state_at("A", &events, StateResVersion::V2, &String::new());
         assert!(state.is_some());
         let state_map = state.unwrap();
 
@@ -3227,6 +3237,7 @@ mod tests {
             &auth_context,
             rezzy::StateResVersion::V2_1,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
 
         // Assert that a power levels event is resolved, showing the ancestral PL event was correctly processed
@@ -4629,7 +4640,9 @@ fn test_types_deserialize_depth_and_redaction_validation() {
 #[test]
 fn test_compute_state_at_missing_target() {
     let events_map: HashMap<String, LeanEvent> = HashMap::new();
-    assert!(compute_state_at("missing", &events_map, StateResVersion::V2).is_none());
+    assert!(
+        compute_state_at("missing", &events_map, StateResVersion::V2, &String::new(),).is_none()
+    );
 }
 
 #[test]
@@ -4678,7 +4691,7 @@ fn test_compute_state_at_merge_divergence() {
         },
     );
 
-    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2, &String::new()).unwrap();
     assert!(state.is_empty());
 }
 
@@ -4726,7 +4739,7 @@ fn test_compute_state_at_merge_identical() {
         },
     );
 
-    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2, &String::new()).unwrap();
     assert!(state.is_empty());
 }
 
@@ -5289,6 +5302,7 @@ fn test_resolve_iterative_sort_with_deltas_parity() {
         &auth_context,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // resolve_iterative_sort_with_deltas
@@ -5298,6 +5312,7 @@ fn test_resolve_iterative_sort_with_deltas_parity() {
         &auth_context,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // The resolved state must be identical
@@ -5402,6 +5417,7 @@ fn test_resolve_iterative_sort_with_deltas_no_duplicate_power_events() {
         &auth_context,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let power_deltas: Vec<_> = deltas
@@ -5473,6 +5489,7 @@ fn test_deltas_supplemental_power_event_from_auth_context() {
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // The PL slot must be resolved to one of the two conflicting PLs
@@ -5926,6 +5943,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
         &auth_context,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // Resolve with V2.1
@@ -5935,6 +5953,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // V2: unconflicted alice=leave → alice's $jr_invite fails auth → $jr_public wins
@@ -6215,6 +6234,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         &HashMap::<String, LeanEvent<String>>::new(),
         StateResVersion::V1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert_eq!(v1_resolved.len(), 1);
 
@@ -6315,6 +6335,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         &auth,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     assert!(!resolved.contains_key(&(
@@ -6980,6 +7001,7 @@ fn test_local_auth_cache_version_invalidation() {
         Some(&mut cache),
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert_eq!(cache.version, StateResVersion::V2_1);
     assert!(!cache.map.contains_key("stale_key"));
@@ -6998,6 +7020,7 @@ fn test_local_auth_cache_version_invalidation() {
         Some(&mut cache2),
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert_eq!(cache2.version, StateResVersion::V2_1);
     assert!(!cache2.map.contains_key("stale2"));
@@ -7025,7 +7048,7 @@ fn test_trivial_conflict_fast_path_picks_later_ts() {
         .into_iter()
         .map(|e| (e.event_id.clone(), e))
         .collect();
-    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2, &String::new()).unwrap();
     // B (ts=200) should win the topic slot
     assert_eq!(
         state.get(&(
@@ -7057,7 +7080,7 @@ fn test_trivial_conflict_fast_path_ts_tie_falls_back_to_event_id() {
         .into_iter()
         .map(|e| (e.event_id.clone(), e))
         .collect();
-    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2, &String::new()).unwrap();
     // Same ts=100, so event_id tiebreak: "B" > "A" → B wins
     assert_eq!(
         state.get(&(
@@ -7086,7 +7109,7 @@ fn test_trivial_conflict_power_event_fallthrough() {
         .into_iter()
         .map(|e| (e.event_id.clone(), e))
         .collect();
-    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2, &String::new()).unwrap();
     // PL_B (ts=200) should win over PL_A (ts=100) via the full pipeline's
     // Kahn sort + iterative auth. The trivial fast path skips power events
     // entirely, so getting the correct winner proves fallthrough occurred.
@@ -7116,7 +7139,7 @@ fn test_trivial_conflict_no_create_bails_to_full_pipeline() {
         .into_iter()
         .map(|e| (e.event_id.clone(), e))
         .collect();
-    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2, &String::new()).unwrap();
     assert!(
         state.is_empty(),
         "Missing create event should result in empty state (fast path bails, full pipeline rejects all)"
@@ -7276,7 +7299,8 @@ fn test_mainline_position_beats_timestamp_on_divergent_auth_chains() {
         .map(|e| (e.event_id.clone(), e))
         .collect();
 
-    let state = compute_state_at("$merge", &events_map, StateResVersion::V2).unwrap();
+    let state =
+        compute_state_at("$merge", &events_map, StateResVersion::V2, &String::new()).unwrap();
 
     // $topic_new_pl (ts=400) must win because it's closer to the current PL
     // in the mainline (position 0). $topic_old_pl (ts=500) is farther
@@ -7459,6 +7483,7 @@ fn test_msc4297_problem_b_resolve_state_maps_parity() {
         &events_map,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // The decisive assertion: both paths must produce identical results
@@ -7816,6 +7841,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
         &events_map,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert_eq!(
         resolved_v2_1, resolved_manual,
@@ -7828,6 +7854,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
         &events_map,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert_eq!(
         resolved_v2_1_1, resolved_manual_v2_1_1,
@@ -7978,6 +8005,7 @@ fn test_conflicted_keys_derived_before_cdo() {
         &auth,
         StateResVersion::V2_1_1,
         &mut HashMap::new(),
+        &String::new(),
     );
 
     // Expected resolved keys: create, alice_join, bob member (ban), join_rules, power_levels.
@@ -8071,7 +8099,7 @@ fn test_soft_fail_and_rejected_state_events_on_linear_chain() {
         String::new(),
     );
 
-    let st = compute_state_at("C", &em, StateResVersion::V2).unwrap();
+    let st = compute_state_at("C", &em, StateResVersion::V2, &String::new()).unwrap();
     assert_eq!(
         st.get(&name_key),
         Some(&"B".to_string()),
@@ -8084,9 +8112,15 @@ fn test_soft_fail_and_rejected_state_events_on_linear_chain() {
 
     // compute_state_at_streaming (the batch/streaming path).
     let mut streamed: Option<rezzy::SharedState<String, String>> = None;
-    compute_state_at_streaming(&["C"], &em, StateResVersion::V2, |_, state| {
-        streamed = Some(state.into_iter().collect());
-    });
+    compute_state_at_streaming(
+        &["C"],
+        &em,
+        StateResVersion::V2,
+        |_, state| {
+            streamed = Some(state.into_iter().collect());
+        },
+        &String::new(),
+    );
     let streamed = streamed.unwrap();
     assert_eq!(streamed.get(&name_key), Some(&"B".to_string()));
     assert!(!streamed.contains_key(&topic_key));
@@ -8094,13 +8128,18 @@ fn test_soft_fail_and_rejected_state_events_on_linear_chain() {
     // compute_state_at_streaming_optimized (the full-rebuild pipeline): B contributes,
     // so a New update with state {name: B} must be emitted.
     let mut saw_name_b = false;
-    let _ =
-        compute_state_at_streaming_optimized(&["B", "C"], &em, StateResVersion::V2, |_, upd| {
+    let _ = compute_state_at_streaming_optimized(
+        &["B", "C"],
+        &em,
+        StateResVersion::V2,
+        |_, upd| {
             if let StateUpdate::New { state, .. } = upd {
                 saw_name_b = saw_name_b || state.contains_key(&name_key);
                 assert!(!state.contains_key(&topic_key));
             }
-        });
+        },
+        &String::new(),
+    );
     assert!(
         saw_name_b,
         "optimized streaming must include the soft-failed name event"

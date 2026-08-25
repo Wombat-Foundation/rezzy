@@ -480,12 +480,14 @@ fn main() {
             last,
             events,
             StateResVersion::V2_1,
+            &String::new(),
         )
         .expect("last member must resolve (String)");
         let u32_state = compute_state_at::<String, serde_json::Value, String, _, InternId>(
             last,
             &u32_events,
             StateResVersion::V2_1,
+            &InternId::default(),
         )
         .expect("last member must resolve (u32)");
         let str_keyed: std::collections::BTreeMap<(String, String), String> = str_state
@@ -511,7 +513,8 @@ fn main() {
 
         // Batch path (engages the parallel lattice fold under default `std`).
         let batch_str = measure("batch  String    ", reps, || {
-            let result = compute_state_at_batch(&target_refs, events, StateResVersion::V2_1);
+            let result =
+                compute_state_at_batch(&target_refs, events, StateResVersion::V2_1, &String::new());
             assert_eq!(
                 result.len(),
                 target_refs.len(),
@@ -520,7 +523,12 @@ fn main() {
             std::hint::black_box(&result);
         });
         let batch_interned = measure("batch  InternedKey", reps, || {
-            let result = compute_state_at_batch(&target_refs, &interned, StateResVersion::V2_1);
+            let result = compute_state_at_batch(
+                &target_refs,
+                &interned,
+                StateResVersion::V2_1,
+                &InternedKey::default(),
+            );
             assert_eq!(
                 result.len(),
                 target_refs.len(),
@@ -529,7 +537,12 @@ fn main() {
             std::hint::black_box(&result);
         });
         let batch_u32 = measure("batch  u32 InternId", reps, || {
-            let result = compute_state_at_batch(&target_refs, &u32_events, StateResVersion::V2_1);
+            let result = compute_state_at_batch(
+                &target_refs,
+                &u32_events,
+                StateResVersion::V2_1,
+                &InternId::default(),
+            );
             assert_eq!(
                 result.len(),
                 target_refs.len(),
@@ -545,6 +558,7 @@ fn main() {
                 last,
                 events,
                 StateResVersion::V2_1,
+                &String::new(),
             )
             .expect("last member must resolve");
             std::hint::black_box(state.len());
@@ -554,6 +568,7 @@ fn main() {
                 last,
                 &interned,
                 StateResVersion::V2_1,
+                &InternedKey::default(),
             )
             .expect("last member must resolve");
             std::hint::black_box(state.len());
@@ -563,6 +578,7 @@ fn main() {
                 last,
                 &u32_events,
                 StateResVersion::V2_1,
+                &InternId::default(),
             )
             .expect("last member must resolve");
             std::hint::black_box(state.len());
@@ -604,12 +620,14 @@ fn main() {
             last,
             events,
             StateResVersion::V2_1,
+            &String::new(),
         )
         .expect("last merge event must resolve (String)");
         let u32_state = compute_state_at::<String, serde_json::Value, String, _, InternId>(
             last,
             &u32_events,
             StateResVersion::V2_1,
+            &InternId::default(),
         )
         .expect("last merge event must resolve (u32)");
         let str_keyed: std::collections::BTreeMap<(String, String), String> = str_state
@@ -636,6 +654,7 @@ fn main() {
                 last,
                 events,
                 StateResVersion::V2_1,
+                &String::new(),
             )
             .expect("must resolve");
             std::hint::black_box(state.len());
@@ -645,6 +664,7 @@ fn main() {
                 last,
                 &u32_events,
                 StateResVersion::V2_1,
+                &InternId::default(),
             )
             .expect("must resolve");
             std::hint::black_box(state.len());

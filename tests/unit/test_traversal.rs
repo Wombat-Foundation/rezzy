@@ -74,6 +74,7 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     let ok_v21 = resolved_v21.contains_key(&(
         rezzy::basespec::event_types::EventType::from("m.room.name"),
@@ -90,6 +91,7 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     let ok_v211 = resolved_v211.contains_key(&(
         rezzy::basespec::event_types::EventType::from("m.room.name"),
@@ -248,6 +250,7 @@ fn test_banned_sender_message_is_hard_rejected() {
             &auth_context,
             version,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
         assert!(
             resolved.contains_key(&(
@@ -269,6 +272,7 @@ fn test_banned_sender_message_is_hard_rejected() {
             &auth_context,
             version,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
         // The ban must win the member key...
         assert_eq!(
@@ -370,6 +374,7 @@ fn test_v2_1_1_ancient_prev_event_allowed() {
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // State resolution still passes because the auth_events are valid.
@@ -475,6 +480,7 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // The resolved state should contain the ban, not the join
@@ -554,6 +560,7 @@ fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let bob_member_key = (
@@ -693,6 +700,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert!(
         resolved_control.contains_key(&name_key),
@@ -708,6 +716,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert!(
         !resolved_v21.contains_key(&name_key),
@@ -723,6 +732,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert!(
         !resolved_v211.contains_key(&name_key),
@@ -846,6 +856,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert!(
         resolved_control.contains_key(&(
@@ -862,6 +873,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // Alice's ban has PL 100, so Kahn sort evaluates it FIRST. It is added to the resolved state.
@@ -890,6 +902,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // V2.1.1 REJECTS Bob's concurrent name change!
@@ -949,6 +962,7 @@ fn test_v2_1_strictness_future_v2_2_should_pass() {
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // V2.1 Rightfully Fails: It enforces the 1-hop strictness. Without "$jr" in the auth chain,
@@ -1047,6 +1061,7 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let nexy_member_key = (
@@ -1187,6 +1202,7 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let spammer_key = (
@@ -1321,6 +1337,7 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert!(
         resolved_control.contains_key(&(
@@ -1337,6 +1354,7 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // Bob's ban must be resolved first in Step 2.
@@ -1513,6 +1531,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         None,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // Test the "correct auth diff" scenario (FIXED)
@@ -1530,6 +1549,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         None,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // Both scenarios resolve to the same winner because the mainline ordering is
@@ -1707,6 +1727,7 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // Mallory's PL event must be rejected (banned sender)
@@ -1765,6 +1786,7 @@ fn test_v2_2_event_id_tiebreak() {
         &auth_context,
         StateResVersion::V2_2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // $topic_b wins: both events have equal PL (0), empty mainline (position 0),
@@ -1816,6 +1838,7 @@ fn test_v2_1_1_creator_in_users_map_rejected() {
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let pl_key = (
@@ -1911,6 +1934,7 @@ fn test_v2_1_1_ban_supplementation_return_path() {
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // Mallory's PL must be rejected (she's banned)
@@ -1985,6 +2009,7 @@ fn test_v2_1_1_power_phase_membership_bypass_prevention() {
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let pl_key = (
@@ -2057,6 +2082,7 @@ fn test_v2_1_rejects_pl_from_progressively_banned_sender() {
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let pl_key = (
@@ -2315,8 +2341,11 @@ fn auth_diff_context_event_scenario(version: StateResVersion) -> Option<String> 
     }
 
     let mut final_state: Option<HashMap<(String, String), String>> = None;
-    let completed =
-        rezzy::compute_state_at_streaming_optimized(&["$merge"], &events, version, |id, update| {
+    let completed = rezzy::compute_state_at_streaming_optimized(
+        &["$merge"],
+        &events,
+        version,
+        |id, update| {
             if id != "$merge" {
                 return;
             }
@@ -2328,7 +2357,9 @@ fn auth_diff_context_event_scenario(version: StateResVersion) -> Option<String> 
                         .collect(),
                 );
             }
-        });
+        },
+        &String::new(),
+    );
     assert!(
         completed,
         "compute_state_at_streaming_optimized detected a cycle"

@@ -94,7 +94,7 @@ impl<
         K,
     > crate::auth::StateProvider<Id, C, LeanEvent<Id, C, K>> for OverlayState<'_, Id, C, S1, S2, K>
 where
-    K: Ord + Clone + Default + AsRef<str>,
+    K: Ord + Clone + AsRef<str>,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     /// Returns the resolved event or a limited local-auth fallback for the query.
@@ -387,6 +387,7 @@ pub fn compute_state_at<Id, C, Q, S, K>(
     target_event_id: &Q,
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
+    empty_key: &K,
 ) -> Option<BTreeMap<(EventType, K), Id>>
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
@@ -401,9 +402,15 @@ where
     }
 
     let mut result = None;
-    compute_state_at_streaming(&[target_event_id], events_map, version, |_, state| {
-        result = Some(state.into_iter().collect());
-    });
+    compute_state_at_streaming(
+        &[target_event_id],
+        events_map,
+        version,
+        |_, state| {
+            result = Some(state.into_iter().collect());
+        },
+        empty_key,
+    );
     result
 }
 
@@ -438,6 +445,7 @@ pub fn compute_state_at_batch<Id, C, Q, S, K>(
     target_event_ids: &[&Q],
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
+    empty_key: &K,
 ) -> HashMap<Id, BTreeMap<(EventType, K), Id>>
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
@@ -449,9 +457,15 @@ where
 {
     let mut results = HashMap::with_capacity(target_event_ids.len());
 
-    compute_state_at_streaming(target_event_ids, events_map, version, |id, state| {
-        results.insert(id, state.into_iter().collect());
-    });
+    compute_state_at_streaming(
+        target_event_ids,
+        events_map,
+        version,
+        |id, state| {
+            results.insert(id, state.into_iter().collect());
+        },
+        empty_key,
+    );
 
     results
 }
@@ -502,6 +516,7 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F, K>(
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
+    empty_key: &K,
 ) where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
@@ -519,6 +534,7 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F, K>(
             on_target_resolved(id, state);
             Ok(())
         },
+        empty_key,
     );
 
     match result {
@@ -546,6 +562,7 @@ pub fn try_compute_state_at_streaming<Id, C, Q, S, F, E, K>(
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
+    empty_key: &K,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
@@ -589,6 +606,7 @@ where
             let id = index.items()[idx].clone();
             on_target_resolved(id, shared_state)
         },
+        empty_key,
     )
 }
 
@@ -602,6 +620,7 @@ fn run_state_pipeline_streaming<Id, C, S, F, E, K>(
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target: F,
+    empty_key: &K,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -656,6 +675,7 @@ where
                 &mut global_auth_cache,
                 &mut mainline_cache,
                 version,
+                empty_key,
             )
         };
 
@@ -663,7 +683,7 @@ where
             state_before.insert(
                 (
                     EventType::from(ev.event_type.as_str()),
-                    ev.state_key.clone().unwrap_or_default(),
+                    ev.state_key.clone().unwrap_or_else(|| empty_key.clone()),
                 ),
                 ev.event_id.clone(),
             );
@@ -1095,6 +1115,7 @@ fn resolve_merge_fast_path<Id, C, S, K>(
     global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
+    empty_key: &K,
 ) -> SharedState<Id, K>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -1115,6 +1136,7 @@ where
             global_auth_cache,
             mainline_cache,
             version,
+            empty_key,
         )
         .into_iter()
         .collect()
@@ -1130,6 +1152,7 @@ fn resolve_multiple_prev_states<Id, C, S, K>(
     global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
+    empty_key: &K,
 ) -> SharedState<Id, K>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -1191,6 +1214,7 @@ where
         &mut pl_cache,
         mainline_cache,
         &conflicted_keys,
+        empty_key,
     )
 }
 
@@ -2139,6 +2163,7 @@ pub fn resolve_merge_fast_path_hashed<Id, C, S, K>(
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     version: StateResVersion,
+    empty_key: &K,
 ) -> HashedState<Id, K>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -2153,6 +2178,7 @@ where
         global_auth_cache,
         &mut FastMap::default(),
         version,
+        empty_key,
     )
 }
 
@@ -2167,6 +2193,7 @@ fn resolve_merge_fast_path_hashed_with_cache<Id, C, S, K>(
     global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
+    empty_key: &K,
 ) -> HashedState<Id, K>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -2197,6 +2224,7 @@ where
             global_auth_cache,
             mainline_cache,
             version,
+            empty_key,
         );
 
         // Incremental LtHash update from the first parent state!
@@ -2232,6 +2260,7 @@ fn run_state_pipeline_streaming_optimized<'a, Id, C, S, F, E, K>(
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target: F,
+    empty_key: &K,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -2321,13 +2350,14 @@ where
                 &mut global_auth_cache,
                 &mut mainline_cache,
                 version,
+                empty_key,
             )
         };
 
         if is_state && !ev.rejected {
             let key = (
                 EventType::from(ev.event_type.as_str()),
-                ev.state_key.clone().unwrap_or_default(),
+                ev.state_key.clone().unwrap_or_else(|| empty_key.clone()),
             );
             state_before.insert(key, ev.event_id.clone());
         }
@@ -2370,6 +2400,7 @@ pub fn try_compute_state_at_streaming_optimized<Id, C, Q, S, F, E, K>(
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
+    empty_key: &K,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
@@ -2413,6 +2444,7 @@ where
             let id = index.items()[idx].clone();
             on_target_resolved(id, update)
         },
+        empty_key,
     )
 }
 
@@ -2427,6 +2459,7 @@ pub fn compute_state_at_streaming_optimized<Id, C, Q, S, F, K>(
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
+    empty_key: &K,
 ) -> bool
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
@@ -2445,6 +2478,7 @@ where
             on_target_resolved(id, update);
             Ok(())
         },
+        empty_key,
     );
 
     match result {
@@ -3567,7 +3601,12 @@ mod tests {
         events_map.insert("A".into(), a);
         events_map.insert("D".into(), d);
 
-        let result = compute_state_at(&"D".to_string(), &events_map, crate::StateResVersion::V2);
+        let result = compute_state_at(
+            &"D".to_string(),
+            &events_map,
+            crate::StateResVersion::V2,
+            &String::new(),
+        );
         assert!(result.is_some());
     }
 
@@ -3644,7 +3683,12 @@ mod tests {
         // compute_state_at traverses backwards from D. When both B and C
         // reference A, the out_degree bookkeeping must handle the second
         // reference finding out_degree[A] == 0.
-        let result = compute_state_at(&"D".to_string(), &events_map, crate::StateResVersion::V2);
+        let result = compute_state_at(
+            &"D".to_string(),
+            &events_map,
+            crate::StateResVersion::V2,
+            &String::new(),
+        );
         assert!(result.is_some(), "should reconstruct state at D");
         let state = result.unwrap();
         // create event should be in state
@@ -3703,6 +3747,7 @@ mod tests {
             &events_map,
             StateResVersion::V2_1_1,
             |_, _| {},
+            &String::new(),
         );
         assert!(
             !completed,
@@ -3814,6 +3859,7 @@ mod tests {
                 }
                 _ => {}
             },
+            &String::new(),
         );
 
         // Assert updates are correct
@@ -3870,7 +3916,12 @@ mod tests {
         events_map.insert("D".into(), d);
 
         // Must not panic (e.g. double-take on B's state) and must resolve.
-        let result = compute_state_at(&"D".to_string(), &events_map, crate::StateResVersion::V2);
+        let result = compute_state_at(
+            &"D".to_string(),
+            &events_map,
+            crate::StateResVersion::V2,
+            &String::new(),
+        );
         assert!(result.is_some());
     }
 
@@ -3897,6 +3948,7 @@ mod tests {
                 &events_map,
                 crate::StateResVersion::V2,
                 |_, _| Err("callback aborted"),
+                &String::new(),
             );
 
         assert_eq!(
@@ -3920,6 +3972,7 @@ mod tests {
                 callback_called = true;
                 Ok::<(), &'static str>(())
             },
+            &String::new(),
         );
 
         assert_eq!(result, Ok(()));
@@ -4025,6 +4078,7 @@ mod tests {
             &events_map,
             &mut cache,
             crate::StateResVersion::V2,
+            &String::new(),
         );
 
         assert_eq!(
@@ -4077,6 +4131,7 @@ mod tests {
                 &events_map,
                 &mut fast_cache,
                 crate::StateResVersion::V2,
+                &String::new(),
             );
 
             let mut full_cache = LocalAuthCache::new(crate::StateResVersion::V2);
@@ -4088,6 +4143,7 @@ mod tests {
                 &mut full_cache,
                 &mut mainline_cache,
                 crate::StateResVersion::V2,
+                &String::new(),
             );
 
             assert_eq!(
@@ -4366,6 +4422,7 @@ mod tests {
                     callback_called = true;
                     Ok(())
                 },
+                &String::new(),
             );
 
         assert_eq!(result, Ok(()));
@@ -4418,6 +4475,7 @@ mod tests {
                     saw_new = true;
                 }
             },
+            &String::new(),
         );
 
         assert!(ok, "must complete without panicking");

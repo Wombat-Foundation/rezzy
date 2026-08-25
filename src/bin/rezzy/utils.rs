@@ -436,6 +436,7 @@ pub fn partition_and_resolve_state(
         events_map,
         version,
         &mut pl_cache,
+        &String::new(),
     );
 
     let duration = start.elapsed();

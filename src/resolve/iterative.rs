@@ -100,17 +100,18 @@ where
 // set size, not the full event set.
 pub(crate) fn derive_all_conflicted_keys<Id, C, S, K>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    empty_key: &K,
 ) -> crate::FastSet<(EventType, K)>
 where
     Id: crate::basespec::rezzy_types::EventId,
-    K: Clone + Default + Eq + core::hash::Hash,
+    K: Clone + Eq + core::hash::Hash,
 {
     conflicted_events
         .values()
         .map(|ev| {
             (
                 EventType::from(ev.event_type.as_str()),
-                ev.state_key.clone().unwrap_or_default(),
+                ev.state_key.clone().unwrap_or_else(|| empty_key.clone()),
             )
         })
         .collect()
@@ -312,9 +313,10 @@ pub(crate) fn merge_unconflicted_power_events<Id, K>(
     version: StateResVersion,
     unconflicted_state: &crate::state::at::SharedState<Id, K>,
     resolved: &mut crate::state::at::SharedState<Id, K>,
+    empty_key: &K,
 ) where
     Id: Clone,
-    K: Ord + Clone + Default,
+    K: Ord + Clone,
 {
     use crate::basespec::event_types::{M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_POWER_LEVELS};
 
@@ -323,7 +325,7 @@ pub(crate) fn merge_unconflicted_power_events<Id, K>(
     // into `resolved` before building the mainline, so they are visible to `build_mainline` and sorting.
     if version.is_v2_1_plus() {
         for event_type in [M_ROOM_POWER_LEVELS, M_ROOM_JOIN_RULES, M_ROOM_CREATE] {
-            let key = (EventType::from(event_type), K::default());
+            let key = (EventType::from(event_type), empty_key.clone());
             if let Some(v) = unconflicted_state.get(&key) {
                 resolved.entry(key).or_insert_with(|| v.clone());
             }
@@ -343,6 +345,7 @@ pub(crate) fn execute_power_phase<'a, Id, C, S1, S2, K>(
     auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
     original_conflicted_keys: &alloc::collections::BTreeSet<Id>,
     version: StateResVersion,
+    empty_key: &K,
 ) -> (
     crate::basespec::rezzy_types::SortContext<'a, Id, C, S1, S2, LeanEvent<Id, C, K>>, // sort_context
     HashMap<Id, LeanEvent<Id, C, K>>, // power_events
@@ -354,7 +357,7 @@ where
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + AsRef<str>,
+    K: Ord + Clone + AsRef<str>,
 {
     let sort_context = crate::basespec::rezzy_types::SortContext {
         primary: conflicted_events,
@@ -388,7 +391,7 @@ where
 
     let create_key = (
         EventType::from(crate::basespec::event_types::M_ROOM_CREATE),
-        K::default(),
+        empty_key.clone(),
     );
 
     let create_ev = unconflicted_state
@@ -426,7 +429,7 @@ pub(crate) fn is_sender_banned<Id, C, K>(
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
-    K: Ord + Clone + Default + AsRef<str>,
+    K: Ord + Clone + AsRef<str>,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     use crate::auth::StateKeyDyn;
@@ -482,7 +485,7 @@ where
 /// let auth_ctx: HashMap<String, LeanEvent> = /* auth chain for new_events */
 /// # HashMap::new();
 ///
-/// let resolved = resolve_iterative_sort(&checkpoint, &new_events, &auth_ctx, StateResVersion::V2, &mut std::collections::HashMap::new());
+/// let resolved = resolve_iterative_sort(&checkpoint, &new_events, &auth_ctx, StateResVersion::V2, &mut std::collections::HashMap::new(), &String::new());
 /// ```
 ///
 /// # Auth Chain Safety
@@ -539,6 +542,7 @@ pub fn resolve_iterative_sort<
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64, Spl>,
+    empty_key: &K,
 ) -> crate::state::at::SharedState<Id, K>
 where
     K: crate::basespec::rezzy_types::StateKey,
@@ -552,6 +556,7 @@ where
         None,
         version,
         pl_cache,
+        empty_key,
     )
 }
 
@@ -573,13 +578,14 @@ pub fn resolve_iterative_sort_with_cache<
     external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64, Spl>,
+    empty_key: &K,
 ) -> crate::state::at::SharedState<Id, K>
 where
     K: crate::basespec::rezzy_types::StateKey,
     Spl: core::hash::BuildHasher,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    let conflicted_keys = derive_all_conflicted_keys(conflicted_events);
+    let conflicted_keys = derive_all_conflicted_keys(conflicted_events, empty_key);
     resolve_iterative_sort_with_all_caches::<Id, C, S1, S2, Spl, K>(
         unconflicted_state,
         conflicted_events,
@@ -589,6 +595,7 @@ where
         pl_cache,
         &mut FastMap::default(),
         &conflicted_keys,
+        empty_key,
     )
 }
 
@@ -615,6 +622,7 @@ pub(crate) fn resolve_iterative_sort_with_all_caches<
     pl_cache: &mut HashMap<Id, i64, Spl>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     conflicted_keys: &crate::FastSet<(EventType, K)>,
+    empty_key: &K,
 ) -> crate::state::at::SharedState<Id, K>
 where
     K: crate::basespec::rezzy_types::StateKey,
@@ -633,6 +641,7 @@ where
         auth_context,
         &original_conflicted_keys,
         version,
+        empty_key,
     );
 
     let mut fallback_cache = crate::state::at::LocalAuthCache::<Id, C, K>::new(version);
@@ -660,10 +669,10 @@ where
 
     let sort_set = &conflicted_events;
 
-    merge_unconflicted_power_events(version, unconflicted_state, &mut resolved);
+    merge_unconflicted_power_events(version, unconflicted_state, &mut resolved, empty_key);
 
     // Step 3: Build the power-level mainline for mainline sort
-    let mainline = build_mainline_with_cache(&resolved, &sort_context, mainline_cache);
+    let mainline = build_mainline_with_cache(&resolved, &sort_context, mainline_cache, empty_key);
 
     // Resolved-state screening pass (V2.1.1+): drop non-power conflicted events
     // whose sender is already banned in `resolved`, before mainline sort. Sound
@@ -776,6 +785,7 @@ pub fn resolve_iterative_sort_with_deltas<
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64, Spl>,
+    empty_key: &K,
 ) -> (
     crate::state::at::SharedState<Id, K>,
     alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
@@ -792,6 +802,7 @@ where
         None,
         version,
         pl_cache,
+        empty_key,
     )
 }
 
@@ -822,6 +833,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
     external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64, Spl>,
+    empty_key: &K,
 ) -> (
     crate::state::at::SharedState<Id, K>,
     alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
@@ -833,7 +845,7 @@ where
 {
     use crate::state::delta::{ResolutionDelta, ResolvePhase};
 
-    let conflicted_keys = derive_all_conflicted_keys(&conflicted_events);
+    let conflicted_keys = derive_all_conflicted_keys(&conflicted_events, empty_key);
     let original_conflicted_keys =
         prepare_conflicted_and_keys(&conflicted_events, auth_context, version);
 
@@ -848,6 +860,7 @@ where
         auth_context,
         &original_conflicted_keys,
         version,
+        empty_key,
     );
 
     let mut fallback_cache = LocalAuthCache::new(version);
@@ -910,9 +923,9 @@ where
 
     // --- Non-power phase (with delta tracking) ---
 
-    merge_unconflicted_power_events(version, &unconflicted_state, &mut resolved);
+    merge_unconflicted_power_events(version, &unconflicted_state, &mut resolved, empty_key);
 
-    let mainline = build_mainline(&resolved, &sort_context);
+    let mainline = build_mainline(&resolved, &sort_context, empty_key);
     // Same resolved-state screening pass (V2.1.1+) as the main path in
     // `resolve_iterative_sort_with_all_caches`: drop non-power conflicted
     // events whose sender is already banned in `resolved` before mainline sort,
@@ -1202,6 +1215,7 @@ mod tests {
             None,
             StateResVersion::V2_1_1,
             &mut HashMap::new(),
+            &String::new(),
         );
         let bob_delta = deltas
             .iter()
@@ -1224,6 +1238,7 @@ mod tests {
             None,
             StateResVersion::V2_1,
             &mut HashMap::new(),
+            &String::new(),
         );
         assert!(
             deltas.iter().any(|d| d.event_id == "$bob_msg"),
@@ -1272,6 +1287,7 @@ mod tests {
             None,
             StateResVersion::V2_1,
             &mut HashMap::new(),
+            &String::new(),
         );
         assert!(
             deltas.iter().any(|d| d.event_id == "$alice_join"),

@@ -55,6 +55,7 @@ fn resolve_and_get_state(fixture_path: &str, version: StateResVersion) -> HashMa
         &map,
         version,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     resolved
         .into_iter()

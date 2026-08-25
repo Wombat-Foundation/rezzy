@@ -531,6 +531,7 @@ fn run_shootout(
             &auth_context,
             rezzy::StateResVersion::V2,
             &mut pl_cache,
+            &String::new(),
         );
         rezzy_result = Some(black_box(res));
     }

@@ -268,6 +268,7 @@ where
             rezzy::StateResVersion::V2
         },
         &mut pl_cache,
+        &String::new(),
     );
 
     let mut result = StateMap::new();

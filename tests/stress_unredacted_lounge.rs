@@ -69,6 +69,7 @@ fn resolve_v2_1_from_subgraph(
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     )
 }
 
@@ -401,6 +402,7 @@ fn test_checkpoint_partial_join_resolution() {
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     println!(
         "Checkpoint resolution: {} entries",

@@ -47,18 +47,23 @@ impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Disp
 /// Trait alias for types that can serve as the "key" half of a Matrix state
 /// tuple `(event_type, state_key)`.
 ///
-/// Any type that is `Clone + Eq + Hash + Ord + AsRef<str> + Default + 'static` automatically
+/// Any type that is `Clone + Eq + Hash + Ord + AsRef<str>` automatically
 /// implements this trait via a blanket impl. In practice, this is `String`
 /// (the default everywhere in this crate), but it can be substituted with a
-/// lighter interned/`Arc<str>`-style key by downstream homeservers.
+/// lighter interned/`Arc<str>`-style key by downstream homeservers -- including
+/// a *borrowing* key tied to a `&'a` interner arena, which is why this trait
+/// no longer requires `Default` or `'static`: neither can be produced from
+/// nothing by a key that borrows from an arena the caller owns. Callers that
+/// need "the empty state key" (e.g. to look up `m.room.create`) now pass one
+/// explicitly (see `empty_key` parameters on the resolution entry points)
+/// instead of relying on `K::default()`.
 ///
 /// **Contract:**
-/// - `K::default().as_ref()` **must** equal the empty string `""`.
 /// - Any implementor's `Ord` ordering **must** match the lexicographic byte ordering of
 ///   its `AsRef<str>` representation. This contract is required for `Borrow`-based
 ///   `BTreeMap` lookups to function correctly.
-pub trait StateKey: Clone + Eq + core::hash::Hash + Ord + AsRef<str> + Default {}
-impl<T: Clone + Eq + core::hash::Hash + Ord + AsRef<str> + Default> StateKey for T {}
+pub trait StateKey: Clone + Eq + core::hash::Hash + Ord + AsRef<str> {}
+impl<T: Clone + Eq + core::hash::Hash + Ord + AsRef<str>> StateKey for T {}
 
 /// Selects which state resolution algorithm to use.
 ///

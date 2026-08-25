@@ -132,7 +132,7 @@ fn test_topo_functions_ignore_federation_depth() {
     // ── compute_state_at: streaming pipeline uses same topo sort ──
     // If the topo sort were fooled by event.depth, it would process B
     // AFTER D (depth 50 > 3), producing wrong state at D.
-    let state = rezzy::compute_state_at("D", &events_map, StateResVersion::V2)
+    let state = rezzy::compute_state_at("D", &events_map, StateResVersion::V2, &String::new())
         .expect("D must be reachable");
     // The create event from A must be in the resolved state at D
     assert_eq!(
@@ -406,6 +406,7 @@ fn test_resolve_merge_fast_path_hashed_mismatch() {
         &events_map,
         &mut global_auth_cache,
         StateResVersion::V2_1_1,
+        &String::new(),
     );
 
     // Verify member state: join_event_2 wins
@@ -447,11 +448,20 @@ fn test_compute_state_at_missing_target_and_batch() {
     .map(|e| (e.event_id.clone(), e))
     .collect();
 
-    assert!(
-        rezzy::compute_state_at(&"GHOST".to_string(), &events_map, StateResVersion::V2).is_none()
-    );
+    assert!(rezzy::compute_state_at(
+        &"GHOST".to_string(),
+        &events_map,
+        StateResVersion::V2,
+        &String::new(),
+    )
+    .is_none());
 
-    let batch = rezzy::compute_state_at_batch(&["A", "GHOST"], &events_map, StateResVersion::V2);
+    let batch = rezzy::compute_state_at_batch(
+        &["A", "GHOST"],
+        &events_map,
+        StateResVersion::V2,
+        &String::new(),
+    );
     assert!(batch.contains_key("A"));
     assert!(!batch.contains_key("GHOST"));
 }
@@ -478,7 +488,13 @@ fn test_compute_state_at_streaming_non_optimized_cycle() {
     .map(|e| (e.event_id.clone(), e))
     .collect();
 
-    rezzy::compute_state_at_streaming(&["A"], &events_map, StateResVersion::V2, |_, _| {});
+    rezzy::compute_state_at_streaming(
+        &["A"],
+        &events_map,
+        StateResVersion::V2,
+        |_, _| {},
+        &String::new(),
+    );
 }
 
 /// `compute_auth_chain_diff`'s real heap traversal: the U-walk catch-up loop,
@@ -708,7 +724,12 @@ fn test_resolve_merge_fast_path_identical_parents() {
     .map(|e| (e.event_id.clone(), e))
     .collect();
 
-    let state = rezzy::compute_state_at(&"D".to_string(), &events_map, StateResVersion::V2);
+    let state = rezzy::compute_state_at(
+        &"D".to_string(),
+        &events_map,
+        StateResVersion::V2,
+        &String::new(),
+    );
     let state = state.expect("state at D must resolve");
     assert!(state.contains_key(&(
         rezzy::basespec::event_types::EventType::from("m.room.create"),
@@ -730,7 +751,12 @@ fn test_resolve_multiple_prev_states_update_arm() {
     .map(|e| (e.event_id.clone(), e))
     .collect();
 
-    let state = rezzy::compute_state_at(&"D".to_string(), &events_map, StateResVersion::V2);
+    let state = rezzy::compute_state_at(
+        &"D".to_string(),
+        &events_map,
+        StateResVersion::V2,
+        &String::new(),
+    );
     let state = state.expect("conflicted fork at D must resolve");
     // The conflicted topic key must be present, resolved to one of B/C.
     assert!(state.contains_key(&(
@@ -788,6 +814,7 @@ fn test_resolve_merge_fast_path_hashed_slow_path_diff() {
         &events_map,
         &mut cache,
         StateResVersion::V2,
+        &String::new(),
     );
     assert!(resolved.state.contains_key(&(
         rezzy::basespec::event_types::EventType::from("m.room.create"),
@@ -840,6 +867,7 @@ fn test_resolve_merge_fast_path_hashed_slow_path_diff() {
         &events_map,
         &mut cache,
         StateResVersion::V2,
+        &String::new(),
     );
     // The ghost members are dropped; only the create key survives.
     assert!(resolved2.state.contains_key(&(
@@ -924,6 +952,7 @@ fn test_resolve_merge_fast_path_hashed_update_arm() {
         &events_map,
         &mut cache,
         StateResVersion::V2,
+        &String::new(),
     );
     assert_eq!(
         resolved.state.get(&(
@@ -960,8 +989,15 @@ fn test_interned_key_matches_string_path() {
         .map(|(id, ev)| (id.clone(), ev.clone().into_interned_state_key()))
         .collect();
 
-    let str_state = rezzy::compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
-    let interned_state = rezzy::compute_state_at("D", &interned_map, StateResVersion::V2).unwrap();
+    let str_state =
+        rezzy::compute_state_at("D", &events_map, StateResVersion::V2, &String::new()).unwrap();
+    let interned_state = rezzy::compute_state_at(
+        "D",
+        &interned_map,
+        StateResVersion::V2,
+        &rezzy::InternedKey::default(),
+    )
+    .unwrap();
 
     let str_keyed: std::collections::BTreeMap<(String, String), String> = str_state
         .into_iter()

@@ -236,18 +236,19 @@ where
 pub(crate) fn build_mainline<Id, C, E, K>(
     resolved: &crate::state::at::SharedState<Id, K>,
     auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    empty_key: &K,
 ) -> Vec<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
     E: EventLike<Id = Id, Content = C>,
-    K: Ord + Clone + Default,
+    K: Ord + Clone,
 {
     // The hot path (compute_state_at's fork-merge loop) now threads a persistent
     // cache through `resolve_iterative_sort_with_all_caches`, so this fresh-cache
     // fallback only matters for one-shot callers (e.g. resolve_lattice_fold's V2
     // path, which calls build_mainline exactly once per resolution).
-    build_mainline_with_cache(resolved, auth_context, &mut FastMap::default())
+    build_mainline_with_cache(resolved, auth_context, &mut FastMap::default(), empty_key)
 }
 
 /// Like [`build_mainline`], but populates a `pl_parent_cache` mapping each
@@ -260,18 +261,19 @@ pub(crate) fn build_mainline_with_cache<Id, C, E, K>(
     resolved: &crate::state::at::SharedState<Id, K>,
     auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
     pl_parent_cache: &mut FastMap<Id, Option<Id>>,
+    empty_key: &K,
 ) -> Vec<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
     E: EventLike<Id = Id, Content = C>,
-    K: Ord + Clone + Default,
+    K: Ord + Clone,
 {
     let mut mainline = Vec::new();
     let mut seen_in_mainline = crate::FastSet::default();
     let pl_key = (
         crate::basespec::event_types::EventType::from(M_ROOM_POWER_LEVELS),
-        K::default(),
+        empty_key.clone(),
     );
     let mut current = resolved.get(&pl_key).cloned();
 
@@ -482,7 +484,7 @@ mod tests {
         );
 
         // Before the fix, this would infinite loop!
-        let mainline = build_mainline(&resolved, &auth_context);
+        let mainline = build_mainline(&resolved, &auth_context, &alloc::string::String::new());
 
         // A and B should both be in the mainline exactly once.
         assert_eq!(
@@ -714,12 +716,12 @@ mod tests {
 
         // First call: populates cache for PL2 → Some(PL1), PL1 → Some(PL0), PL0 → None
         let mut cache = FastMap::default();
-        let ml1 = build_mainline_with_cache(&resolved, &ctx, &mut cache);
+        let ml1 = build_mainline_with_cache(&resolved, &ctx, &mut cache, &String::new());
         assert_eq!(ml1, alloc::vec!["PL2", "PL1", "PL0"]);
         assert_eq!(cache.len(), 3, "all 3 PL events must be cached");
 
         // Second call: hits cache immediately for PL2 → skips BFS
-        let ml2 = build_mainline_with_cache(&resolved, &ctx, &mut cache);
+        let ml2 = build_mainline_with_cache(&resolved, &ctx, &mut cache, &String::new());
         assert_eq!(ml2, ml1, "cached mainline must match original");
     }
 

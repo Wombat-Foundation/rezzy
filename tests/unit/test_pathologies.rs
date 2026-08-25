@@ -48,6 +48,7 @@ fn test_pathology_duplicate_auth_poisoning() {
             &auth_context,
             StateResVersion::V2_1,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
         let _ = resolve_iterative_sort(
             &utils::build_unconflicted_state_test_helper(&auth_context),
@@ -55,6 +56,7 @@ fn test_pathology_duplicate_auth_poisoning() {
             &auth_context,
             StateResVersion::V2_1_1,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
     }
 
@@ -68,6 +70,7 @@ fn test_pathology_duplicate_auth_poisoning() {
             &auth_context,
             StateResVersion::V2_1,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
         let dur = start.elapsed();
         if dur < min_v21 {
@@ -85,6 +88,7 @@ fn test_pathology_duplicate_auth_poisoning() {
             &auth_context,
             StateResVersion::V2_1_1,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
         let dur = start.elapsed();
         if dur < min_v211 {
@@ -133,6 +137,7 @@ fn test_pathology_invite_lock() {
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert!(
         resolved_v21.contains_key(&user_key),
@@ -145,6 +150,7 @@ fn test_pathology_invite_lock() {
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert!(
         resolved_v211.contains_key(&user_key),

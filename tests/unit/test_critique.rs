@@ -196,6 +196,7 @@ fn resolve_full(events: &[LeanEvent], version: StateResVersion) -> ResolvedState
         &events_map,
         version,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let mut full_state = HashMap::new();

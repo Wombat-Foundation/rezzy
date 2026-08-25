@@ -49,6 +49,7 @@ fn write_oracle(fixture_path: &str, oracle_path: &str, version: StateResVersion)
         &map,
         version,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let mut entries: Vec<Value> = resolved

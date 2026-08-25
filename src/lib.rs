@@ -29,6 +29,7 @@
 //!     &auth_context,
 //!     StateResVersion::V2,
 //!     &mut HashMap::new(),
+//!     &String::new(),
 //! );
 //! ```
 //!

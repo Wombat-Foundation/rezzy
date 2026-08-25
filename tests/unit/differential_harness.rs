@@ -315,6 +315,7 @@ fn resolve(p: &Problem, version: StateResVersion) -> SharedState {
         &p.auth_context,
         version,
         &mut HashMap::new(),
+        &String::new(),
     )
 }
 

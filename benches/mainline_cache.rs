@@ -272,7 +272,12 @@ fn main() {
         measure(
             &format!("compute_state_at_batch (L={pl_chain_len}, M={fork_count})"),
             || {
-                let result = compute_state_at_batch(&target_refs, &events, StateResVersion::V2_1);
+                let result = compute_state_at_batch(
+                    &target_refs,
+                    &events,
+                    StateResVersion::V2_1,
+                    &String::new(),
+                );
                 assert_eq!(result.len(), target_refs.len(), "all targets must resolve");
                 std::hint::black_box(&result);
             },
@@ -287,6 +292,7 @@ fn main() {
                         target,
                         &events,
                         StateResVersion::V2_1,
+                        &String::new(),
                     )
                     .expect("every benchmark target must resolve");
                     total_states += state.len();
