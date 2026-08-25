@@ -94,46 +94,58 @@ refcounting (`Arc<str>`) regardless of key collisions. The prototype (sorted
 first-seen ids, no lifetime constraint) confirmed the hypothesis: -17% to -23%
 across all three room sizes, unlike `InternedKey`'s reversal at 5000.
 
-That result does not survive contact with the real pipeline, for two
-independent, structural reasons — both confirmed against actual code, not just
-argued:
+That result does not survive contact with the real pipeline — but only one of
+the two reasons originally logged here is actually structural. The other was
+an implementation shortcut in the Phase 1 rewrite that got mistaken for a hard
+constraint; corrected below.
 
-1. **Ordering soundness.** `RoomState`'s `BTreeMap` lookups are sound only
-   because every `K` used as a key agrees with lexicographic string `Ord` (see
-   [`StateKeyDyn`](../src/auth/mod.rs) and its `Borrow<dyn StateKeyDyn>` impl).
-   A production `InternId` can't keep the prototype's sorted-once integer
-   `Ord` — a live homeserver's state-key set grows incrementally (new members
-   joining), so ids can't be assigned in final sorted order up front. `Ord`
-   has to resolve through the interner (string compare) instead, which gives
-   back exactly the cost (`str` comparison) the integer key was meant to
-   avoid.
-2. **Lifetime soundness.** Any borrowing `InternId<'a>` fails to satisfy the
-   resolution entry points' existing bound
+1. **Ordering, NOT actually forced through the interner.** `RoomState`'s
+   `BTreeMap` lookups are sound only because every `K` used as a key agrees
+   with lexicographic string `Ord` (see [`StateKeyDyn`](../src/auth/mod.rs)
+   and its `Borrow<dyn StateKeyDyn>` impl) — that part is real. But every
+   resolution entry point (`compute_state_at`/`_batch`/`_streaming`,
+   `src/state/at.rs`) takes the full event set as an already-materialized
+   `&HashMap` argument; "streaming" only describes results flowing out via
+   callback, not events streaming in. The complete vocabulary of distinct
+   `state_key`s for one call is therefore known before resolution starts, so
+   a **per-call** interner can collect every key, sort once, and assign
+   rank-based `u32` ids matching that sort — giving a plain `u32` compare for
+   `Ord`, zero string touches, for the whole call. The "ids can't be sorted
+   up front" objection only applies to a _global, server-lifetime_ interner
+   (whose vocabulary genuinely grows across calls as new members join); the
+   Phase 1 prototype used first-seen ids and resolved `Ord` through the
+   interner (string compare) as a shortcut to avoid the two-phase
+   collect-then-sort build, not because the entry points required it. That
+   shortcut is what the re-bench below actually measured eroding.
+2. **Lifetime soundness — this one is real.** Any borrowing `InternId<'a>`
+   fails to satisfy the resolution entry points' existing bound
    `for<'q> (String, K): Borrow<dyn StateKeyDyn + 'q>` (`src/auth/mod.rs`):
-   the blanket `Borrow` impl requires `K: 'a` for the *same* `'a` on every
+   the blanket `Borrow` impl requires `K: 'a` for the same `'a` on every
    invocation, and satisfying that `for<'q>` universally-quantified bound
    forces `K: 'static`. A per-resolution-run, stack-borrowed interner is
    therefore not viable as `K` under the current signatures without also
    threading a `'static` requirement through every consumer.
 
-With `Ord` forced through the interner (string compare) *and* the interner
-forced `'static` (leaked, for the bench), re-benchmarking the real lib type
-against `String` reproduced the erosion directly: the win shrinks from small
-to mid room sizes and disappears or reverses at 5000 members (repeated runs:
-roughly -12% → -4% → anywhere from -0.1% to +31% depending on run — i.e. no
-longer a reliable win at scale, sometimes a clear loss). This is the same
-atomics-avoidance idea that motivated the investigation, but the very
-soundness contract that makes `RoomState` lookups safe removes the mechanism
-(cheap integer `Ord`) that made the u32 approach win in the first place.
+With `Ord` forced through the interner (string compare, the Phase 1 shortcut
+above) _and_ the interner forced `'static` (leaked, for the bench),
+re-benchmarking the real lib type against `String` reproduced an erosion: the
+win shrinks from small to mid room sizes and disappears or reverses at 5000
+members (repeated runs: roughly -12% → -4% → anywhere from -0.1% to +31%
+depending on run). That number measured the string-compare `Ord` shortcut, not
+a proper sort-once-per-call `Ord` — so it is not yet the honest answer to
+whether `u32` interning wins in production.
 
-**Verdict: rejected.** Do not revisit `u32`-interned state keys without new
-evidence that changes one of the two structural blockers above (e.g. a
-resolution-path redesign that doesn't need `BTreeMap`-ordered `K`, or a
-crate-wide `'static`-interner design accepted for other reasons). The Phase 1
-prototype work (`8bf6680`, `99d1cfb`, `9fa73b3`, `39dd517`) was reverted from
-`dev`; `benches/interned_key.rs` still carries the original `String` vs
-`InternedKey` (`Arc<str>`) comparison from `fdddb31` as a live artifact of the
-size-dependent tradeoff documented above.
+**Status: reopened, not rejected.** The only confirmed structural blocker is
+the `'static` lifetime requirement (point 2). Before deciding whether to pay
+that lifetime-threading cost, redo the prototype with a correct two-phase
+build (collect every `state_key` in the call's `events_map`, sort once,
+assign rank ids) so its `Ord` is genuinely `u32`-cheap, and re-bench that
+against `String` to get the real number. If that number still doesn't justify
+threading `'static` through the public API, reject then — not before. The
+Phase 1 prototype work (`8bf6680`, `99d1cfb`, `9fa73b3`, `39dd517`) was
+reverted from `dev` pending that redo; `benches/interned_key.rs` still carries
+the original `String` vs `InternedKey` (`Arc<str>`) comparison from `fdddb31`
+as a live artifact of the size-dependent tradeoff documented above.
 
 ### No true zero-copy identifiers (RocksDB-slice-backed views)
 
