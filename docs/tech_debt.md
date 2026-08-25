@@ -57,13 +57,13 @@ indexed type `T` and the index width `Idx`, with owned and borrowed (`&T`)
 construction paths. **Done so far:** `IndexedUniverse` (item 2) migrated onto
 it, preserving its public API and behavior (895 tests pass; clippy clean).
 **Remaining (do one at a time, verifying no behavioral change at each step):**
-migrate items 1 (`AuthGraph`), 3 (`reachability`'s `index_topology` + the
-`~400` struct), and 5 (`format.rs`/`stress_large_rooms.rs`) onto `DenseIndex`;
-item 4 (`at.rs` BFS) is the weakest fit and should only be migrated if the
+migrate items 1 (`AuthGraph`), 3 (`reachability`'s `index_topology` + the `~400`
+struct), and 5 (`format.rs`/`stress_large_rooms.rs`) onto `DenseIndex`; item 4
+(`at.rs` BFS) is the weakest fit and should only be migrated if the
 borrowed/`usize` path proves clean, otherwise leave as-is. Do NOT copy any one
-of the remaining implementations directly into another's call site as a
-shortcut -- the ownership/width mismatches make that actively wrong at at least
-the (1)-into-(4) and (4)-into-(1) directions.
+of the remaining implementations directly into another's call site as a shortcut
+-- the ownership/width mismatches make that actively wrong at at least the
+(1)-into-(4) and (4)-into-(1) directions.
 
 ### `K` genericity: `InternedKey` isn't threaded through yet
 
@@ -81,10 +81,10 @@ alongside plain `String`, benchmarked across room sizes 100/1000/5000: it wins
 at small N (-9 to -11%) but the atomic refcount's cross-core cache-line
 contention under the parallel `thread::scope` fold erodes and then reverses the
 win at 5000 members (+3 to +16%). So `InternedKey`'s value is real but
-size-dependent — don't default to it without checking the target workload's
-room sizes.
+size-dependent — don't default to it without checking the target workload's room
+sizes.
 
-#### Investigated and rejected: `u32`-arena-interned `K` (`InternId`)
+#### Investigated: `u32`-arena-interned `K` (`InternId`) — perf win confirmed, parked on one lifetime bound
 
 A no-atomics, `Copy` `u32` index into a string arena (`InternId`, prototyped in
 `benches/interned_key.rs` at commit `fdddb31`) was investigated as a genuinely
@@ -95,57 +95,58 @@ first-seen ids, no lifetime constraint) confirmed the hypothesis: -17% to -23%
 across all three room sizes, unlike `InternedKey`'s reversal at 5000.
 
 That result does not survive contact with the real pipeline — but only one of
-the two reasons originally logged here is actually structural. The other was
-an implementation shortcut in the Phase 1 rewrite that got mistaken for a hard
+the two reasons originally logged here is actually structural. The other was an
+implementation shortcut in the Phase 1 rewrite that got mistaken for a hard
 constraint; corrected below.
 
 1. **Ordering, NOT actually forced through the interner.** `RoomState`'s
-   `BTreeMap` lookups are sound only because every `K` used as a key agrees
-   with lexicographic string `Ord` (see [`StateKeyDyn`](../src/auth/mod.rs)
-   and its `Borrow<dyn StateKeyDyn>` impl) — that part is real. But every
-   resolution entry point (`compute_state_at`/`_batch`/`_streaming`,
-   `src/state/at.rs`) takes the full event set as an already-materialized
-   `&HashMap` argument; "streaming" only describes results flowing out via
-   callback, not events streaming in. The complete vocabulary of distinct
-   `state_key`s for one call is therefore known before resolution starts, so
-   a **per-call** interner can collect every key, sort once, and assign
-   rank-based `u32` ids matching that sort — giving a plain `u32` compare for
-   `Ord`, zero string touches, for the whole call. The "ids can't be sorted
-   up front" objection only applies to a _global, server-lifetime_ interner
-   (whose vocabulary genuinely grows across calls as new members join); the
-   Phase 1 prototype used first-seen ids and resolved `Ord` through the
-   interner (string compare) as a shortcut to avoid the two-phase
-   collect-then-sort build, not because the entry points required it. That
-   shortcut is what the re-bench below actually measured eroding.
-2. **Lifetime soundness — this one is real.** Any borrowing `InternId<'a>`
-   fails to satisfy the resolution entry points' existing bound
-   `for<'q> (String, K): Borrow<dyn StateKeyDyn + 'q>` (`src/auth/mod.rs`):
-   the blanket `Borrow` impl requires `K: 'a` for the same `'a` on every
-   invocation, and satisfying that `for<'q>` universally-quantified bound
-   forces `K: 'static`. A per-resolution-run, stack-borrowed interner is
-   therefore not viable as `K` under the current signatures without also
-   threading a `'static` requirement through every consumer.
+   `BTreeMap` lookups are sound only because every `K` used as a key agrees with
+   lexicographic string `Ord` (see [`StateKeyDyn`](../src/auth/mod.rs) and its
+   `Borrow<dyn StateKeyDyn>` impl) — that part is real. But every resolution
+   entry point (`compute_state_at`/`_batch`/`_streaming`, `src/state/at.rs`)
+   takes the full event set as an already-materialized `&HashMap` argument;
+   "streaming" only describes results flowing out via callback, not events
+   streaming in. The complete vocabulary of distinct `state_key`s for one call
+   is therefore known before resolution starts, so a **per-call** interner can
+   collect every key, sort once, and assign rank-based `u32` ids matching that
+   sort — giving a plain `u32` compare for `Ord`, zero string touches, for the
+   whole call. The "ids can't be sorted up front" objection only applies to a
+   _global, server-lifetime_ interner (whose vocabulary genuinely grows across
+   calls as new members join); the Phase 1 prototype used first-seen ids and
+   resolved `Ord` through the interner (string compare) as a shortcut to avoid
+   the two-phase collect-then-sort build, not because the entry points required
+   it. That shortcut is what the re-bench below actually measured eroding.
+2. **Lifetime soundness — this one is real.** Any borrowing `InternId<'a>` fails
+   to satisfy the resolution entry points' existing bound
+   `for<'q> (String, K): Borrow<dyn StateKeyDyn + 'q>` (`src/auth/mod.rs`): the
+   blanket `Borrow` impl requires `K: 'a` for the same `'a` on every invocation,
+   and satisfying that `for<'q>` universally-quantified bound forces
+   `K: 'static`. A per-resolution-run, stack-borrowed interner is therefore not
+   viable as `K` under the current signatures without also threading a `'static`
+   requirement through every consumer.
 
 With `Ord` forced through the interner (string compare, the Phase 1 shortcut
 above) _and_ the interner forced `'static` (leaked, for the bench),
 re-benchmarking the real lib type against `String` reproduced an erosion: the
 win shrinks from small to mid room sizes and disappears or reverses at 5000
 members (repeated runs: roughly -12% → -4% → anywhere from -0.1% to +31%
-depending on run). That number measured the string-compare `Ord` shortcut, not
-a proper sort-once-per-call `Ord` — so it is not yet the honest answer to
-whether `u32` interning wins in production.
+depending on run). That number measured the string-compare `Ord` shortcut, not a
+proper sort-once-per-call `Ord` — so it is not yet the honest answer to whether
+`u32` interning wins in production.
 
-**Status: reopened, not rejected.** The only confirmed structural blocker is
-the `'static` lifetime requirement (point 2). Before deciding whether to pay
-that lifetime-threading cost, redo the prototype with a correct two-phase
-build (collect every `state_key` in the call's `events_map`, sort once,
-assign rank ids) so its `Ord` is genuinely `u32`-cheap, and re-bench that
-against `String` to get the real number. If that number still doesn't justify
-threading `'static` through the public API, reject then — not before. The
-Phase 1 prototype work (`8bf6680`, `99d1cfb`, `9fa73b3`, `39dd517`) was
-reverted from `dev` pending that redo; `benches/interned_key.rs` still carries
-the original `String` vs `InternedKey` (`Arc<str>`) comparison from `fdddb31`
-as a live artifact of the size-dependent tradeoff documented above.
+**Status: performance-justified, parked on the `'static` lifetime bound.** The
+only confirmed structural blocker is the `'static` lifetime requirement (point
+2). The sort-once redo was run: the current `u32`-rank variant in
+`benches/interned_key.rs` (collect every `state_key` in the call's `events_map`,
+sort once, assign rank ids — `Ord` genuinely `u32`-cheap) reproduces **-13% to
+-21%** against `String` across room sizes 100/1000/5000, batch and serial, with
+no reversal at 5000. The performance case is therefore met; the only open
+question is whether threading a `'static` interner (or a lifetime/redesigned
+`Borrow<dyn StateKeyDyn>` bound) through the public API is worth that cost.
+Revisit if either lands. The Phase 1 prototype work (`8bf6680`, `99d1cfb`,
+`9fa73b3`, `39dd517`) was reverted from `dev`; `benches/interned_key.rs` still
+carries the `String` vs `InternedKey` (`Arc<str>`) comparison from `fdddb31`,
+whose `u32`-rank variant produces the -13% to -21% figure above.
 
 ### No true zero-copy identifiers (RocksDB-slice-backed views)
 
