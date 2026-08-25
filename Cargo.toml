@@ -153,6 +153,11 @@ path = "benches/mainline_cache.rs"
 harness = false
 
 [[bench]]
+name = "interned_key"
+path = "benches/interned_key.rs"
+harness = false
+
+[[bench]]
 name = "persistence"
 path = "benches/persistence.rs"
 harness = false
