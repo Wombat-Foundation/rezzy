@@ -457,9 +457,12 @@ pub fn check_auth_with_context<
         ));
     }
 
-    if event.rejected() || event.soft_fail() {
+    // Rejected events must not be auth-checked (spec rooms/v9). Soft-failed events are
+    // auth-checked as normal and participate in state resolution (spec server-server-api
+    // "Soft failure"); they are not blanket-rejected here.
+    if event.rejected() {
         return Err(AuthError::InvalidSyntax(
-            "rejected or soft-failed events must not be auth-checked".into(),
+            "rejected events must not be auth-checked".into(),
         ));
     }
     reject_flagged_auth_state(event, state)?;

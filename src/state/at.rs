@@ -208,7 +208,12 @@ where
     K: crate::basespec::rezzy_types::StateKey,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    if ev.rejected || ev.soft_fail {
+    // Rejected events must never be admitted into state (spec rooms/v9). Soft-failed
+    // events, however, participate in state resolution as normal (spec server-server-api
+    // "Soft failure"): they are auth-checked like any other event and admitted if they
+    // pass. Blanket-rejecting them here would diverge from Synapse/spec, which re-auth-checks
+    // them during `_iterative_auth_checks`.
+    if ev.rejected {
         return false;
     }
 
@@ -658,7 +663,7 @@ where
             )
         };
 
-        if ev.state_key.is_some() && !ev.rejected && !ev.soft_fail {
+        if ev.state_key.is_some() && !ev.rejected {
             state_before.insert(
                 (
                     EventType::from(ev.event_type.as_str()),
@@ -2325,7 +2330,7 @@ where
             )
         };
 
-        if is_state && !ev.rejected && !ev.soft_fail {
+        if is_state && !ev.rejected {
             let key = (
                 EventType::from(ev.event_type.as_str()),
                 ev.state_key.clone().unwrap_or_default(),
@@ -4429,11 +4434,43 @@ mod tests {
         assert!(saw_new, "B's state is new, not inherited");
     }
 
-    /// Coverage: `iterative_auth_ok`'s rejected/soft-fail short-circuit (line 240).
+    /// Coverage: `iterative_auth_ok` — rejected events short-circuit (never admitted);
+    /// soft-failed events are auth-checked as normal and admitted when they pass.
     #[test]
     fn test_iterative_auth_ok_rejected_and_soft_fail() {
-        let resolved: SharedState<String, String> = SharedState::new();
-        let auth_context: HashMap<String, LeanEvent> = HashMap::new();
+        use crate::basespec::event_types::M_ROOM_CREATE;
+
+        let create_ev = LeanEvent {
+            event_id: "$create".into(),
+            event_type: M_ROOM_CREATE.into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            content: json!({ "room_version": "10", "creator": "@alice:x" }),
+            ..Default::default()
+        };
+        let join_rules_ev = LeanEvent {
+            event_id: "$jr".into(),
+            event_type: "m.room.join_rules".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            content: json!({ "join_rule": "public" }),
+            ..Default::default()
+        };
+        let mut resolved: SharedState<String, String> = SharedState::new();
+        resolved.insert(
+            (EventType::from(M_ROOM_CREATE), String::new()),
+            "$create".into(),
+        );
+        resolved.insert(
+            (EventType::from("m.room.join_rules"), String::new()),
+            "$jr".into(),
+        );
+        let auth_context: HashMap<String, LeanEvent> = [
+            ("$create".into(), create_ev.clone()),
+            ("$jr".into(), join_rules_ev),
+        ]
+        .into_iter()
+        .collect();
         let sort_set: HashMap<String, LeanEvent> = HashMap::new();
 
         let rejected = LeanEvent {
@@ -4449,26 +4486,36 @@ mod tests {
             &sort_set,
             BTreeMap::new(),
             None,
-            crate::StateResVersion::V2,
+            crate::StateResVersion::V2_1,
             false,
         ));
 
-        let soft_failed = LeanEvent {
+        // A soft-failed event is NOT blanket-rejected: it is auth-checked as normal and
+        // admitted if it passes (spec server-server-api "Soft failure"). This join is valid
+        // (public join rules, sender not banned), so it must be accepted despite soft_fail.
+        let soft_failed_join = LeanEvent {
             event_id: "Y".into(),
-            event_type: "m.room.message".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@alice:x".into()),
+            sender: "@alice:x".into(),
+            content: json!({ "membership": "join" }),
+            auth_events: vec!["$create".into(), "$jr".into()],
             soft_fail: true,
             ..Default::default()
         };
-        assert!(!iterative_auth_ok(
-            &soft_failed,
-            &resolved,
-            &auth_context,
-            &sort_set,
-            BTreeMap::new(),
-            None,
-            crate::StateResVersion::V2,
-            false,
-        ));
+        assert!(
+            iterative_auth_ok(
+                &soft_failed_join,
+                &resolved,
+                &auth_context,
+                &sort_set,
+                BTreeMap::new(),
+                Some(&create_ev),
+                crate::StateResVersion::V2_1,
+                false,
+            ),
+            "a soft-failed event that passes auth must be admitted into state"
+        );
     }
 
     /// Coverage: `update_local_auth` — the no-state-key early return (line 265)

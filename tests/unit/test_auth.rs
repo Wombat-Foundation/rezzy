@@ -105,15 +105,21 @@ fn test_flagged_events_are_not_auth_checked() {
     );
     soft_fail.soft_fail = true;
 
-    for event in [&rejected, &soft_fail] {
-        assert!(
-            matches!(
-                check_auth(event, &state, StateResVersion::V2_1, None),
-                Err(AuthError::InvalidSyntax(reason)) if reason.contains("rejected or soft-failed")
-            ),
-            "flagged events must not be auth-checked"
-        );
-    }
+    // Rejected events are never auth-checked (spec rooms/v9).
+    assert!(
+        matches!(
+            check_auth(&rejected, &state, StateResVersion::V2_1, None),
+            Err(AuthError::InvalidSyntax(reason)) if reason.contains("rejected")
+        ),
+        "rejected events must not be auth-checked"
+    );
+
+    // Soft-failed events are auth-checked as normal and participate in resolution
+    // (spec server-server-api "Soft failure"). This message from a joined user is valid.
+    assert!(
+        check_auth(&soft_fail, &state, StateResVersion::V2_1, None).is_ok(),
+        "a valid soft-failed event must pass auth rather than being blanket-rejected"
+    );
 }
 
 #[test]

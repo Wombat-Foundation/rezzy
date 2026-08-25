@@ -8033,67 +8033,68 @@ fn test_conflicted_keys_derived_before_cdo() {
 }
 
 #[test]
-fn test_soft_fail_and_rejected_state_events_excluded_on_linear_chain() {
+fn test_soft_fail_and_rejected_state_events_on_linear_chain() {
+    use rezzy::{compute_state_at_streaming, StateUpdate};
     use std::collections::HashMap;
-    let mut em: HashMap<String, LeanEvent> = HashMap::new();
-    em.insert(
-        "A".into(),
-        LeanEvent {
-            event_id: "A".into(),
-            event_type: "m.room.message".into(),
-            prev_events: vec![],
-            ..Default::default()
-        },
+
+    // Linear chain A -> B(soft-failed m.room.name) -> R(rejected m.room.topic) -> C.
+    // Per spec server-server-api "Soft failure", soft-failed events participate in state
+    // resolution as normal (so B IS in the resolved state), while rejected events are
+    // excluded (spec rooms/v9 / Synapse v2 `_iterative_auth_checks`).
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"A","type":"m.room.message","sender":"@a:x","prev_events":[]}
+{"event_id":"B","type":"m.room.name","state_key":"","sender":"@a:x","prev_events":["A"],"__soft_fail":true}
+{"event_id":"R","type":"m.room.topic","state_key":"","sender":"@a:x","prev_events":["B"],"__rejected":true}
+{"event_id":"C","type":"m.room.message","sender":"@a:x","prev_events":["R"]}
+"#,
     );
+    let em: HashMap<String, LeanEvent> = events
+        .iter()
+        .map(|e| (e.event_id.clone(), e.clone()))
+        .collect();
 
-    let mut soft = LeanEvent {
-        event_id: "B".into(),
-        event_type: "m.room.name".into(),
-        state_key: Some(String::new()),
-        prev_events: vec!["A".into()],
-        ..Default::default()
-    };
-    soft.soft_fail = true;
-    em.insert("B".into(), soft);
-
-    let mut rej = LeanEvent {
-        event_id: "R".into(),
-        event_type: "m.room.topic".into(),
-        state_key: Some(String::new()),
-        prev_events: vec!["B".into()],
-        ..Default::default()
-    };
-    rej.rejected = true;
-    em.insert("R".into(), rej);
-
-    em.insert(
-        "C".into(),
-        LeanEvent {
-            event_id: "C".into(),
-            event_type: "m.room.message".into(),
-            prev_events: vec!["R".into()],
-            ..Default::default()
-        },
+    let name_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.name"),
+        String::new(),
+    );
+    let topic_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.topic"),
+        String::new(),
     );
 
     let st = compute_state_at("C", &em, StateResVersion::V2).unwrap();
-    assert!(
-        !st.contains_key(&(
-            rezzy::basespec::event_types::EventType::from("m.room.name"),
-            String::new()
-        )),
-        "soft-failed state event leaked into resolved state"
+    assert_eq!(
+        st.get(&name_key),
+        Some(&"B".to_string()),
+        "soft-failed state event must participate in the resolved state"
     );
     assert!(
-        !st.contains_key(&(
-            rezzy::basespec::event_types::EventType::from("m.room.topic"),
-            String::new()
-        )),
-        "rejected state event leaked into resolved state"
+        !st.contains_key(&topic_key),
+        "rejected state event must be excluded from the resolved state"
     );
 
-    let _ = compute_state_at_streaming_optimized(&["C"], &em, StateResVersion::V2, |_, upd| {
-        assert!(matches!(upd, rezzy::StateUpdate::Unchanged { .. }),
-            "linear chain should emit only Unchanged updates once soft-fail/rejected state is dropped");
+    // compute_state_at_streaming (the batch/streaming path).
+    let mut streamed: Option<rezzy::SharedState<String, String>> = None;
+    compute_state_at_streaming(&["C"], &em, StateResVersion::V2, |_, state| {
+        streamed = Some(state.into_iter().collect());
     });
+    let streamed = streamed.unwrap();
+    assert_eq!(streamed.get(&name_key), Some(&"B".to_string()));
+    assert!(!streamed.contains_key(&topic_key));
+
+    // compute_state_at_streaming_optimized (the full-rebuild pipeline): B contributes,
+    // so a New update with state {name: B} must be emitted.
+    let mut saw_name_b = false;
+    let _ =
+        compute_state_at_streaming_optimized(&["B", "C"], &em, StateResVersion::V2, |_, upd| {
+            if let StateUpdate::New { state, .. } = upd {
+                saw_name_b = saw_name_b || state.contains_key(&name_key);
+                assert!(!state.contains_key(&topic_key));
+            }
+        });
+    assert!(
+        saw_name_b,
+        "optimized streaming must include the soft-failed name event"
+    );
 }
