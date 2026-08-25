@@ -306,12 +306,20 @@ fn reject_if_flagged_auth_state<
     event_type: &str,
     state_key: &str,
 ) -> Result<(), AuthError<Id>> {
+    // Only `rejected` disqualifies state as auth material. Soft-failed events
+    // are NOT rejected here: per the server-server spec's "Soft failure"
+    // section, "Soft failed events participate in state resolution as normal
+    // if further events are received which reference it" and "it is possible
+    // for such events to appear in the current state of the room" -- once a
+    // soft-failed event is legitimately resolved into state, later events are
+    // meant to be able to build on it like any other state, not be blanket
+    // rejected for doing so.
     if state
         .get_event(event_type, state_key)
-        .is_some_and(|ev| ev.rejected() || ev.soft_fail())
+        .is_some_and(EventLike::rejected)
     {
         return Err(AuthError::InvalidSyntax(alloc::format!(
-            "rejected or soft-failed auth state event {event_type}/{state_key} must not be used"
+            "rejected auth state event {event_type}/{state_key} must not be used"
         )));
     }
     Ok(())
@@ -2226,9 +2234,75 @@ mod tests {
         );
     }
 
-    /// Coverage: `reject_flagged_auth_state` - invite must reject flagged `m.room.join_rules`.
+    /// Coverage: `reject_flagged_auth_state` - invite must reject REJECTED
+    /// `m.room.join_rules` auth state.
     #[test]
-    fn test_invite_rejects_flagged_join_rules() {
+    fn test_invite_rejects_rejected_join_rules() {
+        let invite_event: LeanEvent<String> = LeanEvent {
+            event_id: "$invite".into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some("@target:x".into()),
+            sender: "@sender:x".into(),
+            content: json!({"membership": "invite"}),
+            ..Default::default()
+        };
+
+        let mut state = RoomState::new();
+        state.insert(
+            (M_ROOM_CREATE.into(), String::new()),
+            make_test_event("$create", M_ROOM_CREATE, "@creator:x", json!({})),
+        );
+        state.insert(
+            (M_ROOM_POWER_LEVELS.into(), String::new()),
+            make_test_event("$pl", M_ROOM_POWER_LEVELS, "@creator:x", json!({})),
+        );
+        state.insert(
+            (M_ROOM_MEMBER.into(), "@sender:x".into()),
+            make_test_event(
+                "$sender_join",
+                M_ROOM_MEMBER,
+                "@sender:x",
+                json!({"membership": "join"}),
+            ),
+        );
+        state.insert(
+            (M_ROOM_MEMBER.into(), "@target:x".into()),
+            make_test_event(
+                "$target_leave",
+                M_ROOM_MEMBER,
+                "@target:x",
+                json!({"membership": "leave"}),
+            ),
+        );
+        state.insert(
+            (M_ROOM_JOIN_RULES.into(), String::new()),
+            LeanEvent {
+                event_id: "$jr".into(),
+                event_type: M_ROOM_JOIN_RULES.into(),
+                sender: "@creator:x".into(),
+                content: json!({"join_rule": "invite"}),
+                rejected: true,
+                soft_fail: false,
+                ..Default::default()
+            },
+        );
+
+        let result = reject_flagged_auth_state(&invite_event, &state);
+        assert!(
+            matches!(result, Err(AuthError::InvalidSyntax(_))),
+            "Invite must reject rejected join_rules auth state: {result:?}"
+        );
+    }
+
+    /// Coverage: `reject_flagged_auth_state` must NOT reject SOFT-FAILED
+    /// auth state. Per the server-server spec's "Soft failure" section:
+    /// "Soft failed events participate in state resolution as normal if
+    /// further events are received which reference it" and "it is possible
+    /// for such events to appear in the current state of the room" -- once
+    /// legitimately resolved into state, a soft-failed event is meant to be
+    /// usable by later events like any other state, not blanket-rejected.
+    #[test]
+    fn test_invite_allows_soft_failed_join_rules() {
         let invite_event: LeanEvent<String> = LeanEvent {
             event_id: "$invite".into(),
             event_type: M_ROOM_MEMBER.into(),
@@ -2280,8 +2354,8 @@ mod tests {
 
         let result = reject_flagged_auth_state(&invite_event, &state);
         assert!(
-            matches!(result, Err(AuthError::InvalidSyntax(_))),
-            "Invite must reject flagged join_rules auth state: {result:?}"
+            result.is_ok(),
+            "Soft-failed join_rules auth state must be usable, per spec \"Soft failure\": {result:?}"
         );
     }
 
