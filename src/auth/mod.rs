@@ -1205,7 +1205,13 @@ where
     // chain that loops back on itself) leaves its members with a permanently
     // nonzero in-degree; append them in original order, matching the old
     // code's `unwrap_or(0)` fallback of just taking the next one when stuck.
-    let blocked_by: alloc::collections::BTreeMap<usize, usize> = pairs
+    //
+    // `crate::HashMap`, not `BTreeMap`: only point lookups happen below, its
+    // iteration order is never relied on, and the keys are plain `usize`
+    // positions -- so there's no reason to pay `BTreeMap`'s O(log n) per
+    // insert/lookup when O(1) amortized is available, which keeps the whole
+    // sort O(n) instead of O(n log n).
+    let blocked_by: crate::HashMap<usize, usize> = pairs
         .iter()
         .enumerate()
         .map(|(i, &(rp, _))| (rp, i))
