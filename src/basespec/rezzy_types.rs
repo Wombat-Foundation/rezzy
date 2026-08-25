@@ -2942,3 +2942,58 @@ mod redact_content_tests {
         assert_eq!(redacted, json!({ "parent": { "a": 1, "b": 2 } }));
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod index_by_event_id_tests {
+    use super::*;
+
+    /// `index_by_event_id` assigns indices in iteration order, keyed by each
+    /// event's `event_id`.
+    #[test]
+    fn test_index_by_event_id_assigns_indices_in_iteration_order() {
+        let events = [
+            LeanEvent {
+                event_id: "$c:example".into(),
+                ..Default::default()
+            },
+            LeanEvent {
+                event_id: "$a:example".into(),
+                ..Default::default()
+            },
+            LeanEvent {
+                event_id: "$b:example".into(),
+                ..Default::default()
+            },
+        ];
+        let index = index_by_event_id(events.iter());
+        assert_eq!(index.len(), 3);
+        assert_eq!(index.get("$c:example"), Some(&0));
+        assert_eq!(index.get("$a:example"), Some(&1));
+        assert_eq!(index.get("$b:example"), Some(&2));
+    }
+
+    /// Duplicate `event_id`s collapse: the later occurrence wins, matching
+    /// the insert-based build the formatter and stress test rely on.
+    #[test]
+    fn test_index_by_event_id_keeps_last_duplicate_index() {
+        let events = [
+            LeanEvent {
+                event_id: "$a:example".into(),
+                ..Default::default()
+            },
+            LeanEvent {
+                event_id: "$a:example".into(),
+                ..Default::default()
+            },
+            LeanEvent {
+                event_id: "$b:example".into(),
+                ..Default::default()
+            },
+        ];
+        let index = index_by_event_id(events.iter());
+        assert_eq!(index.len(), 2);
+        assert_eq!(index.get("$a:example"), Some(&1));
+        assert_eq!(index.get("$b:example"), Some(&2));
+    }
+}
