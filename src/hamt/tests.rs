@@ -1357,6 +1357,44 @@ impl HamtCodec for CollidingKey {
     }
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct InMemoryOnlyKey(u64);
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct InMemoryOnlyValue(u64);
+
+#[test]
+fn test_in_memory_mutation_does_not_require_hamt_codec() {
+    let structural_key = b"in_memory_only_mutation";
+    let root = build_hamt(
+        structural_key,
+        vec![(InMemoryOnlyKey(1), InMemoryOnlyValue(10))],
+    )
+    .expect("build root");
+    let mut no_resolver =
+        |_hash: &StructuralHash| -> Result<Arc<HamtNode<InMemoryOnlyKey, InMemoryOnlyValue>>, ()> {
+            panic!("resident mutation must not resolve a lazy node")
+        };
+
+    let (root, displaced) = insert(
+        &root,
+        structural_key,
+        InMemoryOnlyKey(2),
+        InMemoryOnlyValue(20),
+        &mut no_resolver,
+    )
+    .expect("insert without persistence codec");
+    assert_eq!(displaced, None);
+
+    let (root, removed) = remove(&root, structural_key, &InMemoryOnlyKey(1), &mut no_resolver)
+        .expect("remove without persistence codec");
+    assert_eq!(removed, Some(InMemoryOnlyValue(10)));
+    assert_eq!(
+        root.get(structural_key, &InMemoryOnlyKey(2)),
+        Some(&InMemoryOnlyValue(20))
+    );
+}
+
 #[test]
 fn test_build_hamt_with_key_hash_reports_max_depth_exhaustion() {
     let key = b"dummy_server_key";
@@ -1440,11 +1478,12 @@ fn test_insert_node_with_ctx_guards_max_depth_reentry() {
         unreachable!("resolver should not be called at a depth-exhausted guard")
     };
     let mut key_hash_fn = |k: &u64| key_path_hash(key, k);
+    let mut sink = |_: &Arc<HamtNode<u64, u64>>| {};
     let mut ctx = InsertCtx {
         structural_key: key,
         key_hash: &mut key_hash_fn,
         resolver: &mut resolver,
-        sink: None,
+        sink: &mut sink,
     };
 
     let result = insert_node_with_ctx(&node, 2_u64, 20_u64, [0u8; 16], HAMT_MAX_DEPTH, &mut ctx);
@@ -1477,11 +1516,12 @@ fn test_remove_node_with_ctx_guards_max_depth_entry() {
     let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
         unreachable!("entry guard returns before any resolver call")
     };
+    let mut sink = |_: &Arc<HamtNode<u64, u64>>| {};
 
     let mut ctx = crate::hamt::RemoveCtx {
         structural_key: key,
         resolver: &mut resolver,
-        sink: None,
+        sink: &mut sink,
     };
 
     let (outcome, removed) =
@@ -1518,12 +1558,13 @@ fn test_remove_node_with_ctx_guards_max_depth_reentry() {
     let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
         unreachable!("resolved child is never resolved lazily")
     };
+    let mut sink = |_: &Arc<HamtNode<u64, u64>>| {};
 
     let depth = HAMT_MAX_DEPTH - 1;
     let mut ctx = crate::hamt::RemoveCtx {
         structural_key: key,
         resolver: &mut resolver,
-        sink: None,
+        sink: &mut sink,
     };
     let (outcome, removed) = remove_node_with_ctx(&node, &2_u64, &[0u8; 16], depth, &mut ctx)
         .expect("re-entry guard returns Ok, not Err");
@@ -4733,14 +4774,16 @@ fn test_persist_chain_refcount_closure_with_retirement() {
 
     // Linearly retire root 0 (superseded by 1) and root 1 (superseded by 2)
     let delta_1 = diff_node_hashes(&all_roots[0], &all_roots[1], &mut no_resolver).expect("diff 1");
-    table
+    let mut zeroed = table
         .apply_superseded(&delta_1.superseded_node_hashes)
         .expect("apply superseded 1");
 
     let delta_2 = diff_node_hashes(&all_roots[1], &all_roots[2], &mut no_resolver).expect("diff 2");
-    table
-        .apply_superseded(&delta_2.superseded_node_hashes)
-        .expect("apply superseded 2");
+    zeroed.extend(
+        table
+            .apply_superseded(&delta_2.superseded_node_hashes)
+            .expect("apply superseded 2"),
+    );
 
     // Surviving roots: [2, 3, 4, 5]
     let surviving_roots = vec![
@@ -4768,14 +4811,17 @@ fn test_persist_chain_refcount_closure_with_retirement() {
         );
     }
 
-    // Invariant 2: Any hash that reached count 0 MUST NOT be reachable from surviving roots
-    for hash in &audit.unreachable {
-        if table.count(hash) == 0 {
-            assert!(
-                !audit.reachable.contains(hash),
-                "zeroed node {hash:?} must be unreachable from surviving roots"
-            );
-        }
+    // Invariant 2: Every hash reported as a deletion candidate MUST be absent
+    // from the full mark of all retained roots.
+    assert!(
+        !zeroed.is_empty(),
+        "fixture must actually retire some nodes"
+    );
+    for hash in zeroed {
+        assert!(
+            audit.unreachable.contains(&hash),
+            "zeroed node {hash:?} must be unreachable from every retained root"
+        );
     }
 }
 

@@ -903,31 +903,17 @@ where
     })
 }
 
-fn emit_node_to_sink<K: HamtCodec + Clone, V: HamtCodec + Clone>(
-    node: &Arc<HamtNode<K, V>>,
-    sink: &mut Option<&mut Vec<(StructuralHash, Vec<u8>)>>,
-) {
-    if let Some(s) = sink {
-        s.push((
-            node.structural_hash,
-            PersistedInternalNode::from(node.as_ref()).encode_v1(),
-        ));
-    }
+type MutationSink<'a, K, V> = dyn FnMut(&Arc<HamtNode<K, V>>) + 'a;
+
+fn emit_node_to_sink<K, V>(node: &Arc<HamtNode<K, V>>, sink: &mut MutationSink<'_, K, V>) {
+    sink(node);
 }
 
-fn emit_split_nodes_to_sink<K: HamtCodec + Clone, V: HamtCodec + Clone>(
-    node: &Arc<HamtNode<K, V>>,
-    sink: &mut Option<&mut Vec<(StructuralHash, Vec<u8>)>>,
-) {
-    if let Some(s) = sink {
-        s.push((
-            node.structural_hash,
-            PersistedInternalNode::from(node.as_ref()).encode_v1(),
-        ));
-        for child in &node.children {
-            if let NodeRef::Resolved(child_node) = child {
-                emit_split_nodes_to_sink(child_node, &mut Some(*s));
-            }
+fn emit_split_nodes_to_sink<K, V>(node: &Arc<HamtNode<K, V>>, sink: &mut MutationSink<'_, K, V>) {
+    sink(node);
+    for child in &node.children {
+        if let NodeRef::Resolved(child_node) = child {
+            emit_split_nodes_to_sink(child_node, sink);
         }
     }
 }
@@ -942,25 +928,26 @@ fn insert_node<K, V, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: Hash + Eq + Clone,
+    V: Hash + Clone,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     let mut key_hash = |k: &K| key_path_hash(structural_key, k);
+    let mut sink = |_: &Arc<HamtNode<K, V>>| {};
     let mut ctx = InsertCtx {
         structural_key,
         key_hash: &mut key_hash,
         resolver,
-        sink: None,
+        sink: &mut sink,
     };
     insert_node_with_ctx(node, key, value, *path_hash, depth, &mut ctx)
 }
 
-struct InsertCtx<'a, KeyHash, F> {
+struct InsertCtx<'a, K, V, KeyHash, F> {
     structural_key: &'a [u8],
     key_hash: &'a mut KeyHash,
     resolver: &'a mut F,
-    sink: Option<&'a mut Vec<(StructuralHash, Vec<u8>)>>,
+    sink: &'a mut MutationSink<'a, K, V>,
 }
 
 struct InsertStep<K, V> {
@@ -977,11 +964,11 @@ fn insert_node_with_ctx<K, V, KeyHash, F, E>(
     value: V,
     path_hash: StructuralHash,
     depth: usize,
-    ctx: &mut InsertCtx<'_, KeyHash, F>,
+    ctx: &mut InsertCtx<'_, K, V, KeyHash, F>,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: Hash + Eq + Clone,
+    V: Hash + Clone,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -1015,7 +1002,7 @@ where
                 leaves,
                 node.children.clone(),
             );
-            emit_node_to_sink(&new_node, &mut ctx.sink);
+            emit_node_to_sink(&new_node, ctx.sink);
             return Ok((new_node, Some(old_value)));
         }
 
@@ -1038,7 +1025,7 @@ where
         leaves,
         node.children.clone(),
     );
-    emit_node_to_sink(&new_node, &mut ctx.sink);
+    emit_node_to_sink(&new_node, ctx.sink);
     Ok((new_node, None))
 }
 
@@ -1047,11 +1034,11 @@ fn insert_into_leaf_slot<K, V, KeyHash, F, E>(
     structural_key: &[u8],
     step: InsertStep<K, V>,
     next_depth: usize,
-    ctx: &mut InsertCtx<'_, KeyHash, F>,
+    ctx: &mut InsertCtx<'_, K, V, KeyHash, F>,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: Hash + Eq + Clone,
+    V: Hash + Clone,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -1079,7 +1066,7 @@ where
         },
     ];
     let child = build_node(structural_key, split_entries, next_depth)?;
-    emit_split_nodes_to_sink(&child, &mut ctx.sink);
+    emit_split_nodes_to_sink(&child, ctx.sink);
 
     let mut leaves = node.leaves.clone();
     leaves.remove(idx);
@@ -1089,7 +1076,7 @@ where
     let mut children = node.children.clone();
     children.insert(child_idx, NodeRef::Resolved(child));
     let new_node = rebuild_node(structural_key, new_datamap, new_nodemap, leaves, children);
-    emit_node_to_sink(&new_node, &mut ctx.sink);
+    emit_node_to_sink(&new_node, ctx.sink);
     Ok((new_node, None))
 }
 
@@ -1098,11 +1085,11 @@ fn insert_into_child_slot<K, V, KeyHash, F, E>(
     structural_key: &[u8],
     step: InsertStep<K, V>,
     next_depth: usize,
-    ctx: &mut InsertCtx<'_, KeyHash, F>,
+    ctx: &mut InsertCtx<'_, K, V, KeyHash, F>,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: Hash + Eq + Clone,
+    V: Hash + Clone,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -1129,7 +1116,7 @@ where
         node.leaves.clone(),
         children,
     );
-    emit_node_to_sink(&new_node, &mut ctx.sink);
+    emit_node_to_sink(&new_node, ctx.sink);
     Ok((new_node, old_value))
 }
 
@@ -1157,8 +1144,8 @@ pub fn insert<K, V, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: Hash + Eq + Clone,
+    V: Hash + Clone,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     let path_hash = key_path_hash(structural_key, &key);
@@ -1189,17 +1176,18 @@ pub fn insert_with_key_hash<K, V, KeyHash, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: Hash + Eq + Clone,
+    V: Hash + Clone,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     let path_hash = key_hash(&key);
+    let mut sink = |_: &Arc<HamtNode<K, V>>| {};
     let mut ctx = InsertCtx {
         structural_key,
         key_hash: &mut key_hash,
         resolver,
-        sink: None,
+        sink: &mut sink,
     };
     insert_node_with_ctx(node, key, value, path_hash, 0, &mut ctx)
 }
@@ -1252,10 +1240,10 @@ where
     ))
 }
 
-struct RemoveCtx<'a, F> {
+struct RemoveCtx<'a, K, V, F> {
     structural_key: &'a [u8],
     resolver: &'a mut F,
-    sink: Option<&'a mut Vec<(StructuralHash, Vec<u8>)>>,
+    sink: &'a mut MutationSink<'a, K, V>,
 }
 
 /// Removes a key from a HAMT via `O(log S)` path-copying, without
@@ -1282,23 +1270,26 @@ pub fn remove<K, V, Q, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Borrow<Q> + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: Hash + Eq + Borrow<Q> + Clone,
+    V: Hash + Clone,
     Q: Hash + Eq + ?Sized,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     let path_hash = key_path_hash(structural_key, key);
-    let mut ctx = RemoveCtx {
-        structural_key,
-        resolver,
-        sink: None,
+    let mut sink = |_: &Arc<HamtNode<K, V>>| {};
+    let (outcome, old_value) = {
+        let mut ctx = RemoveCtx {
+            structural_key,
+            resolver,
+            sink: &mut sink,
+        };
+        remove_node_with_ctx(node, key, &path_hash, 0, &mut ctx)?
     };
-    let (outcome, old_value) = remove_node_with_ctx(node, key, &path_hash, 0, &mut ctx)?;
     let new_root = finalize_remove_root(
         structural_key,
         outcome,
         |leaf_key| bucket_index(&key_path_hash(structural_key, leaf_key), 0),
-        None,
+        &mut sink,
     );
     Ok((new_root, old_value))
 }
@@ -1308,11 +1299,11 @@ fn remove_node_with_ctx<K, V, Q, F, E>(
     key: &Q,
     path_hash: &StructuralHash,
     depth: usize,
-    ctx: &mut RemoveCtx<'_, F>,
+    ctx: &mut RemoveCtx<'_, K, V, F>,
 ) -> RemoveStepResult<K, V, E>
 where
-    K: Hash + Eq + Borrow<Q> + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: Hash + Eq + Borrow<Q> + Clone,
+    V: Hash + Clone,
     Q: Eq + ?Sized,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -1342,7 +1333,7 @@ where
             node.children.clone(),
         );
         if let RemoveOutcome::Node(ref new_node) = outcome {
-            emit_node_to_sink(new_node, &mut ctx.sink);
+            emit_node_to_sink(new_node, ctx.sink);
         }
         return Ok((outcome, Some(old_value)));
     }
@@ -1379,7 +1370,7 @@ where
                 children,
             );
             if let RemoveOutcome::Node(ref new_node) = outcome {
-                emit_node_to_sink(new_node, &mut ctx.sink);
+                emit_node_to_sink(new_node, ctx.sink);
             }
             Ok((outcome, old_value))
         }
@@ -1394,7 +1385,7 @@ where
             let outcome =
                 finalize_after_removal(structural_key, new_datamap, new_nodemap, leaves, children);
             if let RemoveOutcome::Node(ref new_node) = outcome {
-                emit_node_to_sink(new_node, &mut ctx.sink);
+                emit_node_to_sink(new_node, ctx.sink);
             }
             Ok((outcome, old_value))
         }
@@ -1408,7 +1399,7 @@ where
                 node.leaves.clone(),
                 children,
             );
-            emit_node_to_sink(&new_node, &mut ctx.sink);
+            emit_node_to_sink(&new_node, ctx.sink);
             Ok((RemoveOutcome::Node(new_node), old_value))
         }
     }
@@ -1418,24 +1409,24 @@ fn finalize_remove_root<K, V, F>(
     structural_key: &[u8],
     outcome: RemoveOutcome<K, V>,
     mut root_slot_for_leaf: F,
-    mut sink: Option<&mut Vec<(StructuralHash, Vec<u8>)>>,
+    sink: &mut MutationSink<'_, K, V>,
 ) -> Arc<HamtNode<K, V>>
 where
-    K: Hash + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: Hash + Clone,
+    V: Hash + Clone,
     F: FnMut(&K) -> usize,
 {
     match outcome {
         RemoveOutcome::Empty => {
             let root = rebuild_node(structural_key, 0, 0, Vec::new(), Vec::new());
-            emit_node_to_sink(&root, &mut sink);
+            emit_node_to_sink(&root, sink);
             root
         }
         RemoveOutcome::Leaf(leaf_key, leaf_value) => {
             let root_slot = root_slot_for_leaf(&leaf_key);
             let leaves = vec![(leaf_key, leaf_value)];
             let root = rebuild_node(structural_key, 1_u32 << root_slot, 0, leaves, Vec::new());
-            emit_node_to_sink(&root, &mut sink);
+            emit_node_to_sink(&root, sink);
             root
         }
         RemoveOutcome::Node(new_root) => new_root,
@@ -1467,23 +1458,26 @@ pub fn remove_with_key_hash<K, V, KeyHash, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: Hash + Eq + Clone,
+    V: Hash + Clone,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     let path_hash = key_hash(key);
-    let mut ctx = RemoveCtx {
-        structural_key,
-        resolver,
-        sink: None,
+    let mut sink = |_: &Arc<HamtNode<K, V>>| {};
+    let (outcome, old_value) = {
+        let mut ctx = RemoveCtx {
+            structural_key,
+            resolver,
+            sink: &mut sink,
+        };
+        remove_node_with_ctx(node, key, &path_hash, 0, &mut ctx)?
     };
-    let (outcome, old_value) = remove_node_with_ctx(node, key, &path_hash, 0, &mut ctx)?;
     let new_root = finalize_remove_root(
         structural_key,
         outcome,
         |leaf_key| bucket_index(&key_hash(leaf_key), 0),
-        None,
+        &mut sink,
     );
     Ok((new_root, old_value))
 }
@@ -1537,31 +1531,41 @@ where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     let mut created = Vec::new();
-    let (new_root, displaced) = if let Some(val) = value {
-        let path_hash = key_path_hash(structural_key, &key);
-        let mut key_hash = |k: &K| key_path_hash(structural_key, k);
-        let mut ctx = InsertCtx {
-            structural_key,
-            key_hash: &mut key_hash,
-            resolver,
-            sink: Some(&mut created),
+    let (new_root, displaced) = {
+        let mut sink = |node: &Arc<HamtNode<K, V>>| {
+            created.push((
+                node.structural_hash,
+                PersistedInternalNode::from(node.as_ref()).encode_v1(),
+            ));
         };
-        insert_node_with_ctx(prev_root, key, val, path_hash, 0, &mut ctx)?
-    } else {
-        let path_hash = key_path_hash(structural_key, &key);
-        let mut ctx = RemoveCtx {
-            structural_key,
-            resolver,
-            sink: Some(&mut created),
-        };
-        let (outcome, old_value) = remove_node_with_ctx(prev_root, &key, &path_hash, 0, &mut ctx)?;
-        let new_root = finalize_remove_root(
-            structural_key,
-            outcome,
-            |leaf_key| bucket_index(&key_path_hash(structural_key, leaf_key), 0),
-            ctx.sink.as_deref_mut(),
-        );
-        (new_root, old_value)
+        if let Some(val) = value {
+            let path_hash = key_path_hash(structural_key, &key);
+            let mut key_hash = |k: &K| key_path_hash(structural_key, k);
+            let mut ctx = InsertCtx {
+                structural_key,
+                key_hash: &mut key_hash,
+                resolver,
+                sink: &mut sink,
+            };
+            insert_node_with_ctx(prev_root, key, val, path_hash, 0, &mut ctx)?
+        } else {
+            let path_hash = key_path_hash(structural_key, &key);
+            let (outcome, old_value) = {
+                let mut ctx = RemoveCtx {
+                    structural_key,
+                    resolver,
+                    sink: &mut sink,
+                };
+                remove_node_with_ctx(prev_root, &key, &path_hash, 0, &mut ctx)?
+            };
+            let new_root = finalize_remove_root(
+                structural_key,
+                outcome,
+                |leaf_key| bucket_index(&key_path_hash(structural_key, leaf_key), 0),
+                &mut sink,
+            );
+            (new_root, old_value)
+        }
     };
 
     if new_root.structural_hash == prev_root.structural_hash {
