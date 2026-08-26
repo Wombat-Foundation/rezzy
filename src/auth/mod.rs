@@ -94,10 +94,7 @@ pub enum AuthError<Id = String> {
         actual: Option<String>,
     },
     /// MSC4242 Rule 4.3: an auth event derived from state was rejected during PDU receipt.
-    RejectedAuthEvent {
-        event_id: Id,
-        auth_event_id: Id,
-    },
+    RejectedAuthEvent { event_id: Id, auth_event_id: Id },
 }
 
 impl<Id: fmt::Display> fmt::Display for AuthError<Id> {

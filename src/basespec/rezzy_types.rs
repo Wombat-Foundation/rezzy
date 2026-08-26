@@ -2433,7 +2433,13 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         if self.auth_events.len() > 10 {
             return Err("auth_events exceeds maximum allowed length of 10");
         }
-        if self.prev_state_events.len() > crate::basespec::event_types::MAX_PREV_STATE_EVENTS {
+        // The `prev_state_events` fanout cap is an MSC4242 (State DAG) rule that
+        // applies only to V2.2 rooms; the field is meaningless elsewhere.
+        if matches!(
+            StateResVersion::from_room_version(room_version),
+            Some(StateResVersion::V2_2)
+        ) && self.prev_state_events.len() > crate::basespec::event_types::MAX_PREV_STATE_EVENTS
+        {
             return Err("prev_state_events exceeds maximum allowed length of 20");
         }
         if self.event_type.is_empty() {

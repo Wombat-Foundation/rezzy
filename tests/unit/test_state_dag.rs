@@ -150,6 +150,27 @@ fn test_validation_fanout_limit_exceeded() {
 }
 
 #[test]
+fn test_prev_state_events_fanout_limit_only_applies_to_v22() {
+    // The 20-event `prev_state_events` cap is an MSC4242 rule that only
+    // applies to V2.2 rooms; non-V2.2 events are not subject to it.
+    let mut ev = make_state_event(
+        "$e",
+        M_ROOM_MEMBER,
+        "@a:example.com",
+        "@a:example.com",
+        vec![],
+        json!({ "membership": "join" }),
+        None,
+    );
+    ev.prev_state_events = (0..21).map(|i| format!("$p{i}")).collect();
+
+    // Non-V2.2 room (v11): limit not enforced.
+    assert!(ev.validate_syntactic("11").is_ok());
+    // V2.2 (MSC4242): limit enforced.
+    assert!(ev.validate_syntactic("org.matrix.msc4242.12").is_err());
+}
+
+#[test]
 fn test_validation_rejects_non_state_event_in_prev_state_events() {
     let mut events = HashMap::new();
     let msg_ev = make_timeline_event(

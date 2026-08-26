@@ -640,7 +640,9 @@ where
         let mut state_before: SharedState<Id, K> = if prev_states.is_empty() {
             SharedState::new()
         } else if prev_states.len() == 1 {
-            prev_states.pop().unwrap_or_default()
+            // `prev_states` only ever holds `Some` parent states, so the sole
+            // element is guaranteed present (index 0 is valid for len == 1).
+            prev_states.remove(0)
         } else {
             resolve_merge_fast_path(
                 &prev_states,
@@ -682,7 +684,9 @@ where
     if parent_states.is_empty() {
         Ok(SharedState::new())
     } else if parent_states.len() == 1 {
-        Ok(parent_states.pop().unwrap_or_default())
+        // `parent_states` only ever holds `Some` states (see the loop above), so
+        // the sole element is guaranteed present (index 0 is valid for len == 1).
+        Ok(parent_states.remove(0))
     } else {
         Ok(resolve_merge_fast_path(
             &parent_states,
