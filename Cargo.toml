@@ -82,13 +82,9 @@ cli = [
     "dep:zeroize",
 ]
 regen = ["std"]
-# Event signature verification. `signing` defaults to the RFC-8032 (ed25519-
-# dalek) backend, which shares rezzy's sha2 0.10 (no duplicate sha2 crate).
-# The consensus-strict (ZIP-215, ed25519-consensus) backend is available via
-# `signing-consensus` for callers that need Synapse/Dendrite parity; it pulls
-# its own sha2 0.9 chain.
+# Event signature verification uses the RFC-8032 (ed25519-dalek) backend,
+# which shares rezzy's sha2 0.10 (no duplicate production hash crate).
 signing = ["signing-dalek"]
-signing-consensus = ["alloc", "dep:ed25519-consensus"]
 signing-dalek = ["alloc", "dep:ed25519-dalek"]
 # Fast JSON parsing (simd-json) — opt-in. simd-json only wins on LARGE single
 # JSON documents; at PDU scale serde_json measures ~1.1x faster (small PDUs,
@@ -118,7 +114,6 @@ base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 bincode = { version = "1", optional = true }
 blake2 = { version = "0.10", default-features = false }
 clap = { version = "=4.5.48", optional = true, features = ["derive", "env"] }
-ed25519-consensus = { version = "2.1", optional = true, default-features = false }
 ed25519-dalek = { version = "2", optional = true, default-features = false, features = [
     "std",
     "batch",
@@ -157,6 +152,8 @@ ureq = { version = "2.9", optional = true, default-features = false, features = 
 zeroize = { version = "=1.8.2", optional = true, default-features = false }
 
 [dev-dependencies]
+ed25519-consensus = { version = "2.1", default-features = false, features = ["std"] }
+rand_08 = { package = "rand", version = "0.8" }
 similar = "2.7.0"
 
 [[example]]
@@ -175,6 +172,13 @@ path = "benches/signature_verify.rs"
 harness = false
 test = false
 required-features = ["signing", "mock-ruma", "simd-json-serde"]
+
+[[bench]]
+name = "ed25519_backends"
+path = "benches/ed25519_backends.rs"
+harness = false
+test = false
+required-features = ["signing-dalek"]
 
 [[test]]
 name = "unit"

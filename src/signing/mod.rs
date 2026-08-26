@@ -1,16 +1,12 @@
 //! Event signature verification (Ed25519).
 //!
 //! rezzy's core stays crypto-free: graph/state resolution carries no key
-//! machinery. Enabling a `signing` feature pulls in one of two Ed25519
-//! backends behind a single [`SignatureVerifier`] trait:
+//! machinery. Enabling the `signing` feature pulls in the Ed25519 backend
+//! behind a [`SignatureVerifier`] trait:
 //!
 //! - `signing` (default) / `signing-dalek` — [`ed25519_dalek`] (RFC 8032
 //!   strict). Shares rezzy's `sha2 0.10`, so no duplicate hash crate is
 //!   pulled.
-//! - `signing-consensus` — `ed25519_consensus` (ZIP-215). Matches the
-//!   verification criteria of libsodium (Synapse) and `crypto/ed25519`
-//!   (Dendrite), eliminating cross-implementation signature desyncs; use this
-//!   for federation-critical paths. It pulls its own `sha2 0.9` chain.
 //!
 //! Both backends verify over the canonical redacted JSON produced by
 //! [`crate::basespec::rezzy_types::canonical_redacted_json`] — the same
@@ -41,11 +37,6 @@ use alloc::string::ToString;
 use serde_json::Value;
 
 use crate::basespec::rezzy_types::{canonical_redacted_json, EventVerifier};
-
-#[cfg(feature = "signing-consensus")]
-mod consensus;
-#[cfg(feature = "signing-consensus")]
-pub use consensus::ConsensusVerifier;
 
 #[cfg(feature = "signing-dalek")]
 mod dalek;
@@ -194,180 +185,6 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
             .get(event_id)
             .ok_or_else(|| alloc::format!("unknown event {}", event_id.as_ref()))?;
         crate::basespec::rezzy_types::verify_content_hash(value, &self.room_version)
-    }
-}
-
-#[cfg(all(test, feature = "signing-consensus"))]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
-    use super::*;
-    use base64::Engine as _;
-    use ed25519_consensus::SigningKey;
-    use serde_json::json;
-
-    /// Signs `value`'s canonical redacted JSON and embeds the base64 signature
-    /// under `signatures[server][key_id]`, returning the event ready to verify.
-    fn signed_event(
-        mut value: Value,
-        room_version: &str,
-        server: &str,
-        key_id: &str,
-        sk: &SigningKey,
-    ) -> Value {
-        let canonical = canonical_redacted_json(&value, room_version);
-        let sig = sk.sign(canonical.as_bytes());
-        let sig_b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(sig.to_bytes());
-        let obj = value.as_object_mut().expect("event is an object");
-        obj.entry("signatures")
-            .or_insert_with(|| json!({}))
-            .as_object_mut()
-            .expect("signatures is an object")
-            .insert(server.to_string(), json!({ key_id: sig_b64 }));
-        value
-    }
-
-    #[test]
-    fn consensus_verifies_round_trip() {
-        let sk = SigningKey::from([7_u8; 32]);
-        let vk = sk.verification_key();
-
-        let raw = signed_event(
-            json!({
-                "type": "m.room.message",
-                "room_id": "!r:example.com",
-                "sender": "@a:example.com",
-                "origin_server_ts": 1,
-                "content": { "body": "hi" },
-            }),
-            "10",
-            "example.com",
-            "ed25519:0",
-            &sk,
-        );
-
-        let mut keys = ConsensusVerifier::new();
-        keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
-            .unwrap();
-        verify_event_signatures(&raw, "10", &keys).unwrap();
-    }
-
-    #[test]
-    fn consensus_rejects_tampered_content() {
-        let sk = SigningKey::from([8_u8; 32]);
-        let vk = sk.verification_key();
-
-        let mut raw = signed_event(
-            json!({
-                "type": "m.room.message",
-                "room_id": "!r:example.com",
-                "sender": "@a:example.com",
-                "origin_server_ts": 1,
-                "content": { "body": "hi" },
-            }),
-            "10",
-            "example.com",
-            "ed25519:0",
-            &sk,
-        );
-        // Tamper with a redaction-preserved top-level field after signing:
-        // the signature must no longer verify.
-        raw["origin_server_ts"] = json!(999);
-
-        let mut keys = ConsensusVerifier::new();
-        keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
-            .unwrap();
-        assert!(verify_event_signatures(&raw, "10", &keys).is_err());
-    }
-
-    #[test]
-    fn unknown_key_is_not_attempted() {
-        let sk = SigningKey::from([9_u8; 32]);
-        let raw = signed_event(
-            json!({
-                "type": "m.room.message",
-                "room_id": "!r:example.com",
-                "sender": "@a:example.com",
-                "origin_server_ts": 1,
-                "content": { "body": "hi" },
-            }),
-            "10",
-            "example.com",
-            "ed25519:0",
-            &sk,
-        );
-        // No key registered: verification must report no supported signatures.
-        let keys = ConsensusVerifier::new();
-        assert!(verify_event_signatures(&raw, "10", &keys).is_err());
-    }
-
-    #[test]
-    fn msc4242_prev_state_events_survive_signing() {
-        // Regression: the MSC4242 `prev_state_events` redaction bug made a
-        // signed event fail verification because redaction dropped the field
-        // the signature covered. With the fix, prev_state_events is preserved
-        // in the canonical input, so a signature covering it verifies.
-        let sk = SigningKey::from([10_u8; 32]);
-        let vk = sk.verification_key();
-
-        let raw = signed_event(
-            json!({
-                "type": "m.room.member",
-                "room_id": "!r:example.com",
-                "sender": "@a:example.com",
-                "state_key": "@a:example.com",
-                "origin_server_ts": 1,
-                "prev_state_events": ["$B"],
-                "content": { "membership": "join" },
-            }),
-            "org.matrix.msc4242.12",
-            "example.com",
-            "ed25519:0",
-            &sk,
-        );
-
-        // The canonical signed input must contain prev_state_events.
-        let canonical = canonical_redacted_json(&raw, "org.matrix.msc4242.12");
-        assert!(canonical.contains("prev_state_events"));
-
-        let mut keys = ConsensusVerifier::new();
-        keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
-            .unwrap();
-        verify_event_signatures(&raw, "org.matrix.msc4242.12", &keys).unwrap();
-    }
-
-    #[test]
-    fn native_verifier_implements_event_verifier() {
-        let sk = SigningKey::from([11_u8; 32]);
-        let vk = sk.verification_key();
-
-        let event_id = "$test_event";
-        let raw = signed_event(
-            json!({
-                "type": "m.room.member",
-                "room_id": "!r:example.com",
-                "sender": "@a:example.com",
-                "state_key": "@a:example.com",
-                "origin_server_ts": 1,
-                "content": { "membership": "join" },
-                "hashes": { "sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
-            }),
-            "10",
-            "example.com",
-            "ed25519:0",
-            &sk,
-        );
-
-        let mut keys = ConsensusVerifier::new();
-        keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
-            .unwrap();
-
-        let mut events = crate::HashMap::new();
-        events.insert(event_id.to_string(), raw);
-        let verifier = NativeVerifier::new(events, "10", keys);
-
-        // signatures pass; content-hash is fake so that specific check fails.
-        EventVerifier::verify_signatures(&verifier, &event_id.to_string()).unwrap();
-        assert!(EventVerifier::verify_content_hash(&verifier, &event_id.to_string()).is_err());
     }
 }
 

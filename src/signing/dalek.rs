@@ -12,8 +12,7 @@ use super::SignatureVerifier;
 
 /// Verifies Ed25519 signatures with [`ed25519_dalek`] (RFC 8032 strict).
 ///
-/// Prefer `ConsensusVerifier` (ZIP-215) for federation workloads; this
-/// backend is for callers with an existing dalek keyring.
+/// This backend is suitable for callers with an existing dalek keyring.
 #[derive(Default)]
 pub struct DalekVerifier {
     keys: BTreeMap<(String, String), VerifyingKey>,

@@ -1,6 +1,6 @@
 //! Head-to-head event signature verification: ruma's `verify_event`
 //! (redaction + content-hash + ed25519-dalek) vs rezzy's native pipeline
-//! (`canonical_redacted_json` + `verify_content_hash` + ed25519-consensus).
+//! (`canonical_redacted_json` + `verify_content_hash` + ed25519-dalek).
 //!
 //! The Ed25519 curve math is identical underneath, so this measures the
 //! redaction/canonicalization + JSON-manipulation + pipeline overhead —
