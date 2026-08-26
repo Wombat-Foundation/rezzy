@@ -162,6 +162,31 @@ impl HamtCodec for Vec<u8> {
     }
 }
 
+impl<A: HamtCodec, B: HamtCodec> HamtCodec for (A, B) {
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        self.0.encode_hamt(out);
+        self.1.encode_hamt(out);
+    }
+
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        let a = A::decode_hamt(input, cursor)?;
+        let b = B::decode_hamt(input, cursor)?;
+        Ok((a, b))
+    }
+}
+
+impl HamtCodec for crate::basespec::event_types::EventType {
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        let s = alloc::string::String::from(self.as_str());
+        s.encode_hamt(out);
+    }
+
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        let s = String::decode_hamt(input, cursor)?;
+        Ok(crate::basespec::event_types::EventType::from(s.as_str()))
+    }
+}
+
 /// A representation of an internal node that is safe to persist to disk.
 ///
 /// Leaves are stored inline as `(K, V)` pairs in datamap order, while child
@@ -267,6 +292,10 @@ where
                 .try_into()
                 .map_err(|_| "Buffer too short for nodemap")?,
         );
+
+        if (datamap & nodemap) != 0 {
+            return Err("Datamap and nodemap overlap: node is corrupt");
+        }
 
         let mut structural_hash = [0u8; 16];
         structural_hash.copy_from_slice(&buf[9..25]);

@@ -5,6 +5,7 @@ edition = "2021"
 rust-version = "1.81"
 resolver = "2"
 autobins = false
+autobenches = false
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
 description = "Lightweight and formally verified: State Res v1, v2, and v2.1 reference implementations in Rust."
 keywords = ["matrix", "state-resolution", "federation", "verification"]
@@ -162,62 +163,74 @@ similar = "2.7.0"
 [[bench]]
 name = "reconcile"
 harness = false
+test = false
 
 [[bench]]
 name = "signature_verify"
 path = "benches/signature_verify.rs"
 harness = false
+test = false
 required-features = ["signing", "mock-ruma", "simd-json-serde"]
 
 [[bench]]
 name = "resolve"
 path = "benches/resolve.rs"
 harness = false
+test = false
 
 [[bench]]
 name = "state_backend"
 path = "benches/state_backend.rs"
 harness = false
+test = false
 
 [[bench]]
 name = "mainline_cache"
 path = "benches/mainline_cache.rs"
 harness = false
+test = false
 
 [[bench]]
 name = "interned_key"
 path = "benches/interned_key.rs"
 harness = false
+test = false
 
 [[bench]]
 name = "interned_lookup"
 path = "benches/interned_lookup.rs"
 harness = false
+test = false
 
 [[bench]]
 name = "persistence"
 path = "benches/persistence.rs"
 harness = false
+test = false
 
 [[bench]]
 name = "lthash"
 path = "benches/lthash.rs"
 harness = false
+test = false
 
 [[bench]]
 name = "state_groups"
 path = "benches/state_groups.rs"
 harness = false
+test = false
 
 [[bench]]
 name = "cumulative_rebuild"
 path = "benches/cumulative_rebuild.rs"
 harness = false
+test = false
 
 [[bench]]
 name = "hamt_audit_bitmap"
 path = "benches/hamt_audit_bitmap.rs"
 harness = false
+test = false
 required-features = ["std"]
 
 [[test]]
