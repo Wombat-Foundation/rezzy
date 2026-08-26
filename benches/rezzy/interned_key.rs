@@ -474,7 +474,7 @@ fn measure(label: &str, reps: usize, f: impl Fn()) -> Duration {
 // answering the same question. Run `cargo bench --bench interned_lookup`
 // for that comparison.
 
-fn main() {
+pub fn run() {
     println!("=== full resolution bench (compute_state_at / compute_state_at_batch) ===");
     let sizes = [100usize, 1_000, 5_000];
     let rooms: Vec<(usize, HashMap<String, LeanEvent>, Vec<String>)> = sizes

@@ -53,13 +53,15 @@ ignored = [
 name = "rezzy"
 path = "src/bin/rezzy/main.rs"
 required-features = ["cli"]
+test = false
 
 [[bin]]
 name = "regen_oracles"
 path = "tests/bin/regen_oracles.rs"
 required-features = ["regen"]
+test = false
 
-[[bin]]
+[[example]]
 name = "bench_files"
 path = "scripts/bench_files.rs"
 
@@ -67,6 +69,7 @@ path = "scripts/bench_files.rs"
 name = "bench_ruma_vs_rezzy"
 path = "scripts/bench_ruma_vs_rezzy.rs"
 required-features = ["mock-ruma"]
+test = false
 
 [features]
 default = ["std", "signing"]
@@ -161,7 +164,8 @@ zeroize = { version = "=1.8.2", optional = true, default-features = false }
 similar = "2.7.0"
 
 [[bench]]
-name = "reconcile"
+name = "rezzy"
+path = "benches/rezzy/main.rs"
 harness = false
 test = false
 
@@ -171,67 +175,6 @@ path = "benches/signature_verify.rs"
 harness = false
 test = false
 required-features = ["signing", "mock-ruma", "simd-json-serde"]
-
-[[bench]]
-name = "resolve"
-path = "benches/resolve.rs"
-harness = false
-test = false
-
-[[bench]]
-name = "state_backend"
-path = "benches/state_backend.rs"
-harness = false
-test = false
-
-[[bench]]
-name = "mainline_cache"
-path = "benches/mainline_cache.rs"
-harness = false
-test = false
-
-[[bench]]
-name = "interned_key"
-path = "benches/interned_key.rs"
-harness = false
-test = false
-
-[[bench]]
-name = "interned_lookup"
-path = "benches/interned_lookup.rs"
-harness = false
-test = false
-
-[[bench]]
-name = "persistence"
-path = "benches/persistence.rs"
-harness = false
-test = false
-
-[[bench]]
-name = "lthash"
-path = "benches/lthash.rs"
-harness = false
-test = false
-
-[[bench]]
-name = "state_groups"
-path = "benches/state_groups.rs"
-harness = false
-test = false
-
-[[bench]]
-name = "cumulative_rebuild"
-path = "benches/cumulative_rebuild.rs"
-harness = false
-test = false
-
-[[bench]]
-name = "hamt_audit_bitmap"
-path = "benches/hamt_audit_bitmap.rs"
-harness = false
-test = false
-required-features = ["std"]
 
 [[test]]
 name = "unit"

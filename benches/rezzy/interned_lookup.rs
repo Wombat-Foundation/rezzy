@@ -195,7 +195,7 @@ fn build(
     (str_map, id_map, str_to_id, hits, misses)
 }
 
-fn main() {
+pub fn run() {
     for &type_count in &[1usize, 16] {
         println!("--- {type_count} event type(s) ---");
         for &m in &[100usize, 1_000, 5_000] {

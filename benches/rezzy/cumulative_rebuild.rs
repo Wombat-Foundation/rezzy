@@ -45,8 +45,7 @@ use rezzy::hamt::{self, codec::HamtCodec, HamtNode};
 use rezzy::state::LtHash;
 use sha2::{Digest, Sha256};
 
-mod common;
-use common::{collect_all_nodes, collect_new_nodes, to_persisted, Xorshift128};
+use super::common::{collect_all_nodes, collect_new_nodes, to_persisted, Xorshift128};
 
 const S_MAX: usize = 4096;
 const STRUCTURAL_KEY: &[u8] = b"bench-cumulative-rebuild";
@@ -104,7 +103,7 @@ fn encode_full_map(state: &HashMap<Key, Value>) -> usize {
 }
 
 #[allow(clippy::too_many_lines)]
-fn main() {
+pub fn run() {
     println!(
         "cumulative rebuild cost, building state from empty to S={S_MAX} one mutation at a time:"
     );

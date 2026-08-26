@@ -268,7 +268,7 @@ fn report_speedup_two(label: &str, slower_baseline: Duration, faster_baseline: D
     }
 }
 
-fn main() {
+pub fn run() {
     for &n in &[
         16usize, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
     ] {

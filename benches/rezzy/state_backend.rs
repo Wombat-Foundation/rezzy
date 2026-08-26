@@ -351,7 +351,7 @@ fn report_speedup(ordmap: Duration, hamt: Duration) {
     }
 }
 
-fn main() {
+pub fn run() {
     for &n in &[16usize, 128, 1024, 8192] {
         let entries = make_entries(n, 0x5EED_0000 + n as u64);
         bench_bulk_build(n, &entries);

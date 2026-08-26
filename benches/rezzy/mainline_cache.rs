@@ -270,7 +270,7 @@ fn measure(label: &str, f: impl FnOnce()) -> Duration {
     elapsed
 }
 
-fn main() {
+pub fn run() {
     for &(pl_chain_len, fork_count) in &[(200usize, 500usize), (1_000, 2_000), (2_000, 5_000)] {
         println!("--- pl_chain_len={pl_chain_len} fork_count={fork_count} ---");
         let (events, targets) = build_dag(pl_chain_len, fork_count);

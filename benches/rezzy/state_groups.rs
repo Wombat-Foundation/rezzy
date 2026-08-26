@@ -47,8 +47,7 @@ use std::time::{Duration, Instant};
 
 use rezzy::hamt::{self, codec::HamtCodec, HamtNode};
 
-mod common;
-use common::{collect_new_nodes, to_persisted, Xorshift128};
+use super::common::{collect_new_nodes, to_persisted, Xorshift128};
 
 type Key = String;
 type Value = String;
@@ -344,7 +343,7 @@ fn report_ratio_bytes(label: &str, hamt: f64, other: f64) {
     }
 }
 
-fn main() {
+pub fn run() {
     // 550, not 500: deliberately mid-window (50 hops past the snapshot at
     // 500) so the bounded chain's lookup isn't measured at its trivial
     // best case of landing exactly on a snapshot. See the assertion in

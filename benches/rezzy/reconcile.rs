@@ -467,7 +467,7 @@ fn benchmark_presplit_antichain_exchange_from_pool(
 }
 
 #[allow(clippy::too_many_lines)]
-fn main() {
+pub fn run() {
     let elapsed = measure(1_000_000, || {
         black_box(gf64_mul(
             black_box(0x0123_4567_89ab_cdef),
