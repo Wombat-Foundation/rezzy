@@ -132,7 +132,8 @@ fn root_stable_vector() {
 fn header_root_uses_null_for_missing_optional_fields() {
     let root = merkle::header_root(&Header {
         room_id: "!room:example.org".into(),
-        sender: "@alice:example.org".into(),
+        sender_localpart: "alice".into(),
+        sender_domain: "example.org".into(),
         event_type: "m.room.message".into(),
         state_key: None,
         redacts: None,
@@ -143,7 +144,7 @@ fn header_root_uses_null_for_missing_optional_fields() {
 
     assert_eq!(
         hex(root),
-        "f4f5f542c8adb6ba354328dfeda66fd069b77981a5514bb86cb22072d5117324"
+        "db91cc8e8d3eb0d13885c32f28dbd4215a111081383e25263749c65d9bf8bc37"
     );
 }
 
@@ -153,7 +154,8 @@ fn event_root_and_id_stable_vector() {
     let auth = merkle::component_hash("auth_events", &json!(["$auth:example.org"])).unwrap();
     let header = merkle::header_root(&Header {
         room_id: "!room:example.org".into(),
-        sender: "@alice:example.org".into(),
+        sender_localpart: "alice".into(),
+        sender_domain: "example.org".into(),
         event_type: "m.room.message".into(),
         state_key: None,
         redacts: None,
@@ -176,11 +178,11 @@ fn event_root_and_id_stable_vector() {
 
     assert_eq!(
         hex(root),
-        "734aaf66da440dfbbe445bfe7874014983beafe7682b456f40973f7e8e0a2e4d"
+        "4ccc880527fe5f97d27a04105bb55e6c6e75d87928e54a6cd2973c224802ce91"
     );
     assert_eq!(
         merkle::event_id(root),
-        "$c0qvZtpEDfu-RFv-eHQBSYO-r-doK0VvQJc_fo4KLk0"
+        "$TMyIBSf-X5fSegQQW7VebG512Hko5Ups0pc8IkgCzpE"
     );
 }
 

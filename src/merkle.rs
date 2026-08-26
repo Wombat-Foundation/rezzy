@@ -69,10 +69,16 @@ impl Field {
 }
 
 /// Fields committed by [`header_root`].
+///
+/// `sender_localpart` and `sender_domain` are committed as independent leaves
+/// (rather than a single combined `sender` leaf) so that a proof can disclose
+/// and verify the sending server's identity without disclosing the sender's
+/// localpart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub room_id: String,
-    pub sender: String,
+    pub sender_localpart: String,
+    pub sender_domain: String,
     pub event_type: String,
     pub state_key: Option<String>,
     pub redacts: Option<String>,
@@ -168,9 +174,9 @@ pub fn root(fields: &[Field]) -> Result<Hash, MerkleError> {
     root_from_leaves(&leaves)
 }
 
-/// Computes `header_root` over `room_id`, `sender`, `type`, `state_key`,
-/// `redacts`, `depth`, and `origin_server_ts`. Missing optional fields are
-/// encoded as `null`.
+/// Computes `header_root` over `room_id`, `sender_localpart`,
+/// `sender_domain`, `type`, `state_key`, `redacts`, `depth`, and
+/// `origin_server_ts`. Missing optional fields are encoded as `null`.
 ///
 /// # Errors
 ///
@@ -185,7 +191,11 @@ pub fn header_root(header: &Header) -> Result<Hash, MerkleError> {
             header.redacts.clone().map_or(Value::Null, Value::from),
         ),
         Field::new("room_id", Value::from(header.room_id.clone())),
-        Field::new("sender", Value::from(header.sender.clone())),
+        Field::new("sender_domain", Value::from(header.sender_domain.clone())),
+        Field::new(
+            "sender_localpart",
+            Value::from(header.sender_localpart.clone()),
+        ),
         Field::new(
             "state_key",
             header.state_key.clone().map_or(Value::Null, Value::from),
