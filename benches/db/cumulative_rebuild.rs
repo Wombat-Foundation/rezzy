@@ -45,7 +45,7 @@ use rezzy::hamt::{self, codec::HamtCodec, HamtNode};
 use rezzy::state::LtHash;
 use sha2::{Digest, Sha256};
 
-use super::common::{collect_all_nodes, collect_new_nodes, to_persisted, Xorshift128};
+use crate::common::{collect_all_nodes, collect_new_nodes, to_persisted, Xorshift128};
 
 const S_MAX: usize = 4096;
 const STRUCTURAL_KEY: &[u8] = b"bench-cumulative-rebuild";

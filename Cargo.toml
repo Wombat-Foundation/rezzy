@@ -61,10 +61,6 @@ path = "tests/bin/regen_oracles.rs"
 required-features = ["regen"]
 test = false
 
-[[example]]
-name = "bench_files"
-path = "scripts/bench_files.rs"
-
 [[bin]]
 name = "bench_ruma_vs_rezzy"
 path = "scripts/bench_ruma_vs_rezzy.rs"
@@ -163,9 +159,13 @@ zeroize = { version = "=1.8.2", optional = true, default-features = false }
 [dev-dependencies]
 similar = "2.7.0"
 
+[[example]]
+name = "bench_files"
+path = "scripts/bench_files.rs"
+
 [[bench]]
 name = "rezzy"
-path = "benches/rezzy/main.rs"
+path = "benches/main.rs"
 harness = false
 test = false
 

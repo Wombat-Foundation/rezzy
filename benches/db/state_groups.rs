@@ -47,7 +47,7 @@ use std::time::{Duration, Instant};
 
 use rezzy::hamt::{self, codec::HamtCodec, HamtNode};
 
-use super::common::{collect_new_nodes, to_persisted, Xorshift128};
+use crate::common::{collect_new_nodes, to_persisted, Xorshift128};
 
 type Key = String;
 type Value = String;
