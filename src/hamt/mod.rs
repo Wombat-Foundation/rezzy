@@ -1684,8 +1684,9 @@ where
 
 /// Descends into a batch of persisted node byte slices for their targeted keys.
 ///
-/// `nodes_and_keys` is a slice of `(node_bytes, depth, target_key_hashes)` triples, where each node
-/// is evaluated ONLY against the keys that routed to it at its specific depth.
+/// `nodes_and_keys` contains the expected node hash, encoded bytes, depth, and
+/// target key hashes for each fetched node. Each node is evaluated only against
+/// the keys that routed to it at that depth.
 /// `key_hash_fn` computes the `KeyPathHash` of a decoded leaf key to verify exact matches.
 ///
 /// # Absence Invariant
@@ -1699,7 +1700,7 @@ where
 /// Returns [`DescendError::Decode`] if any node byte slice fails v1 parsing, or
 /// [`DescendError::CorruptNode`] if internal bitmap invariants are violated.
 pub fn descend_level<K, V, KeyHash>(
-    nodes_and_keys: &[(&[u8], usize, &[KeyPathHash])],
+    nodes_and_keys: &[(StructuralHash, &[u8], usize, &[KeyPathHash])],
     mut key_hash_fn: KeyHash,
 ) -> Result<DescendResult<V>, DescendError>
 where
@@ -1712,9 +1713,14 @@ where
     let mut pending_map: crate::HashMap<StructuralHash, Vec<KeyPathHash>> =
         crate::HashMap::default();
 
-    for &(node_bytes, depth, target_keys) in nodes_and_keys {
+    for &(expected_hash, node_bytes, depth, target_keys) in nodes_and_keys {
         let node =
             PersistedInternalNode::<K, V>::decode_v1(node_bytes).map_err(DescendError::Decode)?;
+        if node.structural_hash != expected_hash {
+            return Err(DescendError::CorruptNode(
+                "decoded structural hash does not match requested node hash",
+            ));
+        }
 
         for &req_hash in target_keys {
             let slot = bucket_index(&req_hash, depth);

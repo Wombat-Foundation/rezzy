@@ -4589,7 +4589,8 @@ fn test_lazy_resolver_mutation_and_resolution_bounds() {
             panic!("unexpected resolution on resident root")
         };
 
-    // Mutate multiple keys to test both root leaves and child subtrees
+    // Mutate multiple keys to test both root leaves and child subtrees.
+    let mut exercised_lazy_child = false;
     for target_key in [5_u32, 25_u32, 45_u32, 999_u32] {
         let new_val = Some(u64::from(target_key) * 999);
 
@@ -4629,7 +4630,12 @@ fn test_lazy_resolver_mutation_and_resolution_bounds() {
             store.resolutions.get(),
             HAMT_MAX_DEPTH
         );
+        exercised_lazy_child |= store.resolutions.get() > 0;
     }
+    assert!(
+        exercised_lazy_child,
+        "fixture must exercise at least one lazy child resolution"
+    );
 }
 
 #[test]
@@ -4892,7 +4898,7 @@ fn test_descend_level_batched_exact_lookup() {
         vec![(root.structural_hash, 0, requested_hashes)];
 
     while !frontier.is_empty() {
-        let mut nodes_batch: Vec<(&[u8], usize, &[KeyPathHash])> = Vec::new();
+        let mut nodes_batch: Vec<(StructuralHash, &[u8], usize, &[KeyPathHash])> = Vec::new();
         let mut borrowed_node_bytes: Vec<&[u8]> = Vec::new();
 
         for (node_hash, _, _) in &frontier {
@@ -4900,8 +4906,8 @@ fn test_descend_level_batched_exact_lookup() {
             borrowed_node_bytes.push(node_bytes.as_slice());
         }
 
-        for (i, (_, depth, keys)) in frontier.iter().enumerate() {
-            nodes_batch.push((borrowed_node_bytes[i], *depth, keys.as_slice()));
+        for (i, (node_hash, depth, keys)) in frontier.iter().enumerate() {
+            nodes_batch.push((*node_hash, borrowed_node_bytes[i], *depth, keys.as_slice()));
         }
 
         let result: DescendResult<u64> =
@@ -4947,7 +4953,7 @@ fn test_descend_level_rejects_corruption() {
 
     // 1. Truncated buffer: returns Decode error
     let truncated_buf = vec![0x01, 0x00];
-    let res = descend_level::<u32, u64, _>(&[(&truncated_buf, 0, &[req_hash])], |k| {
+    let res = descend_level::<u32, u64, _>(&[([0; 16], &truncated_buf, 0, &[req_hash])], |k| {
         crate::hamt::key_path_hash(key, k)
     });
     assert!(matches!(res, Err(DescendError::Decode(_))));
@@ -4962,8 +4968,17 @@ fn test_descend_level_rejects_corruption() {
     corrupt_header.extend_from_slice(&42_u32.to_le_bytes()); // leaf key
     corrupt_header.extend_from_slice(&100_u64.to_le_bytes()); // leaf val
     corrupt_header.extend_from_slice(&[0u8; 16]); // child hash
-    let res2 = descend_level::<u32, u64, _>(&[(&corrupt_header, 0, &[req_hash])], |k| {
+    let res2 = descend_level::<u32, u64, _>(&[([0; 16], &corrupt_header, 0, &[req_hash])], |k| {
         crate::hamt::key_path_hash(key, k)
     });
     assert!(matches!(res2, Err(DescendError::Decode(_))));
+
+    // 3. A valid node returned for the wrong requested hash is corruption.
+    let root = build_hamt(key, vec![(42_u32, 100_u64)]).expect("build root");
+    let node_bytes = PersistedInternalNode::from(root.as_ref()).encode_v1();
+    let wrong_hash = [0xff; 16];
+    let res3 = descend_level::<u32, u64, _>(&[(wrong_hash, &node_bytes, 0, &[req_hash])], |k| {
+        crate::hamt::key_path_hash(key, k)
+    });
+    assert!(matches!(res3, Err(DescendError::CorruptNode(_))));
 }
