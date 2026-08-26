@@ -4442,3 +4442,309 @@ fn test_refcount_table_end_to_end_with_diff_node_hashes_matches_reachability() {
         }
     }
 }
+
+#[test]
+fn test_persist_mutation_rebuild_equivalence_property() {
+    let key = b"prop_test_server_key";
+    let mut state: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
+    for i in 0..50 {
+        state.insert(i, u64::from(i) * 10);
+    }
+
+    let mut current_root = build_hamt(key, state.clone()).expect("build initial hamt");
+
+    let mut no_resolver = |_h: &StructuralHash| -> Result<Arc<HamtNode<u32, u64>>, ()> {
+        panic!("unexpected lazy resolution in memory test")
+    };
+
+    // Perform sequence of 100 pseudo-random mutations (inserts, updates, deletes)
+    let mut rng_state: u64 = 0xdead_beef;
+    let mut next_rnd = || -> u64 {
+        rng_state ^= rng_state << 13;
+        rng_state ^= rng_state >> 7;
+        rng_state ^= rng_state << 17;
+        rng_state
+    };
+
+    for _ in 0..100 {
+        let op = next_rnd() % 3;
+        let k = (next_rnd() % 100) as u32;
+        let v = next_rnd() % 1000;
+
+        let opt_val = if op == 0 {
+            // Remove
+            state.remove(&k);
+            None
+        } else {
+            // Insert / Update
+            state.insert(k, v);
+            Some(v)
+        };
+
+        let (new_root, _, created) =
+            persist_mutation(&current_root, key, k, opt_val, &mut no_resolver)
+                .expect("persist_mutation must succeed");
+
+        // Rebuild from scratch and assert identical structural hash
+        let rebuilt_root = build_hamt(key, state.clone()).expect("rebuild hamt");
+        assert_eq!(
+            new_root.structural_hash, rebuilt_root.structural_hash,
+            "incremental persist_mutation root must match from-scratch rebuild exactly"
+        );
+
+        if new_root.structural_hash == current_root.structural_hash {
+            assert!(
+                created.is_empty(),
+                "noop mutation must produce zero created nodes"
+            );
+        } else {
+            assert!(
+                !created.is_empty(),
+                "real state change must produce at least one created node"
+            );
+        }
+
+        current_root = new_root;
+    }
+}
+
+#[test]
+fn test_persist_chain_coverage_property() {
+    let key = b"prop_chain_coverage_key";
+    let prev_root =
+        build_hamt(key, (0_u32..20_u32).map(|i| (i, u64::from(i) * 100))).expect("build root");
+
+    let mut no_resolver = |_h: &StructuralHash| -> Result<Arc<HamtNode<u32, u64>>, ()> {
+        panic!("unexpected lazy resolution in memory test")
+    };
+
+    let prev_reachable: std::collections::BTreeSet<StructuralHash> =
+        reachable_node_hashes(&prev_root, &mut no_resolver)
+            .expect("reachable prev")
+            .into_iter()
+            .collect();
+
+    let mutations = vec![
+        (5_u32, Some(555_u64)),
+        (100_u32, Some(1000_u64)),
+        (2_u32, None),
+        (101_u32, Some(1010_u64)),
+        (102_u32, Some(1020_u64)),
+        (100_u32, None),
+        (5_u32, Some(500_u64)), // revert to original value
+    ];
+
+    let steps = persist_chain(&prev_root, key, mutations, &mut no_resolver)
+        .expect("persist_chain must succeed");
+
+    assert_eq!(steps.len(), 7);
+
+    let mut cumulative_created = prev_reachable;
+    for (i, step) in steps.iter().enumerate() {
+        for (hash, bytes) in &step.created {
+            assert_eq!(
+                *hash,
+                PersistedInternalNode::<u32, u64>::decode_v1(bytes)
+                    .expect("valid decode")
+                    .structural_hash
+            );
+            cumulative_created.insert(*hash);
+        }
+
+        // Chain coverage invariant: every node reachable from root_i must be present
+        // in cumulative_created (union of created_j for j<=i and reachable(prev_root))
+        let root_i_reachable =
+            reachable_node_hashes(&step.root, &mut no_resolver).expect("reachable step");
+        for hash in &root_i_reachable {
+            assert!(
+                cumulative_created.contains(hash),
+                "step {i}: node {hash:?} reachable from root_{i} was not created in any prior step"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_persist_chain_refcount_closure_property() {
+    let key = b"prop_refcount_closure_key";
+    let prev_root =
+        build_hamt(key, (0_u32..10_u32).map(|i| (i, u64::from(i)))).expect("build root");
+
+    let mut no_resolver = |_h: &StructuralHash| -> Result<Arc<HamtNode<u32, u64>>, ()> {
+        panic!("unexpected lazy resolution in memory test")
+    };
+
+    let mutations = vec![
+        (1_u32, Some(100_u64)),
+        (2_u32, Some(200_u64)),
+        (3_u32, Some(300_u64)),
+        (1_u32, Some(1_u64)), // revert
+        (4_u32, None),
+    ];
+
+    let steps = persist_chain(&prev_root, key, mutations, &mut no_resolver).expect("persist_chain");
+
+    let mut table = RefcountTable::new();
+
+    // Initial root refcounts
+    table.bootstrap(reachable_node_hashes(&prev_root, &mut no_resolver).expect("reachable"));
+
+    // Apply per-step increments
+    let mut all_created_hashes = Vec::new();
+    for step in &steps {
+        let step_hashes: Vec<StructuralHash> = step.created.iter().map(|(h, _)| *h).collect();
+        table.apply_new(&step_hashes);
+        all_created_hashes.extend(step_hashes);
+    }
+
+    // Now retire roots in arbitrary order using mark-sweep
+    let all_roots: Vec<Arc<HamtNode<u32, u64>>> = std::iter::once(prev_root.clone())
+        .chain(steps.iter().map(|s| s.root.clone()))
+        .collect();
+
+    // Keep only roots [0, 2, 4]
+    let surviving_roots = vec![
+        all_roots[0].clone(),
+        all_roots[2].clone(),
+        all_roots[4].clone(),
+    ];
+    let universe: Vec<StructuralHash> = reachable_node_hashes(&prev_root, &mut no_resolver)
+        .expect("reachable")
+        .into_iter()
+        .chain(all_created_hashes)
+        .collect();
+
+    let audit =
+        crate::hamt::audit::node_reachability_audit(surviving_roots, universe, &mut no_resolver)
+            .expect("audit");
+
+    // Assert that every node in the audit's reachable set has positive refcount
+    for hash in &audit.reachable {
+        assert!(
+            table.count(hash) > 0,
+            "node {hash:?} reachable from surviving roots must have positive count"
+        );
+    }
+}
+
+#[test]
+fn test_persist_chain_overwrite_then_revert() {
+    let key = b"overwrite_revert_key";
+    let root_0 = build_hamt(key, vec![(1_u32, 100_u64)]).expect("root 0");
+
+    let mut no_resolver = |_h: &StructuralHash| -> Result<Arc<HamtNode<u32, u64>>, ()> {
+        panic!("unexpected lazy resolution in memory test")
+    };
+
+    let mutations = vec![
+        (1_u32, Some(200_u64)), // Step 1: overwrite
+        (1_u32, Some(100_u64)), // Step 2: revert to original
+    ];
+
+    let steps = persist_chain(&root_0, key, mutations, &mut no_resolver).expect("chain");
+    assert_eq!(steps.len(), 2);
+
+    assert_eq!(steps[0].displaced, Some(100_u64));
+    assert_ne!(steps[0].root_hash, root_0.structural_hash);
+    assert!(!steps[0].created.is_empty());
+
+    assert_eq!(steps[1].displaced, Some(200_u64));
+    // Step 2 restored state to exact root_0
+    assert_eq!(steps[1].root_hash, root_0.structural_hash);
+    assert_eq!(
+        steps[1].root.structural_hash, root_0.structural_hash,
+        "reverting value must produce identical structural hash"
+    );
+}
+
+#[test]
+fn test_descend_level_batched_exact_lookup() {
+    fn store_nodes(
+        node: &Arc<HamtNode<u32, u64>>,
+        storage: &mut std::collections::HashMap<StructuralHash, Vec<u8>>,
+    ) {
+        let bytes = PersistedInternalNode::from(node.as_ref()).encode_v1();
+        storage.insert(node.structural_hash, bytes);
+        for child in &node.children {
+            if let NodeRef::Resolved(child_node) = child {
+                store_nodes(child_node, storage);
+            }
+        }
+    }
+
+    let key = b"descend_level_key";
+    let entries: Vec<(u32, u64)> = (0_u32..50_u32).map(|i| (i, u64::from(i) * 7)).collect();
+    let root = build_hamt(key, entries.clone()).expect("build");
+
+    let mut no_resolver = |_h: &StructuralHash| -> Result<Arc<HamtNode<u32, u64>>, ()> {
+        panic!("unexpected lazy resolution in memory test")
+    };
+
+    // Collect all internal nodes encoded
+    let _all_hashes = reachable_node_hashes(&root, &mut no_resolver).expect("reachable");
+    let mut storage: std::collections::HashMap<StructuralHash, Vec<u8>> =
+        std::collections::HashMap::new();
+
+    store_nodes(&root, &mut storage);
+
+    // Prepare requested keys: 50 present keys + 20 absent keys
+    let mut requested_hashes = Vec::new();
+    for i in 0..70 {
+        requested_hashes.push(crate::hamt::key_path_hash(key, &i));
+    }
+
+    let mut found_map: std::collections::HashMap<KeyPathHash, u64> =
+        std::collections::HashMap::new();
+    let mut absent_set: std::collections::HashSet<KeyPathHash> = std::collections::HashSet::new();
+
+    // Start level-synchronous descent from root
+    let mut frontier: Vec<(StructuralHash, Vec<KeyPathHash>)> =
+        vec![(root.structural_hash, requested_hashes)];
+    let mut depth = 0;
+
+    while !frontier.is_empty() && depth < HAMT_MAX_DEPTH {
+        let mut nodes_batch: Vec<(&[u8], &[KeyPathHash])> = Vec::new();
+        let mut borrowed_node_bytes: Vec<&[u8]> = Vec::new();
+
+        for (node_hash, _) in &frontier {
+            let node_bytes = storage.get(node_hash).expect("node exists in storage");
+            borrowed_node_bytes.push(node_bytes.as_slice());
+        }
+
+        for (i, (_, keys)) in frontier.iter().enumerate() {
+            nodes_batch.push((borrowed_node_bytes[i], keys.as_slice()));
+        }
+
+        let result: DescendResult<u64> = descend_level::<u32, u64, _>(&nodes_batch, depth, |k| {
+            crate::hamt::key_path_hash(key, k)
+        })
+        .expect("descend_level succeeds");
+
+        for (h, v) in result.found {
+            found_map.insert(h, v);
+        }
+        for h in result.absent {
+            absent_set.insert(h);
+        }
+
+        frontier = result.pending;
+        depth += 1;
+    }
+
+    // Verify results
+    assert_eq!(found_map.len(), 50, "all 50 present keys must be found");
+    for (k, v) in &entries {
+        let h = crate::hamt::key_path_hash(key, k);
+        assert_eq!(found_map.get(&h), Some(v));
+    }
+
+    assert_eq!(
+        absent_set.len(),
+        20,
+        "all 20 absent keys must be proven absent"
+    );
+    for k in 50..70 {
+        let h = crate::hamt::key_path_hash(key, &k);
+        assert!(absent_set.contains(&h));
+    }
+}
