@@ -68,6 +68,7 @@ fn insert_pl_auth_chain(
             content: serde_json::json!({ "join_rule": "public" }),
             prev_events: Vec::new(),
             auth_events: Vec::new(),
+            prev_state_events: Vec::new(),
             depth,
             rejected: false,
             soft_fail: false,
@@ -99,6 +100,7 @@ fn insert_pl_auth_chain(
                 } else {
                     vec![prev_auth.clone(), root_id.clone()]
                 },
+                prev_state_events: Vec::new(),
                 depth: depth + hop as u64 + 1,
                 rejected: false,
                 soft_fail: false,
@@ -135,6 +137,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
             content: serde_json::json!({ "creator": "@creator:example.org" }),
             prev_events: Vec::new(),
             auth_events: Vec::new(),
+            prev_state_events: Vec::new(),
             depth: 0,
             rejected: false,
             soft_fail: false,
@@ -167,6 +170,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                 } else {
                     vec![pl_auth_root, prev_pl.clone()]
                 },
+                prev_state_events: Vec::new(),
                 depth: pl_depth,
                 rejected: false,
                 soft_fail: false,
@@ -201,6 +205,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                 content: serde_json::json!({ "membership": "join" }),
                 prev_events: vec![top_pl.clone()],
                 auth_events: vec![top_pl.clone(), pl_auth_root.clone()],
+                prev_state_events: Vec::new(),
                 depth,
                 rejected: false,
                 soft_fail: false,
@@ -222,6 +227,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                 content: serde_json::json!({ "membership": "join" }),
                 prev_events: vec![top_pl.clone()],
                 auth_events: vec![top_pl.clone(), pl_auth_root],
+                prev_state_events: Vec::new(),
                 depth,
                 rejected: false,
                 soft_fail: false,
@@ -243,6 +249,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                 content: serde_json::json!({ "body": "merge" }),
                 prev_events: vec![a_id, b_id],
                 auth_events: vec![top_pl.clone()],
+                prev_state_events: Vec::new(),
                 depth: depth + 1,
                 rejected: false,
                 soft_fail: false,

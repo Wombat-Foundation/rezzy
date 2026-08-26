@@ -93,6 +93,11 @@ pub enum AuthError<Id = String> {
         /// (rather than a populated, differing one).
         actual: Option<String>,
     },
+    /// MSC4242 Rule 4.3: an auth event derived from state was rejected during PDU receipt.
+    RejectedAuthEvent {
+        event_id: Id,
+        auth_event_id: Id,
+    },
 }
 
 impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
@@ -141,15 +146,22 @@ impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
             } => match actual {
                 Some(actual) => write!(
                     f,
-                    "{event_id} (room {expected}) cites auth event {auth_event_id} from a \
-                     different room ({actual})"
+                    "event {event_id} in room {expected} cites auth event {auth_event_id} from foreign room {actual}"
                 ),
                 None => write!(
                     f,
-                    "{event_id} (room {expected}) cites auth event {auth_event_id}, which \
-                     carries no room_id at all"
+                    "event {event_id} in room {expected} cites auth event {auth_event_id} with no room_id"
                 ),
             },
+            AuthError::RejectedAuthEvent {
+                event_id,
+                auth_event_id,
+            } => {
+                write!(
+                    f,
+                    "event {event_id} cites rejected auth event {auth_event_id}"
+                )
+            }
         }
     }
 }
@@ -1989,15 +2001,15 @@ fn required_auth_types_for<
 /// V2.1 create-omission rule is expressed.
 #[allow(clippy::too_many_arguments)]
 fn auth_types_for_event_core<'a>(
-    event_type: &'a str,
+    event_type: &str,
     sender: &'a str,
     state_key: Option<&'a str>,
-    membership: Option<&'a str>,
+    membership: Option<&str>,
     third_party_invite_token: Option<&'a str>,
     join_authorised_via_users_server: Option<&'a str>,
     version: StateResVersion,
-    room_version: &'a str,
-) -> Vec<(&'a str, &'a str)> {
+    room_version: &str,
+) -> Vec<(&'static str, &'a str)> {
     let mut auth_types = Vec::new();
 
     if event_type == M_ROOM_CREATE {
@@ -2087,6 +2099,25 @@ pub fn auth_types_for_event(
     .into_iter()
     .map(|(event_type, state_key)| (event_type.to_string(), state_key.to_string()))
     .collect()
+}
+
+/// Computes the required `(event_type, state_key)` authorization tuples for any [`EventLike`].
+#[must_use]
+pub fn auth_types_for_event_like<'a, E: EventLike + ?Sized>(
+    event: &'a E,
+    version: StateResVersion,
+    room_version: &str,
+) -> Vec<(&'static str, &'a str)> {
+    auth_types_for_event_core(
+        event.event_type().as_ref(),
+        event.sender(),
+        event.state_key(),
+        event.get_membership(),
+        event.get_third_party_invite_token(),
+        event.get_join_authorised_via_users_server(),
+        version,
+        room_version,
+    )
 }
 
 #[cfg(test)]

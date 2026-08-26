@@ -1108,7 +1108,7 @@ where
 
 /// Fast-path resolution for merging multiple states when they are all structurally identical.
 /// Bypasses full state resolution by simply returning one of the identical parent states.
-fn resolve_merge_fast_path<Id, C, S, K>(
+pub(crate) fn resolve_merge_fast_path<Id, C, S, K>(
     prev_states: &[SharedState<Id, K>],
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C, K>,

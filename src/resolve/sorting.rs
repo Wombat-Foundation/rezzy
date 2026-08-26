@@ -411,12 +411,6 @@ pub fn mainline_sort<Id, C, E>(
     C: Clone + crate::basespec::rezzy_types::EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
-    #[cfg(all(feature = "std", debug_assertions, not(test)))]
-    std::eprintln!(
-        "[DEBUG] mainline_sort: sorting {} non-power events against mainline of length {}",
-        events.len(),
-        mainline.len()
-    );
     // O(V+E) iterative DFS to find the closest mainline index for all non-power events
     let dist = compute_closest_mainline_positions(events, mainline, auth_context);
 

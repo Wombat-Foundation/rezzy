@@ -2124,6 +2124,7 @@ mod tests {
             origin_server_ts: ts,
             prev_events: vec![],
             auth_events: auth.into_iter().map(ToString::to_string).collect(),
+            prev_state_events: vec![],
             depth: 1,
             sender: "@user:example.com".into(),
             content: serde_json::Value::Object(serde_json::Map::new()),
@@ -5773,6 +5774,7 @@ fn test_lean_event_serialize_roundtrip() {
         content: serde_json::json!({"body": "hello"}),
         prev_events: vec!["$prev".into()],
         auth_events: vec!["$auth".into()],
+        prev_state_events: vec!["$state".into()],
         depth: 5,
         rejected: true,
         soft_fail: true,
@@ -6813,6 +6815,7 @@ fn test_lean_event_borrowed_view_roundtrip() {
         content: serde_json::json!({"body": "hello"}),
         prev_events: vec!["$prev".into()],
         auth_events: vec!["$auth".into()],
+        prev_state_events: vec!["$prev_state".into()],
         depth: 5,
         rejected: true,
         soft_fail: false,
@@ -6829,6 +6832,7 @@ fn test_lean_event_borrowed_view_roundtrip() {
     assert_eq!(view.content, &event.content);
     assert_eq!(view.prev_events, event.prev_events.as_slice());
     assert_eq!(view.auth_events, event.auth_events.as_slice());
+    assert_eq!(view.prev_state_events, event.prev_state_events.as_slice());
     assert_eq!(view.depth, event.depth);
     assert_eq!(view.rejected, event.rejected);
     assert_eq!(view.soft_fail, event.soft_fail);
@@ -6843,6 +6847,7 @@ fn test_lean_event_borrowed_view_roundtrip() {
     assert_eq!(owned.content, event.content);
     assert_eq!(owned.prev_events, event.prev_events);
     assert_eq!(owned.auth_events, event.auth_events);
+    assert_eq!(owned.prev_state_events, event.prev_state_events);
     assert_eq!(owned.depth, event.depth);
     assert_eq!(owned.rejected, event.rejected);
     assert_eq!(owned.soft_fail, event.soft_fail);
@@ -6862,6 +6867,7 @@ fn test_lean_event_borrowed_view_accessors() {
         content: serde_json::json!({"body": "hello"}),
         prev_events: vec!["$prev".into()],
         auth_events: vec!["$auth".into()],
+        prev_state_events: vec!["$prev_state".into()],
         depth: 5,
         rejected: true,
         soft_fail: false,
@@ -8019,6 +8025,7 @@ fn test_lean_event_serialize_propagates_write_error() {
         content: serde_json::json!({}),
         prev_events: vec![],
         auth_events: vec![],
+        prev_state_events: vec![],
         depth: 1,
         rejected: false,
         soft_fail: false,

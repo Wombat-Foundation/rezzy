@@ -844,6 +844,7 @@ impl<Id: Clone, K: Clone> LeanEvent<Id, Value, K> {
             content: redact_content(&self.content, rule),
             prev_events: self.prev_events.clone(),
             auth_events: self.auth_events.clone(),
+            prev_state_events: self.prev_state_events.clone(),
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
@@ -1022,6 +1023,11 @@ pub trait DagNode {
 
     /// Event IDs of the authorization events for this event.
     fn auth_events(&self) -> &[Self::Id];
+
+    /// Event IDs of the previous state events in the state DAG (MSC4242).
+    fn prev_state_events(&self) -> &[Self::Id] {
+        &[]
+    }
 }
 
 impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
@@ -1038,6 +1044,9 @@ impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
     }
     fn auth_events(&self) -> &[Id] {
         &self.auth_events
+    }
+    fn prev_state_events(&self) -> &[Id] {
+        &self.prev_state_events
     }
 }
 
@@ -1308,6 +1317,11 @@ pub trait RawEvent {
     /// References to auth event IDs.
     fn raw_auth_events(&self) -> &[Self::Id];
 
+    /// References to previous state event IDs in the state DAG (MSC4242).
+    fn raw_prev_state_events(&self) -> &[Self::Id] {
+        &[]
+    }
+
     /// DAG depth.
     fn raw_depth(&self) -> u64;
 
@@ -1387,6 +1401,10 @@ impl<T: RawEvent> DagNode for ParsedEvent<'_, T> {
 
     fn auth_events(&self) -> &[T::Id] {
         self.raw.raw_auth_events()
+    }
+
+    fn prev_state_events(&self) -> &[T::Id] {
+        self.raw.raw_prev_state_events()
     }
 }
 
@@ -1483,6 +1501,8 @@ pub struct LeanEvent<Id = String, C = Value, K = String> {
     pub prev_events: Vec<Id>,
     /// Event IDs of the authorization events for this event (auth DAG).
     pub auth_events: Vec<Id>,
+    /// Event IDs of the previous state events in the state DAG (MSC4242).
+    pub prev_state_events: Vec<Id>,
     /// DAG depth (distance from the root). Required for V1 sort ordering.
     pub depth: u64,
     /// Whether this event was rejected by the homeserver (e.g., due to failing auth).
@@ -1673,6 +1693,7 @@ impl<Id, C> LeanEvent<Id, C, String> {
             content: self.content,
             prev_events: self.prev_events,
             auth_events: self.auth_events,
+            prev_state_events: self.prev_state_events,
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
@@ -1697,6 +1718,7 @@ pub struct LeanEventRef<'a, Id = String, C = Value, K = String> {
     pub content: &'a C,
     pub prev_events: &'a [Id],
     pub auth_events: &'a [Id],
+    pub prev_state_events: &'a [Id],
     pub depth: u64,
     pub room_id: Option<&'a RoomId>,
     pub rejected: bool,
@@ -1722,6 +1744,7 @@ impl<Id: EventId, C, K> LeanEventRef<'_, Id, C, K> {
             content: self.content.clone(),
             prev_events: self.prev_events.to_vec(),
             auth_events: self.auth_events.to_vec(),
+            prev_state_events: self.prev_state_events.to_vec(),
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
@@ -1744,6 +1767,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
             content: &self.content,
             prev_events: &self.prev_events,
             auth_events: &self.auth_events,
+            prev_state_events: &self.prev_state_events,
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
@@ -1766,6 +1790,9 @@ impl<Id: EventId, C: EventContent, K> DagNode for LeanEventRef<'_, Id, C, K> {
     }
     fn auth_events(&self) -> &[Id] {
         self.auth_events
+    }
+    fn prev_state_events(&self) -> &[Id] {
+        self.prev_state_events
     }
 }
 
@@ -2406,6 +2433,9 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         if self.auth_events.len() > 10 {
             return Err("auth_events exceeds maximum allowed length of 10");
         }
+        if self.prev_state_events.len() > crate::basespec::event_types::MAX_PREV_STATE_EVENTS {
+            return Err("prev_state_events exceeds maximum allowed length of 20");
+        }
         if self.event_type.is_empty() {
             return Err("event_type cannot be empty");
         }
@@ -2780,6 +2810,8 @@ impl LeanEvent<String, Value, String> {
 
         let prev_events = parse_string_array(FIELD_PREV_EVENTS);
         let auth_events = parse_string_array(FIELD_AUTH_EVENTS);
+        let prev_state_events =
+            parse_string_array(crate::basespec::event_types::FIELD_PREV_STATE_EVENTS);
         let depth = match value.get(FIELD_DEPTH) {
             Some(depth) => depth
                 .as_u64()
@@ -2809,6 +2841,7 @@ impl LeanEvent<String, Value, String> {
             content,
             prev_events,
             auth_events,
+            prev_state_events,
             depth,
             rejected,
             soft_fail,
