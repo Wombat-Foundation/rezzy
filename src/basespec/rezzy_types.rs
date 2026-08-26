@@ -1067,15 +1067,32 @@ impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// // Recommended: use RawEvent + ParsedEvent (see RawEvent docs).
-/// // Direct impl only needed for custom Content types:
+/// ```rust,no_run
+/// use std::borrow::Cow;
+/// use rezzy::{DagNode, EventLike};
+///
+/// struct MyEvent {
+///     event_id: String,
+///     sender: String,
+///     parsed_content: serde_json::Value,
+/// }
+///
+/// impl DagNode for MyEvent {
+///     type Id = String;
+///     fn event_id(&self) -> &String { &self.event_id }
+///     fn depth(&self) -> u64 { 0 }
+///     fn prev_events(&self) -> &[String] { &[] }
+///     fn auth_events(&self) -> &[String] { &[] }
+/// }
+///
 /// impl EventLike for MyEvent {
 ///     type Content = serde_json::Value;
-///     fn event_type(&self) -> Cow<'_, str> { /* ... */ }
-///     fn sender(&self) -> &str { /* ... */ }
+///     fn event_type(&self) -> Cow<'_, str> { Cow::Borrowed("m.room.message") }
+///     fn sender(&self) -> &str { &self.sender }
+///     fn state_key(&self) -> Option<&str> { None }
+///     fn power_level(&self) -> i64 { 0 }
+///     fn origin_server_ts(&self) -> u64 { 0 }
 ///     fn content(&self) -> &serde_json::Value { &self.parsed_content }
-///     // ... remaining structural accessors
 /// }
 /// ```
 pub trait EventLike: DagNode {
@@ -1260,37 +1277,54 @@ impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEvent<Id, C,
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// impl rezzy::RawEvent for Pdu {
-///     type Id = OwnedEventId;
+/// ```rust,no_run
+/// use std::borrow::Cow;
+/// use rezzy::{RawEvent, ParsedEvent};
 ///
-///     fn raw_event_id(&self) -> &OwnedEventId { &self.event_id }
+/// struct Pdu {
+///     event_id: String,
+///     sender: String,
+///     kind: String,
+///     state_key: Option<String>,
+///     content: String,
+///     prev_events: Vec<String>,
+///     auth_events: Vec<String>,
+///     depth: u64,
+///     origin_server_ts: u64,
+///     rejected: bool,
+///     soft_fail: bool,
+/// }
 ///
-///     /// `TimelineEventType` enum → `"m.room.member"` etc.
-///     fn raw_event_type(&self) -> Cow<'_, str> {
-///         Cow::Owned(self.kind.to_string())
-///     }
+/// impl RawEvent for Pdu {
+///     type Id = String;
 ///
-///     /// `OwnedUserId` → `"@user:server"`
-///     fn raw_sender(&self) -> &str { self.sender.as_str() }
-///
-///     /// `Option<StateKey>` → `Option<&str>`
+///     fn raw_event_id(&self) -> &String { &self.event_id }
+///     fn raw_event_type(&self) -> Cow<'_, str> { Cow::Borrowed(&self.kind) }
+///     fn raw_sender(&self) -> &str { &self.sender }
 ///     fn raw_state_key(&self) -> Option<&str> { self.state_key.as_deref() }
-///
-///     /// `Box<RawJsonValue>` → raw JSON string
-///     fn raw_content_json(&self) -> &str { self.content.get() }
-///
-///     fn raw_prev_events(&self) -> &[OwnedEventId] { &self.prev_events }
-///     fn raw_auth_events(&self) -> &[OwnedEventId] { &self.auth_events }
-///     fn raw_depth(&self) -> u64 { self.depth.into() }
-///     fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts.into() }
+///     fn raw_content_json(&self) -> &str { &self.content }
+///     fn raw_prev_events(&self) -> &[String] { &self.prev_events }
+///     fn raw_auth_events(&self) -> &[String] { &self.auth_events }
+///     fn raw_depth(&self) -> u64 { self.depth }
+///     fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts }
 ///     fn raw_rejected(&self) -> bool { self.rejected }
 ///     fn raw_soft_fail(&self) -> bool { self.soft_fail }
 /// }
 ///
-/// // Usage — zero boilerplate, one JSON parse:
-/// let event = rezzy::ParsedEvent::new(&pdu);
-/// rezzy::auth::check_auth(&event, &state, version, None)?;
+/// let pdu = Pdu {
+///     event_id: "$abc:example.com".into(),
+///     sender: "@alice:example.com".into(),
+///     kind: "m.room.message".into(),
+///     state_key: None,
+///     content: "{}".into(),
+///     prev_events: vec![],
+///     auth_events: vec![],
+///     depth: 1,
+///     origin_server_ts: 1000,
+///     rejected: false,
+///     soft_fail: false,
+/// };
+/// let _event = ParsedEvent::new(&pdu);
 /// ```
 pub trait RawEvent {
     /// The event ID type (e.g. `OwnedEventId`, `String`).
