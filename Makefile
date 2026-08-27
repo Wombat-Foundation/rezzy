@@ -37,6 +37,11 @@ lint: ##H Run all linters
 		$(CARGO) check --all-targets $(CARGO_FEATURE_ARGS); \
 	fi
 
+.PHONY: doc
+doc: ##H Generate rustdoc API documentation
+	$(CARGO) doc --no-deps
+	echo '<meta http-equiv="refresh" content="0;url=rezzy/index.html">' > target/doc/index.html
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Lean targets
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -82,11 +87,6 @@ rust/build: ##H Compile Rust binary (release)
 rust/so: ##H Compile shared object (librezzy.so) from the library
 	$(CARGO) rustc --locked --release --lib --crate-type cdylib $(CARGO_FEATURE_ARGS)
 	@echo "Built: target/release/librezzy.so"
-
-.PHONY: rust/doc
-rust/doc: ##H Generate rustdoc API documentation
-	$(CARGO) doc --no-deps
-	echo '<meta http-equiv="refresh" content="0;url=rezzy/index.html">' > target/doc/index.html
 
 .PHONY: rust/test
 rust/test: ##H Run Rust tests (p=NAME for specific test, a=ARGS for test binary args)

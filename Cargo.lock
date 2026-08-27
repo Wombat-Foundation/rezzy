@@ -1272,7 +1272,6 @@ dependencies = [
  "similar",
  "test-log",
  "ureq",
- "zeroize",
 ]
 
 [[package]]

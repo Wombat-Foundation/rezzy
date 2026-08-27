@@ -79,7 +79,6 @@ cli = [
     "dep:idna_adapter",
     "mimalloc",
     "ureq/tls",
-    "dep:zeroize",
 ]
 regen = ["std"]
 # Event signature verification uses the RFC-8032 (ed25519-dalek) backend,
@@ -149,8 +148,6 @@ test-log = { version = "0.2.20", optional = true }
 ureq = { version = "2.9", optional = true, default-features = false, features = [
     "json",
 ] }
-zeroize = { version = "=1.8.2", optional = true, default-features = false }
-
 [dev-dependencies]
 ed25519-consensus = { version = "2.1", default-features = false, features = ["std"] }
 rand_08 = { package = "rand", version = "0.8" }
@@ -249,3 +246,18 @@ panic = "abort"
 [profile.release]
 strip = "symbols"
 lto = "thin"
+
+# Optimize for quick edit/compile cycles. Full debug info makes artifacts much
+# larger and slows linking; use a debug build with symbols only when needed.
+[profile.dev]
+opt-level = 0
+debug = 0
+strip = "debuginfo"
+incremental = true
+codegen-units = 256
+
+[profile.test]
+debug = 0
+strip = "debuginfo"
+incremental = true
+codegen-units = 256
