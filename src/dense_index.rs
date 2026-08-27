@@ -19,6 +19,20 @@ use crate::HashMap;
 use alloc::vec::Vec;
 use core::fmt;
 
+#[cfg(test)]
+static FORCE_ALLOCATION_FAILURE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+#[inline]
+fn allocation_should_fail() -> bool {
+    #[cfg(test)]
+    {
+        return FORCE_ALLOCATION_FAILURE.load(core::sync::atomic::Ordering::Relaxed);
+    }
+    #[cfg(not(test))]
+    false
+}
+
 /// The largest index value a [`DenseIndex`] index width can hold. Used to pick
 /// the default overflow bound in [`DenseIndex::try_build`].
 pub trait DenseIndexWidth: Copy {
@@ -161,7 +175,10 @@ impl<T: Eq + Clone + core::hash::Hash, Idx: Copy + TryFrom<usize> + DenseIndexWi
                     allocation_failed: false,
                 });
             }
-            if items.try_reserve(1).is_err() || index_by_item.try_reserve(1).is_err() {
+            if allocation_should_fail()
+                || items.try_reserve(1).is_err()
+                || index_by_item.try_reserve(1).is_err()
+            {
                 return Err(IndexTooLarge {
                     distinct_count: items.len(),
                     allocation_failed: true,
@@ -320,5 +337,15 @@ mod tests {
         let err = DenseIndex::<u32, u8>::try_build_bounded(0..300u32, 300)
             .expect_err("256 distinct items cannot fit in a u8 index");
         assert_eq!(err.distinct_count, 256);
+    }
+
+    #[test]
+    fn allocation_failure_is_reported_without_panicking() {
+        FORCE_ALLOCATION_FAILURE.store(true, core::sync::atomic::Ordering::Relaxed);
+        let err = DenseIndex::<u32>::try_build_bounded([1], 10)
+            .expect_err("injected allocation failure must be returned");
+        FORCE_ALLOCATION_FAILURE.store(false, core::sync::atomic::Ordering::Relaxed);
+        assert!(err.allocation_failed);
+        assert_eq!(err.distinct_count, 0);
     }
 }
