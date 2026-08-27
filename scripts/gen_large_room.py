@@ -362,7 +362,7 @@ for i in range(500):
 # ============================================================================
 print("Phase 6: Final churn...")
 REMAINING = NUM_EVENTS - len(events)
-for i in range(REMAINING):
+for _i in range(REMAINING):
     r = random.random()
     if r < 0.6:
         pool = [u for u in ALL_USERS if u not in joined_users]

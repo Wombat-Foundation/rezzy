@@ -98,7 +98,7 @@ endif
 
 .PHONY: rust/bench
 rust/bench: ##H Run benchmarks
-	#$(CARGO) bench --profile release --bench reconcile resolve
+	#$(CARGO) bench --profile release --bench rezzy -- resolve
 	$(CARGO) bench --profile release --benches
 
 .PHONY: rust/coverage

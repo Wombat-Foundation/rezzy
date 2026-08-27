@@ -422,7 +422,6 @@ fn to_rezzy_lean(ev: &TestEvent) -> rezzy::LeanEvent {
         content: content_val,
         prev_events: ev.prev_events.iter().map(ToString::to_string).collect(),
         auth_events: ev.auth_events.iter().map(ToString::to_string).collect(),
-        prev_state_events: Vec::new(),
         depth: 0,
         rejected: false,
         soft_fail: false,

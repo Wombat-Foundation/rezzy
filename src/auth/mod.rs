@@ -1157,14 +1157,14 @@ pub fn apply_authorized_redactions<Id, E, K>(
     room_version: &str,
 ) -> RedactionReport<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId + Clone + AsRef<str>,
+    Id: crate::basespec::rezzy_types::EventId + Clone,
     E: EventLike<Id = Id, Content = serde_json::Value>,
     K: crate::basespec::rezzy_types::StateKey + Clone,
 {
-    let pos_by_id: alloc::collections::BTreeMap<&str, usize> = events
+    let pos_by_id: alloc::collections::BTreeMap<alloc::string::String, usize> = events
         .iter()
         .enumerate()
-        .map(|(i, e)| (e.event_id.as_ref(), i))
+        .map(|(i, e)| (e.event_id.to_string(), i))
         .collect();
 
     // Collect (redaction_pos, target_pos) pairs and deferred (out-of-batch)

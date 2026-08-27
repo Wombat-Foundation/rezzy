@@ -843,7 +843,20 @@ fn write_redacted_canonical<W: core::fmt::Write>(
 
     out.write_str("{")?;
     let mut first = true;
+    let mut content_written = false;
     for (key, v) in obj {
+        // `redact_json` always materializes an empty `content` object, even
+        // when the input omitted the field. Insert it before the first later
+        // key so the streaming output remains in canonical key order.
+        if !content_written && key.as_str() > FIELD_CONTENT {
+            if !first {
+                out.write_str(",")?;
+            }
+            first = false;
+            write_json_string(out, FIELD_CONTENT)?;
+            out.write_str(":{}")?;
+            content_written = true;
+        }
         let keep = match key.as_str() {
             FIELD_EVENT_ID
             | FIELD_TYPE
@@ -872,9 +885,17 @@ fn write_redacted_canonical<W: core::fmt::Write>(
         out.write_str(":")?;
         if key == FIELD_CONTENT {
             write_json_value(out, &redact_content(v, rule))?;
+            content_written = true;
         } else {
             write_json_value(out, v)?;
         }
+    }
+    if !content_written {
+        if !first {
+            out.write_str(",")?;
+        }
+        write_json_string(out, FIELD_CONTENT)?;
+        out.write_str(":{}")?;
     }
     out.write_str("}")
 }
@@ -918,12 +939,15 @@ impl<Id: Clone, K: Clone> LeanEvent<Id, Value, K> {
 /// `room_version` selects the preserved-key rule; obtain it from the room's
 /// `m.room.create` content (`get_room_version`).
 #[must_use]
-pub fn apply_redaction<Id: Clone + AsRef<str>, K: Clone>(
+pub fn apply_redaction<Id: Clone + core::fmt::Display, K: Clone>(
     target: &LeanEvent<Id, Value, K>,
     redaction: &LeanEvent<Id, Value, K>,
     room_version: &str,
 ) -> Option<LeanEvent<Id, Value, K>> {
-    if redaction.get_redacts() != Some(target.event_id.as_ref()) {
+    if !redaction
+        .get_redacts()
+        .is_some_and(|target_id| target_id == target.event_id.to_string())
+    {
         return None;
     }
     Some(target.redacted(room_version))
@@ -3510,6 +3534,10 @@ mod canonical_parity_tests {
             (
                 json!({ "type":"m.room.join_rules","content":{"join_rule":"invite","allow":[]} }),
                 "9",
+            ),
+            (
+                json!({ "type":"m.room.message","sender":"@a:x","depth":1 }),
+                "10",
             ),
             (
                 json!({ "type":"m.room.power_levels","content":{"users":{"@a:x":100},"ban":50,"extra":1} }),

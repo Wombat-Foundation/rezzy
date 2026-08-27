@@ -6,10 +6,9 @@ import uuid
 
 print("Opening files A.txt and B.txt...")
 start = time.time()
-with (
-    open("A.txt", "w", encoding="utf-8") as fa,
-    open("B.txt", "w", encoding="utf-8") as fb,
-):
+with open("A.txt", "w", encoding="utf-8") as fa, open(
+    "B.txt", "w", encoding="utf-8"
+) as fb:
     print("Step 1/3: Generating 10,000,000 shared UUIDs (in both A and B)...")
     for i in range(10_000_000):
         u = str(uuid.uuid4())

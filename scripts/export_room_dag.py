@@ -38,6 +38,7 @@ Usage:
 # pylint: disable=duplicate-code
 
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -85,7 +86,7 @@ def api_get(path, params=None, server=None):
     except (
         json.JSONDecodeError,
         UnicodeDecodeError,
-        urllib.error.IncompleteReadError,
+        http.client.IncompleteRead,
     ) as e:
         print(f"  Invalid API response: {e}", file=sys.stderr)
         return None

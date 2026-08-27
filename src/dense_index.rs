@@ -20,14 +20,15 @@ use alloc::vec::Vec;
 use core::fmt;
 
 #[cfg(test)]
-static FORCE_ALLOCATION_FAILURE: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
+std::thread_local! {
+    static FORCE_ALLOCATION_FAILURE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
 
 #[inline]
 fn allocation_should_fail() -> bool {
     #[cfg(test)]
     {
-        FORCE_ALLOCATION_FAILURE.load(core::sync::atomic::Ordering::Relaxed)
+        FORCE_ALLOCATION_FAILURE.with(core::cell::Cell::get)
     }
     #[cfg(not(test))]
     false
@@ -356,10 +357,10 @@ mod tests {
 
     #[test]
     fn allocation_failure_is_reported_without_panicking() {
-        FORCE_ALLOCATION_FAILURE.store(true, core::sync::atomic::Ordering::Relaxed);
+        FORCE_ALLOCATION_FAILURE.with(|flag| flag.set(true));
         let err = DenseIndex::<u32>::try_build_bounded([1], 10)
             .expect_err("injected allocation failure must be returned");
-        FORCE_ALLOCATION_FAILURE.store(false, core::sync::atomic::Ordering::Relaxed);
+        FORCE_ALLOCATION_FAILURE.with(|flag| flag.set(false));
         assert!(err.allocation_failed);
         assert_eq!(err.distinct_count, 0);
     }

@@ -801,7 +801,7 @@ mod tests {
             coerce_json_to_i64(&serde_json::json!(u64::MAX)),
             Some(9_007_199_254_740_991)
         );
-        // legacy float power levels: as_f64 -> Number::from_f64(f.trunc()) -> as_i64
+        // legacy float power levels: truncate toward zero, then range-check and cast to i64
         assert_eq!(coerce_json_to_i64(&serde_json::json!(50.0)), Some(50));
         assert_eq!(coerce_json_to_i64(&serde_json::json!(50.9)), Some(50));
         assert_eq!(coerce_json_to_i64(&serde_json::json!(-50.9)), Some(-50));
