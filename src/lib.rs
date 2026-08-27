@@ -50,7 +50,6 @@ extern crate std;
 extern crate alloc;
 
 use alloc::string::String;
-use alloc::string::ToString;
 use alloc::vec::Vec;
 
 pub mod auth;
@@ -66,6 +65,7 @@ pub mod signing;
 pub mod state;
 pub mod warnings;
 
+pub use basespec::event_types::EventType;
 pub use basespec::rezzy_types::*;
 pub use dense_index::{DenseIndex, IndexTooLarge};
 pub use reconcile::*;
@@ -94,29 +94,34 @@ pub enum OutputFormat {
 
 /// One resolved-state entry in `(type, state_key, event_id)` form.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ResolvedStateEntry {
-    pub event_type: String,
-    pub state_key: String,
-    pub event_id: String,
+pub struct ResolvedStateEntry<Id = String, K = String> {
+    pub event_type: EventType,
+    pub state_key: K,
+    pub event_id: Id,
 }
 
 /// Converts a resolved state map into a stable, sorted list of entries.
 #[must_use]
-pub fn resolved_state_entries<Id: basespec::rezzy_types::EventId>(
-    final_state_map: &crate::state::at::SharedState<Id>,
-) -> Vec<ResolvedStateEntry> {
+pub fn resolved_state_entries<Id, K>(
+    final_state_map: &crate::state::at::SharedState<Id, K>,
+) -> Vec<ResolvedStateEntry<Id, K>>
+where
+    Id: basespec::rezzy_types::EventId,
+    K: basespec::rezzy_types::StateKey,
+{
     let mut entries = final_state_map
         .iter()
         .map(|((event_type, state_key), event_id)| ResolvedStateEntry {
-            event_type: event_type.to_string(),
+            event_type: event_type.clone(),
             state_key: state_key.clone(),
-            event_id: event_id.to_string(),
+            event_id: event_id.clone(),
         })
         .collect::<Vec<_>>();
     entries.sort_by(|a, b| {
         a.event_type
             .cmp(&b.event_type)
             .then_with(|| a.state_key.cmp(&b.state_key))
+            .then_with(|| a.event_id.cmp(&b.event_id))
     });
     entries
 }
@@ -173,17 +178,17 @@ mod tests {
             entries,
             vec![
                 ResolvedStateEntry {
-                    event_type: "m.room.create".into(),
+                    event_type: EventType::RoomCreate,
                     state_key: String::new(),
                     event_id: "$c".into(),
                 },
                 ResolvedStateEntry {
-                    event_type: "m.room.member".into(),
+                    event_type: EventType::RoomMember,
                     state_key: "@alice:x".into(),
                     event_id: "$a".into(),
                 },
                 ResolvedStateEntry {
-                    event_type: "m.room.member".into(),
+                    event_type: EventType::RoomMember,
                     state_key: "@bob:x".into(),
                     event_id: "$b".into(),
                 },

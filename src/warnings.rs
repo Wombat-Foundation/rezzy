@@ -1,26 +1,10 @@
-//! A structured, stably-coded channel for conditions the Matrix spec leaves
-//! undefined or homeserver-specific -- rezzy detects them but deliberately
-//! does not pick a policy (reject vs continue) on the caller's behalf.
+//! Diagnostic warnings for spec-undefined or implementation-deferred conditions.
 //!
-//! Contrast with [`crate::auth::AuthError`]: an `AuthError` means the spec
-//! is definite and the event MUST be rejected. A [`Warning`] means the spec
-//! is silent or explicitly defers to implementations, so rezzy surfaces the
-//! condition structurally instead of hard-coding an opinion. Two examples
-//! already wired through this channel:
+//! Unlike [`crate::auth::AuthError`] (which strictly invalidates events per the
+//! spec), a [`Warning`] reports non-fatal anomalies — such as missing DAG
+//! references or legacy oversized fields — without enforcing a rejection policy.
 //!
-//! - An event whose `prev_events` reference an ID missing from the local
-//!   DAG. The spec has no rule for this (it's a backfill/sync concern, not
-//!   an auth concern) -- some homeservers may want to reject until backfill
-//!   completes, others may want to process what they have and backfill
-//!   asynchronously.
-//! - A pre-v11 event exceeding the 255-byte field limit that v11+ hard-
-//!   enforces. Synapse itself only warns pre-v11 (`strict_event_byte_limits_room_versions`)
-//!   to avoid splitting the DAG against legacy rooms with oversized fields
-//!   already baked into their history; a from-scratch deployment might
-//!   reasonably choose to reject instead.
-//!
-//! Every variant has a [`Warning::code`] -- a short, stable string safe to
-//! match on or log across rezzy versions even as a variant's fields grow.
+//! Every variant provides a stable [`Warning::code`] for programmatic matching and logging.
 
 use alloc::string::String;
 use alloc::vec::Vec;
