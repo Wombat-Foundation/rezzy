@@ -4575,6 +4575,103 @@ fn test_apply_authorized_redactions_report() {
     assert_eq!(target.content, serde_json::json!({}));
 }
 
+#[test]
+fn test_apply_authorized_redactions_no_redactions_fast_path() {
+    use rezzy::auth::{apply_authorized_redactions, RedactionReport, RoomState};
+    let state = RoomState::<String, serde_json::Value, String>::new();
+    let mut empty_events: Vec<LeanEvent> = Vec::new();
+    let report = apply_authorized_redactions(&mut empty_events, &state, StateResVersion::V2, "11");
+    assert_eq!(report, RedactionReport::default());
+
+    let mut non_redactions: Vec<LeanEvent> = vec![LeanEvent {
+        event_id: "$msg".into(),
+        event_type: "m.room.message".into(),
+        sender: "@alice:example.com".into(),
+        ..Default::default()
+    }];
+    let report =
+        apply_authorized_redactions(&mut non_redactions, &state, StateResVersion::V2, "11");
+    assert_eq!(report, RedactionReport::default());
+}
+
+#[test]
+fn test_apply_authorized_redactions_different_id_types() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use std::sync::Arc;
+
+    // Test with Arc<str>
+    let mut arc_events = vec![
+        LeanEvent::<Arc<str>, serde_json::Value, String> {
+            event_id: Arc::from("$target"),
+            event_type: "m.room.message".into(),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "body": "hello" }),
+            ..Default::default()
+        },
+        LeanEvent::<Arc<str>, serde_json::Value, String> {
+            event_id: Arc::from("$redaction"),
+            event_type: "m.room.redaction".into(),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "redacts": "$target" }),
+            ..Default::default()
+        },
+    ];
+    let arc_state = RoomState::<Arc<str>, serde_json::Value, String>::new();
+    let report =
+        apply_authorized_redactions(&mut arc_events, &arc_state, StateResVersion::V2, "11");
+    assert_eq!(
+        report.applied,
+        vec![(Arc::from("$redaction"), Arc::from("$target"))]
+    );
+
+    // Test with Box<str>
+    let mut box_events = vec![
+        LeanEvent::<Box<str>, serde_json::Value, String> {
+            event_id: Box::from("$target"),
+            event_type: "m.room.message".into(),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "body": "hello" }),
+            ..Default::default()
+        },
+        LeanEvent::<Box<str>, serde_json::Value, String> {
+            event_id: Box::from("$redaction"),
+            event_type: "m.room.redaction".into(),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "redacts": "$target" }),
+            ..Default::default()
+        },
+    ];
+    let box_state = RoomState::<Box<str>, serde_json::Value, String>::new();
+    let report =
+        apply_authorized_redactions(&mut box_events, &box_state, StateResVersion::V2, "11");
+    assert_eq!(
+        report.applied,
+        vec![(Box::from("$redaction"), Box::from("$target"))]
+    );
+
+    // Test with u64 ID type (which falls back to Cow::Owned via ToString)
+    let mut u64_events = vec![
+        LeanEvent::<u64, serde_json::Value, String> {
+            event_id: 1,
+            event_type: "m.room.message".into(),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "body": "hello" }),
+            ..Default::default()
+        },
+        LeanEvent::<u64, serde_json::Value, String> {
+            event_id: 2,
+            event_type: "m.room.redaction".into(),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "redacts": "1" }),
+            ..Default::default()
+        },
+    ];
+    let u64_state = RoomState::<u64, serde_json::Value, String>::new();
+    let report =
+        apply_authorized_redactions(&mut u64_events, &u64_state, StateResVersion::V2, "11");
+    assert_eq!(report.applied, vec![(2, 1)]);
+}
+
 /// `LeanEvent::is_redaction()` must return true only for `m.room.redaction`
 /// events that carry a resolvable `redacts` field. Both the event-type check
 /// and the `get_redacts().is_some()` conjunct need coverage.
