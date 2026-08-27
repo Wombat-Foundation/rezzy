@@ -643,6 +643,23 @@ mod tests {
     }
 
     #[test]
+    fn test_lthash_replace_checked_success() {
+        let mut actual = LtHash::ZERO;
+        actual.insert("m.room.topic", "", "$old");
+        actual.replace_checked("m.room.topic", "", "$old", "m.room.topic", "", "$new");
+
+        let mut expected = LtHash::ZERO;
+        expected.insert("m.room.topic", "", "$new");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_lthash_defaults_to_zero() {
+        assert_eq!(LtHash::default(), LtHash::ZERO);
+        assert_eq!(RedactionOverlay::default(), RedactionOverlay::ZERO);
+    }
+
+    #[test]
     fn test_lthash_mismatched_state_key_replace_panics() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut h = LtHash::ZERO;
