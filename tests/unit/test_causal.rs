@@ -68,6 +68,7 @@ fn causal_inclusion_proof_rejects_non_member() {
     let (a, d) = (key(0xa1), key(0xd4));
     let s = CausalSet::empty().insert(a);
     assert!(s.inclusion_proof(&d).is_none());
+    assert!(CausalSet::empty().inclusion_proof(&d).is_none());
 }
 
 #[test]
@@ -163,6 +164,10 @@ fn verify_causal_inclusion_rejects_count_forgery() {
     assert!(!verify_causal_inclusion(&a, &path, root, count + 1));
     // Tampering with sibling count
     if !path.is_empty() {
+        let mut overflow_path = path.clone();
+        overflow_path[0].count = u64::MAX;
+        assert!(!verify_causal_inclusion(&a, &overflow_path, root, count));
+
         path[0].count = path[0].count.saturating_add(10);
         assert!(!verify_causal_inclusion(&a, &path, root, count));
     }

@@ -409,9 +409,12 @@ fn merkle_error_display_covers_all_variants() {
 #[test]
 fn leaf_path_single_field_and_empty() {
     let single = [Field::new("type", json!("m.room.message"))];
+    let leaf_hash = field_leaf_hash(&single[0]);
+    let single_root = merkle::root(&single).unwrap();
+    assert_eq!(single_root, leaf_hash);
+
     let (path, proved_root) = merkle::leaf_path(&single, "type").unwrap();
     assert!(path.is_empty());
-    let leaf_hash = field_leaf_hash(&single[0]);
     assert_eq!(proved_root, leaf_hash);
     assert!(merkle::verify_leaf_path(leaf_hash, &path, proved_root));
 
