@@ -823,12 +823,13 @@ pub mod causal {
         )
     }
 
-    /// Sums two subtree/sibling counts. The draft's "Room-version validity"
-    /// section mandates rejecting an overflowing count addition rather than
-    /// wrapping or saturating it; `checked_add` plus this `expect` is that
-    /// rejection. In practice a real causal set's population is always far
-    /// below `u64::MAX`, so this never actually fires.
-    fn checked_count_sum(a: u64, b: u64) -> u64 {
+    /// Sums two subtree/sibling counts. A locally built causal set's
+    /// population is bounded by the number of distinct 32-byte keys held in
+    /// memory, so this sum cannot reach `u64::MAX`; `saturating_add` avoids a
+    /// panic path without changing any reachable result. Verification of an
+    /// untrusted path uses `checked_add` in `verify_causal_path` and rejects
+    /// overflow, as the draft's "Room-version validity" section requires.
+    fn count_sum(a: u64, b: u64) -> u64 {
         a.saturating_add(b)
     }
 
