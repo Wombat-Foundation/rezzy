@@ -1188,7 +1188,9 @@ where
             state_before.insert(
                 (
                     EventType::from(ev.event_type.as_str()),
-                    ev.state_key.clone().unwrap_or_else(|| empty_key.clone()),
+                    ev.state_key
+                        .clone()
+                        .expect("state_key was checked to be present"),
                 ),
                 ev.event_id.clone(),
             );
@@ -1319,7 +1321,10 @@ where
         state.insert(
             (
                 EventType::from(event.event_type.as_str()),
-                event.state_key.clone().unwrap_or_else(|| empty_key.clone()),
+                event
+                    .state_key
+                    .clone()
+                    .expect("state_key was checked to be present"),
             ),
             event.event_id.clone(),
         );
@@ -1372,4 +1377,59 @@ where
     }
 
     Ok(derived_auth)
+}
+
+#[cfg(test)]
+mod targeted_coverage_tests {
+    use super::*;
+    use serde_json::Value;
+
+    fn event(
+        id: &str,
+        event_type: &str,
+        state_key: Option<&str>,
+    ) -> LeanEvent<String, Value, String> {
+        LeanEvent {
+            event_id: id.into(),
+            event_type: event_type.into(),
+            state_key: state_key.map(String::from),
+            sender: "@alice:example.org".into(),
+            content: Value::Null,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ancestor_collection_reports_dense_index_allocation_failure() {
+        let root = event("$root", M_ROOM_CREATE, Some(""));
+        let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
+        events.insert(root.event_id.clone(), root);
+        let target = "$root".to_string();
+
+        crate::dense_index::set_force_allocation_failure(true);
+        let result = collect_state_dag_ancestor_short_ids_batch(&[&target], &events);
+        crate::dense_index::set_force_allocation_failure(false);
+
+        assert_eq!(result, Err(Vec::new()));
+    }
+
+    #[test]
+    fn state_after_inserts_state_event_and_create_auth_is_empty() {
+        let create = event("$create", M_ROOM_CREATE, Some(""));
+        let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
+        events.insert(create.event_id.clone(), create.clone());
+        let state =
+            compute_state_after_from_dag(&create, &events, StateResVersion::V2_2, &String::new())
+                .expect("create state is valid");
+
+        assert_eq!(
+            state.get(&(EventType::from(M_ROOM_CREATE), String::new())),
+            Some(&"$create".to_string())
+        );
+        assert!(
+            derive_auth_events_from_state_dag(&create, &state, &events, "12")
+                .unwrap()
+                .is_empty()
+        );
+    }
 }

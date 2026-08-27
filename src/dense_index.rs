@@ -34,6 +34,11 @@ fn allocation_should_fail() -> bool {
     false
 }
 
+#[cfg(test)]
+pub(crate) fn set_force_allocation_failure(value: bool) {
+    FORCE_ALLOCATION_FAILURE.with(|flag| flag.set(value));
+}
+
 /// The largest index value a [`DenseIndex`] index width can hold. Used to pick
 /// the default overflow bound in [`DenseIndex::try_build`].
 pub trait DenseIndexWidth: Copy {
