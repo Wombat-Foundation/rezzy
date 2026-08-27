@@ -273,7 +273,7 @@ impl LtHash {
 /// A homomorphic digest of the redaction overlay associated with a resolved
 /// state.  The overlay is deliberately a separate accumulator from
 /// [`LtHash`]: it does not describe another state snapshot.  Each entry names
-/// a selected state event and one effective causal redaction of that event.
+/// one selected state event that is effectively redacted at the DAG point.
 ///
 /// Callers should insert only redactions which have already passed their room
 /// version's authorization rules and are causal at the state point being
@@ -292,13 +292,12 @@ impl RedactionOverlay {
     /// The identity element (no effectively redacted selected events).
     pub const ZERO: Self = Self([0u16; 1024]);
 
-    const DST: &'static [u8] = b"msc4500_redaction_overlay_v1\x00";
+    const DST: &'static [u8] = b"msc4500\x00";
 
     fn seed(
         event_type: &str,
         state_key: &str,
         event_id: &(impl core::fmt::Display + ?Sized),
-        redaction_id: &(impl core::fmt::Display + ?Sized),
     ) -> Self {
         use sha3::digest::{ExtendableOutput, Update};
 
@@ -309,14 +308,10 @@ impl RedactionOverlay {
             xof.update(&len.to_le_bytes());
             xof.update(value.as_bytes());
         }
-        // Length-prefix both IDs so that concatenation cannot make two
-        // overlay entries ambiguous (and so the redaction ID is not merely a
-        // suffix of the state event ID).
-        for value in [event_id.to_string(), redaction_id.to_string()] {
-            let (value, len) = truncate_to_u16_limit(&value);
-            xof.update(&len.to_le_bytes());
-            xof.update(value.as_bytes());
-        }
+        let value = event_id.to_string();
+        let (value, len) = truncate_to_u16_limit(&value);
+        xof.update(&len.to_le_bytes());
+        xof.update(value.as_bytes());
 
         let mut bytes = [0u8; 2048];
         xof.finalize_xof_into(&mut bytes);
@@ -333,9 +328,8 @@ impl RedactionOverlay {
         event_type: &str,
         state_key: &str,
         event_id: &(impl core::fmt::Display + ?Sized),
-        redaction_id: &(impl core::fmt::Display + ?Sized),
     ) {
-        let seed = Self::seed(event_type, state_key, event_id, redaction_id);
+        let seed = Self::seed(event_type, state_key, event_id);
         for (left, right) in self.0.chunks_exact_mut(8).zip(seed.0.chunks_exact(8)) {
             for i in 0..8 {
                 left[i] = left[i].wrapping_add(right[i]);
@@ -349,9 +343,8 @@ impl RedactionOverlay {
         event_type: &str,
         state_key: &str,
         event_id: &(impl core::fmt::Display + ?Sized),
-        redaction_id: &(impl core::fmt::Display + ?Sized),
     ) {
-        let seed = Self::seed(event_type, state_key, event_id, redaction_id);
+        let seed = Self::seed(event_type, state_key, event_id);
         for (left, right) in self.0.chunks_exact_mut(8).zip(seed.0.chunks_exact(8)) {
             for i in 0..8 {
                 left[i] = left[i].wrapping_sub(right[i]);
@@ -492,45 +485,20 @@ mod tests {
     #[test]
     fn test_redaction_overlay_is_separate_and_order_independent() {
         let mut left = RedactionOverlay::ZERO;
-        left.insert(
-            "m.room.member",
-            "@alice:example.org",
-            "$state",
-            "$redaction",
-        );
+        left.insert("m.room.member", "@alice:example.org", "$state");
 
         let mut right = RedactionOverlay::ZERO;
-        right.insert("m.room.member", "@alice:example.org", "$state", "$other");
+        right.insert("m.room.member", "@alice:example.org", "$other-state");
         assert_ne!(left.digest(), right.digest());
 
         let mut reordered = RedactionOverlay::ZERO;
-        reordered.insert(
-            "m.room.member",
-            "@bob:example.org",
-            "$other-state",
-            "$other-redaction",
-        );
-        reordered.insert(
-            "m.room.member",
-            "@alice:example.org",
-            "$state",
-            "$redaction",
-        );
+        reordered.insert("m.room.member", "@bob:example.org", "$other-state");
+        reordered.insert("m.room.member", "@alice:example.org", "$state");
         let mut expected = left;
-        expected.insert(
-            "m.room.member",
-            "@bob:example.org",
-            "$other-state",
-            "$other-redaction",
-        );
+        expected.insert("m.room.member", "@bob:example.org", "$other-state");
         assert_eq!(reordered, expected);
 
-        reordered.remove(
-            "m.room.member",
-            "@bob:example.org",
-            "$other-state",
-            "$other-redaction",
-        );
+        reordered.remove("m.room.member", "@bob:example.org", "$other-state");
         assert_eq!(reordered, left);
     }
 
