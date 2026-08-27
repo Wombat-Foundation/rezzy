@@ -3563,7 +3563,7 @@ mod canonical_redacted_json_tests {
             "type": "m.room.member",
             "content": {"membership": "\u{0008}"}
         });
-        assert!(canonical_redacted_json(&escaped, "10").contains(r#"\b"#));
+        assert!(canonical_redacted_json(&escaped, "10").contains(r"\b"));
     }
 
     #[test]

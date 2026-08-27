@@ -172,6 +172,73 @@ impl<Id: fmt::Display> fmt::Display for StateDagValidationError<Id> {
     }
 }
 
+#[cfg(test)]
+mod validation_error_display_tests {
+    use super::StateDagValidationError;
+    use alloc::format;
+
+    #[test]
+    fn formats_every_state_dag_validation_error() {
+        let cases = [
+            (
+                StateDagValidationError::FanoutExceeded { count: 21, limit: 20 },
+                "prev_state_events count 21 exceeds limit 20",
+            ),
+            (
+                StateDagValidationError::<&str>::CreateWithPrevStateEvents,
+                "m.room.create must not have prev_state_events",
+            ),
+            (
+                StateDagValidationError::NonCreateWithoutPrevStateEvents { event_id: "$e" },
+                "non-create event $e in MSC4242 room must have prev_state_events",
+            ),
+            (
+                StateDagValidationError::ReferencedNonStateEvent {
+                    citing_event: "$c",
+                    referenced_event: "$r",
+                },
+                "event $c references non-state event $r in prev_state_events",
+            ),
+            (
+                StateDagValidationError::ReferencedForeignRoom {
+                    citing_event: "$c",
+                    referenced_event: "$r",
+                    expected_room: "!expected:example.org".into(),
+                    actual_room: Some("!actual:example.org".into()),
+                },
+                "event $c (room !expected:example.org) references event $r from different room !actual:example.org",
+            ),
+            (
+                StateDagValidationError::ReferencedForeignRoom {
+                    citing_event: "$c",
+                    referenced_event: "$r",
+                    expected_room: "!expected:example.org".into(),
+                    actual_room: None,
+                },
+                "event $c (room !expected:example.org) references event $r without room_id",
+            ),
+            (
+                StateDagValidationError::ReferencedRejectedEvent {
+                    citing_event: "$c",
+                    referenced_event: "$r",
+                },
+                "event $c references rejected event $r in prev_state_events",
+            ),
+            (
+                StateDagValidationError::MissingReferencedEvent {
+                    citing_event: "$c",
+                    missing_id: "$m",
+                },
+                "event $c references missing event $m in prev_state_events",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(format!("{error}"), expected);
+        }
+    }
+}
+
 /// Error during State DAG computation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateDagError<Id = String> {
@@ -196,6 +263,258 @@ impl<Id: fmt::Display> fmt::Display for StateDagError<Id> {
             }
             Self::CycleDetected => write!(f, "cycle detected in state DAG"),
         }
+    }
+}
+
+#[cfg(test)]
+mod state_dag_error_display_tests {
+    use super::{StateDagError, StateDagValidationError};
+    use alloc::{format, vec};
+
+    #[test]
+    fn formats_every_state_dag_error_variant() {
+        let validation =
+            StateDagError::<&str>::Validation(StateDagValidationError::CreateWithPrevStateEvents);
+        assert_eq!(
+            format!("{validation}"),
+            "state DAG validation error: m.room.create must not have prev_state_events"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                StateDagError::<&str>::IncompleteDag {
+                    missing_event_ids: vec!["$a", "$b"]
+                }
+            ),
+            "state DAG is incomplete; missing 2 ancestor events"
+        );
+        assert_eq!(
+            format!("{}", StateDagError::<&str>::CycleDetected),
+            "cycle detected in state DAG"
+        );
+    }
+}
+
+#[cfg(test)]
+mod state_dag_branch_coverage_tests {
+    use super::*;
+    use crate::basespec::rezzy_types::RoomId;
+    use alloc::{format, string::String};
+    use serde_json::Value;
+
+    type TestEvent = LeanEvent<String, Value, String>;
+    type TestMap = crate::HashMap<String, TestEvent>;
+
+    fn event(id: &str, state_key: Option<&str>) -> LeanEvent<String, Value, String> {
+        LeanEvent {
+            event_id: id.into(),
+            event_type: "m.room.message".into(),
+            state_key: state_key.map(String::from),
+            power_level: 0,
+            origin_server_ts: 0,
+            sender: "@alice:example.org".into(),
+            content: Value::Null,
+            prev_events: Vec::new(),
+            auth_events: Vec::new(),
+            depth: 0,
+            rejected: false,
+            soft_fail: false,
+            room_id: None,
+        }
+    }
+
+    #[test]
+    fn validates_foreign_room_without_parent_room_id() {
+        let mut citing = event("$c", Some(""));
+        citing.room_id = Some(RoomId::new("!room:example.org"));
+        citing.auth_events.push("$p".into());
+        let parent = event("$p", Some(""));
+        let mut events: TestMap = crate::HashMap::default();
+        events.insert(parent.event_id.clone(), parent);
+
+        let error = validate_msc4242_prev_state_events(&citing, &events).unwrap_err();
+        assert!(matches!(
+            error,
+            StateDagValidationError::ReferencedForeignRoom {
+                actual_room: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn validates_matching_parent_and_rejects_excessive_fanout() {
+        let mut citing = event("$c", Some(""));
+        citing.room_id = Some(RoomId::new("!room:example.org"));
+        citing.auth_events.push("$p".into());
+        let mut parent = event("$p", Some(""));
+        parent.room_id = citing.room_id.clone();
+        let mut events: TestMap = crate::HashMap::default();
+        events.insert(parent.event_id.clone(), parent);
+        assert!(validate_msc4242_prev_state_events(&citing, &events).is_ok());
+
+        citing.auth_events = (0..=MAX_PREV_STATE_EVENTS)
+            .map(|i| format!("$parent{i}"))
+            .collect();
+        assert!(matches!(
+            validate_msc4242_prev_state_events(&citing, &events),
+            Err(StateDagValidationError::FanoutExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn walk_handles_duplicate_start_and_stop_on_missing() {
+        let missing: String = "$missing".into();
+        let mut events: TestMap = crate::HashMap::default();
+        let mut root = event("$root", Some(""));
+        root.auth_events.push(missing.clone());
+        events.insert(root.event_id.clone(), root);
+        let starts = [&"$root".to_string(), &"$root".to_string()];
+        let result = walk_state_dag(
+            &starts,
+            &events,
+            StateDagWalkOptions {
+                max_steps: None,
+                stop_on_first_missing: true,
+            },
+        );
+        assert!(matches!(
+            result,
+            StateDagCompleteness::Incomplete {
+                missing_event_ids,
+                ..
+            } if missing_event_ids == vec![missing]
+        ));
+    }
+
+    #[test]
+    fn walk_reports_truncation_and_cycles_as_incomplete() {
+        let mut root = event("$root", Some(""));
+        root.auth_events.push("$missing".into());
+        let mut events: TestMap = crate::HashMap::default();
+        events.insert(root.event_id.clone(), root);
+        let start = "$root".to_string();
+        let truncated = walk_state_dag(
+            &[&start],
+            &events,
+            StateDagWalkOptions {
+                max_steps: Some(1),
+                stop_on_first_missing: false,
+            },
+        );
+        assert!(matches!(truncated, StateDagCompleteness::Incomplete { .. }));
+
+        let mut a = event("$a", Some(""));
+        a.auth_events.push("$b".into());
+        let mut b = event("$b", Some(""));
+        b.auth_events.push("$a".into());
+        let mut cyclic: TestMap = crate::HashMap::default();
+        cyclic.insert(a.event_id.clone(), a);
+        cyclic.insert(b.event_id.clone(), b);
+        let cycle_start = "$a".to_string();
+        assert!(matches!(
+            walk_state_dag(
+                &[&cycle_start],
+                &cyclic,
+                StateDagWalkOptions {
+                    max_steps: None,
+                    stop_on_first_missing: false,
+                }
+            ),
+            StateDagCompleteness::Incomplete { .. }
+        ));
+    }
+
+    #[test]
+    fn ordering_missing_events_ignores_unknown_latest_event() {
+        let unknown = "$unknown".to_string();
+        let events = crate::HashMap::<String, LeanEvent<String, Value, String>>::default();
+        assert!(order_missing_state_events_deterministic(&[&unknown], &events, 10).is_empty());
+
+        let mut latest = event("$latest", Some(""));
+        latest.auth_events.push("$missing".into());
+        let mut events: TestMap = crate::HashMap::default();
+        events.insert(latest.event_id.clone(), latest);
+        assert_eq!(
+            order_missing_state_events_deterministic(&[&"$latest".to_string()], &events, 10),
+            vec!["$missing".to_string()]
+        );
+    }
+
+    #[test]
+    fn state_before_rejects_invalid_create_and_non_create_shapes() {
+        let empty_key = String::new();
+        let mut create = event("$create", Some(""));
+        create.event_type = M_ROOM_CREATE.into();
+        create.auth_events.push("$parent".into());
+        let events = crate::HashMap::<String, LeanEvent<String, Value, String>>::default();
+        assert!(matches!(
+            compute_state_before_from_dag(&create, &events, StateResVersion::V2_2, &empty_key),
+            Err(StateDagError::Validation(
+                StateDagValidationError::CreateWithPrevStateEvents
+            ))
+        ));
+
+        let non_create = event("$event", Some(""));
+        assert!(matches!(
+            compute_state_before_from_dag(&non_create, &events, StateResVersion::V2_2, &empty_key),
+            Err(StateDagError::Validation(
+                StateDagValidationError::NonCreateWithoutPrevStateEvents { .. }
+            ))
+        ));
+
+        let mut missing_parent = event("$event", Some(""));
+        missing_parent.auth_events.push("$missing".into());
+        assert!(matches!(
+            compute_state_before_from_dag(
+                &missing_parent,
+                &events,
+                StateResVersion::V2_2,
+                &empty_key
+            ),
+            Err(StateDagError::Validation(
+                StateDagValidationError::MissingReferencedEvent { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn state_before_resolves_multiple_parent_states_and_detects_cycles() {
+        let empty_key = String::new();
+        let mut create = event("$create", Some(""));
+        create.event_type = M_ROOM_CREATE.into();
+        let mut left = event("$left", Some("@left:example.org"));
+        left.auth_events.push("$create".into());
+        let mut right = event("$right", Some("@right:example.org"));
+        right.auth_events.push("$create".into());
+        let mut target = event("$target", Some("@target:example.org"));
+        target.auth_events.extend(["$left".into(), "$right".into()]);
+        let mut events: TestMap = crate::HashMap::default();
+        for value in [create, left, right, target.clone()] {
+            events.insert(value.event_id.clone(), value);
+        }
+        assert!(
+            compute_state_before_from_dag(&target, &events, StateResVersion::V2_2, &empty_key)
+                .is_ok()
+        );
+
+        let mut cycle = event("$cycle", Some("@cycle:example.org"));
+        cycle.auth_events.push("$cycle".into());
+        let mut cyclic: TestMap = crate::HashMap::default();
+        cyclic.insert(cycle.event_id.clone(), cycle.clone());
+        assert!(matches!(
+            compute_state_before_from_dag(&cycle, &cyclic, StateResVersion::V2_2, &empty_key),
+            Err(StateDagError::CycleDetected)
+        ));
+    }
+
+    #[test]
+    fn ancestor_collection_reports_missing_ids_and_deduplicates_them() {
+        let unknown = "$unknown".to_string();
+        let events = crate::HashMap::<String, LeanEvent<String, Value, String>>::default();
+        let targets = [&unknown, &unknown];
+        let missing = collect_state_dag_ancestor_short_ids_batch(&targets, &events).unwrap_err();
+        assert_eq!(missing, vec![unknown]);
     }
 }
 
