@@ -173,7 +173,6 @@ impl<Id: fmt::Display> fmt::Display for StateDagValidationError<Id> {
 }
 
 #[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
 mod validation_error_display_tests {
     use super::StateDagValidationError;
     use alloc::format;
@@ -268,7 +267,6 @@ impl<Id: fmt::Display> fmt::Display for StateDagError<Id> {
 }
 
 #[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
 mod state_dag_error_display_tests {
     use super::{StateDagError, StateDagValidationError};
     use alloc::{format, vec};
@@ -298,7 +296,6 @@ mod state_dag_error_display_tests {
 }
 
 #[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
 mod state_dag_branch_coverage_tests {
     use super::*;
     use crate::basespec::rezzy_types::RoomId;
@@ -1147,18 +1144,16 @@ where
 
     for idx in sorted_ancestors {
         let id_val = index.items()[idx];
-        let Some(ev) = events_map.get(id_val) else {
-            continue;
-        };
+        let ev = events_map
+            .get(id_val)
+            .expect("state DAG index contains only events from the event map");
 
         let mut prev_states = Vec::with_capacity(ev.prev_state_events().len());
         for pe in ev.prev_state_events() {
-            let Some(pe_idx) = index.index_of(&pe) else {
-                continue;
-            };
-            if out_degree[pe_idx] == 0 {
-                continue;
-            }
+            let pe_idx = index
+                .index_of(&pe)
+                .expect("state DAG ancestor index contains every referenced parent");
+            debug_assert!(out_degree[pe_idx] > 0);
             out_degree[pe_idx] = out_degree[pe_idx].saturating_sub(1);
             if out_degree[pe_idx] == 0 {
                 if let Some(pe_state) = state_after_map[pe_idx].take() {
