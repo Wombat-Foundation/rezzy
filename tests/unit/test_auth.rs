@@ -561,6 +561,15 @@ fn test_auth_error_display_variants() {
     assert!(msg11.contains("$untagged"));
     assert!(msg11.contains("!room_a:x.com"));
     assert!(msg11.contains("no room_id"));
+
+    let err12: AuthError<String> = AuthError::RejectedAuthEvent {
+        event_id: "$citing".into(),
+        auth_event_id: "$rejected_auth".into(),
+    };
+    let msg12 = format!("{err12}");
+    assert!(msg12.contains("$citing"));
+    assert!(msg12.contains("$rejected_auth"));
+    assert!(msg12.contains("cites rejected auth event"));
 }
 
 #[test]
