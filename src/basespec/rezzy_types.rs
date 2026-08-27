@@ -351,6 +351,59 @@ pub fn redaction_preserved_keys(event_type: &str, room_version: &str) -> Redacti
     }
 }
 
+/// Splits `content` into MSC4511's `redacted_content` (the fields this room
+/// version's redaction algorithm preserves) and `ephemeral_content` (every
+/// remaining field, i.e. what redaction strips), for the given event type and
+/// room version. `redacted_content` is exactly the output of the internal
+/// `redact_content` helper;
+/// `ephemeral_content` is the complement needed to recover `content` from the
+/// two pieces.
+#[must_use]
+pub fn split_redaction_content(
+    content: &Value,
+    event_type: &str,
+    room_version: &str,
+) -> (Value, Value) {
+    let rule = redaction_preserved_keys(event_type, room_version);
+    let redacted = redact_content(content, rule);
+    let ephemeral = ephemeral_content_remainder(content, &redacted);
+    (redacted, ephemeral)
+}
+
+/// Returns the content present in `content` but not preserved in `redacted`,
+/// recursing one level for the `third_party_invite`-shaped nested-path case.
+fn ephemeral_content_remainder(content: &Value, redacted: &Value) -> Value {
+    let Value::Object(content_obj) = content else {
+        return Value::Object(serde_json::Map::default());
+    };
+    let empty = serde_json::Map::default();
+    let redacted_obj = match redacted {
+        Value::Object(m) => m,
+        _ => &empty,
+    };
+    let mut out = serde_json::Map::new();
+    for (key, value) in content_obj {
+        match (redacted_obj.get(key), value) {
+            (Some(preserved), _) if preserved == value => {}
+            (Some(Value::Object(preserved_inner)), Value::Object(full_inner)) => {
+                let mut remainder = serde_json::Map::new();
+                for (inner_key, inner_value) in full_inner {
+                    if preserved_inner.get(inner_key) != Some(inner_value) {
+                        remainder.insert(inner_key.clone(), inner_value.clone());
+                    }
+                }
+                if !remainder.is_empty() {
+                    out.insert(key.clone(), Value::Object(remainder));
+                }
+            }
+            _ => {
+                out.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    Value::Object(out)
+}
+
 /// Filters `content` down to exactly the keys a redaction preserves, per the
 /// given rule. Top-level keys are copied as-is; dotted paths (e.g.
 /// `third_party_invite.signed`) keep only the nested key under the parent
