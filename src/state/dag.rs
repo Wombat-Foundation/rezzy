@@ -583,6 +583,47 @@ mod state_dag_branch_coverage_tests {
     }
 
     #[test]
+    fn state_after_finalization_handles_missing_and_empty_parent_sets() {
+        let empty_key = String::new();
+        let missing_id = "$missing-final-parent".to_string();
+        let mut missing = event("$missing-final-target", Some("target"));
+        missing.auth_events.push(missing_id.clone());
+        let empty_events: TestMap = crate::HashMap::default();
+        let empty_index: DenseIndex<&String, usize> = DenseIndex::try_build([]).unwrap();
+        let empty_states: Vec<Option<SharedState<String, String>>> = Vec::new();
+        let mut auth_cache = LocalAuthCache::new(StateResVersion::V2_2);
+        let mut mainline_cache = FastMap::default();
+        assert!(matches!(
+            finish_state_after_from_dag(
+                &missing,
+                &empty_events,
+                &empty_index,
+                &empty_states,
+                &mut auth_cache,
+                &mut mainline_cache,
+                StateResVersion::V2_2,
+                &empty_key,
+            ),
+            Err(StateDagError::IncompleteDag { missing_event_ids })
+                if missing_event_ids == vec![missing_id]
+        ));
+
+        let empty = event("$empty-final-target", Some("target"));
+        assert!(finish_state_after_from_dag(
+            &empty,
+            &empty_events,
+            &empty_index,
+            &empty_states,
+            &mut auth_cache,
+            &mut mainline_cache,
+            StateResVersion::V2_2,
+            &empty_key,
+        )
+        .unwrap()
+        .is_empty());
+    }
+
+    #[test]
     fn ancestor_collection_reports_missing_ids_and_deduplicates_them() {
         let unknown = "$unknown".to_string();
         let events = crate::HashMap::<String, LeanEvent<String, Value, String>>::default();
@@ -1135,6 +1176,36 @@ where
         }
     }
 
+    finish_state_after_from_dag(
+        event,
+        events_map,
+        &index,
+        &state_after_map,
+        &mut global_auth_cache,
+        &mut mainline_cache,
+        version,
+        empty_key,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_state_after_from_dag<Id, C, S, K>(
+    event: &LeanEvent<Id, C, K>,
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    index: &DenseIndex<&Id, usize>,
+    state_after_map: &[Option<SharedState<Id, K>>],
+    global_auth_cache: &mut LocalAuthCache<Id, C, K>,
+    mainline_cache: &mut FastMap<Id, Option<Id>>,
+    version: StateResVersion,
+    empty_key: &K,
+) -> Result<SharedState<Id, K>, StateDagError<Id>>
+where
+    Id: EventId,
+    C: EventContent,
+    K: StateKey,
+    S: core::hash::BuildHasher,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn StateKeyDyn + 'q>,
+{
     let mut parent_states = Vec::with_capacity(event.prev_state_events().len());
     for pe in event.prev_state_events() {
         let Some(pe_idx) = index.index_of(&pe) else {
@@ -1157,8 +1228,8 @@ where
         Ok(resolve_merge_fast_path(
             &parent_states,
             events_map,
-            &mut global_auth_cache,
-            &mut mainline_cache,
+            global_auth_cache,
+            mainline_cache,
             version,
             empty_key,
         ))
