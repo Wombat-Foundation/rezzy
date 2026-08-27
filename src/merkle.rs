@@ -353,7 +353,10 @@ fn merkle_root_and_path(hashes: &[Hash], target: usize) -> Option<(Hash, Vec<Pro
                 });
                 Some((inner_hash(left_root, right_root), path))
             } else {
-                let (right_root, mut path) = merkle_root_and_path(&hashes[k..], target - k)?;
+                // `target >= k` here (the `target < k` branch above already
+                // handled the other case), so this never saturates.
+                let (right_root, mut path) =
+                    merkle_root_and_path(&hashes[k..], target.saturating_sub(k))?;
                 let left_root = merkle_root(&hashes[..k])?;
                 path.push(ProofStep {
                     side: Side::Left,
@@ -577,23 +580,34 @@ pub mod causal {
 
     /// Returns the bit of `key` at depth `d` (0 = most significant bit of
     /// byte 0), matching the MSB-to-LSB traversal defined for the causal
-    /// trie.
+    /// trie. `d % 8` is always in `0..=7`, so the subtraction from 7 never
+    /// underflows; `saturating_sub` documents that instead of asserting it.
     fn causal_bit(key: &Hash, d: usize) -> u8 {
         let byte_idx = d / 8;
-        let bit_idx = 7 - (d % 8);
+        let bit_idx = 7_usize.saturating_sub(d % 8);
         (key[byte_idx] >> bit_idx) & 1
+    }
+
+    /// Converts a trie depth (always `< CAUSAL_DEPTH`, i.e. `<= 255`) to the
+    /// `u16` `causal_node` hashes over. `unwrap_or(u16::MAX)` is unreachable
+    /// in practice but keeps this a checked, non-panicking conversion rather
+    /// than a silent truncating `as` cast.
+    fn depth_u16(depth: usize) -> u16 {
+        u16::try_from(depth).unwrap_or(u16::MAX)
     }
 
     /// The canonical empty-subtree hash at `depth`, for `depth` in
     /// `[0, CAUSAL_DEPTH]`. `depth == CAUSAL_DEPTH` is the distinguished
     /// empty leaf; every other level is derived from `causal_node` of two
-    /// empty children.
+    /// empty children. `depth` is always `< CAUSAL_DEPTH` here (the
+    /// `depth == CAUSAL_DEPTH` case returns above), so `saturating_add(1)`
+    /// never actually saturates.
     fn empty_hash(depth: usize) -> Hash {
         if depth == CAUSAL_DEPTH {
             return hash_parts(&[CAUSAL_EMPTY_LEAF_DST]);
         }
-        let child = empty_hash(depth + 1);
-        causal_node(depth as u16, child, 0, child, 0)
+        let child = empty_hash(depth.saturating_add(1));
+        causal_node(depth_u16(depth), child, 0, child, 0)
     }
 
     /// An immutable population of event-ID keys committed by a persistent
@@ -757,11 +771,23 @@ pub mod causal {
         )
     }
 
+    /// Sums two subtree/sibling counts. The draft's "Room-version validity"
+    /// section mandates rejecting an overflowing count addition rather than
+    /// wrapping or saturating it; `checked_add` plus this `expect` is that
+    /// rejection. In practice a real causal set's population is always far
+    /// below `u64::MAX`, so this never actually fires.
+    fn checked_count_sum(a: u64, b: u64) -> u64 {
+        a.checked_add(b)
+            .expect("msc4511 causal_set count overflow: MUST reject, not wrap or saturate")
+    }
+
     /// Recomputes a causal trie root from a terminal node (either a
     /// `causal_leaf` and count 1, or a canonical empty hash and count 0) by
     /// applying `path`'s siblings from the level just above the terminal
     /// depth up to the root. `path` is ordered leaf-to-root (deepest sibling
-    /// first), so `depth` walks downward from `terminal_depth - 1` to 0.
+    /// first), so `depth` walks downward from `terminal_depth - 1` to 0;
+    /// `path.len() == terminal_depth` is checked first, so the decrement
+    /// below never underflows past 0.
     fn verify_causal_path(
         terminal_hash: Hash,
         terminal_count: u64,
@@ -777,14 +803,16 @@ pub mod causal {
         let mut cur_count = terminal_count;
         let mut depth = terminal_depth;
         for step in path {
-            depth -= 1;
+            depth = depth.saturating_sub(1);
             cur_hash = match step.side {
-                Side::Left => causal_node(depth as u16, step.hash, step.count, cur_hash, cur_count),
+                Side::Left => {
+                    causal_node(depth_u16(depth), step.hash, step.count, cur_hash, cur_count)
+                }
                 Side::Right => {
-                    causal_node(depth as u16, cur_hash, cur_count, step.hash, step.count)
+                    causal_node(depth_u16(depth), cur_hash, cur_count, step.hash, step.count)
                 }
             };
-            cur_count += step.count;
+            cur_count = checked_count_sum(cur_count, step.count);
         }
         cur_hash == root && cur_count == count
     }
@@ -800,7 +828,9 @@ pub mod causal {
     }
 
     /// Computes the (hash, count) of the subtree rooted at `depth` that
-    /// contains exactly the given non-empty key set.
+    /// contains exactly the given non-empty key set. `depth` is always
+    /// `< CAUSAL_DEPTH` here (the `depth == CAUSAL_DEPTH` case returns
+    /// above), so `saturating_add(1)` never actually saturates.
     fn subtree_root(keys: &[Hash], depth: usize) -> (Hash, u64) {
         if depth == CAUSAL_DEPTH {
             return (causal_leaf(keys[0]), 1);
@@ -814,11 +844,18 @@ pub mod causal {
                 right.push(*k);
             }
         }
-        let (left_hash, left_count) = subtree_root_or_empty(&left, depth + 1);
-        let (right_hash, right_count) = subtree_root_or_empty(&right, depth + 1);
+        let next_depth = depth.saturating_add(1);
+        let (left_hash, left_count) = subtree_root_or_empty(&left, next_depth);
+        let (right_hash, right_count) = subtree_root_or_empty(&right, next_depth);
         (
-            causal_node(depth as u16, left_hash, left_count, right_hash, right_count),
-            left_count + right_count,
+            causal_node(
+                depth_u16(depth),
+                left_hash,
+                left_count,
+                right_hash,
+                right_count,
+            ),
+            checked_count_sum(left_count, right_count),
         )
     }
 
@@ -854,28 +891,55 @@ pub mod causal {
                 right.push(*k);
             }
         }
+        // `depth < CAUSAL_DEPTH` here (checked above), so this never
+        // actually saturates.
+        let next_depth = depth.saturating_add(1);
         if causal_bit(target, depth) == 0 {
             let (left_hash, left_count, mut path, kind, term_depth) =
-                descend(&left, depth + 1, target);
-            let (right_hash, right_count) = subtree_root_or_empty(&right, depth + 1);
-            let node = causal_node(depth as u16, left_hash, left_count, right_hash, right_count);
+                descend(&left, next_depth, target);
+            let (right_hash, right_count) = subtree_root_or_empty(&right, next_depth);
+            let node = causal_node(
+                depth_u16(depth),
+                left_hash,
+                left_count,
+                right_hash,
+                right_count,
+            );
             path.push(CausalProofStep {
                 side: Side::Right,
                 hash: right_hash,
                 count: right_count,
             });
-            (node, left_count + right_count, path, kind, term_depth)
+            (
+                node,
+                checked_count_sum(left_count, right_count),
+                path,
+                kind,
+                term_depth,
+            )
         } else {
             let (right_hash, right_count, mut path, kind, term_depth) =
-                descend(&right, depth + 1, target);
-            let (left_hash, left_count) = subtree_root_or_empty(&left, depth + 1);
-            let node = causal_node(depth as u16, left_hash, left_count, right_hash, right_count);
+                descend(&right, next_depth, target);
+            let (left_hash, left_count) = subtree_root_or_empty(&left, next_depth);
+            let node = causal_node(
+                depth_u16(depth),
+                left_hash,
+                left_count,
+                right_hash,
+                right_count,
+            );
             path.push(CausalProofStep {
                 side: Side::Left,
                 hash: left_hash,
                 count: left_count,
             });
-            (node, left_count + right_count, path, kind, term_depth)
+            (
+                node,
+                checked_count_sum(left_count, right_count),
+                path,
+                kind,
+                term_depth,
+            )
         }
     }
 }
