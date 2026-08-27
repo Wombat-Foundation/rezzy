@@ -293,11 +293,8 @@ where
         if let Ok(num) = v.parse::<u32>() {
             return Ok(num);
         }
-        if let Some(res_ver) = StateResVersion::from_room_version(v) {
-            if res_ver.is_v2_1_plus() {
-                return Ok(12);
-            }
-            return Ok(2);
+        if StateResVersion::from_room_version(v).is_some_and(|r| r.is_v2_1_plus()) {
+            return Ok(12);
         }
     }
     Ok(1) // V1 rooms didn't have a room_version field
