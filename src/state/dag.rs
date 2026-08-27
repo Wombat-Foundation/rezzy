@@ -557,6 +557,36 @@ mod state_dag_branch_coverage_tests {
                 .is_ok()
         );
 
+        let mut merge_create = event("$merge-create", Some(""));
+        merge_create.event_type = M_ROOM_CREATE.into();
+        let mut merge_left = event("$merge-left", Some("left"));
+        merge_left.auth_events.push(merge_create.event_id.clone());
+        let mut merge_right = event("$merge-right", Some("right"));
+        merge_right.auth_events.push(merge_create.event_id.clone());
+        let mut merge = event("$merge", Some("merge"));
+        merge
+            .auth_events
+            .extend([merge_left.event_id.clone(), merge_right.event_id.clone()]);
+        let mut merge_target = event("$merge-target", Some("target"));
+        merge_target.auth_events.push(merge.event_id.clone());
+        let mut merge_events: TestMap = crate::HashMap::default();
+        for value in [
+            merge_create,
+            merge_left,
+            merge_right,
+            merge,
+            merge_target.clone(),
+        ] {
+            merge_events.insert(value.event_id.clone(), value);
+        }
+        assert!(compute_state_before_from_dag(
+            &merge_target,
+            &merge_events,
+            StateResVersion::V2_2,
+            &empty_key,
+        )
+        .is_ok());
+
         let mut cycle = event("$cycle", Some("@cycle:example.org"));
         cycle.auth_events.push("$cycle".into());
         let mut cyclic: TestMap = crate::HashMap::default();
