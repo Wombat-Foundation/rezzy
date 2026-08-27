@@ -204,9 +204,7 @@ pub fn get_evaluator() -> EvaluatorBackend {
         let cached = BACKEND.load(Ordering::Acquire);
         return cached_evaluator(cached, backend);
     }
-    if matches!(backend, EvaluatorBackend::Scalar) {
-        warn_scalar_evaluator();
-    }
+    warn_if_scalar(backend);
     backend
 }
 
@@ -237,6 +235,13 @@ fn warn_scalar_evaluator() {
         "rezzy: WARN: GF64 non-SIMD (scalar) evaluator in use; \
          PCLMULQDQ/AVX-512 not detected on this CPU"
     );
+}
+
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+fn warn_if_scalar(backend: EvaluatorBackend) {
+    if matches!(backend, EvaluatorBackend::Scalar) {
+        warn_scalar_evaluator();
+    }
 }
 
 #[cfg(any(not(feature = "std"), not(target_arch = "x86_64")))]
@@ -380,7 +385,7 @@ mod tests {
     #[cfg(all(feature = "std", target_arch = "x86_64"))]
     #[test]
     fn scalar_backend_warning_is_emitted() {
-        warn_scalar_evaluator();
+        warn_if_scalar(EvaluatorBackend::Scalar);
     }
 
     /// Regression test for a missing second-order field reduction in
