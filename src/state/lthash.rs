@@ -30,6 +30,8 @@
 //! - **Order independence**: addition is commutative + associative.
 //! - **Cryptographic security**: hard to find set collisions (SVP).
 
+use alloc::string::ToString;
+
 /// A 2048-byte homomorphic state hash using `LtHash`.
 ///
 /// `LtHash` (Lattice Hash) is based on the homomorphic hashing paradigm first introduced
@@ -268,6 +270,149 @@ impl LtHash {
     }
 }
 
+/// A homomorphic digest of the redaction overlay associated with a resolved
+/// state.  The overlay is deliberately a separate accumulator from
+/// [`LtHash`]: it does not describe another state snapshot.  Each entry names
+/// a selected state event and one effective causal redaction of that event.
+///
+/// Callers should insert only redactions which have already passed their room
+/// version's authorization rules and are causal at the state point being
+/// described.  An empty overlay is a known empty overlay; `None` in
+/// [`StateDigest`] means that the sender did not compute one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RedactionOverlay(pub [u16; 1024]);
+
+impl Default for RedactionOverlay {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
+impl RedactionOverlay {
+    /// The identity element (no effectively redacted selected events).
+    pub const ZERO: Self = Self([0u16; 1024]);
+
+    const DST: &'static [u8] = b"msc4500_redaction_overlay_v1\x00";
+
+    fn seed(
+        event_type: &str,
+        state_key: &str,
+        event_id: &(impl core::fmt::Display + ?Sized),
+        redaction_id: &(impl core::fmt::Display + ?Sized),
+    ) -> Self {
+        use sha3::digest::{ExtendableOutput, Update};
+
+        let mut xof = sha3::Shake256::default();
+        xof.update(Self::DST);
+        for value in [event_type, state_key] {
+            let (value, len) = truncate_to_u16_limit(value);
+            xof.update(&len.to_le_bytes());
+            xof.update(value.as_bytes());
+        }
+        // Length-prefix both IDs so that concatenation cannot make two
+        // overlay entries ambiguous (and so the redaction ID is not merely a
+        // suffix of the state event ID).
+        for value in [event_id.to_string(), redaction_id.to_string()] {
+            let (value, len) = truncate_to_u16_limit(&value);
+            xof.update(&len.to_le_bytes());
+            xof.update(value.as_bytes());
+        }
+
+        let mut bytes = [0u8; 2048];
+        xof.finalize_xof_into(&mut bytes);
+        let mut out = [0u16; 1024];
+        for (i, chunk) in bytes.chunks_exact(2).enumerate() {
+            out[i] = u16::from_le_bytes([chunk[0], chunk[1]]);
+        }
+        Self(out)
+    }
+
+    /// Adds one effectively redacted selected state event to the overlay.
+    pub fn insert(
+        &mut self,
+        event_type: &str,
+        state_key: &str,
+        event_id: &(impl core::fmt::Display + ?Sized),
+        redaction_id: &(impl core::fmt::Display + ?Sized),
+    ) {
+        let seed = Self::seed(event_type, state_key, event_id, redaction_id);
+        for (left, right) in self.0.chunks_exact_mut(8).zip(seed.0.chunks_exact(8)) {
+            for i in 0..8 {
+                left[i] = left[i].wrapping_add(right[i]);
+            }
+        }
+    }
+
+    /// Removes one overlay entry previously inserted with [`Self::insert`].
+    pub fn remove(
+        &mut self,
+        event_type: &str,
+        state_key: &str,
+        event_id: &(impl core::fmt::Display + ?Sized),
+        redaction_id: &(impl core::fmt::Display + ?Sized),
+    ) {
+        let seed = Self::seed(event_type, state_key, event_id, redaction_id);
+        for (left, right) in self.0.chunks_exact_mut(8).zip(seed.0.chunks_exact(8)) {
+            for i in 0..8 {
+                left[i] = left[i].wrapping_sub(right[i]);
+            }
+        }
+    }
+
+    /// Collapses the overlay lattice to its 32-byte MSC4500 wire digest.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        use blake2::digest::consts::U32;
+        use blake2::{Blake2b, Digest};
+        let mut hasher = Blake2b::<U32>::new();
+        let mut bytes = [0u8; 2048];
+        for (i, value) in self.0.iter().enumerate() {
+            let pair = value.to_le_bytes();
+            bytes[i * 2] = pair[0];
+            bytes[i * 2 + 1] = pair[1];
+        }
+        hasher.update(bytes);
+        hasher.finalize().into()
+    }
+}
+
+/// The two MSC4500 state digests sent by a server.  `overlay` is optional for
+/// wire compatibility and must never be interpreted as agreement when absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateDigest {
+    pub primary: [u8; 32],
+    pub overlay: Option<[u8; 32]>,
+}
+
+/// Result of comparing two state digest advertisements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DigestAgreement {
+    /// The selected `(type, state_key, event_id)` maps differ.
+    PrimaryMismatch,
+    /// Primary maps agree and both overlay digests agree.
+    FullySynchronized,
+    /// Primary maps agree but causal redaction overlays differ.
+    OverlayMismatch,
+    /// Primary maps agree, but at least one side omitted its overlay.
+    OverlayUnknown,
+}
+
+impl StateDigest {
+    /// Compares primary state first, then treats the overlay as a diagnostic.
+    #[must_use]
+    pub fn compare(self, remote: Self) -> DigestAgreement {
+        if self.primary != remote.primary {
+            DigestAgreement::PrimaryMismatch
+        } else {
+            match (self.overlay, remote.overlay) {
+                (Some(left), Some(right)) if left == right => DigestAgreement::FullySynchronized,
+                (Some(_), Some(_)) => DigestAgreement::OverlayMismatch,
+                _ => DigestAgreement::OverlayUnknown,
+            }
+        }
+    }
+}
+
 /// Computes a deterministic 256-bit `LtHash` fingerprint of a
 /// state map, returned as a 32-byte array.
 ///
@@ -342,6 +487,83 @@ mod tests {
         let mut b = StateMap::new();
         b.insert(("m.room.create".into(), String::new()), "$2".into());
         assert_ne!(LtHash::from_state(&a), LtHash::from_state(&b),);
+    }
+
+    #[test]
+    fn test_redaction_overlay_is_separate_and_order_independent() {
+        let mut left = RedactionOverlay::ZERO;
+        left.insert(
+            "m.room.member",
+            "@alice:example.org",
+            "$state",
+            "$redaction",
+        );
+
+        let mut right = RedactionOverlay::ZERO;
+        right.insert("m.room.member", "@alice:example.org", "$state", "$other");
+        assert_ne!(left.digest(), right.digest());
+
+        let mut reordered = RedactionOverlay::ZERO;
+        reordered.insert(
+            "m.room.member",
+            "@bob:example.org",
+            "$other-state",
+            "$other-redaction",
+        );
+        reordered.insert(
+            "m.room.member",
+            "@alice:example.org",
+            "$state",
+            "$redaction",
+        );
+        let mut expected = left;
+        expected.insert(
+            "m.room.member",
+            "@bob:example.org",
+            "$other-state",
+            "$other-redaction",
+        );
+        assert_eq!(reordered, expected);
+
+        reordered.remove(
+            "m.room.member",
+            "@bob:example.org",
+            "$other-state",
+            "$other-redaction",
+        );
+        assert_eq!(reordered, left);
+    }
+
+    #[test]
+    fn test_state_digest_comparison_preserves_unknown_overlay_semantics() {
+        let primary = [7u8; 32];
+        let overlay = [9u8; 32];
+        let same = StateDigest {
+            primary,
+            overlay: Some(overlay),
+        };
+        assert_eq!(same.compare(same), DigestAgreement::FullySynchronized);
+        assert_eq!(
+            same.compare(StateDigest {
+                primary,
+                overlay: Some([8u8; 32]),
+            }),
+            DigestAgreement::OverlayMismatch
+        );
+        assert_eq!(
+            same.compare(StateDigest {
+                primary,
+                overlay: None,
+            }),
+            DigestAgreement::OverlayUnknown
+        );
+        assert_eq!(
+            same.compare(StateDigest {
+                primary: [6u8; 32],
+                overlay: Some(overlay),
+            }),
+            DigestAgreement::PrimaryMismatch
+        );
     }
 
     #[test]

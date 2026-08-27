@@ -185,6 +185,26 @@ pub fn redactable_content_hash(value: &Value) -> Result<Hash, MerkleError> {
     component_hash("redactable_content", value)
 }
 
+/// Splits event content using the room-version redaction rules and hashes both
+/// halves required by MSC4511's content-hash construction.
+///
+/// The split itself remains in [`crate::basespec::rezzy_types::split_redaction_content`],
+/// where the Matrix redaction tables live; this helper keeps merkle callers
+/// from accidentally hashing the unsplit content.  The returned pair is
+/// `(redacted_content_hash, redactable_content_hash)`.
+pub fn split_content_hashes(
+    content: &Value,
+    event_type: &str,
+    room_version: &str,
+) -> Result<(Hash, Hash), MerkleError> {
+    let (redacted, redactable) =
+        crate::basespec::rezzy_types::split_redaction_content(content, event_type, room_version);
+    Ok((
+        redacted_content_hash(&redacted)?,
+        redactable_content_hash(&redactable)?,
+    ))
+}
+
 /// Combines `redacted_content_hash` and `redactable_content_hash` into the
 /// top-level `content_hash` component, per MSC4511's split-canonicalization
 /// redaction fix.

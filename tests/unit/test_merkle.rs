@@ -88,6 +88,24 @@ fn canonical_json_accepts_small_u64_number() {
 }
 
 #[test]
+fn split_content_hashes_uses_room_redaction_rules() {
+    let (redacted, redactable) = merkle::split_content_hashes(
+        &json!({"membership": "join", "displayname": "Alice"}),
+        "m.room.member",
+        "11",
+    )
+    .unwrap();
+    assert_eq!(
+        redacted,
+        merkle::redacted_content_hash(&json!({"membership": "join"})).unwrap()
+    );
+    assert_eq!(
+        redactable,
+        merkle::redactable_content_hash(&json!({"displayname": "Alice"})).unwrap()
+    );
+}
+
+#[test]
 fn canonical_json_encodes_top_level_null_and_false() {
     assert_eq!(
         String::from_utf8(merkle::canonical_json(&Value::Null).unwrap()).unwrap(),
