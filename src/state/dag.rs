@@ -173,6 +173,7 @@ impl<Id: fmt::Display> fmt::Display for StateDagValidationError<Id> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod validation_error_display_tests {
     use super::StateDagValidationError;
     use alloc::format;
@@ -267,6 +268,7 @@ impl<Id: fmt::Display> fmt::Display for StateDagError<Id> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod state_dag_error_display_tests {
     use super::{StateDagError, StateDagValidationError};
     use alloc::{format, vec};
@@ -296,6 +298,7 @@ mod state_dag_error_display_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod state_dag_branch_coverage_tests {
     use super::*;
     use crate::basespec::rezzy_types::RoomId;
@@ -674,6 +677,12 @@ mod state_dag_branch_coverage_tests {
         assert_eq!(
             collect_state_dag_ancestor_short_ids_batch(&[&target], &events).unwrap_err(),
             vec!["$nested-missing".to_string()]
+        );
+        assert_eq!(
+            incomplete_dag_error(vec!["$nested-missing".to_string()]),
+            StateDagError::IncompleteDag {
+                missing_event_ids: vec!["$nested-missing".to_string()]
+            }
         );
 
         let mut create = event("$create", None);
@@ -1113,11 +1122,8 @@ where
 
     let parent_refs: Vec<&Id> = event.prev_state_events().iter().collect();
     validate_state_dag_ancestors(event, events_map)?;
-    let index = collect_state_dag_ancestor_short_ids_batch(&parent_refs, events_map).map_err(
-        |missing| StateDagError::IncompleteDag {
-            missing_event_ids: missing,
-        },
-    )?;
+    let index = collect_state_dag_ancestor_short_ids_batch(&parent_refs, events_map)
+        .map_err(incomplete_dag_error)?;
 
     let (sorted_ancestors, mut out_degree) =
         topological_sort_state_dag_short_ids(&index, events_map);
@@ -1205,6 +1211,10 @@ where
         version,
         empty_key,
     )
+}
+
+fn incomplete_dag_error<Id>(missing_event_ids: Vec<Id>) -> StateDagError<Id> {
+    StateDagError::IncompleteDag { missing_event_ids }
 }
 
 fn validate_state_dag_ancestors<Id, C, S, K>(
