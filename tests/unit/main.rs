@@ -33,6 +33,7 @@ mod utils;
 
 mod differential_harness;
 mod test_auth;
+mod test_causal;
 mod test_critique;
 mod test_hashing;
 mod test_integer_keys;

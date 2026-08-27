@@ -1,6 +1,6 @@
 use rezzy::merkle::{
     self, AuthEventsHash, ContentHash, EventHeaderRoot, Field, Header, MerkleError,
-    OtherSignedFieldsHash, PrevEventsHash,
+    OtherSignedFieldsHash, PrevEventsHash, Side,
 };
 use serde_json::{json, Value};
 use std::fmt::Write;
@@ -222,6 +222,75 @@ fn content_hash_supports_null_ephemeral_content() {
     assert_ne!(hex(combined.0), hex(both_null_combined.0));
 }
 
+fn sample_header_fields() -> Vec<Field> {
+    vec![
+        Field::new("room_id", json!("!room:example.org")),
+        Field::new("sender_localpart", json!("alice")),
+        Field::new("sender_domain", json!("example.org")),
+        Field::new("type", json!("m.room.message")),
+        Field::new("state_key", Value::Null),
+        Field::new("redacts", Value::Null),
+        Field::new("depth", json!(42)),
+        Field::new("origin_server_ts", json!(123_456_789)),
+    ]
+}
+
+fn field_leaf_hash(field: &Field) -> merkle::Hash {
+    let canonical = merkle::canonical_json(&field.value).unwrap();
+    merkle::leaf_hash(&field.name, &canonical).unwrap()
+}
+
+/// Coverage: `leaf_path` reconstructs the same root `root()` computes, for
+/// every field in an 8-field header.
+#[test]
+fn leaf_path_reconstructs_root() {
+    let fields = sample_header_fields();
+    let root = merkle::root(&fields).unwrap();
+
+    for field in &fields {
+        let (path, proved_root) = merkle::leaf_path(&fields, &field.name).unwrap();
+        assert_eq!(proved_root, root, "field: {}", field.name);
+        let leaf_hash = field_leaf_hash(field);
+        assert!(
+            merkle::verify_leaf_path(leaf_hash, &path, root),
+            "field: {}",
+            field.name
+        );
+    }
+}
+
+/// Coverage: matches the draft's illustrative `sender_domain` proof example
+/// (3 steps: right, right, left) over this exact 8-field header.
+#[test]
+fn leaf_path_matches_draft_sender_domain_example() {
+    let fields = sample_header_fields();
+    let (path, _root) = merkle::leaf_path(&fields, "sender_domain").unwrap();
+    assert_eq!(path.len(), 3);
+    let want = [Side::Right, Side::Right, Side::Left];
+    for (step, expected) in path.iter().zip(want) {
+        assert_eq!(step.side, expected);
+    }
+}
+
+#[test]
+fn verify_leaf_path_rejects_tampered_sibling() {
+    let fields = sample_header_fields();
+    let root = merkle::root(&fields).unwrap();
+    let (mut path, _) = merkle::leaf_path(&fields, "type").unwrap();
+    let leaf_hash = field_leaf_hash(&Field::new("type", json!("m.room.message")));
+    path[0].hash[0] ^= 0xFF;
+    assert!(!merkle::verify_leaf_path(leaf_hash, &path, root));
+}
+
+#[test]
+fn leaf_path_rejects_unknown_field() {
+    let fields = sample_header_fields();
+    assert_eq!(
+        merkle::leaf_path(&fields, "nonexistent").unwrap_err(),
+        MerkleError::FieldNotFound("nonexistent".into())
+    );
+}
+
 #[test]
 fn duplicate_field_rejected() {
     assert_eq!(
@@ -297,6 +366,10 @@ fn merkle_error_display_covers_all_variants() {
         (
             MerkleError::DuplicateField("depth".into()),
             "merkle: duplicate field: depth",
+        ),
+        (
+            MerkleError::FieldNotFound("sender_domain".into()),
+            "merkle: field not found: sender_domain",
         ),
         (MerkleError::NoLeaves, "merkle: no leaves"),
         (
