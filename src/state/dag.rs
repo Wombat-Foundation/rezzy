@@ -526,6 +526,11 @@ mod state_dag_branch_coverage_tests {
                 StateDagValidationError::MissingReferencedEvent { .. }
             ))
         ));
+        assert!(matches!(
+            validate_state_dag_ancestors(&missing_parent, &events),
+            Err(StateDagError::IncompleteDag { missing_event_ids })
+                if missing_event_ids == vec!["$missing".to_string()]
+        ));
     }
 
     #[test]
@@ -1077,23 +1082,7 @@ where
     validate_msc4242_prev_state_events(event, events_map).map_err(StateDagError::Validation)?;
 
     let parent_refs: Vec<&Id> = event.prev_state_events().iter().collect();
-    // Validate the complete reachable graph, not only the target's immediate
-    // parents. Otherwise a malformed indirect ancestor can influence state.
-    let mut pending: Vec<Id> = event.prev_state_events().to_vec();
-    let mut checked: FastSet<Id> = FastSet::default();
-    while let Some(id) = pending.pop() {
-        if !checked.insert(id.clone()) {
-            continue;
-        }
-        let Some(ancestor) = events_map.get(&id) else {
-            return Err(StateDagError::IncompleteDag {
-                missing_event_ids: vec![id],
-            });
-        };
-        validate_msc4242_prev_state_events(ancestor, events_map)
-            .map_err(StateDagError::Validation)?;
-        pending.extend(ancestor.prev_state_events().iter().cloned());
-    }
+    validate_state_dag_ancestors(event, events_map)?;
     let index = collect_state_dag_ancestor_short_ids_batch(&parent_refs, events_map).map_err(
         |missing| StateDagError::IncompleteDag {
             missing_event_ids: missing,
@@ -1186,6 +1175,36 @@ where
         version,
         empty_key,
     )
+}
+
+fn validate_state_dag_ancestors<Id, C, S, K>(
+    event: &LeanEvent<Id, C, K>,
+    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+) -> Result<(), StateDagError<Id>>
+where
+    Id: EventId,
+    C: EventContent,
+    K: StateKey,
+    S: core::hash::BuildHasher,
+{
+    // Validate the complete reachable graph, not only the target's immediate
+    // parents. Otherwise a malformed indirect ancestor can influence state.
+    let mut pending: Vec<Id> = event.prev_state_events().to_vec();
+    let mut checked: FastSet<Id> = FastSet::default();
+    while let Some(id) = pending.pop() {
+        if !checked.insert(id.clone()) {
+            continue;
+        }
+        let Some(ancestor) = events_map.get(&id) else {
+            return Err(StateDagError::IncompleteDag {
+                missing_event_ids: vec![id],
+            });
+        };
+        validate_msc4242_prev_state_events(ancestor, events_map)
+            .map_err(StateDagError::Validation)?;
+        pending.extend(ancestor.prev_state_events().iter().cloned());
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
