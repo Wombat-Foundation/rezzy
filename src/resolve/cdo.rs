@@ -127,12 +127,12 @@ where
     false
 }
 
-#[cfg(target_feature = "avx512f")]
 /// Number of `u64` words per bitmask chunk (8 × 64 = 512 bits on AVX-512).
+#[cfg(target_feature = "avx512f")]
 const WORDS_PER_CHUNK: usize = 8;
 
-#[cfg(not(target_feature = "avx512f"))]
 /// Number of `u64` words per bitmask chunk (4 × 64 = 256 bits on AVX2/NEON).
+#[cfg(not(target_feature = "avx512f"))]
 const WORDS_PER_CHUNK: usize = 4;
 
 fn compute_cdo_bit_masks_chunk<Id, C, S: core::hash::BuildHasher, K>(

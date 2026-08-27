@@ -168,12 +168,13 @@ where
 /// Evaluates whether an event passes authentication checks given a resolved state map,
 /// delegating to the core `crate::auth::check_auth` logic via a temporary `OverlayState` view.
 ///
+/// Authenticates an event against the current resolved state and an optional local auth context.
+/// Ensures the event complies with the Matrix spec rules for its given type.
+///
 /// NOTE: In V2.1/MSC4297, progressive state starts empty. The first event's sender membership
 /// check must use its own `auth_events` (via `local_auth` / `OverlayState` fallback), not the
 /// empty state. This is critical for competing bans where both senders need membership validation.
 #[allow(clippy::too_many_arguments)]
-/// Authenticates an event against the current resolved state and an optional local auth context.
-/// Ensures the event complies with the Matrix spec rules for its given type.
 pub(crate) fn iterative_auth_ok<Id, C, S1, S2, K>(
     ev: &LeanEvent<Id, C, K>,
     resolved: &crate::state::at::SharedState<Id, K>,
@@ -418,7 +419,6 @@ where
 /// For processing multiple events in production (e.g., full room rebuilds),
 /// use [`compute_state_at_streaming`] instead to stream states via a callback
 /// and keep memory bounded to the DAG's width.
-/// Computes the state of a room at multiple target events concurrently.
 ///
 /// # Panics
 ///
@@ -907,7 +907,6 @@ where
 /// let merge_base = compute_merge_base(&tips, &events);
 /// ```
 #[must_use]
-/// Computes the merge base (common ancestors) of a set of target events in the DAG.
 #[cfg(feature = "std")]
 pub fn compute_merge_base<'a, Id, Q, S, Node>(
     extremities: &[&Q],

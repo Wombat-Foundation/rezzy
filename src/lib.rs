@@ -2,36 +2,9 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! # Rezzy — Matrix State Resolution Engine
 //!
-//! A high-performance, spec-compliant implementation of [Matrix](https://spec.matrix.org/)
-//! state resolution versions **V1**, **V2**, **V2.1** ([MSC4297]), **V2.1.1**
-//! (experimental), and **V2.2** (experimental [MSC4242]) support.
-//!
-//! Rezzy is designed for correctness-first operation inside homeservers, bridges,
-//! and formal-verification toolchains. It runs in `#![no_std]` environments (with
-//! `alloc`) and optionally leverages SIMD-width bitmask sweeps for CDO filtering.
-//!
-//! ## Quick Start Example (Room V11 / State Res V2)
-//!
-//! ```rust,no_run
-//! use rezzy::{resolve_iterative_sort, LeanEvent, SharedState, StateResVersion, HashMap};
-//!
-//! // Build the unconflicted state (agreed upon by all forks).
-//! let unconflicted_state = SharedState::new();
-//!
-//! // Populate conflicted events and full auth context.
-//! let conflicted_subgraph: HashMap<String, LeanEvent> = HashMap::new();
-//! let auth_context: HashMap<String, LeanEvent> = HashMap::new();
-//!
-//! // Resolve the winning state.
-//! let resolved = resolve_iterative_sort(
-//!     &unconflicted_state,
-//!     &conflicted_subgraph,
-//!     &auth_context,
-//!     StateResVersion::V2,
-//!     &mut HashMap::new(),
-//!     &String::new(),
-//! );
-//! ```
+//! Spec-compliant implementation of Matrix state resolution versions
+//! **V1**, **V2**, **V2.1** ([MSC4297]), **V2.1.1**, and **V2.2** ([MSC4242]).
+//! Runs in `#![no_std]` environments (with `alloc`).
 //!
 //! ## Feature Flags
 //!
@@ -39,13 +12,12 @@
 //! |-------------|:-------:|-------------|
 //! | `std`       | ✓       | Enables `std::collections::{HashMap, HashSet}` and thread-parallel lattice resolution. |
 //! | `alloc`     | ✓       | Bare `alloc` support for `no_std` targets (implied by `std`). |
-//! | `cli`       | ✗       | Builds the `rezzy` CLI binary and the `merge` module. |
+//! | `cli`       | ✗       | Builds the `rezzy` CLI binary and merge utilities. |
 //! | `mock-ruma` | ✗       | Enables Ruma SDK interop for upstream parity testing. |
 //! | `regen`     | ✗       | Builds the `regen_oracles` snapshot regeneration binary. |
 //!
-//! Canonical-JSON SHA-256 hashing (reference hash / `hashes.sha256` content
-//! hash) is always compiled in — see [`reference_hash`] and
-//! [`verify_content_hash`].
+//! Canonical-JSON SHA-256 hashing is always compiled in — see [`reference_hash`]
+//! and [`verify_content_hash`].
 //!
 //! ## Spec References
 //!

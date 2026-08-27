@@ -448,7 +448,7 @@ where
 /// [`diff_node_hashes`] alone cannot provide since it only reports the delta
 /// between two adjacent roots.
 ///
-/// Runs in `O(N)` in the number of internal nodes reachable from `root` and
+/// Runs in `O(N)` time where `N` is the number of internal nodes reachable from `root` and
 /// may resolve every lazy child along the way.
 ///
 /// # Errors

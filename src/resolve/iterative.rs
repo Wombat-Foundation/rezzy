@@ -117,7 +117,7 @@ where
         .collect()
 }
 
-/// State Resolution V2+ auth-chain expansion (room versions 2 - 11+, Spec [§State Resolution]).
+/// State Resolution V2+ auth-chain expansion (room versions 2–11+, Spec [State Resolution][v2-spec]).
 ///
 /// After the initial power/non-power classification, this function recursively
 /// walks the `auth_events` of each power event. Any event found in the
@@ -129,7 +129,6 @@ where
 /// and applies to all versions that use V2-derived resolution: V2, V2.1, V2.1.1, and V2.2.
 ///
 /// [v2-spec]: https://spec.matrix.org/v1.13/rooms/v2/#state-resolution
-/// Expands the auth chains for a set of V2 power events, building an auth context.
 pub fn expand_v2_power_events_auth_chains<
     Id: crate::basespec::rezzy_types::EventId,
     C: Clone,
@@ -461,12 +460,14 @@ where
 ///   from the conflicted set. Must include all power-level, membership,
 ///   and join-rules events needed for authorization.
 /// - `version`: Which resolution algorithm to use (see [`StateResVersion`]).
+/// - `pl_cache`: Scratch hashmap for caching event power levels across sorting passes.
+/// - `empty_key`: Representation of the empty state key (e.g. `""` for `String` keys).
 ///
 /// # Returns
 ///
-/// A `imbl::OrdMap<(event_type, state_key), event_id>` representing the resolved
-/// room state — the union of unconflicted state and the winners from the
-/// conflicted set.
+/// A [`SharedState<Id, K>`](crate::state::at::SharedState) (`imbl::OrdMap<(EventType, K), Id>`)
+/// representing the resolved room state — the union of unconflicted state and the winners
+/// from the conflicted set.
 ///
 /// # Checkpoint / Partial-Join
 ///

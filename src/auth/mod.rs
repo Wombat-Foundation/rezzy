@@ -166,11 +166,11 @@ impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
 use core::borrow::Borrow;
 use core::cmp::Ordering;
 
-/// Trait for zero-copy lookups into `BTreeMap<(String, String), _>`.
+/// Trait for zero-copy lookups into state maps.
 ///
-/// This enables querying a `BTreeMap` keyed by owned `(String, String)`
-/// using borrowed `(&str, &str)` tuples — avoiding allocation for
-/// every state lookup during auth checking.
+/// This enables querying [`SharedState`](crate::state::at::SharedState) or `BTreeMap`
+/// maps keyed by owned `(EventType, K)` or `(String, K)` tuples using borrowed `(&str, &str)`
+/// tuples — avoiding allocation for state lookups during auth checking.
 pub trait StateKeyDyn {
     /// The event type (e.g. `"m.room.member"`).
     fn ev_type(&self) -> &str;

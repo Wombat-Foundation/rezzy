@@ -36,7 +36,7 @@ use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER, 
 /// canonical wire-format representation of the event ID. This is relied upon
 /// by `LtHash::seed()` in [`crate::state::lthash`] for
 /// content-addressed state hashing — if two implementations produce different
-/// `Display` output for the same logical event ID, state hashes will diverge
+/// `Display` output for the same logical event ID, state hashes will diverge.
 pub trait EventId:
     Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display
 {

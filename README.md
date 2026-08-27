@@ -18,15 +18,15 @@ resolution `v2`, `v2.1`, `v2.1.1` (experimental), and
 
 <!-- markdownlint-disable MD013 -->
 
-|      Room Version       | State Resolution | Notes                                   |
-| :---------------------: | :--------------: | --------------------------------------- |
-|         _1_ \*          |       _V1_       | _Legacy — depth-based ordering_         |
-|         _2_ \*          |       _V2_       | _Mainline sort + iterative auth_        |
-|           3–6           |        V2        | Event ID format changes only            |
-|          7–10           |        V2        | Knocking, restricted joins              |
-|           11            |        V2        | Redaction rules update                  |
-|         **12**          |     **V2.1**     | MSC4297 — conflicted subgraph expansion |
-| _org.matrix.msc4242_ \* |      _V2.2_      | Experimental — State DAGs               |
+|      Room Version       | State Resolution | Notes                                     |
+| :---------------------: | :--------------: | ----------------------------------------- |
+|         _1_ \*          |       _V1_       | _Legacy — depth-based ordering_           |
+|         _2_ \*          |       _V2_       | _Mainline sort + iterative auth_          |
+|           3–6           |        V2        | Event ID format changes only              |
+|          7–10           |        V2        | Knocking, restricted joins                |
+|           11            |        V2        | Redaction rules update                    |
+|         **12**          |     **V2.1**     | [MSC4297] — conflicted subgraph expansion |
+| _org.matrix.msc4242_ \* |      _V2.2_      | Experimental — State DAGs ([MSC4242])     |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -65,8 +65,9 @@ Everything re-exports from the crate root —
 `StateResVersion`, `HashMap`, the works.
 
 - **`resolve_iterative_sort`** — the main entry point.
-  Unconflicted state, conflicted events, auth context,
-  and version → winning `SharedState`.
+  Unconflicted baseline, conflicted events, auth
+  context, algorithm version, power-level cache, and
+  empty state key → winning `SharedState`.
 - **`resolve_lattice_fold`** — parallel alternative
   (lattice fold instead of sequential mainline sort).
 - **`resolve_iterative_sort_with_deltas`** — diagnostic
@@ -75,11 +76,14 @@ Everything re-exports from the crate root —
   **`compute_state_at_streaming`** — reconstruct resolved
   state at any DAG position. Streaming variant bounds
   memory to frontier width.
-- **`auth::check_auth`** — spec-compliant auth engine.
-  Implement `StateProvider` to plug in your own backend.
-- Generic `EventId` trait — `String`, `u32`, `u64`,
-  `ruma::OwnedEventId` all just work.
-- `EventContent` trait — skip JSON parsing in the hot
+- **`auth::check_auth`** /
+  **`auth::check_auth_with_context`** — spec-compliant
+  auth engine. Implement `StateProvider` to plug in your
+  own backend.
+- Generic **`EventId`** and **`StateKey`** traits —
+  `String`, `u32`, `u64`, `ruma::OwnedEventId`, or interned
+  keys all just work.
+- **`EventContent`** trait — skip JSON parsing in the hot
   path. `serde_json::Value` works via default impl.
 - Generic `EventId` support across delta compression
   (`StateDelta`, `CompactedCheckpoint`) and core data
@@ -140,14 +144,11 @@ cargo install cargo-llvm-cov
 make cov
 ```
 
-## Algorithmic & architectural engineering
+## Architecture & Algorithms
 
-Because we care about raw performance and mechanical
-efficiency, `rezzy` is built on a foundation of
-blazingly fast ideas. Under the hood of our production
-code, you will find:
+Under the hood:
 
-- _Causal domination_ operator (CDO) pre-filtering
+- Resolved-state screening pass & CDO historical analysis
 - Experimental V2.1.1 State Resolution with
   supplemental narrowing
 - Batched/strip-mined **SWAR** (SIMD within a register)
@@ -305,17 +306,26 @@ for a given event type.
 
 `resolve_iterative_sort` is generic over `Id: EventId`,
 and `EventId` has a blanket impl for any
-`T: Clone + Eq + Hash + Ord + Debug`. This means `u32`,
+`T: Clone + Eq + Hash + Ord + Debug + Display`. This means `u32`,
 `u64`, and any interned short ID type work out of the
 box:
 
 ```rust
-let unconflicted: imbl::OrdMap<(String, String), u64> = /* ... */;
-let events: HashMap<u64, LeanEvent<u64>> = /* ... */;
-let auth_ctx: HashMap<u64, LeanEvent<u64>> = /* ... */;
+use rezzy::{resolve_iterative_sort, LeanEvent, SharedState, StateResVersion, HashMap};
 
-let resolved: imbl::OrdMap<(String, String), u64> =
-    resolve_iterative_sort(unconflicted, events, &auth_ctx, StateResVersion::V2);
+let unconflicted: SharedState<u64> = SharedState::new();
+let events: HashMap<u64, LeanEvent<u64>> = HashMap::new();
+let auth_ctx: HashMap<u64, LeanEvent<u64>> = HashMap::new();
+let mut pl_cache = HashMap::new();
+
+let resolved: SharedState<u64> = resolve_iterative_sort(
+    &unconflicted,
+    &events,
+    &auth_ctx,
+    StateResVersion::V2,
+    &mut pl_cache,
+    &String::new(),
+);
 ```
 
 ### Snapshot/checkpoint (partial-join support) ✓
@@ -339,3 +349,12 @@ Full delta chain support with Synapse-like compaction:
 - All checkpoint types derive `Serialize` /
   `Deserialize` for direct storage in RocksDB, bincode,
   etc.
+
+[MSC1693]: https://github.com/matrix-org/matrix-spec-proposals/pull/1693
+[MSC3089]: https://github.com/matrix-org/matrix-spec-proposals/pull/3089
+[MSC4242]: https://github.com/matrix-org/matrix-spec-proposals/pull/4242
+[MSC4289]: https://github.com/matrix-org/matrix-spec-proposals/pull/4289
+[MSC4297]: https://github.com/matrix-org/matrix-spec-proposals/pull/4297
+[MSC4500]: https://github.com/matrix-org/matrix-spec-proposals/pull/4500
+[MSC4511]: https://github.com/matrix-org/matrix-spec-proposals/pull/4511
+[MSC4521]: https://github.com/matrix-org/matrix-spec-proposals/pull/4521
