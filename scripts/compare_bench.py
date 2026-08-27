@@ -33,17 +33,25 @@ import sys
 # `label: (setup: ..., algo: ..., ...)` forms, so only the stable per-op/total
 # ms metrics are tracked.
 METRIC = re.compile(r"^(.+?):\s+([0-9]+(?:\.[0-9]+)?)\s*ms\b")
+CHECKPOINT = re.compile(r"^\s*S=(\d+):\s*$")
 
 
 def extract(path: str) -> dict[str, float]:
     """Parse the tee'd bench output into {label: milliseconds}."""
     metrics: dict[str, float] = {}
+    checkpoint: str | None = None
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
+            checkpoint_match = CHECKPOINT.match(line)
+            if checkpoint_match:
+                checkpoint = checkpoint_match.group(1)
+                continue
             m = METRIC.match(line)
             if not m:
                 continue
             label = m.group(1).strip()
+            if checkpoint is not None:
+                label = f"S={checkpoint}: {label}"
             if label in metrics:
                 raise ValueError(f"duplicate benchmark label: {label}")
             metrics[label] = float(m.group(2))

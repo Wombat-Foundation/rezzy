@@ -151,7 +151,6 @@ struct MultiForkDag {
 #[allow(clippy::too_many_lines)]
 fn build_multi_fork_dag(
     num_members: usize,
-    num_common_timeline: usize,
     num_forks: usize,
     conflicts_per_fork: usize,
 ) -> MultiForkDag {
@@ -237,24 +236,6 @@ fn build_multi_fork_dag(
         });
         last_prev = ev.event_id.clone();
         member_join_ids.push(ev.event_id.clone());
-        events.insert(ev.event_id.clone(), ev);
-    }
-
-    // 6. Common timeline events
-    for i in 0..num_common_timeline {
-        current_ts = current_ts.saturating_add(10);
-        let msg_id = format!("common_msg_{i}");
-        let ev = make_event(EventInit {
-            id: &msg_id,
-            sender: "alice",
-            ev_type: TimelineEventType::RoomMessage,
-            state_key: None,
-            content_json: r#"{"body":"timeline noise"}"#,
-            prev_events: &[last_prev.as_ref()],
-            auth_events: &["create", "alice_join", "power_levels"],
-            ts: current_ts,
-        });
-        last_prev = ev.event_id.clone();
         events.insert(ev.event_id.clone(), ev);
     }
 
@@ -433,12 +414,11 @@ fn to_rezzy_lean(ev: &TestEvent) -> rezzy::LeanEvent {
 fn run_shootout(
     scenario_name: &str,
     num_members: usize,
-    num_timeline: usize,
     num_forks: usize,
     conflicts_per_fork: usize,
     runs: u32,
 ) {
-    let dag = build_multi_fork_dag(num_members, num_timeline, num_forks, conflicts_per_fork);
+    let dag = build_multi_fork_dag(num_members, num_forks, conflicts_per_fork);
     let events_map = &dag.events;
 
     let fetch_event =
@@ -607,31 +587,28 @@ fn main() {
     println!("   and cargo bench --bench resolve, not this in-memory String-ID fixture)");
     println!("================================================================================\n");
 
-    // 1. Nasty 2-Branch Conflict (500 Members, 100 Conflicted Keys, Deep Auth Chains, ~1,600 PDUs)
+    // 1. Nasty 2-Branch Conflict (500 Members, 100 Conflicted Keys, Deep Auth Chains)
     run_shootout(
-        "Nasty 2-Branch Conflict (500 Members, 100 Conflicted Keys, ~1,600 PDUs)",
+        "Nasty 2-Branch Conflict (500 Members, 100 Conflicted Keys)",
         500,
-        1000,
         2,
         100,
         500,
     );
 
-    // 2. 4-Way Federated Partition Fork (500 Members, 200 Conflicted Keys, ~2,500 PDUs)
+    // 2. 4-Way Federated Partition Fork (500 Members, 200 Conflicted Keys)
     run_shootout(
-        "4-Way Federated Partition (500 Members, 4 Forks, 200 Conflicted Keys, ~2,500 PDUs)",
+        "4-Way Federated Partition (500 Members, 4 Forks, 200 Conflicted Keys)",
         500,
-        1500,
         4,
         100,
         200,
     );
 
-    // 3. 8-Way Split-Brain Chaos (1,000 Members, 8 Forks, 400 Conflicted Keys, ~5,000 PDUs)
+    // 3. 8-Way Split-Brain Chaos (1,000 Members, 8 Forks, 400 Conflicted Keys)
     run_shootout(
-        "8-Way Split-Brain Chaos (1,000 Members, 8 Forks, 400 Conflicted Keys, ~5,000 PDUs)",
+        "8-Way Split-Brain Chaos (1,000 Members, 8 Forks, 400 Conflicted Keys)",
         1000,
-        3000,
         8,
         100,
         50,
@@ -639,9 +616,8 @@ fn main() {
 
     // 4. Mega Rebuild Stress (2,000 Members, 8 Forks, 800 Conflicted Keys, ~10,000 PDUs)
     run_shootout(
-        "Mega Rebuild Stress (2,000 Members, 8 Forks, 800 Conflicted Keys, ~10,000 PDUs)",
+        "Mega Rebuild Stress (2,000 Members, 8 Forks, 800 Conflicted Keys)",
         2000,
-        6000,
         8,
         200,
         20,

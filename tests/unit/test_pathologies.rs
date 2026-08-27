@@ -113,7 +113,12 @@ fn test_pathology_invite_lock() {
     let mut auth_context = HashMap::new();
     let mut conflicted_events = HashMap::new();
     for ev in events {
-        if ev.sender == "@nexy:B" {
+        let contested_join_rules =
+            ev.event_type == "m.room.join_rules" && matches!(ev.depth, 4 | 5);
+        if ev.sender == "@nexy:B" || contested_join_rules {
+            if contested_join_rules {
+                auth_context.insert(ev.event_id.clone(), ev.clone());
+            }
             conflicted_events.insert(ev.event_id.clone(), ev);
         } else {
             auth_context.insert(ev.event_id.clone(), ev);
