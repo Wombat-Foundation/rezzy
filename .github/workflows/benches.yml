@@ -13,6 +13,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: benchmark-publish-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -34,7 +38,7 @@ jobs:
         # `make rust/bench` (cargo bench --profile release --benches) drives the
         # custom wall-clock harness in benches/. Tee the output so the metric
         # extraction step below can parse it.
-        run: cargo bench --profile release --benches 2>&1 | tee bench-output.txt
+        run: set -o pipefail; cargo bench --profile release --benches 2>&1 | tee bench-output.txt
 
       - name: Fetch previous best metrics
         # Previous best is tracked as bench.json on the `_metadata/badges` branch.
@@ -64,8 +68,10 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # bench-new.json is untracked, so it survives the branch switch below.
           git fetch origin _metadata/badges 2>/dev/null || true
+          cp bench-new.json "${RUNNER_TEMP}/bench-new.json"
+          git clean -f -- bench-new.json bench.json
           git checkout -B _metadata/badges origin/_metadata/badges 2>/dev/null || git checkout -b _metadata/badges
-          cp bench-new.json bench.json
+          cp "${RUNNER_TEMP}/bench-new.json" bench.json
           git add bench.json
           if git diff --cached --quiet; then
             echo "no metric change to publish"
