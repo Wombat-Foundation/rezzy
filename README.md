@@ -148,39 +148,19 @@ make cov
 
 Under the hood:
 
-- Resolved-state screening pass & CDO historical analysis
-- Experimental V2.1.1 State Resolution with
-  supplemental narrowing
-- Batched/strip-mined **SWAR** (SIMD within a register)
-  matrix sweeps
-- `O(1)` _causal coordinatization_ projection
-- Filtered _commutative join-semilattice_ folding
-- Integer "interning" (`ShortID`) graph-based traversal
-- Flat-array "stride matrices"
-- Fully-featured, spec-compliant authorization engine
-- Reverse topological power ordering (Kahn's algorithm)
-- `Arc`-based copy-on-write (CoW) structural sharing
-- `O(1)` fast-path _merge resolution_ via
-  "pointer-equality bypass"
-- Native **n-way state resolution** (resolve/merge
-  arbitrary DAG forks in a single pass)
-- Zero-allocation stack-safe DAG crawling
-- Generic `BuildHasher` decoupling
-- Supremum deletion attack (Byzantine fault mitigation)
-- Optimal conflicted state sub-graph computation
-  (MSC4297)
-- **Roaring bitmaps** (SIMD-optimized set operations)
-- `FNV-1a` 128-bit lexicographical state hashing
-- Compacted delta chains with auto-snapshot
-  (bounded reconstruction cost)
-- Per-event resolution tracing
-  (`ResolutionDelta` + phase tracking)
-- Checkpoint/partial-join resolution
-  (trusted snapshot as unconflicted base)
-- Batch state computation with shared topological
-  traversal
-- `no_std` compatible (`alloc`-only, no system
-  dependencies)
+- **MSC4297 / MSC4242 resolution**: Conflicted state subgraph expansion and state DAG validation.
+- **Power ordering & mainline sort**: Reverse topological power sorting via Kahn's algorithm and mainline distance ranking.
+- **Resolved-state screening**: Sound post-power ban enforcement (`is_sender_banned`) for hardened state resolution.
+- **Structural sharing & merge fast-paths**: `Arc`-backed `SharedState` with pointer-equality bypass for identical parent states.
+- **State DAG traversal**: Iterative, stack-safe ancestor crawling, merge base computation, and extremity discovery.
+- **Native n-way resolution**: Resolve and merge arbitrary DAG forks in a single pass.
+- **Streaming & batch state reconstruction**: `compute_state_at_streaming` bounds peak memory to the DAG's active frontier width.
+- **Compacted state deltas**: Forward delta chains with auto-snapshotting for fast checkpoint-based reconstruction.
+- **Roaring bitmaps & dense indexing**: SIMD-accelerated set operations for reachability, auth differences, and HAMT node audits.
+- **Content-addressed state hashing**: Incremental lattice hashing (`LtHash`) and Canonical JSON SHA-256 reference hashing.
+- **Minisketch set reconciliation**: GF(2^64) PinSketch with SIMD-accelerated root finding for federation sync.
+- **Generic type decoupling**: Parameterized over `Id: EventId`, `K: StateKey`, `C: EventContent`, and `S: BuildHasher`.
+- **`no_std` compatible**: Pure `#![no_std]` core with `alloc` support and zero system dependencies.
 
 ## Synchronous model
 
