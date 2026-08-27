@@ -79,6 +79,7 @@ fn causal_non_inclusion_proof_verifies() {
     assert_eq!(root, s.root());
     assert_eq!(count, s.count());
     assert!(verify_causal_non_inclusion(
+        &d,
         terminal_depth,
         &path,
         root,
@@ -102,6 +103,7 @@ fn causal_non_inclusion_proof_on_empty_set() {
     assert!(path.is_empty());
     assert_eq!(terminal_depth, 0);
     assert!(verify_causal_non_inclusion(
+        &d,
         terminal_depth,
         &path,
         root,
@@ -127,6 +129,7 @@ fn verify_causal_non_inclusion_rejects_wrong_terminal_depth() {
 
     let (path, terminal_depth, root, count) = s.non_inclusion_proof(&d).unwrap();
     assert!(!verify_causal_non_inclusion(
+        &d,
         terminal_depth + 1,
         &path,
         root,
@@ -137,6 +140,7 @@ fn verify_causal_non_inclusion_rejects_wrong_terminal_depth() {
 #[test]
 fn verify_causal_non_inclusion_rejects_out_of_range_depth() {
     assert!(!verify_causal_non_inclusion(
+        &key(0xd4),
         CAUSAL_DEPTH + 1,
         &[],
         [0; 32],

@@ -67,6 +67,9 @@ pub struct IndexTooLarge {
 
 impl fmt::Display for IndexTooLarge {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.allocation_failed {
+            return f.write_str("failed to allocate memory while building index");
+        }
         write!(
             f,
             "index has {} distinct items, more than the index width can address",
@@ -160,11 +163,23 @@ impl<T: Eq + Clone + core::hash::Hash, Idx: Copy + TryFrom<usize> + DenseIndexWi
                 // small set for dedup.
                 let mut distinct_count = index_by_item.len();
                 let mut post_bound: crate::HashSet<T> = crate::HashSet::default();
+                if allocation_should_fail() || post_bound.try_reserve(1).is_err() {
+                    return Err(IndexTooLarge {
+                        distinct_count,
+                        allocation_failed: true,
+                    });
+                }
                 post_bound.insert(item);
                 distinct_count = distinct_count.saturating_add(1);
                 for i in iter {
                     if index_by_item.contains_key(&i) {
                         continue;
+                    }
+                    if allocation_should_fail() || post_bound.try_reserve(1).is_err() {
+                        return Err(IndexTooLarge {
+                            distinct_count,
+                            allocation_failed: true,
+                        });
                     }
                     if post_bound.insert(i) {
                         distinct_count = distinct_count.saturating_add(1);

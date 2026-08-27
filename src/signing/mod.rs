@@ -94,7 +94,12 @@ pub fn verify_event_signatures(
     let origin = value
         .get("event_id")
         .and_then(Value::as_str)
-        .and_then(|id| id.rsplit_once(':').map(|(_, server)| server));
+        .and_then(|id| {
+            id.strip_prefix('$')
+                .unwrap_or(id)
+                .split_once(':')
+                .map(|(_, server)| server)
+        });
 
     let mut verified_any = false;
     for (server, keys) in signatures {
@@ -167,7 +172,12 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
             .events
             .get(event_id)
             .ok_or_else(|| alloc::format!("unknown event {}", event_id.as_ref()))?;
-        if matches!(self.room_version.as_str(), "1" | "2") {
+        if self
+            .room_version
+            .split('.')
+            .next()
+            .is_some_and(|v| matches!(v, "1" | "2"))
+        {
             Ok(())
         } else {
             let expected = crate::basespec::rezzy_types::reference_hash(value, &self.room_version)?;

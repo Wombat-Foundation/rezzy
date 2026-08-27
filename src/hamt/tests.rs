@@ -5111,7 +5111,7 @@ fn test_descend_level_batched_exact_lookup() {
         }
 
         let result: DescendResult<u64> =
-            descend_level::<u32, u64, _>(&nodes_batch, |k| crate::hamt::key_path_hash(key, k))
+            descend_level::<u32, u64, _>(key, &nodes_batch, |k| crate::hamt::key_path_hash(key, k))
                 .expect("descend_level succeeds");
 
         for (h, v) in result.found {
@@ -5153,9 +5153,10 @@ fn test_descend_level_rejects_corruption() {
 
     // 1. Truncated buffer: returns Decode error
     let truncated_buf = vec![0x01, 0x00];
-    let res = descend_level::<u32, u64, _>(&[([0; 16], &truncated_buf, 0, &[req_hash])], |k| {
-        crate::hamt::key_path_hash(key, k)
-    });
+    let res =
+        descend_level::<u32, u64, _>(key, &[([0; 16], &truncated_buf, 0, &[req_hash])], |k| {
+            crate::hamt::key_path_hash(key, k)
+        });
     assert!(matches!(res, Err(DescendError::Decode(_))));
     let decode_error = res.expect_err("truncated node must fail to decode");
     assert_eq!(
@@ -5173,18 +5174,20 @@ fn test_descend_level_rejects_corruption() {
     corrupt_header.extend_from_slice(&42_u32.to_le_bytes()); // leaf key
     corrupt_header.extend_from_slice(&100_u64.to_le_bytes()); // leaf val
     corrupt_header.extend_from_slice(&[0u8; 16]); // child hash
-    let res2 = descend_level::<u32, u64, _>(&[([0; 16], &corrupt_header, 0, &[req_hash])], |k| {
-        crate::hamt::key_path_hash(key, k)
-    });
+    let res2 =
+        descend_level::<u32, u64, _>(key, &[([0; 16], &corrupt_header, 0, &[req_hash])], |k| {
+            crate::hamt::key_path_hash(key, k)
+        });
     assert!(matches!(res2, Err(DescendError::Decode(_))));
 
     // 3. A valid node returned for the wrong requested hash is corruption.
     let root = build_hamt(key, vec![(42_u32, 100_u64)]).expect("build root");
     let node_bytes = PersistedInternalNode::from(root.as_ref()).encode_v1();
     let wrong_hash = [0xff; 16];
-    let res3 = descend_level::<u32, u64, _>(&[(wrong_hash, &node_bytes, 0, &[req_hash])], |k| {
-        crate::hamt::key_path_hash(key, k)
-    });
+    let res3 =
+        descend_level::<u32, u64, _>(key, &[(wrong_hash, &node_bytes, 0, &[req_hash])], |k| {
+            crate::hamt::key_path_hash(key, k)
+        });
     assert!(matches!(res3, Err(DescendError::CorruptNode(_))));
     let corrupt_error = res3.expect_err("wrong node hash must be corruption");
     assert_eq!(

@@ -293,6 +293,7 @@ where
 /// event ID or non-create leaf, reports the missing events so the host homeserver
 /// can fetch them (e.g. via `/get_missing_events?state_dag=true`).
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn walk_state_dag<Id, C, S, K>(
     start_events: &[&Id],
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
@@ -376,7 +377,48 @@ where
         }
     }
 
-    if !truncated && missing.is_empty() && disconnected.is_empty() {
+    // `visited` prevents repeated work but is not a cycle detector: a back
+    // edge can be skipped after the same node was reached through another
+    // branch. Run an explicit colour walk over the discovered graph so a
+    // cyclic ancestry can never be reported as complete.
+    let reachable_set: FastSet<Id> = reachable.iter().cloned().collect();
+    let mut done: FastSet<Id> = FastSet::default();
+    let mut active: FastSet<Id> = FastSet::default();
+    let mut has_cycle = false;
+    for root in &reachable {
+        if done.contains(root) {
+            continue;
+        }
+        let mut stack = vec![(root.clone(), false)];
+        while let Some((id, exiting)) = stack.pop() {
+            if exiting {
+                active.remove(&id);
+                done.insert(id);
+                continue;
+            }
+            if active.contains(&id) {
+                has_cycle = true;
+                break;
+            }
+            if done.contains(&id) {
+                continue;
+            }
+            active.insert(id.clone());
+            stack.push((id.clone(), true));
+            if let Some(ev) = events_map.get(&id) {
+                for parent in ev.prev_state_events().iter().rev() {
+                    if reachable_set.contains(parent) {
+                        stack.push((parent.clone(), false));
+                    }
+                }
+            }
+        }
+        if has_cycle {
+            break;
+        }
+    }
+
+    if !truncated && !has_cycle && missing.is_empty() && disconnected.is_empty() {
         if let Some(create_id) = create_event_id {
             return StateDagCompleteness::Complete {
                 create_event_id: create_id,

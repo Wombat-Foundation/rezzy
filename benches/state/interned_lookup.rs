@@ -120,7 +120,7 @@ fn intern_get(
     map.get(&(et, sk)).copied()
 }
 
-fn measure(label: &str, reps: usize, f: impl Fn()) -> f64 {
+fn measure(label: impl AsRef<str>, reps: usize, f: impl Fn()) -> f64 {
     f(); // warmup
     f();
     let start = Instant::now();
@@ -128,7 +128,7 @@ fn measure(label: &str, reps: usize, f: impl Fn()) -> f64 {
         f();
     }
     let per_ms = start.elapsed().as_secs_f64() * 1000.0 / reps as f64;
-    println!("  {label}: {per_ms:.3} ms/run");
+    println!("  {}: {per_ms:.3} ms/run", label.as_ref());
     per_ms
 }
 
@@ -220,37 +220,55 @@ pub fn run() {
                 misses.len()
             );
 
-            let str_ms = measure("  lookup String   (hit only) ", reps, || {
-                let mut acc = 0usize;
-                for (et, sk) in &hits {
-                    acc = acc.wrapping_add(string_get(&str_map, et, sk).unwrap_or(0));
-                }
-                std::hint::black_box(acc);
-            });
-            let int_ms = measure("  lookup InternId (hit only) ", reps, || {
-                let mut acc = 0usize;
-                for (et, sk) in &hits {
-                    acc = acc.wrapping_add(intern_get(&id_map, &str_to_id, et, sk).unwrap_or(0));
-                }
-                std::hint::black_box(acc);
-            });
+            let str_ms = measure(
+                format!("{type_count}/{m}: lookup String (hit only)"),
+                reps,
+                || {
+                    let mut acc = 0usize;
+                    for (et, sk) in &hits {
+                        acc = acc.wrapping_add(string_get(&str_map, et, sk).unwrap_or(0));
+                    }
+                    std::hint::black_box(acc);
+                },
+            );
+            let int_ms = measure(
+                format!("{type_count}/{m}: lookup InternId (hit only)"),
+                reps,
+                || {
+                    let mut acc = 0usize;
+                    for (et, sk) in &hits {
+                        acc =
+                            acc.wrapping_add(intern_get(&id_map, &str_to_id, et, sk).unwrap_or(0));
+                    }
+                    std::hint::black_box(acc);
+                },
+            );
             let delta = (int_ms - str_ms) / str_ms * 100.0;
             println!("  InternId vs String (hits): {delta:+.1}%");
 
-            let str_mix = measure("  lookup String   (hit+miss)  ", reps_mix, || {
-                let mut acc = 0usize;
-                for (et, sk) in hits.iter().chain(misses.iter()) {
-                    acc = acc.wrapping_add(string_get(&str_map, et, sk).unwrap_or(0));
-                }
-                std::hint::black_box(acc);
-            });
-            let int_mix = measure("  lookup InternId (hit+miss)  ", reps_mix, || {
-                let mut acc = 0usize;
-                for (et, sk) in hits.iter().chain(misses.iter()) {
-                    acc = acc.wrapping_add(intern_get(&id_map, &str_to_id, et, sk).unwrap_or(0));
-                }
-                std::hint::black_box(acc);
-            });
+            let str_mix = measure(
+                format!("{type_count}/{m}: lookup String (hit+miss)"),
+                reps_mix,
+                || {
+                    let mut acc = 0usize;
+                    for (et, sk) in hits.iter().chain(misses.iter()) {
+                        acc = acc.wrapping_add(string_get(&str_map, et, sk).unwrap_or(0));
+                    }
+                    std::hint::black_box(acc);
+                },
+            );
+            let int_mix = measure(
+                format!("{type_count}/{m}: lookup InternId (hit+miss)"),
+                reps_mix,
+                || {
+                    let mut acc = 0usize;
+                    for (et, sk) in hits.iter().chain(misses.iter()) {
+                        acc =
+                            acc.wrapping_add(intern_get(&id_map, &str_to_id, et, sk).unwrap_or(0));
+                    }
+                    std::hint::black_box(acc);
+                },
+            );
             let delta_mix = (int_mix - str_mix) / str_mix * 100.0;
             println!("  InternId vs String (hit+miss): {delta_mix:+.1}%");
         }

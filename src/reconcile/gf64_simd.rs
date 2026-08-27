@@ -205,7 +205,28 @@ pub fn get_evaluator() -> EvaluatorBackend {
         #[cfg(has_avx512_support)]
         EvaluatorBackend::Avx512 => 3,
     };
-    BACKEND.store(encoded, Ordering::Relaxed);
+    // Only the thread that wins initialization emits the diagnostic. Other
+    // concurrent callers use the winner's cached backend and must not repeat
+    // the scalar warning.
+    if BACKEND
+        .compare_exchange(0, encoded, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        let cached = BACKEND.load(Ordering::Acquire);
+        return match cached {
+            1 => EvaluatorBackend::Scalar,
+            2 => EvaluatorBackend::Sse,
+            #[cfg(has_avx512_support)]
+            3 => EvaluatorBackend::Avx512,
+            _ => backend,
+        };
+    }
+    if matches!(backend, EvaluatorBackend::Scalar) {
+        std::eprintln!(
+            "rezzy: WARN: GF64 non-SIMD (scalar) evaluator in use; \
+             PCLMULQDQ/AVX-512 not detected on this CPU"
+        );
+    }
     backend
 }
 
@@ -218,14 +239,7 @@ pub fn get_evaluator() -> EvaluatorBackend {
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 fn get_evaluator_internal() -> EvaluatorBackend {
     let (has_avx512, has_pclmul) = get_evaluator_features();
-    let backend = select_evaluator_backend(has_avx512, has_pclmul);
-    if matches!(backend, EvaluatorBackend::Scalar) {
-        std::eprintln!(
-            "rezzy: WARN: GF64 non-SIMD (scalar) evaluator in use; \
-             PCLMULQDQ/AVX-512 not detected on this CPU"
-        );
-    }
-    backend
+    select_evaluator_backend(has_avx512, has_pclmul)
 }
 
 #[cfg(all(feature = "std", target_arch = "x86_64"))]

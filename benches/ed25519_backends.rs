@@ -128,7 +128,7 @@ fn benchmark(size: usize, iterations: u32) {
     report("dalek batch", dalek_batch, iterations, size);
     report("consensus batch", consensus_batch, iterations, size);
     println!(
-        "consensus/dalek: sequential {:.2}x, batch {:.2}x",
+        "dalek/consensus: sequential {:.2}x, batch {:.2}x",
         dalek_sequential.as_secs_f64() / consensus_sequential.as_secs_f64(),
         dalek_batch.as_secs_f64() / consensus_batch.as_secs_f64(),
     );

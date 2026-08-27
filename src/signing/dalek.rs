@@ -114,8 +114,20 @@ pub fn verify_batch(
             ));
         };
 
+        let origin = value
+            .get("event_id")
+            .and_then(Value::as_str)
+            .and_then(|id| {
+                id.strip_prefix('$')
+                    .unwrap_or(id)
+                    .split_once(':')
+                    .map(|(_, server)| server)
+            });
         let mut selected: Option<(Signature, VerifyingKey)> = None;
         'outer: for (server, key_set) in sigs_map {
+            if origin.is_some_and(|expected| expected != server) {
+                continue;
+            }
             let Some(key_set) = key_set.as_object() else {
                 continue;
             };

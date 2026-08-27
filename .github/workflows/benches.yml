@@ -8,10 +8,8 @@ on:
     branches: ["main", "master"]
   workflow_dispatch:
 
-# `contents: write` is needed only to push the updated best-metric JSON to the
-# `_metadata/badges` branch; it is only exercised on main/master pushes.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: benchmark-publish-${{ github.ref }}
@@ -24,13 +22,13 @@ jobs:
   bench:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: bench
 
@@ -59,19 +57,34 @@ jobs:
             --out bench-new.json \
             --margin 0.10
 
-      - name: Publish new best to _metadata/badges (main/master only)
-        # Only the default branch updates the recorded best; PR runs compare only.
+      - name: Stage metrics for publisher
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        with:
+          name: benchmark-metrics
+          path: bench-new.json
+
+  publish:
+    needs: bench
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: benchmark-metrics
+      - name: Publish new best to _metadata/badges
         run: |
-          set -e
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # bench-new.json is untracked, so it survives the branch switch below.
           git fetch origin _metadata/badges 2>/dev/null || true
-          cp bench-new.json "${RUNNER_TEMP}/bench-new.json"
-          git clean -f -- bench-new.json bench.json
           git checkout -B _metadata/badges origin/_metadata/badges 2>/dev/null || git checkout -b _metadata/badges
-          cp "${RUNNER_TEMP}/bench-new.json" bench.json
+          cp "${GITHUB_WORKSPACE}/bench-new.json" bench.json
           git add bench.json
           if git diff --cached --quiet; then
             echo "no metric change to publish"

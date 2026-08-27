@@ -177,8 +177,10 @@ impl<A: HamtCodec, B: HamtCodec> HamtCodec for (A, B) {
 
 impl HamtCodec for crate::basespec::event_types::EventType {
     fn encode_hamt(&self, out: &mut Vec<u8>) {
-        let s = alloc::string::String::from(self.as_str());
-        s.encode_hamt(out);
+        let bytes = self.as_str().as_bytes();
+        let len = u32::try_from(bytes.len()).expect("string too long for HAMT codec");
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(bytes);
     }
 
     fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {

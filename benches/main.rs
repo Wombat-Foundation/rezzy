@@ -62,7 +62,7 @@ const BENCHMARKS: &[BenchmarkEntry] = &[
     },
     BenchmarkEntry {
         domain: "state",
-        name: "interned_lookup",
+        name: "state/interned_lookup",
         description: "Micro-bench of event state lookups across multiple event types",
         run_fn: state::interned_lookup::run,
     },

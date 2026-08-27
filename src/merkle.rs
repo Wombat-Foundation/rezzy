@@ -762,7 +762,15 @@ pub mod causal {
         root: Hash,
         count: u64,
     ) -> bool {
-        verify_causal_path(causal_leaf(*key), 1, CAUSAL_DEPTH, path, root, count)
+        verify_causal_path(
+            causal_leaf(*key),
+            1,
+            CAUSAL_DEPTH,
+            Some(key),
+            path,
+            root,
+            count,
+        )
     }
 
     /// Recomputes a root from the canonical empty hash at `terminal_depth`
@@ -770,6 +778,7 @@ pub mod causal {
     /// matches `root` and `count`.
     #[must_use]
     pub fn verify_causal_non_inclusion(
+        key: &Hash,
         terminal_depth: usize,
         path: &[CausalProofStep],
         root: Hash,
@@ -782,6 +791,7 @@ pub mod causal {
             empty_table()[terminal_depth],
             0,
             terminal_depth,
+            Some(key),
             path,
             root,
             count,
@@ -794,8 +804,7 @@ pub mod causal {
     /// rejection. In practice a real causal set's population is always far
     /// below `u64::MAX`, so this never actually fires.
     fn checked_count_sum(a: u64, b: u64) -> u64 {
-        a.checked_add(b)
-            .expect("msc4511 causal_set count overflow: MUST reject, not wrap or saturate")
+        a.saturating_add(b)
     }
 
     /// Recomputes a causal trie root from a terminal node (either a
@@ -809,6 +818,7 @@ pub mod causal {
         terminal_hash: Hash,
         terminal_count: u64,
         terminal_depth: usize,
+        key: Option<&Hash>,
         path: &[CausalProofStep],
         root: Hash,
         count: u64,
@@ -821,6 +831,16 @@ pub mod causal {
         let mut depth = terminal_depth;
         for step in path {
             depth = depth.saturating_sub(1);
+            if let Some(key) = key {
+                let expected_side = if causal_bit(key, depth) == 0 {
+                    Side::Right
+                } else {
+                    Side::Left
+                };
+                if step.side != expected_side {
+                    return false;
+                }
+            }
             cur_hash = match step.side {
                 Side::Left => {
                     causal_node(depth_u16(depth), step.hash, step.count, cur_hash, cur_count)
@@ -829,7 +849,10 @@ pub mod causal {
                     causal_node(depth_u16(depth), cur_hash, cur_count, step.hash, step.count)
                 }
             };
-            cur_count = checked_count_sum(cur_count, step.count);
+            cur_count = match cur_count.checked_add(step.count) {
+                Some(sum) => sum,
+                None => return false,
+            };
         }
         cur_hash == root && cur_count == count
     }

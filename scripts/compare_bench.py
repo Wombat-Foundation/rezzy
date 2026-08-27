@@ -64,7 +64,11 @@ def main() -> int:
     if not 0.0 < args.margin < 1.0:
         ap.error("--margin must be in (0, 1)")
 
-    current = extract(args.current)
+    try:
+        current = extract(args.current)
+    except (OSError, ValueError) as exc:
+        print(f"could not parse benchmark output: {exc}", file=sys.stderr)
+        return 1
     if not current:
         print("no benchmark metrics parsed", file=sys.stderr)
         return 1

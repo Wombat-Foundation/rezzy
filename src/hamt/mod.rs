@@ -1703,12 +1703,13 @@ where
 /// Returns [`DescendError::Decode`] if any node byte slice fails v1 parsing, or
 /// [`DescendError::CorruptNode`] if internal bitmap invariants are violated.
 pub fn descend_level<K, V, KeyHash>(
+    structural_key: &[u8],
     nodes_and_keys: &[(StructuralHash, &[u8], usize, &[KeyPathHash])],
     mut key_hash_fn: KeyHash,
 ) -> Result<DescendResult<V>, DescendError>
 where
-    K: HamtCodec + Eq,
-    V: HamtCodec + Clone,
+    K: HamtCodec + Eq + Hash,
+    V: HamtCodec + Clone + Hash,
     KeyHash: FnMut(&K) -> KeyPathHash,
 {
     let mut found = Vec::new();
@@ -1724,8 +1725,31 @@ where
                 "decoded structural hash does not match requested node hash",
             ));
         }
+        let decoded_children: Vec<NodeRef<K, V>> = node
+            .child_hashes
+            .iter()
+            .copied()
+            .map(NodeRef::Lazy)
+            .collect();
+        let recomputed = HamtNode::compute_structural_hash(
+            structural_key,
+            node.datamap,
+            node.nodemap,
+            &node.leaves,
+            &decoded_children,
+        );
+        if recomputed != expected_hash {
+            return Err(DescendError::CorruptNode(
+                "decoded node contents do not match structural hash",
+            ));
+        }
 
         for &req_hash in target_keys {
+            if depth >= HAMT_MAX_DEPTH {
+                return Err(DescendError::CorruptNode(
+                    "HAMT depth exceeds routing limit",
+                ));
+            }
             let slot = bucket_index(&req_hash, depth);
             let bit = 1_u32 << slot;
 

@@ -933,24 +933,28 @@ where
     // comment for the soundness argument and version gating. Screened events
     // are collected separately so the per-event delta contract still records
     // their rejection below.
-    let mut non_power_list: alloc::vec::Vec<&LeanEvent<Id, C, K>> = alloc::vec::Vec::new();
-    let mut screened: alloc::vec::Vec<&LeanEvent<Id, C, K>> = alloc::vec::Vec::new();
-    if version.has_ban_evasion_hardening() {
-        for ev in non_power_events.values() {
-            if is_sender_banned(ev, &resolved, &sort_context) {
-                screened.push(ev);
-            } else {
-                non_power_list.push(ev);
-            }
-        }
-    } else {
-        non_power_list.extend(non_power_events.values());
-    }
+    // Keep screened events in the sorted stream. They must not mutate state,
+    // but their rejected deltas still belong at their mainline positions;
+    // appending them afterward makes the delta sequence disagree with the
+    // documented mainline ordering.
+    let mut non_power_list: alloc::vec::Vec<&LeanEvent<Id, C, K>> =
+        non_power_events.values().collect();
     mainline_sort(&mut non_power_list, &mainline, &sort_context);
 
     for ev in non_power_list {
         let Some(sk) = &ev.state_key else { continue };
         let key = (EventType::from(ev.event_type.as_str()), sk.clone());
+        if version.has_ban_evasion_hardening() && is_sender_banned(ev, &resolved, &sort_context) {
+            let replaced = resolved.get(&key).cloned();
+            deltas.push(ResolutionDelta {
+                event_id: ev.event_id.clone(),
+                accepted: false,
+                key,
+                replaced,
+                phase: ResolvePhase::NonPower,
+            });
+            continue;
+        }
         let local_auth = compute_local_auth(ev, auth_context, sort_set, local_auth_cache, version);
         let accepted = iterative_auth_ok(
             ev,
@@ -973,22 +977,6 @@ where
             event_id: ev.event_id.clone(),
             accepted,
             key: key.clone(),
-            replaced,
-            phase: ResolvePhase::NonPower,
-        });
-    }
-
-    // Banned-sender events were screened out before mainline sort above (same
-    // as the main path), but the per-event delta contract still requires a
-    // rejected delta for each one rather than silently omitting it.
-    for ev in screened {
-        let Some(sk) = &ev.state_key else { continue };
-        let key = (EventType::from(ev.event_type.as_str()), sk.clone());
-        let replaced = resolved.get(&key).cloned();
-        deltas.push(ResolutionDelta {
-            event_id: ev.event_id.clone(),
-            accepted: false,
-            key,
             replaced,
             phase: ResolvePhase::NonPower,
         });
