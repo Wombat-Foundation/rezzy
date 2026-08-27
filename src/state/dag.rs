@@ -173,6 +173,7 @@ impl<Id: fmt::Display> fmt::Display for StateDagValidationError<Id> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod validation_error_display_tests {
     use super::StateDagValidationError;
     use alloc::format;
@@ -267,6 +268,7 @@ impl<Id: fmt::Display> fmt::Display for StateDagError<Id> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod state_dag_error_display_tests {
     use super::{StateDagError, StateDagValidationError};
     use alloc::{format, vec};
@@ -296,6 +298,7 @@ mod state_dag_error_display_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod state_dag_branch_coverage_tests {
     use super::*;
     use crate::basespec::rezzy_types::RoomId;

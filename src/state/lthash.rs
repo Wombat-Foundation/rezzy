@@ -323,6 +323,10 @@ impl RedactionOverlay {
     }
 
     /// Adds one effectively redacted selected state event to the overlay.
+    ///
+    /// The caller must maintain set semantics: inserting the same tuple more
+    /// than once intentionally changes the lattice, just as it does for the
+    /// primary accumulator.
     pub fn insert(
         &mut self,
         event_type: &str,
@@ -338,6 +342,8 @@ impl RedactionOverlay {
     }
 
     /// Removes one overlay entry previously inserted with [`Self::insert`].
+    /// Callers must not remove an entry that is absent from the authoritative
+    /// overlay set.
     pub fn remove(
         &mut self,
         event_type: &str,
@@ -370,12 +376,25 @@ impl RedactionOverlay {
     }
 }
 
-/// The two MSC4500 state digests sent by a server.  `overlay` is optional for
-/// wire compatibility and must never be interpreted as agreement when absent.
+/// The MSC4500 state digest for one DAG point: the primary resolved-state
+/// digest and, when supported, its causal redaction overlay digest.
+///
+/// MSC4500 carries these values as `before` and `after` fields around a state
+/// transition (alongside `redactions_before` and `redactions_after`). This
+/// type represents one such point; [`StateDigestTransition`] represents the
+/// pair. `overlay` is optional for wire compatibility and must never be
+/// interpreted as agreement when absent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StateDigest {
     pub primary: [u8; 32],
     pub overlay: Option<[u8; 32]>,
+}
+
+/// The before/after digest pair carried for one MSC4500 state transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateDigestTransition {
+    pub before: StateDigest,
+    pub after: StateDigest,
 }
 
 /// Result of comparing two state digest advertisements.
@@ -501,6 +520,19 @@ mod tests {
 
         reordered.remove("m.room.member", "@bob:example.org", "$other-state");
         assert_eq!(reordered, left);
+    }
+
+    #[test]
+    fn test_redaction_overlay_msc4500_vector() {
+        let mut overlay = RedactionOverlay::ZERO;
+        overlay.insert("m.room.member", "@alice:example.org", "$state");
+        assert_eq!(
+            overlay.digest(),
+            [
+                69, 243, 113, 245, 224, 85, 213, 42, 145, 18, 212, 145, 211, 128, 87, 65, 242, 201,
+                250, 196, 142, 78, 66, 51, 101, 158, 98, 105, 6, 218, 254, 190,
+            ]
+        );
     }
 
     #[test]
