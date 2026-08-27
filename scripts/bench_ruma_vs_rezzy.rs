@@ -10,7 +10,7 @@
 //! in-memory `String`-ID fixture, is not where rezzy's performance advantage
 //! lives: rezzy's large speedups are in bitwise auth-difference and Roaring
 //! reachability/transitive-closure, measured by `run_bench_auth_difference.sh`
-//! and `cargo bench --bench resolve`. Both engines here resolve a pre-computed
+//! and `cargo bench --bench rezzy -- resolve`. Both engines here resolve a pre-computed
 //! in-memory DAG with no database I/O, and rezzy uses its zero-copy borrowed
 //! entry point so the timed loop does not pay a per-iteration `serde_json`
 //! deep clone.
@@ -584,7 +584,7 @@ fn main() {
     println!("================================================================================");
     println!("  MATRIX STATE RESOLUTION LARGE-SCALE SHOOTOUT: ruma-state-res vs rezzy");
     println!("  (correctness-parity oracle; perf claims belong in run_bench_auth_difference.sh");
-    println!("   and cargo bench --bench resolve, not this in-memory String-ID fixture)");
+    println!("   and cargo bench --bench rezzy -- resolve, not this in-memory String-ID fixture)");
     println!("================================================================================\n");
 
     // 1. Nasty 2-Branch Conflict (500 Members, 100 Conflicted Keys, Deep Auth Chains)

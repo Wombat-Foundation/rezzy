@@ -9,7 +9,7 @@
 //! insert/remove during resolution, and cheap clone-and-diverge across
 //! conflict branches.
 //!
-//! Run with: `cargo bench --bench state_backend`
+//! Run with: `cargo bench --bench rezzy -- state_backend`
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,

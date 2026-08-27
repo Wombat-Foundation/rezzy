@@ -28,7 +28,7 @@
 //! seconds of genuine CPU at S=4096 already; going to 65536 would take
 //! this from a benchmark to a coffee break.
 //!
-//! Run with: `cargo bench --bench cumulative_rebuild`
+//! Run with: `cargo bench --bench rezzy -- cumulative_rebuild`
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,

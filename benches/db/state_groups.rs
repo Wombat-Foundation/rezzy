@@ -32,7 +32,7 @@
 //! - worst-case point-lookup cost for a key set once at genesis and never
 //!   touched again, read back after the whole mutation stream has run
 //!
-//! Run with: `cargo bench --bench state_groups`
+//! Run with: `cargo bench --bench rezzy -- state_groups`
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,

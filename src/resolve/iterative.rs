@@ -16,13 +16,15 @@
 //!
 //! This module implements the full Matrix state resolution pipeline:
 //!
-//! 1. **Resolved-state screening pass** (V2.1.1+): drops non-power conflicted
-//!    events whose sender is already banned in the resolved state
-//!    (`is_sender_banned`), the sound replacement for the retired CDO pre-filter.
-//! 2. **Power phase**: classifies events as power vs. non-power, expands auth
-//!    chains, then iteratively auth-checks power events in reverse topological order.
-//! 3. **Non-power phase**: sorts remaining events by mainline distance and
-//!    iteratively auth-checks them against the progressively-built resolved state.
+//! 1. **Power phase**: classifies events into power and non-power subsets,
+//!    expands power auth chains, Kahn-sorts power events in reverse topological
+//!    order, and iteratively auth-checks them against the authoritative create/power state.
+//! 2. **Resolved-state screening pass** (V2.1.1+): drops non-power conflicted
+//!    events whose sender is already banned in the power-phase resolved state
+//!    (`is_sender_banned`), replacing the retired CDO pre-filter.
+//! 3. **Non-power phase**: builds the power-level mainline, sorts remaining
+//!    events by mainline distance and timestamp, and iteratively auth-checks them
+//!    against the progressively-built resolved state.
 //!
 //! For the lattice-coordinatized variant (parallel, `O(1)` projection), see
 //! [`crate::resolve::lattice::resolve_lattice_fold`].
@@ -36,9 +38,10 @@ use crate::{
 };
 use alloc::vec::Vec;
 
-/// Prepares the conflicted events map and tracks the original conflicted keys
-/// for the resolved-state screening pass (the CDO pre-filter that formerly ran
-/// here is retired — see the body comment below).
+/// Collects the initial set of conflicted event IDs.
+///
+/// (The historical CDO pre-filter that previously modified this set is retired;
+/// the sound resolved-state screening pass runs after the power phase via `is_sender_banned`.)
 pub(crate) fn prepare_conflicted_and_keys<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,

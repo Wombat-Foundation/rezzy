@@ -37,8 +37,9 @@ lint: ##H Run all linters
 		$(CARGO) check --all-targets $(CARGO_FEATURE_ARGS); \
 	fi
 
-.PHONY: doc
-doc: ##H Generate rustdoc API documentation
+.PHONY: doc rust/doc
+doc: rust/doc ##H Alias for rust/doc
+rust/doc: ##H Generate rustdoc API documentation
 	$(CARGO) doc --no-deps
 	echo '<meta http-equiv="refresh" content="0;url=rezzy/index.html">' > target/doc/index.html
 

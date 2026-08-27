@@ -469,7 +469,7 @@ fn measure(label: &str, reps: usize, f: impl Fn()) -> Duration {
 // vs zero-alloc InternId) that used to live here was superseded by
 // `benches/interned_lookup.rs`, which covers the same measurement plus a
 // type-count sweep (1 vs 16 event types) -- removed to avoid two benches
-// answering the same question. Run `cargo bench --bench interned_lookup`
+// answering the same question. Run `cargo bench --bench rezzy -- interned_lookup`
 // for that comparison.
 
 pub fn run() {
