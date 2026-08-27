@@ -4512,6 +4512,24 @@ fn test_refcount_table_apply_superseded_underflow_is_atomic() {
 }
 
 #[test]
+fn test_refcount_table_underflow_reports_first_hash_in_input_order() {
+    use crate::hamt::gc::{RefcountTable, RefcountUnderflow};
+
+    let key = b"ordered_underflow";
+    let root = build_hamt(key, (0_u64..32).map(|i| (i, i))).expect("build root");
+    let hashes = crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
+    assert!(hashes.len() >= 2);
+
+    let mut table = RefcountTable::new();
+    table.apply_new(&[hashes[1]]);
+    let err = table
+        .apply_superseded(&[hashes[0], hashes[1]])
+        .expect_err("the first hash is untracked");
+    assert_eq!(err, RefcountUnderflow { hash: hashes[0] });
+    assert_eq!(table.count(&hashes[1]), 1, "validation remains atomic");
+}
+
+#[test]
 fn test_refcount_table_apply_superseded_repeated_hash_in_one_batch() {
     use crate::hamt::gc::RefcountTable;
 
