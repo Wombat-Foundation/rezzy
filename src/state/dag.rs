@@ -423,6 +423,21 @@ mod state_dag_branch_coverage_tests {
             ),
             StateDagCompleteness::Incomplete { .. }
         ));
+
+        let disconnected = event("$disconnected", Some(""));
+        let mut disconnected_map: TestMap = crate::HashMap::default();
+        disconnected_map.insert(disconnected.event_id.clone(), disconnected);
+        assert!(matches!(
+            walk_state_dag(
+                &[&"$disconnected".to_string()],
+                &disconnected_map,
+                StateDagWalkOptions {
+                    max_steps: None,
+                    stop_on_first_missing: true,
+                }
+            ),
+            StateDagCompleteness::Incomplete { .. }
+        ));
     }
 
     #[test]
@@ -430,6 +445,7 @@ mod state_dag_branch_coverage_tests {
         let unknown = "$unknown".to_string();
         let events = crate::HashMap::<String, LeanEvent<String, Value, String>>::default();
         assert!(order_missing_state_events_deterministic(&[&unknown], &events, 10).is_empty());
+        assert!(order_missing_state_events_deterministic(&[&unknown], &events, 0).is_empty());
 
         let mut latest = event("$latest", Some(""));
         latest.auth_events.push("$missing".into());
@@ -454,6 +470,19 @@ mod state_dag_branch_coverage_tests {
                 StateDagValidationError::CreateWithPrevStateEvents
             ))
         ));
+
+        let valid_create = event("$valid-create", Some(""));
+        let mut valid_create = valid_create;
+        valid_create.event_type = M_ROOM_CREATE.into();
+        valid_create.state_key = None;
+        assert!(compute_state_before_from_dag(
+            &valid_create,
+            &events,
+            StateResVersion::V2_2,
+            &empty_key
+        )
+        .unwrap()
+        .is_empty());
 
         let non_create = event("$event", Some(""));
         assert!(matches!(
@@ -515,6 +544,25 @@ mod state_dag_branch_coverage_tests {
         let targets = [&unknown, &unknown];
         let missing = collect_state_dag_ancestor_short_ids_batch(&targets, &events).unwrap_err();
         assert_eq!(missing, vec![unknown]);
+
+        let mut parent = event("$parent", Some(""));
+        parent.auth_events.push("$nested-missing".into());
+        let mut events: TestMap = crate::HashMap::default();
+        events.insert(parent.event_id.clone(), parent);
+        let target = "$parent".to_string();
+        assert_eq!(
+            collect_state_dag_ancestor_short_ids_batch(&[&target], &events).unwrap_err(),
+            vec!["$nested-missing".to_string()]
+        );
+
+        let mut create = event("$create", None);
+        create.event_type = M_ROOM_CREATE.into();
+        let state = SharedState::new();
+        assert!(
+            derive_auth_events_from_state_dag(&create, &state, &events, "12")
+                .unwrap()
+                .is_empty()
+        );
     }
 }
 
