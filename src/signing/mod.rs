@@ -67,6 +67,30 @@ pub trait SignatureVerifier {
     ) -> Result<(), String>;
 }
 
+/// Extracts the expected homeserver domain that should sign `value`.
+///
+/// For room versions 1 and 2, event IDs have the form `$localpart:domain.com` and
+/// the domain is extracted from the event ID. For room versions 3+, event IDs are
+/// content hashes, so the signer is the sender's homeserver (extracted from `@user:domain.com`).
+#[must_use]
+pub(crate) fn expected_event_signer<'a>(value: &'a Value) -> Option<&'a str> {
+    if let Some(event_id) = value.get("event_id").and_then(Value::as_str) {
+        if let Some((_, server)) = event_id
+            .strip_prefix('$')
+            .unwrap_or(event_id)
+            .split_once(':')
+        {
+            return Some(server);
+        }
+    }
+    if let Some(sender) = value.get("sender").and_then(Value::as_str) {
+        if let Some((_, server)) = sender.strip_prefix('@').unwrap_or(sender).split_once(':') {
+            return Some(server);
+        }
+    }
+    None
+}
+
 /// Verifies every signature in `value["signatures"][server][key_id]` that
 /// `verifier` holds a key for, over the canonical redacted JSON of `value`.
 ///
@@ -91,15 +115,7 @@ pub fn verify_event_signatures(
             "event has no signatures object",
         ));
     };
-    let origin = value
-        .get("event_id")
-        .and_then(Value::as_str)
-        .and_then(|id| {
-            id.strip_prefix('$')
-                .unwrap_or(id)
-                .split_once(':')
-                .map(|(_, server)| server)
-        });
+    let origin = expected_event_signer(value);
 
     let mut verified_any = false;
     for (server, keys) in signatures {
@@ -326,9 +342,33 @@ mod dalek_tests {
         let sk = SigningKey::from_bytes(&[10_u8; 32]);
         let vk = sk.verifying_key();
 
-        let raw = signed_event(
+        // 1. Signature map has uppercase server, keyring registered lowercase
+        let raw_upper_sig = signed_event(
             json!({
                 "event_id": "$1:EXAMPLE.COM",
+                "type": "m.room.message",
+                "room_id": "!r:example.com",
+                "sender": "@a:example.com",
+                "origin_server_ts": 1,
+                "content": { "body": "hi" },
+            }),
+            "1",
+            "EXAMPLE.COM",
+            "ed25519:0",
+            &sk,
+        );
+
+        let mut keys_lower = DalekVerifier::new();
+        keys_lower
+            .insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
+            .unwrap();
+        verify_event_signatures(&raw_upper_sig, "1", &keys_lower).unwrap();
+        verify_batch(&[raw_upper_sig.clone()], "1", &keys_lower).unwrap();
+
+        // 2. Signature map has lowercase server, keyring registered uppercase
+        let raw_lower_sig = signed_event(
+            json!({
+                "event_id": "$2:example.com",
                 "type": "m.room.message",
                 "room_id": "!r:example.com",
                 "sender": "@a:example.com",
@@ -341,11 +381,12 @@ mod dalek_tests {
             &sk,
         );
 
-        let mut keys = DalekVerifier::new();
-        keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
+        let mut keys_upper = DalekVerifier::new();
+        keys_upper
+            .insert_public_key("EXAMPLE.COM", "ed25519:0", &vk.to_bytes())
             .unwrap();
-        verify_event_signatures(&raw, "1", &keys).unwrap();
-        verify_batch(&[raw], "1", &keys).unwrap();
+        verify_event_signatures(&raw_lower_sig, "1", &keys_upper).unwrap();
+        verify_batch(&[raw_lower_sig], "1", &keys_upper).unwrap();
     }
 
     #[test]
@@ -374,5 +415,45 @@ mod dalek_tests {
         assert!(nv
             .verify_event_id_hash(&"$opaque:example.com".to_string())
             .is_err());
+    }
+
+    #[test]
+    fn dalek_rejects_event_with_invalid_known_signature_alongside_valid() {
+        use base64::Engine as _;
+        let sk1 = SigningKey::from_bytes(&[1_u8; 32]);
+        let vk1 = sk1.verifying_key();
+        let sk2 = SigningKey::from_bytes(&[2_u8; 32]);
+        let vk2 = sk2.verifying_key();
+
+        let mut event = signed_event(
+            json!({
+                "event_id": "$1:example.com",
+                "type": "m.room.message",
+                "room_id": "!r:example.com",
+                "sender": "@a:example.com",
+                "origin_server_ts": 1,
+                "content": { "body": "hi" },
+            }),
+            "1",
+            "example.com",
+            "ed25519:1",
+            &sk1,
+        );
+
+        // Add a second known key on example.com with a corrupted signature
+        let corrupt_sig = base64::engine::general_purpose::STANDARD_NO_PAD.encode([99_u8; 64]);
+        event["signatures"]["example.com"]["ed25519:2"] = json!(corrupt_sig);
+
+        let mut verifier = DalekVerifier::new();
+        verifier
+            .insert_public_key("example.com", "ed25519:1", &vk1.to_bytes())
+            .unwrap();
+        verifier
+            .insert_public_key("example.com", "ed25519:2", &vk2.to_bytes())
+            .unwrap();
+
+        // Both verify_event_signatures and verify_batch must reject the event
+        assert!(verify_event_signatures(&event, "1", &verifier).is_err());
+        assert!(verify_batch(&[event], "1", &verifier).is_err());
     }
 }

@@ -846,9 +846,38 @@ fn determinism_same_input_same_output() {
                 while iter < ITER_COUNT {
                     let mut rng = iteration_rng(BASE_SEED, iter);
                     let problem = gen_problem(&mut rng, 7000 + iter * 17);
+                    // Build an equivalent problem with reversed map insertion orders
+                    let mut rev_conflicted = HashMap::default();
+                    let mut conflicted_vec: Vec<_> = problem
+                        .conflicted
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    conflicted_vec.reverse();
+                    for (k, v) in conflicted_vec {
+                        rev_conflicted.insert(k, v);
+                    }
+                    let mut rev_auth = HashMap::default();
+                    let mut auth_vec: Vec<_> = problem
+                        .auth_context
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    auth_vec.reverse();
+                    for (k, v) in auth_vec {
+                        rev_auth.insert(k, v);
+                    }
+                    let problem_b = Problem {
+                        unconflicted: problem.unconflicted.clone(),
+                        conflicted: rev_conflicted,
+                        auth_context: rev_auth,
+                    };
                     let a = resolve(&problem, StateResVersion::V2_1_1);
-                    let b = resolve(&problem, StateResVersion::V2_1_1);
-                    assert_eq!(a, b, "resolution not deterministic on iteration {iter}");
+                    let b = resolve(&problem_b, StateResVersion::V2_1_1);
+                    assert_eq!(
+                        a, b,
+                        "resolution not deterministic under different map insertion orders on iteration {iter}"
+                    );
                     iter += stride;
                 }
             });

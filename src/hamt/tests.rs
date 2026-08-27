@@ -5087,7 +5087,7 @@ fn test_descend_level_batched_exact_lookup() {
 
     // Prepare requested keys: 50 present keys + 20 absent keys
     let mut requested_hashes = Vec::new();
-    for i in 0..70 {
+    for i in 0_u32..70_u32 {
         requested_hashes.push(crate::hamt::key_path_hash(key, &i));
     }
 
@@ -5142,7 +5142,7 @@ fn test_descend_level_batched_exact_lookup() {
         20,
         "all 20 absent keys must be proven absent"
     );
-    for k in 50..70 {
+    for k in 50_u32..70_u32 {
         let h = crate::hamt::key_path_hash(key, &k);
         assert!(absent_set.contains(&h));
     }

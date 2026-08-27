@@ -66,7 +66,7 @@ pub struct DescendResult<V> {
     pub found: Vec<(KeyPathHash, V)>,
     /// Keys proven to be absent at this level (the corresponding slot bit was clear).
     pub absent: Vec<KeyPathHash>,
-    /// Keys that need to descend further, grouped by the child node's `StructuralHash`.
+    /// Keys that need to descend further (to `depth + 1`), grouped by the child node's `StructuralHash`.
     pub pending: Vec<(StructuralHash, Vec<KeyPathHash>)>,
 }
 
@@ -1688,9 +1688,14 @@ where
 /// Descends into a batch of persisted node byte slices for their targeted keys.
 ///
 /// `nodes_and_keys` contains the expected node hash, encoded bytes, depth, and
-/// target key hashes for each fetched node. Each node is evaluated only against
-/// the keys that routed to it at that depth.
+/// target key hashes for each fetched node. All entries in a single `nodes_and_keys`
+/// call must share the same `depth` (the current level of breadth-first descent).
+/// Each node is evaluated only against the keys that routed to it at that depth.
 /// `key_hash_fn` computes the `KeyPathHash` of a decoded leaf key to verify exact matches.
+///
+/// # Depth Contract
+/// All tuples in `nodes_and_keys` must specify the same `depth` level. Successful
+/// descent produces [`DescendResult::pending`] entries representing child nodes at `depth + 1`.
 ///
 /// # Absence Invariant
 /// A key is reported in `absent` ONLY when:
@@ -1712,6 +1717,13 @@ where
     V: HamtCodec + Clone + Hash,
     KeyHash: FnMut(&K) -> KeyPathHash,
 {
+    if let Some(&(_, _, first_depth, _)) = nodes_and_keys.first() {
+        debug_assert!(
+            nodes_and_keys.iter().all(|&(_, _, d, _)| d == first_depth),
+            "all nodes in a single descend_level call must use the same depth"
+        );
+    }
+
     let mut found = Vec::new();
     let mut absent = Vec::new();
     let mut pending_map: crate::HashMap<StructuralHash, Vec<KeyPathHash>> =

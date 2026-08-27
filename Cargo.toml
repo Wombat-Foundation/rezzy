@@ -6,6 +6,7 @@ rust-version = "1.81"
 resolver = "2"
 autobins = false
 autobenches = false
+autotests = false
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
 description = "Lightweight and formally verified: State Res v1, v2, and v2.1 reference implementations in Rust."
 keywords = ["matrix", "state-resolution", "federation", "verification"]

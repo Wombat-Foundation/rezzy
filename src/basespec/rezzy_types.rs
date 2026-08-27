@@ -37,7 +37,6 @@ use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER, 
 /// by `LtHash::seed()` in [`crate::state::lthash`] for
 /// content-addressed state hashing — if two implementations produce different
 /// `Display` output for the same logical event ID, state hashes will diverge
-/// across homeservers.
 pub trait EventId:
     Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display
 {

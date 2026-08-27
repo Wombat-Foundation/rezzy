@@ -468,8 +468,14 @@ mod state_dag_branch_coverage_tests {
     fn ordering_missing_events_ignores_unknown_latest_event() {
         let unknown = "$unknown".to_string();
         let events = crate::HashMap::<String, LeanEvent<String, Value, String>>::default();
-        assert!(order_missing_state_events_deterministic(&[&unknown], &events, 10).is_empty());
-        assert!(order_missing_state_events_deterministic(&[&unknown], &events, 0).is_empty());
+        assert_eq!(
+            order_missing_state_events_deterministic(&[&unknown], &events, 10),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            order_missing_state_events_deterministic(&[&unknown], &events, 0),
+            Vec::<String>::new()
+        );
 
         let mut latest = event("$latest", Some(""));
         latest.auth_events.push("$missing".into());
@@ -499,14 +505,16 @@ mod state_dag_branch_coverage_tests {
         let mut valid_create = valid_create;
         valid_create.event_type = M_ROOM_CREATE.into();
         valid_create.state_key = None;
-        assert!(compute_state_before_from_dag(
-            &valid_create,
-            &events,
-            StateResVersion::V2_2,
-            &empty_key
-        )
-        .unwrap()
-        .is_empty());
+        assert_eq!(
+            compute_state_before_from_dag(
+                &valid_create,
+                &events,
+                StateResVersion::V2_2,
+                &empty_key
+            )
+            .unwrap(),
+            SharedState::new()
+        );
 
         let non_create = event("$event", Some(""));
         assert!(matches!(
@@ -647,18 +655,20 @@ mod state_dag_branch_coverage_tests {
         ));
 
         let empty = event("$empty-final-target", Some("target"));
-        assert!(finish_state_after_from_dag(
-            &empty,
-            &empty_events,
-            &empty_index,
-            &empty_states,
-            &mut auth_cache,
-            &mut mainline_cache,
-            StateResVersion::V2_2,
-            &empty_key,
-        )
-        .unwrap()
-        .is_empty());
+        assert_eq!(
+            finish_state_after_from_dag(
+                &empty,
+                &empty_events,
+                &empty_index,
+                &empty_states,
+                &mut auth_cache,
+                &mut mainline_cache,
+                StateResVersion::V2_2,
+                &empty_key,
+            )
+            .unwrap(),
+            SharedState::new()
+        );
     }
 
     #[test]
@@ -688,10 +698,9 @@ mod state_dag_branch_coverage_tests {
         let mut create = event("$create", None);
         create.event_type = M_ROOM_CREATE.into();
         let state = SharedState::new();
-        assert!(
-            derive_auth_events_from_state_dag(&create, &state, &events, "12")
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            derive_auth_events_from_state_dag(&create, &state, &events, "12").unwrap(),
+            Vec::<String>::new()
         );
     }
 }

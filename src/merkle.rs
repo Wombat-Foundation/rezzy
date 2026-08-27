@@ -560,12 +560,10 @@ fn hash_parts(parts: &[&[u8]]) -> Hash {
     hasher.finalize().into()
 }
 
-/// MSC4511's causal sparse Merkle sum trie: a persistent 256-level structure
+/// MSC4511's causal sparse Merkle sum trie: a reference 256-level structure
 /// committing the set of event IDs in an event's strict causal past.
 ///
-/// This mirrors `gomatrixcrypto`'s `merkle.CausalSet`. Empty-subtree hashes
-/// are recomputed recursively on each call rather than cached in a static
-/// table, which is simpler but not optimized for production-scale use.
+/// This provides a reference implementation matching `gomatrixcrypto`'s `merkle.CausalSet`.
 pub mod causal {
     use super::{hash_parts, Hash};
     use alloc::{collections::BTreeSet, vec::Vec};
@@ -649,9 +647,9 @@ pub mod causal {
         table
     }
 
-    /// An immutable population of event-ID keys committed by a persistent
+    /// An in-memory population of event-ID keys committed by an MSC4511
     /// 256-level sparse Merkle sum trie.
-    #[derive(Debug, Clone, Default)]
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
     pub struct CausalSet {
         keys: BTreeSet<Hash>,
     }
@@ -689,6 +687,16 @@ pub mod causal {
             Self {
                 keys: BTreeSet::new(),
             }
+        }
+
+        /// Inserts a key into `self` in place without cloning.
+        pub fn insert_mut(&mut self, key: Hash) -> bool {
+            self.keys.insert(key)
+        }
+
+        /// Extends `self` with keys from an iterator in place.
+        pub fn extend<I: IntoIterator<Item = Hash>>(&mut self, iter: I) {
+            self.keys.extend(iter);
         }
 
         /// Returns a new [`CausalSet`] containing every key in `self` plus

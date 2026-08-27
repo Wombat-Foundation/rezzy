@@ -28,7 +28,7 @@ impl DalekVerifier {
     /// Registers a public key for `(server_name, key_id)`.
     pub fn insert(&mut self, server_name: &str, key_id: &str, key: VerifyingKey) -> &mut Self {
         self.keys
-            .insert((server_name.to_string(), key_id.to_string()), key);
+            .insert((server_name.to_ascii_lowercase(), key_id.to_string()), key);
         self
     }
 
@@ -50,14 +50,14 @@ impl DalekVerifier {
     #[must_use]
     pub fn get_key(&self, server_name: &str, key_id: &str) -> Option<&VerifyingKey> {
         self.keys
-            .get(&(server_name.to_string(), key_id.to_string()))
+            .get(&(server_name.to_ascii_lowercase(), key_id.to_string()))
     }
 }
 
 impl SignatureVerifier for DalekVerifier {
     fn has_key(&self, server_name: &str, key_id: &str) -> bool {
         self.keys
-            .contains_key(&(server_name.to_string(), key_id.to_string()))
+            .contains_key(&(server_name.to_ascii_lowercase(), key_id.to_string()))
     }
 
     fn verify(
@@ -69,7 +69,7 @@ impl SignatureVerifier for DalekVerifier {
     ) -> Result<(), String> {
         let key = self
             .keys
-            .get(&(server_name.to_string(), key_id.to_string()))
+            .get(&(server_name.to_ascii_lowercase(), key_id.to_string()))
             .ok_or_else(|| alloc::format!("no public key for {server_name}/{key_id}"))?;
         let sig_bytes: [u8; 64] = signature
             .try_into()
@@ -114,17 +114,9 @@ pub fn verify_batch(
             ));
         };
 
-        let origin = value
-            .get("event_id")
-            .and_then(Value::as_str)
-            .and_then(|id| {
-                id.strip_prefix('$')
-                    .unwrap_or(id)
-                    .split_once(':')
-                    .map(|(_, server)| server)
-            });
-        let mut selected: Option<(Signature, VerifyingKey)> = None;
-        'outer: for (server, key_set) in sigs_map {
+        let origin = super::expected_event_signer(value);
+        let mut event_verified_any = false;
+        for (server, key_set) in sigs_map {
             if origin.is_some_and(|expected| !expected.eq_ignore_ascii_case(server)) {
                 continue;
             }
@@ -146,17 +138,18 @@ pub fn verify_batch(
                 let sig_bytes: [u8; 64] = raw
                     .try_into()
                     .map_err(|_| alloc::string::String::from("signature must be 64 bytes"))?;
-                selected = Some((Signature::from_bytes(&sig_bytes), *key));
-                break 'outer;
+                event_verified_any = true;
+                messages.push(message.clone());
+                signatures.push(Signature::from_bytes(&sig_bytes));
+                verifying_keys.push(*key);
             }
         }
 
-        let (signature, verifying_key) = selected.ok_or_else(|| {
-            alloc::string::String::from("no supported signatures present on event")
-        })?;
-        messages.push(message);
-        signatures.push(signature);
-        verifying_keys.push(verifying_key);
+        if !event_verified_any {
+            return Err(alloc::string::String::from(
+                "no supported signatures present on event",
+            ));
+        }
     }
 
     let message_refs: Vec<&[u8]> = messages.iter().map(Vec::as_slice).collect();

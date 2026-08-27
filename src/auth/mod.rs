@@ -1132,6 +1132,22 @@ impl<Id> Default for RedactionReport<Id> {
     }
 }
 
+#[inline]
+pub(crate) fn event_id_to_wire_cow<Id: core::fmt::Display + 'static>(
+    id: &Id,
+) -> alloc::borrow::Cow<'_, str> {
+    if let Some(s) = (id as &dyn core::any::Any).downcast_ref::<alloc::string::String>() {
+        return alloc::borrow::Cow::Borrowed(s.as_str());
+    }
+    if let Some(s) = (id as &dyn core::any::Any).downcast_ref::<alloc::sync::Arc<str>>() {
+        return alloc::borrow::Cow::Borrowed(s.as_ref());
+    }
+    if let Some(s) = (id as &dyn core::any::Any).downcast_ref::<alloc::boxed::Box<str>>() {
+        return alloc::borrow::Cow::Borrowed(s.as_ref());
+    }
+    alloc::borrow::Cow::Owned(alloc::string::ToString::to_string(id))
+}
+
 /// Apply each `m.room.redaction` event to its in-set target, but only when the
 /// redaction is **authorized** against the provided room state.
 ///
@@ -1164,29 +1180,32 @@ pub fn apply_authorized_redactions<Id, E, K>(
     room_version: &str,
 ) -> RedactionReport<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId + Clone,
+    Id: crate::basespec::rezzy_types::EventId + Clone + 'static,
     E: EventLike<Id = Id, Content = serde_json::Value>,
     K: crate::basespec::rezzy_types::StateKey + Clone,
 {
-    let pos_by_id: alloc::collections::BTreeMap<alloc::string::String, usize> = events
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (e.event_id.to_string(), i))
-        .collect();
-
-    // Collect (redaction_pos, target_pos) pairs and deferred (out-of-batch)
-    // targets BEFORE any mutable borrow, so `pos_by_id`'s borrow of `events`
-    // ends before the in-place split below.
+    // Collect active redaction positions first. If there are no redactions
+    // in this batch, return immediately without constructing the index map.
     let redaction_positions: Vec<usize> = events
         .iter()
         .enumerate()
         // A rejected redaction is categorically invalid (failed auth against
         // its own auth_events) and must never strip content. Soft-failed
-        // redactions are NOT excluded: soft-fail is a stale arrival-time
-        // verdict, and authorization is re-checked below against the resolved
-        // state via `redaction_is_authorized`.
+        // redactions are also excluded from being applied.
         .filter(|(_, e)| e.event_type == M_ROOM_REDACTION && !e.rejected && !e.soft_fail())
         .map(|(i, _)| i)
+        .collect();
+
+    if redaction_positions.is_empty() {
+        return RedactionReport::default();
+    }
+
+    // Build the wire ID index map. For string-backed IDs (String, Arc<str>, Box<str>),
+    // `event_id_to_wire_cow` borrows directly without allocating.
+    let pos_by_id: alloc::collections::BTreeMap<alloc::borrow::Cow<'_, str>, usize> = events
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (event_id_to_wire_cow(&e.event_id), i))
         .collect();
 
     let mut pairs: Vec<(usize, usize)> = Vec::new();

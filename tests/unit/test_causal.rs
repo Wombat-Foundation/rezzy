@@ -152,3 +152,62 @@ fn verify_causal_non_inclusion_rejects_out_of_range_depth() {
 fn causal_proof_step_sides_are_distinct() {
     assert_ne!(Side::Left, Side::Right);
 }
+
+#[test]
+fn verify_causal_inclusion_rejects_count_forgery() {
+    let (a, b) = (key(0xa1), key(0xb2));
+    let s = CausalSet::empty().insert(a).insert(b);
+
+    let (mut path, root, count) = s.inclusion_proof(&a).unwrap();
+    // Tampering with total root count
+    assert!(!verify_causal_inclusion(&a, &path, root, count + 1));
+    // Tampering with sibling count
+    if !path.is_empty() {
+        path[0].count = path[0].count.saturating_add(10);
+        assert!(!verify_causal_inclusion(&a, &path, root, count));
+    }
+}
+
+#[test]
+fn verify_causal_inclusion_rejects_side_forgery() {
+    let (a, b) = (key(0xa1), key(0xb2));
+    let s = CausalSet::empty().insert(a).insert(b);
+
+    let (mut path, root, count) = s.inclusion_proof(&a).unwrap();
+    if !path.is_empty() {
+        path[0].side = match path[0].side {
+            Side::Left => Side::Right,
+            Side::Right => Side::Left,
+        };
+        assert!(!verify_causal_inclusion(&a, &path, root, count));
+    }
+}
+
+#[test]
+fn causal_deep_key_prefixes() {
+    let mut k1 = [0xAA; 32];
+    let mut k2 = [0xAA; 32];
+    // Differentiate only at the very last bit
+    k1[31] = 0x00;
+    k2[31] = 0x01;
+
+    let s = CausalSet::empty().insert(k1).insert(k2);
+    assert_eq!(s.count(), 2);
+
+    let (path1, root, count) = s.inclusion_proof(&k1).unwrap();
+    assert!(verify_causal_inclusion(&k1, &path1, root, count));
+
+    let (path2, root, count) = s.inclusion_proof(&k2).unwrap();
+    assert!(verify_causal_inclusion(&k2, &path2, root, count));
+
+    let mut non_member = [0xAA; 32];
+    non_member[31] = 0x02;
+    let (non_path, depth, root, count) = s.non_inclusion_proof(&non_member).unwrap();
+    assert!(verify_causal_non_inclusion(
+        &non_member,
+        depth,
+        &non_path,
+        root,
+        count
+    ));
+}

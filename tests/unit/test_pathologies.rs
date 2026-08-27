@@ -136,6 +136,8 @@ fn test_pathology_invite_lock() {
         "@nexy:B".to_string(),
     );
 
+    let expected_join_id = "$g9ncvyzCxY7U+znAlCxynnqcyZfM7jkJy140WWkxrbo";
+
     let resolved_v21 = resolve_iterative_sort(
         &utils::build_unconflicted_state_test_helper(&auth_context),
         &conflicted_events,
@@ -144,10 +146,15 @@ fn test_pathology_invite_lock() {
         &mut std::collections::HashMap::new(),
         &String::new(),
     );
-    assert!(
-        resolved_v21.contains_key(&user_key),
-        "V2.1 must keep @nexy:B joined: the later public join_rules wins over the invite lock"
+    let winning_v21 = resolved_v21.get(&user_key).expect(
+        "V2.1 must keep @nexy:B joined: the later public join_rules wins over the invite lock",
     );
+    assert_eq!(winning_v21, expected_join_id);
+    let event_v21 = conflicted_events
+        .get(winning_v21)
+        .or_else(|| auth_context.get(winning_v21))
+        .expect("winning event must exist");
+    assert_eq!(event_v21.get_membership(), Some("join"));
 
     let resolved_v211 = resolve_iterative_sort(
         &utils::build_unconflicted_state_test_helper(&auth_context),
@@ -157,10 +164,15 @@ fn test_pathology_invite_lock() {
         &mut std::collections::HashMap::new(),
         &String::new(),
     );
-    assert!(
-        resolved_v211.contains_key(&user_key),
-        "V2.1.1 must also keep @nexy:B joined (no hallucinated missing join)"
-    );
+    let winning_v211 = resolved_v211
+        .get(&user_key)
+        .expect("V2.1.1 must also keep @nexy:B joined (no hallucinated missing join)");
+    assert_eq!(winning_v211, expected_join_id);
+    let event_v211 = conflicted_events
+        .get(winning_v211)
+        .or_else(|| auth_context.get(winning_v211))
+        .expect("winning event must exist");
+    assert_eq!(event_v211.get_membership(), Some("join"));
 }
 
 fn simulate_federation_lag(
