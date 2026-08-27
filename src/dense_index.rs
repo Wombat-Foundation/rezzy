@@ -35,6 +35,7 @@ fn allocation_should_fail() -> bool {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn set_force_allocation_failure(value: bool) {
     FORCE_ALLOCATION_FAILURE.with(|flag| flag.set(value));
 }
@@ -372,6 +373,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod targeted_coverage_tests {
     use super::*;
     use alloc::string::ToString;

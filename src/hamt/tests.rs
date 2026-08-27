@@ -1617,11 +1617,13 @@ fn test_hamt_error_display_formatting() {
         "hamt mutation resolver failed: missing node"
     );
 
-    let mutate_err_depth: HamtMutateError<&str> = HamtMutateError::MaxDepthExceeded { depth: 9 };
+    let mutate_err_depth: HamtMutateError<std::io::Error> =
+        HamtMutateError::MaxDepthExceeded { depth: 9 };
     assert_eq!(
         mutate_err_depth.to_string(),
         "hamt mutation max depth exceeded at depth 9"
     );
+    assert!(std::error::Error::source(&mutate_err_depth).is_none());
 
     let traversal_resolve: HamtMutateError<&str> =
         HamtTraversalError::Resolve("resolver failed").into();

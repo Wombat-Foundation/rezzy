@@ -182,10 +182,12 @@ pub enum EvaluatorBackend {
 }
 
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
+static BACKEND: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
 #[must_use]
 pub fn get_evaluator() -> EvaluatorBackend {
-    use core::sync::atomic::{AtomicU8, Ordering};
-    static BACKEND: AtomicU8 = AtomicU8::new(0);
+    use core::sync::atomic::Ordering;
 
     let val = BACKEND.load(Ordering::Relaxed);
     if val != 0 {
@@ -404,6 +406,33 @@ mod tests {
         warning.clear();
         warn_if_scalar_to(EvaluatorBackend::Sse, &mut warning);
         assert!(warning.is_empty());
+    }
+
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    #[test]
+    fn warning_writer_matches_the_real_scalar_warning() {
+        warn_scalar_evaluator();
+    }
+
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    #[test]
+    fn concurrent_initialization_uses_the_acquire_cached_backend() {
+        use std::sync::Barrier;
+
+        BACKEND.store(0, core::sync::atomic::Ordering::Release);
+        let barrier = std::sync::Arc::new(Barrier::new(16));
+        std::thread::scope(|scope| {
+            for _ in 0..15 {
+                let barrier = std::sync::Arc::clone(&barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    let _ = get_evaluator();
+                });
+            }
+            barrier.wait();
+            let _ = get_evaluator();
+        });
+        assert_ne!(BACKEND.load(core::sync::atomic::Ordering::Acquire), 0);
     }
 
     /// Regression test for a missing second-order field reduction in
