@@ -104,7 +104,7 @@ End-to-End:      BFS = 579.59 ms  vs  Cached Bitmap Index = 4.881 ms   =>  118.7
 ### To Run the Full Graph Traversal Benchmarks
 
 ```bash
-cargo bench --manifest-path ../rezzy/Cargo.toml --bench rezzy -- resolve
+cargo bench --bench rezzy -- resolve
 ```
 
 ### Expanding Sample Cases

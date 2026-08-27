@@ -236,6 +236,11 @@ where
             child_slots,
             "child count must match nodemap bits"
         );
+        assert_eq!(
+            self.datamap & self.nodemap,
+            0,
+            "datamap and nodemap must not overlap"
+        );
 
         let mut body = Vec::new();
         for (key, value) in &self.leaves {
