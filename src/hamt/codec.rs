@@ -1,3 +1,5 @@
+//! Dense binary serialization and deserialization for persisted HAMT nodes.
+
 use alloc::{string::String, vec::Vec};
 use core::convert::TryFrom;
 

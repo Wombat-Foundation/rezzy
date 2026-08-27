@@ -1,3 +1,5 @@
+//! Structural hashing and state-group identity for HAMT nodes.
+
 use blake2::{digest::Digest, Blake2b512};
 use core::hash::Hasher;
 

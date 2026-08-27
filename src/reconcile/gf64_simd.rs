@@ -1,3 +1,5 @@
+//! SIMD-accelerated GF(2^64) polynomial evaluation for minisketch reconciliation.
+
 #![allow(unsafe_code)]
 
 #[cfg(all(target_arch = "x86_64", has_avx512_support))]
