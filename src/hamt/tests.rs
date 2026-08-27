@@ -5194,4 +5194,39 @@ fn test_descend_level_rejects_corruption() {
         format!("{corrupt_error}"),
         "hamt descend corrupt node: decoded structural hash does not match requested node hash"
     );
+
+    // 4. The persisted hash matches the requested hash, but the decoded
+    // contents were altered after hashing.
+    let mut corrupt_node = PersistedInternalNode::<u32, u64>::from(root.as_ref());
+    corrupt_node.leaves[0].1 = 101;
+    let corrupt_bytes = corrupt_node.encode_v1();
+    let res4 = descend_level::<u32, u64, _>(
+        key,
+        &[(root.structural_hash, &corrupt_bytes, 0, &[req_hash])],
+        |k| crate::hamt::key_path_hash(key, k),
+    );
+    assert_eq!(
+        res4,
+        Err(DescendError::CorruptNode(
+            "decoded node contents do not match structural hash"
+        ))
+    );
+
+    // 5. A valid node queried beyond the routing depth is rejected.
+    let res5 = descend_level::<u32, u64, _>(
+        key,
+        &[(
+            root.structural_hash,
+            &node_bytes,
+            HAMT_MAX_DEPTH,
+            &[req_hash],
+        )],
+        |k| crate::hamt::key_path_hash(key, k),
+    );
+    assert_eq!(
+        res5,
+        Err(DescendError::CorruptNode(
+            "HAMT depth exceeds routing limit"
+        ))
+    );
 }
