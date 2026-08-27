@@ -405,3 +405,19 @@ fn merkle_error_display_covers_all_variants() {
         assert_eq!(error.to_string(), message);
     }
 }
+
+#[test]
+fn leaf_path_single_field_and_empty() {
+    let single = [Field::new("type", json!("m.room.message"))];
+    let (path, proved_root) = merkle::leaf_path(&single, "type").unwrap();
+    assert!(path.is_empty());
+    let leaf_hash = field_leaf_hash(&single[0]);
+    assert_eq!(proved_root, leaf_hash);
+    assert!(merkle::verify_leaf_path(leaf_hash, &path, proved_root));
+
+    let empty: [Field; 0] = [];
+    assert_eq!(
+        merkle::leaf_path(&empty, "type").unwrap_err(),
+        MerkleError::FieldNotFound("type".into())
+    );
+}
