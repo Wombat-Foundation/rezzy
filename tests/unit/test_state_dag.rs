@@ -40,7 +40,7 @@ fn make_state_event(
         event_type: event_type.to_string(),
         state_key: Some(state_key.to_string()),
         sender: sender.to_string(),
-        prev_state_events: prev_state_events
+        auth_events: prev_state_events
             .into_iter()
             .map(ToString::to_string)
             .collect(),
@@ -65,7 +65,7 @@ fn make_timeline_event(
         event_type: event_type.to_string(),
         state_key: None,
         sender: sender.to_string(),
-        prev_state_events: prev_state_events
+        auth_events: prev_state_events
             .into_iter()
             .map(ToString::to_string)
             .collect(),
@@ -162,7 +162,7 @@ fn test_prev_state_events_fanout_limit_only_applies_to_v22() {
         json!({ "membership": "join" }),
         None,
     );
-    ev.prev_state_events = (0..21).map(|i| format!("$p{i}")).collect();
+    ev.auth_events = (0..21).map(|i| format!("$p{i}")).collect();
 
     // Non-V2.2 room (v11): limit not enforced.
     assert!(ev.validate_syntactic("11").is_ok());

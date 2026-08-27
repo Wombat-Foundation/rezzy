@@ -68,7 +68,7 @@ required-features = ["mock-ruma"]
 test = false
 
 [features]
-default = ["std", "signing"]
+default = ["std"]
 std = ["alloc", "serde_json/std", "serde/std", "dep:roaring"]
 alloc = []
 cli = [

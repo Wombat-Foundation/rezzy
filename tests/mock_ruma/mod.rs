@@ -36,7 +36,6 @@ fn ruma_to_lean_event<E: Event>(ev: &E) -> LeanEvent {
             .auth_events()
             .map(alloc::string::ToString::to_string)
             .collect(),
-        prev_state_events: Vec::new(),
         depth: 0,
         rejected: false,
         soft_fail: false,

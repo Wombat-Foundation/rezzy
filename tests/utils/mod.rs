@@ -119,15 +119,6 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
                         .collect()
                 })
                 .unwrap_or_default(),
-            prev_state_events: value
-                .get("prev_state_events")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
             depth: value
                 .get("depth")
                 .and_then(serde_json::Value::as_u64)

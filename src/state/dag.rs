@@ -31,7 +31,9 @@
 
 use crate::auth::{auth_types_for_event_like, AuthError, StateKeyDyn};
 use crate::basespec::event_types::{EventType, MAX_PREV_STATE_EVENTS, M_ROOM_CREATE};
-use crate::basespec::rezzy_types::{EventContent, EventId, LeanEvent, StateKey, StateResVersion};
+use crate::basespec::rezzy_types::{
+    DagNode, EventContent, EventId, LeanEvent, StateKey, StateResVersion,
+};
 use crate::state::at::{resolve_merge_fast_path, LocalAuthCache, SharedState};
 use crate::{DenseIndex, FastMap, FastSet, HashMap};
 use alloc::collections::VecDeque;
@@ -218,26 +220,26 @@ where
     S: core::hash::BuildHasher,
 {
     if event.event_type == M_ROOM_CREATE {
-        if !event.prev_state_events.is_empty() {
+        if !event.prev_state_events().is_empty() {
             return Err(StateDagValidationError::CreateWithPrevStateEvents);
         }
         return Ok(());
     }
 
-    if event.prev_state_events.is_empty() {
+    if event.prev_state_events().is_empty() {
         return Err(StateDagValidationError::NonCreateWithoutPrevStateEvents {
             event_id: event.event_id.clone(),
         });
     }
 
-    if event.prev_state_events.len() > MAX_PREV_STATE_EVENTS {
+    if event.prev_state_events().len() > MAX_PREV_STATE_EVENTS {
         return Err(StateDagValidationError::FanoutExceeded {
-            count: event.prev_state_events.len(),
+            count: event.prev_state_events().len(),
             limit: MAX_PREV_STATE_EVENTS,
         });
     }
 
-    for pse_id in &event.prev_state_events {
+    for pse_id in event.prev_state_events() {
         let Some(parent) = events_map.get(pse_id) else {
             return Err(StateDagValidationError::MissingReferencedEvent {
                 citing_event: event.event_id.clone(),
@@ -343,7 +345,7 @@ where
             continue;
         }
 
-        if ev.prev_state_events.is_empty() {
+        if ev.prev_state_events().is_empty() {
             // Non-create event with no prev_state_events is disconnected from create.
             if disconnected_set.insert(ev.event_id.clone()) {
                 disconnected.push(ev.event_id.clone());
@@ -358,7 +360,7 @@ where
             continue;
         }
 
-        for pe in &ev.prev_state_events {
+        for pe in ev.prev_state_events() {
             if !visited.contains(pe) {
                 queue.push_back(pe.clone());
             }
@@ -417,7 +419,7 @@ where
 
     for &lid in latest_events {
         if let Some(ev) = events_map.get(lid) {
-            for pe in &ev.prev_state_events {
+            for pe in ev.prev_state_events() {
                 queue.push_back((pe.clone(), 1));
             }
         }
@@ -432,7 +434,7 @@ where
         if visited.insert(id.clone()) {
             if let Some(ev) = events_map.get(&id) {
                 if ev.event_type != M_ROOM_CREATE {
-                    for pe in &ev.prev_state_events {
+                    for pe in ev.prev_state_events() {
                         queue.push_back((pe.clone(), hops.saturating_add(1)));
                     }
                 }
@@ -482,7 +484,7 @@ where
         let current_id = queue[head];
         head = head.saturating_add(1);
         if let Some(ev) = events_map.get(current_id) {
-            for pe in &ev.prev_state_events {
+            for pe in ev.prev_state_events() {
                 if let Some((k, _)) = events_map.get_key_value(pe) {
                     if seen.insert(k) {
                         index_to_id.push(k);
@@ -518,7 +520,7 @@ where
 
     for (node_idx, &id) in index.items().iter().enumerate() {
         if let Some(ev) = events_map.get(id) {
-            for pe in &ev.prev_state_events {
+            for pe in ev.prev_state_events() {
                 if let Some(pe_idx) = index.index_of(&pe) {
                     in_degree[node_idx] = in_degree[node_idx].saturating_add(1);
                     out_degree[pe_idx] = out_degree[pe_idx].saturating_add(1);
@@ -572,7 +574,7 @@ where
     for<'q> (EventType, K): core::borrow::Borrow<dyn StateKeyDyn + 'q>,
 {
     if event.event_type == M_ROOM_CREATE {
-        if !event.prev_state_events.is_empty() {
+        if !event.prev_state_events().is_empty() {
             return Err(StateDagError::Validation(
                 StateDagValidationError::CreateWithPrevStateEvents,
             ));
@@ -582,7 +584,7 @@ where
 
     validate_msc4242_prev_state_events(event, events_map).map_err(StateDagError::Validation)?;
 
-    if event.prev_state_events.is_empty() {
+    if event.prev_state_events().is_empty() {
         return Err(StateDagError::Validation(
             StateDagValidationError::NonCreateWithoutPrevStateEvents {
                 event_id: event.event_id.clone(),
@@ -590,10 +592,10 @@ where
         ));
     }
 
-    let parent_refs: Vec<&Id> = event.prev_state_events.iter().collect();
+    let parent_refs: Vec<&Id> = event.prev_state_events().iter().collect();
     // Validate the complete reachable graph, not only the target's immediate
     // parents. Otherwise a malformed indirect ancestor can influence state.
-    let mut pending: Vec<Id> = event.prev_state_events.clone();
+    let mut pending: Vec<Id> = event.prev_state_events().to_vec();
     let mut checked: FastSet<Id> = FastSet::default();
     while let Some(id) = pending.pop() {
         if !checked.insert(id.clone()) {
@@ -606,7 +608,7 @@ where
         };
         validate_msc4242_prev_state_events(ancestor, events_map)
             .map_err(StateDagError::Validation)?;
-        pending.extend(ancestor.prev_state_events.iter().cloned());
+        pending.extend(ancestor.prev_state_events().iter().cloned());
     }
     let index = collect_state_dag_ancestor_short_ids_batch(&parent_refs, events_map).map_err(
         |missing| StateDagError::IncompleteDag {
@@ -622,7 +624,7 @@ where
     }
 
     // Allocate an extra out_degree ref for parents of target event
-    for p_id in &event.prev_state_events {
+    for p_id in event.prev_state_events() {
         if let Some(idx) = index.index_of(&p_id) {
             out_degree[idx] = out_degree[idx].saturating_add(1);
         }
@@ -640,8 +642,8 @@ where
             continue;
         };
 
-        let mut prev_states = Vec::with_capacity(ev.prev_state_events.len());
-        for pe in &ev.prev_state_events {
+        let mut prev_states = Vec::with_capacity(ev.prev_state_events().len());
+        for pe in ev.prev_state_events() {
             let Some(pe_idx) = index.index_of(&pe) else {
                 continue;
             };
@@ -690,8 +692,8 @@ where
         }
     }
 
-    let mut parent_states = Vec::with_capacity(event.prev_state_events.len());
-    for pe in &event.prev_state_events {
+    let mut parent_states = Vec::with_capacity(event.prev_state_events().len());
+    for pe in event.prev_state_events() {
         let Some(pe_idx) = index.index_of(&pe) else {
             return Err(StateDagError::IncompleteDag {
                 missing_event_ids: vec![pe.clone()],

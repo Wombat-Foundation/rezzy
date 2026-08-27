@@ -897,7 +897,6 @@ impl<Id: Clone, K: Clone> LeanEvent<Id, Value, K> {
             content: redact_content(&self.content, rule),
             prev_events: self.prev_events.clone(),
             auth_events: self.auth_events.clone(),
-            prev_state_events: self.prev_state_events.clone(),
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
@@ -1099,7 +1098,10 @@ impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
         &self.auth_events
     }
     fn prev_state_events(&self) -> &[Id] {
-        &self.prev_state_events
+        // MSC4242 replaces the wire-level auth_events list with
+        // prev_state_events. LeanEvent stores that shared list in auth_events;
+        // callers select its meaning by room version.
+        &self.auth_events
     }
 }
 
@@ -1589,7 +1591,6 @@ pub struct LeanEvent<Id = String, C = Value, K = String> {
     /// Event IDs of the authorization events for this event (auth DAG).
     pub auth_events: Vec<Id>,
     /// Event IDs of the previous state events in the state DAG (MSC4242).
-    pub prev_state_events: Vec<Id>,
     /// DAG depth (distance from the root). Required for V1 sort ordering.
     pub depth: u64,
     /// Whether this event was rejected by the homeserver (e.g., due to failing auth).
@@ -1780,7 +1781,6 @@ impl<Id, C> LeanEvent<Id, C, String> {
             content: self.content,
             prev_events: self.prev_events,
             auth_events: self.auth_events,
-            prev_state_events: self.prev_state_events,
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
@@ -1805,7 +1805,6 @@ pub struct LeanEventRef<'a, Id = String, C = Value, K = String> {
     pub content: &'a C,
     pub prev_events: &'a [Id],
     pub auth_events: &'a [Id],
-    pub prev_state_events: &'a [Id],
     pub depth: u64,
     pub room_id: Option<&'a RoomId>,
     pub rejected: bool,
@@ -1831,7 +1830,6 @@ impl<Id: EventId, C, K> LeanEventRef<'_, Id, C, K> {
             content: self.content.clone(),
             prev_events: self.prev_events.to_vec(),
             auth_events: self.auth_events.to_vec(),
-            prev_state_events: self.prev_state_events.to_vec(),
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
@@ -1854,7 +1852,6 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
             content: &self.content,
             prev_events: &self.prev_events,
             auth_events: &self.auth_events,
-            prev_state_events: &self.prev_state_events,
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
@@ -1879,7 +1876,9 @@ impl<Id: EventId, C: EventContent, K> DagNode for LeanEventRef<'_, Id, C, K> {
         self.auth_events
     }
     fn prev_state_events(&self) -> &[Id] {
-        self.prev_state_events
+        // See LeanEvent::prev_state_events: this borrowed view uses the same
+        // compatibility storage for the MSC4242 replacement field.
+        self.auth_events
     }
 }
 
@@ -1929,7 +1928,7 @@ impl<Id: serde::Serialize, C: serde::Serialize, K: AsRef<str>> serde::Serialize
         use serde::ser::SerializeStruct;
         // TODO: trait forces `Result` here, so `?` shows as dead coverage; see
         // docs/tech_debt.md for the refactor investigation.
-        let mut state = serializer.serialize_struct("LeanEvent", 13)?;
+        let mut state = serializer.serialize_struct("LeanEvent", 12)?;
         state.serialize_field(FIELD_EVENT_ID, &self.event_id)?;
         state.serialize_field(FIELD_TYPE, &self.event_type)?;
         if let Some(ref sk) = self.state_key {
@@ -1941,10 +1940,6 @@ impl<Id: serde::Serialize, C: serde::Serialize, K: AsRef<str>> serde::Serialize
         state.serialize_field(FIELD_CONTENT, &self.content)?;
         state.serialize_field(FIELD_PREV_EVENTS, &self.prev_events)?;
         state.serialize_field(FIELD_AUTH_EVENTS, &self.auth_events)?;
-        state.serialize_field(
-            crate::basespec::event_types::FIELD_PREV_STATE_EVENTS,
-            &self.prev_state_events,
-        )?;
         state.serialize_field(FIELD_DEPTH, &self.depth)?;
         state.serialize_field(FIELD_REJECTED, &self.rejected)?;
         state.serialize_field(FIELD_SOFT_FAIL, &self.soft_fail)?;
@@ -2528,15 +2523,6 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         if self.auth_events.len() > 10 {
             return Err("auth_events exceeds maximum allowed length of 10");
         }
-        // The `prev_state_events` fanout cap is an MSC4242 (State DAG) rule that
-        // applies only to V2.2 rooms; the field is meaningless elsewhere.
-        if matches!(
-            StateResVersion::from_room_version(room_version),
-            Some(StateResVersion::V2_2)
-        ) && self.prev_state_events.len() > crate::basespec::event_types::MAX_PREV_STATE_EVENTS
-        {
-            return Err("prev_state_events exceeds maximum allowed length of 20");
-        }
         if self.event_type.is_empty() {
             return Err("event_type cannot be empty");
         }
@@ -2910,9 +2896,17 @@ impl LeanEvent<String, Value, String> {
         };
 
         let prev_events = parse_string_array(FIELD_PREV_EVENTS);
-        let auth_events = parse_string_array(FIELD_AUTH_EVENTS);
-        let prev_state_events =
-            parse_string_array(crate::basespec::event_types::FIELD_PREV_STATE_EVENTS);
+        let auth_events = value
+            .get(FIELD_AUTH_EVENTS)
+            .map(|_| parse_string_array(FIELD_AUTH_EVENTS))
+            .or_else(|| {
+                room_version
+                    .filter(|version| is_msc4242_room_version(version))
+                    .map(|_| {
+                        parse_string_array(crate::basespec::event_types::FIELD_PREV_STATE_EVENTS)
+                    })
+            })
+            .unwrap_or_default();
         let depth = match value.get(FIELD_DEPTH) {
             Some(depth) => depth
                 .as_u64()
@@ -2942,7 +2936,6 @@ impl LeanEvent<String, Value, String> {
             content,
             prev_events,
             auth_events,
-            prev_state_events,
             depth,
             rejected,
             soft_fail,
