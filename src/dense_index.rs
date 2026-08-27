@@ -27,7 +27,7 @@ static FORCE_ALLOCATION_FAILURE: core::sync::atomic::AtomicBool =
 fn allocation_should_fail() -> bool {
     #[cfg(test)]
     {
-        return FORCE_ALLOCATION_FAILURE.load(core::sync::atomic::Ordering::Relaxed);
+        FORCE_ALLOCATION_FAILURE.load(core::sync::atomic::Ordering::Relaxed)
     }
     #[cfg(not(test))]
     false

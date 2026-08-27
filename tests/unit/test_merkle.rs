@@ -196,7 +196,8 @@ fn content_hash_combines_redacted_and_redactable() {
     let redactable = merkle::redactable_content_hash(&json!({ "displayname": "Alice" })).unwrap();
     let combined = merkle::content_hash(redacted, redactable);
 
-    let other_redactable = merkle::redactable_content_hash(&json!({ "displayname": "Bob" })).unwrap();
+    let other_redactable =
+        merkle::redactable_content_hash(&json!({ "displayname": "Bob" })).unwrap();
     let combined_with_different_redactable = merkle::content_hash(redacted, other_redactable);
 
     assert_ne!(hex(combined.0), hex(combined_with_different_redactable.0));

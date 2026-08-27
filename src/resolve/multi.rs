@@ -48,9 +48,10 @@
 
 use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::{
-    EventContent, EventId, EventProvider, LeanEvent, StateResVersion,
+    EventContent, EventId, EventProvider, LeanEvent, StateKey, StateResVersion,
 };
 use crate::state::at::SharedState;
+use crate::state::diff::{StateDiff, StateDiffEntry};
 use crate::{FastMap, FastSet, HashMap};
 use alloc::vec::Vec;
 
@@ -78,14 +79,15 @@ use alloc::vec::Vec;
 ///
 /// This function does not panic.
 #[must_use]
-pub fn partition_state_maps<'a, Id, I, Iter>(
+pub fn partition_state_maps<'a, Id, K, I, Iter>(
     state_maps: I,
     num_maps: usize,
-) -> (SharedState<Id>, Vec<Id>)
+) -> (SharedState<Id, K>, Vec<Id>)
 where
     Id: EventId,
     I: IntoIterator<Item = Iter>,
-    Iter: IntoIterator<Item = (&'a (EventType, alloc::string::String), &'a Id)>,
+    K: StateKey + 'a,
+    Iter: IntoIterator<Item = (&'a (EventType, K), &'a Id)>,
     Id: 'a,
 {
     // Flattened borrowed-key scan: a single `FastMap` allocation instead of a
@@ -95,8 +97,7 @@ where
     // disagreement. `foldhash` (hashbrown's default hasher) hashes the
     // attacker-chosen state keys faster than SipHash while staying randomized
     // enough for these internal-only maps.
-    let mut occurrences: FastMap<&'a (EventType, alloc::string::String), Occurrence<'a, Id>> =
-        FastMap::default();
+    let mut occurrences: FastMap<&'a (EventType, K), Occurrence<'a, Id>> = FastMap::default();
 
     for map in state_maps {
         for (key, id) in map {
@@ -214,6 +215,28 @@ where
     C: EventContent + Clone,
     S: core::hash::BuildHasher,
 {
+    resolve_state_maps_generic(
+        state_maps,
+        event_context,
+        version,
+        &alloc::string::String::new(),
+    )
+    .0
+}
+
+fn resolve_state_maps_generic<Id, C, S, K>(
+    state_maps: &[SharedState<Id, K>],
+    event_context: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    version: StateResVersion,
+    empty_key: &K,
+) -> (SharedState<Id, K>, crate::FastSet<(EventType, K)>)
+where
+    Id: EventId,
+    C: EventContent + Clone,
+    S: core::hash::BuildHasher,
+    K: StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+{
     assert!(
         !state_maps.is_empty(),
         "resolve_state_maps requires at least one state map"
@@ -224,11 +247,11 @@ where
     // `imbl::OrdMap` root, so a full structural `==` comparison is wasted.
     let first = &state_maps[0];
     if state_maps.len() == 2 && first.ptr_eq(&state_maps[1]) {
-        return first.clone();
+        return (first.clone(), crate::FastSet::default());
     }
     let all_identical = state_maps[1..].iter().all(|m| m == first);
     if all_identical {
-        return first.clone();
+        return (first.clone(), crate::FastSet::default());
     }
 
     // Partition into unconflicted / conflicted
@@ -238,7 +261,7 @@ where
     // Build the conflicted events map from the event context.
     // Panic if a conflicted event is missing — event_context must contain all
     // events referenced by the state maps.
-    let mut conflicted_events: HashMap<Id, LeanEvent<Id, C>> = HashMap::new();
+    let mut conflicted_events: HashMap<Id, LeanEvent<Id, C, K>> = HashMap::new();
     for id in &conflicted_ids {
         let ev = event_context
             .get(id)
@@ -254,9 +277,8 @@ where
     // TODO(perf): duplicates an EventType::from() conversion the power/
     // non-power phases redo per event — see the identical TODO on
     // resolve::iterative::derive_all_conflicted_keys.
-    let empty_key = alloc::string::String::new();
     let conflicted_keys =
-        crate::resolve::iterative::derive_all_conflicted_keys(&conflicted_events, &empty_key);
+        crate::resolve::iterative::derive_all_conflicted_keys(&conflicted_events, empty_key);
 
     // For V2.1+ rooms, compute the conflicted subgraph (MSC4297).
     if matches!(version, StateResVersion::V2_1 | StateResVersion::V2_1_1) {
@@ -272,7 +294,7 @@ where
     }
 
     let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
-    crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
+    let resolved = crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
         &unconflicted_state,
         &conflicted_events,
         event_context,
@@ -281,8 +303,82 @@ where
         &mut pl_cache,
         &mut crate::FastMap::default(),
         &conflicted_keys,
-        &empty_key,
-    )
+        empty_key,
+    );
+    (resolved, conflicted_keys)
+}
+
+/// Computes the exact state mutations needed to update the selected input
+/// state map to the result of resolving `state_maps`.
+///
+/// This is the incremental handoff API for callers that already persist the
+/// predecessor state elsewhere (for example, in a HAMT). The baseline is
+/// explicit by index and is never inferred from map allocation identity or
+/// iteration order.
+///
+/// The returned [`StateDiff`] contains final state changes only:
+/// additions, removals, and replacements. It does not contain the
+/// per-event auth-processing trace exposed by
+/// [`crate::resolve_iterative_sort_with_deltas`].
+///
+/// This function does not change the existing [`resolve_state_maps`] return
+/// type. Rezzy still materializes the resolved `SharedState` internally in
+/// order to perform resolution; this API avoids making callers retain or
+/// rebuild that full map at the persistence boundary. Because the baseline is
+/// an input fork, the final diff only examines the genuinely conflicted
+/// state-key slots.
+///
+/// `empty_key` is passed explicitly because [`StateKey`] does not require a
+/// default value. It is used for state events whose `state_key` is absent.
+///
+/// # Panics
+///
+/// Panics if `base_state_index` is outside `state_maps` or if a conflicted
+/// event is missing from `event_context`.
+///
+#[must_use]
+pub fn resolve_state_maps_diff<Id, C, S, K>(
+    base_state_index: usize,
+    state_maps: &[SharedState<Id, K>],
+    event_context: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    version: StateResVersion,
+    empty_key: &K,
+) -> StateDiff<Id, K>
+where
+    Id: EventId,
+    C: EventContent + Clone,
+    S: core::hash::BuildHasher,
+    K: StateKey,
+    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+{
+    let base_state = state_maps
+        .get(base_state_index)
+        .unwrap_or_else(|| panic!("base_state_index out of range: {base_state_index}"));
+    let (resolved, conflicted_keys) =
+        resolve_state_maps_generic(state_maps, event_context, version, empty_key);
+
+    let mut entries = Vec::new();
+    for key in conflicted_keys {
+        match (base_state.get(&key), resolved.get(&key)) {
+            (None, Some(new_id)) => entries.push(StateDiffEntry::Added {
+                key,
+                event_id: new_id.clone(),
+            }),
+            (Some(old_id), None) => entries.push(StateDiffEntry::Removed {
+                key,
+                event_id: old_id.clone(),
+            }),
+            (Some(old_id), Some(new_id)) if old_id != new_id => {
+                entries.push(StateDiffEntry::Changed {
+                    key,
+                    old_event_id: old_id.clone(),
+                    new_event_id: new_id.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+    StateDiff { entries }
 }
 
 /// Builds a stripped auth-only event map and computes the V2.1+ conflicted
@@ -297,14 +393,15 @@ where
 /// path). The returned subgraph events must be merged into `conflicted_events`
 /// by the caller.
 #[inline(never)]
-fn compute_v2_1_subgraph<'a, Id, C, I>(
+fn compute_v2_1_subgraph<'a, Id, C, I, K>(
     events: I,
     conflicted_ids: &[Id],
 ) -> HashMap<Id, LeanEvent<Id>>
 where
     Id: EventId + 'a,
     C: 'a,
-    I: IntoIterator<Item = (&'a Id, &'a LeanEvent<Id, C>)>,
+    K: StateKey + 'a,
+    I: IntoIterator<Item = (&'a Id, &'a LeanEvent<Id, C, K>)>,
 {
     let auth_only: HashMap<Id, LeanEvent<Id>> = events
         .into_iter()
@@ -316,7 +413,10 @@ where
                     soft_fail: false,
                     event_id: ev.event_id.clone(),
                     event_type: ev.event_type.clone(),
-                    state_key: ev.state_key.clone(),
+                    state_key: ev
+                        .state_key
+                        .as_ref()
+                        .map(|key| alloc::string::String::from(key.as_ref())),
                     sender: ev.sender.clone(),
                     auth_events: ev.auth_events.clone(),
                     prev_events: Vec::new(),
@@ -349,10 +449,11 @@ fn populate_auth_from_diff<Id, C>(
     C: Clone,
 {
     for aid in auth_diff {
-        if !conflicted_events.contains_key(&aid) {
-            if let Some(ev) = provider.get_event(&aid) {
-                auth_context.insert(aid, ev.clone());
-            }
+        if conflicted_events.contains_key(&aid) {
+            continue;
+        }
+        if let Some(ev) = provider.get_event(&aid) {
+            auth_context.insert(aid, ev.clone());
         }
     }
 }
@@ -658,6 +759,76 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_state_maps_diff_supports_interned_state_keys() {
+        let base: SharedState<alloc::string::String, crate::InternedKey> = SharedState::new();
+        let states = [base.clone()];
+        let diff = resolve_state_maps_diff(
+            0,
+            &states,
+            &HashMap::<
+                alloc::string::String,
+                LeanEvent<alloc::string::String, serde_json::Value, crate::InternedKey>,
+            >::new(),
+            StateResVersion::V2,
+            &crate::InternedKey::new(""),
+        );
+
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "base_state_index out of range: 1")]
+    fn test_resolve_state_maps_diff_rejects_invalid_baseline_index() {
+        let states: [StateMap; 1] = [StateMap::new()];
+        let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+
+        let _ = resolve_state_maps_diff(
+            1,
+            &states,
+            &events,
+            StateResVersion::V2,
+            &alloc::string::String::new(),
+        );
+    }
+
+    fn assert_two_fork_diff(diff: &StateDiff<alloc::string::String>) {
+        use crate::state::diff::StateDiffEntry;
+
+        assert_eq!(diff.len(), 3);
+        assert!(diff.entries.iter().any(|entry| matches!(
+            entry,
+            StateDiffEntry::Added { event_id, .. } if event_id == "$alice_join"
+        )));
+        assert!(diff.entries.iter().any(|entry| matches!(
+            entry,
+            StateDiffEntry::Removed { event_id, .. } if event_id == "$bob_join"
+        )));
+        assert!(diff.entries.iter().any(|entry| matches!(
+            entry,
+            StateDiffEntry::Changed {
+                old_event_id,
+                new_event_id,
+                ..
+            } if old_event_id == "$pl_b" && new_event_id == "$pl_a"
+        )));
+    }
+
+    fn assert_unchanged_baseline_diff(
+        fork_a: StateMap,
+        fork_b: StateMap,
+        events: &HashMap<alloc::string::String, LeanEvent>,
+    ) {
+        let diff = resolve_state_maps_diff(
+            0,
+            &[fork_a, fork_b],
+            events,
+            StateResVersion::V2,
+            &alloc::string::String::new(),
+        );
+        assert!(diff.is_empty());
+    }
+
+    #[test]
     fn test_resolve_two_forks() {
         // Scenario: two forks disagree on who sent the latest PL event.
         // Fork A has PL from alice (creator), fork B has PL from bob (non-creator).
@@ -743,7 +914,27 @@ mod tests {
         );
         fork_b.insert(("m.room.power_levels".into(), "".into()), "$pl_b".into());
 
-        let resolved = resolve_state_maps(&[fork_a, fork_b], &events, StateResVersion::V2);
+        let resolved = resolve_state_maps(
+            &[fork_a.clone(), fork_b.clone()],
+            &events,
+            StateResVersion::V2,
+        );
+
+        let diff = resolve_state_maps_diff(
+            1,
+            &[fork_a.clone(), fork_b.clone()],
+            &events,
+            StateResVersion::V2,
+            &alloc::string::String::new(),
+        );
+
+        // The designated predecessor is fork B, not state_maps[0]. The
+        // shared create slot is unchanged; member and PL conflicts mutate.
+        assert_two_fork_diff(&diff);
+
+        // With fork A as the baseline, the winning PL event is unchanged.
+        // This exercises the no-op branch for an actual resolved conflict.
+        assert_unchanged_baseline_diff(fork_a, fork_b, &events);
 
         // The create event should be unconflicted
         assert_eq!(
@@ -1210,8 +1401,10 @@ mod tests {
             StateResVersion::V2,
         );
 
-        // Pass a precomputed auth diff containing the create event
-        let auth_diff: alloc::vec::Vec<alloc::string::String> = alloc::vec!["$create".into()];
+        // Include an auth event already present in conflicted_events. It must
+        // be skipped by populate_auth_from_diff rather than reinserted.
+        let auth_diff: alloc::vec::Vec<alloc::string::String> =
+            alloc::vec!["$create".into(), "$alice_join".into()];
         let lazy = resolve_state_maps_lazy_with_diff(
             &[fork_a, fork_b],
             &events,
