@@ -438,6 +438,27 @@ mod state_dag_branch_coverage_tests {
             ),
             StateDagCompleteness::Incomplete { .. }
         ));
+
+        let mut create = event("$shared-create", None);
+        create.event_type = M_ROOM_CREATE.into();
+        let mut left = event("$shared-left", Some("left"));
+        left.auth_events.push(create.event_id.clone());
+        let mut right = event("$shared-right", Some("right"));
+        right.auth_events.push(create.event_id.clone());
+        let mut tip = event("$shared-tip", Some("tip"));
+        tip.auth_events
+            .extend([left.event_id.clone(), right.event_id.clone()]);
+        let mut shared: TestMap = crate::HashMap::default();
+        for value in [create, left, right, tip.clone()] {
+            shared.insert(value.event_id.clone(), value);
+        }
+        assert!(matches!(
+            walk_state_dag(&[&tip.event_id], &shared, StateDagWalkOptions::default()),
+            StateDagCompleteness::Complete {
+                state_event_count: 4,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -526,6 +547,10 @@ mod state_dag_branch_coverage_tests {
             compute_state_before_from_dag(&target, &events, StateResVersion::V2_2, &empty_key)
                 .is_ok()
         );
+        assert!(
+            compute_state_after_from_dag(&target, &events, StateResVersion::V2_2, &empty_key)
+                .is_ok()
+        );
 
         let mut cycle = event("$cycle", Some("@cycle:example.org"));
         cycle.auth_events.push("$cycle".into());
@@ -535,6 +560,26 @@ mod state_dag_branch_coverage_tests {
             compute_state_before_from_dag(&cycle, &cyclic, StateResVersion::V2_2, &empty_key),
             Err(StateDagError::CycleDetected)
         ));
+    }
+
+    #[test]
+    fn state_after_handles_single_parent_and_inserts_state_event() {
+        let empty_key = String::new();
+        let mut create = event("$single-create", Some(""));
+        create.event_type = M_ROOM_CREATE.into();
+        let mut parent = event("$single-parent", Some("parent"));
+        parent.auth_events.push(create.event_id.clone());
+        let mut target = event("$single-target", Some("target"));
+        target.auth_events.push(parent.event_id.clone());
+        let mut events: TestMap = crate::HashMap::default();
+        for value in [create, parent, target.clone()] {
+            events.insert(value.event_id.clone(), value);
+        }
+
+        let state =
+            compute_state_after_from_dag(&target, &events, StateResVersion::V2_2, &empty_key)
+                .unwrap();
+        assert!(state.contains_key(&(EventType::from("m.room.message"), "target".to_string())));
     }
 
     #[test]
@@ -835,10 +880,7 @@ where
     }
 
     while let Some((id, hops)) = queue.pop_front() {
-        let entry = min_hops.entry(id.clone()).or_insert(hops);
-        if hops < *entry {
-            *entry = hops;
-        }
+        min_hops.entry(id.clone()).or_insert(hops);
 
         if visited.insert(id.clone()) {
             if let Some(ev) = events_map.get(&id) {
@@ -992,14 +1034,6 @@ where
     }
 
     validate_msc4242_prev_state_events(event, events_map).map_err(StateDagError::Validation)?;
-
-    if event.prev_state_events().is_empty() {
-        return Err(StateDagError::Validation(
-            StateDagValidationError::NonCreateWithoutPrevStateEvents {
-                event_id: event.event_id.clone(),
-            },
-        ));
-    }
 
     let parent_refs: Vec<&Id> = event.prev_state_events().iter().collect();
     // Validate the complete reachable graph, not only the target's immediate
