@@ -82,6 +82,13 @@ def api_get(path, params=None, server=None):
     except urllib.error.URLError as e:
         print(f"  Error: {e}", file=sys.stderr)
         return None
+    except (
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        urllib.error.IncompleteReadError,
+    ) as e:
+        print(f"  Invalid API response: {e}", file=sys.stderr)
+        return None
 
 
 def resolve_alias(alias):

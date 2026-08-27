@@ -29,7 +29,7 @@ def fetch_event(event_id, homeserver, headers):
         )
         if res.status_code == 200:
             return res.json()
-    except requests.RequestException:
+    except (requests.RequestException, ValueError):
         return None
     return None
 

@@ -1178,7 +1178,7 @@ where
         // redactions are NOT excluded: soft-fail is a stale arrival-time
         // verdict, and authorization is re-checked below against the resolved
         // state via `redaction_is_authorized`.
-        .filter(|(_, e)| e.event_type == M_ROOM_REDACTION && !e.rejected)
+        .filter(|(_, e)| e.event_type == M_ROOM_REDACTION && !e.rejected && !e.soft_fail())
         .map(|(i, _)| i)
         .collect();
 

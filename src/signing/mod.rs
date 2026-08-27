@@ -38,9 +38,9 @@ use serde_json::Value;
 
 use crate::basespec::rezzy_types::{canonical_redacted_json, EventVerifier};
 
-#[cfg(feature = "signing-dalek")]
+#[cfg(any(feature = "signing", feature = "signing-dalek"))]
 mod dalek;
-#[cfg(feature = "signing-dalek")]
+#[cfg(any(feature = "signing", feature = "signing-dalek"))]
 pub use dalek::{verify_batch, DalekVerifier};
 
 /// A backend able to verify one Ed25519 signature over a message.
@@ -160,10 +160,17 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
             .events
             .get(event_id)
             .ok_or_else(|| alloc::format!("unknown event {}", event_id.as_ref()))?;
-        let expected = crate::basespec::rezzy_types::reference_hash(value, &self.room_version)?;
-        if event_id.as_ref() == expected.as_str() {
+        if matches!(self.room_version.as_str(), "1" | "2") {
             Ok(())
         } else {
+            let expected = crate::basespec::rezzy_types::reference_hash(value, &self.room_version)?;
+            let actual = event_id
+                .as_ref()
+                .strip_prefix('$')
+                .unwrap_or(event_id.as_ref());
+            if actual == expected {
+                return Ok(());
+            }
             Err(alloc::format!(
                 "event id hash mismatch for {}: expected {expected}",
                 event_id.as_ref()

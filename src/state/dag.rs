@@ -311,6 +311,7 @@ where
     let mut queue: VecDeque<Id> = start_events.iter().map(|id| (*id).clone()).collect();
     let mut create_event_id: Option<Id> = None;
     let mut steps: usize = 0;
+    let mut truncated = false;
 
     while let Some(current_id) = queue.pop_front() {
         if visited.contains(&current_id) {
@@ -365,12 +366,15 @@ where
 
         if let Some(max) = options.max_steps {
             if steps >= max {
+                if !queue.is_empty() {
+                    truncated = true;
+                }
                 break;
             }
         }
     }
 
-    if missing.is_empty() && disconnected.is_empty() {
+    if !truncated && missing.is_empty() && disconnected.is_empty() {
         if let Some(create_id) = create_event_id {
             return StateDagCompleteness::Complete {
                 create_event_id: create_id,
@@ -587,6 +591,23 @@ where
     }
 
     let parent_refs: Vec<&Id> = event.prev_state_events.iter().collect();
+    // Validate the complete reachable graph, not only the target's immediate
+    // parents. Otherwise a malformed indirect ancestor can influence state.
+    let mut pending: Vec<Id> = event.prev_state_events.clone();
+    let mut checked: FastSet<Id> = FastSet::default();
+    while let Some(id) = pending.pop() {
+        if !checked.insert(id.clone()) {
+            continue;
+        }
+        let Some(ancestor) = events_map.get(&id) else {
+            return Err(StateDagError::IncompleteDag {
+                missing_event_ids: vec![id],
+            });
+        };
+        validate_msc4242_prev_state_events(ancestor, events_map)
+            .map_err(StateDagError::Validation)?;
+        pending.extend(ancestor.prev_state_events.iter().cloned());
+    }
     let index = collect_state_dag_ancestor_short_ids_batch(&parent_refs, events_map).map_err(
         |missing| StateDagError::IncompleteDag {
             missing_event_ids: missing,

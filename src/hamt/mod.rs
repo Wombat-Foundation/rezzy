@@ -1622,8 +1622,7 @@ where
     }
 
     let delta = diff_node_hashes(prev_root, &current_root, resolver)?;
-    let new_set: std::collections::HashSet<StructuralHash> =
-        delta.new_node_hashes.into_iter().collect();
+    let new_set: crate::HashSet<StructuralHash> = delta.new_node_hashes.into_iter().collect();
 
     let mut created = Vec::with_capacity(new_set.len());
     let mut stack = vec![current_root.clone()];

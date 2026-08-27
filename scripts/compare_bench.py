@@ -43,9 +43,10 @@ def extract(path: str) -> dict[str, float]:
             m = METRIC.match(line)
             if not m:
                 continue
-            # Last occurrence wins; label collisions are unlikely because the
-            # benches embed their fixture parameters in the label.
-            metrics[m.group(1).strip()] = float(m.group(2))
+            label = m.group(1).strip()
+            if label in metrics:
+                raise ValueError(f"duplicate benchmark label: {label}")
+            metrics[label] = float(m.group(2))
     return metrics
 
 
@@ -64,6 +65,9 @@ def main() -> int:
         ap.error("--margin must be in (0, 1)")
 
     current = extract(args.current)
+    if not current:
+        print("no benchmark metrics parsed", file=sys.stderr)
+        return 1
     try:
         with open(args.best, encoding="utf-8") as fh:
             best: dict[str, float] = json.load(fh)

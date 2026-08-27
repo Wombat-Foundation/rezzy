@@ -89,7 +89,7 @@ pub mod hamt;
 pub mod merkle;
 pub mod reconcile;
 pub mod resolve;
-#[cfg(feature = "signing")]
+#[cfg(any(feature = "signing", feature = "signing-dalek"))]
 pub mod signing;
 pub mod state;
 pub mod warnings;
