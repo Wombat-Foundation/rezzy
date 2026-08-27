@@ -34,6 +34,8 @@ pub struct UniverseTooLarge {
     /// `u32::MAX`). Not a constant `u32::MAX + 1`: the builder keeps counting
     /// distinct hashes past the bound before failing.
     pub distinct_count: usize,
+    /// True when construction stopped because memory allocation failed.
+    pub allocation_failed: bool,
 }
 
 impl fmt::Display for UniverseTooLarge {
@@ -68,6 +70,7 @@ impl From<IndexTooLarge> for UniverseTooLarge {
     fn from(err: IndexTooLarge) -> Self {
         Self {
             distinct_count: err.distinct_count,
+            allocation_failed: err.allocation_failed,
         }
     }
 }

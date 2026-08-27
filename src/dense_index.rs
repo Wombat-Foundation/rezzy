@@ -47,6 +47,8 @@ pub struct IndexTooLarge {
     /// a constant `bound + 1`: the builder keeps counting distinct items past
     /// the bound before failing.
     pub distinct_count: usize,
+    /// True when construction stopped because memory allocation failed.
+    pub allocation_failed: bool,
 }
 
 impl fmt::Display for IndexTooLarge {
@@ -154,10 +156,20 @@ impl<T: Eq + Clone + core::hash::Hash, Idx: Copy + TryFrom<usize> + DenseIndexWi
                         distinct_count = distinct_count.saturating_add(1);
                     }
                 }
-                return Err(IndexTooLarge { distinct_count });
+                return Err(IndexTooLarge {
+                    distinct_count,
+                    allocation_failed: false,
+                });
+            }
+            if items.try_reserve(1).is_err() || index_by_item.try_reserve(1).is_err() {
+                return Err(IndexTooLarge {
+                    distinct_count: items.len(),
+                    allocation_failed: true,
+                });
             }
             let idx = Idx::try_from(items.len()).map_err(|_| IndexTooLarge {
                 distinct_count: items.len(),
+                allocation_failed: false,
             })?;
             index_by_item.insert(item.clone(), idx);
             items.push(item);
@@ -272,7 +284,10 @@ mod tests {
 
     #[test]
     fn index_too_large_displays_distinct_count() {
-        let err = IndexTooLarge { distinct_count: 3 };
+        let err = IndexTooLarge {
+            distinct_count: 3,
+            allocation_failed: false,
+        };
         assert_eq!(
             err.to_string(),
             "index has 3 distinct items, more than the index width can address"

@@ -3728,6 +3728,7 @@ fn test_universe_too_large_from_index_too_large_preserves_distinct_count() {
 
     let err: UniverseTooLarge = IndexTooLarge {
         distinct_count: 4_294_967_297,
+        allocation_failed: false,
     }
     .into();
     assert_eq!(err.distinct_count, 4_294_967_297);
@@ -3739,6 +3740,7 @@ fn test_universe_too_large_display() {
 
     let err = crate::hamt::audit::UniverseTooLarge {
         distinct_count: 4_294_967_296,
+        allocation_failed: false,
     };
     assert_eq!(
         err.to_string(),
@@ -3750,7 +3752,10 @@ fn test_universe_too_large_display() {
 fn test_bitmap_audit_error_display_and_conversions() {
     use alloc::string::ToString;
 
-    let universe_err = crate::hamt::audit::UniverseTooLarge { distinct_count: 42 };
+    let universe_err = crate::hamt::audit::UniverseTooLarge {
+        distinct_count: 42,
+        allocation_failed: false,
+    };
     let wrapped: crate::hamt::BitmapAuditError<&str> = universe_err.into();
     assert_eq!(
         wrapped.to_string(),
@@ -3788,6 +3793,7 @@ fn test_bitmap_audit_error_source_and_downcast() {
     // Universe variant: `source()` returns the wrapped UniverseTooLarge.
     let universe_err = crate::hamt::audit::UniverseTooLarge {
         distinct_count: 123,
+        allocation_failed: false,
     };
     let wrapped: crate::hamt::BitmapAuditError<std::io::Error> = universe_err.into();
     assert_eq!(
