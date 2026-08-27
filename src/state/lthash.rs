@@ -533,6 +533,27 @@ mod tests {
                 250, 196, 142, 78, 66, 51, 101, 158, 98, 105, 6, 218, 254, 190,
             ]
         );
+
+        let mut two = RedactionOverlay::ZERO;
+        two.insert("m.room.create", "", "$create");
+        two.insert("m.room.member", "@alice:example.org", "$state");
+        assert_eq!(
+            two.digest(),
+            [
+                54, 140, 209, 168, 4, 44, 140, 28, 220, 20, 48, 207, 210, 180, 227, 77, 28, 8, 19,
+                140, 157, 131, 50, 182, 108, 137, 17, 37, 212, 109, 40, 231,
+            ]
+        );
+
+        let mut custom = RedactionOverlay::ZERO;
+        custom.insert("org.example.custom", "key", "$custom");
+        assert_eq!(
+            custom.digest(),
+            [
+                170, 247, 17, 119, 141, 227, 146, 115, 229, 232, 55, 1, 194, 64, 252, 131, 61, 17,
+                11, 81, 6, 9, 121, 44, 58, 85, 193, 228, 45, 47, 192, 70,
+            ]
+        );
     }
 
     #[test]
