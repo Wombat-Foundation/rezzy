@@ -352,11 +352,11 @@ pub fn redaction_preserved_keys(event_type: &str, room_version: &str) -> Redacti
 }
 
 /// Splits `content` into MSC4511's `redacted_content` (the fields this room
-/// version's redaction algorithm preserves) and `ephemeral_content` (every
+/// version's redaction algorithm preserves) and `redactable_content` (every
 /// remaining field, i.e. what redaction strips), for the given event type and
 /// room version. `redacted_content` is exactly the output of the internal
 /// `redact_content` helper;
-/// `ephemeral_content` is the complement needed to recover `content` from the
+/// `redactable_content` is the complement needed to recover `content` from the
 /// two pieces.
 #[must_use]
 pub fn split_redaction_content(
@@ -366,13 +366,13 @@ pub fn split_redaction_content(
 ) -> (Value, Value) {
     let rule = redaction_preserved_keys(event_type, room_version);
     let redacted = redact_content(content, rule);
-    let ephemeral = ephemeral_content_remainder(content, &redacted);
-    (redacted, ephemeral)
+    let redactable = redactable_content_remainder(content, &redacted);
+    (redacted, redactable)
 }
 
 /// Returns the content present in `content` but not preserved in `redacted`,
 /// recursing one level for the `third_party_invite`-shaped nested-path case.
-fn ephemeral_content_remainder(content: &Value, redacted: &Value) -> Value {
+fn redactable_content_remainder(content: &Value, redacted: &Value) -> Value {
     let Value::Object(content_obj) = content else {
         return Value::Object(serde_json::Map::default());
     };

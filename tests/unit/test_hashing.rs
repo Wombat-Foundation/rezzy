@@ -187,31 +187,31 @@ fn test_redact_json_preserves_dotted_nested_key() {
 
 /// Coverage: `split_redaction_content`'s complement of
 /// `redaction_preserved_keys(All, ..)`. `m.room.create` preserves all of
-/// `content` in v11+, so `ephemeral_content` must be empty and
+/// `content` in v11+, so `redactable_content` must be empty and
 /// `redacted_content` must equal `content` untouched.
 #[test]
-fn test_split_redaction_content_all_rule_yields_empty_ephemeral() {
+fn test_split_redaction_content_all_rule_yields_empty_redactable() {
     let content = json!({ "creator": "@alice:example.com", "room_version": "11" });
-    let (redacted, ephemeral) = rezzy::split_redaction_content(&content, "m.room.create", "11");
+    let (redacted, redactable) = rezzy::split_redaction_content(&content, "m.room.create", "11");
     assert_eq!(redacted, content);
-    assert_eq!(ephemeral, json!({}));
+    assert_eq!(redactable, json!({}));
 }
 
 /// Coverage: `split_redaction_content`'s complement of a top-level `Keys`
 /// rule. `m.room.message` has no MSC4511-preserved keys (`RedactionRule::None`),
-/// so every content field must land in `ephemeral_content`, none in
+/// so every content field must land in `redactable_content`, none in
 /// `redacted_content`.
 #[test]
 fn test_split_redaction_content_none_rule_yields_empty_redacted() {
     let content = json!({ "body": "hello", "msgtype": "m.text" });
-    let (redacted, ephemeral) = rezzy::split_redaction_content(&content, "m.room.message", "11");
+    let (redacted, redactable) = rezzy::split_redaction_content(&content, "m.room.message", "11");
     assert_eq!(redacted, json!({}));
-    assert_eq!(ephemeral, content);
+    assert_eq!(redactable, content);
 }
 
 /// Coverage: `split_redaction_content`'s top-level `Keys` split with a
 /// non-preserved sibling field. `m.room.member` preserves `membership`; a
-/// vendor-specific extra field must fall through to `ephemeral_content`
+/// vendor-specific extra field must fall through to `redactable_content`
 /// while `membership` lands only in `redacted_content`, with no overlap and
 /// no dropped keys between the two halves.
 #[test]
@@ -220,14 +220,14 @@ fn test_split_redaction_content_keys_rule_partitions_without_overlap_or_loss() {
         "membership": "join",
         "displayname": "Alice"
     });
-    let (redacted, ephemeral) = rezzy::split_redaction_content(&content, "m.room.member", "11");
+    let (redacted, redactable) = rezzy::split_redaction_content(&content, "m.room.member", "11");
     assert_eq!(redacted, json!({ "membership": "join" }));
-    assert_eq!(ephemeral, json!({ "displayname": "Alice" }));
+    assert_eq!(redactable, json!({ "displayname": "Alice" }));
 }
 
 /// Coverage: `split_redaction_content`'s nested-path remainder branch for
 /// `third_party_invite.signed`. The nested `signed` key is preserved and
-/// must not reappear in `ephemeral_content`, while the sibling
+/// must not reappear in `redactable_content`, while the sibling
 /// `display_name` under the same parent object must.
 #[test]
 fn test_split_redaction_content_dotted_nested_key_remainder() {
@@ -238,13 +238,13 @@ fn test_split_redaction_content_dotted_nested_key_remainder() {
             "display_name": "Bob"
         }
     });
-    let (redacted, ephemeral) = rezzy::split_redaction_content(&content, "m.room.member", "11");
+    let (redacted, redactable) = rezzy::split_redaction_content(&content, "m.room.member", "11");
     assert_eq!(
         redacted["third_party_invite"],
         json!({ "signed": { "mxid": "@bob:example.com", "token": "abc" } })
     );
     assert_eq!(
-        ephemeral["third_party_invite"],
+        redactable["third_party_invite"],
         json!({ "display_name": "Bob" })
     );
 }

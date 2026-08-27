@@ -175,22 +175,22 @@ pub fn redacted_content_hash(value: &Value) -> Result<Hash, MerkleError> {
     component_hash("redacted_content", value)
 }
 
-/// Computes the `ephemeral_content_hash` leaf for MSC4511's `content_hash`
+/// Computes the `redactable_content_hash` leaf for MSC4511's `content_hash`
 /// split: the leaf hash of the event body fields that redaction strips.
 ///
 /// # Errors
 ///
 /// Returns a [`MerkleError`] if `value` cannot be canonically encoded.
-pub fn ephemeral_content_hash(value: &Value) -> Result<Hash, MerkleError> {
-    component_hash("ephemeral_content", value)
+pub fn redactable_content_hash(value: &Value) -> Result<Hash, MerkleError> {
+    component_hash("redactable_content", value)
 }
 
-/// Combines `redacted_content_hash` and `ephemeral_content_hash` into the
+/// Combines `redacted_content_hash` and `redactable_content_hash` into the
 /// top-level `content_hash` component, per MSC4511's split-canonicalization
 /// redaction fix.
 #[must_use]
-pub fn content_hash(redacted_content_hash: Hash, ephemeral_content_hash: Hash) -> ContentHash {
-    ContentHash(inner_hash(redacted_content_hash, ephemeral_content_hash))
+pub fn content_hash(redacted_content_hash: Hash, redactable_content_hash: Hash) -> ContentHash {
+    ContentHash(inner_hash(redacted_content_hash, redactable_content_hash))
 }
 
 /// Computes the RFC6962-shaped Merkle root over sorted MSC4511 field leaves.

@@ -187,38 +187,38 @@ fn event_root_and_id_stable_vector() {
 }
 
 /// Coverage: `content_hash` combines `redacted_content_hash` and
-/// `ephemeral_content_hash` via `inner_hash`, so it must equal a direct
+/// `redactable_content_hash` via `inner_hash`, so it must equal a direct
 /// `component_hash`-style computation of that combination, and it must
 /// change if either side changes.
 #[test]
-fn content_hash_combines_redacted_and_ephemeral() {
+fn content_hash_combines_redacted_and_redactable() {
     let redacted = merkle::redacted_content_hash(&json!({ "membership": "join" })).unwrap();
-    let ephemeral = merkle::ephemeral_content_hash(&json!({ "displayname": "Alice" })).unwrap();
-    let combined = merkle::content_hash(redacted, ephemeral);
+    let redactable = merkle::redactable_content_hash(&json!({ "displayname": "Alice" })).unwrap();
+    let combined = merkle::content_hash(redacted, redactable);
 
-    let other_ephemeral = merkle::ephemeral_content_hash(&json!({ "displayname": "Bob" })).unwrap();
-    let combined_with_different_ephemeral = merkle::content_hash(redacted, other_ephemeral);
+    let other_redactable = merkle::redactable_content_hash(&json!({ "displayname": "Bob" })).unwrap();
+    let combined_with_different_redactable = merkle::content_hash(redacted, other_redactable);
 
-    assert_ne!(hex(combined.0), hex(combined_with_different_ephemeral.0));
+    assert_ne!(hex(combined.0), hex(combined_with_different_redactable.0));
 
     // Same inputs must be deterministic.
-    let combined_again = merkle::content_hash(redacted, ephemeral);
+    let combined_again = merkle::content_hash(redacted, redactable);
     assert_eq!(hex(combined.0), hex(combined_again.0));
 }
 
 /// Coverage: an event with no redaction-protected content (e.g. an ordinary
-/// `m.room.message`) can still compute `content_hash` with `ephemeral_content`
+/// `m.room.message`) can still compute `content_hash` with `redactable_content`
 /// as canonical `null`, per the draft's "no redaction-protected fields" case.
 #[test]
-fn content_hash_supports_null_ephemeral_content() {
+fn content_hash_supports_null_redactable_content() {
     let redacted = merkle::redacted_content_hash(&json!({})).unwrap();
-    let ephemeral = merkle::ephemeral_content_hash(&Value::Null).unwrap();
-    let combined = merkle::content_hash(redacted, ephemeral);
+    let redactable = merkle::redactable_content_hash(&Value::Null).unwrap();
+    let combined = merkle::content_hash(redacted, redactable);
 
     // Must not equal the all-null degenerate case, confirming the redacted
     // side is actually mixed into the combination.
     let both_null_redacted = merkle::redacted_content_hash(&Value::Null).unwrap();
-    let both_null_combined = merkle::content_hash(both_null_redacted, ephemeral);
+    let both_null_combined = merkle::content_hash(both_null_redacted, redactable);
     assert_ne!(hex(combined.0), hex(both_null_combined.0));
 }
 
