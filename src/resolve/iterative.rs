@@ -1022,6 +1022,25 @@ mod tests {
     }
 
     #[test]
+    fn derive_all_conflicted_keys_uses_supplied_empty_key_for_event_without_state_key() {
+        let event: LeanEvent<String, serde_json::Value, String> = LeanEvent {
+            event_id: "$message".into(),
+            event_type: "m.room.message".into(),
+            state_key: None,
+            sender: "@alice:example.com".into(),
+            ..Default::default()
+        };
+        let mut events = HashMap::new();
+        events.insert(event.event_id.clone(), event);
+
+        let keys = derive_all_conflicted_keys(&events, &"sentinel-empty-key".to_string());
+        assert!(keys.contains(&(
+            EventType::from("m.room.message"),
+            "sentinel-empty-key".to_string()
+        )));
+    }
+
+    #[test]
     fn is_sender_banned_detects_banned_sender() {
         let mut resolved: SharedState<String, String> = SharedState::new();
         resolved.insert(
