@@ -929,7 +929,7 @@ pub mod causal {
                 right_hash,
                 right_count,
             ),
-            checked_count_sum(left_count, right_count),
+            count_sum(left_count, right_count),
         )
     }
 
@@ -987,7 +987,7 @@ pub mod causal {
             });
             (
                 node,
-                checked_count_sum(left_count, right_count),
+                count_sum(left_count, right_count),
                 path,
                 kind,
                 term_depth,
@@ -1010,7 +1010,7 @@ pub mod causal {
             });
             (
                 node,
-                checked_count_sum(left_count, right_count),
+                count_sum(left_count, right_count),
                 path,
                 kind,
                 term_depth,

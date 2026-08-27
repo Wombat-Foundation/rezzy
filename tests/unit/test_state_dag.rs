@@ -151,8 +151,6 @@ fn test_validation_fanout_limit_exceeded() {
 
 #[test]
 fn test_prev_state_events_fanout_limit_only_applies_to_v22() {
-#[test]
-fn test_prev_state_events_fanout_limit_only_applies_to_v22() {
     // The 20-event `prev_state_events` cap is an MSC4242 rule that only
     // applies to V2.2 rooms; non-V2.2 events are not subject to it.
     let prev_state_events = (0..21).map(|i| format!("$p{i}")).collect::<Vec<_>>();
