@@ -14,26 +14,18 @@ use alloc::vec::Vec;
 /// See the module docs for the distinction from [`crate::auth::AuthError`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Warning<Id = String> {
-    /// W001: an event's `prev_events` cite one or more IDs not found in the
-    /// local DAG. Convertible from [`crate::state::at::BackwardExtremity`],
-    /// which groups the same information as a caller-facing backfill-gap
-    /// report; this variant exists so that information can also flow
-    /// through the general warnings channel.
+    /// An event's `prev_events` cite one or more IDs not found in the local DAG.
     UnknownPrevEvent {
         /// The event whose `prev_events` reference missing parents.
         event_id: Id,
         /// The specific parent IDs that are unknown locally.
         missing_ids: Vec<Id>,
     },
-    /// W002: a pre-v11 event exceeds the 255-byte field limit that v11+
-    /// hard-enforces (`strict_event_byte_limits_room_versions`). Emitted by
-    /// [`crate::basespec::rezzy_types::LeanEvent::validate_syntactic`]
-    /// instead of the `eprintln!` it previously used.
+    /// A pre-v11 event exceeds the 255-byte field length limit.
     OversizedFieldPreV11 {
         /// The event with the oversized field.
         event_id: Id,
-        /// Which field exceeded the limit (`"event_id"`, `"sender"`,
-        /// `"event_type"`, or `"state_key"`).
+        /// Which field exceeded the limit (`"event_id"`, `"sender"`, `"event_type"`, or `"state_key"`).
         field: &'static str,
         /// The field's actual byte length.
         len: usize,
@@ -50,6 +42,41 @@ impl<Id> Warning<Id> {
         match self {
             Self::UnknownPrevEvent { .. } => "W001_UNKNOWN_PREV_EVENT",
             Self::OversizedFieldPreV11 { .. } => "W002_OVERSIZED_FIELD_PRE_V11",
+        }
+    }
+}
+
+impl<Id: core::fmt::Display> core::fmt::Display for Warning<Id> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnknownPrevEvent {
+                event_id,
+                missing_ids,
+            } => {
+                write!(
+                    f,
+                    "[{}] event {} references {} missing prev_events",
+                    self.code(),
+                    event_id,
+                    missing_ids.len()
+                )
+            }
+            Self::OversizedFieldPreV11 {
+                event_id,
+                field,
+                len,
+                limit,
+            } => {
+                write!(
+                    f,
+                    "[{}] event {} field '{}' length {} exceeds limit {}",
+                    self.code(),
+                    event_id,
+                    field,
+                    len,
+                    limit
+                )
+            }
         }
     }
 }
@@ -115,6 +142,10 @@ mod tests {
             missing_ids: vec!["$missing".into()],
         };
         assert_eq!(unknown_prev.code(), "W001_UNKNOWN_PREV_EVENT");
+        assert_eq!(
+            unknown_prev.to_string(),
+            "[W001_UNKNOWN_PREV_EVENT] event $a references 1 missing prev_events"
+        );
 
         let oversized: Warning<String> = Warning::OversizedFieldPreV11 {
             event_id: "$a".into(),
@@ -123,6 +154,10 @@ mod tests {
             limit: 255,
         };
         assert_eq!(oversized.code(), "W002_OVERSIZED_FIELD_PRE_V11");
+        assert_eq!(
+            oversized.to_string(),
+            "[W002_OVERSIZED_FIELD_PRE_V11] event $a field 'sender' length 300 exceeds limit 255"
+        );
     }
 
     #[test]
