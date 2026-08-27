@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Homomorphic reconciliation helpers.
+//! Minisketch reconciliation helpers.
 
 pub mod algebraic;
 pub mod client;
