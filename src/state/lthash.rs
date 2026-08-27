@@ -275,8 +275,8 @@ impl LtHash {
 /// [`LtHash`]: it does not describe another state snapshot.  Each entry names
 /// one selected state event that is effectively redacted at the DAG point.
 ///
-/// Callers should insert only redactions which have already passed their room
-/// version's authorization rules and are causal at the state point being
+/// Callers should insert only selected state events that are effectively
+/// redacted by authorized causal redactions at the state point being
 /// described.  An empty overlay is a known empty overlay; `None` in
 /// [`StateDigest`] means that the sender did not compute one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -292,7 +292,7 @@ impl RedactionOverlay {
     /// The identity element (no effectively redacted selected events).
     pub const ZERO: Self = Self([0u16; 1024]);
 
-    const DST: &'static [u8] = b"msc4500\x00";
+    const DST: &'static [u8] = b"msc4500_lthash16_redactions_v1\x00";
 
     fn seed(
         event_type: &str,
@@ -308,10 +308,10 @@ impl RedactionOverlay {
             xof.update(&len.to_le_bytes());
             xof.update(value.as_bytes());
         }
-        let value = event_id.to_string();
-        let (value, len) = truncate_to_u16_limit(&value);
-        xof.update(&len.to_le_bytes());
-        xof.update(value.as_bytes());
+        // The event ID is appended raw, matching the primary MSC4500 element
+        // encoding. It is already self-delimiting under Matrix event-ID
+        // syntax and must not acquire a second length prefix here.
+        xof.update(event_id.to_string().as_bytes());
 
         let mut bytes = [0u8; 2048];
         xof.finalize_xof_into(&mut bytes);
@@ -361,8 +361,9 @@ impl RedactionOverlay {
         let mut bytes = [0u8; 2048];
         for (i, value) in self.0.iter().enumerate() {
             let pair = value.to_le_bytes();
-            bytes[i * 2] = pair[0];
-            bytes[i * 2 + 1] = pair[1];
+            let index = i.wrapping_mul(2);
+            bytes[index] = pair[0];
+            bytes[index.wrapping_add(1)] = pair[1];
         }
         hasher.update(bytes);
         hasher.finalize().into()
@@ -394,14 +395,14 @@ impl StateDigest {
     /// Compares primary state first, then treats the overlay as a diagnostic.
     #[must_use]
     pub fn compare(self, remote: Self) -> DigestAgreement {
-        if self.primary != remote.primary {
-            DigestAgreement::PrimaryMismatch
-        } else {
+        if self.primary == remote.primary {
             match (self.overlay, remote.overlay) {
                 (Some(left), Some(right)) if left == right => DigestAgreement::FullySynchronized,
                 (Some(_), Some(_)) => DigestAgreement::OverlayMismatch,
                 _ => DigestAgreement::OverlayUnknown,
             }
+        } else {
+            DigestAgreement::PrimaryMismatch
         }
     }
 }

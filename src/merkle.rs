@@ -192,6 +192,11 @@ pub fn redactable_content_hash(value: &Value) -> Result<Hash, MerkleError> {
 /// where the Matrix redaction tables live; this helper keeps merkle callers
 /// from accidentally hashing the unsplit content.  The returned pair is
 /// `(redacted_content_hash, redactable_content_hash)`.
+///
+/// # Errors
+///
+/// Returns [`MerkleError`] if either split content value cannot be encoded as
+/// Matrix Canonical JSON.
 pub fn split_content_hashes(
     content: &Value,
     event_type: &str,
