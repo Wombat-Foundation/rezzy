@@ -2334,11 +2334,8 @@ where
             )
         };
 
-        if is_state && !ev.rejected {
-            let key = (
-                EventType::from(ev.event_type.as_str()),
-                ev.state_key.clone().unwrap_or_else(|| empty_key.clone()),
-            );
+        if let Some(state_key) = ev.state_key.as_ref().filter(|_| !ev.rejected) {
+            let key = (EventType::from(ev.event_type.as_str()), state_key.clone());
             state_before.insert(key, ev.event_id.clone());
         }
 
@@ -4645,7 +4642,9 @@ mod tests {
             event_id: "E2".into(),
             event_type: "m.room.message".into(),
             sender: "@x:x".into(),
-            auth_events: vec!["X".into()],
+            // Include an absent auth ID so the missing-event branch in
+            // `compute_local_auth` is exercised as part of this traversal.
+            auth_events: vec!["X".into(), "MISSING".into()],
             depth: 3,
             ..Default::default()
         };
