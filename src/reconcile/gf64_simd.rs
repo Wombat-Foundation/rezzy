@@ -230,11 +230,24 @@ fn encode_backend(backend: EvaluatorBackend) -> u8 {
 }
 
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
+const SCALAR_EVALUATOR_WARNING: &str =
+    "rezzy: WARN: GF64 non-SIMD (scalar) evaluator in use; PCLMULQDQ/AVX-512 not detected on this CPU";
+
+#[cfg(all(feature = "std", target_arch = "x86_64", test))]
+fn write_scalar_evaluator_warning<W: core::fmt::Write>(out: &mut W) {
+    let _ = out.write_str(SCALAR_EVALUATOR_WARNING);
+}
+
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
 fn warn_scalar_evaluator() {
-    std::eprintln!(
-        "rezzy: WARN: GF64 non-SIMD (scalar) evaluator in use; \
-         PCLMULQDQ/AVX-512 not detected on this CPU"
-    );
+    std::eprintln!("{SCALAR_EVALUATOR_WARNING}");
+}
+
+#[cfg(all(feature = "std", target_arch = "x86_64", test))]
+fn warn_if_scalar_to<W: core::fmt::Write>(backend: EvaluatorBackend, out: &mut W) {
+    if matches!(backend, EvaluatorBackend::Scalar) {
+        write_scalar_evaluator_warning(out);
+    }
 }
 
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
@@ -294,7 +307,7 @@ fn select_evaluator_backend(_has_avx512: bool, has_pclmul: bool) -> EvaluatorBac
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use alloc::vec::Vec;
+    use alloc::{string::String, vec::Vec};
 
     #[cfg(all(target_arch = "x86_64", not(has_avx512_support)))]
     #[test]
@@ -385,7 +398,12 @@ mod tests {
     #[cfg(all(feature = "std", target_arch = "x86_64"))]
     #[test]
     fn scalar_backend_warning_is_emitted() {
-        warn_if_scalar(EvaluatorBackend::Scalar);
+        let mut warning = String::new();
+        warn_if_scalar_to(EvaluatorBackend::Scalar, &mut warning);
+        assert_eq!(warning, SCALAR_EVALUATOR_WARNING);
+        warning.clear();
+        warn_if_scalar_to(EvaluatorBackend::Sse, &mut warning);
+        assert!(warning.is_empty());
     }
 
     /// Regression test for a missing second-order field reduction in

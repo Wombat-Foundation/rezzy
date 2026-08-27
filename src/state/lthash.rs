@@ -30,8 +30,6 @@
 //! - **Order independence**: addition is commutative + associative.
 //! - **Cryptographic security**: hard to find set collisions (SVP).
 
-use alloc::string::ToString;
-
 /// A 2048-byte homomorphic state hash using `LtHash`.
 ///
 /// `LtHash` (Lattice Hash) is based on the homomorphic hashing paradigm first introduced
@@ -299,6 +297,7 @@ impl RedactionOverlay {
         state_key: &str,
         event_id: &(impl core::fmt::Display + ?Sized),
     ) -> Self {
+        use core::fmt::Write;
         use sha3::digest::{ExtendableOutput, Update};
 
         let mut xof = sha3::Shake256::default();
@@ -311,7 +310,8 @@ impl RedactionOverlay {
         // The event ID is appended raw, matching the primary MSC4500 element
         // encoding. It is already self-delimiting under Matrix event-ID
         // syntax and must not acquire a second length prefix here.
-        xof.update(event_id.to_string().as_bytes());
+        let mut writer = HashWriter { hasher: &mut xof };
+        write!(writer, "{event_id}").expect("failed to write event_id to hasher");
 
         let mut bytes = [0u8; 2048];
         xof.finalize_xof_into(&mut bytes);
