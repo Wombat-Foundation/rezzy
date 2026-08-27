@@ -153,20 +153,21 @@ fn test_validation_fanout_limit_exceeded() {
 fn test_prev_state_events_fanout_limit_only_applies_to_v22() {
     // The 20-event `prev_state_events` cap is an MSC4242 rule that only
     // applies to V2.2 rooms; non-V2.2 events are not subject to it.
-    let mut ev = make_state_event(
-        "$e",
-        M_ROOM_MEMBER,
-        "@a:example.com",
-        "@a:example.com",
-        vec![],
-        json!({ "membership": "join" }),
-        None,
-    );
-    ev.auth_events = (0..21).map(|i| format!("$p{i}")).collect();
+    let prev_state_events = (0..21).map(|i| format!("$p{i}")).collect::<Vec<_>>();
+    let raw = json!({
+        "event_id": "$e",
+        "type": M_ROOM_MEMBER,
+        "state_key": "@a:example.com",
+        "sender": "@a:example.com",
+        "prev_state_events": prev_state_events,
+        "content": { "membership": "join" }
+    });
 
     // Non-V2.2 room (v11): limit not enforced.
+    let ev = LeanEvent::from_value(&raw, Some("11")).unwrap();
     assert!(ev.validate_syntactic("11").is_ok());
     // V2.2 (MSC4242): limit enforced.
+    let ev = LeanEvent::from_value(&raw, Some("org.matrix.msc4242.12")).unwrap();
     assert!(ev.validate_syntactic("org.matrix.msc4242.12").is_err());
 }
 
@@ -673,7 +674,6 @@ fn test_compute_state_from_dag_fork_resolution() {
     );
     pl_root.origin_server_ts = 100;
     pl_root.depth = 1;
-    pl_root.auth_events = vec![];
 
     let mut join_rules = make_state_event(
         "$jr",
@@ -686,7 +686,6 @@ fn test_compute_state_from_dag_fork_resolution() {
     );
     join_rules.origin_server_ts = 150;
     join_rules.depth = 2;
-    join_rules.auth_events = vec!["$pl_root".to_string()];
 
     // Fork A: Topic changed by @creator:example.com
     let mut topic_a = make_state_event(
@@ -700,7 +699,6 @@ fn test_compute_state_from_dag_fork_resolution() {
     );
     topic_a.origin_server_ts = 200;
     topic_a.depth = 3;
-    topic_a.auth_events = vec!["$pl_root".to_string()];
 
     // Fork B: Member Bob joins on Fork B
     let mut member_bob = make_state_event(
@@ -714,7 +712,6 @@ fn test_compute_state_from_dag_fork_resolution() {
     );
     member_bob.origin_server_ts = 300;
     member_bob.depth = 3;
-    member_bob.auth_events = vec!["$pl_root".to_string(), "$jr".to_string()];
 
     // Merge event citing both forks in prev_state_events
     let mut merge = make_timeline_event(

@@ -5794,11 +5794,11 @@ fn test_lean_event_serialize_roundtrip() {
     assert_eq!(ev.auth_events, back.auth_events);
     assert_eq!(
         DagNodeTrait::prev_state_events(&ev.as_ref()),
-        &[String::from("$state")]
+        &[String::from("$auth")]
     );
     assert_eq!(
         DagNodeTrait::prev_state_events(&ev),
-        &[String::from("$state")]
+        &[String::from("$auth")]
     );
     assert_eq!(ev.rejected, back.rejected);
     assert_eq!(ev.soft_fail, back.soft_fail);

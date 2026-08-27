@@ -2520,8 +2520,17 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         if self.prev_events.len() > 20 {
             return Err("prev_events exceeds maximum allowed length of 20");
         }
-        if self.auth_events.len() > 10 {
+        let is_msc4242 = matches!(
+            StateResVersion::from_room_version(room_version),
+            Some(StateResVersion::V2_2)
+        );
+        if !is_msc4242 && self.auth_events.len() > 10 {
             return Err("auth_events exceeds maximum allowed length of 10");
+        }
+        if is_msc4242
+            && self.auth_events.len() > crate::basespec::event_types::MAX_PREV_STATE_EVENTS
+        {
+            return Err("prev_state_events exceeds maximum allowed length of 20");
         }
         if self.event_type.is_empty() {
             return Err("event_type cannot be empty");
