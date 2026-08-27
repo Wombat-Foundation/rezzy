@@ -493,10 +493,10 @@ fn redact_top_level(value: &Value, room_version: &str) -> serde_json::Map<String
     // under that format survive redaction with their hashes/signatures intact.
     // `take` is a no-op when the field is absent, so stable v11/v12 events
     // (which never carry it) are unaffected.
-    if room_version_is_v11_or_later(room_version) {
+    if is_msc4242_room_version(room_version) {
         take("prev_state_events", &mut out);
     }
-    if !room_version_is_v11_or_later(room_version) {
+    if !is_msc4242_room_version(room_version) {
         take("origin", &mut out);
         take("membership", &mut out);
         take("prev_state", &mut out);
@@ -839,7 +839,7 @@ fn write_redacted_canonical<W: core::fmt::Write>(
     let event_type = obj.get(FIELD_TYPE).and_then(Value::as_str).unwrap_or("");
     let rule = redaction_preserved_keys(event_type, room_version);
     let is_v12_create = event_type == M_ROOM_CREATE && room_version_is_v12_or_later(room_version);
-    let v11 = room_version_is_v11_or_later(room_version);
+    let msc4242 = is_msc4242_room_version(room_version);
 
     out.write_str("{")?;
     let mut first = true;
@@ -856,8 +856,8 @@ fn write_redacted_canonical<W: core::fmt::Write>(
             | FIELD_ORIGIN_SERVER_TS
             | FIELD_CONTENT => true,
             "room_id" => !is_v12_create,
-            "prev_state_events" => v11,
-            "origin" | "membership" | "prev_state" => !v11,
+            "prev_state_events" => msc4242,
+            "origin" | "membership" | "prev_state" => !msc4242,
             // `unsigned`, `signatures`, and any unrecognized key are dropped.
             _ => false,
         };
@@ -2399,6 +2399,10 @@ fn room_version_is_v11_or_later(room_version: &str) -> bool {
         .and_then(|major| major.parse::<u32>().ok())
         .is_some_and(|major| major >= 11)
         || StateResVersion::from_room_version(room_version).is_some_and(|v| v.is_v2_1_plus())
+}
+
+fn is_msc4242_room_version(room_version: &str) -> bool {
+    room_version == "org.matrix.msc4242.12"
 }
 
 /// Returns `true` if `room_version`'s major version is 12 or later (the

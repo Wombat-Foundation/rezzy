@@ -91,9 +91,16 @@ pub fn verify_event_signatures(
             "event has no signatures object",
         ));
     };
+    let origin = value
+        .get("event_id")
+        .and_then(Value::as_str)
+        .and_then(|id| id.rsplit_once(':').map(|(_, server)| server));
 
     let mut verified_any = false;
     for (server, keys) in signatures {
+        if origin.is_some_and(|expected| expected != server) {
+            continue;
+        }
         let Some(keys_obj) = keys.as_object() else {
             continue;
         };

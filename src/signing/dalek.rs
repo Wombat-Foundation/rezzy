@@ -148,6 +148,11 @@ pub fn verify_batch(
     }
 
     let message_refs: Vec<&[u8]> = messages.iter().map(Vec::as_slice).collect();
-    ed25519_dalek::verify_batch(&message_refs, &signatures, &verifying_keys)
-        .map_err(|e| alloc::format!("batch signature verification failed: {e}"))
+    // Batch verification does not enforce the strict RFC 8032 checks that
+    // this backend promises, so verify each item through the strict path.
+    for ((message, signature), key) in message_refs.iter().zip(&signatures).zip(&verifying_keys) {
+        key.verify_strict(message, signature)
+            .map_err(|e| alloc::format!("batch signature verification failed: {e}"))?;
+    }
+    Ok(())
 }
