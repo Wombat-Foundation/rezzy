@@ -34,6 +34,7 @@ import sys
 # ms metrics are tracked.
 METRIC = re.compile(r"^(.+?):\s+([0-9]+(?:\.[0-9]+)?)\s*ms\b")
 CHECKPOINT = re.compile(r"^\s*S=(\d+):\s*$")
+BENCHMARK_SECTION = re.compile(r"^\s*\[[^]]+\]\s+BENCHMARK:")
 
 
 def extract(path: str) -> dict[str, float]:
@@ -42,6 +43,9 @@ def extract(path: str) -> dict[str, float]:
     checkpoint: str | None = None
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
+            if BENCHMARK_SECTION.match(line):
+                checkpoint = None
+                continue
             checkpoint_match = CHECKPOINT.match(line)
             if checkpoint_match:
                 checkpoint = checkpoint_match.group(1)

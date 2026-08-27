@@ -106,6 +106,14 @@ fn init_interner(rooms: &[&HashMap<String, LeanEvent>]) {
     INTERN
         .set(keys)
         .expect("interner must be initialized exactly once");
+    assert_eq!(
+        INTERN
+            .get()
+            .and_then(|keys| keys.first())
+            .map(String::as_str),
+        Some(""),
+        "the first interned key must be the empty state key"
+    );
 }
 
 fn str_to_id() -> HashMap<String, InternId> {
@@ -544,7 +552,7 @@ pub fn run() {
         };
 
         // Batch path (engages the parallel lattice fold under default `std`).
-        let batch_str = measure("batch  String    ", reps, || {
+        let batch_str = measure(&format!("batch  String    n={n}"), reps, || {
             let result =
                 compute_state_at_batch(&target_refs, events, StateResVersion::V2_1, &String::new());
             assert_eq!(
@@ -554,7 +562,7 @@ pub fn run() {
             );
             std::hint::black_box(&result);
         });
-        let batch_interned = measure("batch  InternedKey", reps, || {
+        let batch_interned = measure(&format!("batch  InternedKey n={n}"), reps, || {
             let result = compute_state_at_batch(
                 &target_refs,
                 &interned,
@@ -568,7 +576,7 @@ pub fn run() {
             );
             std::hint::black_box(&result);
         });
-        let batch_u32 = measure("batch  u32 InternId", reps, || {
+        let batch_u32 = measure(&format!("batch  u32 InternId n={n}"), reps, || {
             let result = compute_state_at_batch(
                 &target_refs,
                 &u32_events,
@@ -585,7 +593,7 @@ pub fn run() {
 
         // Serial (cache-free) control at the last (deepest) member.
         let last = target_refs.last().copied().unwrap();
-        let ser_str = measure("serial String    ", reps, || {
+        let ser_str = measure(&format!("serial String    n={n}"), reps, || {
             let state = compute_state_at::<String, serde_json::Value, str, _, String>(
                 last,
                 events,
@@ -595,7 +603,7 @@ pub fn run() {
             .expect("last member must resolve");
             std::hint::black_box(state.len());
         });
-        let ser_interned = measure("serial InternedKey", reps, || {
+        let ser_interned = measure(&format!("serial InternedKey n={n}"), reps, || {
             let state = compute_state_at::<String, serde_json::Value, str, _, InternedKey>(
                 last,
                 &interned,
@@ -605,7 +613,7 @@ pub fn run() {
             .expect("last member must resolve");
             std::hint::black_box(state.len());
         });
-        let ser_u32 = measure("serial u32 InternId", reps, || {
+        let ser_u32 = measure(&format!("serial u32 InternId n={n}"), reps, || {
             let state = compute_state_at::<String, serde_json::Value, str, _, InternId>(
                 last,
                 &u32_events,
@@ -681,7 +689,7 @@ pub fn run() {
             500 => 50,
             _ => 10,
         };
-        let str_dur = measure("conflict String    ", reps, || {
+        let str_dur = measure(&format!("conflict String    n={n}"), reps, || {
             let state = compute_state_at::<String, serde_json::Value, str, _, String>(
                 last,
                 events,
@@ -691,7 +699,7 @@ pub fn run() {
             .expect("must resolve");
             std::hint::black_box(state.len());
         });
-        let u32_dur = measure("conflict u32 InternId", reps, || {
+        let u32_dur = measure(&format!("conflict u32 InternId n={n}"), reps, || {
             let state = compute_state_at::<String, serde_json::Value, str, _, InternId>(
                 last,
                 &u32_events,
