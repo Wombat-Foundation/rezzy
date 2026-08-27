@@ -1302,6 +1302,10 @@ where
 ///
 /// # Errors
 /// Returns [`StateDagError`] if state resolution fails.
+///
+/// # Panics
+/// Panics only if the event's `state_key` changes between the presence check
+/// and insertion, which cannot occur through this shared-reference API.
 pub fn compute_state_after_from_dag<Id, C, S, K>(
     event: &LeanEvent<Id, C, K>,
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,

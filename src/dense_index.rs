@@ -370,3 +370,58 @@ mod tests {
         assert_eq!(err.distinct_count, 0);
     }
 }
+
+#[cfg(test)]
+mod targeted_coverage_tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    #[test]
+    fn displays_allocation_failure() {
+        let error = IndexTooLarge {
+            distinct_count: 0,
+            allocation_failed: true,
+        };
+        assert_eq!(
+            error.to_string(),
+            "failed to allocate memory while building index"
+        );
+    }
+
+    #[test]
+    fn reports_failure_while_seeding_post_bound_set() {
+        set_force_allocation_failure(true);
+        let error = DenseIndex::<u32>::try_build_bounded([1], 0)
+            .expect_err("injected post-bound allocation failure must be returned");
+        set_force_allocation_failure(false);
+        assert!(error.allocation_failed);
+        assert_eq!(error.distinct_count, 0);
+    }
+
+    #[test]
+    fn reports_failure_while_counting_post_bound_items() {
+        struct FailAfterFirst {
+            next: u32,
+        }
+
+        impl Iterator for FailAfterFirst {
+            type Item = u32;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                let item = self.next;
+                self.next = self.next.saturating_add(1);
+                if item == 2 {
+                    set_force_allocation_failure(true);
+                }
+                (item <= 2).then_some(item)
+            }
+        }
+
+        set_force_allocation_failure(false);
+        let error = DenseIndex::<u32>::try_build_bounded(FailAfterFirst { next: 1 }, 0)
+            .expect_err("injected post-bound counting failure must be returned");
+        set_force_allocation_failure(false);
+        assert!(error.allocation_failed);
+        assert_eq!(error.distinct_count, 1);
+    }
+}
