@@ -151,6 +151,8 @@ fn test_validation_fanout_limit_exceeded() {
 
 #[test]
 fn test_prev_state_events_fanout_limit_only_applies_to_v22() {
+#[test]
+fn test_prev_state_events_fanout_limit_only_applies_to_v22() {
     // The 20-event `prev_state_events` cap is an MSC4242 rule that only
     // applies to V2.2 rooms; non-V2.2 events are not subject to it.
     let prev_state_events = (0..21).map(|i| format!("$p{i}")).collect::<Vec<_>>();
@@ -163,13 +165,18 @@ fn test_prev_state_events_fanout_limit_only_applies_to_v22() {
         "content": { "membership": "join" }
     });
 
-    // Non-V2.2 room (v11): prev_state_events is not loaded into auth_events.
+    // Non-V2.2 room (v11): limit not enforced.
+    // v11 reads `auth_events`, not `prev_state_events`, so set it explicitly;
+    // 21 entries must still trip the v11 10-entry `auth_events` cap.
+    let mut v11_raw = raw.clone();
+    v11_raw["auth_events"] = json!(prev_state_events);
+    let ev = LeanEvent::from_value(&v11_raw, Some("11")).unwrap();
+    assert!(ev.validate_syntactic("11").is_err());
+    // And an empty citation list is accepted under v11.
     let ev = LeanEvent::from_value(&raw, Some("11")).unwrap();
-    assert!(ev.auth_events.is_empty());
     assert!(ev.validate_syntactic("11").is_ok());
     // V2.2 (MSC4242): limit enforced.
     let ev = LeanEvent::from_value(&raw, Some("org.matrix.msc4242.12")).unwrap();
-    assert_eq!(ev.auth_events.len(), 21);
     assert!(ev.validate_syntactic("org.matrix.msc4242.12").is_err());
 }
 

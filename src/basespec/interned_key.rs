@@ -181,6 +181,15 @@ impl<'a, Id, C> InternedRoomState<'a, Id, C> {
                  different Interner than the one supplied"
             );
         }
+        // The key `Ord` is rank-based, so ranks must follow byte order for the
+        // `StateKeyDyn` lexicographic contract to hold.
+        debug_assert!(
+            map.keys().zip(map.keys().skip(1)).all(|(a, b)| (
+                a.0.as_ref(),
+                a.1.as_ref()
+            ) < (b.0.as_ref(), b.1.as_ref())),
+            "InternedRoomState::new: interner ranks are not in sorted string order"
+        );
         Self { interner, map }
     }
 }
