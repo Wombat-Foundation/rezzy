@@ -5436,3 +5436,21 @@ fn test_interned_key_as_lean_event_state_key() {
     let cloned = ev.state_key.clone();
     assert_eq!(cloned, ev.state_key);
 }
+
+#[test]
+fn test_msc4242_prev_state_events_limit_in_check_auth() {
+    let auth_events = (0..21).map(|i| format!("$auth{i}")).collect::<Vec<_>>();
+    let ev: LeanEvent = LeanEvent {
+        event_id: "$ev:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@alice:example.com".into(),
+        auth_events,
+        ..Default::default()
+    };
+    let state = std::collections::BTreeMap::new();
+    let res = rezzy::auth::check_auth(&ev, &state, StateResVersion::V2_2, None);
+    assert!(matches!(
+        res,
+        Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("prev_state_events exceeds maximum allowed length of 20")
+    ));
+}

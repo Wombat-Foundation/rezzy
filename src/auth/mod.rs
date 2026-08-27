@@ -294,13 +294,10 @@ where
             return Ok(num);
         }
         if let Some(res_ver) = StateResVersion::from_room_version(v) {
-            match res_ver {
-                StateResVersion::V1 => return Ok(1),
-                StateResVersion::V2 => return Ok(2),
-                StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2 => {
-                    return Ok(12)
-                }
+            if res_ver.is_v2_1_plus() {
+                return Ok(12);
             }
+            return Ok(2);
         }
     }
     Ok(1) // V1 rooms didn't have a room_version field
