@@ -211,3 +211,23 @@ fn causal_deep_key_prefixes() {
         count
     ));
 }
+
+#[test]
+fn insert_mut_and_extend_match_immutable_methods() {
+    let (a, b, c) = (key(0xa1), key(0xb2), key(0xc3));
+
+    let mut s_mut = CausalSet::empty();
+    assert!(s_mut.insert_mut(a));
+    assert!(!s_mut.insert_mut(a)); // duplicate insert returns false
+    assert!(s_mut.insert_mut(b));
+
+    let s_imm = CausalSet::empty().insert(a).insert(b);
+    assert_eq!(s_mut.root(), s_imm.root());
+    assert_eq!(s_mut.count(), s_imm.count());
+
+    let mut s_ext = CausalSet::empty();
+    s_ext.extend([a, b, c, a]);
+    let s_direct = CausalSet::empty().insert(a).insert(b).insert(c);
+    assert_eq!(s_ext.root(), s_direct.root());
+    assert_eq!(s_ext.count(), s_direct.count());
+}
