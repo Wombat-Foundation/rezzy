@@ -596,18 +596,32 @@ pub mod causal {
         u16::try_from(depth).unwrap_or(u16::MAX)
     }
 
-    /// The canonical empty-subtree hash at `depth`, for `depth` in
-    /// `[0, CAUSAL_DEPTH]`. `depth == CAUSAL_DEPTH` is the distinguished
-    /// empty leaf; every other level is derived from `causal_node` of two
-    /// empty children. `depth` is always `< CAUSAL_DEPTH` here (the
-    /// `depth == CAUSAL_DEPTH` case returns above), so `saturating_add(1)`
-    /// never actually saturates.
-    fn empty_hash(depth: usize) -> Hash {
-        if depth == CAUSAL_DEPTH {
-            return hash_parts(&[CAUSAL_EMPTY_LEAF_DST]);
+    /// The canonical empty-subtree hash at every depth in `[0, CAUSAL_DEPTH]`,
+    /// indexed by depth. Index `CAUSAL_DEPTH` is the distinguished empty
+    /// leaf; every other index is derived from `causal_node` of two empty
+    /// children at the next depth.
+    ///
+    /// Built once per top-level call (see [`empty_table`]) rather than
+    /// recomputed recursively per lookup: a naive `empty_hash(depth)` that
+    /// recurses to `CAUSAL_DEPTH` on every call is called at nearly every
+    /// level of [`subtree_root`]/[`descend`]'s own recursion, which blows up
+    /// to roughly `CAUSAL_DEPTH^2` hash calls for one root computation.
+    /// Building this table bottom-up costs exactly `CAUSAL_DEPTH` hash calls
+    /// total.
+    type EmptyTable = [Hash; CAUSAL_DEPTH.saturating_add(1)];
+
+    /// Builds [`EmptyTable`] bottom-up: one pass, `CAUSAL_DEPTH` `causal_node`
+    /// calls plus one leaf hash.
+    fn empty_table() -> EmptyTable {
+        let mut table = [[0_u8; super::HASH_SIZE]; CAUSAL_DEPTH.saturating_add(1)];
+        table[CAUSAL_DEPTH] = hash_parts(&[CAUSAL_EMPTY_LEAF_DST]);
+        let mut depth = CAUSAL_DEPTH;
+        while depth > 0 {
+            depth = depth.saturating_sub(1);
+            let child = table[depth.saturating_add(1)];
+            table[depth] = causal_node(depth_u16(depth), child, 0, child, 0);
         }
-        let child = empty_hash(depth.saturating_add(1));
-        causal_node(depth_u16(depth), child, 0, child, 0)
+        table
     }
 
     /// An immutable population of event-ID keys committed by a persistent
@@ -689,11 +703,12 @@ pub mod causal {
         /// Computes the canonical sparse Merkle sum trie root for `self`.
         #[must_use]
         pub fn root(&self) -> Hash {
+            let empty = empty_table();
             if self.keys.is_empty() {
-                return empty_hash(0);
+                return empty[0];
             }
             let keys: Vec<Hash> = self.keys.iter().copied().collect();
-            subtree_root(&keys, 0).0
+            subtree_root(&keys, 0, &empty).0
         }
 
         /// Returns the ordered (leaf-to-root) sibling path proving `key` is a
@@ -706,7 +721,8 @@ pub mod causal {
                 return None;
             }
             let keys: Vec<Hash> = self.keys.iter().copied().collect();
-            let (node_hash, node_count, path, kind, _depth) = descend(&keys, 0, key);
+            let empty = empty_table();
+            let (node_hash, node_count, path, kind, _depth) = descend(&keys, 0, key, &empty);
             if kind != TerminalKind::Leaf {
                 return None;
             }
@@ -723,11 +739,12 @@ pub mod causal {
             &self,
             key: &Hash,
         ) -> Option<(Vec<CausalProofStep>, usize, Hash, u64)> {
+            let empty = empty_table();
             if self.keys.is_empty() {
-                return Some((Vec::new(), 0, empty_hash(0), 0));
+                return Some((Vec::new(), 0, empty[0], 0));
             }
             let keys: Vec<Hash> = self.keys.iter().copied().collect();
-            let (node_hash, node_count, path, kind, depth) = descend(&keys, 0, key);
+            let (node_hash, node_count, path, kind, depth) = descend(&keys, 0, key, &empty);
             if kind != TerminalKind::Empty {
                 return None;
             }
@@ -762,7 +779,7 @@ pub mod causal {
             return false;
         }
         verify_causal_path(
-            empty_hash(terminal_depth),
+            empty_table()[terminal_depth],
             0,
             terminal_depth,
             path,
@@ -818,12 +835,12 @@ pub mod causal {
     }
 
     /// `subtree_root`, generalized to accept an empty key set, returning the
-    /// canonical empty subtree at `depth`.
-    fn subtree_root_or_empty(keys: &[Hash], depth: usize) -> (Hash, u64) {
+    /// canonical empty subtree at `depth` from the precomputed `empty` table.
+    fn subtree_root_or_empty(keys: &[Hash], depth: usize, empty: &EmptyTable) -> (Hash, u64) {
         if keys.is_empty() {
-            (empty_hash(depth), 0)
+            (empty[depth], 0)
         } else {
-            subtree_root(keys, depth)
+            subtree_root(keys, depth, empty)
         }
     }
 
@@ -831,7 +848,7 @@ pub mod causal {
     /// contains exactly the given non-empty key set. `depth` is always
     /// `< CAUSAL_DEPTH` here (the `depth == CAUSAL_DEPTH` case returns
     /// above), so `saturating_add(1)` never actually saturates.
-    fn subtree_root(keys: &[Hash], depth: usize) -> (Hash, u64) {
+    fn subtree_root(keys: &[Hash], depth: usize, empty: &EmptyTable) -> (Hash, u64) {
         if depth == CAUSAL_DEPTH {
             return (causal_leaf(keys[0]), 1);
         }
@@ -845,8 +862,8 @@ pub mod causal {
             }
         }
         let next_depth = depth.saturating_add(1);
-        let (left_hash, left_count) = subtree_root_or_empty(&left, next_depth);
-        let (right_hash, right_count) = subtree_root_or_empty(&right, next_depth);
+        let (left_hash, left_count) = subtree_root_or_empty(&left, next_depth, empty);
+        let (right_hash, right_count) = subtree_root_or_empty(&right, next_depth, empty);
         (
             causal_node(
                 depth_u16(depth),
@@ -869,9 +886,10 @@ pub mod causal {
         keys: &[Hash],
         depth: usize,
         target: &Hash,
+        empty: &EmptyTable,
     ) -> (Hash, u64, Vec<CausalProofStep>, TerminalKind, usize) {
         if keys.is_empty() {
-            return (empty_hash(depth), 0, Vec::new(), TerminalKind::Empty, depth);
+            return (empty[depth], 0, Vec::new(), TerminalKind::Empty, depth);
         }
         if depth == CAUSAL_DEPTH {
             return (
@@ -896,8 +914,8 @@ pub mod causal {
         let next_depth = depth.saturating_add(1);
         if causal_bit(target, depth) == 0 {
             let (left_hash, left_count, mut path, kind, term_depth) =
-                descend(&left, next_depth, target);
-            let (right_hash, right_count) = subtree_root_or_empty(&right, next_depth);
+                descend(&left, next_depth, target, empty);
+            let (right_hash, right_count) = subtree_root_or_empty(&right, next_depth, empty);
             let node = causal_node(
                 depth_u16(depth),
                 left_hash,
@@ -919,8 +937,8 @@ pub mod causal {
             )
         } else {
             let (right_hash, right_count, mut path, kind, term_depth) =
-                descend(&right, next_depth, target);
-            let (left_hash, left_count) = subtree_root_or_empty(&left, next_depth);
+                descend(&right, next_depth, target, empty);
+            let (left_hash, left_count) = subtree_root_or_empty(&left, next_depth, empty);
             let node = causal_node(
                 depth_u16(depth),
                 left_hash,
