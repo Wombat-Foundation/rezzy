@@ -103,7 +103,7 @@ pub fn verify_event_signatures(
 
     let mut verified_any = false;
     for (server, keys) in signatures {
-        if origin.is_some_and(|expected| expected != server) {
+        if origin.is_some_and(|expected| !expected.eq_ignore_ascii_case(server)) {
             continue;
         }
         let Some(keys_obj) = keys.as_object() else {
@@ -172,12 +172,7 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
             .events
             .get(event_id)
             .ok_or_else(|| alloc::format!("unknown event {}", event_id.as_ref()))?;
-        if self
-            .room_version
-            .split('.')
-            .next()
-            .is_some_and(|v| matches!(v, "1" | "2"))
-        {
+        if matches!(self.room_version.as_str(), "1" | "2") {
             Ok(())
         } else {
             let expected = crate::basespec::rezzy_types::reference_hash(value, &self.room_version)?;
@@ -324,5 +319,60 @@ mod dalek_tests {
         let mut tampered = events.clone();
         tampered[3]["origin_server_ts"] = json!(999);
         assert!(verify_batch(&tampered, "10", &keys).is_err());
+    }
+
+    #[test]
+    fn dalek_verifies_case_insensitive_server_name() {
+        let sk = SigningKey::from_bytes(&[10_u8; 32]);
+        let vk = sk.verifying_key();
+
+        let raw = signed_event(
+            json!({
+                "event_id": "$1:EXAMPLE.COM",
+                "type": "m.room.message",
+                "room_id": "!r:example.com",
+                "sender": "@a:example.com",
+                "origin_server_ts": 1,
+                "content": { "body": "hi" },
+            }),
+            "1",
+            "example.com",
+            "ed25519:0",
+            &sk,
+        );
+
+        let mut keys = DalekVerifier::new();
+        keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
+            .unwrap();
+        verify_event_signatures(&raw, "1", &keys).unwrap();
+        verify_batch(&[raw], "1", &keys).unwrap();
+    }
+
+    #[test]
+    fn native_verifier_rejects_unsupported_dotted_version() {
+        let sk = SigningKey::from_bytes(&[11_u8; 32]);
+        let vk = sk.verifying_key();
+        let raw = signed_event(
+            json!({
+                "type": "m.room.message",
+                "room_id": "!r:example.com",
+                "sender": "@a:example.com",
+                "origin_server_ts": 1,
+                "content": { "body": "hi" },
+            }),
+            "2.1",
+            "example.com",
+            "ed25519:0",
+            &sk,
+        );
+        let mut map = crate::HashMap::new();
+        map.insert("$opaque:example.com".to_string(), raw);
+        let mut keys = DalekVerifier::new();
+        keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
+            .unwrap();
+        let nv = NativeVerifier::new(map, "2.1", keys);
+        assert!(nv
+            .verify_event_id_hash(&"$opaque:example.com".to_string())
+            .is_err());
     }
 }

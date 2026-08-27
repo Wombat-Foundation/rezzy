@@ -1614,7 +1614,6 @@ pub struct LeanEvent<Id = String, C = Value, K = String> {
     pub prev_events: Vec<Id>,
     /// Event IDs of the authorization events for this event (auth DAG).
     pub auth_events: Vec<Id>,
-    /// Event IDs of the previous state events in the state DAG (MSC4242).
     /// DAG depth (distance from the root). Required for V1 sort ordering.
     pub depth: u64,
     /// Whether this event was rejected by the homeserver (e.g., due to failing auth).

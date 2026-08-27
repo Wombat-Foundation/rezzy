@@ -163,11 +163,13 @@ fn test_prev_state_events_fanout_limit_only_applies_to_v22() {
         "content": { "membership": "join" }
     });
 
-    // Non-V2.2 room (v11): limit not enforced.
+    // Non-V2.2 room (v11): prev_state_events is not loaded into auth_events.
     let ev = LeanEvent::from_value(&raw, Some("11")).unwrap();
+    assert!(ev.auth_events.is_empty());
     assert!(ev.validate_syntactic("11").is_ok());
     // V2.2 (MSC4242): limit enforced.
     let ev = LeanEvent::from_value(&raw, Some("org.matrix.msc4242.12")).unwrap();
+    assert_eq!(ev.auth_events.len(), 21);
     assert!(ev.validate_syntactic("org.matrix.msc4242.12").is_err());
 }
 

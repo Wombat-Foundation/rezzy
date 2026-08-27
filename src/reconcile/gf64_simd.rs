@@ -185,11 +185,10 @@ pub enum EvaluatorBackend {
 static BACKEND: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
-#[must_use]
-pub fn get_evaluator() -> EvaluatorBackend {
+fn get_evaluator_with_cache(cache: &core::sync::atomic::AtomicU8) -> EvaluatorBackend {
     use core::sync::atomic::Ordering;
 
-    let val = BACKEND.load(Ordering::Relaxed);
+    let val = cache.load(Ordering::Relaxed);
     if val != 0 {
         return cached_evaluator(val, EvaluatorBackend::Scalar);
     }
@@ -199,15 +198,21 @@ pub fn get_evaluator() -> EvaluatorBackend {
     // Only the thread that wins initialization emits the diagnostic. Other
     // concurrent callers use the winner's cached backend and must not repeat
     // the scalar warning.
-    if BACKEND
+    if cache
         .compare_exchange(0, encoded, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        let cached = BACKEND.load(Ordering::Acquire);
+        let cached = cache.load(Ordering::Acquire);
         return cached_evaluator(cached, backend);
     }
     warn_if_scalar(backend);
     backend
+}
+
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+#[must_use]
+pub fn get_evaluator() -> EvaluatorBackend {
+    get_evaluator_with_cache(&BACKEND)
 }
 
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
@@ -419,20 +424,21 @@ mod tests {
     fn concurrent_initialization_uses_the_acquire_cached_backend() {
         use std::sync::Barrier;
 
-        BACKEND.store(0, core::sync::atomic::Ordering::Release);
+        let test_cache = core::sync::atomic::AtomicU8::new(0);
+        let cache_ref = &test_cache;
         let barrier = std::sync::Arc::new(Barrier::new(16));
         std::thread::scope(|scope| {
             for _ in 0..15 {
                 let barrier = std::sync::Arc::clone(&barrier);
                 scope.spawn(move || {
                     barrier.wait();
-                    let _ = get_evaluator();
+                    let _ = get_evaluator_with_cache(cache_ref);
                 });
             }
             barrier.wait();
-            let _ = get_evaluator();
+            let _ = get_evaluator_with_cache(cache_ref);
         });
-        assert_ne!(BACKEND.load(core::sync::atomic::Ordering::Acquire), 0);
+        assert_ne!(test_cache.load(core::sync::atomic::Ordering::Acquire), 0);
     }
 
     /// Regression test for a missing second-order field reduction in

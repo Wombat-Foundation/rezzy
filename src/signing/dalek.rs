@@ -125,7 +125,7 @@ pub fn verify_batch(
             });
         let mut selected: Option<(Signature, VerifyingKey)> = None;
         'outer: for (server, key_set) in sigs_map {
-            if origin.is_some_and(|expected| expected != server) {
+            if origin.is_some_and(|expected| !expected.eq_ignore_ascii_case(server)) {
                 continue;
             }
             let Some(key_set) = key_set.as_object() else {
