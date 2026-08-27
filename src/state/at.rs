@@ -99,7 +99,7 @@ where
 {
     /// Returns the resolved event or a limited local-auth fallback for the query.
     fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C, K>> {
-        use crate::basespec::event_types::{M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
+        use crate::basespec::event_types::{M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
 
         let query: &dyn crate::auth::StateKeyDyn = &(event_type, state_key);
 
@@ -124,8 +124,8 @@ where
             // Under Matrix State Resolution, during the power phase, a required auth event in the conflicted set
             // can ONLY be used if it has been successfully authorized and resolved
             // (i.e. is present in the resolved state).
-            let is_required_type = event_type == M_ROOM_POWER_LEVELS
-                || event_type == crate::basespec::event_types::M_ROOM_JOIN_RULES;
+            let is_required_type =
+                event_type == M_ROOM_POWER_LEVELS || event_type == M_ROOM_JOIN_RULES;
 
             // Gate the power-phase fallback behind V2.1.1+ only: per
             // `StateResVersion::has_ban_evasion_hardening`'s documentation,
@@ -134,37 +134,21 @@ where
             // unconditional `Some(ev)` below. Go through the shared method
             // (not a local `matches!` copy) so this can't silently drift
             // from `resolve::iterative`'s `is_sender_banned` gate again.
-            if self.is_power_phase
-                && self.version.has_ban_evasion_hardening()
-                && is_required_type
-                && self.sort_set.contains_key(&ev.event_id)
-            {
-                if let Some(resolved_id) = self.resolved.get(query) {
-                    if let Some(resolved_ev) = self
-                        .auth_context
-                        .get(resolved_id)
-                        .or_else(|| self.sort_set.get(resolved_id))
-                    {
-                        return Some(resolved_ev);
-                    }
-                    None
+            if self.is_power_phase && self.version.has_ban_evasion_hardening() && is_required_type {
+                if self.resolved.contains_key(query) {
+                    // A resolved ID that cannot be found in either backing
+                    // collection is not safe to replace with local auth.
+                    return None;
+                }
+                // No resolved event was found above. Under V2.1+, allow the
+                // local auth event only while resolving a power/required event.
+                let candidate_is_power = self.candidate_event_type == M_ROOM_POWER_LEVELS
+                    || self.candidate_event_type == M_ROOM_JOIN_RULES
+                    || self.candidate_event_type == M_ROOM_MEMBER;
+                if candidate_is_power {
+                    Some(ev)
                 } else {
-                    // Under V2.1+, during the power phase, we fall back to the local auth event
-                    // if NO event of this type has been resolved yet, BUT only if we are currently
-                    // resolving a power/required event itself. This prevents non-power events from
-                    // bypass-authorizing against unresolved/conflicted power events.
-                    // Type-level approximation: a plain join isn't a power event in the spec's
-                    // sense, but only power-phase candidates reach this branch, so the
-                    // content-level ban/kick distinction is unnecessary here.
-                    let candidate_is_power = self.candidate_event_type == M_ROOM_POWER_LEVELS
-                        || self.candidate_event_type
-                            == crate::basespec::event_types::M_ROOM_JOIN_RULES
-                        || self.candidate_event_type == M_ROOM_MEMBER;
-                    if candidate_is_power {
-                        Some(ev)
-                    } else {
-                        None
-                    }
+                    None
                 }
             } else {
                 Some(ev)
@@ -678,12 +662,9 @@ where
             )
         };
 
-        if ev.state_key.is_some() && !ev.rejected {
+        if let Some(state_key) = ev.state_key.as_ref().filter(|_| !ev.rejected) {
             state_before.insert(
-                (
-                    EventType::from(ev.event_type.as_str()),
-                    ev.state_key.clone().unwrap_or_else(|| empty_key.clone()),
-                ),
+                (EventType::from(ev.event_type.as_str()), state_key.clone()),
                 ev.event_id.clone(),
             );
         }
@@ -2691,8 +2672,7 @@ mod tests {
         let build_overlay = |version: StateResVersion| {
             let resolved = imbl::OrdMap::new();
             let auth_context = HashMap::new();
-            let mut sort_set = HashMap::new();
-            sort_set.insert("$pl".to_string(), pl_ev.clone());
+            let sort_set = HashMap::new();
             let mut local_auth = BTreeMap::new();
             local_auth.insert(
                 (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
@@ -2809,9 +2789,10 @@ mod tests {
         // 2. Test case: resolved_id is NOT found, and candidate_is_power is true (returns Some(ev)).
         {
             let resolved = imbl::OrdMap::new();
-            let auth_context = HashMap::new();
+            let mut auth_context = HashMap::new();
+            auth_context.insert("$jr".to_string(), jr_ev.clone());
             let mut sort_set = HashMap::new();
-            sort_set.insert("$pl".to_string(), pl_ev.clone());
+            sort_set.insert("$jr".to_string(), jr_ev.clone());
 
             let mut local_auth = BTreeMap::new();
             local_auth.insert(
@@ -2874,12 +2855,16 @@ mod tests {
                     EventType::from(crate::basespec::event_types::M_ROOM_JOIN_RULES),
                     String::new(),
                 ),
-                "$jr".to_string(),
+                "$jr_resolved".to_string(),
             );
 
-            let auth_context = HashMap::new();
-            let mut sort_set = HashMap::new();
-            sort_set.insert("$jr".to_string(), jr_ev.clone());
+            let mut auth_context = HashMap::new();
+            let resolved_jr = LeanEvent {
+                event_id: "$jr_resolved".to_string(),
+                ..jr_ev.clone()
+            };
+            auth_context.insert("$jr_resolved".to_string(), resolved_jr.clone());
+            let sort_set = HashMap::new();
 
             let mut local_auth = BTreeMap::new();
             local_auth.insert(
@@ -2903,7 +2888,7 @@ mod tests {
 
             let res = overlay.get_event(crate::basespec::event_types::M_ROOM_JOIN_RULES, "");
             assert!(res.is_some());
-            assert_eq!(res.unwrap().event_id, "$jr");
+            assert_eq!(res.unwrap().event_id, "$jr_resolved");
         }
 
         // 5. Test case: a resolved member ban is returned directly during

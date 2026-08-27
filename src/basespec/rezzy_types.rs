@@ -3462,13 +3462,20 @@ mod canonical_parity_tests {
     fn content_hash_writer_is_byte_identical_to_serde() {
         let cases = [
             json!({ "type":"m.room.message","room_id":"!r:x","sender":"@a:x","origin_server_ts":1,"content":{"body":"hi"},"hashes":{"sha256":"abc"},"unsigned":{"age_ts":5},"signatures":{"x":{"ed25519:0":"sig"}} }),
-            json!({ "a":1,"b":{"c":[1,2,3],"d":"x\ny\tz\u{0001}"},"e":1.5,"f":null,"g":true }),
+            json!({ "a":1,"b":{"c":[1,2,3],"d":"x\ny\tz\u{0001}\u{000c}\u{000d}"},"e":1.5,"f":null,"g":true }),
             json!({ "s":"unicode \u{e9}\u{fc} \u{1F600}","ctrl":"\u{0000}\u{001f}","q":"\"quoted\"","bs":"a\\b" }),
             json!({ "negative":-42,"big":9_007_199_254_740_993_u64,"float":-0.0,"arr":[true,false,null,1] }),
         ];
         for c in cases {
             assert_eq!(content_hash_writer(&c), content_hash_serde(&c), "case: {c}");
         }
+
+        let mut output = String::new();
+        write_content_hash_canonical(&mut output, &json!(null)).unwrap();
+        assert_eq!(output, "{}");
+        output.clear();
+        write_redacted_canonical(&mut output, &json!(["non-object content"]), "11").unwrap();
+        assert_eq!(output, "{}");
     }
 
     #[test]

@@ -295,6 +295,7 @@ mod tests {
 
     #[test]
     fn test_evaluators_match_scalar() {
+        let _ = get_evaluator();
         let term = 0x8000_0000_0000_0000;
         let source: Vec<u64> = (0..20_u64).map(|i| i * 0x0123_4567_89ab_cdef).collect();
         let mut expected = alloc::vec![0u64; 20];

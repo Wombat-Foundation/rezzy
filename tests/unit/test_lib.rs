@@ -5764,6 +5764,8 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
 
 #[test]
 fn test_lean_event_serialize_roundtrip() {
+    use rezzy::basespec::rezzy_types::DagNode as DagNodeTrait;
+
     let ev = LeanEvent::<String> {
         event_id: "$test".into(),
         event_type: "m.room.message".into(),
@@ -5792,6 +5794,14 @@ fn test_lean_event_serialize_roundtrip() {
     assert_eq!(ev.content, back.content);
     assert_eq!(ev.prev_events, back.prev_events);
     assert_eq!(ev.auth_events, back.auth_events);
+    assert_eq!(
+        DagNodeTrait::prev_state_events(&ev.as_ref()),
+        &[String::from("$state")]
+    );
+    assert_eq!(
+        DagNodeTrait::prev_state_events(&ev),
+        &[String::from("$state")]
+    );
     assert_eq!(ev.rejected, back.rejected);
     assert_eq!(ev.soft_fail, back.soft_fail);
 }
@@ -6563,7 +6573,7 @@ impl rezzy::RawEvent for TestRawEvent {
 /// delegations, and the `RawEvent::raw_power_level` default.
 #[test]
 fn test_parsed_event_full_coverage() {
-    use rezzy::basespec::rezzy_types::{DagNode, EventLike};
+    use rezzy::basespec::rezzy_types::{DagNode, EventLike, RawEvent};
 
     let raw = TestRawEvent {
         id: "$test1".into(),
@@ -6581,6 +6591,7 @@ fn test_parsed_event_full_coverage() {
     let parsed_default_flags = rezzy::ParsedEvent::new(&raw);
     assert!(!parsed_default_flags.rejected());
     assert!(!parsed_default_flags.soft_fail());
+    assert!(RawEvent::raw_prev_state_events(&raw).is_empty());
 
     // ParsedEvent::new (line 502-508)
     // Use a PL-like event so we can test all EventLike default methods
@@ -6615,6 +6626,7 @@ fn test_parsed_event_full_coverage() {
     assert_eq!(parsed.depth(), 42);
     assert_eq!(parsed.prev_events(), &["$prev1"]);
     assert_eq!(parsed.auth_events().len(), 2);
+    assert!(parsed.prev_state_events().is_empty());
 
     // EventLike required methods (lines 534-556)
     assert_eq!(parsed.event_type().as_ref(), "m.room.power_levels");
@@ -6945,6 +6957,7 @@ fn test_event_like_default_rejection_flags() {
 
     assert!(!event.rejected());
     assert!(!event.soft_fail());
+    assert!(DagNode::prev_state_events(&event).is_empty());
 }
 
 // ── Coverage: EventLike default methods + LeanEvent pl/ts ───────────

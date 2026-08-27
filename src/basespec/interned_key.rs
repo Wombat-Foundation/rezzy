@@ -333,6 +333,7 @@ mod tests {
                 ),
             ]),
         };
+        let map = InternedRoomState::new(interner_ref, map.map);
 
         // Query via the trait's &str boundary; resolves both halves through the
         // interner (id_of) to the owned key with zero allocation. No 'static.

@@ -1616,6 +1616,122 @@ fn test_hamt_error_display_formatting() {
         mutate_err_resolve.to_string(),
         "hamt mutation resolver failed: missing node"
     );
+
+    let mutate_err_depth: HamtMutateError<&str> = HamtMutateError::MaxDepthExceeded { depth: 9 };
+    assert_eq!(
+        mutate_err_depth.to_string(),
+        "hamt mutation max depth exceeded at depth 9"
+    );
+
+    let traversal_resolve: HamtMutateError<&str> =
+        HamtTraversalError::Resolve("resolver failed").into();
+    assert!(matches!(
+        traversal_resolve,
+        HamtMutateError::Resolve("resolver failed")
+    ));
+    let traversal_depth: HamtMutateError<&str> =
+        HamtTraversalError::MaxDepthExceeded { depth: 11 }.into();
+    assert!(matches!(
+        traversal_depth,
+        HamtMutateError::MaxDepthExceeded { depth: 11 }
+    ));
+}
+
+#[test]
+fn test_persist_mutations_insert_and_remove() {
+    let structural_key = b"persist_mutations_test";
+    let root = build_hamt::<u64, u64, _>(structural_key, []).expect("empty root");
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("empty root has no lazy children")
+    };
+
+    let (new_root, displaced, created) = persist_mutations(
+        &root,
+        structural_key,
+        vec![(1_u64, Some(10_u64)), (999_u64, None)],
+        &mut resolver,
+    )
+    .expect("persisting mutations should succeed");
+
+    assert_eq!(displaced, vec![None, None]);
+    assert_eq!(new_root.get(structural_key, &1), Some(&10));
+    assert!(!created.is_empty());
+}
+
+#[test]
+fn test_persist_mutations_noop_and_remove_existing() {
+    let structural_key = b"persist_mutations_noop";
+    let root = build_hamt(structural_key, [(1_u64, 10_u64), (2_u64, 20_u64)]).expect("root");
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("root has no lazy children")
+    };
+
+    let (same_root, displaced, created) = persist_mutations(
+        &root,
+        structural_key,
+        Vec::<(u64, Option<u64>)>::new(),
+        &mut resolver,
+    )
+    .expect("empty mutation batch should succeed");
+    assert_eq!(same_root.structural_hash, root.structural_hash);
+    assert!(displaced.is_empty());
+    assert!(created.is_empty());
+
+    let (removed_root, displaced, created) =
+        persist_mutations(&root, structural_key, vec![(1_u64, None)], &mut resolver)
+            .expect("remove mutation should succeed");
+    assert_eq!(displaced, vec![Some(10)]);
+    assert_eq!(removed_root.get(structural_key, &1), None);
+    assert_eq!(removed_root.get(structural_key, &2), Some(&20));
+    assert!(!created.is_empty());
+
+    let (single_removed_root, displaced, created) =
+        persist_mutation(&root, structural_key, 1_u64, None, &mut resolver)
+            .expect("single remove mutation should succeed");
+    assert_eq!(displaced, Some(10));
+    assert_eq!(single_removed_root.get(structural_key, &2), Some(&20));
+    assert!(!created.is_empty());
+}
+
+#[test]
+fn test_persist_mutations_emits_resolved_child_nodes() {
+    let structural_key = b"persist_mutations_child";
+    let first = 0_u64;
+    let first_slot = bucket_index(&leaf_hash_for_key(structural_key, first), 0);
+    let second = (1_u64..1_000_000)
+        .find(|candidate| {
+            *candidate != first
+                && bucket_index(&leaf_hash_for_key(structural_key, *candidate), 0) == first_slot
+        })
+        .expect("find colliding key");
+    let root =
+        build_hamt(structural_key, [(first, 10_u64), (second, 20_u64)]).expect("colliding root");
+    assert!(
+        !root.children.is_empty(),
+        "collision should create a child node"
+    );
+
+    let third = (second + 1..1_000_000)
+        .find(|candidate| {
+            bucket_index(&leaf_hash_for_key(structural_key, *candidate), 0) == first_slot
+        })
+        .expect("find another colliding key");
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("root is fully resolved")
+    };
+    let (new_root, _, created) = persist_mutations(
+        &root,
+        structural_key,
+        vec![(third, Some(30_u64))],
+        &mut resolver,
+    )
+    .expect("persisting child mutation should succeed");
+
+    assert_eq!(new_root.get(structural_key, &third), Some(&30));
+    assert!(
+        created.len() >= 2,
+        "root and changed child should be emitted"
+    );
 }
 
 fn find_key_with_slot_at_depth(key: &[u8], depth: usize, slot: usize) -> u64 {
@@ -2896,6 +3012,20 @@ fn test_hamt_codec_types() {
     assert_eq!(Vec::<u8>::decode_hamt(&out, &mut cursor), Ok(v1));
     assert_eq!(Vec::<u8>::decode_hamt(&out, &mut cursor), Ok(v2));
     assert!(Vec::<u8>::decode_hamt(&out[0..2], &mut 0).is_err());
+
+    // Tuple and EventType codecs are used by persisted HAMT leaves.
+    out.clear();
+    let value = (
+        crate::basespec::event_types::EventType::from("m.room.create"),
+        42u32,
+    );
+    value.encode_hamt(&mut out);
+    let mut cursor = 0;
+    assert_eq!(
+        <(crate::basespec::event_types::EventType, u32)>::decode_hamt(&out, &mut cursor),
+        Ok(value)
+    );
+    assert_eq!(cursor, out.len());
 }
 
 #[test]
@@ -5003,6 +5133,11 @@ fn test_descend_level_rejects_corruption() {
         crate::hamt::key_path_hash(key, k)
     });
     assert!(matches!(res, Err(DescendError::Decode(_))));
+    let decode_error = res.expect_err("truncated node must fail to decode");
+    assert_eq!(
+        format!("{decode_error}"),
+        "hamt descend decode error: Buffer too short for v1 header"
+    );
 
     // 2. Overlapping datamap & nodemap: returns Decode error
     let mut corrupt_header = vec![0x01]; // v1
@@ -5027,4 +5162,9 @@ fn test_descend_level_rejects_corruption() {
         crate::hamt::key_path_hash(key, k)
     });
     assert!(matches!(res3, Err(DescendError::CorruptNode(_))));
+    let corrupt_error = res3.expect_err("wrong node hash must be corruption");
+    assert_eq!(
+        format!("{corrupt_error}"),
+        "hamt descend corrupt node: decoded structural hash does not match requested node hash"
+    );
 }
