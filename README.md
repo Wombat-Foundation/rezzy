@@ -1,11 +1,12 @@
 # Rezzy: Matrix State Resolution Engine
 
 [![CI](https://img.shields.io/github/actions/workflow/status/gamesguru/rezzy/rust.yml?branch=master&label=CI)](https://github.com/gamesguru/rezzy/actions/workflows/rust.yml)
-[![Tests](https://raw.githubusercontent.com/gamesguru/rezzy/badges/tests.svg)](https://github.com/gamesguru/rezzy/actions/workflows/rust.yml)
 [![Benchmarks](https://img.shields.io/github/actions/workflow/status/gamesguru/rezzy/benches.yml?branch=master&label=benchmarks)](https://github.com/gamesguru/rezzy/actions/workflows/benches.yml)
 [![codecov](https://codecov.io/gh/gamesguru/rezzy/graph/badge.svg)](https://codecov.io/gh/gamesguru/rezzy)
 [![crates.io](https://img.shields.io/crates/v/rezzy.svg)](https://crates.io/crates/rezzy)
 [![TDD](https://img.shields.io/badge/development-TDD-green.svg)](https://en.wikipedia.org/wiki/Test-driven_development)
+
+[![Tests](https://raw.githubusercontent.com/gamesguru/rezzy/badges/tests.svg)](https://github.com/gamesguru/rezzy/actions/workflows/rust.yml)
 [![Complement](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fgamesguru%2Fcontinuwuity%2F_metadata%2Fbadges%2Fbadge-guru-dev-2026-03-27-b1-presence-b2-federation.json)](https://github.com/gamesguru/continuwuity/actions/workflows/complement.yml?query=branch%3Aguru%2Fdev-2026-03-27%2Bb1-presence%2Bb2-federation)
 
 Rezzy is a high-performance, dependency-free Rust engine
@@ -148,19 +149,32 @@ make cov
 
 Under the hood:
 
-- **MSC4297 / MSC4242 resolution**: Conflicted state subgraph expansion and state DAG validation.
-- **Power ordering & mainline sort**: Reverse topological power sorting via Kahn's algorithm and mainline distance ranking.
-- **Resolved-state screening**: Sound post-power ban enforcement (`is_sender_banned`) for hardened state resolution.
-- **Structural sharing & merge fast-paths**: `Arc`-backed `SharedState` with pointer-equality bypass for identical parent states.
-- **State DAG traversal**: Iterative, stack-safe ancestor crawling, merge base computation, and extremity discovery.
-- **Native n-way resolution**: Resolve and merge arbitrary DAG forks in a single pass.
-- **Streaming & batch state reconstruction**: `compute_state_at_streaming` bounds peak memory to the DAG's active frontier width.
-- **Compacted state deltas**: Forward delta chains with auto-snapshotting for fast checkpoint-based reconstruction.
-- **Roaring bitmaps & dense indexing**: SIMD-accelerated set operations for reachability, auth differences, and HAMT node audits.
-- **Content-addressed state hashing**: Incremental lattice hashing (`LtHash`) and Canonical JSON SHA-256 reference hashing.
-- **Minisketch set reconciliation**: GF(2^64) PinSketch with SIMD-accelerated root finding for federation sync.
-- **Generic type decoupling**: Parameterized over `Id: EventId`, `K: StateKey`, `C: EventContent`, and `S: BuildHasher`.
-- **`no_std` compatible**: Pure `#![no_std]` core with `alloc` support and zero system dependencies.
+- **MSC4297 / MSC4242 resolution**: Conflicted state subgraph expansion and
+  state DAG validation.
+- **Power ordering & mainline sort**: Reverse topological power sorting via
+  Kahn's algorithm and mainline distance ranking.
+- **Resolved-state screening**: Sound post-power ban enforcement
+  (`is_sender_banned`) for hardened state resolution.
+- **Structural sharing & merge fast-paths**: `Arc`-backed `SharedState` with
+  pointer-equality bypass for identical parent states.
+- **State DAG traversal**: Iterative, stack-safe ancestor crawling, merge base
+  computation, and extremity discovery.
+- **Native n-way resolution**: Resolve and merge arbitrary DAG forks in a single
+  pass.
+- **Streaming & batch state reconstruction**: `compute_state_at_streaming`
+  bounds peak memory to the DAG's active frontier width.
+- **Compacted state deltas**: Forward delta chains with auto-snapshotting for
+  fast checkpoint-based reconstruction.
+- **Roaring bitmaps & dense indexing**: SIMD-accelerated set operations for
+  reachability, auth differences, and HAMT node audits.
+- **Content-addressed state hashing**: Incremental lattice hashing (`LtHash`)
+  and Canonical JSON SHA-256 reference hashing.
+- **Minisketch set reconciliation**: GF(2^64) PinSketch with SIMD-accelerated
+  root finding for federation sync.
+- **Generic type decoupling**: Parameterized over `Id: EventId`,
+  `K: StateKey`, `C: EventContent`, and `S: BuildHasher`.
+- **`no_std` compatible**: Pure `#![no_std]` core with `alloc` support and zero
+  system dependencies.
 
 ## Synchronous model
 
@@ -330,11 +344,5 @@ Full delta chain support with Synapse-like compaction:
   `Deserialize` for direct storage in RocksDB, bincode,
   etc.
 
-[MSC1693]: https://github.com/matrix-org/matrix-spec-proposals/pull/1693
-[MSC3089]: https://github.com/matrix-org/matrix-spec-proposals/pull/3089
 [MSC4242]: https://github.com/matrix-org/matrix-spec-proposals/pull/4242
-[MSC4289]: https://github.com/matrix-org/matrix-spec-proposals/pull/4289
 [MSC4297]: https://github.com/matrix-org/matrix-spec-proposals/pull/4297
-[MSC4500]: https://github.com/matrix-org/matrix-spec-proposals/pull/4500
-[MSC4511]: https://github.com/matrix-org/matrix-spec-proposals/pull/4511
-[MSC4521]: https://github.com/matrix-org/matrix-spec-proposals/pull/4521
