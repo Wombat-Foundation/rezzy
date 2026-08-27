@@ -3537,3 +3537,44 @@ mod canonical_parity_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod canonical_redacted_json_tests {
+    use super::{canonical_redacted_json, redactable_content_remainder, split_redaction_content};
+    use serde_json::json;
+
+    #[test]
+    fn canonical_redacted_json_returns_redacted_canonical_bytes() {
+        let event = json!({
+            "type": "m.room.member",
+            "sender": "@alice:example.org",
+            "state_key": "@bob:example.org",
+            "content": {"membership": "join", "not_preserved": true},
+            "signatures": {"example.org": {"ed25519:0": "ignored"}},
+            "unsigned": {"age": 1}
+        });
+
+        assert_eq!(
+            canonical_redacted_json(&event, "10"),
+            r#"{"content":{"membership":"join"},"sender":"@alice:example.org","state_key":"@bob:example.org","type":"m.room.member"}"#
+        );
+
+        let escaped = json!({
+            "type": "m.room.member",
+            "content": {"membership": "\u{0008}"}
+        });
+        assert!(canonical_redacted_json(&escaped, "10").contains(r#"\b"#));
+    }
+
+    #[test]
+    fn redaction_remainder_handles_non_object_inputs() {
+        assert_eq!(
+            split_redaction_content(&json!(null), "m.room.message", "10"),
+            (json!({}), json!({}))
+        );
+        assert_eq!(
+            redactable_content_remainder(&json!({"extra": 1}), &json!(null)),
+            json!({"extra": 1})
+        );
+    }
+}
