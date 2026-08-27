@@ -44,7 +44,7 @@
 //!
 //! 1. **`fold_lattice_chunk`** — processes a slice of events in a single thread,
 //!    auth-checking each and folding per-`(type, state_key)` winners via the LUB operator.
-//! 2. **`merge_lattice_winners`** — merges thread-local winner maps back into
+//! 2. **`update_winner_if_better`** — merges thread-local winner maps back into
 //!    the global result using the same LUB comparator.
 //! 3. **`compute_lattice_coordinatized_winners`** — orchestrates the parallel
 //!    fan-out via `std::thread::scope`, splits events into chunks, and coordinates

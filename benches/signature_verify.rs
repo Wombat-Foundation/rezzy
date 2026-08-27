@@ -6,7 +6,8 @@
 //! redaction/canonicalization + JSON-manipulation + pipeline overhead —
 //! exactly the part where a single-source-of-truth redaction/canonicalization
 //! engine (rezzy) can diverge from a verification-time re-implementation
-//! (ruma). Run with: `cargo bench --bench signature_verify --features signing`.
+//! (ruma). Run with: `cargo bench --bench signature_verify --features
+//! signing,mock-ruma,simd-json-serde`.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_precision_loss,
