@@ -1031,3 +1031,64 @@ fn test_interned_key_matches_string_path() {
         Some(&"D".to_string())
     );
 }
+
+/// Verifies that integer-backed interned keys (e.g. `InternId(u32)`) and
+/// borrowed `&'a str` satisfy `StateKey` and execute state resolution correctly.
+#[test]
+fn test_integer_intern_id_as_state_key() {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+    struct InternId(u32);
+
+    const KEYS: &[&str] = &["", "@x:x", "@y:x"];
+
+    impl AsRef<str> for InternId {
+        fn as_ref(&self) -> &str {
+            KEYS[self.0 as usize]
+        }
+    }
+
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.member","state_key":"@x:x","sender":"@x:x","depth":2,"content":{"membership":"join"},"prev_events":["A"],"auth_events":["A"]}
+{"event_id":"C","type":"m.room.member","state_key":"@y:x","sender":"@x:x","depth":3,"content":{"membership":"join"},"prev_events":["B"],"auth_events":["A","B"]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    let interned_map: HashMap<String, rezzy::LeanEvent<String, serde_json::Value, InternId>> =
+        events_map
+            .iter()
+            .map(|(id, ev)| {
+                let intern_key = ev.state_key.as_ref().map(|k| {
+                    let idx = KEYS.iter().position(|&s| s == k).unwrap();
+                    InternId(idx as u32)
+                });
+                let mut new_ev = ev.clone();
+                new_ev.state_key = None;
+                (
+                    id.clone(),
+                    rezzy::LeanEvent {
+                        event_id: new_ev.event_id,
+                        event_type: new_ev.event_type,
+                        state_key: intern_key,
+                        power_level: new_ev.power_level,
+                        origin_server_ts: new_ev.origin_server_ts,
+                        sender: new_ev.sender,
+                        content: new_ev.content,
+                        prev_events: new_ev.prev_events,
+                        auth_events: new_ev.auth_events,
+                        depth: new_ev.depth,
+                        rejected: new_ev.rejected,
+                        soft_fail: new_ev.soft_fail,
+                        room_id: new_ev.room_id,
+                    },
+                )
+            })
+            .collect();
+
+    let state = rezzy::compute_state_at("C", &interned_map, StateResVersion::V2, &InternId(0))
+        .expect("resolution with InternId state key succeeds");
+
+    assert_eq!(state.len(), 3);
+}
