@@ -718,7 +718,7 @@ mod tests {
             rezzy::StateResVersion::V2,
             &mut std::collections::HashMap::new(),
         );
-        assert_ne!(sorted, [] as [String; 0]);
+        assert_ne!(sorted, [] as [std::string::String; 0]);
         assert_eq!(sorted, vec!["A", "B"]);
     }
 
@@ -1763,7 +1763,7 @@ mod tests {
         );
         match result {
             KahnSortResult::CycleDetected { sorted, stuck } => {
-                assert_eq!(sorted, [] as [String; 0]);
+                assert_eq!(sorted, [] as [std::string::String; 0]);
                 assert_eq!(stuck.len(), 2);
                 let mut stuck_sorted = stuck.clone();
                 stuck_sorted.sort();
@@ -1834,7 +1834,7 @@ mod tests {
             stuck: vec!["A".into(), "B".into()],
         };
         assert!(!cycle.is_ok());
-        assert_eq!(cycle.into_sorted(), [] as [String; 0]);
+        assert_eq!(cycle.into_sorted(), [] as [std::string::String; 0]);
     }
 
     #[test]
@@ -2110,7 +2110,7 @@ mod tests {
         );
         let result = compute_v2_1_conflicted_subgraph_bounded(&graph, &[], Some(1));
         assert!(result.subgraph.is_empty());
-        assert_eq!(result.missing_auth_events, [] as [String; 0]);
+        assert_eq!(result.missing_auth_events, [] as [std::string::String; 0]);
     }
 
     fn default_test_event(id: &str, pl: i64, ts: u64, auth: Vec<&str>) -> LeanEvent {
@@ -2969,7 +2969,7 @@ mod tests {
             rezzy::basespec::rezzy_types::StateResVersion::V2_1,
         );
         assert_eq!(accepted_ids, vec!["$create_no_key"]);
-        assert_eq!(rejected_ids, [] as [(String, rezzy::auth::AuthError); 0]);
+        assert_eq!(rejected_ids, [] as [(std::string::String, rezzy::auth::AuthError); 0]);
     }
 
     #[test]
@@ -6721,7 +6721,7 @@ fn test_parsed_event_full_coverage() {
     assert_eq!(parsed.depth(), 42);
     assert_eq!(parsed.prev_events(), &["$prev1"]);
     assert_eq!(parsed.auth_events().len(), 2);
-    assert_eq!(parsed.prev_state_events(), &[] as &[String]);
+    assert_eq!(parsed.prev_state_events(), []);
 
     // EventLike required methods (lines 534-556)
     assert_eq!(parsed.event_type().as_ref(), "m.room.power_levels");

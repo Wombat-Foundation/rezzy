@@ -594,22 +594,13 @@ fn test_compute_merge_bases_convergence_and_edge_cases() {
     assert_eq!(junctions[0].mask, 0b11);
 
     // Fewer than 2 extremities -> empty.
-    assert_eq!(
-        rezzy::compute_merge_bases(&["A"], &events_map, 100),
-        [] as [rezzy::MergeBase<&String>; 0]
-    );
+    assert_eq!(rezzy::compute_merge_bases(&["A"], &events_map, 100), [] as [rezzy::MergeBase<&std::string::String>; 0]);
 
     // Zero step budget -> no traversal happens.
-    assert_eq!(
-        rezzy::compute_merge_bases(&["A", "B"], &events_map, 0),
-        [] as [rezzy::MergeBase<&String>; 0]
-    );
+    assert_eq!(rezzy::compute_merge_bases(&["A", "B"], &events_map, 0), [] as [rezzy::MergeBase<&std::string::String>; 0]);
 
     // Disjoint tips -> no common ancestor, empty result.
-    assert_eq!(
-        rezzy::compute_merge_bases(&["X", "Y"], &events_map, 100),
-        [] as [rezzy::MergeBase<&String>; 0]
-    );
+    assert_eq!(rezzy::compute_merge_bases(&["X", "Y"], &events_map, 100), [] as [rezzy::MergeBase<&std::string::String>; 0]);
 }
 
 /// `find_backward_extremities`: events whose `prev_events` reference ids

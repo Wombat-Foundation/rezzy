@@ -474,7 +474,7 @@ mod tests {
 
         let mut empty = Vec::new();
         poly_square(&mut empty).unwrap();
-        assert!(empty.is_empty());
+        assert_eq!(empty, [] as [u64; 0]);
     }
 
     #[test]
@@ -491,7 +491,7 @@ mod tests {
     fn root_finding_handles_constant_and_inseparable_polynomials() {
         let mut roots = Vec::new();
         find_roots(vec![1], &mut roots).unwrap();
-        assert!(roots.is_empty());
+        assert_eq!(roots, [] as [u64; 0]);
         assert_eq!(
             find_roots(vec![1, 0, 1], &mut roots),
             Err(AlgebraicError::DecodeFailure)
@@ -511,7 +511,7 @@ mod tests {
             find_roots_with_budget(polynomial, &mut roots, &mut 0),
             Err(AlgebraicError::BudgetExhausted)
         );
-        assert!(roots.is_empty());
+        assert_eq!(roots, [] as [u64; 0]);
     }
 
     #[test]

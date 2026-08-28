@@ -73,7 +73,7 @@ pub trait SignatureVerifier {
 /// the domain is extracted from the event ID. For room versions 3+, event IDs are
 /// content hashes, so the signer is the sender's homeserver (extracted from `@user:domain.com`).
 #[must_use]
-pub(crate) fn expected_event_signer<'a>(value: &'a Value) -> Option<&'a str> {
+pub(crate) fn expected_event_signer(value: &Value) -> Option<&str> {
     if let Some(event_id) = value.get("event_id").and_then(Value::as_str) {
         if let Some((_, server)) = event_id
             .strip_prefix('$')
@@ -363,7 +363,7 @@ mod dalek_tests {
             .insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
             .unwrap();
         verify_event_signatures(&raw_upper_sig, "1", &keys_lower).unwrap();
-        verify_batch(&[raw_upper_sig.clone()], "1", &keys_lower).unwrap();
+        verify_batch(core::slice::from_ref(&raw_upper_sig), "1", &keys_lower).unwrap();
 
         // 2. Signature map has lowercase server, keyring registered uppercase
         let raw_lower_sig = signed_event(

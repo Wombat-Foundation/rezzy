@@ -412,7 +412,7 @@ mod tests {
         assert_eq!(warning, SCALAR_EVALUATOR_WARNING);
         warning.clear();
         warn_if_scalar_to(EvaluatorBackend::Sse, &mut warning);
-        assert!(warning.is_empty());
+        assert_eq!(warning, "");
     }
 
     #[cfg(all(feature = "std", target_arch = "x86_64"))]

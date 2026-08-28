@@ -490,7 +490,7 @@ fn run_shootout(
             &StateResolutionV2Rules::V2_0,
             fork_state_refs.clone(),
             dag.fork_auth_chains.clone(),
-            &fetch_event,
+            fetch_event,
             |_| unreachable!(),
         );
         ruma_result = Some(black_box(res.unwrap()));

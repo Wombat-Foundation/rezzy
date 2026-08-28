@@ -181,7 +181,7 @@ mod tests {
     fn test_outcome_new_has_no_warnings() {
         let outcome: Outcome<i32, String> = Outcome::new(42);
         assert_eq!(outcome.value, 42);
-        assert!(outcome.warnings.is_empty());
+        assert_eq!(outcome.warnings, [] as [Warning<String>; 0]);
     }
 
     #[test]

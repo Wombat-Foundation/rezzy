@@ -1439,10 +1439,9 @@ mod targeted_coverage_tests {
             state.get(&(EventType::from(M_ROOM_CREATE), String::new())),
             Some(&"$create".to_string())
         );
-        assert!(
+        assert_eq!(
             derive_auth_events_from_state_dag(&create, &state, &events, "12")
-                .unwrap()
-                .is_empty()
+                .unwrap(), [] as [std::string::String; 0]
         );
     }
 }

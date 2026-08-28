@@ -2981,7 +2981,7 @@ mod tests {
     #[test]
     fn test_find_forward_extremities_roaring_empty() {
         let extremities = find_forward_extremities_roaring::<String, _, Vec<String>>(Vec::new());
-        assert!(extremities.is_empty());
+        assert_eq!(extremities, [] as [std::string::String; 0]);
     }
 
     #[test]
@@ -3233,7 +3233,7 @@ mod tests {
     fn test_compute_topo_positions_empty() {
         let events_map: HashMap<String, LeanEvent> = HashMap::new();
         let result = compute_topo_positions(&events_map, core::cmp::Ord::cmp);
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [std::string::String; 0]);
     }
 
     /// Coverage: `compute_depths` with empty input (line 1520).
@@ -3414,7 +3414,7 @@ mod tests {
             },
         );
         let result = reverse_topological_order("missing_tip", &events_map, core::cmp::Ord::cmp);
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [std::string::String; 0]);
     }
 
     /// Coverage: `compute_auth_chain_diff` prune-early when conflicted ID

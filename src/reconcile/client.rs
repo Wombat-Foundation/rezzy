@@ -1133,7 +1133,7 @@ mod tests {
             panic!("expected a partially drained request round");
         };
 
-        assert!(accumulated_roots.is_empty());
+        assert_eq!(accumulated_roots, [] as [u64; 0]);
         assert_eq!(
             requests,
             vec![BucketRequest {
