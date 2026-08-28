@@ -5477,7 +5477,7 @@ fn test_msc4242_prev_state_events_limit_in_check_auth() {
             std::borrow::Cow::Borrowed("m.room.message")
         }
 
-        fn sender(&self) -> &str {
+        fn sender(&self) -> &'static str {
             "@alice:example.com"
         }
 
@@ -5498,13 +5498,25 @@ fn test_msc4242_prev_state_events_limit_in_check_auth() {
         }
     }
 
+    struct EmptyState;
+
+    impl StateProvider<String, serde_json::Value, EventWithSeparateStateEdges> for EmptyState {
+        fn get_event(
+            &self,
+            _event_type: &str,
+            _state_key: &str,
+        ) -> Option<&EventWithSeparateStateEdges> {
+            None
+        }
+    }
+
     let ev = EventWithSeparateStateEdges {
         event_id: "$ev:example.com".into(),
         auth_events: Vec::new(),
         prev_state_events: (0..21).map(|i| format!("$state{i}")).collect(),
         content: json!({}),
     };
-    let state = std::collections::BTreeMap::new();
+    let state = EmptyState;
     let res = rezzy::auth::check_auth(&ev, &state, StateResVersion::V2_2, None);
     assert!(matches!(
         res,
