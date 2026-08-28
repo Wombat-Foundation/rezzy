@@ -121,7 +121,6 @@ where
         a.event_type
             .cmp(&b.event_type)
             .then_with(|| a.state_key.cmp(&b.state_key))
-            .then_with(|| a.event_id.cmp(&b.event_id))
     });
     entries
 }
