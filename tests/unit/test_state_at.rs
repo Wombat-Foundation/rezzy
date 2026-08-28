@@ -1062,7 +1062,7 @@ fn test_integer_intern_id_as_state_key() {
             .map(|(id, ev)| {
                 let intern_key = ev.state_key.as_ref().map(|k| {
                     let idx = KEYS.iter().position(|&s| s == k).unwrap();
-                    InternId(idx as u32)
+                    InternId(u32::try_from(idx).expect("test key index fits u32"))
                 });
                 let mut new_ev = ev.clone();
                 new_ev.state_key = None;

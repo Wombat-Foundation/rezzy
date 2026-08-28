@@ -24,6 +24,8 @@ pub const MAX_BUCKETS_PER_ROUND: usize = 128;
 /// Maximum split depth implied by `MAX_BUCKETS_PER_ROUND`.
 pub const MAX_BUCKET_ROUND_DEPTH: u8 = bucket_round_depth(MAX_BUCKETS_PER_ROUND);
 
+const MIN_BUCKET_SKETCH_CAPACITY: usize = 4;
+
 const fn bucket_round_depth(bucket_count: usize) -> u8 {
     let mut count = bucket_count;
     let mut depth: u8 = 0;
@@ -44,6 +46,10 @@ fn provision_capacity(delta: u64, headroom: u64) -> Option<u64> {
         .and_then(|capacity| capacity.checked_add(delta % 2))
         .and_then(|capacity| capacity.checked_add(4))
         .and_then(|capacity| capacity.checked_add(headroom))
+}
+
+fn derive_gate_threshold(max_rounds: usize) -> Option<u64> {
+    u64::try_from(max_rounds.saturating_mul(MAX_BUCKETED_SKETCH_CAPACITY)).ok()
 }
 
 /// Requester policy for one MSC0501 reconciliation exchange.
@@ -267,11 +273,11 @@ fn retry_or_split_bucket(
         return Ok(requests);
     }
 
-    if previous.depth >= 31 {
+    if previous.depth >= super::MAX_DEPTH {
         return Err(ClientAction::ExtremityDiff);
     }
 
-    let floor = 4_usize;
+    let floor = MIN_BUCKET_SKETCH_CAPACITY;
     let Ok(floor_u64) = u64::try_from(floor) else {
         return Err(ClientAction::ExtremityDiff);
     };
@@ -309,10 +315,7 @@ impl Default for ReconciliationClient {
         Self {
             max_sketch_capacity: MAX_LOCAL_SKETCH_DECODE_CAPACITY,
             max_rounds: MAX_RECONCILIATION_ROUNDS,
-            gate_threshold: u64::try_from(
-                MAX_RECONCILIATION_ROUNDS.saturating_mul(MAX_BUCKETED_SKETCH_CAPACITY),
-            )
-            .ok(),
+            gate_threshold: derive_gate_threshold(MAX_RECONCILIATION_ROUNDS),
         }
     }
 }
@@ -330,20 +333,18 @@ impl ReconciliationClient {
         Ok(Self {
             max_sketch_capacity,
             max_rounds: MAX_RECONCILIATION_ROUNDS,
-            gate_threshold: u64::try_from(
-                MAX_RECONCILIATION_ROUNDS.saturating_mul(MAX_BUCKETED_SKETCH_CAPACITY),
-            )
-            .ok(),
+            gate_threshold: derive_gate_threshold(MAX_RECONCILIATION_ROUNDS),
         })
     }
 
-    /// Sets a custom maximum round count for the reconciliation client,
-    /// adjusting the gate threshold accordingly.
+    /// Sets a custom maximum round count and recalculates the gate threshold.
+    ///
+    /// This overwrites a threshold configured earlier with
+    /// [`Self::with_gate_threshold`], so builder call order is significant.
     #[must_use]
     pub fn with_max_rounds(mut self, max_rounds: usize) -> Self {
         self.max_rounds = max_rounds;
-        self.gate_threshold =
-            u64::try_from(max_rounds.saturating_mul(MAX_BUCKETED_SKETCH_CAPACITY)).ok();
+        self.gate_threshold = derive_gate_threshold(max_rounds);
         self
     }
 
@@ -421,10 +422,11 @@ impl ReconciliationClient {
         let provisioned = u64::try_from(concurrency_headroom)
             .ok()
             .and_then(|headroom| provision_capacity(estimated_delta, headroom));
-        let target_capacity = provisioned
-            .and_then(|value| usize::try_from(value).ok())
-            .unwrap_or(crate::reconcile::triage::MAX_BUCKETED_SKETCH_CAPACITY)
-            .min(crate::reconcile::triage::MAX_BUCKETED_SKETCH_CAPACITY);
+        let Some(target_capacity) = provisioned.and_then(|value| usize::try_from(value).ok())
+        else {
+            return ClientAction::ExtremityDiff;
+        };
+        let target_capacity = target_capacity.min(MAX_BUCKETED_SKETCH_CAPACITY);
 
         let mut depth = 0_u8;
         let mut buckets = 1_usize;
@@ -438,7 +440,7 @@ impl ReconciliationClient {
 
         let per_bucket = target_capacity
             .div_ceil(buckets)
-            .clamp(4, MAX_BUCKET_SKETCH_CAPACITY);
+            .clamp(MIN_BUCKET_SKETCH_CAPACITY, MAX_BUCKET_SKETCH_CAPACITY);
         let total_capacity = buckets.saturating_mul(per_bucket);
 
         if buckets > MAX_BUCKETS_PER_ROUND
@@ -448,7 +450,9 @@ impl ReconciliationClient {
         }
 
         let mut requests = alloc::vec::Vec::with_capacity(buckets);
-        let max_prefix = u32::try_from(buckets).unwrap_or(0);
+        let Ok(max_prefix) = u64::try_from(buckets) else {
+            return ClientAction::ExtremityDiff;
+        };
         for prefix in 0..max_prefix {
             requests.push(BucketRequest {
                 depth,
@@ -987,7 +991,7 @@ mod tests {
     fn bucket_transition_falls_back_when_retry_fanout_exceeds_round_cap() {
         let mut failed_buckets = alloc::vec::Vec::with_capacity(65);
         let mut previous_requests = alloc::vec::Vec::with_capacity(65);
-        for prefix in 0..65_u32 {
+        for prefix in 0..65_u64 {
             failed_buckets.push((7, prefix));
             previous_requests.push(BucketRequest {
                 depth: 7,
@@ -1025,7 +1029,7 @@ mod tests {
 
         let mut previous_requests = alloc::vec::Vec::with_capacity(65);
         let mut failed_buckets = alloc::vec::Vec::with_capacity(65);
-        for prefix in 0..65_u32 {
+        for prefix in 0..65_u64 {
             failed_buckets.push((7, prefix));
             previous_requests.push(BucketRequest {
                 depth: 7,

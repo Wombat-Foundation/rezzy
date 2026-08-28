@@ -21,7 +21,7 @@ format: ##H Format codebase (Rust + Lean + scripts)
 	-black $(LINT_LOCS_PY)
 	-isort $(LINT_LOCS_PY)
 	-shfmt -w $(LINT_LOCS_SH)
-	cargo sort --workspace --grouped
+	$(CARGO) sort --workspace --grouped
 
 .PHONY: fix
 fix:	##H Clippy auto-fix
@@ -30,12 +30,7 @@ fix:	##H Clippy auto-fix
 
 .PHONY: lint
 lint: ##H Run all linters
-	@if $(CARGO) clippy --version >/dev/null 2>&1; then \
-		$(CARGO) clippy --all-targets $(CARGO_FEATURE_ARGS); \
-	else \
-		echo "warning: Clippy is unavailable; running cargo check only"; \
-		$(CARGO) check --all-targets $(CARGO_FEATURE_ARGS); \
-	fi
+	$(CARGO) clippy --all-targets $(CARGO_FEATURE_ARGS); \
 
 .PHONY: doc rust/doc
 doc: rust/doc ##H Alias for rust/doc
@@ -106,11 +101,11 @@ rust/bench: ##H Run benchmarks
 rust/coverage: ##H Run code coverage and generate HTML report
 	# TODO: include `src/bin/` in coverage
 	# Run coverage
-	$(CARGO) +nightly llvm-cov --lib --tests \
+	$(CARGO) llvm-cov --lib --tests \
 		--html --output-dir .coverage \
 		--ignore-filename-regex 'src/bin/.*|scripts/.*'
 	# Process report to codecov-compatible JSON
-	$(CARGO) +nightly llvm-cov report \
+	$(CARGO) llvm-cov report \
 		--ignore-filename-regex 'src/bin/.*|scripts/.*' \
 		--codecov --output-path .coverage/codecov.json
 	@echo DONE. You may open it with:

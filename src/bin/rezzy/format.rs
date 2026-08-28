@@ -644,7 +644,6 @@ pub fn format_cli_output(ctx: &FormattingContext) -> serde_json::Value {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use rezzy::StateResVersion;
 
     #[test]
     fn resolve_state_output_exposes_the_resolved_state_entries() {

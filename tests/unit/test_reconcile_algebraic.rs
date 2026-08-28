@@ -227,11 +227,12 @@ fn accumulator_residual_is_the_digest_xor() {
 
 #[test]
 fn multi_round_bucket_transition_flow() {
+    use rezzy::reconcile::triage::MAX_BUCKET_SKETCH_CAPACITY;
     use rezzy::{
         BucketDecodeBatch, BucketDecodeSuccess, BucketRequest, ClientAction, ReconciliationClient,
     };
 
-    // Round 1: depth 0 bucket at capacity 32 fails because delta is larger than 32.
+    // Round 1 bisects because its capacity meets MAX_BUCKET_SKETCH_CAPACITY.
     let r1_batch = BucketDecodeBatch {
         successful_buckets: vec![],
         failed_buckets: vec![(0, 0)],
@@ -239,7 +240,7 @@ fn multi_round_bucket_transition_flow() {
     let r1_previous = vec![BucketRequest {
         depth: 0,
         prefix: 0,
-        capacity: 32,
+        capacity: MAX_BUCKET_SKETCH_CAPACITY,
     }];
 
     // Transitioning Round 1 bisects (0,0) into depth 1 prefixes: (1, 0) and (1, 1)
