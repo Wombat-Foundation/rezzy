@@ -14,6 +14,7 @@
 
 //! Unit tests for MSC4242 (State Res V2.2) State DAG library primitives.
 
+use rezzy::auth::{check_auth_with_context, RoomState};
 use rezzy::basespec::event_types::{
     EventType, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
 };
@@ -756,6 +757,78 @@ fn test_compute_state_from_dag_fork_resolution() {
     );
 }
 
+/// A complete State DAG has one deterministic state-before result. Storage-map
+/// insertion order must not affect which state tuple wins at a merge.
+#[test]
+fn test_compute_state_from_dag_is_deterministic_across_storage_order() {
+    let empty_key = String::new();
+    let create = make_state_event(
+        "$create",
+        M_ROOM_CREATE,
+        "",
+        "@creator:example.com",
+        vec![],
+        json!({ "creator": "@creator:example.com" }),
+        None,
+    );
+    let mut name_a = make_state_event(
+        "$name_a",
+        "m.room.name",
+        "",
+        "@creator:example.com",
+        vec!["$create"],
+        json!({ "name": "A" }),
+        None,
+    );
+    let mut name_b = make_state_event(
+        "$name_b",
+        "m.room.name",
+        "",
+        "@creator:example.com",
+        vec!["$create"],
+        json!({ "name": "B" }),
+        None,
+    );
+    // Force the resolver's final event-ID tie-break rather than relying on a
+    // storage iteration order or differing timestamps.
+    name_a.origin_server_ts = 500;
+    name_b.origin_server_ts = 500;
+    name_a.depth = 2;
+    name_b.depth = 2;
+    let merge = make_timeline_event(
+        "$merge",
+        "m.room.message",
+        "@creator:example.com",
+        vec!["$name_a", "$name_b"],
+        json!({ "body": "merge" }),
+        None,
+    );
+
+    let all_events = [create, name_a, name_b, merge.clone()];
+    let mut forward = HashMap::new();
+    let mut reverse = HashMap::new();
+    for event in &all_events {
+        forward.insert(event.event_id.clone(), event.clone());
+    }
+    for event in all_events.iter().rev() {
+        reverse.insert(event.event_id.clone(), event.clone());
+    }
+
+    let state_forward =
+        compute_state_before_from_dag(&merge, &forward, StateResVersion::V2_2, &empty_key)
+            .expect("complete State DAG must resolve");
+    let state_reverse =
+        compute_state_before_from_dag(&merge, &reverse, StateResVersion::V2_2, &empty_key)
+            .expect("complete State DAG must resolve regardless of storage order");
+
+    assert_eq!(state_forward, state_reverse);
+    assert_eq!(
+        state_forward.get(&(EventType::from("m.room.name"), empty_key)),
+        Some(&"$name_b".to_string()),
+        "equal timestamp candidates use the deterministic event-ID tie-break"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 5. Auth Events Derivation (derive_auth_events_from_state_dag)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -882,5 +955,135 @@ fn test_derive_auth_events_rejects_if_auth_event_is_rejected() {
             event_id: "$msg".to_string(),
             auth_event_id: "$pl_rejected".to_string(),
         }
+    );
+}
+
+/// Builds a `RoomState` (event-keyed) from a `SharedState` (id-keyed) result by
+/// resolving each state tuple's id back to its full event via `events_map`.
+fn room_state_from_shared(
+    shared: &rezzy::state::at::SharedState<String, String>,
+    events_map: &HashMap<String, LeanEvent>,
+) -> RoomState {
+    let mut room_state = RoomState::new();
+    for ((event_type, state_key), event_id) in shared {
+        let event = events_map
+            .get(event_id)
+            .expect("state tuple must reference a known event")
+            .clone();
+        room_state.insert((event_type.to_string(), state_key.clone()), event);
+    }
+    room_state
+}
+
+/// End-to-end companion to `test_v2_1_strictness_future_v2_2_should_pass` in
+/// `test_traversal.rs`. That test shows V2.1 rightfully rejects a join whose
+/// flat `auth_events` list omits a required type (here: `m.room.power_levels`),
+/// because in V2.1 the client itself must separately enumerate every required
+/// auth type's event id. V2.2 removes that flat list entirely: a state event
+/// cites only its true state parent via `prev_state_events`, and the receiver
+/// *derives* every required auth event from `state_before` (walked from that
+/// single citation), rather than trusting a client-supplied enumeration. This
+/// test shows the derived set is correct — and sufficient for authorization —
+/// from Bob's single, honest `prev_state_events` citation alone, with no flat
+/// auth-type list for a client to get wrong in the first place. `state_at(e)`
+/// is a pure function of the DAG, so the verdict is determined by the DAG
+/// shape a validated citation resolves to, not by an auth-type enumeration.
+#[test]
+fn test_v2_2_derives_auth_from_single_state_parent_citation() {
+    let mut events = HashMap::new();
+    let empty_key = String::new();
+
+    let create = make_state_event(
+        "$create",
+        M_ROOM_CREATE,
+        "",
+        "@alice:example.com",
+        vec![],
+        json!({ "creator": "@alice:example.com" }),
+        None,
+    );
+    let pl = make_state_event(
+        "$pl",
+        M_ROOM_POWER_LEVELS,
+        "",
+        "@alice:example.com",
+        vec!["$create"],
+        json!({ "users": { "@alice:example.com": 100 } }),
+        None,
+    );
+    let join_rules = make_state_event(
+        "$jr",
+        M_ROOM_JOIN_RULES,
+        "",
+        "@alice:example.com",
+        vec!["$pl"],
+        json!({ "join_rule": "public" }),
+        None,
+    );
+
+    events.insert("$create".to_string(), create);
+    events.insert("$pl".to_string(), pl);
+    events.insert("$jr".to_string(), join_rules.clone());
+
+    // Bob joins. He is allowed because the room is public. Unlike the V2.1
+    // fixture, Bob does not enumerate `$create`/`$pl`/`$jr` himself at all —
+    // he cites only his one true state parent, `$jr`.
+    let bob_join = make_state_event(
+        "$bob_join",
+        M_ROOM_MEMBER,
+        "@bob:example.com",
+        "@bob:example.com",
+        vec!["$jr"],
+        json!({ "membership": "join" }),
+        None,
+    );
+
+    let state_before =
+        compute_state_before_from_dag(&bob_join, &events, StateResVersion::V2_2, &empty_key)
+            .expect("state before bob's join");
+
+    // Both power_levels and join_rules are reachable via the validated
+    // prev_state_events DAG, even though Bob cited neither directly.
+    assert_eq!(
+        state_before.get(&(EventType::from(M_ROOM_POWER_LEVELS), empty_key.clone())),
+        Some(&"$pl".to_string())
+    );
+    assert_eq!(
+        state_before.get(&(EventType::from(M_ROOM_JOIN_RULES), empty_key.clone())),
+        Some(&"$jr".to_string())
+    );
+
+    let derived_auth = derive_auth_events_from_state_dag(&bob_join, &state_before, &events, "12.1")
+        .expect("derive auth events from state DAG");
+    assert!(
+        derived_auth.contains(&"$pl".to_string()),
+        "derived auth events must include power_levels, though Bob never cited it"
+    );
+    assert!(
+        derived_auth.contains(&"$jr".to_string()),
+        "derived auth events must include join_rules"
+    );
+    assert!(
+        !derived_auth.contains(&"$create".to_string()),
+        "create is never a V2.1+ auth event"
+    );
+
+    // Authorize using the DAG-derived auth events (what a V2.2 receiver
+    // actually authorizes against), not a client-supplied flat list.
+    let mut authorized_bob_join = bob_join;
+    authorized_bob_join.auth_events = derived_auth;
+
+    let room_state = room_state_from_shared(&state_before, &events);
+
+    let result = check_auth_with_context(
+        &authorized_bob_join,
+        &room_state,
+        StateResVersion::V2_2,
+        None,
+        Some(&events),
+    );
+    assert!(
+        result.is_ok(),
+        "V2.2 should accept the join once auth is derived from the validated State DAG: {result:?}"
     );
 }

@@ -4,7 +4,7 @@ MSC2403,Add knock feature,MSC,merged,V7+,full,"check_knock_rules: sender==state_
 MSC4297,State Resolution v2.1,MSC,merged,V12+,full,"Empty initial state, conflicted subgraph extraction, ancestral power event routing, missing auth event tolerance. Does NOT specify CDO or ban-evasion hardening -- those are rezzy-internal (V2_1_1), not MSC4297 itself"
 MSC4307,Validate that auth_events are in the correct room,MSC,merged,all,partial,"Rule 2.5 in check_auth_chain. Spec text is unconditional; rezzy's check is opt-in on the citing event's own room_id (Option<RoomId>, None by default) -- weaker than spec. See AuthError::ForeignRoomEvent"
 MSC3757,Restricting who can overwrite a state event,MSC,unstable,org.matrix.msc3757[.10],none,Future: suffix matching + admin PL override for owned state. Not yet implemented.
-MSC4242,State DAGs (v2.2),MSC,proposed,org.matrix.msc4242.12,experimental,State DAGs (with possible lattice fold parallel resolution). Reserved for future room versions
+MSC4242,State DAGs (v2.2),MSC,proposed,org.matrix.msc4242.12,experimental,"State DAG validation, state-before reconstruction, and derived auth are implemented experimentally. See docs/rezzy_msc4242_security_comparison.md for the security-scenario boundary and Complement overlap."
 MSC4289,Explicitly privilege room creators,MSC,merged,V12+,full,Creator gets i64::MAX power; additional_creators array; creators excluded from PL users map
 spec/v1.13§11.1,Room Version 1,spec,stable,V1,full,State Resolution v1
 spec/v1.13§11.2,Room Version 2,spec,stable,V2,full,State Resolution v2 (MSC1693)

@@ -19,10 +19,10 @@ mod tests {
     #[test]
     fn test_leanevent_deserialization_defaults() {
         let json = r#"{
-			"event_id": "$test",
-			"type": "m.room.message",
-			"origin_server_ts": 12345
-		}"#;
+            "event_id": "$test",
+            "type": "m.room.message",
+            "origin_server_ts": 12345
+        }"#;
         let ev: LeanEvent = serde_json::from_str(json).unwrap();
         assert_eq!(ev.event_id, "$test");
         assert_eq!(ev.event_type, "m.room.message");

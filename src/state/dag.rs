@@ -1393,6 +1393,7 @@ where
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod targeted_coverage_tests {
     use super::*;
     use serde_json::Value;
