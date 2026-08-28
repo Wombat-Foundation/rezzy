@@ -1440,8 +1440,8 @@ mod targeted_coverage_tests {
             Some(&"$create".to_string())
         );
         assert_eq!(
-            derive_auth_events_from_state_dag(&create, &state, &events, "12")
-                .unwrap(), [] as [std::string::String; 0]
+            derive_auth_events_from_state_dag(&create, &state, &events, "12").unwrap(),
+            [] as [std::string::String; 0]
         );
     }
 }

@@ -620,7 +620,13 @@ mod tests {
             "#,
         );
         let (backward, missing_auth) = report_gaps(&events, |_| false);
-        assert_eq!(backward, [] as [rezzy::BackwardExtremity<std::string::String>; 0]);
-        assert_eq!(missing_auth, [] as [rezzy::MissingAuthEvent<std::string::String>; 0]);
+        assert_eq!(
+            backward,
+            [] as [rezzy::BackwardExtremity<std::string::String>; 0]
+        );
+        assert_eq!(
+            missing_auth,
+            [] as [rezzy::MissingAuthEvent<std::string::String>; 0]
+        );
     }
 }

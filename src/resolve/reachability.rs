@@ -1,5 +1,25 @@
 //! Pure reachability contract for room DAG accelerators.
 //!
+//! # Choosing an index
+//!
+//! [`ForwardReachabilityIndex`] stores a descendant closure. It is excellent
+//! for repeated broad queries over a sealed DAG snapshot, but must not be used
+//! as a live room index: appending an event changes the descendant closure of
+//! every ancestor, so its maintenance cost is unbounded with room history.
+//!
+//! [`RangePrefilterReachability`] is the default snapshot accelerator. It
+//! stores indexed adjacency, conservative descendant ranges, and linear
+//! segments; ranges and segments only prune its exact BFS, never decide
+//! reachability by themselves.
+//!
+//! For MSC4297, this module expects a graph snapshot that already contains the
+//! direct auth edges needed to form reverse adjacency. It cannot discover a
+//! persisted event's children from that event's `auth_events`; a storage-backed
+//! caller needs a reverse-edge index, a chain cover, or a loaded query
+//! envelope. Use [`RangePrefilterReachability::filter_reachable`] for a sparse
+//! candidate set and [`RangePrefilterReachability::forward_reachable_ids`] when
+//! every node in the snapshot is a candidate.
+//!
 //! This module intentionally stays free of storage, threading, and cache
 //! policy. It defines only the query result type and the minimal trait that a
 //! drop-in accelerator must satisfy.

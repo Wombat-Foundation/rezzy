@@ -768,7 +768,10 @@ fn test_iterative_auth_chain() {
         rezzy::basespec::rezzy_types::StateResVersion::V2_1,
     );
     assert_eq!(accepted, vec!["$create", "$join", "$msg"]);
-    assert_eq!(rejected, [] as [(std::string::String, rezzy::auth::AuthError); 0]);
+    assert_eq!(
+        rejected,
+        [] as [(std::string::String, rezzy::auth::AuthError); 0]
+    );
 }
 
 /// Rule 2.5: a citing event's `auth_events` entry pointing at an event with
@@ -953,7 +956,10 @@ fn test_iterative_auth_chain_room_id_none_on_citing_side_is_never_checked() {
     );
 
     assert_eq!(accepted, vec!["$create", "$foreign_pl", "$msg"]);
-    assert_eq!(rejected, [] as [(std::string::String, rezzy::auth::AuthError); 0]);
+    assert_eq!(
+        rejected,
+        [] as [(std::string::String, rezzy::auth::AuthError); 0]
+    );
 }
 
 #[test]
