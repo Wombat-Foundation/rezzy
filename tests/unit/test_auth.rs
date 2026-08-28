@@ -768,7 +768,7 @@ fn test_iterative_auth_chain() {
         rezzy::basespec::rezzy_types::StateResVersion::V2_1,
     );
     assert_eq!(accepted, vec!["$create", "$join", "$msg"]);
-    assert!(rejected.is_empty());
+    assert_eq!(rejected, [] as [(String, rezzy::auth::AuthError); 0]);
 }
 
 /// Rule 2.5: a citing event's `auth_events` entry pointing at an event with
@@ -953,7 +953,7 @@ fn test_iterative_auth_chain_room_id_none_on_citing_side_is_never_checked() {
     );
 
     assert_eq!(accepted, vec!["$create", "$foreign_pl", "$msg"]);
-    assert!(rejected.is_empty());
+    assert_eq!(rejected, [] as [(String, rezzy::auth::AuthError); 0]);
 }
 
 #[test]
@@ -2139,7 +2139,7 @@ fn test_auth_types_for_event() {
         StateResVersion::V2_1,
         "11",
     );
-    assert!(types.is_empty());
+    assert_eq!(types, [] as [(String, String); 0]);
 
     let types = auth_types_for_event(
         "m.room.message",

@@ -502,7 +502,7 @@ fn test_delta_chain_generation_correctness() {
     assert_eq!(id3, "$3");
     assert_eq!(p3, &Some(*h2));
     assert_eq!(h3, h2); // State hash must be identical because it's a non-state event
-    assert!(d3.is_empty()); // Delta list must be empty because state did not change
+    assert_eq!(d3.as_slice(), []); // Delta list must be empty because state did not change
 }
 
 #[test]

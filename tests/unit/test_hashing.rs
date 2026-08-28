@@ -129,7 +129,7 @@ fn test_reference_hash_canonicalizes_array_content() {
     assert!(h
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
-    assert!(!h.is_empty());
+    assert_ne!(h, "");
 }
 
 #[test]
