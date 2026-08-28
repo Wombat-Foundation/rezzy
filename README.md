@@ -82,8 +82,9 @@ Everything re-exports from the crate root —
   auth engine. Implement `StateProvider` to plug in your
   own backend.
 - Generic **`EventId`** and **`StateKey`** traits —
-  `String`, `u32`, `u64`, `ruma::OwnedEventId`, or interned
-  keys all just work.
+  `EventId` accepts `String`, `u32`, `u64`, or
+  `ruma::OwnedEventId`; `StateKey` accepts any string-like
+  key (`String`, `Arc<str>`, or interned arena keys).
 - **`EventContent`** trait — skip JSON parsing in the hot
   path. `serde_json::Value` works via default impl.
 - Generic `EventId` support across delta compression

@@ -468,7 +468,8 @@ pub fn check_auth_with_context<
             "auth_events exceeds maximum allowed length of 10".into(),
         ));
     }
-    if is_msc4242 && event.auth_events().len() > crate::basespec::event_types::MAX_PREV_STATE_EVENTS
+    if is_msc4242
+        && event.prev_state_events().len() > crate::basespec::event_types::MAX_PREV_STATE_EVENTS
     {
         return Err(AuthError::InvalidSyntax(
             "prev_state_events exceeds maximum allowed length of 20".into(),

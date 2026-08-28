@@ -5439,13 +5439,70 @@ fn test_interned_key_as_lean_event_state_key() {
 
 #[test]
 fn test_msc4242_prev_state_events_limit_in_check_auth() {
-    let auth_events = (0..21).map(|i| format!("$auth{i}")).collect::<Vec<_>>();
-    let ev: LeanEvent = LeanEvent {
+    struct EventWithSeparateStateEdges {
+        event_id: String,
+        auth_events: Vec<String>,
+        prev_state_events: Vec<String>,
+        content: serde_json::Value,
+    }
+
+    impl DagNode for EventWithSeparateStateEdges {
+        type Id = String;
+
+        fn event_id(&self) -> &Self::Id {
+            &self.event_id
+        }
+
+        fn depth(&self) -> u64 {
+            0
+        }
+
+        fn prev_events(&self) -> &[Self::Id] {
+            &[]
+        }
+
+        fn auth_events(&self) -> &[Self::Id] {
+            &self.auth_events
+        }
+
+        fn prev_state_events(&self) -> &[Self::Id] {
+            &self.prev_state_events
+        }
+    }
+
+    impl EventLike for EventWithSeparateStateEdges {
+        type Content = serde_json::Value;
+
+        fn event_type(&self) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed("m.room.message")
+        }
+
+        fn sender(&self) -> &str {
+            "@alice:example.com"
+        }
+
+        fn state_key(&self) -> Option<&str> {
+            None
+        }
+
+        fn power_level(&self) -> i64 {
+            0
+        }
+
+        fn origin_server_ts(&self) -> u64 {
+            0
+        }
+
+        fn content(&self) -> &Self::Content {
+            &self.content
+        }
+    }
+
+    let ev = EventWithSeparateStateEdges {
         event_id: "$ev:example.com".into(),
-        event_type: "m.room.message".into(),
-        sender: "@alice:example.com".into(),
-        auth_events,
-        ..Default::default()
+        auth_events: Vec::new(),
+        prev_state_events: (0..21).map(|i| format!("$state{i}")).collect(),
+        content: json!({}),
     };
     let state = std::collections::BTreeMap::new();
     let res = rezzy::auth::check_auth(&ev, &state, StateResVersion::V2_2, None);
