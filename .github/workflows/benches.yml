@@ -12,7 +12,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: benchmark-publish-${{ github.ref }}
+  # `main` and `master` pushes both publish to the same `_metadata/badges`
+  # branch, so they must share one queue or their pushes race. PRs don't
+  # publish, so they stay grouped per-ref to run independently.
+  group: >-
+    ${{ github.event_name == 'pull_request' && format('benchmark-publish-{0}', github.ref)
+        || 'benchmark-publish-main' }}
   cancel-in-progress: false
 
 env:

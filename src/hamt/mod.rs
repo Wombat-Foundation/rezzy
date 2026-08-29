@@ -1517,6 +1517,15 @@ pub type PersistMutationsResult<K, V, E> = Result<
 /// This is for a single published state group. The returned `created` nodes must be written to
 /// storage before publishing the state group root pointer.
 ///
+/// # Custom-hash roots
+/// This always routes with the default keyed structural hash, the same one
+/// [`build_hamt`] uses. It is only correct for trees built by [`build_hamt`]
+/// (or `prev_root`s produced by a prior call to this function). Do not call
+/// this on a `prev_root` built by [`build_hamt_with_key_hash`] — it will
+/// route with the wrong hash, silently missing existing entries and leaving
+/// the tree inconsistent. Use [`insert_with_key_hash`]/[`remove_with_key_hash`]
+/// directly for those trees instead.
+///
 /// # Errors
 /// Returns [`HamtMutateError`] if `resolver` fails to load a lazy child or depth is exhausted.
 pub fn persist_mutation<K, V, F, E>(
@@ -1591,6 +1600,11 @@ where
 /// Callers using lazy resolvers should pass a memoizing resolver (or use [`persist_chain`])
 /// to avoid repeated backend fetches during the end-of-batch diff pass.
 ///
+/// # Custom-hash roots
+/// Same default-hash-only routing as [`persist_mutation`]; see its
+/// "Custom-hash roots" section — do not call this on a
+/// [`build_hamt_with_key_hash`] tree.
+///
 /// # Errors
 /// Returns [`HamtMutateError`] if `resolver` fails to load a lazy child or depth is exhausted.
 pub fn persist_mutations<K, V, I, F, E>(
@@ -1653,6 +1667,11 @@ where
 /// # Publication Contract
 /// For each step $i$, the `step.created` nodes must be written to storage before publishing
 /// the corresponding state group root.
+///
+/// # Custom-hash roots
+/// Same default-hash-only routing as [`persist_mutation`]; see its
+/// "Custom-hash roots" section — do not call this on a
+/// [`build_hamt_with_key_hash`] tree.
 ///
 /// # Errors
 /// Returns [`HamtMutateError`] if `resolver` fails to load a lazy child or depth is exhausted.

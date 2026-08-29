@@ -869,7 +869,7 @@ fn write_redacted_canonical<W: core::fmt::Write>(
             | FIELD_CONTENT => true,
             "room_id" => !is_v12_create,
             "prev_state_events" => msc4242,
-            "origin" | "membership" | "prev_state" => !msc4242,
+            "origin" | "membership" | "prev_state" => !room_version_is_v11_or_later(room_version),
             // `unsigned`, `signatures`, and any unrecognized key are dropped.
             _ => false,
         };

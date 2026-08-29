@@ -422,11 +422,15 @@ impl ReconciliationClient {
         let provisioned = u64::try_from(concurrency_headroom)
             .ok()
             .and_then(|headroom| provision_capacity(estimated_delta, headroom));
-        let Some(target_capacity) = provisioned.and_then(|value| usize::try_from(value).ok())
-        else {
+        // Clamp before the `usize` conversion: on 32-bit targets a large
+        // provisioned `u64` can exceed `usize::MAX` even though it's far
+        // above `MAX_BUCKETED_SKETCH_CAPACITY`, which the value is capped to
+        // right below anyway. Converting first would reject those cases as
+        // `ExtremityDiff` instead of just clamping.
+        let capped = provisioned.map(|value| value.min(MAX_BUCKETED_SKETCH_CAPACITY as u64));
+        let Some(target_capacity) = capped.and_then(|value| usize::try_from(value).ok()) else {
             return ClientAction::ExtremityDiff;
         };
-        let target_capacity = target_capacity.min(MAX_BUCKETED_SKETCH_CAPACITY);
 
         let mut depth = 0_u8;
         let mut buckets = 1_usize;
