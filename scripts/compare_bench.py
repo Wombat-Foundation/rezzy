@@ -13,6 +13,9 @@ value against the previous best (`--best`, a JSON object), FAILS if any metric
 regressed beyond `--margin` (default 10%), and writes the running best (the
 fastest value seen for each label) to `--out`.
 
+When the runner prints benchmark section headers, they are included in each
+metric key so equal operation names from separate benchmarks do not collide.
+
 Exit code is 1 if any metric regressed beyond the margin, else 0. This is
 intended to be driven from `.github/workflows/benches.yml` after teeing the
 bench output to a file.
@@ -34,16 +37,19 @@ import sys
 # so only the stable per-op/total metrics are tracked.
 METRIC = re.compile(r"^(.+?):\s+([0-9]+(?:\.[0-9]+)?)\s*(ns|ms)(?:/op)?\b")
 CHECKPOINT = re.compile(r"^\s*S=(\d+):\s*$")
-BENCHMARK_SECTION = re.compile(r"^\s*\[[^]]+\]\s+BENCHMARK:")
+BENCHMARK_SECTION = re.compile(r"^\s*\[([^]]+)\]\s+BENCHMARK:\s*(.+?)\s*$")
 
 
 def extract(path: str) -> dict[str, float]:
     """Parse the tee'd bench output into {label: milliseconds}."""
     metrics: dict[str, float] = {}
     checkpoint: str | None = None
+    benchmark: str | None = None
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
-            if BENCHMARK_SECTION.match(line):
+            section_match = BENCHMARK_SECTION.match(line)
+            if section_match:
+                benchmark = f"{section_match.group(1)}/{section_match.group(2)}"
                 checkpoint = None
                 continue
             checkpoint_match = CHECKPOINT.match(line)
@@ -54,6 +60,8 @@ def extract(path: str) -> dict[str, float]:
             if not m:
                 continue
             label = m.group(1).strip()
+            if benchmark is not None:
+                label = f"{benchmark}: {label}"
             if checkpoint is not None:
                 label = f"S={checkpoint}: {label}"
             if label in metrics:
