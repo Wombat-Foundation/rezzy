@@ -1,5 +1,4 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-mod utils;
+use crate::utils;
 use std::collections::HashMap;
 extern crate alloc;
 
@@ -8,9 +7,9 @@ extern crate alloc;
 #[allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
 mod tests {
 
+    use super::alloc::string::ToString;
+    use super::alloc::vec;
     use super::utils;
-    use alloc::string::ToString;
-    use alloc::vec;
     use core::cmp::Ordering;
     use rezzy::*;
 
@@ -20,10 +19,10 @@ mod tests {
     #[test]
     fn test_leanevent_deserialization_defaults() {
         let json = r#"{
-			"event_id": "$test",
-			"type": "m.room.message",
-			"origin_server_ts": 12345
-		}"#;
+            "event_id": "$test",
+            "type": "m.room.message",
+            "origin_server_ts": 12345
+        }"#;
         let ev: LeanEvent = serde_json::from_str(json).unwrap();
         assert_eq!(ev.event_id, "$test");
         assert_eq!(ev.event_type, "m.room.message");
@@ -250,13 +249,11 @@ mod tests {
         let p_base = SortPriority {
             power_level: e_base.power_level,
             event: &e_base,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         let p_worst_pl = SortPriority {
             power_level: e_worst_pl.power_level,
             event: &e_worst_pl,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
 
@@ -272,7 +269,6 @@ mod tests {
         let p_later_ts = SortPriority {
             power_level: e_later_ts.power_level,
             event: &e_later_ts,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         // p_later_ts has ts 20 (better — wins); later ts pops LAST = is Smaller.
@@ -288,7 +284,6 @@ mod tests {
         let p_larger_id = SortPriority {
             power_level: e_larger_id.power_level,
             event: &e_larger_id,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         // p_larger_id has id "$2" (better — wins); larger id pops LAST = is Smaller.
@@ -296,59 +291,6 @@ mod tests {
         assert_eq!(p_base.cmp(&p_larger_id), Ordering::Greater);
     }
 
-    /// V2.1.1 introduces an `auth_chain_distance` tie-breaker between equal PLs.
-    #[test]
-    fn test_sort_priority_v2_1_1_auth_chain_distance_tie_break() {
-        let evs = utils::parse_jsonl_events(
-            r#"
-            {"event_id": "$close", "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 10}
-            {"event_id": "$far",   "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 10}
-        "#,
-        );
-
-        // Case 1: Equal PL, different auth_chain_distance.
-        let p_close = SortPriority {
-            power_level: 100,
-            event: &evs[0],
-            auth_chain_distance: 1,
-            version: rezzy::StateResVersion::V2_1_1,
-        };
-        let p_far = SortPriority {
-            power_level: 100,
-            event: &evs[1],
-            auth_chain_distance: 5,
-            version: rezzy::StateResVersion::V2_1_1,
-        };
-        // cmp uses `other.distance.cmp(&self.distance)`:
-        //   p_far.cmp(p_close) → other(1).cmp(self(5)) → Less
-        assert_eq!(p_far.cmp(&p_close), Ordering::Less);
-        assert_eq!(p_close.cmp(&p_far), Ordering::Greater);
-
-        // Case 2: Equal PL AND equal distance → falls through to origin_server_ts.
-        let evs2 = utils::parse_jsonl_events(
-            r#"
-            {"event_id": "$early", "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 10}
-            {"event_id": "$late",  "type": "m.room.member", "sender": "@a:x", "origin_server_ts": 20}
-        "#,
-        );
-        let p_early = SortPriority {
-            power_level: 100,
-            event: &evs2[0],
-            auth_chain_distance: 3,
-            version: rezzy::StateResVersion::V2_1_1,
-        };
-        let p_late = SortPriority {
-            power_level: 100,
-            event: &evs2[1],
-            auth_chain_distance: 3,
-            version: rezzy::StateResVersion::V2_1_1,
-        };
-        // Equal distance → earlier ts pops first (Greater = loses).
-        assert_eq!(p_early.cmp(&p_late), Ordering::Greater);
-        assert_eq!(p_late.cmp(&p_early), Ordering::Less);
-    }
-
-    /// `SortPriority` derives Copy; the manual Clone impl must agree.
     #[test]
     fn test_sort_priority_clone() {
         let evs = utils::parse_jsonl_events(
@@ -359,7 +301,6 @@ mod tests {
         let p = SortPriority {
             power_level: 50,
             event: &evs[0],
-            auth_chain_distance: 3,
             version: rezzy::StateResVersion::V2_1_1,
         };
         #[allow(clippy::clone_on_copy)]
@@ -378,13 +319,11 @@ mod tests {
         let p_v1 = SortPriority {
             power_level: 0,
             event: &event,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V1,
         };
         let p_v2 = SortPriority {
             power_level: 0,
             event: &event,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
 
@@ -496,11 +435,12 @@ mod tests {
         // In V2.1, A should win because B (higher PL=100) is applied first and then
         // overwritten by A (lower PL=50) — lower PL pops last and wins for same-key conflicts.
         let resolved = resolve_iterative_sort(
-            unconflicted,
-            conflicted.clone(),
+            &unconflicted,
+            &conflicted,
             &conflicted,
             rezzy::StateResVersion::V2_1,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
         assert_eq!(
             resolved.get(&(
@@ -778,7 +718,7 @@ mod tests {
             rezzy::StateResVersion::V2,
             &mut std::collections::HashMap::new(),
         );
-        assert!(!sorted.is_empty());
+        assert_ne!(sorted, [] as [std::string::String; 0]);
         assert_eq!(sorted, vec!["A", "B"]);
     }
 
@@ -801,6 +741,28 @@ mod tests {
     }
 
     #[test]
+    fn test_serialization_roundtrip_state_key_none() {
+        // A LeanEvent with no state_key: the Serialize impl's
+        // `if let Some(state_key)` branch is skipped, exercising the None
+        // fall-through.
+        let event: LeanEvent = LeanEvent {
+            event_id: "$abc".into(),
+            event_type: "m.room.message".into(),
+            state_key: None,
+            power_level: 100,
+            origin_server_ts: 12345,
+            prev_events: vec![],
+            auth_events: vec![],
+            depth: 5,
+            ..Default::default()
+        };
+        let serialized = serde_json::to_string(&event).unwrap();
+        let deserialized: LeanEvent = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(event, deserialized);
+        assert_eq!(deserialized.state_key, None);
+    }
+
+    #[test]
     fn test_redacts_top_level_is_promoted_into_content() {
         let event_json = r#"{
             "event_id": "$redact",
@@ -811,6 +773,44 @@ mod tests {
         }"#;
         let event: LeanEvent = serde_json::from_str(event_json).unwrap();
         assert_eq!(event.get_redacts(), Some("$target:example.com"));
+    }
+
+    #[test]
+    fn test_redaction_accepts_matching_top_level_and_content_redacts() {
+        // Both the top-level `redacts` field and `content.redacts` are present
+        // and agree: `from_value` takes the equality fall-through rather than
+        // the mismatch error branch.
+        let event_json = r#"{
+            "event_id": "$redact",
+            "type": "m.room.redaction",
+            "sender": "@alice:example.com",
+            "content": { "redacts": "$target:example.com" },
+            "redacts": "$target:example.com"
+        }"#;
+        let event: LeanEvent = serde_json::from_str(event_json).unwrap();
+        assert_eq!(event.get_redacts(), Some("$target:example.com"));
+    }
+
+    #[test]
+    fn test_coerce_json_to_i64_all_branches() {
+        use rezzy::coerce_json_to_i64;
+        // int
+        assert_eq!(coerce_json_to_i64(&serde_json::json!(50)), Some(50));
+        // uint (overflow clamps to MAX_POWER_LEVEL_JSON = 2^53 - 1)
+        assert_eq!(
+            coerce_json_to_i64(&serde_json::json!(u64::MAX)),
+            Some(9_007_199_254_740_991)
+        );
+        // legacy float power levels: truncate toward zero, then range-check and cast to i64
+        assert_eq!(coerce_json_to_i64(&serde_json::json!(50.0)), Some(50));
+        assert_eq!(coerce_json_to_i64(&serde_json::json!(50.9)), Some(50));
+        assert_eq!(coerce_json_to_i64(&serde_json::json!(-50.9)), Some(-50));
+        // string-encoded
+        assert_eq!(coerce_json_to_i64(&serde_json::json!("42")), Some(42));
+        // non-integer -> None
+        assert_eq!(coerce_json_to_i64(&serde_json::json!("abc")), None);
+        assert_eq!(coerce_json_to_i64(&serde_json::Value::Null), None);
+        assert_eq!(coerce_json_to_i64(&serde_json::json!([1, 2, 3])), None);
     }
 
     #[test]
@@ -842,13 +842,11 @@ mod tests {
         let p1 = SortPriority {
             power_level: e1.power_level,
             event: &e1,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         let p2 = SortPriority {
             power_level: e2.power_level,
             event: &e2,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         assert!(p1.partial_cmp(&p2).is_some());
@@ -858,7 +856,7 @@ mod tests {
     fn test_trait_coverage() {
         let v = rezzy::StateResVersion::V2;
         assert_eq!(v, rezzy::StateResVersion::V2);
-        let _ = alloc::format!("{v:?}");
+        let _ = format!("{v:?}");
 
         let e: LeanEvent = LeanEvent {
             event_id: "a".into(),
@@ -872,7 +870,7 @@ mod tests {
             ..Default::default()
         };
         let _ = e.clone();
-        let _ = alloc::format!("{e:?}");
+        let _ = format!("{e:?}");
     }
 
     #[test]
@@ -987,13 +985,109 @@ mod tests {
         );
         let conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let resolved = resolve_iterative_sort(
-            unconflicted.clone(),
-            conflicted.clone(),
+            &unconflicted,
+            &conflicted,
             &conflicted,
             rezzy::StateResVersion::V2,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
         assert_eq!(resolved, unconflicted);
+    }
+
+    /// `resolve_iterative_sort` reads its inputs by reference (zero-copy): it
+    /// must not mutate them, so the same borrowed maps can be resolved
+    /// repeatedly and reused afterward.
+    #[test]
+    fn test_resolve_iterative_sort_borrows_inputs() {
+        use serde_json::json;
+
+        let mk = |id: &str, typ: &str, sk: Option<&str>, sender: &str| -> LeanEvent {
+            LeanEvent {
+                event_id: id.to_string(),
+                event_type: typ.to_string(),
+                state_key: sk.map(std::string::ToString::to_string),
+                sender: sender.to_string(),
+                origin_server_ts: 100,
+                content: json!({ "body": "x" }),
+                ..Default::default()
+            }
+        };
+
+        let create = mk("$create", "m.room.create", Some(""), "@alice:x");
+        let alice_join = mk("$aj", "m.room.member", Some("@alice:x"), "@alice:x");
+        let pl = mk("$pl", "m.room.power_levels", Some(""), "@alice:x");
+        let jr = mk("$jr", "m.room.join_rules", Some(""), "@alice:x");
+        let bob_join = mk("$bj", "m.room.member", Some("@bob:x"), "@bob:x");
+
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        conflicted.insert("$bj".into(), bob_join.clone());
+        let mut auth: HashMap<String, LeanEvent> = HashMap::new();
+        for ev in [&create, &alice_join, &pl, &jr, &bob_join] {
+            auth.insert(ev.event_id.clone(), ev.clone());
+        }
+
+        let mut unconflicted = imbl::OrdMap::new();
+        unconflicted.insert(("m.room.create".into(), String::new()), "$create".into());
+        unconflicted.insert(("m.room.member".into(), "@alice:x".into()), "$aj".into());
+        unconflicted.insert(("m.room.power_levels".into(), String::new()), "$pl".into());
+        unconflicted.insert(("m.room.join_rules".into(), String::new()), "$jr".into());
+
+        let version = rezzy::StateResVersion::V2;
+
+        // Same borrowed inputs, resolved twice: identical results, and the
+        // inputs are intact afterward (proving the resolver didn't clone/consume).
+        let a = resolve_iterative_sort(
+            &unconflicted,
+            &conflicted,
+            &auth,
+            version,
+            &mut HashMap::new(),
+            &String::new(),
+        );
+        let b = resolve_iterative_sort(
+            &unconflicted,
+            &conflicted,
+            &auth,
+            version,
+            &mut HashMap::new(),
+            &String::new(),
+        );
+        assert_eq!(
+            a, b,
+            "repeated resolution over the same borrowed inputs must agree"
+        );
+        assert_eq!(
+            conflicted.len(),
+            1,
+            "borrowed conflicted map must be untouched"
+        );
+        assert!(unconflicted.contains_key(&("m.room.power_levels".into(), String::new())));
+
+        // V2.1 exercises the empty-set / MSC4297 overlay path, which starts
+        // resolved from scratch rather than from a clone of the unconflicted
+        // base -- the two algorithm generations must both borrow without
+        // mutating the inputs.
+        let v21 = resolve_iterative_sort(
+            &unconflicted,
+            &conflicted,
+            &auth,
+            rezzy::StateResVersion::V2_1,
+            &mut HashMap::new(),
+            &String::new(),
+        );
+        let v21_again = resolve_iterative_sort(
+            &unconflicted,
+            &conflicted,
+            &auth,
+            rezzy::StateResVersion::V2_1,
+            &mut HashMap::new(),
+            &String::new(),
+        );
+        assert_eq!(
+            v21, v21_again,
+            "V2.1 overlay must be reusable over borrowed inputs"
+        );
     }
 
     #[test]
@@ -1138,11 +1232,12 @@ mod tests {
         );
 
         let resolved = resolve_iterative_sort(
-            unconflicted.clone(),
-            conflicted,
+            &unconflicted,
+            &conflicted,
             &auth_context,
             rezzy::StateResVersion::V2_1,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
 
         assert_eq!(
@@ -1177,8 +1272,8 @@ mod tests {
                     power_level: r.1,
                     origin_server_ts: r.2,
                     depth: r.3,
-                    prev_events: r.4.iter().map(alloc::string::ToString::to_string).collect(),
-                    auth_events: r.4.iter().map(alloc::string::ToString::to_string).collect(),
+                    prev_events: r.4.iter().map(ToString::to_string).collect(),
+                    auth_events: r.4.iter().map(ToString::to_string).collect(),
                     ..Default::default()
                 },
             );
@@ -1192,10 +1287,7 @@ mod tests {
         );
         assert_eq!(
             result,
-            expected
-                .iter()
-                .map(alloc::string::ToString::to_string)
-                .collect::<Vec<_>>()
+            expected.iter().map(ToString::to_string).collect::<Vec<_>>()
         );
     }
 
@@ -1268,7 +1360,7 @@ mod tests {
         let v = rezzy::StateResVersion::V2;
         let v2 = v;
         assert_eq!(v, v2);
-        let debug_str = alloc::format!("{v:?}");
+        let debug_str = format!("{v:?}");
         assert!(debug_str.contains("V2"));
     }
 
@@ -1287,7 +1379,7 @@ mod tests {
         };
         let e2 = e.clone();
         assert_eq!(e, e2);
-        let debug_str = alloc::format!("{e:?}");
+        let debug_str = format!("{e:?}");
         assert!(debug_str.contains("event_id"));
     }
 
@@ -1307,12 +1399,11 @@ mod tests {
         let p = SortPriority {
             power_level: e.power_level,
             event: &e,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         let p2 = p;
         assert_eq!(p, p2);
-        let debug_str = alloc::format!("{p:?}");
+        let debug_str = format!("{p:?}");
         assert!(debug_str.contains("version"));
     }
 
@@ -1574,7 +1665,6 @@ mod tests {
         let p_base = SortPriority {
             power_level: e_base.power_level,
             event: &e_base,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         let e_high_power: LeanEvent = LeanEvent {
@@ -1584,7 +1674,6 @@ mod tests {
         let p_high_power = SortPriority {
             power_level: e_high_power.power_level,
             event: &e_high_power,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         // p_base is WORSE (PL 50 < 100). Higher PL is Greater (pops first). So p_base < p_high_power.
@@ -1596,7 +1685,6 @@ mod tests {
         let p_best = SortPriority {
             power_level: e_best.power_level,
             event: &e_best,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         // p_best has TS 100 (better: later wins). Better must be Smaller (pops last).
@@ -1609,7 +1697,6 @@ mod tests {
         let p_early_id = SortPriority {
             power_level: e_early_id.power_level,
             event: &e_early_id,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V2,
         };
         // p_base has ID "m" (better — larger id wins). Better must be Smaller (pops last). So p_base < p_early_id.
@@ -1617,7 +1704,6 @@ mod tests {
         let p_v1_base = SortPriority {
             power_level: e_base.power_level,
             event: &e_base,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V1,
         };
         let e_shallow: LeanEvent = LeanEvent {
@@ -1627,7 +1713,6 @@ mod tests {
         let p_shallow = SortPriority {
             power_level: e_shallow.power_level,
             event: &e_shallow,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V1,
         };
         // V1: shallow depth (1) is better. Better must be Smaller (pops last). So p_v1_base > p_shallow.
@@ -1635,7 +1720,6 @@ mod tests {
         let p_v1_early_id = SortPriority {
             power_level: e_early_id.power_level,
             event: &e_early_id,
-            auth_chain_distance: 0,
             version: rezzy::StateResVersion::V1,
         };
         // V1: early ID "a" is better. Better must be Smaller (pops last). So p_v1_base > p_v1_early_id.
@@ -1679,7 +1763,7 @@ mod tests {
         );
         match result {
             KahnSortResult::CycleDetected { sorted, stuck } => {
-                assert!(sorted.is_empty());
+                assert_eq!(sorted, [] as [std::string::String; 0]);
                 assert_eq!(stuck.len(), 2);
                 let mut stuck_sorted = stuck.clone();
                 stuck_sorted.sort();
@@ -1750,7 +1834,7 @@ mod tests {
             stuck: vec!["A".into(), "B".into()],
         };
         assert!(!cycle.is_ok());
-        assert!(cycle.into_sorted().is_empty());
+        assert_eq!(cycle.into_sorted(), [] as [std::string::String; 0]);
     }
 
     #[test]
@@ -1833,9 +1917,9 @@ mod tests {
         // 1000-event deep chain: ev_0 <- ev_1 <- ev_2 <- ... <- ev_999
         let mut events: HashMap<String, LeanEvent> = HashMap::new();
         for i in 0..1000u32 {
-            let id = alloc::format!("ev_{i}");
+            let id = format!("ev_{i}");
             let auth = if i > 0 {
-                vec![alloc::format!("ev_{}", i - 1)]
+                vec![format!("ev_{}", i - 1)]
             } else {
                 vec![]
             };
@@ -1883,10 +1967,7 @@ mod tests {
                     event_id: id.into(),
                     event_type: "m.room.member".into(),
                     state_key: Some("@alice:example.com".into()),
-                    auth_events: auths
-                        .iter()
-                        .map(alloc::string::ToString::to_string)
-                        .collect(),
+                    auth_events: auths.iter().map(ToString::to_string).collect(),
                     ..Default::default()
                 },
             );
@@ -2029,7 +2110,7 @@ mod tests {
         );
         let result = compute_v2_1_conflicted_subgraph_bounded(&graph, &[], Some(1));
         assert!(result.subgraph.is_empty());
-        assert!(result.missing_auth_events.is_empty());
+        assert_eq!(result.missing_auth_events, [] as [std::string::String; 0]);
     }
 
     fn default_test_event(id: &str, pl: i64, ts: u64, auth: Vec<&str>) -> LeanEvent {
@@ -2046,6 +2127,7 @@ mod tests {
             depth: 1,
             sender: "@user:example.com".into(),
             content: serde_json::Value::Object(serde_json::Map::new()),
+            room_id: None,
         }
     }
 
@@ -2090,7 +2172,12 @@ mod tests {
 
         let mut events_to_sort = vec![ev_old, ev_new, ev_no_pl];
 
-        mainline_sort(&mut events_to_sort, &mainline, &auth_context);
+        mainline_sort(
+            &mut events_to_sort,
+            &mainline,
+            &auth_context,
+            rezzy::StateResVersion::V2,
+        );
 
         let sorted_ids: Vec<String> = events_to_sort.iter().map(|e| e.event_id.clone()).collect();
         // Per spec, an event with i = ∞ (no mainline ancestor) sorts before all
@@ -2211,7 +2298,6 @@ mod tests {
     // into auth_context forces the `while let Some(aid) = queue.pop_front()`
     // loop to iterate and push grandparents. The chain also gives $P3 in-degree
     // 0, exercising the Kahn source promotion (cdo.rs:244, 268).
-    /// Regression coverage for multi-hop auth-chain closure under CDO filtering.
     #[test]
     fn test_cdo_multihop_auth_chain_closure() {
         use serde_json::json;
@@ -2261,7 +2347,6 @@ mod tests {
     // fallback (cdo.rs:277-285). A genuine prev/auth cycle leaves some ids never
     // reaching in-degree 0; the leftover branch must append them in sorted
     // order rather than dropping them from the sweep.
-    /// Regression coverage for cycle-leftover handling during CDO fallback.
     #[test]
     fn test_cdo_cycle_leftover_fallback() {
         use serde_json::json;
@@ -2301,18 +2386,14 @@ mod tests {
         assert!(safe.contains_key("$B"));
     }
 
-    // Coverage: process_direct_domination_chunks "already-dropped admin" skip
-    // (cdo.rs:407). A lower-priority admin action (`$bob_ban_carol`) is dropped
-    // by a higher-priority ban (`$alice_ban_bob`). It remains in that chunk's
-    // `chunk_admin_to_pos` map, so when a LATER event (`$dave_join`) is checked
-    // the dropped admin is re-encountered and skipped via `continue`. Dave is a
-    // different sender than the ban target so no admin restricts him, forcing
-    // the loop to walk past the dropped admin (deterministic regardless of the
-    // map's iteration order). Also exercises the transitive-dependency
-    // propagation (cdo.rs:470-474) via `$dependent` (auths the dropped ban).
-    /// Regression coverage for skipping already-dropped admin events inside a chunk.
+    // Regression for the cycle-leftover domination fix: an event that only
+    // exists because Kahn's algorithm hit a cycle (an `unordered_id`) must
+    // not be dropped as a domination target, because its array position is
+    // not a real topological order. Here an admin ban dominates a cyclic
+    // event by structural match; without the `unordered_ids` guard the sweep
+    // would drop the cyclic event based on an unreliable ordering.
     #[test]
-    fn test_cdo_skip_already_dropped_admin_in_chunk() {
+    fn test_cdo_cycle_leftover_not_dominated() {
         use serde_json::json;
 
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
@@ -2328,56 +2409,190 @@ mod tests {
             content: json!({ "membership": "ban" }),
             ..Default::default()
         };
-        let bob_ban_carol: LeanEvent = LeanEvent {
-            event_id: "$bob_ban_carol".into(),
+        // $A and $B form a mutual prev/auth cycle; $B is a ban of Dave by
+        // Bob (structurally matched by alice_ban_bob). Both are unordered.
+        let a: LeanEvent = LeanEvent {
+            event_id: "$A".into(),
             event_type: "m.room.member".into(),
-            state_key: Some("@carol:example.com".into()),
-            sender: "@bob:example.com".into(),
-            power_level: 0,
-            origin_server_ts: 1100,
+            state_key: Some("@bob:example.com".into()),
+            sender: "@alice:example.com".into(),
+            prev_events: vec!["$B".into()],
+            auth_events: vec!["$B".into()],
             content: json!({ "membership": "ban" }),
             ..Default::default()
         };
-        let dave_join: LeanEvent = LeanEvent {
-            event_id: "$dave_join".into(),
+        let b: LeanEvent = LeanEvent {
+            event_id: "$B".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@dave:example.com".into()),
-            sender: "@dave:example.com".into(),
-            power_level: 0,
-            origin_server_ts: 1200,
-            content: json!({ "membership": "join" }),
+            sender: "@bob:example.com".into(),
+            prev_events: vec!["$A".into()],
+            auth_events: vec!["$A".into()],
+            power_level: 50,
+            content: json!({ "membership": "ban" }),
             ..Default::default()
         };
-        // Auth-depends on the dropped ban; must itself be dropped only through
-        // transitive propagation (dave/eve are not the ban target).
-        let dependent: LeanEvent = LeanEvent {
-            event_id: "$dependent".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@eve:example.com".into()),
-            sender: "@eve:example.com".into(),
-            power_level: 0,
-            origin_server_ts: 1300,
-            auth_events: vec!["$bob_ban_carol".into()],
-            content: json!({ "membership": "join" }),
-            ..Default::default()
-        };
-
+        conflicted.insert(a.event_id.clone(), a);
+        conflicted.insert(b.event_id.clone(), b);
         conflicted.insert(alice_ban_bob.event_id.clone(), alice_ban_bob);
-        conflicted.insert(bob_ban_carol.event_id.clone(), bob_ban_carol);
-        conflicted.insert(dave_join.event_id.clone(), dave_join);
-        conflicted.insert(dependent.event_id.clone(), dependent);
 
         let safe = apply_cdo_filter(&conflicted, &auth);
-        assert_eq!(
-            safe.len(),
-            2,
-            "only the surviving ban + dave remain: {:?}",
-            safe.keys()
+
+        // The cyclic events are unordered: their array position carries no
+        // causal meaning, so they must neither dominate nor be dominated.
+        // They survive the filter (only the genuinely-ordered admin ban
+        // could ever be used for domination, and even it is not trusted to
+        // drop an unordered event).
+        assert!(safe.contains_key("$A"), "unordered $A must not be dropped");
+        assert!(safe.contains_key("$B"), "unordered $B must not be dropped");
+    }
+
+    // Dominator-validity gap — resolved. The CDO used to drop a candidate based
+    // on a structurally-a-ban/kick admin action WITHOUT checking that the
+    // dominator itself would pass auth. Here `@mallory` has PL 0 (below the
+    // room's ban level), so `$evil_ban` is auth-INVALID; `$victim_join` (an
+    // auth-valid join into the public room) is the correct winner for @bob.
+    // The unsound CDO pre-filter is retired from `prepare_conflicted_and_keys`,
+    // so V2.1.1 now rejects `$evil_ban` on auth and keeps the join, matching
+    // V2.1. This test guards that the live path stays sound: if someone
+    // re-connects the pre-filter, it fails loudly.
+    #[test]
+    fn test_cdo_dominator_validity_closed_v2_1_1_keeps_winner() {
+        use rezzy::basespec::event_types::EventType;
+        use serde_json::json;
+
+        let mut ts = 1000u64;
+        let create: LeanEvent = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:x".into(),
+            origin_server_ts: ts,
+            content: json!({ "room_version": "12.1", "creator": "@admin:x" }),
+            ..Default::default()
+        };
+        ts += 1;
+        let admin_join: LeanEvent = LeanEvent {
+            event_id: "$admin_join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@admin:x".into()),
+            sender: "@admin:x".into(),
+            origin_server_ts: ts,
+            prev_events: vec!["$create".into()],
+            auth_events: vec!["$create".into()],
+            depth: 2,
+            ..Default::default()
+        };
+        ts += 1;
+        let pl: LeanEvent = LeanEvent {
+            event_id: "$pl".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:x".into(),
+            origin_server_ts: ts,
+            content: json!({
+                "users": { "@admin:x": 100 },
+                "users_default": 0,
+                "state_default": 50,
+                "ban": 50
+            }),
+            auth_events: vec!["$create".into(), "$admin_join".into()],
+            prev_events: vec!["$admin_join".into()],
+            depth: 3,
+            ..Default::default()
+        };
+        ts += 1;
+        let jr: LeanEvent = LeanEvent {
+            event_id: "$jr".into(),
+            event_type: "m.room.join_rules".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:x".into(),
+            origin_server_ts: ts,
+            content: json!({ "join_rule": "public" }),
+            auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
+            prev_events: vec!["$pl".into()],
+            depth: 4,
+            ..Default::default()
+        };
+
+        let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+        for ev in [&create, &admin_join, &pl, &jr] {
+            auth_context.insert(ev.event_id.clone(), ev.clone());
+        }
+        let mut unconflicted: imbl::OrdMap<(EventType, String), String> = imbl::OrdMap::new();
+        for ev in [&create, &admin_join, &pl, &jr] {
+            let sk = ev.state_key.clone().unwrap_or_default();
+            unconflicted.insert(
+                (EventType::from(ev.event_type.as_str()), sk),
+                ev.event_id.clone(),
+            );
+        }
+
+        let evil_ban: LeanEvent = LeanEvent {
+            event_id: "$evil_ban".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:x".into()),
+            sender: "@mallory:x".into(),
+            origin_server_ts: 2000,
+            power_level: 100,
+            content: json!({ "membership": "ban" }),
+            auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
+            prev_events: vec!["$jr".into()],
+            depth: 5,
+            ..Default::default()
+        };
+        let victim_join: LeanEvent = LeanEvent {
+            event_id: "$victim_join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@bob:x".into()),
+            sender: "@bob:x".into(),
+            origin_server_ts: 2100,
+            power_level: 0,
+            content: json!({ "membership": "join" }),
+            auth_events: vec![
+                "$create".into(),
+                "$admin_join".into(),
+                "$pl".into(),
+                "$jr".into(),
+            ],
+            prev_events: vec!["$jr".into()],
+            depth: 5,
+            ..Default::default()
+        };
+
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        conflicted.insert(evil_ban.event_id.clone(), evil_ban);
+        conflicted.insert(victim_join.event_id.clone(), victim_join);
+
+        // NOTE: this test guards the *live* V2.1.1 path. The CDO pre-filter
+        // (which used to drop `$victim_join` on the strength of the auth-invalid
+        // `$evil_ban`) is retired from `prepare_conflicted_and_keys` for exactly
+        // this reason — the dominator-validity gap. Resolution must now reject
+        // `$evil_ban` on auth and keep the join, so V2.1.1 must match V2.1. If
+        // someone re-connects the unsound pre-filter, this test fails loudly.
+        let bob_key = (EventType::from("m.room.member"), "@bob:x".to_string());
+        let r21 = resolve_iterative_sort(
+            &unconflicted,
+            &conflicted,
+            &auth_context,
+            rezzy::StateResVersion::V2_1,
+            &mut std::collections::HashMap::new(),
+            &String::new(),
         );
-        assert!(safe.contains_key("$alice_ban_bob"));
-        assert!(safe.contains_key("$dave_join"));
-        assert!(!safe.contains_key("$bob_ban_carol"));
-        assert!(!safe.contains_key("$dependent"));
+        let r211 = resolve_iterative_sort(
+            &unconflicted,
+            &conflicted,
+            &auth_context,
+            rezzy::StateResVersion::V2_1_1,
+            &mut std::collections::HashMap::new(),
+            &String::new(),
+        );
+        assert_eq!(r21.get(&bob_key), Some(&"$victim_join".to_string()));
+        assert_eq!(
+            r211, r21,
+            "V2.1.1 must not diverge: an auth-invalid dominator must not erase a \
+             resolved winner"
+        );
     }
 
     // Coverage: process_direct_domination_chunks "already-dropped event" skip
@@ -2385,7 +2600,6 @@ mod tests {
     // `chunk_size = WORDS_PER_CHUNK * 64 = 512`. Alice's high-priority ban drops
     // every one of Bob's 513 bans during chunk 1; chunk 2 then re-visits those
     // already-dropped events and must skip them via `continue`.
-    /// Regression coverage for multi-chunk revisits of already-dropped events.
     #[test]
     fn test_cdo_multichunk_revisits_dropped_event() {
         use serde_json::json;
@@ -2429,133 +2643,33 @@ mod tests {
         assert!(safe.contains_key("$alice_ban_bob"));
     }
 
-    /// Regression coverage for the membership-evaporation anomaly fixture.
     #[test]
     fn test_anomaly_06b_mod_membership_evaporation() {
-        use serde_json::json;
+        let auth_evs = utils::parse_jsonl_events(
+            r#"
+            {"event_id": "$root",            "type": "m.room.create",       "state_key": "", "sender": "@alice:example.com", "origin_server_ts": 1000}
+            {"event_id": "$alice_join",      "type": "m.room.member",       "state_key": "@alice:example.com", "sender": "@alice:example.com", "origin_server_ts": 1100, "prev_events": ["$root"], "auth_events": ["$root"], "content": {}}
+            {"event_id": "$jr_pub",          "type": "m.room.join_rules",   "state_key": "", "sender": "@alice:example.com", "origin_server_ts": 1150, "prev_events": ["$alice_join"], "auth_events": ["$root", "$alice_join"], "content": {"join_rule": "public"}}
+            {"event_id": "$pl_init",         "type": "m.room.power_levels", "state_key": "", "sender": "@alice:example.com", "origin_server_ts": 1200, "prev_events": ["$jr_pub"], "auth_events": ["$root", "$alice_join", "$jr_pub"], "content": {"users": {"@alice:example.com": 100}}}
+            "#,
+        );
+        let conflicted_evs = utils::parse_jsonl_events(
+            r#"
+            {"event_id": "$rules_invite",     "type": "m.room.join_rules",   "state_key": "", "sender": "@alice:example.com", "origin_server_ts": 1300, "prev_events": ["$pl_init"], "auth_events": ["$root", "$alice_join", "$pl_init"], "content": {"join_rule": "invite"}}
+            {"event_id": "$nexy_join",        "type": "m.room.member",       "state_key": "@nexy:example.com", "sender": "@nexy:example.com", "origin_server_ts": 1310, "prev_events": ["$pl_init"], "auth_events": ["$root", "$alice_join", "$jr_pub", "$pl_init"], "content": {"membership": "join"}}
+            {"event_id": "$nexy_promo",       "type": "m.room.power_levels", "state_key": "", "sender": "@alice:example.com", "origin_server_ts": 1320, "prev_events": ["$nexy_join"], "auth_events": ["$root", "$alice_join", "$nexy_join", "$pl_init"], "content": {"users": {"@alice:example.com": 100, "@nexy:example.com": 50}}}
+            {"event_id": "$nexy_bans_spammer", "type": "m.room.member",      "state_key": "@spammer:example.com", "sender": "@nexy:example.com", "origin_server_ts": 1330, "prev_events": ["$nexy_promo"], "auth_events": ["$root", "$alice_join", "$nexy_join", "$nexy_promo"], "content": {"membership": "ban"}}
+            "#,
+        );
 
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let mut auth: HashMap<String, LeanEvent> = HashMap::new();
-
-        let root: LeanEvent = LeanEvent {
-            event_id: "$root".into(),
-            event_type: "m.room.create".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:example.com".into(),
-            origin_server_ts: 1000,
-            ..Default::default()
-        };
-        auth.insert(root.event_id.clone(), root.clone());
-
-        let alice_join: LeanEvent = LeanEvent {
-            event_id: "$alice_join".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@alice:example.com".into()),
-            sender: "@alice:example.com".into(),
-            origin_server_ts: 1100,
-            prev_events: vec!["$root".into()],
-            auth_events: vec!["$root".into()],
-            ..Default::default()
-        };
-        auth.insert(alice_join.event_id.clone(), alice_join.clone());
-
-        let jr_pub: LeanEvent = LeanEvent {
-            event_id: "$jr_pub".into(),
-            event_type: "m.room.join_rules".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:example.com".into(),
-            origin_server_ts: 1150,
-            prev_events: vec!["$alice_join".into()],
-            auth_events: vec!["$root".into(), "$alice_join".into()],
-            content: json!({ "join_rule": "public" }),
-            ..Default::default()
-        };
-        auth.insert(jr_pub.event_id.clone(), jr_pub.clone());
-
-        let pl_init: LeanEvent = LeanEvent {
-            event_id: "$pl_init".into(),
-            event_type: "m.room.power_levels".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:example.com".into(),
-            origin_server_ts: 1200,
-            prev_events: vec!["$jr_pub".into()],
-            auth_events: vec!["$root".into(), "$alice_join".into(), "$jr_pub".into()],
-            content: json!({ "users": { "@alice:example.com": 100 } }),
-            ..Default::default()
-        };
-        auth.insert(pl_init.event_id.clone(), pl_init.clone());
-
-        // Fork A: Lockdown to invite
-        let rules_invite: LeanEvent = LeanEvent {
-            event_id: "$rules_invite".into(),
-            event_type: "m.room.join_rules".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:example.com".into(),
-            origin_server_ts: 1300,
-            prev_events: vec!["$pl_init".into()],
-            auth_events: vec!["$root".into(), "$alice_join".into(), "$pl_init".into()],
-            content: json!({ "join_rule": "invite" }),
-            ..Default::default()
-        };
-        conflicted.insert(rules_invite.event_id.clone(), rules_invite.clone());
-
-        // Fork B: Nexy's actions (dependent on public join rules)
-        let nexy_join: LeanEvent = LeanEvent {
-            event_id: "$nexy_join".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@nexy:example.com".into()),
-            sender: "@nexy:example.com".into(),
-            origin_server_ts: 1310,
-            prev_events: vec!["$pl_init".into()],
-            auth_events: vec![
-                "$root".into(),
-                "$alice_join".into(),
-                "$jr_pub".into(),
-                "$pl_init".into(),
-            ],
-            content: json!({ "membership": "join" }),
-            ..Default::default()
-        };
-        conflicted.insert(nexy_join.event_id.clone(), nexy_join.clone());
-
-        let nexy_promo: LeanEvent = LeanEvent {
-            event_id: "$nexy_promo".into(),
-            event_type: "m.room.power_levels".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:example.com".into(),
-            origin_server_ts: 1320,
-            prev_events: vec!["$nexy_join".into()],
-            auth_events: vec![
-                "$root".into(),
-                "$alice_join".into(),
-                "$nexy_join".into(),
-                "$pl_init".into(),
-            ],
-            content: json!({ "users": { "@alice:example.com": 100, "@nexy:example.com": 50 } }),
-            ..Default::default()
-        };
-        conflicted.insert(nexy_promo.event_id.clone(), nexy_promo.clone());
-
-        let nexy_bans_spammer: LeanEvent = LeanEvent {
-            event_id: "$nexy_bans_spammer".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@spammer:example.com".into()),
-            sender: "@nexy:example.com".into(),
-            origin_server_ts: 1330,
-            prev_events: vec!["$nexy_promo".into()],
-            auth_events: vec![
-                "$root".into(),
-                "$alice_join".into(),
-                "$nexy_join".into(),
-                "$nexy_promo".into(),
-            ],
-            content: json!({ "membership": "ban" }),
-            ..Default::default()
-        };
-        conflicted.insert(
-            nexy_bans_spammer.event_id.clone(),
-            nexy_bans_spammer.clone(),
-        );
+        for ev in auth_evs {
+            auth.insert(ev.event_id.clone(), ev);
+        }
+        for ev in conflicted_evs {
+            conflicted.insert(ev.event_id.clone(), ev);
+        }
 
         // Under v2.1.1, apply_cdo_filter is executed. $rules_invite (invite
         // lockdown) is concurrent with $nexy_join, but must NOT dominate it:
@@ -2616,7 +2730,7 @@ mod tests {
         ];
         for err in errs {
             let formatted = format!("{err}");
-            assert!(!formatted.is_empty());
+            assert_ne!(formatted, "");
         }
 
         // 2. StateKeyDyn comparisons, EQ, and Ord coverage
@@ -2860,7 +2974,10 @@ mod tests {
             rezzy::basespec::rezzy_types::StateResVersion::V2_1,
         );
         assert_eq!(accepted_ids, vec!["$create_no_key"]);
-        assert!(rejected_ids.is_empty());
+        assert_eq!(
+            rejected_ids,
+            [] as [(std::string::String, rezzy::auth::AuthError); 0]
+        );
     }
 
     #[test]
@@ -2870,7 +2987,7 @@ mod tests {
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let mut auth: HashMap<String, LeanEvent> = HashMap::new();
 
-        let create = LeanEvent {
+        let create: LeanEvent = LeanEvent {
             event_id: "CREATE".into(),
             event_type: "m.room.create".into(),
             state_key: Some(String::new()),
@@ -2937,11 +3054,12 @@ mod tests {
         );
         // This will run kahn sort on power_events, detect a cycle, and print/handle it safely.
         let resolved = resolve_iterative_sort(
-            unconflicted,
-            conflicted,
+            &unconflicted,
+            &conflicted,
             &auth,
             rezzy::StateResVersion::V2,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
         assert!(!resolved.is_empty());
         // INITIAL_PL wins, not the cyclic A/B pair. A and B mutually auth each
@@ -3020,7 +3138,7 @@ mod tests {
         events.insert("A".into(), a);
 
         // compute_state_at A must run cleanly and return A's state without panicking on missing event B!
-        let state = compute_state_at("A", &events, StateResVersion::V2);
+        let state = compute_state_at("A", &events, StateResVersion::V2, &String::new());
         assert!(state.is_some());
         let state_map = state.unwrap();
 
@@ -3122,11 +3240,12 @@ mod tests {
         // Resolve using V2_1 (MSC4297). This starts with an empty state.
         // It must successfully route and validate `$pl_alice` in order to authorize Bob's PL events.
         let resolved = resolve_iterative_sort(
-            utils::build_unconflicted_state_test_helper(&auth_context),
-            conflicted_events,
+            &utils::build_unconflicted_state_test_helper(&auth_context),
+            &conflicted_events,
             &auth_context,
             rezzy::StateResVersion::V2_1,
             &mut std::collections::HashMap::new(),
+            &String::new(),
         );
 
         // Assert that a power levels event is resolved, showing the ancestral PL event was correctly processed
@@ -3187,7 +3306,10 @@ mod tests {
         assert_eq!(clamped_neg, None);
     }
 }
-use rezzy::{compute_state_at, KahnSortResult, LeanEvent, StateResVersion};
+use rezzy::{
+    compute_state_at, compute_state_at_streaming_optimized, KahnSortResult, LeanEvent,
+    StateResVersion,
+};
 
 #[test]
 fn test_types_kahn_sort_result_methods() {
@@ -3299,10 +3421,20 @@ fn test_types_validate_syntactic() {
         ev.validate_syntactic("11"),
         Err("event_id exceeds maximum allowed length of 255 bytes")
     );
-    assert!(
-        ev.validate_syntactic("10").is_ok(),
-        "pre-v11 rooms only warn on oversized event_id, never hard-fail"
+    let pre_v11 = ev
+        .validate_syntactic("10")
+        .expect("pre-v11 rooms only warn on oversized event_id, never hard-fail");
+    assert_eq!(
+        pre_v11.warnings,
+        vec![rezzy::warnings::Warning::OversizedFieldPreV11 {
+            event_id: ev.event_id.clone(),
+            field: "event_id",
+            len: ev.event_id.len(),
+            limit: 255,
+        }],
+        "the oversized-field condition is now surfaced structurally, not just tolerated"
     );
+    assert_eq!(pre_v11.warnings[0].code(), "W002_OVERSIZED_FIELD_PRE_V11");
     assert_eq!(
         ev.validate_syntactic("12"),
         Err("event_id exceeds maximum allowed length of 255 bytes")
@@ -3416,6 +3548,7 @@ fn test_soft_fail_vs_rejected_events_behavior() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn test_redaction_preserved_keys_matrix() {
     use rezzy::basespec::rezzy_types::{redaction_preserved_keys, RedactionRule};
 
@@ -3431,6 +3564,28 @@ fn test_redaction_preserved_keys_matrix() {
     assert_eq!(
         redaction_preserved_keys("m.room.join_rules", "1"),
         RedactionRule::Keys(&["join_rule"])
+    );
+
+    // Room versions 2-8: distinct `"N" => N` arms in the version-mapping match.
+    // All are pre-v9 / pre-v11, so create keeps `creator` and member keeps only
+    // `membership` -- identical rules to v1, but each version string must be
+    // routed through its own arm (exercises the per-version mapping lines).
+    for v in ["2", "3", "4", "5", "6", "7", "8"] {
+        assert_eq!(
+            redaction_preserved_keys("m.room.create", v),
+            RedactionRule::Keys(&["creator"]),
+            "create redaction for room {v}"
+        );
+        assert_eq!(
+            redaction_preserved_keys("m.room.member", v),
+            RedactionRule::Keys(&["membership"]),
+            "member redaction for room {v}"
+        );
+    }
+    // v10 is its own arm too; it has v9's join_authorised rules but not v11's.
+    assert_eq!(
+        redaction_preserved_keys("m.room.member", "10"),
+        RedactionRule::Keys(&["membership", "join_authorised_via_users_server"])
     );
 
     // Room version 9 (adds join_authorised_via_users_server & allow)
@@ -3539,6 +3694,1052 @@ fn test_redaction_preserved_keys_matrix() {
 }
 
 #[test]
+fn test_redaction_application_strips_content() {
+    use rezzy::apply_redaction;
+
+    // A message redacts down to empty content.
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 1000,
+        content: serde_json::json!({ "body": "spam", "msgtype": "m.text" }),
+        ..Default::default()
+    };
+    let redaction: LeanEvent = LeanEvent {
+        event_id: "$redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@alice:example.com".into(),
+        origin_server_ts: 1100,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    let redacted = apply_redaction(&msg, &redaction, "12").expect("valid redaction should apply");
+    assert_eq!(
+        redacted.content,
+        serde_json::json!({}),
+        "m.room.message content is fully stripped"
+    );
+    // Envelope preserved.
+    assert_eq!(redacted.event_id, "$msg:example.com");
+    assert_eq!(redacted.sender, "@bob:example.com");
+    assert_eq!(redacted.event_type, "m.room.message");
+
+    // m.room.member preserves only `membership` (v12).
+    let member: LeanEvent = LeanEvent {
+        event_id: "$join:example.com".into(),
+        event_type: "m.room.member".into(),
+        state_key: Some("@bob:example.com".into()),
+        sender: "@bob:example.com".into(),
+        content: serde_json::json!({ "membership": "join", "displayname": "Bob" }),
+        ..Default::default()
+    };
+    let redact_member: LeanEvent = LeanEvent {
+        event_id: "$rm:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "redacts": "$join:example.com" }),
+        ..Default::default()
+    };
+    let redacted_member =
+        apply_redaction(&member, &redact_member, "12").expect("valid redaction should apply");
+    assert_eq!(
+        redacted_member.content,
+        serde_json::json!({ "membership": "join" }),
+        "only the membership key survives"
+    );
+
+    // m.room.power_levels preserves `users` (v12) — the anti-PL-wipeout invariant.
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({
+            "users": { "@alice:example.com": 100 },
+            "users_default": 0,
+            "state_default": 50,
+            "something_unrelated": true
+        }),
+        ..Default::default()
+    };
+    let redact_pl: LeanEvent = LeanEvent {
+        event_id: "$rp:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "redacts": "$pl:example.com" }),
+        ..Default::default()
+    };
+    let redacted_pl = apply_redaction(&pl, &redact_pl, "12").expect("valid redaction should apply");
+    assert_eq!(
+        redacted_pl.content,
+        serde_json::json!({
+            "users": { "@alice:example.com": 100 },
+            "users_default": 0,
+            "state_default": 50
+        }),
+        "power_levels redaction must preserve the users map and defaults"
+    );
+
+    // v11+ m.room.create preserves ALL content per the rule matrix
+    // (redaction_preserved_keys; see also test_redaction_application_guards,
+    // which shows a create is redactable and its content is preserved).
+    // Exercise the rule directly via `redacted()`.
+    let create: LeanEvent = LeanEvent {
+        event_id: "$create:example.com".into(),
+        event_type: "m.room.create".into(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "room_version": "12", "creator": "@alice:example.com", "m.federate": true }),
+        ..Default::default()
+    };
+    let redacted_create = create.redacted("12");
+    assert_eq!(
+        redacted_create.content,
+        serde_json::json!({ "room_version": "12", "creator": "@alice:example.com", "m.federate": true }),
+        "v11+ create preserves all content on redaction"
+    );
+}
+
+#[test]
+fn test_redaction_application_guards() {
+    use rezzy::apply_redaction;
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        content: serde_json::json!({ "body": "spam" }),
+        ..Default::default()
+    };
+    // Redaction targeting a DIFFERENT event -> None.
+    let wrong: LeanEvent = LeanEvent {
+        event_id: "$r:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "redacts": "$other:example.com" }),
+        ..Default::default()
+    };
+    assert!(apply_redaction(&msg, &wrong, "12").is_none());
+
+    // Redacting m.room.create is NOT forbidden. In v11+ all of its content is
+    // preserved; before v11 only `creator` survives.
+    let create: LeanEvent = LeanEvent {
+        event_id: "$create:example.com".into(),
+        event_type: "m.room.create".into(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "room_version": "12", "creator": "@alice:example.com" }),
+        ..Default::default()
+    };
+    let redact_create: LeanEvent = LeanEvent {
+        event_id: "$rc:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@alice:example.com".into(),
+        content: serde_json::json!({ "redacts": "$create:example.com" }),
+        ..Default::default()
+    };
+    let redacted_v12 = apply_redaction(&create, &redact_create, "12").unwrap();
+    assert_eq!(
+        redacted_v12.content,
+        serde_json::json!({ "room_version": "12", "creator": "@alice:example.com" })
+    );
+    // Pre-v11 create redaction preserves only `creator`.
+    let redacted_v10 = apply_redaction(&create, &redact_create, "10").unwrap();
+    assert_eq!(
+        redacted_v10.content,
+        serde_json::json!({ "creator": "@alice:example.com" })
+    );
+}
+
+#[test]
+fn test_content_hash_verification_on_raw_pdu() {
+    use rezzy::{compute_content_hash, verify_content_hash};
+
+    // A raw PDU carrying unsigned/signatures; hashes.sha256 covers the
+    // UNREDACTED event with unsigned/signatures/hashes removed.
+    let mut pdu = serde_json::json!({
+        "event_id": "$1:example.com",
+        "type": "m.room.message",
+        "sender": "@bob:example.com",
+        "origin_server_ts": 1,
+        "depth": 2,
+        "content": { "body": "hello" },
+        "unsigned": { "age": 5 },
+        "signatures": { "example.com": { "ed25519:1": "sig" } }
+    });
+
+    // A bogus hash fails.
+    pdu["hashes"] = serde_json::json!({ "sha256": "abc123" });
+    assert!(verify_content_hash(&pdu, "11").is_err());
+
+    // A real content hash passes.
+    let hash = compute_content_hash(&pdu, "11").unwrap();
+    pdu["hashes"] = serde_json::json!({ "sha256": hash });
+    assert!(verify_content_hash(&pdu, "11").is_ok());
+
+    // Tampering with content breaks the commitment.
+    pdu["content"] = serde_json::json!({ "body": "evil" });
+    assert!(verify_content_hash(&pdu, "11").is_err());
+
+    // Missing hashes dict -> nothing to verify -> Err.
+    pdu.as_object_mut().unwrap().remove("hashes");
+    assert!(verify_content_hash(&pdu, "11").is_err());
+}
+
+#[test]
+fn test_ingest_events_verifies_hashes_and_preserves_content() {
+    use rezzy::{compute_content_hash, ingest_events};
+
+    let msg = serde_json::json!({
+        "event_id": "$msg:example.com",
+        "type": "m.room.message",
+        "sender": "@bob:example.com",
+        "origin_server_ts": 10,
+        "depth": 1,
+        "content": { "body": "spam" }
+    });
+    let redaction = serde_json::json!({
+        "event_id": "$r:example.com",
+        "type": "m.room.redaction",
+        "sender": "@alice:example.com",
+        "origin_server_ts": 11,
+        "depth": 2,
+        "redacts": "$msg:example.com",
+        "content": { "redacts": "$msg:example.com" }
+    });
+
+    // Ingest without hashes dicts -> parses both. The target content is
+    // preserved: ingest does not apply redactions (that is an
+    // authorization-checked step against the resolved state).
+    let events = ingest_events(&[msg.clone(), redaction.clone()], "11").unwrap();
+    let target = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(target.content, serde_json::json!({ "body": "spam" }));
+    // The redaction event itself is retained.
+    assert!(events.iter().any(|e| e.event_id == "$r:example.com"));
+
+    // A valid content hash on the message -> verification passes at ingest.
+    let mut hashed = msg.clone();
+    let hash = compute_content_hash(&hashed, "11").unwrap();
+    hashed["hashes"] = serde_json::json!({ "sha256": hash });
+    let events = ingest_events(&[hashed.clone(), redaction.clone()], "11").unwrap();
+    assert!(events.iter().any(|e| e.event_id == "$msg:example.com"));
+
+    // A tampered content hash -> ingest rejects the batch.
+    let mut tampered = hashed.clone();
+    tampered["content"] = serde_json::json!({ "body": "evil" });
+    assert!(ingest_events(&[tampered, redaction.clone()], "11").is_err());
+}
+
+/// Coverage: `ingest_events`'s per-PDU parse-error branch (the `?` on
+/// `LeanEvent::from_value`). A malformed PDU that cannot be parsed into a lean
+/// event aborts the whole batch with an `Err` instead of being silently
+/// skipped.
+#[test]
+fn test_coverage_ingest_events_parse_error_aborts_batch() {
+    use rezzy::ingest_events;
+
+    // No "type" field -> `from_value` sees an empty event_type and returns
+    // Err, surfacing through ingest_events' `map_err(|e| e.to_string())?`.
+    let malformed = serde_json::json!({
+        "event_id": "$bad:example.com",
+        "sender": "@bob:example.com",
+        "origin_server_ts": 10,
+        "depth": 1,
+        "content": {}
+    });
+    let err = ingest_events(&[malformed], "11").unwrap_err();
+    assert!(
+        err.contains("event_type"),
+        "unexpected ingest parse error: {err}"
+    );
+}
+
+/// Regression: `ingest_events` must NOT apply redactions. It runs pre-state-
+/// resolution and has no room state, so it cannot authorize a redaction. A
+/// redaction from a user with no permission must never strip a target's content
+/// during ingest; application is an authorization-checked step the caller runs
+/// against the resolved room state.
+#[test]
+fn test_ingest_events_does_not_apply_unauthorized_redaction() {
+    use rezzy::ingest_events;
+
+    let msg = serde_json::json!({
+        "event_id": "$msg:example.com",
+        "type": "m.room.message",
+        "sender": "@bob:example.com",
+        "origin_server_ts": 10,
+        "depth": 1,
+        "content": { "body": "spam" }
+    });
+    // Mallory (no power, not the target's sender) attempts to redact Bob's message.
+    let redaction = serde_json::json!({
+        "event_id": "$r:example.com",
+        "type": "m.room.redaction",
+        "sender": "@mallory:example.com",
+        "origin_server_ts": 11,
+        "depth": 2,
+        "redacts": "$msg:example.com",
+        "content": { "redacts": "$msg:example.com" }
+    });
+
+    let events = ingest_events(&[msg, redaction], "11").unwrap();
+    let target = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(
+        target.content,
+        serde_json::json!({ "body": "spam" }),
+        "ingest_events must preserve target content: it has no room state to \
+         authorize this (unauthorized) redaction against"
+    );
+}
+
+/// The authorization boundary for redaction application. `apply_authorized_redactions`
+/// must strip a target only when the redaction's sender is authorized: the target's
+/// own sender, or a sender with the `redact` power level (v1/v2 also allow same-domain).
+/// An unrelated sender with no power must NOT strip anything.
+#[test]
+fn test_apply_authorized_redactions_only_strips_authorized_targets() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use rezzy::StateResVersion;
+
+    // Room state: redact level 50, mallory PL 0, bob PL 0 (but bob redacts his
+    // own message, which the spec always permits).
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": {
+                "@admin:example.com": 100,
+                "@bob:example.com": 0,
+                "@mallory:example.com": 0
+            },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut state = RoomState::new();
+    state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        content: serde_json::json!({ "body": "secret" }),
+        ..Default::default()
+    };
+    let mallory_redact: LeanEvent = LeanEvent {
+        event_id: "$mallory_redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@mallory:example.com".into(),
+        origin_server_ts: 11,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    let self_redact: LeanEvent = LeanEvent {
+        event_id: "$self_redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 12,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+
+    // Unauthorized: mallory (PL 0 < redact 50, not the target's sender) must NOT strip.
+    let mut events = vec![msg.clone(), mallory_redact.clone()];
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    assert!(
+        report.skipped_unauthorized.contains(&(
+            "$mallory_redact:example.com".into(),
+            "$msg:example.com".into()
+        )),
+        "unauthorized redaction must be reported as skipped"
+    );
+    let target = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(
+        target.content,
+        serde_json::json!({ "body": "secret" }),
+        "an unauthorized redaction must not strip the target"
+    );
+
+    // Authorized: Bob redacts his own message -> content is stripped.
+    let mut events = vec![msg.clone(), self_redact.clone()];
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    assert!(
+        report
+            .applied
+            .contains(&("$self_redact:example.com".into(), "$msg:example.com".into())),
+        "authorized self-redaction must be reported as applied"
+    );
+    let target = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(
+        target.content,
+        serde_json::json!({}),
+        "a self-redaction must strip the target content"
+    );
+    // Order-invariance: the redaction preceding its target (the opposite
+    // `split_at_mut` branch) must strip identically.
+    let mut events = vec![self_redact.clone(), msg.clone()];
+    let _report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    let target = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(
+        target.content,
+        serde_json::json!({}),
+        "redaction order within the set must not change the outcome"
+    );
+}
+
+/// Redaction-of-redaction: a redaction that is itself the target of another
+/// in-batch redaction must be spent as a redactor before it is replaced as a
+/// target. The naive in-place order can replace R1 (R2's target) before R1
+/// redacts M; R1's `redacts` field is then stripped, `apply_redaction` returns
+/// None, and M is silently left unredacted.
+#[test]
+fn test_apply_authorized_redactions_redaction_of_redaction_order() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use rezzy::StateResVersion;
+
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": {
+                "@admin:example.com": 100,
+                "@bob:example.com": 0
+            },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut state = RoomState::new();
+    state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        content: serde_json::json!({ "body": "secret" }),
+        ..Default::default()
+    };
+    let r1: LeanEvent = LeanEvent {
+        event_id: "$r1:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 11,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    let r2: LeanEvent = LeanEvent {
+        event_id: "$r2:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 12,
+        content: serde_json::json!({ "redacts": "$r1:example.com" }),
+        ..Default::default()
+    };
+
+    // Batch order puts R2 before R1, which would break the naive in-place order.
+    let mut events = vec![msg.clone(), r2.clone(), r1.clone()];
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+
+    let m = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(
+        m.content,
+        serde_json::json!({}),
+        "M must be redacted by R1 (R1 spent as redactor before R2 replaces it)"
+    );
+    let r1_ev = events
+        .iter()
+        .find(|e| e.event_id == "$r1:example.com")
+        .unwrap();
+    assert_eq!(
+        r1_ev.content,
+        serde_json::json!({ "redacts": "$msg:example.com" }),
+        "R1's redacted form preserves its `redacts` key (it must still be usable)"
+    );
+    assert!(
+        report
+            .applied
+            .contains(&("$r1:example.com".into(), "$msg:example.com".into())),
+        "R1's redaction of M must be reported as applied"
+    );
+    assert!(
+        report
+            .applied
+            .contains(&("$r2:example.com".into(), "$r1:example.com".into())),
+        "R2's redaction of R1 must be reported as applied"
+    );
+}
+
+/// A longer redaction-of-redaction-of-redaction chain (R3 redacts R2 redacts
+/// R1 redacts M), fed in fully reversed batch order, to exercise the
+/// linear-time topological ordering's multi-hop path (not just the 2-hop
+/// case above).
+#[test]
+fn test_apply_authorized_redactions_long_chain_reverse_order() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use rezzy::StateResVersion;
+
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": { "@admin:example.com": 100, "@bob:example.com": 0 },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut state = RoomState::new();
+    state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        content: serde_json::json!({ "body": "secret" }),
+        ..Default::default()
+    };
+    let r1: LeanEvent = LeanEvent {
+        event_id: "$r1:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 11,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    let r2: LeanEvent = LeanEvent {
+        event_id: "$r2:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 12,
+        content: serde_json::json!({ "redacts": "$r1:example.com" }),
+        ..Default::default()
+    };
+    let r3: LeanEvent = LeanEvent {
+        event_id: "$r3:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 13,
+        content: serde_json::json!({ "redacts": "$r2:example.com" }),
+        ..Default::default()
+    };
+
+    // Fully reversed batch order: R3, R2, R1, M.
+    let mut events = vec![r3.clone(), r2.clone(), r1.clone(), msg.clone()];
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+
+    let m = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(
+        m.content,
+        serde_json::json!({}),
+        "M must be redacted by R1 despite the fully reversed batch order"
+    );
+    let r1_ev = events
+        .iter()
+        .find(|e| e.event_id == "$r1:example.com")
+        .unwrap();
+    assert_eq!(
+        r1_ev.content,
+        serde_json::json!({ "redacts": "$msg:example.com" }),
+        "R1 must be spent as a redactor (on M) before being replaced as a target (by R2)"
+    );
+    let r2_ev = events
+        .iter()
+        .find(|e| e.event_id == "$r2:example.com")
+        .unwrap();
+    assert_eq!(
+        r2_ev.content,
+        serde_json::json!({ "redacts": "$r1:example.com" }),
+        "R2 must be spent as a redactor (on R1) before being replaced as a target (by R3)"
+    );
+    assert_eq!(report.applied.len(), 3, "all three redactions must apply");
+}
+
+/// A redactor who is NOT the target's sender but holds PL >= redact level must
+/// be authorized (the power-level branch of `redaction_is_authorized`).
+#[test]
+fn test_apply_authorized_redactions_redactor_with_power_level() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use rezzy::StateResVersion;
+
+    // Admin PL 100 >= redact 50, and admin is NOT bob (the target's sender).
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": {
+                "@admin:example.com": 100,
+                "@bob:example.com": 0
+            },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut state = RoomState::new();
+    state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        content: serde_json::json!({ "body": "secret" }),
+        ..Default::default()
+    };
+    let admin_redact: LeanEvent = LeanEvent {
+        event_id: "$admin_redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@admin:example.com".into(),
+        origin_server_ts: 11,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+
+    let mut events = vec![msg.clone(), admin_redact.clone()];
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    assert!(
+        report.applied.contains(&(
+            "$admin_redact:example.com".into(),
+            "$msg:example.com".into()
+        )),
+        "a non-sender redactor with PL >= redact must be authorized: {report:?}"
+    );
+    let m = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(m.content, serde_json::json!({}));
+}
+
+/// Legacy room-v1/v2 rule 11: a redactor (even low-PL, non-sender) is allowed
+/// if the redacted target's domain (from `redacts`) matches the redaction's own
+/// event-id domain. Cross-domain is rejected.
+#[test]
+fn test_apply_authorized_redactions_v1_v2_domain_rule() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use rezzy::StateResVersion;
+
+    // Mallory PL 0, not bob, redact level 50.
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": {
+                "@admin:example.com": 100,
+                "@mallory:example.com": 0
+            },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut state = RoomState::new();
+    state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        content: serde_json::json!({ "body": "secret" }),
+        ..Default::default()
+    };
+
+    // Same domain (example.com): rule 11 allows it.
+    let same_domain: LeanEvent = LeanEvent {
+        event_id: "$redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@mallory:example.com".into(),
+        origin_server_ts: 11,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    let mut events = vec![msg.clone(), same_domain.clone()];
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V1, "1");
+    assert!(
+        report
+            .applied
+            .contains(&("$redact:example.com".into(), "$msg:example.com".into())),
+        "same-domain v1 redaction must be authorized via rule 11: {report:?}"
+    );
+
+    // Cross-domain: target on example.com, redaction on other.com -> rejected.
+    let cross_domain: LeanEvent = LeanEvent {
+        event_id: "$redact:other.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@mallory:example.com".into(),
+        origin_server_ts: 12,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    let mut events = vec![msg.clone(), cross_domain.clone()];
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V1, "1");
+    assert!(
+        report
+            .skipped_unauthorized
+            .contains(&("$redact:other.com".into(), "$msg:example.com".into())),
+        "cross-domain v1 redaction must be rejected: {report:?}"
+    );
+}
+
+/// A redaction event with no `redacts` field is skipped (the `continue` in the
+/// pair-building loop), leaving the target untouched and the report empty.
+#[test]
+fn test_apply_authorized_redactions_ignores_redaction_without_redacts() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use rezzy::StateResVersion;
+
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": { "@admin:example.com": 100, "@bob:example.com": 0 },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut state = RoomState::new();
+    state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        content: serde_json::json!({ "body": "secret" }),
+        ..Default::default()
+    };
+    let no_redacts: LeanEvent = LeanEvent {
+        event_id: "$no_redacts:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 11,
+        content: serde_json::json!({}),
+        ..Default::default()
+    };
+
+    let mut events = vec![msg.clone(), no_redacts.clone()];
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    assert!(
+        report.applied.is_empty()
+            && report.skipped_unauthorized.is_empty()
+            && report.target_not_in_batch.is_empty(),
+        "a redaction without redacts must be silently skipped: {report:?}"
+    );
+    let m = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(m.content, serde_json::json!({ "body": "secret" }));
+}
+
+/// `StateResVersion::has_join_authorised_via_users_server` is a coarse
+/// "not V1" gate: the `V2` enum collapses v2–11 and cannot express "v8+", so
+/// auth selection gates restricted-join on the actual room-version string
+/// instead. Pin its polarity here (it is excluded from the coverage report when
+/// exercised only from the `coverage(off)` gate-polarity unit test).
+#[test]
+fn test_state_res_version_has_join_authorised_via_users_server() {
+    use rezzy::StateResVersion;
+    assert!(!StateResVersion::V1.has_join_authorised_via_users_server());
+    assert!(StateResVersion::V2.has_join_authorised_via_users_server());
+    assert!(StateResVersion::V2_1.has_join_authorised_via_users_server());
+    assert!(StateResVersion::V2_1_1.has_join_authorised_via_users_server());
+    assert!(StateResVersion::V2_2.has_join_authorised_via_users_server());
+}
+
+/// `apply_authorized_redactions` returns a [`RedactionReport`] that tells the
+/// caller what happened to each redaction: applied (authorized + stripped),
+/// skipped (unauthorized), or deferred (target absent from the batch). This is
+/// the "cleanly letting the caller know" contract analogous to how
+/// `validate_forward_extremity` reports soft-fail/reject outcomes.
+#[test]
+fn test_apply_authorized_redactions_report() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use rezzy::StateResVersion;
+
+    // Room state: redact level 50, bob PL 0, mallory PL 0.
+    let pl: LeanEvent = LeanEvent {
+        event_id: "$pl:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": {
+                "@admin:example.com": 100,
+                "@bob:example.com": 0,
+                "@mallory:example.com": 0
+            },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut state = RoomState::new();
+    state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        content: serde_json::json!({ "body": "secret" }),
+        ..Default::default()
+    };
+    let mallory_redact: LeanEvent = LeanEvent {
+        event_id: "$mallory_redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@mallory:example.com".into(),
+        origin_server_ts: 11,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    let self_redact: LeanEvent = LeanEvent {
+        event_id: "$self_redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 12,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+    // A redaction whose target is absent from this batch -> deferred.
+    let deferred_redact: LeanEvent = LeanEvent {
+        event_id: "$deferred_redact:example.com".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 13,
+        content: serde_json::json!({ "redacts": "$not_here:example.com" }),
+        ..Default::default()
+    };
+
+    let mut events = vec![
+        msg.clone(),
+        mallory_redact.clone(),
+        self_redact.clone(),
+        deferred_redact.clone(),
+    ];
+    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+
+    assert!(
+        report
+            .applied
+            .contains(&("$self_redact:example.com".into(), "$msg:example.com".into())),
+        "authorized self-redaction must be reported as applied"
+    );
+    assert!(
+        report.skipped_unauthorized.contains(&(
+            "$mallory_redact:example.com".into(),
+            "$msg:example.com".into()
+        )),
+        "unauthorized redaction must be reported as skipped"
+    );
+    assert_eq!(
+        report.target_not_in_batch,
+        vec![(
+            "$deferred_redact:example.com".to_string(),
+            "$not_here:example.com".to_string()
+        )],
+        "out-of-batch redaction must be reported as deferred with its string target"
+    );
+
+    // Strip behavior still holds: only the authorized self-redaction stripped $msg.
+    let target = events
+        .iter()
+        .find(|e| e.event_id == "$msg:example.com")
+        .unwrap();
+    assert_eq!(target.content, serde_json::json!({}));
+}
+
+#[test]
+fn test_apply_authorized_redactions_no_redactions_fast_path() {
+    use rezzy::auth::{apply_authorized_redactions, RedactionReport, RoomState};
+    let state = RoomState::<String, serde_json::Value, String>::new();
+    let mut empty_events: Vec<LeanEvent> = Vec::new();
+    let report = apply_authorized_redactions(&mut empty_events, &state, StateResVersion::V2, "11");
+    assert_eq!(report, RedactionReport::default());
+
+    let mut non_redactions: Vec<LeanEvent> = vec![LeanEvent {
+        event_id: "$msg".into(),
+        event_type: "m.room.message".into(),
+        sender: "@alice:example.com".into(),
+        ..Default::default()
+    }];
+    let report =
+        apply_authorized_redactions(&mut non_redactions, &state, StateResVersion::V2, "11");
+    assert_eq!(report, RedactionReport::default());
+}
+
+#[test]
+fn test_apply_authorized_redactions_different_id_types() {
+    use rezzy::auth::{apply_authorized_redactions, RoomState};
+    use std::sync::Arc;
+
+    // Test with Arc<str>
+    let mut arc_events = vec![
+        LeanEvent::<Arc<str>, serde_json::Value, String> {
+            event_id: Arc::from("$target"),
+            event_type: "m.room.message".into(),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "body": "hello" }),
+            ..Default::default()
+        },
+        LeanEvent::<Arc<str>, serde_json::Value, String> {
+            event_id: Arc::from("$redaction"),
+            event_type: "m.room.redaction".into(),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "redacts": "$target" }),
+            ..Default::default()
+        },
+    ];
+    let arc_state = RoomState::<Arc<str>, serde_json::Value, String>::new();
+    let report =
+        apply_authorized_redactions(&mut arc_events, &arc_state, StateResVersion::V2, "11");
+    assert_eq!(
+        report.applied,
+        vec![(Arc::from("$redaction"), Arc::from("$target"))]
+    );
+
+    // Test with Box<str>
+    let mut box_events = vec![
+        LeanEvent::<Box<str>, serde_json::Value, String> {
+            event_id: Box::from("$target"),
+            event_type: "m.room.message".into(),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "body": "hello" }),
+            ..Default::default()
+        },
+        LeanEvent::<Box<str>, serde_json::Value, String> {
+            event_id: Box::from("$redaction"),
+            event_type: "m.room.redaction".into(),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "redacts": "$target" }),
+            ..Default::default()
+        },
+    ];
+    let box_state = RoomState::<Box<str>, serde_json::Value, String>::new();
+    let report =
+        apply_authorized_redactions(&mut box_events, &box_state, StateResVersion::V2, "11");
+    assert_eq!(
+        report.applied,
+        vec![(Box::from("$redaction"), Box::from("$target"))]
+    );
+
+    // Test with u64 ID type (which falls back to Cow::Owned via ToString)
+    let mut u64_events = vec![
+        LeanEvent::<u64, serde_json::Value, String> {
+            event_id: 1,
+            event_type: "m.room.message".into(),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "body": "hello" }),
+            ..Default::default()
+        },
+        LeanEvent::<u64, serde_json::Value, String> {
+            event_id: 2,
+            event_type: "m.room.redaction".into(),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "redacts": "1" }),
+            ..Default::default()
+        },
+    ];
+    let u64_state = RoomState::<u64, serde_json::Value, String>::new();
+    let report =
+        apply_authorized_redactions(&mut u64_events, &u64_state, StateResVersion::V2, "11");
+    assert_eq!(report.applied, vec![(2, 1)]);
+}
+
+/// `LeanEvent::is_redaction()` must return true only for `m.room.redaction`
+/// events that carry a resolvable `redacts` field. Both the event-type check
+/// and the `get_redacts().is_some()` conjunct need coverage.
+#[test]
+fn test_lean_event_is_redaction() {
+    // A redaction with a valid `redacts` target -> true.
+    let redaction: LeanEvent = LeanEvent {
+        event_type: "m.room.redaction".into(),
+        content: serde_json::json!({ "redacts": "$x:example.com" }),
+        ..Default::default()
+    };
+    assert!(redaction.is_redaction());
+
+    // A non-redaction event -> false (event_type mismatch).
+    let msg: LeanEvent = LeanEvent {
+        event_type: "m.room.message".into(),
+        content: serde_json::json!({ "body": "hi" }),
+        ..Default::default()
+    };
+    assert!(!msg.is_redaction());
+
+    // A redaction lacking `redacts` -> false (get_redacts() is None).
+    let no_target: LeanEvent = LeanEvent {
+        event_type: "m.room.redaction".into(),
+        content: serde_json::json!({}),
+        ..Default::default()
+    };
+    assert!(!no_target.is_redaction());
+}
+
+#[test]
+fn test_reference_hash_is_redaction_invariant() {
+    use rezzy::{redact_json, reference_hash};
+
+    // For room v4+, the event ID is the reference hash of the REDACTED event.
+    // So redaction must not change the reference hash: event_id(e) ==
+    // event_id(redact(e)). This is what lets a redaction be applied to an event
+    // already in the DAG without breaking references to it.
+    let pdu = serde_json::json!({
+        "event_id": "$1:example.com",
+        "type": "m.room.message",
+        "sender": "@bob:example.com",
+        "origin_server_ts": 1000,
+        "depth": 2,
+        "content": { "body": "spam" },
+        "unsigned": { "age": 5 },
+        "signatures": { "example.com": { "ed25519:1": "sig" } }
+    });
+
+    let h1 = reference_hash(&pdu, "11").unwrap();
+    let h2 = reference_hash(&redact_json(&pdu, "11"), "11").unwrap();
+    assert_eq!(h1, h2);
+
+    // m.room.message preserves no content keys, so redaction empties it.
+    let redacted = redact_json(&pdu, "11");
+    assert_eq!(redacted["content"], serde_json::json!({}));
+    assert_eq!(redacted["event_id"], "$1:example.com");
+}
+
+#[test]
 fn test_types_deserialize_power_level_variants() {
     let json_int =
         r#"{"event_id":"$1","type":"m.room.message","origin_server_ts":1,"power_level":100}"#;
@@ -3634,7 +4835,9 @@ fn test_types_deserialize_depth_and_redaction_validation() {
 #[test]
 fn test_compute_state_at_missing_target() {
     let events_map: HashMap<String, LeanEvent> = HashMap::new();
-    assert!(compute_state_at("missing", &events_map, StateResVersion::V2).is_none());
+    assert!(
+        compute_state_at("missing", &events_map, StateResVersion::V2, &String::new(),).is_none()
+    );
 }
 
 #[test]
@@ -3683,7 +4886,7 @@ fn test_compute_state_at_merge_divergence() {
         },
     );
 
-    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2, &String::new()).unwrap();
     assert!(state.is_empty());
 }
 
@@ -3731,14 +4934,15 @@ fn test_compute_state_at_merge_identical() {
         },
     );
 
-    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2, &String::new()).unwrap();
     assert!(state.is_empty());
 }
 
 #[test]
 fn test_cdo_disconnected_child_missing_from_conflicted() {
-    // Tests propagate_transitive_dependencies when a child is not in the original map.
-    // CDO should safely skip the child instead of panicking.
+    // apply_cdo_filter must not panic when a conflicted event cites an event
+    // ("B") that exists only in the auth context, not in the conflicted set.
+    // Such an event is never a direct-domination drop candidate and is kept.
     use rezzy::cdo;
 
     let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
@@ -4019,7 +5223,6 @@ fn test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action() {
 {"event_id":"$pl_demote_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100,"@bob:b":0},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl_init"]}
 {"event_id":"$pl_grant_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100,"@bob:b":50},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$bob_join","$pl_init"]}
 {"event_id":"$bob_bans_charlie","type":"m.room.member","state_key":"@charlie:c","sender":"@bob:b","depth":5,"origin_server_ts":2001,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$alice_join","$bob_join","$pl_grant_bob"]}
-{"event_id":"$charlie_bans_dave","type":"m.room.member","state_key":"@dave:d","sender":"@charlie:c","depth":6,"origin_server_ts":2002,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$alice_join","$bob_join","$pl_grant_bob"]}
 "#,
     );
     let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
@@ -4027,7 +5230,7 @@ fn test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action() {
 
     for ev in &events {
         match ev.event_id.as_str() {
-            "$pl_demote_bob" | "$pl_grant_bob" | "$bob_bans_charlie" | "$charlie_bans_dave" => {
+            "$pl_demote_bob" | "$pl_grant_bob" | "$bob_bans_charlie" => {
                 conflicted.insert(ev.event_id.clone(), ev.clone());
             }
             _ => {
@@ -4053,43 +5256,28 @@ fn test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action() {
         "Bob's ban cites its own pre-demotion PL grant, so an independent-branch \
          demotion must not dominate it"
     );
-    assert!(
-        !safe.contains_key("$charlie_bans_dave"),
-        "Charlie's ban cites a PL event that does not empower Charlie, so the \
-         independent-branch demotion must still dominate it"
-    );
 }
 
-/// Regression coverage for the CDO demotion-empowerment branch matrix.
+/// Regression for the `sender_has_pre_demotion_pl()` soundness fix: a sender
+/// **absent** from the cited PL event's `users` map must NOT be treated as
+/// empowered. Per the spec, an absent user's power falls back to
+/// `users_default` (and to 0 when that is also absent), so an independent-branch
+/// demotion still dominates an action taken by such a sender.
+///
+/// Mirrors `test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action`
+/// but with Bob omitted from `$pl_grant_bob.users` (and no `users_default`),
+/// so Bob's effective pre-demotion PL is 0 rather than 50.
 #[test]
-fn test_cdo_demotion_empowerment_branch_coverage() {
-    // Exercises the branches of `required_power_level_for` through
-    // `sender_has_pre_demotion_pl`, using an independent-branch demotion that
-    // restricts a PL-0 sender:
-    //   * member self-join (i64::MIN) survives,
-    //   * kick uses the kick level (0) -> survives,
-    //   * ban uses the ban level (50) -> dropped,
-    //   * third-party invite uses the invite level (0) -> survives,
-    //   * a state event with an `events` override (topic=50) -> dropped,
-    //   * a state event falling back to state_default (avatar=50) -> dropped,
-    //   * a message event falling back to events_default (0) -> survives,
-    //   * the room creator (implicit max PL, i64::MAX) survives regardless.
+fn test_cdo_demotion_dominates_absent_sender() {
     let events = utils::parse_jsonl_events(
         r#"
-{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@owner:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@owner:a","room_version":"12"},"prev_events":[],"auth_events":[]}
-{"event_id":"$owner_join","type":"m.room.member","state_key":"@owner:a","sender":"@owner:a","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
-{"event_id":"$admin_join","type":"m.room.member","state_key":"@admin:a","sender":"@admin:a","depth":1,"origin_server_ts":1002,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
-{"event_id":"$pl_init","type":"m.room.power_levels","state_key":"","sender":"@owner:a","depth":2,"origin_server_ts":1003,"content":{"users":{"@owner:a":100,"@admin:a":100},"users_default":0,"ban":50,"kick":0,"invite":0,"events_default":0,"state_default":50,"events":{"m.room.topic":50}},"prev_events":["$owner_join"],"auth_events":["$create","$owner_join"]}
-{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":3,"origin_server_ts":1004,"content":{"membership":"join"},"prev_events":["$pl_init"],"auth_events":["$create","$owner_join","$pl_init"]}
-{"event_id":"$pl_demote","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@owner:a":0,"@admin:a":100,"@bob:b":0},"users_default":0,"ban":50,"kick":0,"invite":0,"events_default":0,"state_default":50,"events":{"m.room.topic":50}},"prev_events":["$admin_join"],"auth_events":["$create","$owner_join","$admin_join","$pl_init"]}
-{"event_id":"$owner_topic","type":"m.room.topic","state_key":"","sender":"@owner:a","depth":4,"origin_server_ts":2001,"content":{"topic":"hi"},"prev_events":["$owner_join"],"auth_events":["$create","$owner_join","$pl_init"]}
-{"event_id":"$bob_rejoin","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":4,"origin_server_ts":2002,"content":{"membership":"join"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
-{"event_id":"$bob_3pi","type":"m.room.third_party_invite","state_key":"","sender":"@bob:b","depth":4,"origin_server_ts":2003,"content":{"display_name":"x"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
-{"event_id":"$bob_topic","type":"m.room.topic","state_key":"","sender":"@bob:b","depth":4,"origin_server_ts":2004,"content":{"topic":"hi"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
-{"event_id":"$bob_kicks_dave","type":"m.room.member","state_key":"@dave:d","sender":"@bob:b","depth":4,"origin_server_ts":2005,"content":{"membership":"leave"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
-{"event_id":"$bob_bans_carol","type":"m.room.member","state_key":"@carol:c","sender":"@bob:b","depth":4,"origin_server_ts":2006,"content":{"membership":"ban"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
-{"event_id":"$bob_avatar","type":"m.room.avatar","state_key":"","sender":"@bob:b","depth":4,"origin_server_ts":2007,"content":{"url":"mxc://x"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
-{"event_id":"$bob_msg","type":"m.room.message","sender":"@bob:b","depth":4,"origin_server_ts":2008,"content":{"body":"hi"},"prev_events":["$bob_join"],"auth_events":["$create","$owner_join","$pl_init","$bob_join"]}
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@alice:a","room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:a","sender":"@alice:a","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl_init","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:a":100},"ban":50,"kick":50},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":3,"origin_server_ts":1003,"content":{"membership":"join"},"prev_events":["$pl_init"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$pl_demote_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100,"@bob:b":0},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl_init"]}
+{"event_id":"$pl_grant_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$bob_join","$pl_init"]}
+{"event_id":"$bob_bans_charlie","type":"m.room.member","state_key":"@charlie:c","sender":"@bob:b","depth":5,"origin_server_ts":2001,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$bob_join","$pl_grant_bob"]}
 "#,
     );
     let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
@@ -4097,8 +5285,7 @@ fn test_cdo_demotion_empowerment_branch_coverage() {
 
     for ev in &events {
         match ev.event_id.as_str() {
-            "$pl_demote" | "$owner_topic" | "$bob_rejoin" | "$bob_3pi" | "$bob_topic"
-            | "$bob_kicks_dave" | "$bob_bans_carol" | "$bob_avatar" | "$bob_msg" => {
+            "$pl_demote_bob" | "$pl_grant_bob" | "$bob_bans_charlie" => {
                 conflicted.insert(ev.event_id.clone(), ev.clone());
             }
             _ => {
@@ -4109,137 +5296,16 @@ fn test_cdo_demotion_empowerment_branch_coverage() {
 
     let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
 
-    // The demotion itself is an admin action and must survive.
-    assert!(safe.contains_key("$pl_demote"));
-    // Room creator has implicit max power (i64::MAX branch): survives.
+    // Bob is absent from $pl_grant_bob.users (no users_default), so his
+    // effective pre-demotion PL is 0 -- the demotion legitimately dominates
+    // his ban of Charlie.
     assert!(
-        safe.contains_key("$owner_topic"),
-        "the room creator keeps implicit max power and is not dominated"
-    );
-    // A member self-join needs no power level (i64::MIN branch): survives.
-    assert!(
-        safe.contains_key("$bob_rejoin"),
-        "a PL-0 sender's self-join is a valid action and is not dominated"
-    );
-    // A kick requires only the kick level (here 0), not the ban level.
-    assert!(
-        safe.contains_key("$bob_kicks_dave"),
-        "a kick uses the kick level (0), which the sender meets"
-    );
-    // A ban requires the ban level (50), which a PL-0 sender lacks.
-    assert!(
-        !safe.contains_key("$bob_bans_carol"),
-        "a ban uses the ban level (50), which the sender does not meet"
-    );
-    // A third-party invite requires only the invite level (here 0): survives.
-    assert!(
-        safe.contains_key("$bob_3pi"),
-        "the third-party invite requires only invite=0, which the sender meets"
-    );
-    // A topic event requires events.m.room.topic = 50 (events override).
-    assert!(
-        !safe.contains_key("$bob_topic"),
-        "a PL-0 sender is not empowered to send a topic (requires 50), so it is dropped"
-    );
-    // An avatar event has no events override, so it falls back to state_default
-    // (50), which a PL-0 sender lacks.
-    assert!(
-        !safe.contains_key("$bob_avatar"),
-        "an avatar falls back to state_default (50), which the sender does not meet"
-    );
-    // A message event has no state_key, so it falls back to events_default (0).
-    assert!(
-        safe.contains_key("$bob_msg"),
-        "a message falls back to events_default (0), which the sender meets"
+        !safe.contains_key("$bob_bans_charlie"),
+        "Bob has no pre-demotion PL grant (absent from users, no users_default), \
+         so an independent-branch demotion must dominate his ban"
     );
 }
 
-/// Regression coverage for unordered cycle leftovers in the domination sweep.
-#[test]
-fn test_cdo_cycle_skip_ordering() {
-    // A deliberately cyclic conflicted graph (a referential-integrity
-    // violation the CDO defends against) leaves both events in
-    // `unordered_ids` after Kahn's sort. The domination loop's `continue`
-    // guards for unordered events and admin actions both fire, so neither
-    // cyclic event is dominated — both fall through to full resolution.
-    //
-    // A separate, non-cyclic target (`$bob_avatar`, authorized against
-    // `$pl_admin` which grants Bob PL 0) would be dominated by `$demote`
-    // if the unordered-admin guard did not skip it; asserting it survives
-    // proves the cycle guard is what prevents the domination.
-    let events = utils::parse_jsonl_events(
-        r#"
-{"event_id":"$demote","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":2,"origin_server_ts":1000,"content":{"users":{"@bob:b":0}},"prev_events":["$bob_join"],"auth_events":["$bob_join"]}
-{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$demote"],"auth_events":["$demote"]}
-{"event_id":"$pl_admin","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":1,"origin_server_ts":1500,"content":{"users":{"@bob:b":0},"state_default":50},"prev_events":[],"auth_events":[]}
-{"event_id":"$bob_avatar","type":"m.room.avatar","state_key":"","sender":"@bob:b","depth":3,"origin_server_ts":2000,"content":{"url":"mxc://x"},"prev_events":["$pl_admin"],"auth_events":["$pl_admin"]}
-"#,
-    );
-    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
-    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
-    for ev in &events {
-        match ev.event_id.as_str() {
-            "$pl_admin" => {
-                auth_context.insert(ev.event_id.clone(), ev.clone());
-            }
-            _ => {
-                conflicted.insert(ev.event_id.clone(), ev.clone());
-            }
-        }
-    }
-
-    let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
-    assert!(
-        safe.contains_key("$demote"),
-        "cyclic events are skipped by domination ordering, not dropped"
-    );
-    assert!(
-        safe.contains_key("$bob_join"),
-        "cyclic events are skipped by domination ordering, not dropped"
-    );
-    assert!(
-        safe.contains_key("$bob_avatar"),
-        "the unordered admin is skipped, so it cannot dominate a normally-targeted event"
-    );
-}
-
-/// In V12+ the spec removes `m.room.create` from `auth_events`, so the CDO's
-/// pre-demotion empowerment check must detect the room creator from the
-/// room/auth context rather than the target's own auth list. Here the creator's
-/// avatar event cites only `$pl` (no `$create`), yet the creator must still be
-/// granted implicit max power and survive the independent demotion.
-#[test]
-fn test_cdo_creator_detected_from_context_not_auth_events() {
-    let events = utils::parse_jsonl_events(
-        r#"
-{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@owner:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@owner:a","room_version":"12"},"prev_events":[],"auth_events":[]}
-{"event_id":"$decoy_create","type":"m.room.create","state_key":"","sender":"@other:x","depth":0,"origin_server_ts":999,"content":{"creator":"@other:x","room_version":"12"},"prev_events":[],"auth_events":[]}
-{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@owner:a","depth":1,"origin_server_ts":1001,"content":{"users":{"@owner:a":0},"state_default":50},"prev_events":["$create"],"auth_events":["$create"]}
-{"event_id":"$pl_demote","type":"m.room.power_levels","state_key":"","sender":"@admin:a","depth":2,"origin_server_ts":2000,"content":{"users":{"@owner:a":0,"@admin:a":100},"state_default":50},"prev_events":["$pl"],"auth_events":["$create","$pl"]}
-{"event_id":"$owner_avatar","type":"m.room.avatar","state_key":"","sender":"@owner:a","depth":3,"origin_server_ts":2001,"content":{"url":"mxc://x"},"prev_events":["$pl"],"auth_events":["$pl"]}
-"#,
-    );
-    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
-    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
-    for ev in &events {
-        match ev.event_id.as_str() {
-            "$create" | "$decoy_create" | "$pl" => {
-                auth_context.insert(ev.event_id.clone(), ev.clone());
-            }
-            _ => {
-                conflicted.insert(ev.event_id.clone(), ev.clone());
-            }
-        }
-    }
-
-    let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
-    assert!(
-        safe.contains_key("$owner_avatar"),
-        "the room's own create (an ancestor) is selected over the decoy, so the creator keeps implicit max power"
-    );
-}
-
-/// Regression coverage for the sorting branch-coverage booster.
 #[test]
 fn test_sorting_coverage() {
     let events = utils::parse_jsonl_events(
@@ -4426,11 +5492,12 @@ fn test_resolve_iterative_sort_with_deltas_parity() {
 
     // resolve_iterative_sort
     let resolved_plain = resolve_iterative_sort(
-        unconflicted.clone(),
-        conflicted.clone(),
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // resolve_iterative_sort_with_deltas
@@ -4440,6 +5507,7 @@ fn test_resolve_iterative_sort_with_deltas_parity() {
         &auth_context,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // The resolved state must be identical
@@ -4544,6 +5612,7 @@ fn test_resolve_iterative_sort_with_deltas_no_duplicate_power_events() {
         &auth_context,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let power_deltas: Vec<_> = deltas
@@ -4615,6 +5684,7 @@ fn test_deltas_supplemental_power_event_from_auth_context() {
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // The PL slot must be resolved to one of the two conflicting PLs
@@ -4798,6 +5868,8 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
 
 #[test]
 fn test_lean_event_serialize_roundtrip() {
+    use rezzy::basespec::rezzy_types::DagNode as DagNodeTrait;
+
     let ev = LeanEvent::<String> {
         event_id: "$test".into(),
         event_type: "m.room.message".into(),
@@ -4811,6 +5883,7 @@ fn test_lean_event_serialize_roundtrip() {
         depth: 5,
         rejected: true,
         soft_fail: true,
+        room_id: None,
     };
     let json = serde_json::to_string(&ev).unwrap();
     let back: LeanEvent<String> = serde_json::from_str(&json).unwrap();
@@ -4824,6 +5897,14 @@ fn test_lean_event_serialize_roundtrip() {
     assert_eq!(ev.content, back.content);
     assert_eq!(ev.prev_events, back.prev_events);
     assert_eq!(ev.auth_events, back.auth_events);
+    assert_eq!(
+        DagNodeTrait::prev_state_events(&ev.as_ref()),
+        &[String::from("$auth")]
+    );
+    assert_eq!(
+        DagNodeTrait::prev_state_events(&ev),
+        &[String::from("$auth")]
+    );
     assert_eq!(ev.rejected, back.rejected);
     assert_eq!(ev.soft_fail, back.soft_fail);
 }
@@ -5062,20 +6143,22 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
 
     // Resolve with V2
     let state_v2 = resolve_iterative_sort(
-        unconflicted.clone(),
-        conflicted.clone(),
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // Resolve with V2.1
     let state_v2_1 = resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // V2: unconflicted alice=leave → alice's $jr_invite fails auth → $jr_public wins
@@ -5255,6 +6338,14 @@ fn test_state_res_version_from_room_version() {
         StateResVersion::from_room_version("12.1"),
         Some(StateResVersion::V2_1_1)
     );
+    assert_eq!(
+        StateResVersion::from_room_version("org.matrix.msc4242.12"),
+        Some(StateResVersion::V2_2)
+    );
+    assert_eq!(
+        StateResVersion::from_room_version("org.matrix.msc4242"),
+        None
+    );
     assert_eq!(StateResVersion::from_room_version("0"), None);
     assert_eq!(StateResVersion::from_room_version("99"), None);
     assert_eq!(StateResVersion::from_room_version(""), None);
@@ -5343,11 +6434,12 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         "123".into(),
     );
     let v1_resolved = rezzy::resolve::resolve_iterative_sort(
-        unconf.clone(),
-        HashMap::<String, LeanEvent<String>>::new(),
+        &unconf,
+        &HashMap::<String, LeanEvent<String>>::new(),
         &HashMap::<String, LeanEvent<String>>::new(),
         StateResVersion::V1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert_eq!(v1_resolved.len(), 1);
 
@@ -5365,13 +6457,11 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     let p1_v1 = SortPriority {
         event: &ev1_v1,
         power_level: 0,
-        auth_chain_distance: 0,
         version: StateResVersion::V1,
     };
     let p2_v1 = SortPriority {
         event: &ev2_v1,
         power_level: 0,
-        auth_chain_distance: 0,
         version: StateResVersion::V1,
     };
     assert_eq!(p1_v1.cmp(&p2_v1), core::cmp::Ordering::Less); // A < B
@@ -5389,13 +6479,11 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     let p1_v2 = SortPriority {
         event: &ev1_v2,
         power_level: 0,
-        auth_chain_distance: 0,
         version: StateResVersion::V2,
     };
     let p2_v2 = SortPriority {
         event: &ev2_v2,
         power_level: 0,
-        auth_chain_distance: 0,
         version: StateResVersion::V2,
     };
     assert_eq!(p1_v2.cmp(&p2_v2), core::cmp::Ordering::Greater); // A > B (inverted)
@@ -5427,7 +6515,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         event_id: "$bogus_pl".into(),
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
-        sender: "@bob:x.com".into(), // PL 0
+        sender: "@bob:x.com".into(), // not a member (no join): rejected for non-membership
         content: serde_json::json!({"users": {"@bob:x.com": 100}}),
         auth_events: vec!["$create".into(), "$pl".into()],
         ..Default::default()
@@ -5437,7 +6525,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         event_id: "$bogus_topic".into(),
         event_type: "m.room.topic".into(),
         state_key: Some(String::new()),
-        sender: "@bob:x.com".into(), // PL 0
+        sender: "@bob:x.com".into(), // not a member (no join): rejected for non-membership
         auth_events: vec!["$create".into(), "$pl".into()],
         ..Default::default()
     };
@@ -5452,6 +6540,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         &auth,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     assert!(!resolved.contains_key(&(
@@ -5587,7 +6676,7 @@ impl rezzy::RawEvent for TestRawEvent {
 /// delegations, and the `RawEvent::raw_power_level` default.
 #[test]
 fn test_parsed_event_full_coverage() {
-    use rezzy::basespec::rezzy_types::{DagNode, EventLike};
+    use rezzy::basespec::rezzy_types::{DagNode, EventLike, RawEvent};
 
     let raw = TestRawEvent {
         id: "$test1".into(),
@@ -5605,6 +6694,7 @@ fn test_parsed_event_full_coverage() {
     let parsed_default_flags = rezzy::ParsedEvent::new(&raw);
     assert!(!parsed_default_flags.rejected());
     assert!(!parsed_default_flags.soft_fail());
+    assert_eq!(RawEvent::raw_prev_state_events(&raw), &[] as &[String],);
 
     // ParsedEvent::new (line 502-508)
     // Use a PL-like event so we can test all EventLike default methods
@@ -5639,6 +6729,7 @@ fn test_parsed_event_full_coverage() {
     assert_eq!(parsed.depth(), 42);
     assert_eq!(parsed.prev_events(), &["$prev1"]);
     assert_eq!(parsed.auth_events().len(), 2);
+    assert_eq!(parsed.prev_state_events(), [] as [String; 0]);
 
     // EventLike required methods (lines 534-556)
     assert_eq!(parsed.event_type().as_ref(), "m.room.power_levels");
@@ -5842,6 +6933,7 @@ fn test_lean_event_borrowed_view_roundtrip() {
         depth: 5,
         rejected: true,
         soft_fail: false,
+        room_id: None,
     };
 
     let view = event.as_ref();
@@ -5890,6 +6982,7 @@ fn test_lean_event_borrowed_view_accessors() {
         depth: 5,
         rejected: true,
         soft_fail: false,
+        room_id: None,
     };
 
     let view = event.as_ref();
@@ -5963,6 +7056,7 @@ fn test_event_like_default_rejection_flags() {
 
     assert!(!event.rejected());
     assert!(!event.soft_fail());
+    assert_eq!(DagNode::prev_state_events(&event), &[] as &[String]);
 }
 
 // ── Coverage: EventLike default methods + LeanEvent pl/ts ───────────
@@ -6109,12 +7203,13 @@ fn test_local_auth_cache_version_invalidation() {
     assert!(!cache.map.is_empty(), "cache should have stale entry");
 
     let _result = rezzy::resolve_iterative_sort_with_cache(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         Some(&mut cache),
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert_eq!(cache.version, StateResVersion::V2_1);
     assert!(!cache.map.contains_key("stale_key"));
@@ -6133,6 +7228,7 @@ fn test_local_auth_cache_version_invalidation() {
         Some(&mut cache2),
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert_eq!(cache2.version, StateResVersion::V2_1);
     assert!(!cache2.map.contains_key("stale2"));
@@ -6160,7 +7256,7 @@ fn test_trivial_conflict_fast_path_picks_later_ts() {
         .into_iter()
         .map(|e| (e.event_id.clone(), e))
         .collect();
-    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2, &String::new()).unwrap();
     // B (ts=200) should win the topic slot
     assert_eq!(
         state.get(&(
@@ -6192,7 +7288,7 @@ fn test_trivial_conflict_fast_path_ts_tie_falls_back_to_event_id() {
         .into_iter()
         .map(|e| (e.event_id.clone(), e))
         .collect();
-    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2, &String::new()).unwrap();
     // Same ts=100, so event_id tiebreak: "B" > "A" → B wins
     assert_eq!(
         state.get(&(
@@ -6221,7 +7317,7 @@ fn test_trivial_conflict_power_event_fallthrough() {
         .into_iter()
         .map(|e| (e.event_id.clone(), e))
         .collect();
-    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2, &String::new()).unwrap();
     // PL_B (ts=200) should win over PL_A (ts=100) via the full pipeline's
     // Kahn sort + iterative auth. The trivial fast path skips power events
     // entirely, so getting the correct winner proves fallthrough occurred.
@@ -6251,7 +7347,7 @@ fn test_trivial_conflict_no_create_bails_to_full_pipeline() {
         .into_iter()
         .map(|e| (e.event_id.clone(), e))
         .collect();
-    let state = compute_state_at("D", &events_map, StateResVersion::V2).unwrap();
+    let state = compute_state_at("D", &events_map, StateResVersion::V2, &String::new()).unwrap();
     assert!(
         state.is_empty(),
         "Missing create event should result in empty state (fast path bails, full pipeline rejects all)"
@@ -6411,7 +7507,8 @@ fn test_mainline_position_beats_timestamp_on_divergent_auth_chains() {
         .map(|e| (e.event_id.clone(), e))
         .collect();
 
-    let state = compute_state_at("$merge", &events_map, StateResVersion::V2).unwrap();
+    let state =
+        compute_state_at("$merge", &events_map, StateResVersion::V2, &String::new()).unwrap();
 
     // $topic_new_pl (ts=400) must win because it's closer to the current PL
     // in the mainline (position 0). $topic_old_pl (ts=500) is farther
@@ -6589,11 +7686,12 @@ fn test_msc4297_problem_b_resolve_state_maps_parity() {
         conflicted_events.insert(id, ev);
     }
     let resolved_manual = rezzy::resolve_iterative_sort(
-        unconflicted,
-        conflicted_events,
+        &unconflicted,
+        &conflicted_events,
         &events_map,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // The decisive assertion: both paths must produce identical results
@@ -6946,11 +8044,12 @@ fn test_performance_and_correctness_dense_bifurcations() {
     }
     // V2.1 parity
     let resolved_manual = rezzy::resolve_iterative_sort(
-        unconflicted.clone(),
-        conflicted_events.clone(),
+        &unconflicted,
+        &conflicted_events,
         &events_map,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert_eq!(
         resolved_v2_1, resolved_manual,
@@ -6958,11 +8057,12 @@ fn test_performance_and_correctness_dense_bifurcations() {
     );
     // V2.1.1 parity
     let resolved_manual_v2_1_1 = rezzy::resolve_iterative_sort(
-        unconflicted,
-        conflicted_events,
+        &unconflicted,
+        &conflicted_events,
         &events_map,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert_eq!(
         resolved_v2_1_1, resolved_manual_v2_1_1,
@@ -7040,6 +8140,7 @@ fn test_lean_event_serialize_propagates_write_error() {
         depth: 1,
         rejected: false,
         soft_fail: false,
+        room_id: None,
     };
 
     let result = serde_json::to_writer(
@@ -7112,6 +8213,7 @@ fn test_conflicted_keys_derived_before_cdo() {
         &auth,
         StateResVersion::V2_1_1,
         &mut HashMap::new(),
+        &String::new(),
     );
 
     // Expected resolved keys: create, alice_join, bob member (ban), join_rules, power_levels.
@@ -7133,15 +8235,19 @@ fn test_conflicted_keys_derived_before_cdo() {
             ("m.room.power_levels".to_string(), String::new()),
         ]
     );
-    // $bob_pl_dominated is a power_levels event by banned bob; the CDO
-    // causally dominates it via $alice_bans_bob, so it is dropped from the
-    // conflicted set and never wins its key (see the apply_cdo_filter check
-    // above). It therefore produces no delta entry at all.
+
+    // $bob_pl_dominated (bob's power_levels) is dropped by the retained CDO
+    // operator (verified above — a *correct* drop here: @alice genuinely bans
+    // bob, so the dominator is auth-valid). But the live V2.1.1 path no longer
+    // runs the CDO pre-filter (retired from prepare_conflicted_and_keys; see the
+    // dominator-validity soundness note there). So $bob_pl_dominated is now
+    // processed by resolution and correctly REJECTED on auth — a banned user's
+    // power_levels cannot be applied — surfacing as a rejected delta instead of
+    // being absent. It still never wins the key.
     assert!(!resolved.values().any(|v| v == "$bob_pl_dominated"));
-    assert!(!deltas
+    assert!(deltas
         .iter()
-        .any(|d| d.event_id == "$bob_pl_dominated" && d.accepted));
-    assert!(!deltas.iter().any(|d| d.event_id == "$bob_pl_dominated"));
+        .any(|d| d.event_id == "$bob_pl_dominated" && !d.accepted));
 
     // Verify deltas for accepted conflicted events
     assert!(deltas.iter().any(|d| d.event_id == "$alice_bans_bob"
@@ -7167,5 +8273,83 @@ fn test_conflicted_keys_derived_before_cdo() {
     assert_eq!(
         resolved.get(&(EventType::from("m.room.power_levels"), String::new())),
         Some(&"$pl_ancestor".to_string())
+    );
+}
+
+#[test]
+fn test_soft_fail_and_rejected_state_events_on_linear_chain() {
+    use rezzy::{compute_state_at_streaming, StateUpdate};
+    use std::collections::HashMap;
+
+    // Linear chain A -> B(soft-failed m.room.name) -> R(rejected m.room.topic) -> C.
+    // Per spec server-server-api "Soft failure", soft-failed events participate in state
+    // resolution as normal (so B IS in the resolved state), while rejected events are
+    // excluded (spec rooms/v9 / Synapse v2 `_iterative_auth_checks`).
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id":"A","type":"m.room.message","sender":"@a:x","prev_events":[]}
+{"event_id":"B","type":"m.room.name","state_key":"","sender":"@a:x","prev_events":["A"],"__soft_fail":true}
+{"event_id":"R","type":"m.room.topic","state_key":"","sender":"@a:x","prev_events":["B"],"__rejected":true}
+{"event_id":"C","type":"m.room.message","sender":"@a:x","prev_events":["R"]}
+"#,
+    );
+    let em: HashMap<String, LeanEvent> = events
+        .iter()
+        .map(|e| (e.event_id.clone(), e.clone()))
+        .collect();
+
+    let name_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.name"),
+        String::new(),
+    );
+    let topic_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.topic"),
+        String::new(),
+    );
+
+    let st = compute_state_at("C", &em, StateResVersion::V2, &String::new()).unwrap();
+    assert_eq!(
+        st.get(&name_key),
+        Some(&"B".to_string()),
+        "soft-failed state event must participate in the resolved state"
+    );
+    assert!(
+        !st.contains_key(&topic_key),
+        "rejected state event must be excluded from the resolved state"
+    );
+
+    // compute_state_at_streaming (the batch/streaming path).
+    let mut streamed: Option<rezzy::SharedState<String, String>> = None;
+    compute_state_at_streaming(
+        &["C"],
+        &em,
+        StateResVersion::V2,
+        |_, state| {
+            streamed = Some(state.into_iter().collect());
+        },
+        &String::new(),
+    );
+    let streamed = streamed.unwrap();
+    assert_eq!(streamed.get(&name_key), Some(&"B".to_string()));
+    assert!(!streamed.contains_key(&topic_key));
+
+    // compute_state_at_streaming_optimized (the full-rebuild pipeline): B contributes,
+    // so a New update with state {name: B} must be emitted.
+    let mut saw_name_b = false;
+    let _ = compute_state_at_streaming_optimized(
+        &["B", "C"],
+        &em,
+        StateResVersion::V2,
+        |_, upd| {
+            if let StateUpdate::New { state, .. } = upd {
+                saw_name_b = saw_name_b || state.contains_key(&name_key);
+                assert!(!state.contains_key(&topic_key));
+            }
+        },
+        &String::new(),
+    );
+    assert!(
+        saw_name_b,
+        "optimized streaming must include the soft-failed name event"
     );
 }

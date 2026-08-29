@@ -39,6 +39,7 @@ fn ruma_to_lean_event<E: Event>(ev: &E) -> LeanEvent {
         depth: 0,
         rejected: false,
         soft_fail: false,
+        room_id: None,
     }
 }
 
@@ -258,8 +259,8 @@ where
     // Attempt to dynamically select V2 vs V2.1 if the inputs match the MSC4297 test scenario.
     let mut pl_cache = std::collections::HashMap::new();
     let resolved = rezzy::resolve_iterative_sort(
-        unconflicted_state,
-        conflicted_events,
+        &unconflicted_state,
+        &conflicted_events,
         &auth_context,
         if state_res_rules.begin_iterative_auth_checks_with_empty_state_map {
             rezzy::StateResVersion::V2_1
@@ -267,6 +268,7 @@ where
             rezzy::StateResVersion::V2
         },
         &mut pl_cache,
+        &String::new(),
     );
 
     let mut result = StateMap::new();

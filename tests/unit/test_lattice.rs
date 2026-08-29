@@ -1,9 +1,8 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Lattice-coordinatized state resolution tests.
 //!
 //! Tests the LUB comparator, `route_power_events`, and `resolve_lattice_fold`.
 
-mod utils;
+use crate::utils;
 
 use rezzy::resolve::lattice::{is_lattice_winner_better, resolve_lattice_fold, route_power_events};
 use rezzy::{LeanEvent, StateResVersion};
@@ -154,11 +153,12 @@ fn test_lattice_fold_parity_with_iterative() {
         StateResVersion::V2,
     );
     let iterative = rezzy::resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &map,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // Lattice and iterative should agree on the topic winner

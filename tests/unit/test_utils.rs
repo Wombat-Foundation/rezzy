@@ -1,5 +1,4 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-mod utils;
+use crate::utils;
 
 #[test]
 fn test_jsonl_parser_utility() {

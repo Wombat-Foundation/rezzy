@@ -1,7 +1,6 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 use rezzy::merkle::{
     self, AuthEventsHash, ContentHash, EventHeaderRoot, Field, Header, MerkleError,
-    OtherSignedFieldsHash, PrevEventsHash,
+    OtherSignedFieldsHash, PrevEventsHash, Side,
 };
 use serde_json::{json, Value};
 use std::fmt::Write;
@@ -89,6 +88,24 @@ fn canonical_json_accepts_small_u64_number() {
 }
 
 #[test]
+fn split_content_hashes_uses_room_redaction_rules() {
+    let (redacted, redactable) = merkle::split_content_hashes(
+        &json!({"membership": "join", "displayname": "Alice"}),
+        "m.room.member",
+        "11",
+    )
+    .unwrap();
+    assert_eq!(
+        redacted,
+        merkle::redacted_content_hash(&json!({"membership": "join"})).unwrap()
+    );
+    assert_eq!(
+        redactable,
+        merkle::redactable_content_hash(&json!({"displayname": "Alice"})).unwrap()
+    );
+}
+
+#[test]
 fn canonical_json_encodes_top_level_null_and_false() {
     assert_eq!(
         String::from_utf8(merkle::canonical_json(&Value::Null).unwrap()).unwrap(),
@@ -133,7 +150,8 @@ fn root_stable_vector() {
 fn header_root_uses_null_for_missing_optional_fields() {
     let root = merkle::header_root(&Header {
         room_id: "!room:example.org".into(),
-        sender: "@alice:example.org".into(),
+        sender_localpart: "alice".into(),
+        sender_domain: "example.org".into(),
         event_type: "m.room.message".into(),
         state_key: None,
         redacts: None,
@@ -144,7 +162,7 @@ fn header_root_uses_null_for_missing_optional_fields() {
 
     assert_eq!(
         hex(root),
-        "f4f5f542c8adb6ba354328dfeda66fd069b77981a5514bb86cb22072d5117324"
+        "db91cc8e8d3eb0d13885c32f28dbd4215a111081383e25263749c65d9bf8bc37"
     );
 }
 
@@ -154,7 +172,8 @@ fn event_root_and_id_stable_vector() {
     let auth = merkle::component_hash("auth_events", &json!(["$auth:example.org"])).unwrap();
     let header = merkle::header_root(&Header {
         room_id: "!room:example.org".into(),
-        sender: "@alice:example.org".into(),
+        sender_localpart: "alice".into(),
+        sender_domain: "example.org".into(),
         event_type: "m.room.message".into(),
         state_key: None,
         redacts: None,
@@ -177,11 +196,117 @@ fn event_root_and_id_stable_vector() {
 
     assert_eq!(
         hex(root),
-        "734aaf66da440dfbbe445bfe7874014983beafe7682b456f40973f7e8e0a2e4d"
+        "4ccc880527fe5f97d27a04105bb55e6c6e75d87928e54a6cd2973c224802ce91"
     );
     assert_eq!(
         merkle::event_id(root),
-        "$c0qvZtpEDfu-RFv-eHQBSYO-r-doK0VvQJc_fo4KLk0"
+        "$TMyIBSf-X5fSegQQW7VebG512Hko5Ups0pc8IkgCzpE"
+    );
+}
+
+/// Coverage: `content_hash` combines `redacted_content_hash` and
+/// `redactable_content_hash` via `inner_hash`, so it must equal a direct
+/// `component_hash`-style computation of that combination, and it must
+/// change if either side changes.
+#[test]
+fn content_hash_combines_redacted_and_redactable() {
+    let redacted = merkle::redacted_content_hash(&json!({ "membership": "join" })).unwrap();
+    let redactable = merkle::redactable_content_hash(&json!({ "displayname": "Alice" })).unwrap();
+    let combined = merkle::content_hash(redacted, redactable);
+
+    let other_redactable =
+        merkle::redactable_content_hash(&json!({ "displayname": "Bob" })).unwrap();
+    let combined_with_different_redactable = merkle::content_hash(redacted, other_redactable);
+
+    assert_ne!(hex(combined.0), hex(combined_with_different_redactable.0));
+
+    // Same inputs must be deterministic.
+    let combined_again = merkle::content_hash(redacted, redactable);
+    assert_eq!(hex(combined.0), hex(combined_again.0));
+}
+
+/// Coverage: an event with no redaction-protected content (e.g. an ordinary
+/// `m.room.message`) can still compute `content_hash` with `redactable_content`
+/// as canonical `null`, per the draft's "no redaction-protected fields" case.
+#[test]
+fn content_hash_supports_null_redactable_content() {
+    let redacted = merkle::redacted_content_hash(&json!({})).unwrap();
+    let redactable = merkle::redactable_content_hash(&Value::Null).unwrap();
+    let combined = merkle::content_hash(redacted, redactable);
+
+    // Must not equal the all-null degenerate case, confirming the redacted
+    // side is actually mixed into the combination.
+    let both_null_redacted = merkle::redacted_content_hash(&Value::Null).unwrap();
+    let both_null_combined = merkle::content_hash(both_null_redacted, redactable);
+    assert_ne!(hex(combined.0), hex(both_null_combined.0));
+}
+
+fn sample_header_fields() -> Vec<Field> {
+    vec![
+        Field::new("room_id", json!("!room:example.org")),
+        Field::new("sender_localpart", json!("alice")),
+        Field::new("sender_domain", json!("example.org")),
+        Field::new("type", json!("m.room.message")),
+        Field::new("state_key", Value::Null),
+        Field::new("redacts", Value::Null),
+        Field::new("depth", json!(42)),
+        Field::new("origin_server_ts", json!(123_456_789)),
+    ]
+}
+
+fn field_leaf_hash(field: &Field) -> merkle::Hash {
+    let canonical = merkle::canonical_json(&field.value).unwrap();
+    merkle::leaf_hash(&field.name, &canonical).unwrap()
+}
+
+/// Coverage: `leaf_path` reconstructs the same root `root()` computes, for
+/// every field in an 8-field header.
+#[test]
+fn leaf_path_reconstructs_root() {
+    let fields = sample_header_fields();
+    let root = merkle::root(&fields).unwrap();
+
+    for field in &fields {
+        let (path, proved_root) = merkle::leaf_path(&fields, &field.name).unwrap();
+        assert_eq!(proved_root, root, "field: {}", field.name);
+        let leaf_hash = field_leaf_hash(field);
+        assert!(
+            merkle::verify_leaf_path(leaf_hash, &path, root),
+            "field: {}",
+            field.name
+        );
+    }
+}
+
+/// Coverage: matches the draft's illustrative `sender_domain` proof example
+/// (3 steps: right, right, left) over this exact 8-field header.
+#[test]
+fn leaf_path_matches_draft_sender_domain_example() {
+    let fields = sample_header_fields();
+    let (path, _root) = merkle::leaf_path(&fields, "sender_domain").unwrap();
+    assert_eq!(path.len(), 3);
+    let want = [Side::Right, Side::Right, Side::Left];
+    for (step, expected) in path.iter().zip(want) {
+        assert_eq!(step.side, expected);
+    }
+}
+
+#[test]
+fn verify_leaf_path_rejects_tampered_sibling() {
+    let fields = sample_header_fields();
+    let root = merkle::root(&fields).unwrap();
+    let (mut path, _) = merkle::leaf_path(&fields, "type").unwrap();
+    let leaf_hash = field_leaf_hash(&Field::new("type", json!("m.room.message")));
+    path[0].hash[0] ^= 0xFF;
+    assert!(!merkle::verify_leaf_path(leaf_hash, &path, root));
+}
+
+#[test]
+fn leaf_path_rejects_unknown_field() {
+    let fields = sample_header_fields();
+    assert_eq!(
+        merkle::leaf_path(&fields, "nonexistent").unwrap_err(),
+        MerkleError::FieldNotFound("nonexistent".into())
     );
 }
 
@@ -261,6 +386,10 @@ fn merkle_error_display_covers_all_variants() {
             MerkleError::DuplicateField("depth".into()),
             "merkle: duplicate field: depth",
         ),
+        (
+            MerkleError::FieldNotFound("sender_domain".into()),
+            "merkle: field not found: sender_domain",
+        ),
         (MerkleError::NoLeaves, "merkle: no leaves"),
         (
             MerkleError::IntegerRange,
@@ -275,4 +404,23 @@ fn merkle_error_display_covers_all_variants() {
     for (error, message) in cases {
         assert_eq!(error.to_string(), message);
     }
+}
+
+#[test]
+fn leaf_path_single_field_and_empty() {
+    let single = [Field::new("type", json!("m.room.message"))];
+    let leaf_hash = field_leaf_hash(&single[0]);
+    let single_root = merkle::root(&single).unwrap();
+    assert_eq!(single_root, leaf_hash);
+
+    let (path, proved_root) = merkle::leaf_path(&single, "type").unwrap();
+    assert!(path.is_empty());
+    assert_eq!(proved_root, leaf_hash);
+    assert!(merkle::verify_leaf_path(leaf_hash, &path, proved_root));
+
+    let empty: [Field; 0] = [];
+    assert_eq!(
+        merkle::leaf_path(&empty, "type").unwrap_err(),
+        MerkleError::FieldNotFound("type".into())
+    );
 }
