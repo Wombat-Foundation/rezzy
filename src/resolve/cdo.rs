@@ -496,21 +496,15 @@ where
                 let effective = explicit.or_else(|| ev.get_users_default()).unwrap_or(0);
 
                 // Required PL for the target event type under *this* PL event.
-                // Mirrors auth::get_required_power_level (spec rule 7 + rule 9):
-                //   events.{event_type}  ->  state_default (if state_key)  ->  events_default
-                // A positive but *insufficient* level must NOT count as a
-                // pre-demotion grant -- only meeting the required threshold does.
-                let required = if target_ev.event_type
-                    == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE
-                {
-                    ev.get_invite().unwrap_or(0)
-                } else if let Some(pl) = ev.get_event_power_level(&target_ev.event_type) {
-                    pl
-                } else if target_ev.state_key.is_some() {
-                    ev.get_state_default().unwrap_or(50)
-                } else {
-                    ev.get_events_default().unwrap_or(0)
-                };
+                // Uses the shared helper to stay in sync with auth checks.
+                let required = crate::auth::pl_threshold_for_event(
+                    ev,
+                    &target_ev.event_type,
+                    target_ev
+                        .state_key
+                        .as_ref()
+                        .map(core::convert::AsRef::as_ref),
+                );
 
                 effective >= required
             })

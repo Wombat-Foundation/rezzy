@@ -699,7 +699,12 @@ where
     let mut non_power_list: Vec<&LeanEvent<Id, C, K>> = if version.has_ban_evasion_hardening() {
         non_power_events
             .iter()
-            .filter(|(_, ev)| !is_sender_banned(ev, &resolved, unconflicted_state, &sort_context))
+            .filter(|(_, ev)| {
+                // is_sender_banned(ev, resolved, unconflicted_state, events)
+                // resolved takes priority; unconflicted_state is the fallback
+                // for V2.1+ where resolved starts empty.
+                !is_sender_banned(ev, &resolved, unconflicted_state, &sort_context)
+            })
             .map(|(_, ev)| ev)
             .collect()
     } else {
@@ -958,6 +963,7 @@ where
         let Some(sk) = &ev.state_key else { continue };
         let key = (EventType::from(ev.event_type.as_str()), sk.clone());
         if version.has_ban_evasion_hardening()
+            // is_sender_banned(ev, resolved, unconflicted_state, events)
             && is_sender_banned(ev, &resolved, &unconflicted_state, &sort_context)
         {
             let replaced = resolved.get(&key).cloned();

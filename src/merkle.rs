@@ -647,6 +647,14 @@ pub mod causal {
         table
     }
 
+    /// The canonical empty causal set root hash (`empty_table()[0]`).
+    /// Exposed so tests can assert against the known value without relying
+    /// on two freshly-built empty sets comparing equal.
+    #[must_use]
+    pub fn empty_root() -> super::Hash {
+        empty_table()[0]
+    }
+
     /// An in-memory population of event-ID keys committed by an MSC4511
     /// 256-level sparse Merkle sum trie.
     #[derive(Debug, Clone, Default, PartialEq, Eq)]

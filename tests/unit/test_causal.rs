@@ -1,5 +1,5 @@
 use rezzy::merkle::causal::{
-    verify_causal_inclusion, verify_causal_non_inclusion, CausalSet, Side, CAUSAL_DEPTH,
+    empty_root, verify_causal_inclusion, verify_causal_non_inclusion, CausalSet, Side, CAUSAL_DEPTH,
 };
 use rezzy::merkle::Hash;
 
@@ -11,15 +11,10 @@ fn key(byte: u8) -> Hash {
 fn empty_causal_set_root_and_count() {
     let empty = CausalSet::empty();
     assert_eq!(empty.count(), 0);
-    // Check that the root is a non-zero, deterministic value (not a tautology).
-    // The canonical empty root is empty_table()[0], which is a specific 32-byte hash.
-    let root = empty.root();
-    assert_ne!(root, [0u8; 32], "empty root should not be all zeros");
-    assert_eq!(
-        root,
-        CausalSet::empty().root(),
-        "empty root should be deterministic"
-    );
+    // Assert against the canonical empty_root() — not a tautology comparing
+    // two freshly-built empty sets. A regression in empty_table()[0] would
+    // change empty_root() and fail this assertion.
+    assert_eq!(empty.root(), empty_root());
 }
 
 #[test]

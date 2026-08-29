@@ -1391,19 +1391,7 @@ fn get_required_power_level<
     state: &impl StateProvider<Id, C, E>,
 ) -> i64 {
     if let Some(pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
-        // Spec Rule 7: m.room.third_party_invite events require the invite level
-        if event_type == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE {
-            return pl_event.get_invite().unwrap_or(0); // 0 is the default invite level
-        }
-        // Check specific event type overrides
-        if let Some(pl) = pl_event.get_event_power_level(event_type) {
-            return pl;
-        }
-        // Fall back to state_default for state events, events_default for others
-        if state_key.is_some() {
-            return pl_event.get_state_default().unwrap_or(50);
-        }
-        return pl_event.get_events_default().unwrap_or(0);
+        return pl_threshold_for_event(pl_event, event_type, state_key);
     }
     // No restrictions if no power_levels event exists
     // However, Matrix spec says if NO PL event exists, state events require 50.
@@ -1414,6 +1402,33 @@ fn get_required_power_level<
     } else {
         0
     }
+}
+
+/// Required power level for `event_type` under a specific `m.room.power_levels`
+/// event. Shared by auth checks and the CDO demotion filter so the spec rule
+/// (events.{type} -> `state_default` -> `events_default`) stays in one place.
+pub(crate) fn pl_threshold_for_event<
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    pl_event: &E,
+    event_type: &str,
+    state_key: Option<&str>,
+) -> i64 {
+    // Spec Rule 7: m.room.third_party_invite events require the invite level
+    if event_type == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE {
+        return pl_event.get_invite().unwrap_or(0);
+    }
+    // Check specific event type overrides
+    if let Some(pl) = pl_event.get_event_power_level(event_type) {
+        return pl;
+    }
+    // Fall back to state_default for state events, events_default for others
+    if state_key.is_some() {
+        return pl_event.get_state_default().unwrap_or(50);
+    }
+    pl_event.get_events_default().unwrap_or(0)
 }
 
 /// Validate leave/kick transition rules.

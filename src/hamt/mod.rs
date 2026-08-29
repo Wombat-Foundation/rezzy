@@ -1760,33 +1760,6 @@ where
             ));
         }
 
-        // Validate every decoded leaf's routed slot before processing
-        // requests. In a correct CHAMP HAMT, a leaf stored at bit `s`
-        // of the datamap must satisfy
-        //     bucket_index(key_hash_fn(leaf_key), depth) == s.
-        // If persisted data placed a leaf under the wrong slot,
-        // descend_level would silently return false absences for lookups
-        // of that leaf's key.
-        if depth < HAMT_MAX_DEPTH {
-            let mut datamap_remaining = node.datamap;
-            let mut leaf_slot_idx = 0usize;
-            while datamap_remaining != 0 {
-                let s = datamap_remaining.trailing_zeros() as usize;
-                let (leaf_key, _) =
-                    node.leaves
-                        .get(leaf_slot_idx)
-                        .ok_or(DescendError::CorruptNode(
-                            "leaf index out of bounds during slot validation",
-                        ))?;
-                let expected_slot = bucket_index(&key_hash_fn(leaf_key), depth);
-                if expected_slot != s {
-                    return Err(DescendError::CorruptNode("leaf routed to wrong slot"));
-                }
-                leaf_slot_idx = leaf_slot_idx.saturating_add(1);
-                datamap_remaining &= datamap_remaining.saturating_sub(1);
-            }
-        }
-
         for &req_hash in target_keys {
             if depth >= HAMT_MAX_DEPTH {
                 return Err(DescendError::CorruptNode(
@@ -1802,6 +1775,15 @@ where
                     .leaves
                     .get(leaf_idx)
                     .ok_or(DescendError::CorruptNode("leaf index out of bounds"))?;
+                // Lazy slot validation: only check the leaf being read, not
+                // the entire datamap. In a correct CHAMP HAMT, a leaf at
+                // slot `s` must satisfy bucket_index(key_hash(leaf_key), depth) == s.
+                if depth < HAMT_MAX_DEPTH {
+                    let expected_slot = bucket_index(&key_hash_fn(leaf_key), depth);
+                    if expected_slot != slot {
+                        return Err(DescendError::CorruptNode("leaf routed to wrong slot"));
+                    }
+                }
                 if key_hash_fn(leaf_key) == req_hash {
                     found.push((req_hash, val.clone()));
                 } else {
