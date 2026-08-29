@@ -91,15 +91,15 @@ impl IndexedUniverse {
     ///
     /// # Errors
     /// Returns [`UniverseTooLarge`] if `universe` contains more than
-    /// `u32::MAX + 1` distinct hashes (the number of addressable slots;
-    /// exactly `u32::MAX + 1` distinct hashes succeeds).
+    /// `u32::MAX` distinct hashes (the bitmap audit converts `len()` to
+    /// `u32` for roaring indexing; exactly `u32::MAX` succeeds).
     pub fn try_build(
         universe: impl IntoIterator<Item = StructuralHash>,
     ) -> Result<Self, UniverseTooLarge> {
-        // `DenseIndex::try_build` already bounds at the addressable slot count
-        // (`Idx::MAX + 1` = `u32::MAX + 1` for a `u32` index), so delegate
-        // rather than recompute that bound here; only the error type differs.
-        DenseIndex::try_build(universe)
+        // `bitmap_node_reachability_audit` converts `universe.len()` to `u32`
+        // for roaring bitmap indexing, so cap at `u32::MAX` — one less than
+        // the raw `DenseIndex<StructuralHash>` addressable slot count.
+        DenseIndex::try_build_bounded(universe, u32::MAX as usize + 1)
             .map(Self)
             .map_err(Into::into)
     }

@@ -187,7 +187,7 @@ impl HamtCodec for crate::basespec::event_types::EventType {
 
     fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
         let s = String::decode_hamt(input, cursor)?;
-        Ok(crate::basespec::event_types::EventType::from(s.as_str()))
+        Ok(crate::basespec::event_types::EventType::from(s))
     }
 }
 
