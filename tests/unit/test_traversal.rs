@@ -1,6 +1,5 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
-mod utils;
+use crate::utils;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use serde_json::json;
 use std::collections::HashMap;
@@ -70,11 +69,12 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
     // V2.1: Should FAIL to resolve the name change.
     // It doesn't see the PL event, so it uses default PL 0 for Alice.
     let resolved_v21 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events.clone(),
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     let ok_v21 = resolved_v21.contains_key(&(
         rezzy::basespec::event_types::EventType::from("m.room.name"),
@@ -86,11 +86,12 @@ fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211
     );
 
     let resolved_v211 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events,
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     let ok_v211 = resolved_v211.contains_key(&(
         rezzy::basespec::event_types::EventType::from("m.room.name"),
@@ -108,6 +109,189 @@ fn test_v2_1_vs_v2_1_1_recursive_auth_lookup() {
     // V2.1 fails because it only checks 1-hop (depth 1).
     // V2.1.1 PASSES because it introduces BFS transitive context gathering.
     run_auth_lookup_scenario(true, false, true);
+}
+
+/// A banned user's message must be **hard-rejected** (never soft-failed) when
+/// the ban is present in the resolved state before the message. This is *not*
+/// the soft-failure mechanism (which is about an event passing auth against
+/// its own local state-at-event but failing against the later resolved
+/// state). Here the ban is genuinely in the state-before, so rejecting the
+/// message is unconditional -- the sender's membership resolves to the ban.
+///
+/// Both V2.1 and V2.1.1 hard-reject here: the ban is a power event that
+/// resolves before the non-power message in either version. The V2.1 vs
+/// V2.1.1 distinction (transitive auth-context gathering for `power_levels` / `join_rules`)
+/// is a separate mechanism, exercised by `run_auth_lookup_scenario`, not this
+/// one.
+#[test]
+fn test_banned_sender_message_is_hard_rejected() {
+    let create_ev = LeanEvent {
+        event_id: "$create".to_string(),
+        event_type: "m.room.create".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".to_string(),
+        origin_server_ts: 100,
+        content: json!({ "room_version": "12.1", "creator": "@admin:example.com" }),
+        ..Default::default()
+    };
+    let admin_join = LeanEvent {
+        event_id: "$admin_join".to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some("@admin:example.com".to_string()),
+        sender: "@admin:example.com".to_string(),
+        origin_server_ts: 200,
+        content: json!({ "membership": "join" }),
+        auth_events: vec!["$create".to_string()],
+        ..Default::default()
+    };
+    let pl_ev = LeanEvent {
+        event_id: "$pl".to_string(),
+        event_type: "m.room.power_levels".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".to_string(),
+        origin_server_ts: 300,
+        content: json!({ "users": { "@admin:example.com": 100, "@bob:example.com": 50 }, "ban": 50, "state_default": 50 }),
+        auth_events: vec!["$create".to_string(), "$admin_join".to_string()],
+        ..Default::default()
+    };
+    // A public join rule, so bob's self-join is authorized. Without it the
+    // default is `invite`, and bob (never invited) cannot validly join -- which
+    // would make the hard-reject below trivially true for the wrong reason
+    // (bob never a valid member), not because of the ban.
+    let join_rules = LeanEvent {
+        event_id: "$join_rules".to_string(),
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".to_string(),
+        origin_server_ts: 350,
+        content: json!({ "join_rule": "public" }),
+        auth_events: vec![
+            "$create".to_string(),
+            "$admin_join".to_string(),
+            "$pl".to_string(),
+        ],
+        ..Default::default()
+    };
+    let bob_join = LeanEvent {
+        event_id: "$bob_join".to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some("@bob:example.com".to_string()),
+        sender: "@bob:example.com".to_string(),
+        origin_server_ts: 400,
+        content: json!({ "membership": "join" }),
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$join_rules".to_string(),
+        ],
+        ..Default::default()
+    };
+    // The ban of bob. Bob's message does not cite this ban directly: the ban
+    // is not reachable transitively from the message's own auth_events
+    // ($create, $bob_join -> $create, $pl). It surfaces because the required
+    // sender-membership key for the message's auth is supplemented from the
+    // resolved state (MSC4297 in V2.1), where the ban wins over bob's join.
+    let ban_bob = LeanEvent {
+        event_id: "$ban_bob".to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some("@bob:example.com".to_string()),
+        sender: "@admin:example.com".to_string(),
+        origin_server_ts: 500,
+        content: json!({ "membership": "ban" }),
+        auth_events: vec![
+            "$create".to_string(),
+            "$admin_join".to_string(),
+            "$bob_join".to_string(),
+            "$pl".to_string(),
+        ],
+        ..Default::default()
+    };
+    // Bob's message. It omits the ban from its own auth_events, so whether the
+    // auth check sees bob as banned depends on the resolved state supplying the
+    // required sender-membership key (which resolves to the ban).
+    let bob_msg = LeanEvent {
+        event_id: "$bob_msg".to_string(),
+        event_type: "m.room.message".to_string(),
+        state_key: Some(String::new()),
+        sender: "@bob:example.com".to_string(),
+        origin_server_ts: 600,
+        content: json!({ "body": "hello" }),
+        auth_events: vec![
+            "$create".to_string(),
+            "$bob_join".to_string(),
+            "$pl".to_string(),
+        ],
+        ..Default::default()
+    };
+
+    let mut auth_context = HashMap::new();
+    for ev in [
+        &create_ev,
+        &admin_join,
+        &pl_ev,
+        &join_rules,
+        &bob_join,
+        &ban_bob,
+        &bob_msg,
+    ] {
+        auth_context.insert(ev.event_id.clone(), ev.clone());
+    }
+
+    // Control: with no ban, bob is a valid public-rule member and his message
+    // must resolve. This proves the hard-reject below is caused by the ban,
+    // not by an otherwise-invalid fixture.
+    for version in [StateResVersion::V2_1, StateResVersion::V2_1_1] {
+        let mut control_conflicted = HashMap::new();
+        control_conflicted.insert("$bob_join".to_string(), bob_join.clone());
+        control_conflicted.insert("$bob_msg".to_string(), bob_msg.clone());
+        let resolved = resolve_iterative_sort(
+            &utils::build_unconflicted_state_test_helper(&auth_context),
+            &control_conflicted,
+            &auth_context,
+            version,
+            &mut std::collections::HashMap::new(),
+            &String::new(),
+        );
+        assert!(
+            resolved.contains_key(&(
+                rezzy::basespec::event_types::EventType::from("m.room.message"),
+                String::new()
+            )),
+            "{version:?} control must accept bob's message when he is joined and not banned"
+        );
+    }
+
+    let mut conflicted = HashMap::new();
+    conflicted.insert("$ban_bob".to_string(), ban_bob);
+    conflicted.insert("$bob_msg".to_string(), bob_msg.clone());
+
+    for version in [StateResVersion::V2_1, StateResVersion::V2_1_1] {
+        let resolved = resolve_iterative_sort(
+            &utils::build_unconflicted_state_test_helper(&auth_context),
+            &conflicted,
+            &auth_context,
+            version,
+            &mut std::collections::HashMap::new(),
+            &String::new(),
+        );
+        // The ban must win the member key...
+        assert_eq!(
+            resolved.get(&(
+                rezzy::basespec::event_types::EventType::from("m.room.member"),
+                "@bob:example.com".to_string()
+            )),
+            Some(&"$ban_bob".to_string()),
+            "ban must be the resolved membership for {version:?}"
+        );
+        // ...and bob's message must be hard-rejected (absent from resolved).
+        assert!(
+            !resolved.contains_key(&(
+                rezzy::basespec::event_types::EventType::from("m.room.message"),
+                String::new()
+            )),
+            "{version:?} must hard-reject the banned sender's message (no soft-fail)"
+        );
+    }
 }
 
 #[test]
@@ -185,11 +369,12 @@ fn test_v2_1_1_ancient_prev_event_allowed() {
     conflicted_events.insert(alice_name.event_id.clone(), alice_name);
 
     let resolved_v211 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events,
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // State resolution still passes because the auth_events are valid.
@@ -236,6 +421,21 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
         ..Default::default()
     };
 
+    // A public join rule, so Bob's self-join is authorized. Without it the
+    // default is `invite`, and Bob (never invited) cannot validly join -- which
+    // would make the ban-win assertion below trivially true for the wrong
+    // reason (Bob never a valid member), not because of the power tie-break.
+    let join_rules = LeanEvent {
+        event_id: "$join_rules".to_string(),
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".to_string(),
+        origin_server_ts: 250,
+        content: json!({ "join_rule": "public" }),
+        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        ..Default::default()
+    };
+
     // Alice (PL 100) bans Bob.
     let alice_ban = LeanEvent {
         event_id: "$alice_ban".to_string(),
@@ -249,7 +449,7 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
     };
 
     // Bob (PL 0) attempts to join.
-    // Exact same origin_server_ts and auth_chain_distance as the ban to force a pure Power Level tie-break.
+    // Exact same origin_server_ts as the ban to force a pure Power Level tie-break.
     let bob_join = LeanEvent {
         event_id: "$bob_join".to_string(),
         event_type: "m.room.member".to_string(),
@@ -257,24 +457,30 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
         sender: "@bob:example.com".to_string(),
         origin_server_ts: 300,
         content: json!({ "membership": "join" }),
-        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$join_rules".to_string(),
+        ],
         ..Default::default()
     };
 
     let mut auth_context = HashMap::new();
     auth_context.insert(create_ev.event_id.clone(), create_ev);
     auth_context.insert(pl_ev.event_id.clone(), pl_ev);
+    auth_context.insert(join_rules.event_id.clone(), join_rules);
 
     let mut conflicted_events = HashMap::new();
     conflicted_events.insert(alice_ban.event_id.clone(), alice_ban);
     conflicted_events.insert(bob_join.event_id.clone(), bob_join);
 
     let resolved = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events,
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // The resolved state should contain the ban, not the join
@@ -290,122 +496,33 @@ fn test_kahn_tiebreak_power_level_overwrites_via_auth() {
 
 #[test]
 fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
-    // Exact same test, but running under V2.1.1 to prove auth_chain_distance doesn't change the outcome.
-    let create_ev = LeanEvent {
-        event_id: "$create".to_string(),
-        event_type: "m.room.create".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 100,
-        ..Default::default()
-    };
-
-    let join_rules = LeanEvent {
-        event_id: "$jr".to_string(),
-        event_type: "m.room.join_rules".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 150,
-        content: serde_json::json!({ "join_rule": "public" }),
-        auth_events: vec!["$create".to_string()],
-        ..Default::default()
-    };
-
-    let pl_alice = LeanEvent {
-        event_id: "$pl_alice".to_string(),
-        event_type: "m.room.power_levels".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 200,
-        content: serde_json::json!({
-            "users": { "@alice:example.com": 60, "@bob:example.com": 50 },
-            "events_default": 0,
-            "state_default": 50
-        }),
-        auth_events: vec!["$create".to_string()],
-        ..Default::default()
-    };
-
-    let pl_bob = LeanEvent {
-        event_id: "$pl_bob".to_string(),
-        event_type: "m.room.power_levels".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 200,
-        content: serde_json::json!({
-            "users": { "@alice:example.com": 50, "@bob:example.com": 60 },
-            "events_default": 0,
-            "state_default": 50
-        }),
-        auth_events: vec!["$create".to_string()],
-        ..Default::default()
-    };
-
-    let alice_join = LeanEvent {
-        event_id: "$alice_join".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@alice:example.com".to_string()),
-        sender: "@alice:example.com".to_string(),
-        origin_server_ts: 250,
-        content: serde_json::json!({ "membership": "join" }),
-        auth_events: vec!["$create".to_string(), "$jr".to_string()],
-        ..Default::default()
-    };
-
-    let bob_join = LeanEvent {
-        event_id: "$bob_join".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@bob:example.com".to_string()),
-        sender: "@bob:example.com".to_string(),
-        origin_server_ts: 250,
-        content: serde_json::json!({ "membership": "join" }),
-        auth_events: vec!["$create".to_string(), "$jr".to_string()],
-        ..Default::default()
-    };
-
-    let alice_ban = LeanEvent {
-        event_id: "$A_alice_ban".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@bob:example.com".to_string()),
-        sender: "@alice:example.com".to_string(),
-        origin_server_ts: 300,
-        content: serde_json::json!({ "membership": "ban" }),
-        auth_events: vec![
-            "$create".to_string(),
-            "$pl_alice".to_string(),
-            "$alice_join".to_string(),
-            "$bob_join".to_string(),
-        ],
-        ..Default::default()
-    };
-
-    let bob_ban = LeanEvent {
-        event_id: "$Z_bob_ban".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@alice:example.com".to_string()),
-        sender: "@bob:example.com".to_string(),
-        origin_server_ts: 300,
-        content: serde_json::json!({ "membership": "ban" }),
-        auth_events: vec![
-            "$create".to_string(),
-            "$pl_bob".to_string(),
-            "$alice_join".to_string(),
-            "$bob_join".to_string(),
-        ],
-        ..Default::default()
-    };
+    // Exact same test, but running under V2.1.1 to confirm the outcome is unchanged.
+    let auth_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 100}
+        {"event_id": "$jr",         "type": "m.room.join_rules",   "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 150, "content": {"join_rule": "public"}, "auth_events": ["$create"]}
+        {"event_id": "$pl_alice",   "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 200, "content": {"users": {"@alice:example.com": 60, "@bob:example.com": 50}, "events_default": 0, "state_default": 50}, "auth_events": ["$create"]}
+        {"event_id": "$pl_bob",     "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 200, "content": {"users": {"@alice:example.com": 50, "@bob:example.com": 60}, "events_default": 0, "state_default": 50}, "auth_events": ["$create"]}
+        {"event_id": "$alice_join", "type": "m.room.member",       "state_key": "@alice:example.com", "sender": "@alice:example.com", "origin_server_ts": 250, "content": {"membership": "join"}, "auth_events": ["$create", "$jr"]}
+        {"event_id": "$bob_join",   "type": "m.room.member",       "state_key": "@bob:example.com", "sender": "@bob:example.com", "origin_server_ts": 250, "content": {"membership": "join"}, "auth_events": ["$create", "$jr"]}
+        "#,
+    );
+    let conflicted_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$A_alice_ban", "type": "m.room.member", "state_key": "@bob:example.com", "sender": "@alice:example.com", "origin_server_ts": 300, "content": {"membership": "ban"}, "auth_events": ["$create", "$pl_alice", "$alice_join", "$bob_join"]}
+        {"event_id": "$Z_bob_ban",   "type": "m.room.member", "state_key": "@alice:example.com", "sender": "@bob:example.com", "origin_server_ts": 300, "content": {"membership": "ban"}, "auth_events": ["$create", "$pl_bob", "$alice_join", "$bob_join"]}
+        "#,
+    );
 
     let mut auth_context = std::collections::HashMap::new();
-    auth_context.insert(create_ev.event_id.clone(), create_ev.clone());
-    auth_context.insert(join_rules.event_id.clone(), join_rules.clone());
-    auth_context.insert(pl_alice.event_id.clone(), pl_alice);
-    auth_context.insert(pl_bob.event_id.clone(), pl_bob);
-    auth_context.insert(alice_join.event_id.clone(), alice_join.clone());
-    auth_context.insert(bob_join.event_id.clone(), bob_join.clone());
+    for ev in auth_evs {
+        auth_context.insert(ev.event_id.clone(), ev);
+    }
 
     let mut conflicted_events = std::collections::HashMap::new();
-    conflicted_events.insert(alice_ban.event_id.clone(), alice_ban);
-    conflicted_events.insert(bob_ban.event_id.clone(), bob_ban);
+    for ev in conflicted_evs {
+        conflicted_events.insert(ev.event_id.clone(), ev);
+    }
 
     let mut unconflicted = imbl::OrdMap::new();
     unconflicted.insert(
@@ -413,36 +530,37 @@ fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
             rezzy::basespec::event_types::EventType::from("m.room.create"),
             String::new(),
         ),
-        create_ev.event_id.clone(),
+        "$create".to_string(),
     );
     unconflicted.insert(
         (
             rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
             String::new(),
         ),
-        join_rules.event_id.clone(),
+        "$jr".to_string(),
     );
     unconflicted.insert(
         (
             rezzy::basespec::event_types::EventType::from("m.room.member"),
             "@alice:example.com".to_string(),
         ),
-        alice_join.event_id.clone(),
+        "$alice_join".to_string(),
     );
     unconflicted.insert(
         (
             rezzy::basespec::event_types::EventType::from("m.room.member"),
             "@bob:example.com".to_string(),
         ),
-        bob_join.event_id.clone(),
+        "$bob_join".to_string(),
     );
 
     let resolved = rezzy::resolve_iterative_sort(
-        unconflicted,
-        conflicted_events,
+        &unconflicted,
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let bob_member_key = (
@@ -491,6 +609,21 @@ fn test_v2_1_1_cve_demotion_evasion() {
         ..Default::default()
     };
 
+    // A public join rule, so Eve's self-join is authorized. Without it the
+    // default is `invite`, and Eve (never invited) cannot validly join -- which
+    // would make the demotion-rejection below trivially true for the wrong
+    // reason (Eve never a valid member), not because of the demotion.
+    let join_rules = LeanEvent {
+        event_id: "$join_rules".to_string(),
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".to_string(),
+        origin_server_ts: 250,
+        content: serde_json::json!({ "join_rule": "public" }),
+        auth_events: vec!["$create".to_string(), "$pl_promo".to_string()],
+        ..Default::default()
+    };
+
     // Eve joins (auths against the PL where she is Admin)
     let eve_join = LeanEvent {
         event_id: "$eve_join".to_string(),
@@ -499,7 +632,11 @@ fn test_v2_1_1_cve_demotion_evasion() {
         sender: "@eve:evil.com".to_string(),
         origin_server_ts: 300,
         content: serde_json::json!({ "membership": "join" }),
-        auth_events: vec!["$create".to_string(), "$pl_promo".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl_promo".to_string(),
+            "$join_rules".to_string(),
+        ],
         ..Default::default()
     };
 
@@ -536,27 +673,50 @@ fn test_v2_1_1_cve_demotion_evasion() {
     let mut auth_context = std::collections::HashMap::new();
     auth_context.insert("$create".to_string(), create_ev);
     auth_context.insert("$pl_promo".to_string(), pl_promo.clone());
-    auth_context.insert("$eve_join".to_string(), eve_join);
+    auth_context.insert("$join_rules".to_string(), join_rules);
+    auth_context.insert("$eve_join".to_string(), eve_join.clone());
     auth_context.insert("$pl_demote".to_string(), pl_demote.clone());
 
     let mut conflicted_events = std::collections::HashMap::new();
-    conflicted_events.insert("$pl_promo".to_string(), pl_promo);
+    conflicted_events.insert("$pl_promo".to_string(), pl_promo.clone());
     conflicted_events.insert("$pl_demote".to_string(), pl_demote);
-    conflicted_events.insert("$eve_attack".to_string(), eve_attack);
+    conflicted_events.insert("$eve_attack".to_string(), eve_attack.clone());
+
+    let name_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.name"),
+        String::new(),
+    );
+
+    // Control: with no demotion, Eve (a valid public-rule member at PL 100 from
+    // the promo) CAN change the room name. This proves the rejection below is
+    // caused by the demotion, not by Eve being an invalid member.
+    let mut control_conflicted = std::collections::HashMap::new();
+    control_conflicted.insert("$pl_promo".to_string(), pl_promo);
+    control_conflicted.insert("$eve_join".to_string(), eve_join);
+    control_conflicted.insert("$eve_attack".to_string(), eve_attack);
+    let resolved_control = rezzy::resolve_iterative_sort(
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &control_conflicted,
+        &auth_context,
+        rezzy::StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
+        &String::new(),
+    );
+    assert!(
+        resolved_control.contains_key(&name_key),
+        "control: with Eve promoted (PL 100) and validly joined, the name change must resolve"
+    );
 
     // --- V2.1 SECURELY BLOCKS THE ATTACK ---
     // V2.1 resolves PLs first (picking the demotion). When validating Eve's attack,
     // V2.1 overlays the consensus PL (demotion). Eve is PL 0. Name change requires 50. REJECTED.
     let resolved_v21 = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events.clone(),
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
-    );
-    let name_key = (
-        rezzy::basespec::event_types::EventType::from("m.room.name"),
-        String::new(),
+        &String::new(),
     );
     assert!(
         !resolved_v21.contains_key(&name_key),
@@ -567,11 +727,12 @@ fn test_v2_1_1_cve_demotion_evasion() {
     // V2.1.1 strictly enforces 1-hop security and supplements the demotion.
     // Therefore, Eve is caught and her attack is rightfully rejected!
     let resolved_v211 = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events,
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert!(
         !resolved_v211.contains_key(&name_key),
@@ -610,6 +771,21 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
         ..Default::default()
     };
 
+    // A public join rule, so Bob's self-join is authorized. Without it the
+    // default is `invite`, and Bob (never invited) cannot validly join -- which
+    // would make the name-change rejection below trivially true for the wrong
+    // reason (Bob never a valid member), not because of the concurrent ban.
+    let join_rules = LeanEvent {
+        event_id: "$join_rules".to_string(),
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".to_string(),
+        origin_server_ts: 250,
+        content: serde_json::json!({ "join_rule": "public" }),
+        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        ..Default::default()
+    };
+
     let bob_join = LeanEvent {
         event_id: "$bob_join".to_string(),
         event_type: "m.room.member".to_string(),
@@ -617,7 +793,11 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
         sender: "@bob:example.com".to_string(),
         origin_server_ts: 300,
         content: serde_json::json!({ "membership": "join" }),
-        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$join_rules".to_string(),
+        ],
         ..Default::default()
     };
 
@@ -657,19 +837,43 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
     let mut auth_context = std::collections::HashMap::new();
     auth_context.insert("$create".to_string(), create_ev);
     auth_context.insert("$pl".to_string(), pl_ev);
-    auth_context.insert("$bob_join".to_string(), bob_join);
+    auth_context.insert("$join_rules".to_string(), join_rules);
+    auth_context.insert("$bob_join".to_string(), bob_join.clone());
 
     let mut conflicted_events = std::collections::HashMap::new();
     conflicted_events.insert("$alice_bans_bob".to_string(), alice_bans_bob);
-    conflicted_events.insert("$bob_name_change".to_string(), bob_name_change);
+    conflicted_events.insert("$bob_name_change".to_string(), bob_name_change.clone());
 
-    // Run V2.1 Resolution (Stock)
-    let resolved_v21 = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events.clone(),
+    // Control: with no ban, Bob (a valid public-rule member at PL 50) CAN change
+    // the room name. This proves the name rejection below is caused by the
+    // concurrent ban, not by Bob being an invalid member.
+    let mut control_conflicted = std::collections::HashMap::new();
+    control_conflicted.insert("$bob_join".to_string(), bob_join);
+    control_conflicted.insert("$bob_name_change".to_string(), bob_name_change);
+    let resolved_control = rezzy::resolve_iterative_sort(
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &control_conflicted,
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
+    );
+    assert!(
+        resolved_control.contains_key(&(
+            rezzy::basespec::event_types::EventType::from("m.room.name"),
+            String::new()
+        )),
+        "control: with Bob validly joined and not banned, the name change must resolve"
+    );
+
+    // Run V2.1 Resolution (Stock)
+    let resolved_v21 = rezzy::resolve_iterative_sort(
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
+        &auth_context,
+        rezzy::StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // Alice's ban has PL 100, so Kahn sort evaluates it FIRST. It is added to the resolved state.
@@ -693,11 +897,12 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
 
     // Run V2.1.1 Resolution (The V3 Fix)
     let resolved_v211 = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events,
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // V2.1.1 REJECTS Bob's concurrent name change!
@@ -708,7 +913,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
 }
 
 #[test]
-fn test_v2_1_strictness_future_v3_should_pass() {
+fn test_v2_1_strictness_future_v2_2_should_pass() {
     let create_ev = LeanEvent {
         event_id: "$create".to_string(),
         event_type: "m.room.create".to_string(),
@@ -752,11 +957,12 @@ fn test_v2_1_strictness_future_v3_should_pass() {
     conflicted_events.insert("$bob_join".to_string(), bob_join);
 
     let resolved_v21 = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events.clone(),
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // V2.1 Rightfully Fails: It enforces the 1-hop strictness. Without "$jr" in the auth chain,
@@ -769,8 +975,9 @@ fn test_v2_1_strictness_future_v3_should_pass() {
         "V2.1 rightfully rejected the event because the 1-hop auth list was incomplete."
     );
 
-    // A future State DAG (MSC4242) algorithm could theoretically pass this by validating
-    // the room state via `prev_state_events` instead of relying on the fragile string array.
+    // A future State-DAGs algorithm (reserved as `StateResVersion::V2_2`, MSC4242)
+    // could theoretically pass this by validating the room state via
+    // `prev_state_events` instead of relying on the fragile string array.
 }
 
 fn make_ghost_moderator_events() -> (
@@ -778,128 +985,32 @@ fn make_ghost_moderator_events() -> (
     HashMap<String, LeanEvent>,
     imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
 ) {
-    let create_ev = LeanEvent {
-        event_id: "$create".to_string(),
-        event_type: "m.room.create".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 100,
-        ..Default::default()
-    };
-
-    let pl_ev = LeanEvent {
-        event_id: "$pl".to_string(),
-        event_type: "m.room.power_levels".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 200,
-        content: serde_json::json!({
-            "users": { "@admin:example.com": 100 },
-        }),
-        auth_events: vec!["$create".to_string()],
-        ..Default::default()
-    };
-
-    let jr_pub = LeanEvent {
-        event_id: "$jr_pub".to_string(),
-        event_type: "m.room.join_rules".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 300,
-        content: serde_json::json!({ "join_rule": "public" }),
-        auth_events: vec!["$create".to_string(), "$pl".to_string()],
-        ..Default::default()
-    };
-
-    let charlie_join = LeanEvent {
-        event_id: "$charlie_join".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@charlie:example.com".to_string()),
-        sender: "@charlie:example.com".to_string(),
-        origin_server_ts: 400,
-        content: serde_json::json!({ "membership": "join" }),
-        auth_events: vec![
-            "$create".to_string(),
-            "$pl".to_string(),
-            "$jr_pub".to_string(),
-        ],
-        ..Default::default()
-    };
-
-    // FORK A: Admin locks the room
-    let admin_lock = LeanEvent {
-        event_id: "$admin_lock".to_string(),
-        event_type: "m.room.join_rules".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 500,
-        content: serde_json::json!({ "join_rule": "invite" }),
-        auth_events: vec!["$create".to_string(), "$pl".to_string()],
-        ..Default::default()
-    };
-
-    // FORK B: Nexy joins on public rules, is promoted to Moderator, and bans spammer
-    let nexy_join = LeanEvent {
-        event_id: "$nexy_join".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@nexy:example.com".to_string()),
-        sender: "@nexy:example.com".to_string(),
-        origin_server_ts: 450,
-        content: serde_json::json!({ "membership": "join" }),
-        auth_events: vec![
-            "$create".to_string(),
-            "$pl".to_string(),
-            "$jr_pub".to_string(),
-        ],
-        ..Default::default()
-    };
-
-    let nexy_promo = LeanEvent {
-        event_id: "$nexy_promo".to_string(),
-        event_type: "m.room.power_levels".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".to_string(),
-        origin_server_ts: 460,
-        content: serde_json::json!({
-            "users": {
-                "@admin:example.com": 100,
-                "@nexy:example.com": 50,
-            }
-        }),
-        auth_events: vec![
-            "$create".to_string(),
-            "$pl".to_string(),
-            "$nexy_join".to_string(),
-        ],
-        ..Default::default()
-    };
-
-    let nexy_bans_spammer = LeanEvent {
-        event_id: "$nexy_bans_spammer".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@spammer:example.com".to_string()),
-        sender: "@nexy:example.com".to_string(),
-        origin_server_ts: 470,
-        content: serde_json::json!({ "membership": "ban" }),
-        auth_events: vec![
-            "$create".to_string(),
-            "$nexy_promo".to_string(),
-            "$nexy_join".to_string(),
-        ],
-        ..Default::default()
-    };
+    let auth_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$create",          "type": "m.room.create",       "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 100}
+        {"event_id": "$pl",              "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 200, "content": {"users": {"@admin:example.com": 100}}, "auth_events": ["$create"]}
+        {"event_id": "$jr_pub",          "type": "m.room.join_rules",   "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 300, "content": {"join_rule": "public"}, "auth_events": ["$create", "$pl"]}
+        {"event_id": "$charlie_join",    "type": "m.room.member",       "state_key": "@charlie:example.com", "sender": "@charlie:example.com", "origin_server_ts": 400, "content": {"membership": "join"}, "auth_events": ["$create", "$pl", "$jr_pub"]}
+        "#,
+    );
+    let conflicted_evs = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$admin_lock",        "type": "m.room.join_rules",   "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 500, "content": {"join_rule": "invite"}, "auth_events": ["$create", "$pl"]}
+        {"event_id": "$nexy_join",         "type": "m.room.member",       "state_key": "@nexy:example.com", "sender": "@nexy:example.com", "origin_server_ts": 450, "content": {"membership": "join"}, "auth_events": ["$create", "$pl", "$jr_pub"]}
+        {"event_id": "$nexy_promo",        "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "origin_server_ts": 460, "content": {"users": {"@admin:example.com": 100, "@nexy:example.com": 50}}, "auth_events": ["$create", "$pl", "$nexy_join"]}
+        {"event_id": "$nexy_bans_spammer", "type": "m.room.member",       "state_key": "@spammer:example.com", "sender": "@nexy:example.com", "origin_server_ts": 470, "content": {"membership": "ban"}, "auth_events": ["$create", "$nexy_promo", "$nexy_join"]}
+        "#,
+    );
 
     let mut auth_context = std::collections::HashMap::new();
-    auth_context.insert("$create".to_string(), create_ev);
-    auth_context.insert("$pl".to_string(), pl_ev);
-    auth_context.insert("$jr_pub".to_string(), jr_pub);
-    auth_context.insert("$charlie_join".to_string(), charlie_join);
+    for ev in auth_evs {
+        auth_context.insert(ev.event_id.clone(), ev);
+    }
 
     let mut conflicted_events = std::collections::HashMap::new();
-    conflicted_events.insert("$admin_lock".to_string(), admin_lock);
-    conflicted_events.insert("$nexy_join".to_string(), nexy_join);
-    conflicted_events.insert("$nexy_promo".to_string(), nexy_promo);
-    conflicted_events.insert("$nexy_bans_spammer".to_string(), nexy_bans_spammer);
+    for ev in conflicted_evs {
+        conflicted_events.insert(ev.event_id.clone(), ev);
+    }
 
     let mut unconflicted_state = imbl::OrdMap::new();
     unconflicted_state.insert(
@@ -935,18 +1046,22 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
     // Concurrently, an Admin locks the room to "invite".
     // Phase 1 evaluates the lockdown and Nexy\'s promotion and ban first (because they are Power Events).
     // Phase 2 evaluates Nexy\'s join. Nexy\'s join is rejected due to the lockdown.
-    // In the intended post-CDO outcome, Nexy's join is rejected and her member
-    // key is absent, while her ban of the spammer and her promotion still resolve.
+    // In unpatched v2.1, her promotion and ban survive, leaving a "Ghost Moderator".
+    // Under V2.1.1 resolution the outcome is the same: Nexy's join is rejected
+    // against the resolved (invite) join rules and her member key is absent,
+    // while her ban of the spammer and her promotion still resolve. Only the
+    // join evaporates; her promotion and ban are not transitively dropped.
 
     let (auth_context, conflicted_events, unconflicted_state) = make_ghost_moderator_events();
 
-    // Run V2.2 (CDO Enabled / State Res v2.2)
+    // Run V2.1.1 (State Res v2.2)
     let resolved_v211 = rezzy::resolve_iterative_sort(
-        unconflicted_state,
-        conflicted_events,
+        &unconflicted_state,
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let nexy_member_key = (
@@ -965,7 +1080,7 @@ fn test_v2_1_1_anomaly_06b_ghost_moderator() {
     // Per the spec, nexy's join is auth-checked against the resolved join_rules
     // (which resolves to invite); nexy is not invited, so her join is rejected
     // and her member key is absent. Her ban on the spammer and her promotion
-    // (admin's power_levels) remain resolved.
+    // (admin's power_levels) are separate power events that still resolve.
     assert_eq!(
         resolved_v211.get(&nexy_member_key).map(String::as_str),
         None
@@ -985,7 +1100,7 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
     // Concurrently, Bob (Spammer) joins the room under the old "public" join rules.
     // Under stock v2.1, Bob's join is evaluated against Fork B's local public rules and accepted,
     // evading the lock.
-    // Under CDO (v2.1.1), the concurrent lockdown dominates and drops Bob's join.
+    // Under V2.1.1, the concurrent lockdown dominates and drops Bob's join.
 
     let create_ev = LeanEvent {
         event_id: "$create".to_string(),
@@ -1080,13 +1195,14 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
         "$jr_pub".to_string(),
     );
 
-    // Run V2.1.1 Resolution (CDO Enabled)
+    // Run V2.1.1 Resolution
     let resolved_v211 = rezzy::resolve_iterative_sort(
-        unconflicted_state,
-        conflicted_events,
+        &unconflicted_state,
+        &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let spammer_key = (
@@ -1137,6 +1253,21 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
         ..Default::default()
     };
 
+    // A public join rule, so Bob's self-join is authorized. Without it the
+    // default is `invite`, and Bob (never invited) cannot validly join -- which
+    // would make the topic rejection below trivially true for the wrong reason
+    // (Bob never a valid member), not because of the concurrent ban.
+    let join_rules = LeanEvent {
+        event_id: "$join_rules".to_string(),
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        sender: "@alice:example.com".to_string(),
+        origin_server_ts: 250,
+        content: serde_json::json!({ "join_rule": "public" }),
+        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        ..Default::default()
+    };
+
     let bob_join = LeanEvent {
         event_id: "$bob_join".to_string(),
         event_type: "m.room.member".to_string(),
@@ -1144,7 +1275,11 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
         sender: "@bob:example.com".to_string(),
         origin_server_ts: 300,
         content: serde_json::json!({ "membership": "join" }),
-        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$join_rules".to_string(),
+        ],
         ..Default::default()
     };
 
@@ -1183,19 +1318,43 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
     let mut auth_context = std::collections::HashMap::new();
     auth_context.insert("$create".to_string(), create_ev);
     auth_context.insert("$pl".to_string(), pl_ev);
-    auth_context.insert("$bob_join".to_string(), bob_join);
+    auth_context.insert("$join_rules".to_string(), join_rules);
+    auth_context.insert("$bob_join".to_string(), bob_join.clone());
 
     let mut conflicted_events = std::collections::HashMap::new();
     conflicted_events.insert("$alice_bans_bob".to_string(), alice_bans_bob);
-    conflicted_events.insert("$bob_topic_change".to_string(), bob_topic_change);
+    conflicted_events.insert("$bob_topic_change".to_string(), bob_topic_change.clone());
 
-    // Run V2.1 Resolution (Fixed & Spec-Compliant)
-    let resolved_v21 = rezzy::resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&auth_context),
-        conflicted_events,
+    // Control: with no ban, Bob (a valid public-rule member at PL 50) CAN change
+    // the room topic. This proves the topic rejection below is caused by the
+    // concurrent ban, not by Bob being an invalid member.
+    let mut control_conflicted = std::collections::HashMap::new();
+    control_conflicted.insert("$bob_join".to_string(), bob_join);
+    control_conflicted.insert("$bob_topic_change".to_string(), bob_topic_change);
+    let resolved_control = rezzy::resolve_iterative_sort(
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &control_conflicted,
         &auth_context,
         rezzy::StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
+    );
+    assert!(
+        resolved_control.contains_key(&(
+            rezzy::basespec::event_types::EventType::from("m.room.topic"),
+            String::new()
+        )),
+        "control: with Bob validly joined and not banned, the topic change must resolve"
+    );
+
+    // Run V2.1 Resolution (Fixed & Spec-Compliant)
+    let resolved_v21 = rezzy::resolve_iterative_sort(
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
+        &auth_context,
+        rezzy::StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // Bob's ban must be resolved first in Step 2.
@@ -1236,6 +1395,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         prev_events: vec![],
         auth_events: vec![],
         content: serde_json::Value::Null,
+        room_id: None,
     };
     events_map.insert("CREATE", create_ev);
 
@@ -1252,6 +1412,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         prev_events: vec!["CREATE"],
         auth_events: vec!["CREATE"],
         content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
+        room_id: None,
     };
     events_map.insert("PL0", pl0);
 
@@ -1268,6 +1429,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         prev_events: vec!["PL0"],
         auth_events: vec!["PL0"],
         content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
+        room_id: None,
     };
     events_map.insert("PL1", pl1);
 
@@ -1284,6 +1446,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         prev_events: vec!["PL1"],
         auth_events: vec!["PL1"],
         content: serde_json::Value::Null,
+        room_id: None,
     };
     events_map.insert("S_A1", sa1);
 
@@ -1300,6 +1463,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         prev_events: vec!["S_A1"],
         auth_events: vec!["PL1"],
         content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
+        room_id: None,
     };
     events_map.insert("PL2", pl2);
 
@@ -1316,6 +1480,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         prev_events: vec!["PL0"],
         auth_events: vec!["PL0"],
         content: serde_json::Value::Null,
+        room_id: None,
     };
     events_map.insert("S_B1", sb1);
 
@@ -1332,6 +1497,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         prev_events: vec!["S_B1"],
         auth_events: vec!["PL0"],
         content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
+        room_id: None,
     };
     events_map.insert("PL_B", pl_b);
 
@@ -1365,6 +1531,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         None,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // Test the "correct auth diff" scenario (FIXED)
@@ -1382,6 +1549,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         None,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // Both scenarios resolve to the same winner because the mainline ordering is
@@ -1448,6 +1616,25 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
         auth_events: vec!["$create".to_string(), "$admin_join".to_string()],
         ..Default::default()
     };
+    // A public join rule, so Mallory's self-join is a genuinely valid membership
+    // (the default `invite` rule would make her never-a-member). Her ban below is
+    // what rejects her PL event, so this keeps the fixture valid without changing
+    // the assertion -- no separate "control" is possible here, since Mallory also
+    // lacks the power level to send PL events even if unbanned.
+    let join_rules = LeanEvent {
+        event_id: "$join_rules".to_string(),
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".to_string(),
+        origin_server_ts: 350,
+        content: json!({ "join_rule": "public" }),
+        auth_events: vec![
+            "$create".to_string(),
+            "$admin_join".to_string(),
+            "$pl".to_string(),
+        ],
+        ..Default::default()
+    };
     let mallory_join = LeanEvent {
         event_id: "$mallory_join".to_string(),
         event_type: "m.room.member".to_string(),
@@ -1455,7 +1642,11 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
         sender: "@mallory:x".to_string(),
         origin_server_ts: 400,
         content: json!({"membership": "join"}),
-        auth_events: vec!["$create".to_string(), "$pl".to_string()],
+        auth_events: vec![
+            "$create".to_string(),
+            "$pl".to_string(),
+            "$join_rules".to_string(),
+        ],
         ..Default::default()
     };
 
@@ -1518,6 +1709,7 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
     auth_context.insert("$create".to_string(), create);
     auth_context.insert("$admin_join".to_string(), admin_join);
     auth_context.insert("$pl".to_string(), pl);
+    auth_context.insert("$join_rules".to_string(), join_rules);
     auth_context.insert("$mallory_join".to_string(), mallory_join);
     auth_context.insert("$mallory_ban".to_string(), mallory_ban);
 
@@ -1530,11 +1722,12 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
     let unconflicted = utils::build_unconflicted_state_test_helper(&auth_context);
 
     let resolved = resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // Mallory's PL event must be rejected (banned sender)
@@ -1550,15 +1743,13 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
     );
 }
 
-/// Coverage: `compute_auth_distance_iterative`
-///
-/// V2.2 uses auth chain distance from `$create` as a tie-breaker in Kahn sort.
-/// This test constructs two competing topic events with multi-hop auth chains,
-/// forcing the iterative DFS traversal through `auth_events` to compute distances.
-/// Multiple conflicted events processed through the same memo cache exercise
-/// the memoization hit path (line 96) and the stack walk logic (lines 106, 111, 123).
+/// V2.2 power-event ordering uses power level, then `origin_server_ts`, then
+/// `event_id` (the redundant `auth_chain_distance` tie-break was removed). This
+/// constructs two competing topic events with equal power level (0) and equal
+/// `origin_server_ts`, forcing the final `event_id` lexicographic tie-break:
+/// `$topic_a` sorts first and `$topic_b` (larger id) wins via last-write-wins.
 #[test]
-fn test_v2_2_auth_distance_tiebreak() {
+fn test_v2_2_event_id_tiebreak() {
     let auth_evs = utils::parse_jsonl_events(
         r#"
         {"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:x", "origin_server_ts": 100, "content": {"room_version": "13", "creator": "@admin:x"}}
@@ -1590,11 +1781,12 @@ fn test_v2_2_auth_distance_tiebreak() {
 
     // Resolve with V2.2
     let resolved = resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2_2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // $topic_b wins: both events have equal PL (0), empty mainline (position 0),
@@ -1641,11 +1833,12 @@ fn test_v2_1_1_creator_in_users_map_rejected() {
 
     let unconflicted = utils::build_unconflicted_state_test_helper(&auth_context);
     let resolved = resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let pl_key = (
@@ -1736,11 +1929,12 @@ fn test_v2_1_1_ban_supplementation_return_path() {
     );
 
     let resolved = resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     // Mallory's PL must be rejected (she's banned)
@@ -1810,11 +2004,12 @@ fn test_v2_1_1_power_phase_membership_bypass_prevention() {
     }
 
     let resolved = resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let pl_key = (
@@ -1882,11 +2077,12 @@ fn test_v2_1_rejects_pl_from_progressively_banned_sender() {
     }
 
     let resolved = resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+        &unconflicted,
+        &conflicted,
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let pl_key = (
@@ -1897,7 +2093,8 @@ fn test_v2_1_rejects_pl_from_progressively_banned_sender() {
     // Under V2.1 (MSC4297), required auth keys (incl. the sender's member event)
     // come from the resolved state. $mal_ban (ts 500) sorts before $mal_pl (ts
     // 700), so by the time $mal_pl is auth-checked Mallory is resolved as banned
-    // and $mal_pl is rejected — $admin_pl wins.
+    // and $mal_pl is rejected — $admin_pl wins. (The prior "stock V2.1 does not
+    // supplement membership" behavior was a non-spec deviation, now removed.)
     assert_eq!(
         resolved.get(&pl_key),
         Some(&"$admin_pl".to_string()),
@@ -2144,8 +2341,11 @@ fn auth_diff_context_event_scenario(version: StateResVersion) -> Option<String> 
     }
 
     let mut final_state: Option<HashMap<(String, String), String>> = None;
-    let completed =
-        rezzy::compute_state_at_streaming_optimized(&["$merge"], &events, version, |id, update| {
+    let completed = rezzy::compute_state_at_streaming_optimized(
+        &["$merge"],
+        &events,
+        version,
+        |id, update| {
             if id != "$merge" {
                 return;
             }
@@ -2157,7 +2357,9 @@ fn auth_diff_context_event_scenario(version: StateResVersion) -> Option<String> 
                         .collect(),
                 );
             }
-        });
+        },
+        &String::new(),
+    );
     assert!(
         completed,
         "compute_state_at_streaming_optimized detected a cycle"

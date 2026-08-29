@@ -1,3 +1,5 @@
+//! Dense binary serialization and deserialization for persisted HAMT nodes.
+
 use alloc::{string::String, vec::Vec};
 use core::convert::TryFrom;
 
@@ -162,6 +164,33 @@ impl HamtCodec for Vec<u8> {
     }
 }
 
+impl<A: HamtCodec, B: HamtCodec> HamtCodec for (A, B) {
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        self.0.encode_hamt(out);
+        self.1.encode_hamt(out);
+    }
+
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        let a = A::decode_hamt(input, cursor)?;
+        let b = B::decode_hamt(input, cursor)?;
+        Ok((a, b))
+    }
+}
+
+impl HamtCodec for crate::basespec::event_types::EventType {
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        let bytes = self.as_str().as_bytes();
+        let len = u32::try_from(bytes.len()).expect("string too long for HAMT codec");
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(bytes);
+    }
+
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        let s = String::decode_hamt(input, cursor)?;
+        Ok(crate::basespec::event_types::EventType::from(s.as_str()))
+    }
+}
+
 /// A representation of an internal node that is safe to persist to disk.
 ///
 /// Leaves are stored inline as `(K, V)` pairs in datamap order, while child
@@ -208,6 +237,11 @@ where
             self.child_hashes.len(),
             child_slots,
             "child count must match nodemap bits"
+        );
+        assert_eq!(
+            self.datamap & self.nodemap,
+            0,
+            "datamap and nodemap must not overlap"
         );
 
         let mut body = Vec::new();
@@ -267,6 +301,10 @@ where
                 .try_into()
                 .map_err(|_| "Buffer too short for nodemap")?,
         );
+
+        if (datamap & nodemap) != 0 {
+            return Err("Datamap and nodemap overlap: node is corrupt");
+        }
 
         let mut structural_hash = [0u8; 16];
         structural_hash.copy_from_slice(&buf[9..25]);

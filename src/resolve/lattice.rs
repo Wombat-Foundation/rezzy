@@ -44,7 +44,7 @@
 //!
 //! 1. **`fold_lattice_chunk`** — processes a slice of events in a single thread,
 //!    auth-checking each and folding per-`(type, state_key)` winners via the LUB operator.
-//! 2. **`merge_lattice_winners`** — merges thread-local winner maps back into
+//! 2. **`update_winner_if_better`** — merges thread-local winner maps back into
 //!    the global result using the same LUB comparator.
 //! 3. **`compute_lattice_coordinatized_winners`** — orchestrates the parallel
 //!    fan-out via `std::thread::scope`, splits events into chunks, and coordinates
@@ -178,20 +178,6 @@ where
     thread_res
 }
 
-fn merge_lattice_winners<'a, Id, C>(
-    key_winners: &mut HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
-    thread_res: HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
-    mainline_distances: &HashMap<Id, usize>,
-    mainline_len: usize,
-) where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent,
-{
-    for (key, ev) in thread_res {
-        update_winner_if_better(key_winners, key, ev, mainline_distances, mainline_len);
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn compute_lattice_coordinatized_winners<
     'a,
@@ -252,7 +238,9 @@ fn compute_lattice_coordinatized_winners<
             for handle in handles {
                 let thread_res = handle.join().unwrap();
                 let mut guard = winners.lock().unwrap();
-                merge_lattice_winners(&mut guard, thread_res, mainline_distances, mainline_len);
+                for (key, ev) in thread_res {
+                    update_winner_if_better(&mut guard, key, ev, mainline_distances, mainline_len);
+                }
             }
         });
         *key_winners = winners.into_inner().unwrap();
@@ -335,7 +323,7 @@ pub fn resolve_lattice_fold<
     S2: core::hash::BuildHasher + Sync + Send,
 >(
     unconflicted_state: crate::state::at::SharedState<Id>,
-    mut conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
+    conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     version: StateResVersion,
 ) -> crate::state::at::SharedState<Id>
@@ -344,15 +332,21 @@ where
     C: crate::basespec::rezzy_types::EventContent + Sync + Send + Clone,
 {
     // jscpd:ignore-end
-    let mut pl_cache = HashMap::new();
+    let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
+
+    // Empty-key sentinel for the `(EventType, K)` lookups below (the
+    // "" state key used for singleton events like power_levels/create).
+    // `K = String` throughout this exploratory path.
+    let empty_key = alloc::string::String::new();
 
     if version.is_v2_1_plus() {
         return crate::resolve::iterative::resolve_iterative_sort(
-            unconflicted_state,
-            conflicted_events,
+            &unconflicted_state,
+            &conflicted_events,
             auth_context,
             version,
             &mut pl_cache,
+            &empty_key,
         );
     }
 
@@ -360,10 +354,11 @@ where
     // `conflicted_events` beyond what its own caller supplied, so every
     // entry is treated as genuinely conflicted (matching the pre-existing
     // behavior of this experimental resolver).
-    let conflicted_keys = crate::resolve::iterative::derive_all_conflicted_keys(&conflicted_events);
+    let conflicted_keys =
+        crate::resolve::iterative::derive_all_conflicted_keys(&conflicted_events, &empty_key);
 
     let original_conflicted_keys = crate::resolve::iterative::prepare_conflicted_and_keys(
-        &mut conflicted_events,
+        &conflicted_events,
         auth_context,
         version,
     );
@@ -378,6 +373,7 @@ where
             auth_context,
             &original_conflicted_keys,
             version,
+            &empty_key,
         );
 
     // Initialize local auth cache for power-phase checks
@@ -399,10 +395,10 @@ where
     let sort_set = &conflicted_events;
 
     // Coordinate Projection Phase (Mainline distance mapping)
-    let mainline = build_mainline(&resolved, &sort_context);
+    let mainline = build_mainline(&resolved, &sort_context, &empty_key, version);
     let mut target_events: alloc::vec::Vec<&LeanEvent<Id, C>> = non_power_events.values().collect();
     let mainline_distances =
-        compute_closest_mainline_positions(&mut target_events, &mainline, &sort_context);
+        compute_closest_mainline_positions(&mut target_events, &mainline, &sort_context, version);
     let mainline_len = mainline.len();
 
     // Semilattice Fold Phase

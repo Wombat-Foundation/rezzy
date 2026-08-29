@@ -1,4 +1,3 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -75,6 +74,7 @@ fn test_compute_state_at_correctness_and_performance() {
             prev_events,
             auth_events: Vec::new(),
             depth: u_i,
+            room_id: None,
         };
 
         events_map.insert(event_id, ev);
@@ -86,12 +86,12 @@ fn test_compute_state_at_correctness_and_performance() {
     let tip_id = "$1000";
 
     // Correctness Checks
-    let early_state =
-        compute_state_at(early_id, &events_map, StateResVersion::V2).expect("should compute");
-    let mid_state =
-        compute_state_at(mid_id, &events_map, StateResVersion::V2).expect("should compute");
-    let tip_state =
-        compute_state_at(tip_id, &events_map, StateResVersion::V2).expect("should compute");
+    let early_state = compute_state_at(early_id, &events_map, StateResVersion::V2, &String::new())
+        .expect("should compute");
+    let mid_state = compute_state_at(mid_id, &events_map, StateResVersion::V2, &String::new())
+        .expect("should compute");
+    let tip_state = compute_state_at(tip_id, &events_map, StateResVersion::V2, &String::new())
+        .expect("should compute");
 
     // Check sizes of the state maps
     // At $100, we should have exactly 10 state keys (100 / 10)
@@ -119,21 +119,21 @@ fn test_compute_state_at_correctness_and_performance() {
     // Early
     let start_early = Instant::now();
     for _ in 0..runs {
-        let _ = compute_state_at(early_id, &events_map, StateResVersion::V2);
+        let _ = compute_state_at(early_id, &events_map, StateResVersion::V2, &String::new());
     }
     let dur_early = start_early.elapsed() / runs;
 
     // Mid
     let start_mid = Instant::now();
     for _ in 0..runs {
-        let _ = compute_state_at(mid_id, &events_map, StateResVersion::V2);
+        let _ = compute_state_at(mid_id, &events_map, StateResVersion::V2, &String::new());
     }
     let dur_mid = start_mid.elapsed() / runs;
 
     // Tip
     let start_tip = Instant::now();
     for _ in 0..runs {
-        let _ = compute_state_at(tip_id, &events_map, StateResVersion::V2);
+        let _ = compute_state_at(tip_id, &events_map, StateResVersion::V2, &String::new());
     }
     let dur_tip = start_tip.elapsed() / runs;
 
@@ -180,6 +180,7 @@ fn test_compute_state_at_batch() {
             prev_events,
             auth_events: Vec::new(),
             depth: u_i,
+            room_id: None,
         };
 
         events_map.insert(event_id, ev);
@@ -190,16 +191,17 @@ fn test_compute_state_at_batch() {
     let tip_id = "$1000";
 
     // 1. Correctness Checks
-    let early_state =
-        compute_state_at(early_id, &events_map, StateResVersion::V2).expect("should compute");
-    let mid_state =
-        compute_state_at(mid_id, &events_map, StateResVersion::V2).expect("should compute");
-    let tip_state =
-        compute_state_at(tip_id, &events_map, StateResVersion::V2).expect("should compute");
+    let early_state = compute_state_at(early_id, &events_map, StateResVersion::V2, &String::new())
+        .expect("should compute");
+    let mid_state = compute_state_at(mid_id, &events_map, StateResVersion::V2, &String::new())
+        .expect("should compute");
+    let tip_state = compute_state_at(tip_id, &events_map, StateResVersion::V2, &String::new())
+        .expect("should compute");
 
     // Run batch computation
     let batch_ids = vec![early_id, mid_id, tip_id];
-    let batch_results = compute_state_at_batch(&batch_ids, &events_map, StateResVersion::V2);
+    let batch_results =
+        compute_state_at_batch(&batch_ids, &events_map, StateResVersion::V2, &String::new());
 
     // Verify batch results exactly match individual results
     assert_eq!(batch_results.len(), 3);
@@ -217,12 +219,18 @@ fn test_compute_state_at_batch() {
         &[],
         &events_map,
         StateResVersion::V2,
+        &String::new(),
     );
     assert!(empty_results.is_empty());
 
     // Verify missing / invalid IDs are ignored or skipped gracefully without panics
     let invalid_ids = vec!["$missing_1", early_id, "$missing_2"];
-    let partial_results = compute_state_at_batch(&invalid_ids, &events_map, StateResVersion::V2);
+    let partial_results = compute_state_at_batch(
+        &invalid_ids,
+        &events_map,
+        StateResVersion::V2,
+        &String::new(),
+    );
     assert_eq!(partial_results.len(), 1);
     assert_eq!(&partial_results[early_id], &early_state);
 }
@@ -265,6 +273,7 @@ fn test_streaming_correctness_with_branched_dag() {
                 prev_events,
                 auth_events: Vec::new(),
                 depth: i,
+                room_id: None,
             },
         );
     }
@@ -291,6 +300,7 @@ fn test_streaming_correctness_with_branched_dag() {
                 prev_events: vec![prev],
                 auth_events: Vec::new(),
                 depth: i,
+                room_id: None,
             },
         );
     }
@@ -325,6 +335,7 @@ fn test_streaming_correctness_with_branched_dag() {
                 prev_events: vec![prev],
                 auth_events: Vec::new(),
                 depth: i,
+                room_id: None,
             },
         );
     }
@@ -345,6 +356,7 @@ fn test_streaming_correctness_with_branched_dag() {
             prev_events: vec!["$49a".to_string(), "$49b".to_string()],
             auth_events: Vec::new(),
             depth: 50,
+            room_id: None,
         },
     );
 
@@ -375,12 +387,18 @@ fn test_streaming_correctness_with_branched_dag() {
 
     let batch_ids = vec!["$40", "$50"];
     let mut streaming_results = HashMap::new();
-    compute_state_at_streaming(&batch_ids, &events_map, StateResVersion::V2, |id, state| {
-        streaming_results.insert(
-            id.clone(),
-            state.into_iter().collect::<imbl::OrdMap<_, _>>(),
-        );
-    });
+    compute_state_at_streaming(
+        &batch_ids,
+        &events_map,
+        StateResVersion::V2,
+        |id, state| {
+            streaming_results.insert(
+                id.clone(),
+                state.into_iter().collect::<imbl::OrdMap<_, _>>(),
+            );
+        },
+        &String::new(),
+    );
 
     assert_eq!(&streaming_results["$40"], &expected_at_40);
     assert_eq!(&streaming_results["$50"], &expected_at_50);
@@ -484,7 +502,7 @@ fn test_delta_chain_generation_correctness() {
     assert_eq!(id3, "$3");
     assert_eq!(p3, &Some(*h2));
     assert_eq!(h3, h2); // State hash must be identical because it's a non-state event
-    assert!(d3.is_empty()); // Delta list must be empty because state did not change
+    assert_eq!(d3.as_slice(), []); // Delta list must be empty because state did not change
 }
 
 #[test]
@@ -612,7 +630,7 @@ fn test_state_delta_compression_robustness() {
 
 // ─── Supplemental coverage tests for state/at.rs  ────────────────────
 
-mod utils;
+use crate::utils;
 
 /// Coverage: `compute_merge_base` (at.rs) — diamond DAG.
 /// Tests: empty extremities, single extremity, two-branch merge, disjoint DAGs.
@@ -896,6 +914,7 @@ fn test_compute_state_at_prev_events_cycle() {
         &events_map,
         StateResVersion::V2,
         |_id, _state| -> Result<(), std::convert::Infallible> { Ok(()) },
+        &String::new(),
     );
     assert!(
         matches!(result, Err(StateComputationError::CycleDetected)),
@@ -904,9 +923,15 @@ fn test_compute_state_at_prev_events_cycle() {
 
     // compute_state_at_streaming should silently handle CycleDetected
     let mut callback_called = false;
-    compute_state_at_streaming(&["$A"], &events_map, StateResVersion::V2, |_id, _state| {
-        callback_called = true;
-    });
+    compute_state_at_streaming(
+        &["$A"],
+        &events_map,
+        StateResVersion::V2,
+        |_id, _state| {
+            callback_called = true;
+        },
+        &String::new(),
+    );
     assert!(
         !callback_called,
         "Callback must not be called when there's a cycle"
@@ -954,7 +979,8 @@ fn test_auth_chain_diff_interleaving() {
         events_map.insert(ev.event_id.clone(), ev);
     }
 
-    let state = compute_state_at("$merge", &events_map, StateResVersion::V2).unwrap();
+    let state =
+        compute_state_at("$merge", &events_map, StateResVersion::V2, &String::new()).unwrap();
 
     assert!(
         state.contains_key(&(

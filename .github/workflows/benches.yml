@@ -1,0 +1,94 @@
+---
+name: Benchmarks
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmark-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: bench
+
+      - name: Run benchmarks (tee to file)
+        # `make rust/bench` (cargo bench --profile release --benches) drives the
+        # custom wall-clock harness in benches/. Tee the output so the metric
+        # extraction step below can parse it.
+        run: set -o pipefail; cargo bench --profile release --benches 2>&1 | tee bench-output.txt
+
+      - name: Fetch previous best metrics
+        # Previous best is tracked as bench.json on the `_metadata/badges` branch.
+        run: |
+          set -e
+          if git ls-remote --heads origin _metadata/badges | grep -q '_metadata/badges'; then
+            git fetch origin _metadata/badges:_metadata/badges
+            git show _metadata/badges:bench.json > bench.json 2>/dev/null || echo '{}' > bench.json
+          else
+            echo '{}' > bench.json
+          fi
+
+      - name: Compare against previous best (10% margin)
+        run: |
+          python3 scripts/compare_bench.py \
+            --current bench-output.txt \
+            --best bench.json \
+            --out bench-new.json \
+            --margin 0.10
+
+      - name: Stage metrics for publisher
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        with:
+          name: benchmark-metrics
+          path: bench-new.json
+
+  publish:
+    needs: bench
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: benchmark-metrics
+      - name: Publish new best to _metadata/badges
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin _metadata/badges 2>/dev/null || true
+          git checkout -B _metadata/badges origin/_metadata/badges 2>/dev/null || git checkout -b _metadata/badges
+          cp "${GITHUB_WORKSPACE}/bench-new.json" bench.json
+          git add bench.json
+          if git diff --cached --quiet; then
+            echo "no metric change to publish"
+          else
+            git commit -m "bench: update best metrics"
+            git push origin _metadata/badges
+          fi

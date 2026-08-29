@@ -56,6 +56,29 @@ where
 /// `max_auth_depth`: If `Some(n)`, limits the backwards traversal to `n` hops.
 /// This prevents history-flooding `DoS` attacks where a rogue admin generates
 /// millions of spoofed events on a dead-end fork.
+///
+/// # ⚠️ Federating servers MUST agree on the same bound
+///
+/// A non-`None` bound truncates the backwards pass: ancestors more than `n`
+/// hops from the conflicted set are silently excluded from
+/// [`SubgraphResult::subgraph`]. If two homeservers federating the same room
+/// resolve with *different* bounds, a truncated ancestor that would have
+/// decided a conflict on one server is absent on the other, so the two can
+/// compute **divergent resolved state and silently partition the room** —
+/// the depth-exceeded truncation is not guaranteed to terminate identically
+/// for every participant.
+///
+/// Because of this, any `Some(n)` must be a **federation-agreed protocol
+/// constant**, not a per-deployment tuning knob: every server in the room
+/// must use the identical value, and it must be set so generously that it can
+/// never truncate a legitimate (non-adversarial) room history. Contrast this
+/// with `HAMT_MAX_DEPTH` elsewhere in the crate, which is a fixed crate
+/// constant every build shares automatically.
+///
+/// In practice, no caller inside this crate passes a real bound: both
+/// production entry points go through [`compute_v2_1_conflicted_subgraph`]
+/// (always `None`). Prefer that unless you have specifically audited the
+/// cross-server agreement requirement above.
 #[must_use]
 pub fn compute_v2_1_conflicted_subgraph_bounded<Id, S>(
     auth_graph: &HashMap<Id, LeanEvent<Id>, S>,

@@ -21,7 +21,8 @@
 pub mod roaring;
 pub mod user;
 
-use alloc::string::String;
+use alloc::collections::VecDeque;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -32,7 +33,9 @@ use crate::basespec::event_types::{
     M_ROOM_POWER_LEVELS, M_ROOM_REDACTION, M_ROOM_THIRD_PARTY_INVITE, RULE_INVITE, RULE_KNOCK,
     RULE_KNOCK_RESTRICTED, RULE_PUBLIC, RULE_RESTRICTED,
 };
-use crate::basespec::rezzy_types::{is_valid_mxid, EventLike, LeanEvent, StateResVersion};
+use crate::basespec::rezzy_types::{
+    apply_redaction, domain_matches, is_valid_mxid, EventLike, LeanEvent, StateResVersion,
+};
 
 /// An error indicating why an event failed authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +64,37 @@ pub enum AuthError<Id = String> {
     MissingCreate,
     /// The event failed basic syntactic validation (e.g. invalid event type, too many `prev_events`).
     InvalidSyntax(String),
+    /// Rule 2.2: `auth_events` omits a `(type, state_key)` pair required by
+    /// the auth-events selection algorithm (e.g. the target member event for
+    /// a membership change, or the room's power levels).
+    IncompleteAuthEvents {
+        event_type: String,
+        state_key: String,
+    },
+    /// Rule 2.5: an `auth_events` entry carries a [`RoomId`](crate::RoomId)
+    /// that doesn't match the citing event's own room, OR carries no
+    /// `room_id` at all. Defense-in-depth against a rogue foreign-room event
+    /// leaking into `auth_context`/the event map this check runs over.
+    ///
+    /// Opt-in only on the *citing* side: this only fires when the citing
+    /// event itself has `Some(room_id)` populated -- a citing event with
+    /// `None` (the default, unless a caller explicitly populates it) never
+    /// triggers this check, so it's not a new hard requirement on every
+    /// event. But once the citing side opts in, an `auth_events` entry with
+    /// `None` is treated the same as a mismatch (`actual: None`), not given
+    /// a free pass: a foreign event that leaked in without ever being
+    /// tagged is exactly the case this check exists to catch, and letting
+    /// an absent tag silently skip the check would defeat it entirely.
+    ForeignRoomEvent {
+        event_id: Id,
+        auth_event_id: Id,
+        expected: String,
+        /// `None` if the cited auth event carries no `room_id` at all
+        /// (rather than a populated, differing one).
+        actual: Option<String>,
+    },
+    /// MSC4242 Rule 4.3: an auth event derived from state was rejected during PDU receipt.
+    RejectedAuthEvent { event_id: Id, auth_event_id: Id },
 }
 
 impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
@@ -92,6 +126,39 @@ impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
             AuthError::InvalidSyntax(reason) => {
                 write!(f, "invalid syntax: {reason}")
             }
+            AuthError::IncompleteAuthEvents {
+                event_type,
+                state_key,
+            } => {
+                write!(
+                    f,
+                    "auth_events omits required ({event_type}, {state_key:?})"
+                )
+            }
+            AuthError::ForeignRoomEvent {
+                event_id,
+                auth_event_id,
+                expected,
+                actual,
+            } => match actual {
+                Some(actual) => write!(
+                    f,
+                    "event {event_id} in room {expected} cites auth event {auth_event_id} from foreign room {actual}"
+                ),
+                None => write!(
+                    f,
+                    "event {event_id} in room {expected} cites auth event {auth_event_id} with no room_id"
+                ),
+            },
+            AuthError::RejectedAuthEvent {
+                event_id,
+                auth_event_id,
+            } => {
+                write!(
+                    f,
+                    "event {event_id} cites rejected auth event {auth_event_id}"
+                )
+            }
         }
     }
 }
@@ -99,11 +166,11 @@ impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
 use core::borrow::Borrow;
 use core::cmp::Ordering;
 
-/// Trait for zero-copy lookups into `BTreeMap<(String, String), _>`.
+/// Trait for zero-copy lookups into state maps.
 ///
-/// This enables querying a `BTreeMap` keyed by owned `(String, String)`
-/// using borrowed `(&str, &str)` tuples — avoiding allocation for
-/// every state lookup during auth checking.
+/// This enables querying [`SharedState`](crate::state::at::SharedState) or `BTreeMap`
+/// maps keyed by owned `(EventType, K)` or `(String, K)` tuples using borrowed `(&str, &str)`
+/// tuples — avoiding allocation for state lookups during auth checking.
 pub trait StateKeyDyn {
     /// The event type (e.g. `"m.room.member"`).
     fn ev_type(&self) -> &str;
@@ -222,11 +289,58 @@ where
     let Some(create) = state.get_event(M_ROOM_CREATE, "") else {
         return Err(AuthError::MissingCreate);
     };
-    Ok(create
-        .content()
-        .get_room_version()
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(1)) // V1 rooms didn't have a room_version field
+    if let Some(v) = create.content().get_room_version() {
+        if let Ok(num) = v.parse::<u32>() {
+            return Ok(num);
+        }
+        if StateResVersion::from_room_version(v).is_some_and(|r| r.is_v2_1_plus()) {
+            return Ok(12);
+        }
+    }
+    // V1 rooms didn't have a room_version field, so an absent (or
+    // unparsable, non-v2.1+ label) value is spec-legal -- but it's rare
+    // enough in practice that it's worth flagging loudly rather than
+    // silently defaulting.
+    #[cfg(feature = "std")]
+    std::eprintln!(
+        "REZZY_WARN: get_room_version_num: no usable content.room_version on m.room.create {:?} -- defaulting to 1",
+        create.event_id()
+    );
+    Ok(1)
+}
+
+/// Reads `content.room_version` off the room's `m.room.create` event, as a
+/// raw string, for the version-string-keyed rules below (Rules 4, 11, 2.2)
+/// that must branch on the literal spec label rather than the collapsed
+/// [`StateResVersion`] enum.
+///
+/// Defaults to `"1"` when the create event is missing or its
+/// `content.room_version` is absent -- both spec-legal (real v1 rooms never
+/// had the field), but rare enough in live traffic that a silent default is
+/// worth flagging loudly rather than passing through unnoticed. `rule` names
+/// the calling rule for the warning.
+fn room_version_str_or_warn<'s, Id, C, E, S>(state: &'s S, rule: &str) -> &'s str
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent + 's,
+    E: EventLike<Id = Id, Content = C> + 's,
+    S: StateProvider<Id, C, E>,
+{
+    let create = state.get_event(M_ROOM_CREATE, "");
+    if let Some(v) = create.and_then(|create_ev| create_ev.content().get_room_version()) {
+        v
+    } else {
+        #[cfg(feature = "std")]
+        std::eprintln!(
+            "REZZY_WARN: {rule}: {} -- defaulting room_version to \"1\"",
+            if create.is_none() {
+                "no m.room.create in state"
+            } else {
+                "m.room.create has no content.room_version"
+            }
+        );
+        "1"
+    }
 }
 
 fn reject_if_flagged_auth_state<
@@ -238,12 +352,20 @@ fn reject_if_flagged_auth_state<
     event_type: &str,
     state_key: &str,
 ) -> Result<(), AuthError<Id>> {
+    // Only `rejected` disqualifies state as auth material. Soft-failed events
+    // are NOT rejected here: per the server-server spec's "Soft failure"
+    // section, "Soft failed events participate in state resolution as normal
+    // if further events are received which reference it" and "it is possible
+    // for such events to appear in the current state of the room" -- once a
+    // soft-failed event is legitimately resolved into state, later events are
+    // meant to be able to build on it like any other state, not be blanket
+    // rejected for doing so.
     if state
         .get_event(event_type, state_key)
-        .is_some_and(|ev| ev.rejected() || ev.soft_fail())
+        .is_some_and(EventLike::rejected)
     {
         return Err(AuthError::InvalidSyntax(alloc::format!(
-            "rejected or soft-failed auth state event {event_type}/{state_key} must not be used"
+            "rejected auth state event {event_type}/{state_key} must not be used"
         )));
     }
     Ok(())
@@ -383,9 +505,17 @@ pub fn check_auth_with_context<
             "prev_events exceeds maximum allowed length of 20".into(),
         ));
     }
-    if event.auth_events().len() > 10 {
+    let is_msc4242 = matches!(version, StateResVersion::V2_2);
+    if !is_msc4242 && event.auth_events().len() > 10 {
         return Err(AuthError::InvalidSyntax(
             "auth_events exceeds maximum allowed length of 10".into(),
+        ));
+    }
+    if is_msc4242
+        && event.prev_state_events().len() > crate::basespec::event_types::MAX_PREV_STATE_EVENTS
+    {
+        return Err(AuthError::InvalidSyntax(
+            "prev_state_events exceeds maximum allowed length of 20".into(),
         ));
     }
 
@@ -400,9 +530,12 @@ pub fn check_auth_with_context<
         ));
     }
 
-    if event.rejected() || event.soft_fail() {
+    // Rejected events must not be auth-checked (spec rooms/v9). Soft-failed events are
+    // auth-checked as normal and participate in state resolution (spec server-server-api
+    // "Soft failure"); they are not blanket-rejected here.
+    if event.rejected() {
         return Err(AuthError::InvalidSyntax(
-            "rejected or soft-failed events must not be auth-checked".into(),
+            "rejected events must not be auth-checked".into(),
         ));
     }
     reject_flagged_auth_state(event, state)?;
@@ -457,10 +590,7 @@ pub fn check_auth_with_context<
     // gating on `version == StateResVersion::V1` would only ever match real
     // room version "1" and silently skip versions 2-5.
     if event_type == crate::basespec::event_types::M_ROOM_ALIASES {
-        let room_version = state
-            .get_event(M_ROOM_CREATE, "")
-            .and_then(|create_ev| create_ev.content().get_room_version())
-            .unwrap_or("1");
+        let room_version = room_version_str_or_warn(state, "Rule 4 (m.room.aliases)");
         if matches!(room_version, "1" | "2" | "3" | "4" | "5") {
             let Some(state_key) = event.state_key() else {
                 return Err(AuthError::InvalidSyntax(
@@ -483,10 +613,7 @@ pub fn check_auth_with_context<
     // Rule 4 above, from the m.room.create event's content, not the
     // collapsed `StateResVersion` enum.
     if event_type == M_ROOM_REDACTION {
-        let room_version = state
-            .get_event(M_ROOM_CREATE, "")
-            .and_then(|create_ev| create_ev.content().get_room_version())
-            .unwrap_or("1");
+        let room_version = room_version_str_or_warn(state, "Rule 11 (m.room.redaction)");
         if matches!(room_version, "1" | "2") {
             let sender_pl = user::get_sender_power_level(event.sender(), state, version);
             let redact_pl = get_redact_power_level(state);
@@ -505,7 +632,20 @@ pub fn check_auth_with_context<
     }
 
     // Rules 2.1, 2.2, 2.3, 2.4 checks via auth_context
-    if let Some(provider) = auth_context {
+    //
+    // MSC4242 (V2.2) does not apply here: `LeanEvent` has no separate
+    // `prev_state_events` storage, so `DagNode::prev_state_events` aliases
+    // `auth_events` (see its impl above) and `event.auth_events()` returns
+    // that same shared field. Running this block against it would validate
+    // the wire-level `prev_state_events` list — up to `MAX_PREV_STATE_EVENTS`
+    // (20) entries of arbitrary state-event types — against the classic
+    // auth_events selection algorithm (`VALID_AUTH_TYPES` whitelist,
+    // `required_auth_types_for`), incorrectly rejecting valid State DAG
+    // events. MSC4242's own auth-relevant checks live in
+    // `validate_msc4242_prev_state_events` (`src/state/dag.rs`), which
+    // operates on `prev_state_events()` directly rather than through this
+    // legacy citation-selection path.
+    if let Some(provider) = auth_context.filter(|_| version != StateResVersion::V2_2) {
         const VALID_AUTH_TYPES: &[&str] = &[
             M_ROOM_CREATE,
             M_ROOM_MEMBER,
@@ -566,6 +706,32 @@ pub fn check_auth_with_context<
                 return Err(AuthError::InvalidSyntax(
                     "auth_events contains duplicate (type, state_key) pair".into(),
                 ));
+            }
+        }
+
+        // Rule 2.2: auth_events must cite every (type, state_key) pair the
+        // selection algorithm requires *and that actually exists in the
+        // room's current state* — not just valid, non-duplicate entries.
+        // A required type with no state entry yet (e.g. m.room.power_levels
+        // before the room has ever set one) is correctly absent from
+        // auth_events, so it's excluded here rather than demanded. Omitting
+        // a citation that *does* exist in state (e.g. the target member
+        // event for a membership change) previously passed silently; see
+        // `required_auth_types_for` and `docs/spec_audit.md` rule 2.2.
+        // The selection is room-version-aware (the v8+ restricted-join
+        // authorising member), so read the actual version from the create
+        // event rather than the collapsed `StateResVersion` enum.
+        let room_version = room_version_str_or_warn(state, "Rule 2.2 (auth_events selection)");
+        for (req_type, req_key) in required_auth_types_for(event, event_type, version, room_version)
+        {
+            if state.get_event(req_type, req_key).is_none() {
+                continue;
+            }
+            if !seen_tuples.contains(&(req_type.to_string(), req_key.to_string())) {
+                return Err(AuthError::IncompleteAuthEvents {
+                    event_type: req_type.to_string(),
+                    state_key: req_key.to_string(),
+                });
             }
         }
     }
@@ -939,6 +1105,256 @@ pub(crate) fn get_redact_power_level<
     DEFAULT_PL_REDACT
 }
 
+/// Whether `redaction` is authorized to redact `target`, given the room state.
+///
+/// Mirrors the spec's redaction rule:
+/// - the target's own sender may always redact their own event;
+/// - a sender whose power level is at least the `redact` level may redact
+///   others' events;
+/// - room versions 1–2 additionally allow a redaction whose sender shares a
+///   domain with the target's sender (federation rule 11).
+fn redaction_is_authorized<Id, C, E, K>(
+    redaction: &LeanEvent<Id, C, K>,
+    target: &LeanEvent<Id, C, K>,
+    state: &impl StateProvider<Id, C, E>,
+    version: StateResVersion,
+    room_version: &str,
+) -> bool
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+    K: crate::basespec::rezzy_types::StateKey,
+{
+    if redaction.sender() == target.sender() {
+        return true;
+    }
+    let sender_pl = user::get_sender_power_level(redaction.sender(), state, version);
+    if sender_pl >= get_redact_power_level(state) {
+        return true;
+    }
+    // Legacy rule 11 (room v1/v2): allowed if the domain of the redacted
+    // event (its `redacts` target) matches the domain of the redaction's own
+    // event_id — matching `check_auth`'s rule, NOT the senders' domains.
+    if matches!(room_version, "1" | "2") {
+        return redaction.get_redacts().is_some_and(|target| {
+            domain_matches(target, &alloc::format!("{}", redaction.event_id))
+        });
+    }
+    false
+}
+
+/// The outcome of applying redactions to a batch of events.
+///
+/// Reports, for each `m.room.redaction` event in the batch, what happened to
+/// its target so callers can surface or re-drive the redaction work without
+/// re-deriving the authorization decision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RedactionReport<Id> {
+    /// `(redaction_id, target_id)` pairs whose redaction was authorized and the
+    /// target stripped in place.
+    pub applied: Vec<(Id, Id)>,
+    /// `(redaction_id, target_id)` pairs rejected because the redaction's
+    /// sender was not authorized to redact the target.
+    pub skipped_unauthorized: Vec<(Id, Id)>,
+    /// `(redaction_id, target_id)` pairs whose target was absent from the
+    /// current batch, so the redaction was deferred. The target is kept as a
+    /// `String` because an out-of-batch target may not be representable as
+    /// `Id` (e.g. an interned/numeric id that can only be resolved in storage).
+    pub target_not_in_batch: Vec<(Id, String)>,
+}
+
+impl<Id> Default for RedactionReport<Id> {
+    fn default() -> Self {
+        RedactionReport {
+            applied: Vec::new(),
+            skipped_unauthorized: Vec::new(),
+            target_not_in_batch: Vec::new(),
+        }
+    }
+}
+
+#[inline]
+pub(crate) fn event_id_to_wire_cow<Id: core::fmt::Display + 'static>(
+    id: &Id,
+) -> alloc::borrow::Cow<'_, str> {
+    if let Some(s) = (id as &dyn core::any::Any).downcast_ref::<alloc::string::String>() {
+        return alloc::borrow::Cow::Borrowed(s.as_str());
+    }
+    if let Some(s) = (id as &dyn core::any::Any).downcast_ref::<alloc::sync::Arc<str>>() {
+        return alloc::borrow::Cow::Borrowed(s.as_ref());
+    }
+    if let Some(s) = (id as &dyn core::any::Any).downcast_ref::<alloc::boxed::Box<str>>() {
+        return alloc::borrow::Cow::Borrowed(s.as_ref());
+    }
+    alloc::borrow::Cow::Owned(alloc::string::ToString::to_string(id))
+}
+
+/// Apply each `m.room.redaction` event to its in-set target, but only when the
+/// redaction is **authorized** against the provided room state.
+///
+/// This is the authorization-checked redaction step that belongs *after* state
+/// resolution: unlike [`crate::basespec::rezzy_types::ingest_events`] (which
+/// parses and verifies content hashes only and must not strip content), this
+/// function has the resolved state needed to check the redact power level and
+/// the target's sender. Unauthorized redactions leave the target untouched.
+///
+/// # Memory contract
+/// This is a pure, in-memory transform — it performs no I/O and owns no state.
+/// The caller must already hold, in memory:
+/// - `events`: the slice of events to redact, including both the redaction
+///   events and their targets. Targets outside `events` are left for a later
+///   pass (a redaction and its target may arrive in different batches).
+/// - `state`: the resolved room state used to authorize each redaction.
+///
+/// The function mutates `events` in place, replacing each authorized target
+/// with its redacted form. Callers can use
+/// [`LeanEvent::is_redaction`](crate::basespec::rezzy_types::LeanEvent::is_redaction)
+/// to cheaply detect whether a batch contains any redaction work before
+/// calling this.
+///
+/// Rejected or soft-failed redaction events are never applied.
+#[must_use]
+pub fn apply_authorized_redactions<Id, E, K>(
+    events: &mut [LeanEvent<Id, serde_json::Value, K>],
+    state: &impl StateProvider<Id, serde_json::Value, E>,
+    version: StateResVersion,
+    room_version: &str,
+) -> RedactionReport<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId + Clone + 'static,
+    E: EventLike<Id = Id, Content = serde_json::Value>,
+    K: crate::basespec::rezzy_types::StateKey + Clone,
+{
+    // Collect active redaction positions first. If there are no redactions
+    // in this batch, return immediately without constructing the index map.
+    let redaction_positions: Vec<usize> = events
+        .iter()
+        .enumerate()
+        // A rejected redaction is categorically invalid (failed auth against
+        // its own auth_events) and must never strip content. Soft-failed
+        // redactions are also excluded from being applied.
+        .filter(|(_, e)| e.event_type == M_ROOM_REDACTION && !e.rejected && !e.soft_fail())
+        .map(|(i, _)| i)
+        .collect();
+
+    if redaction_positions.is_empty() {
+        return RedactionReport::default();
+    }
+
+    // Build the wire ID index map. For string-backed IDs (String, Arc<str>, Box<str>),
+    // `event_id_to_wire_cow` borrows directly without allocating.
+    let pos_by_id: alloc::collections::BTreeMap<alloc::borrow::Cow<'_, str>, usize> = events
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (event_id_to_wire_cow(&e.event_id), i))
+        .collect();
+
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut deferred: Vec<(usize, alloc::string::String)> = Vec::new();
+    for &rp in &redaction_positions {
+        let Some(target_id) = events[rp].get_redacts() else {
+            continue;
+        };
+        match pos_by_id.get(target_id) {
+            Some(&tp) if tp != rp => pairs.push((rp, tp)),
+            _ => deferred.push((rp, target_id.to_string())),
+        }
+    }
+
+    let mut report = RedactionReport::default();
+
+    // Order pairs so a redaction is spent as a redactor before it can be
+    // replaced as a target (redaction-of-redaction chains). If pair B targets
+    // the redactor used by pair A, A must run first; otherwise the in-place
+    // `*target = redacted` replaces the redaction source before it's used, and
+    // `apply_redaction` returns None (its `redacts` field was stripped),
+    // silently losing the outer redaction.
+    //
+    // Each pair's redactor position (`rp`) is unique -- `redaction_positions`
+    // draws from distinct event indices -- so at most one other pair can
+    // block a given pair (the one whose `rp` equals this pair's `tp`). That
+    // makes the dependency graph a forest (plus, pathologically, cycles): a
+    // linear-time topological sort (Kahn's algorithm) reproduces the same
+    // order the old O(n^2)/O(n^3) repeated-scan (`position` + nested `any`
+    // over the shrinking `remaining` list, once per pair) computed, without
+    // rescanning on every pair. A genuine cycle (pathological: a redaction
+    // chain that loops back on itself) leaves its members with a permanently
+    // nonzero in-degree; append them in original order, matching the old
+    // code's `unwrap_or(0)` fallback of just taking the next one when stuck.
+    //
+    // `crate::HashMap`, not `BTreeMap`: only point lookups happen below, its
+    // iteration order is never relied on, and the keys are plain `usize`
+    // positions -- so there's no reason to pay `BTreeMap`'s O(log n) per
+    // insert/lookup when O(1) amortized is available, which keeps the whole
+    // sort O(n) instead of O(n log n).
+    let blocked_by: crate::HashMap<usize, usize> = pairs
+        .iter()
+        .enumerate()
+        .map(|(i, &(rp, _))| (rp, i))
+        .collect();
+    let mut children: Vec<Vec<usize>> = alloc::vec![Vec::new(); pairs.len()];
+    let mut in_degree: Vec<u8> = alloc::vec![0; pairs.len()];
+    for (i, &(_, tp)) in pairs.iter().enumerate() {
+        if let Some(&parent) = blocked_by.get(&tp) {
+            children[parent].push(i);
+            in_degree[i] = 1;
+        }
+    }
+    let mut queue: VecDeque<usize> = (0..pairs.len()).filter(|&i| in_degree[i] == 0).collect();
+    let mut order: Vec<usize> = Vec::with_capacity(pairs.len());
+    let mut emitted = alloc::vec![false; pairs.len()];
+    while let Some(i) = queue.pop_front() {
+        order.push(i);
+        emitted[i] = true;
+        for &c in &children[i] {
+            // Each child has exactly one parent (its unique `blocked_by`
+            // predecessor), so this can only run once per child and never
+            // underflows below 0.
+            in_degree[c] = in_degree[c].saturating_sub(1);
+            if in_degree[c] == 0 {
+                queue.push_back(c);
+            }
+        }
+    }
+    order.extend((0..pairs.len()).filter(|&i| !emitted[i]));
+    let ordered_pairs = order.into_iter().map(|i| pairs[i]).collect();
+    pairs = ordered_pairs;
+
+    for (rp, tp) in pairs {
+        if !redaction_is_authorized(&events[rp], &events[tp], state, version, room_version) {
+            report
+                .skipped_unauthorized
+                .push((events[rp].event_id.clone(), events[tp].event_id.clone()));
+            continue;
+        }
+        let (target, redaction) = if tp < rp {
+            let (left, right) = events.split_at_mut(rp);
+            (&mut left[tp], &right[0])
+        } else {
+            let (left, right) = events.split_at_mut(tp);
+            (&mut right[0], &left[rp])
+        };
+        let redaction_id = redaction.event_id.clone();
+        let target_id = target.event_id.clone();
+        if let Some(redacted) = apply_redaction(target, redaction, room_version) {
+            *target = redacted;
+            report.applied.push((redaction_id, target_id));
+        }
+    }
+
+    // Redactions whose target is absent from this batch are deferred, not
+    // applied; surface them so the caller can re-drive them once the target
+    // arrives (or reject them) rather than silently dropping the redaction.
+    for (rp, target_id) in deferred {
+        report
+            .target_not_in_batch
+            .push((events[rp].event_id.clone(), target_id));
+    }
+
+    report
+}
+
 /// Get the required power level to send an event based on room state.
 fn get_required_power_level<
     Id: crate::basespec::rezzy_types::EventId,
@@ -1003,7 +1419,7 @@ fn check_leave_rules<
 
     // Unban: requires ban_pl. Kick: requires kick_pl.
     // Mutually exclusive per spec §10.2.1.
-    let (required, label) = if current_membership == "ban" {
+    let (required, label) = if current_membership == MEM_BAN {
         (get_ban_power_level(state), "unban")
     } else {
         (get_kick_power_level(state), "kick")
@@ -1177,7 +1593,7 @@ fn check_membership_pl_hierarchies<
     version: StateResVersion,
 ) -> Result<(), AuthError<Id>> {
     // 1. Kick/Ban power vs Target power: ONLY for "leave" (kick) or "ban" transitions.
-    if target_user != event.sender() && (new_membership == "leave" || new_membership == "ban") {
+    if target_user != event.sender() && (new_membership == MEM_LEAVE || new_membership == MEM_BAN) {
         let sender_pl = user::get_sender_power_level(event.sender(), state, version);
         let target_pl = user::get_sender_power_level(target_user, state, version);
 
@@ -1513,6 +1929,33 @@ pub fn check_auth_chain<
             continue;
         }
 
+        // Rule 2.5: reject if any cited auth event carries a room_id that
+        // disagrees with this event's own, OR carries no room_id at all --
+        // opt-in only on this (citing) event's side (see ForeignRoomEvent's
+        // docs for why a `None` here never triggers the check, but a `None`
+        // on the auth event's side, once triggered, is not a free pass).
+        if let Some(expected) = &event.room_id {
+            let foreign = event.auth_events.iter().find_map(|auth_id| {
+                let auth_event = event_map.get(auth_id)?;
+                match &auth_event.room_id {
+                    Some(actual) if actual == expected => None,
+                    Some(actual) => Some((auth_id.clone(), Some(actual.clone()))),
+                    None => Some((auth_id.clone(), None)),
+                }
+            });
+            if let Some((auth_event_id, actual)) = foreign {
+                let err = AuthError::ForeignRoomEvent {
+                    event_id: event.event_id.clone(),
+                    auth_event_id,
+                    expected: expected.to_string(),
+                    actual: actual.map(|a| a.to_string()),
+                };
+                rejected.push((event.event_id.clone(), err));
+                rejected_ids.insert(event.event_id.clone());
+                continue;
+            }
+        }
+
         match check_auth_with_context(event, &state, version, None, Some(&event_map)) {
             Ok(()) => {
                 // Apply event to state if it's a state event
@@ -1583,14 +2026,55 @@ pub fn warn_unexpected_auth_events<
 /// included in auth events. The room's existence is implied via `room_id`.
 ///
 /// Equivalent to Ruma's `state_res::auth_types_for_event`.
-#[must_use]
-pub fn auth_types_for_event(
-    event_type: &str,
-    sender: &str,
-    state_key: Option<&str>,
-    content: &serde_json::Value,
+/// Trait-generic counterpart to [`auth_types_for_event`], used by rule 2.2's
+/// completeness check in `check_auth_with_context`. Operates on
+/// [`EventLike`]/[`crate::basespec::rezzy_types::EventContent`] accessors
+/// rather than raw `serde_json::Value`, so it works for any event
+/// representation (not just JSON-backed ones).
+///
+/// Delegates to the shared selection core [`auth_types_for_event_core`], so it
+/// cannot drift from [`auth_types_for_event`].
+fn required_auth_types_for<
+    'a,
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent + 'a,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    event: &'a E,
+    event_type: &'a str,
     version: StateResVersion,
-) -> Vec<(String, String)> {
+    room_version: &'a str,
+) -> Vec<(&'a str, &'a str)> {
+    auth_types_for_event_core(
+        event_type,
+        event.sender(),
+        event.state_key(),
+        event.get_membership(),
+        event.content().get_third_party_invite_token(),
+        event.get_join_authorised_via_users_server(),
+        version,
+        room_version,
+    )
+}
+
+/// The single auth-event selection algorithm shared by both the JSON-facing
+/// [`auth_types_for_event`] and the trait-generic [`required_auth_types_for`].
+///
+/// Returns the `(type, state_key)` pairs an event requires in its
+/// `auth_events`, given the event's already-extracted fields. Version checks
+/// route through [`StateResVersion::is_v2_1_plus`] so there is one place the
+/// V2.1 create-omission rule is expressed.
+#[allow(clippy::too_many_arguments)]
+fn auth_types_for_event_core<'a>(
+    event_type: &str,
+    sender: &'a str,
+    state_key: Option<&'a str>,
+    membership: Option<&str>,
+    third_party_invite_token: Option<&'a str>,
+    join_authorised_via_users_server: Option<&'a str>,
+    version: StateResVersion,
+    room_version: &str,
+) -> Vec<(&'static str, &'a str)> {
     let mut auth_types = Vec::new();
 
     if event_type == M_ROOM_CREATE {
@@ -1598,54 +2082,107 @@ pub fn auth_types_for_event(
     }
 
     // V2.1+ omits m.room.create from auth events (spec change)
-    if !matches!(
-        version,
-        StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
-    ) {
-        auth_types.push((M_ROOM_CREATE.into(), String::new()));
+    if !version.is_v2_1_plus() {
+        auth_types.push((M_ROOM_CREATE, ""));
     }
-    auth_types.push((M_ROOM_MEMBER.into(), sender.into()));
-    auth_types.push((M_ROOM_POWER_LEVELS.into(), String::new()));
+    auth_types.push((M_ROOM_MEMBER, sender));
+    auth_types.push((M_ROOM_POWER_LEVELS, ""));
 
     if event_type == M_ROOM_MEMBER {
         if let Some(sk) = state_key.filter(|sk| *sk != sender) {
-            auth_types.push((M_ROOM_MEMBER.into(), sk.into()));
+            auth_types.push((M_ROOM_MEMBER, sk));
         }
 
-        let membership = content.get(FIELD_MEMBERSHIP).and_then(|v| v.as_str());
-
-        if membership == Some(MEM_JOIN)
-            || membership == Some(MEM_INVITE)
-            || membership == Some(MEM_KNOCK)
-        {
-            auth_types.push((M_ROOM_JOIN_RULES.into(), String::new()));
+        if matches!(membership, Some(MEM_JOIN | MEM_INVITE | MEM_KNOCK)) {
+            auth_types.push((M_ROOM_JOIN_RULES, ""));
         }
 
-        if let Some(tpi) = content
-            .get(FIELD_THIRD_PARTY_INVITE)
-            .and_then(|t| t.as_object())
-        {
-            if let Some(token) = tpi
-                .get(FIELD_SIGNED)
-                .and_then(|s| s.as_object())
-                .and_then(|s| s.get(FIELD_TOKEN))
-                .and_then(|t| t.as_str())
-            {
-                auth_types.push((M_ROOM_THIRD_PARTY_INVITE.into(), token.into()));
+        // The `m.room.third_party_invite` auth event only applies to invite
+        // memberships carrying a token (mirrors the accept-side gating in the
+        // flagged-auth-state check); a token on any other membership is ignored.
+        if membership == Some(MEM_INVITE) {
+            if let Some(token) = third_party_invite_token {
+                auth_types.push((M_ROOM_THIRD_PARTY_INVITE, token));
             }
         }
 
-        if membership == Some(MEM_JOIN) {
-            if let Some(authorising_user) = content
-                .get(crate::basespec::event_types::FIELD_JOIN_AUTHORISED_VIA_USERS_SERVER)
-                .and_then(|v| v.as_str())
-            {
-                auth_types.push((M_ROOM_MEMBER.into(), authorising_user.into()));
+        // The authorising member is only a required auth event for
+        // restricted-join memberships, which is a room-version-8+ (MSC3089)
+        // feature. Gated on the ACTUAL room version string — the collapsed
+        // `StateResVersion::V2` covers v2–11 and cannot express "v8+", so a
+        // pre-v8 join that (maliciously or erroneously) carries the field must
+        // not be made to require an authorising member the v2–7 rules don't.
+        if membership == Some(MEM_JOIN)
+            && (room_version
+                .split('.')
+                .next()
+                .and_then(|m| m.parse::<u32>().ok())
+                .is_some_and(|major| major >= 8)
+                || StateResVersion::from_room_version(room_version)
+                    .is_some_and(|v| v.is_v2_1_plus()))
+        {
+            if let Some(authorising_user) = join_authorised_via_users_server {
+                auth_types.push((M_ROOM_MEMBER, authorising_user));
             }
         }
     }
 
     auth_types
+}
+
+#[must_use]
+pub fn auth_types_for_event(
+    event_type: &str,
+    sender: &str,
+    state_key: Option<&str>,
+    content: &serde_json::Value,
+    version: StateResVersion,
+    room_version: &str,
+) -> Vec<(String, String)> {
+    let membership = content.get(FIELD_MEMBERSHIP).and_then(|v| v.as_str());
+
+    let third_party_invite_token = content
+        .get(FIELD_THIRD_PARTY_INVITE)
+        .and_then(|t| t.as_object())
+        .and_then(|tpi| tpi.get(FIELD_SIGNED).and_then(|s| s.as_object()))
+        .and_then(|s| s.get(FIELD_TOKEN).and_then(|t| t.as_str()));
+
+    let join_authorised_via_users_server = content
+        .get(crate::basespec::event_types::FIELD_JOIN_AUTHORISED_VIA_USERS_SERVER)
+        .and_then(|v| v.as_str());
+
+    auth_types_for_event_core(
+        event_type,
+        sender,
+        state_key,
+        membership,
+        third_party_invite_token,
+        join_authorised_via_users_server,
+        version,
+        room_version,
+    )
+    .into_iter()
+    .map(|(event_type, state_key)| (event_type.to_string(), state_key.to_string()))
+    .collect()
+}
+
+/// Computes the required `(event_type, state_key)` authorization tuples for any [`EventLike`].
+#[must_use]
+pub fn auth_types_for_event_like<'a, E: EventLike + ?Sized>(
+    event: &'a E,
+    version: StateResVersion,
+    room_version: &str,
+) -> Vec<(&'static str, &'a str)> {
+    auth_types_for_event_core(
+        event.event_type().as_ref(),
+        event.sender(),
+        event.state_key(),
+        event.get_membership(),
+        event.get_third_party_invite_token(),
+        event.get_join_authorised_via_users_server(),
+        version,
+        room_version,
+    )
 }
 
 #[cfg(test)]
@@ -1799,9 +2336,75 @@ mod tests {
         );
     }
 
-    /// Coverage: `reject_flagged_auth_state` - invite must reject flagged `m.room.join_rules`.
+    /// Coverage: `reject_flagged_auth_state` - invite must reject REJECTED
+    /// `m.room.join_rules` auth state.
     #[test]
-    fn test_invite_rejects_flagged_join_rules() {
+    fn test_invite_rejects_rejected_join_rules() {
+        let invite_event: LeanEvent<String> = LeanEvent {
+            event_id: "$invite".into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some("@target:x".into()),
+            sender: "@sender:x".into(),
+            content: json!({"membership": "invite"}),
+            ..Default::default()
+        };
+
+        let mut state = RoomState::new();
+        state.insert(
+            (M_ROOM_CREATE.into(), String::new()),
+            make_test_event("$create", M_ROOM_CREATE, "@creator:x", json!({})),
+        );
+        state.insert(
+            (M_ROOM_POWER_LEVELS.into(), String::new()),
+            make_test_event("$pl", M_ROOM_POWER_LEVELS, "@creator:x", json!({})),
+        );
+        state.insert(
+            (M_ROOM_MEMBER.into(), "@sender:x".into()),
+            make_test_event(
+                "$sender_join",
+                M_ROOM_MEMBER,
+                "@sender:x",
+                json!({"membership": "join"}),
+            ),
+        );
+        state.insert(
+            (M_ROOM_MEMBER.into(), "@target:x".into()),
+            make_test_event(
+                "$target_leave",
+                M_ROOM_MEMBER,
+                "@target:x",
+                json!({"membership": "leave"}),
+            ),
+        );
+        state.insert(
+            (M_ROOM_JOIN_RULES.into(), String::new()),
+            LeanEvent {
+                event_id: "$jr".into(),
+                event_type: M_ROOM_JOIN_RULES.into(),
+                sender: "@creator:x".into(),
+                content: json!({"join_rule": "invite"}),
+                rejected: true,
+                soft_fail: false,
+                ..Default::default()
+            },
+        );
+
+        let result = reject_flagged_auth_state(&invite_event, &state);
+        assert!(
+            matches!(result, Err(AuthError::InvalidSyntax(_))),
+            "Invite must reject rejected join_rules auth state: {result:?}"
+        );
+    }
+
+    /// Coverage: `reject_flagged_auth_state` must NOT reject SOFT-FAILED
+    /// auth state. Per the server-server spec's "Soft failure" section:
+    /// "Soft failed events participate in state resolution as normal if
+    /// further events are received which reference it" and "it is possible
+    /// for such events to appear in the current state of the room" -- once
+    /// legitimately resolved into state, a soft-failed event is meant to be
+    /// usable by later events like any other state, not blanket-rejected.
+    #[test]
+    fn test_invite_allows_soft_failed_join_rules() {
         let invite_event: LeanEvent<String> = LeanEvent {
             event_id: "$invite".into(),
             event_type: M_ROOM_MEMBER.into(),
@@ -1853,8 +2456,155 @@ mod tests {
 
         let result = reject_flagged_auth_state(&invite_event, &state);
         assert!(
-            matches!(result, Err(AuthError::InvalidSyntax(_))),
-            "Invite must reject flagged join_rules auth state: {result:?}"
+            result.is_ok(),
+            "Soft-failed join_rules auth state must be usable, per spec \"Soft failure\": {result:?}"
+        );
+    }
+
+    /// Coverage: `required_auth_types_for`'s `m.room.create` early return.
+    /// Unreachable through the public API -- `check_auth_with_context`
+    /// authorizes `m.room.create` and returns `Ok(())` before ever reaching
+    /// rule 2.2's loop (creates are "always authorized if they're first"),
+    /// so this function is never actually called with `event_type ==
+    /// M_ROOM_CREATE` in practice. Exercised directly since it's still real,
+    /// intentional behavior (an `m.room.create` has no required auth types
+    /// of its own to check) -- called out explicitly rather than left
+    /// permanently uncovered.
+    #[test]
+    fn test_coverage_required_auth_types_for_create_returns_empty() {
+        let create_ev = make_test_event(
+            "$create",
+            M_ROOM_CREATE,
+            "@creator:x",
+            json!({"room_version": "11"}),
+        );
+        let required =
+            required_auth_types_for(&create_ev, M_ROOM_CREATE, StateResVersion::V2, "11");
+        assert!(
+            required.is_empty(),
+            "m.room.create has no required auth types of its own: {required:?}"
+        );
+    }
+
+    /// Coverage: `required_auth_types_for`'s `m.room.third_party_invite`
+    /// push. Reachable through the public API in principle (unlike the
+    /// create early return above -- `m.room.member` events go through rule
+    /// 2.2's loop normally), just never exercised by an existing scenario:
+    /// no test built a member event with a `third_party_invite.signed.token`
+    /// present in `content`.
+    #[test]
+    fn test_coverage_required_auth_types_for_third_party_invite_token() {
+        let invite_ev = make_test_event(
+            "$invite",
+            M_ROOM_MEMBER,
+            "@alice:x",
+            json!({
+                "membership": "invite",
+                "third_party_invite": { "signed": { "token": "abc123" } }
+            }),
+        );
+        let required =
+            required_auth_types_for(&invite_ev, M_ROOM_MEMBER, StateResVersion::V2_1, "11");
+        assert!(
+            required.contains(&(M_ROOM_THIRD_PARTY_INVITE, "abc123")),
+            "expected an (m.room.third_party_invite, \"abc123\") entry: {required:?}"
+        );
+    }
+
+    /// Coverage: `required_auth_types_for`'s `join_authorised_via_users_server`
+    /// push (the restricted-join authorising-member requirement). Same
+    /// reachability note as the `third_party_invite` test above -- never
+    /// exercised by an existing scenario.
+    #[test]
+    fn test_coverage_required_auth_types_for_join_authorised_via_users_server() {
+        let join_ev = make_test_event(
+            "$join",
+            M_ROOM_MEMBER,
+            "@alice:x",
+            json!({
+                "membership": "join",
+                "join_authorised_via_users_server": "@authoriser:x"
+            }),
+        );
+        let required =
+            required_auth_types_for(&join_ev, M_ROOM_MEMBER, StateResVersion::V2_1, "11");
+        assert!(
+            required.contains(&(M_ROOM_MEMBER, "@authoriser:x")),
+            "expected an (m.room.member, \"@authoriser:x\") entry: {required:?}"
+        );
+    }
+
+    /// Regression: a pre-v8 (V1) join carrying `join_authorised_via_users_server`
+    /// must NOT add the authorising member to its required auth events -- the
+    /// field is a room-version-8+ (MSC3089) feature and pre-v8 rooms never
+    /// honor it, even if a malformed event forges the field.
+    #[test]
+    fn test_pre_v8_join_authorised_via_users_server_omitted() {
+        let join_ev = make_test_event(
+            "$join",
+            M_ROOM_MEMBER,
+            "@alice:x",
+            json!({
+                "membership": "join",
+                "join_authorised_via_users_server": "@authoriser:x"
+            }),
+        );
+        let required = required_auth_types_for(&join_ev, M_ROOM_MEMBER, StateResVersion::V1, "1");
+        assert!(
+            !required.contains(&(M_ROOM_MEMBER, "@authoriser:x")),
+            "a pre-v8 join must not require the authorising member as an auth event: {required:?}"
+        );
+    }
+
+    /// Regression: the `join_authorised_via_users_server` auth tuple is gated
+    /// on the ACTUAL room version (v8+), not the collapsed `StateResVersion`
+    /// enum. `StateResVersion::V2` covers v2–11, so a pre-v8 (e.g. v6) join
+    /// carrying the field must not be made to require an authorising member the
+    /// v2–7 rules don't have, while a v8+ join must.
+    #[test]
+    fn test_join_authorised_gated_on_actual_room_version() {
+        let join_ev = make_test_event(
+            "$join",
+            M_ROOM_MEMBER,
+            "@alice:x",
+            json!({
+                "membership": "join",
+                "join_authorised_via_users_server": "@authoriser:x"
+            }),
+        );
+
+        let pre_v8 = required_auth_types_for(&join_ev, M_ROOM_MEMBER, StateResVersion::V2, "6");
+        assert!(
+            !pre_v8.contains(&(M_ROOM_MEMBER, "@authoriser:x")),
+            "a v6 join must not require the authorising member: {pre_v8:?}"
+        );
+
+        let v8 = required_auth_types_for(&join_ev, M_ROOM_MEMBER, StateResVersion::V2, "8");
+        assert!(
+            v8.contains(&(M_ROOM_MEMBER, "@authoriser:x")),
+            "a v8+ join with the field must require the authorising member: {v8:?}"
+        );
+    }
+
+    /// Regression: a non-invite membership carrying a `third_party_invite`
+    /// token must NOT add the third-party invite auth event -- that auth type
+    /// applies only to `membership: invite` events.
+    #[test]
+    fn test_non_invite_membership_third_party_token_omitted() {
+        let join_ev = make_test_event(
+            "$join",
+            M_ROOM_MEMBER,
+            "@alice:x",
+            json!({
+                "membership": "join",
+                "third_party_invite": { "signed": { "token": "abc123" } }
+            }),
+        );
+        let required =
+            required_auth_types_for(&join_ev, M_ROOM_MEMBER, StateResVersion::V2_1, "11");
+        assert!(
+            !required.contains(&(M_ROOM_THIRD_PARTY_INVITE, "abc123")),
+            "a non-invite membership's token must not require the third-party invite auth event: {required:?}"
         );
     }
 }

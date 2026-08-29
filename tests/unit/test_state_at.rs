@@ -1,5 +1,4 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-mod utils;
+use crate::utils;
 
 use rezzy::{verify_pagination, LeanEvent, PaginationViolation, StateResVersion};
 use std::collections::HashMap;
@@ -133,7 +132,7 @@ fn test_topo_functions_ignore_federation_depth() {
     // ── compute_state_at: streaming pipeline uses same topo sort ──
     // If the topo sort were fooled by event.depth, it would process B
     // AFTER D (depth 50 > 3), producing wrong state at D.
-    let state = rezzy::compute_state_at("D", &events_map, StateResVersion::V2)
+    let state = rezzy::compute_state_at("D", &events_map, StateResVersion::V2, &String::new())
         .expect("D must be reachable");
     // The create event from A must be in the resolved state at D
     assert_eq!(
@@ -407,6 +406,7 @@ fn test_resolve_merge_fast_path_hashed_mismatch() {
         &events_map,
         &mut global_auth_cache,
         StateResVersion::V2_1_1,
+        &String::new(),
     );
 
     // Verify member state: join_event_2 wins
@@ -448,11 +448,20 @@ fn test_compute_state_at_missing_target_and_batch() {
     .map(|e| (e.event_id.clone(), e))
     .collect();
 
-    assert!(
-        rezzy::compute_state_at(&"GHOST".to_string(), &events_map, StateResVersion::V2).is_none()
-    );
+    assert!(rezzy::compute_state_at(
+        &"GHOST".to_string(),
+        &events_map,
+        StateResVersion::V2,
+        &String::new(),
+    )
+    .is_none());
 
-    let batch = rezzy::compute_state_at_batch(&["A", "GHOST"], &events_map, StateResVersion::V2);
+    let batch = rezzy::compute_state_at_batch(
+        &["A", "GHOST"],
+        &events_map,
+        StateResVersion::V2,
+        &String::new(),
+    );
     assert!(batch.contains_key("A"));
     assert!(!batch.contains_key("GHOST"));
 }
@@ -479,7 +488,13 @@ fn test_compute_state_at_streaming_non_optimized_cycle() {
     .map(|e| (e.event_id.clone(), e))
     .collect();
 
-    rezzy::compute_state_at_streaming(&["A"], &events_map, StateResVersion::V2, |_, _| {});
+    rezzy::compute_state_at_streaming(
+        &["A"],
+        &events_map,
+        StateResVersion::V2,
+        |_, _| {},
+        &String::new(),
+    );
 }
 
 /// `compute_auth_chain_diff`'s real heap traversal: the U-walk catch-up loop,
@@ -579,13 +594,22 @@ fn test_compute_merge_bases_convergence_and_edge_cases() {
     assert_eq!(junctions[0].mask, 0b11);
 
     // Fewer than 2 extremities -> empty.
-    assert!(rezzy::compute_merge_bases(&["A"], &events_map, 100).is_empty());
+    assert_eq!(
+        rezzy::compute_merge_bases(&["A"], &events_map, 100),
+        [] as [rezzy::MergeBase<&std::string::String>; 0]
+    );
 
     // Zero step budget -> no traversal happens.
-    assert!(rezzy::compute_merge_bases(&["A", "B"], &events_map, 0).is_empty());
+    assert_eq!(
+        rezzy::compute_merge_bases(&["A", "B"], &events_map, 0),
+        [] as [rezzy::MergeBase<&std::string::String>; 0]
+    );
 
     // Disjoint tips -> no common ancestor, empty result.
-    assert!(rezzy::compute_merge_bases(&["X", "Y"], &events_map, 100).is_empty());
+    assert_eq!(
+        rezzy::compute_merge_bases(&["X", "Y"], &events_map, 100),
+        [] as [rezzy::MergeBase<&std::string::String>; 0]
+    );
 }
 
 /// `find_backward_extremities`: events whose `prev_events` reference ids
@@ -709,7 +733,12 @@ fn test_resolve_merge_fast_path_identical_parents() {
     .map(|e| (e.event_id.clone(), e))
     .collect();
 
-    let state = rezzy::compute_state_at(&"D".to_string(), &events_map, StateResVersion::V2);
+    let state = rezzy::compute_state_at(
+        &"D".to_string(),
+        &events_map,
+        StateResVersion::V2,
+        &String::new(),
+    );
     let state = state.expect("state at D must resolve");
     assert!(state.contains_key(&(
         rezzy::basespec::event_types::EventType::from("m.room.create"),
@@ -731,7 +760,12 @@ fn test_resolve_multiple_prev_states_update_arm() {
     .map(|e| (e.event_id.clone(), e))
     .collect();
 
-    let state = rezzy::compute_state_at(&"D".to_string(), &events_map, StateResVersion::V2);
+    let state = rezzy::compute_state_at(
+        &"D".to_string(),
+        &events_map,
+        StateResVersion::V2,
+        &String::new(),
+    );
     let state = state.expect("conflicted fork at D must resolve");
     // The conflicted topic key must be present, resolved to one of B/C.
     assert!(state.contains_key(&(
@@ -789,6 +823,7 @@ fn test_resolve_merge_fast_path_hashed_slow_path_diff() {
         &events_map,
         &mut cache,
         StateResVersion::V2,
+        &String::new(),
     );
     assert!(resolved.state.contains_key(&(
         rezzy::basespec::event_types::EventType::from("m.room.create"),
@@ -841,6 +876,7 @@ fn test_resolve_merge_fast_path_hashed_slow_path_diff() {
         &events_map,
         &mut cache,
         StateResVersion::V2,
+        &String::new(),
     );
     // The ghost members are dropped; only the create key survives.
     assert!(resolved2.state.contains_key(&(
@@ -925,6 +961,7 @@ fn test_resolve_merge_fast_path_hashed_update_arm() {
         &events_map,
         &mut cache,
         StateResVersion::V2,
+        &String::new(),
     );
     assert_eq!(
         resolved.state.get(&(
@@ -934,4 +971,133 @@ fn test_resolve_merge_fast_path_hashed_update_arm() {
         Some(&"T2".to_string()),
         "the auth-invalid first topic must lose to the creator's topic"
     );
+}
+
+/// `InternedKey` is a drop-in `K` for the resolution pipeline: converting
+/// events at the ingest boundary via `into_interned_state_key` and resolving
+/// with `SharedStateInterned` produces identical state to the plain-`String`
+/// path, so the interned representation is purely an allocation tradeoff with
+/// no behavioral difference.
+#[test]
+fn test_interned_key_matches_string_path() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.member","state_key":"@x:x","sender":"@x:x","depth":2,"content":{"membership":"join"},"prev_events":["A"],"auth_events":["A"]}
+{"event_id":"C","type":"m.room.member","state_key":"@y:x","sender":"@x:x","depth":3,"content":{"membership":"join"},"prev_events":["B"],"auth_events":["A","B"]}
+{"event_id":"D","type":"m.room.name","state_key":"","sender":"@x:x","depth":4,"content":{"name":"room"},"prev_events":["C"],"auth_events":["A","B"]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    let interned_map: HashMap<
+        String,
+        rezzy::LeanEvent<String, serde_json::Value, rezzy::InternedKey>,
+    > = events_map
+        .iter()
+        .map(|(id, ev)| (id.clone(), ev.clone().into_interned_state_key()))
+        .collect();
+
+    let str_state =
+        rezzy::compute_state_at("D", &events_map, StateResVersion::V2, &String::new()).unwrap();
+    let interned_state = rezzy::compute_state_at(
+        "D",
+        &interned_map,
+        StateResVersion::V2,
+        &rezzy::InternedKey::default(),
+    )
+    .unwrap();
+
+    let str_keyed: std::collections::BTreeMap<(String, String), String> = str_state
+        .into_iter()
+        .map(|((et, k), id)| ((et.to_string(), k), id))
+        .collect();
+    let interned_keyed: std::collections::BTreeMap<(String, String), String> = interned_state
+        .into_iter()
+        .map(|((et, k), id)| ((et.to_string(), k.as_ref().to_string()), id))
+        .collect();
+
+    // Multiple distinct state keys (two m.room.member entries plus create and
+    // name) so this is a real cross-check of the interned path against the
+    // string path, not a single-entry comparison.
+    assert_eq!(str_keyed.len(), 4, "create, two members, and name");
+    assert_eq!(interned_keyed, str_keyed);
+    assert_eq!(
+        str_keyed.get(&("m.room.create".to_string(), String::new())),
+        Some(&"A".to_string()),
+        "resolved state at D must include the create event from A"
+    );
+    assert_eq!(
+        str_keyed.get(&("m.room.member".to_string(), "@x:x".to_string())),
+        Some(&"B".to_string())
+    );
+    assert_eq!(
+        str_keyed.get(&("m.room.member".to_string(), "@y:x".to_string())),
+        Some(&"C".to_string())
+    );
+    assert_eq!(
+        str_keyed.get(&("m.room.name".to_string(), String::new())),
+        Some(&"D".to_string())
+    );
+}
+
+/// Verifies that integer-backed interned keys (e.g. `InternId(u32)`) and
+/// borrowed `&'a str` satisfy `StateKey` and execute state resolution correctly.
+#[test]
+fn test_integer_intern_id_as_state_key() {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+    struct InternId(u32);
+
+    const KEYS: &[&str] = &["", "@x:x", "@y:x"];
+
+    impl AsRef<str> for InternId {
+        fn as_ref(&self) -> &str {
+            KEYS[self.0 as usize]
+        }
+    }
+
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.member","state_key":"@x:x","sender":"@x:x","depth":2,"content":{"membership":"join"},"prev_events":["A"],"auth_events":["A"]}
+{"event_id":"C","type":"m.room.member","state_key":"@y:x","sender":"@x:x","depth":3,"content":{"membership":"join"},"prev_events":["B"],"auth_events":["A","B"]}
+    "#)
+    .into_iter()
+    .map(|e| (e.event_id.clone(), e))
+    .collect();
+
+    let interned_map: HashMap<String, rezzy::LeanEvent<String, serde_json::Value, InternId>> =
+        events_map
+            .iter()
+            .map(|(id, ev)| {
+                let intern_key = ev.state_key.as_ref().map(|k| {
+                    let idx = KEYS.iter().position(|&s| s == k).unwrap();
+                    InternId(u32::try_from(idx).expect("test key index fits u32"))
+                });
+                let mut new_ev = ev.clone();
+                new_ev.state_key = None;
+                (
+                    id.clone(),
+                    rezzy::LeanEvent {
+                        event_id: new_ev.event_id,
+                        event_type: new_ev.event_type,
+                        state_key: intern_key,
+                        power_level: new_ev.power_level,
+                        origin_server_ts: new_ev.origin_server_ts,
+                        sender: new_ev.sender,
+                        content: new_ev.content,
+                        prev_events: new_ev.prev_events,
+                        auth_events: new_ev.auth_events,
+                        depth: new_ev.depth,
+                        rejected: new_ev.rejected,
+                        soft_fail: new_ev.soft_fail,
+                        room_id: new_ev.room_id,
+                    },
+                )
+            })
+            .collect();
+
+    let state = rezzy::compute_state_at("C", &interned_map, StateResVersion::V2, &InternId(0))
+        .expect("resolution with InternId state key succeeds");
+
+    assert_eq!(state.len(), 3);
 }

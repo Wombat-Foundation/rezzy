@@ -268,6 +268,164 @@ impl LtHash {
     }
 }
 
+/// A homomorphic digest of the redaction overlay associated with a resolved
+/// state.  The overlay is deliberately a separate accumulator from
+/// [`LtHash`]: it does not describe another state snapshot.  Each entry names
+/// one selected state event that is effectively redacted at the DAG point.
+///
+/// Callers should insert only selected state events that are effectively
+/// redacted by authorized causal redactions at the state point being
+/// described.  An empty overlay is a known empty overlay; `None` in
+/// [`StateDigest`] means that the sender did not compute one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RedactionOverlay(pub [u16; 1024]);
+
+impl Default for RedactionOverlay {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
+impl RedactionOverlay {
+    /// The identity element (no effectively redacted selected events).
+    pub const ZERO: Self = Self([0u16; 1024]);
+
+    const DST: &'static [u8] = b"msc4500_lthash16_redactions_v1\x00";
+
+    fn seed(
+        event_type: &str,
+        state_key: &str,
+        event_id: &(impl core::fmt::Display + ?Sized),
+    ) -> Self {
+        use core::fmt::Write;
+        use sha3::digest::{ExtendableOutput, Update};
+
+        let mut xof = sha3::Shake256::default();
+        xof.update(Self::DST);
+        for value in [event_type, state_key] {
+            let (value, len) = truncate_to_u16_limit(value);
+            xof.update(&len.to_le_bytes());
+            xof.update(value.as_bytes());
+        }
+        // The event ID is appended raw, matching the primary MSC4500 element
+        // encoding. It is already self-delimiting under Matrix event-ID
+        // syntax and must not acquire a second length prefix here.
+        let mut writer = HashWriter { hasher: &mut xof };
+        write!(writer, "{event_id}").expect("failed to write event_id to hasher");
+
+        let mut bytes = [0u8; 2048];
+        xof.finalize_xof_into(&mut bytes);
+        let mut out = [0u16; 1024];
+        for (i, chunk) in bytes.chunks_exact(2).enumerate() {
+            out[i] = u16::from_le_bytes([chunk[0], chunk[1]]);
+        }
+        Self(out)
+    }
+
+    /// Adds one effectively redacted selected state event to the overlay.
+    ///
+    /// The caller must maintain set semantics: inserting the same tuple more
+    /// than once intentionally changes the lattice, just as it does for the
+    /// primary accumulator.
+    pub fn insert(
+        &mut self,
+        event_type: &str,
+        state_key: &str,
+        event_id: &(impl core::fmt::Display + ?Sized),
+    ) {
+        let seed = Self::seed(event_type, state_key, event_id);
+        for (left, right) in self.0.chunks_exact_mut(8).zip(seed.0.chunks_exact(8)) {
+            for i in 0..8 {
+                left[i] = left[i].wrapping_add(right[i]);
+            }
+        }
+    }
+
+    /// Removes one overlay entry previously inserted with [`Self::insert`].
+    /// Callers must not remove an entry that is absent from the authoritative
+    /// overlay set.
+    pub fn remove(
+        &mut self,
+        event_type: &str,
+        state_key: &str,
+        event_id: &(impl core::fmt::Display + ?Sized),
+    ) {
+        let seed = Self::seed(event_type, state_key, event_id);
+        for (left, right) in self.0.chunks_exact_mut(8).zip(seed.0.chunks_exact(8)) {
+            for i in 0..8 {
+                left[i] = left[i].wrapping_sub(right[i]);
+            }
+        }
+    }
+
+    /// Collapses the overlay lattice to its 32-byte MSC4500 wire digest.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        use blake2::digest::consts::U32;
+        use blake2::{Blake2b, Digest};
+        let mut hasher = Blake2b::<U32>::new();
+        let mut bytes = [0u8; 2048];
+        for (i, value) in self.0.iter().enumerate() {
+            let pair = value.to_le_bytes();
+            let index = i.wrapping_mul(2);
+            bytes[index] = pair[0];
+            bytes[index.wrapping_add(1)] = pair[1];
+        }
+        hasher.update(bytes);
+        hasher.finalize().into()
+    }
+}
+
+/// The MSC4500 state digest for one DAG point: the primary resolved-state
+/// digest and, when supported, its causal redaction overlay digest.
+///
+/// MSC4500 carries these values as `before` and `after` fields around a state
+/// transition (alongside `redactions_before` and `redactions_after`). This
+/// type represents one such point; [`StateDigestTransition`] represents the
+/// pair. `overlay` is optional for wire compatibility and must never be
+/// interpreted as agreement when absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateDigest {
+    pub primary: [u8; 32],
+    pub overlay: Option<[u8; 32]>,
+}
+
+/// The before/after digest pair carried for one MSC4500 state transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateDigestTransition {
+    pub before: StateDigest,
+    pub after: StateDigest,
+}
+
+/// Result of comparing two state digest advertisements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DigestAgreement {
+    /// The selected `(type, state_key, event_id)` maps differ.
+    PrimaryMismatch,
+    /// Primary maps agree and both overlay digests agree.
+    FullySynchronized,
+    /// Primary maps agree but causal redaction overlays differ.
+    OverlayMismatch,
+    /// Primary maps agree, but at least one side omitted its overlay.
+    OverlayUnknown,
+}
+
+impl StateDigest {
+    /// Compares primary state first, then treats the overlay as a diagnostic.
+    #[must_use]
+    pub fn compare(self, remote: Self) -> DigestAgreement {
+        if self.primary == remote.primary {
+            match (self.overlay, remote.overlay) {
+                (Some(left), Some(right)) if left == right => DigestAgreement::FullySynchronized,
+                (Some(_), Some(_)) => DigestAgreement::OverlayMismatch,
+                _ => DigestAgreement::OverlayUnknown,
+            }
+        } else {
+            DigestAgreement::PrimaryMismatch
+        }
+    }
+}
+
 /// Computes a deterministic 256-bit `LtHash` fingerprint of a
 /// state map, returned as a 32-byte array.
 ///
@@ -345,6 +503,92 @@ mod tests {
     }
 
     #[test]
+    fn test_redaction_overlay_is_separate_and_order_independent() {
+        let mut left = RedactionOverlay::ZERO;
+        left.insert("m.room.member", "@alice:example.org", "$state");
+
+        let mut right = RedactionOverlay::ZERO;
+        right.insert("m.room.member", "@alice:example.org", "$other-state");
+        assert_ne!(left.digest(), right.digest());
+
+        let mut reordered = RedactionOverlay::ZERO;
+        reordered.insert("m.room.member", "@bob:example.org", "$other-state");
+        reordered.insert("m.room.member", "@alice:example.org", "$state");
+        let mut expected = left;
+        expected.insert("m.room.member", "@bob:example.org", "$other-state");
+        assert_eq!(reordered, expected);
+
+        reordered.remove("m.room.member", "@bob:example.org", "$other-state");
+        assert_eq!(reordered, left);
+    }
+
+    #[test]
+    fn test_redaction_overlay_msc4500_vector() {
+        let mut overlay = RedactionOverlay::ZERO;
+        overlay.insert("m.room.member", "@alice:example.org", "$state");
+        assert_eq!(
+            overlay.digest(),
+            [
+                69, 243, 113, 245, 224, 85, 213, 42, 145, 18, 212, 145, 211, 128, 87, 65, 242, 201,
+                250, 196, 142, 78, 66, 51, 101, 158, 98, 105, 6, 218, 254, 190,
+            ]
+        );
+
+        let mut two = RedactionOverlay::ZERO;
+        two.insert("m.room.create", "", "$create");
+        two.insert("m.room.member", "@alice:example.org", "$state");
+        assert_eq!(
+            two.digest(),
+            [
+                54, 140, 209, 168, 4, 44, 140, 28, 220, 20, 48, 207, 210, 180, 227, 77, 28, 8, 19,
+                140, 157, 131, 50, 182, 108, 137, 17, 37, 212, 109, 40, 231,
+            ]
+        );
+
+        let mut custom = RedactionOverlay::ZERO;
+        custom.insert("org.example.custom", "key", "$custom");
+        assert_eq!(
+            custom.digest(),
+            [
+                170, 247, 17, 119, 141, 227, 146, 115, 229, 232, 55, 1, 194, 64, 252, 131, 61, 17,
+                11, 81, 6, 9, 121, 44, 58, 85, 193, 228, 45, 47, 192, 70,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_state_digest_comparison_preserves_unknown_overlay_semantics() {
+        let primary = [7u8; 32];
+        let overlay = [9u8; 32];
+        let same = StateDigest {
+            primary,
+            overlay: Some(overlay),
+        };
+        assert_eq!(same.compare(same), DigestAgreement::FullySynchronized);
+        assert_eq!(
+            same.compare(StateDigest {
+                primary,
+                overlay: Some([8u8; 32]),
+            }),
+            DigestAgreement::OverlayMismatch
+        );
+        assert_eq!(
+            same.compare(StateDigest {
+                primary,
+                overlay: None,
+            }),
+            DigestAgreement::OverlayUnknown
+        );
+        assert_eq!(
+            same.compare(StateDigest {
+                primary: [6u8; 32],
+                overlay: Some(overlay),
+            }),
+            DigestAgreement::PrimaryMismatch
+        );
+    }
+
+    #[test]
     fn test_lthash_order_independence() {
         // Insert in different orders, same result
         let mut h1 = LtHash::ZERO;
@@ -396,6 +640,23 @@ mod tests {
         expected.insert("m.room.topic", "", "$t2");
 
         assert_eq!(h, expected);
+    }
+
+    #[test]
+    fn test_lthash_replace_checked_success() {
+        let mut actual = LtHash::ZERO;
+        actual.insert("m.room.topic", "", "$old");
+        actual.replace_checked("m.room.topic", "", "$old", "m.room.topic", "", "$new");
+
+        let mut expected = LtHash::ZERO;
+        expected.insert("m.room.topic", "", "$new");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_lthash_defaults_to_zero() {
+        assert_eq!(LtHash::default(), LtHash::ZERO);
+        assert_eq!(RedactionOverlay::default(), RedactionOverlay::ZERO);
     }
 
     #[test]

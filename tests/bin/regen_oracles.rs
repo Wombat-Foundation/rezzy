@@ -4,7 +4,8 @@
 //! Overwrites `res/expected/oracle_*.json` with the current `resolve_iterative_sort` output.
 //! Run when the algorithm changes intentionally, then review the git diff and commit both.
 //!
-//!   `cargo test --test regen_oracles --features regen`
+//!   `cargo run --bin regen_oracles --features regen`
+#[path = "../utils/mod.rs"]
 mod utils;
 
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
@@ -43,11 +44,12 @@ fn write_oracle(fixture_path: &str, oracle_path: &str, version: StateResVersion)
     let events = load_fixture(fixture_path);
     let map = to_event_map(&events);
     let resolved = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map),
-        map.clone(),
+        &utils::build_unconflicted_state_test_helper(&map),
+        &map,
         &map,
         version,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
 
     let mut entries: Vec<Value> = resolved

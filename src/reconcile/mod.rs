@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Homomorphic reconciliation helpers.
+//! Minisketch reconciliation helpers.
 
 pub mod algebraic;
 pub mod client;
@@ -23,10 +23,10 @@ pub mod resident;
 pub mod server;
 pub mod triage;
 
+/// Maximum depth of an `h64` bucket request.
+pub const MAX_DEPTH: u8 = 64;
+
 /// Internal bit width of the `h64` trie used to materialize bucket ranges.
-///
-/// This is not the protocol request-depth cap; request validation enforces
-/// depth <= 32 in `triage::validate_bucket_requests`.
 pub const H64_TRIE_WIDTH: u8 = 64;
 
 pub use algebraic::{
@@ -46,8 +46,17 @@ pub use triage::{
     StrataEstimate, MAX_BUCKETED_SKETCH_CAPACITY,
 };
 
+// These are cross-module invariant checks, not dead asserts on a literal --
+// each catches independent constants silently drifting apart across the
+// pinsketch/resident/triage submodules. clippy::assertions_on_constants
+// only sees the current (agreeing) values and flags them as always-true.
+#[allow(clippy::assertions_on_constants)]
 const _: () = assert!(MAX_SKETCH_CAPACITY == 32);
+#[allow(clippy::assertions_on_constants)]
 const _: () = assert!(resident::STRATA_COUNT == 32);
+#[allow(clippy::assertions_on_constants)]
 const _: () = assert!(resident::STRATUM_CAPACITY == 8);
+#[allow(clippy::assertions_on_constants)]
 const _: () = assert!(triage::MAX_BUCKET_SKETCH_CAPACITY == 32);
+#[allow(clippy::assertions_on_constants)]
 const _: () = assert!(triage::MAX_BUCKETED_SKETCH_CAPACITY == 4_096);

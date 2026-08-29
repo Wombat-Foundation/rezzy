@@ -2,35 +2,9 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! # Rezzy — Matrix State Resolution Engine
 //!
-//! A high-performance, spec-compliant implementation of [Matrix](https://spec.matrix.org/)
-//! state resolution versions **V1**, **V2**, **V2.1** ([MSC4297]), **V2.1.1**
-//! (experimental), and **V2.2** (experimental [MSC4242]) support.
-//!
-//! Rezzy is designed for correctness-first operation inside homeservers, bridges,
-//! and formal-verification toolchains. It runs in `#![no_std]` environments (with
-//! `alloc`) and optionally leverages SIMD-width bitmask sweeps for CDO filtering.
-//!
-//! ## Quick Start Example (Room V11 / State Res V2)
-//!
-//! ```rust,no_run
-//! use rezzy::{resolve_iterative_sort, LeanEvent, SharedState, StateResVersion, HashMap};
-//!
-//! // Build the unconflicted state (agreed upon by all forks).
-//! let unconflicted_state = SharedState::new();
-//!
-//! // Populate conflicted events and full auth context.
-//! let conflicted_subgraph: HashMap<String, LeanEvent> = HashMap::new();
-//! let auth_context: HashMap<String, LeanEvent> = HashMap::new();
-//!
-//! // Resolve the winning state.
-//! let resolved = resolve_iterative_sort(
-//!     unconflicted_state,
-//!     conflicted_subgraph,
-//!     &auth_context,
-//!     StateResVersion::V2,
-//!     &mut HashMap::new(),
-//! );
-//! ```
+//! Spec-compliant implementation of Matrix state resolution versions
+//! **V1**, **V2**, **V2.1** ([MSC4297]), **V2.1.1**, and **V2.2** ([MSC4242]).
+//! Runs in `#![no_std]` environments (with `alloc`).
 //!
 //! ## Feature Flags
 //!
@@ -38,10 +12,12 @@
 //! |-------------|:-------:|-------------|
 //! | `std`       | ✓       | Enables `std::collections::{HashMap, HashSet}` and thread-parallel lattice resolution. |
 //! | `alloc`     | ✓       | Bare `alloc` support for `no_std` targets (implied by `std`). |
-//! | `cli`       | ✗       | Builds the `rezzy` CLI binary and the `merge` module. |
-//! | `hashing`   | ✗       | SHA-256 content-hashing for events missing an `event_id`. |
+//! | `cli`       | ✗       | Builds the `rezzy` CLI binary and merge utilities. |
 //! | `mock-ruma` | ✗       | Enables Ruma SDK interop for upstream parity testing. |
 //! | `regen`     | ✗       | Builds the `regen_oracles` snapshot regeneration binary. |
+//!
+//! Canonical-JSON SHA-256 hashing is always compiled in — see [`reference_hash`]
+//! and [`verify_content_hash`].
 //!
 //! ## Spec References
 //!
@@ -74,22 +50,28 @@ extern crate std;
 extern crate alloc;
 
 use alloc::string::String;
-use alloc::string::ToString;
 use alloc::vec::Vec;
 
 pub mod auth;
 pub mod basespec;
 pub mod cuckoo_verify;
+pub mod dense_index;
 pub mod hamt;
 pub mod merkle;
 pub mod reconcile;
 pub mod resolve;
+#[cfg(any(feature = "signing", feature = "signing-dalek"))]
+pub mod signing;
 pub mod state;
+pub mod warnings;
 
+pub use basespec::event_types::EventType;
 pub use basespec::rezzy_types::*;
+pub use dense_index::{DenseIndex, IndexTooLarge};
 pub use reconcile::*;
 pub use resolve::*;
 pub use state::*;
+pub use warnings::{Outcome, Warning};
 
 /// Selects the presentation shape for resolved room data.
 ///
@@ -112,23 +94,27 @@ pub enum OutputFormat {
 
 /// One resolved-state entry in `(type, state_key, event_id)` form.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ResolvedStateEntry {
-    pub event_type: String,
-    pub state_key: String,
-    pub event_id: String,
+pub struct ResolvedStateEntry<Id = String, K = String> {
+    pub event_type: EventType,
+    pub state_key: K,
+    pub event_id: Id,
 }
 
 /// Converts a resolved state map into a stable, sorted list of entries.
 #[must_use]
-pub fn resolved_state_entries<Id: basespec::rezzy_types::EventId>(
-    final_state_map: &crate::state::at::SharedState<Id>,
-) -> Vec<ResolvedStateEntry> {
+pub fn resolved_state_entries<Id, K>(
+    final_state_map: &crate::state::at::SharedState<Id, K>,
+) -> Vec<ResolvedStateEntry<Id, K>>
+where
+    Id: basespec::rezzy_types::EventId,
+    K: basespec::rezzy_types::StateKey,
+{
     let mut entries = final_state_map
         .iter()
         .map(|((event_type, state_key), event_id)| ResolvedStateEntry {
-            event_type: event_type.to_string(),
+            event_type: event_type.clone(),
             state_key: state_key.clone(),
-            event_id: event_id.to_string(),
+            event_id: event_id.clone(),
         })
         .collect::<Vec<_>>();
     entries.sort_by(|a, b| {
@@ -191,17 +177,17 @@ mod tests {
             entries,
             vec![
                 ResolvedStateEntry {
-                    event_type: "m.room.create".into(),
+                    event_type: EventType::RoomCreate,
                     state_key: String::new(),
                     event_id: "$c".into(),
                 },
                 ResolvedStateEntry {
-                    event_type: "m.room.member".into(),
+                    event_type: EventType::RoomMember,
                     state_key: "@alice:x".into(),
                     event_id: "$a".into(),
                 },
                 ResolvedStateEntry {
-                    event_type: "m.room.member".into(),
+                    event_type: EventType::RoomMember,
                     state_key: "@bob:x".into(),
                     event_id: "$b".into(),
                 },

@@ -82,18 +82,20 @@ fn test_benchmark_1k_resolution_determinism() {
 
     // Run resolution twice and verify determinism
     let resolved1 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
-        to_event_map(&events),
+        &utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
+        &to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     let resolved2 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
-        to_event_map(&events),
+        &utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
+        &to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert_eq!(resolved1, resolved2, "Resolution must be deterministic");
 }
@@ -167,18 +169,20 @@ fn test_large_room_10k_v2_1_sort() {
 fn test_large_room_10k_resolution_determinism() {
     let events = load_large_room();
     let r1 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
-        to_event_map(&events),
+        &utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
+        &to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     let r2 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
-        to_event_map(&events),
+        &utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
+        &to_event_map(&events),
         &to_event_map(&events),
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert_eq!(r1, r2, "10K room resolution must be deterministic");
 }
@@ -189,18 +193,20 @@ fn test_large_room_10k_v2_vs_v2_1_divergence() {
     let events = load_large_room();
     let map = to_event_map(&events);
     let v2 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map),
-        map.clone(),
+        &utils::build_unconflicted_state_test_helper(&map),
+        &map,
         &map,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     let v2_1 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map),
-        map.clone(),
+        &utils::build_unconflicted_state_test_helper(&map),
+        &map,
         &map,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     // V2 and V2.1 may diverge on conflicted state — that's the whole point of MSC4297.
     // But both must produce valid resolved state.
@@ -388,22 +394,24 @@ fn test_real_dag_52k_room_resolution() {
     let events = load_real_dag("res/real_dag_52k_room.json");
     let map = to_event_map(&events);
     let resolved = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map),
-        map.clone(),
+        &utils::build_unconflicted_state_test_helper(&map),
+        &map,
         &map,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert!(!resolved.is_empty(), "Resolution should produce state");
     // Determinism check
     let events2 = load_real_dag("res/real_dag_52k_room.json");
     let map2 = to_event_map(&events2);
     let resolved2 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map2),
-        map2.clone(),
+        &utils::build_unconflicted_state_test_helper(&map2),
+        &map2,
         &map2,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert_eq!(resolved, resolved2, "Resolution must be deterministic");
 }
@@ -447,11 +455,12 @@ fn test_real_dag_nheko_room_106_heads() {
 
     // Resolution must still complete on this messy DAG
     let resolved = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&event_map),
-        event_map.clone(),
+        &utils::build_unconflicted_state_test_helper(&event_map),
+        &event_map,
         &event_map,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     assert!(!resolved.is_empty(), "Resolution should produce state");
 }
@@ -563,11 +572,12 @@ fn test_unredacted_spam_storm_v2_1_1() {
 
     let start_v2 = std::time::Instant::now();
     let resolved_v2 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map),
-        map.clone(),
+        &utils::build_unconflicted_state_test_helper(&map),
+        &map,
         &map,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     let dur_v2 = start_v2.elapsed();
     println!(
@@ -578,11 +588,12 @@ fn test_unredacted_spam_storm_v2_1_1() {
 
     let start_v21 = std::time::Instant::now();
     let resolved_v21 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map),
-        map.clone(),
+        &utils::build_unconflicted_state_test_helper(&map),
+        &map,
         &map,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     let dur_v21 = start_v21.elapsed();
     println!(
@@ -593,11 +604,12 @@ fn test_unredacted_spam_storm_v2_1_1() {
 
     let start_v211 = std::time::Instant::now();
     let resolved_v211 = resolve_iterative_sort(
-        utils::build_unconflicted_state_test_helper(&map),
-        map.clone(),
+        &utils::build_unconflicted_state_test_helper(&map),
+        &map,
         &map,
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        &String::new(),
     );
     let dur_v211 = start_v211.elapsed();
     println!(
@@ -707,10 +719,7 @@ fn verify_spam_storm_results(
         }
 
         let mut parent: Vec<usize> = (0..events.len()).collect();
-        let mut id_to_index = std::collections::HashMap::with_capacity(events.len());
-        for (i, ev) in events.iter().enumerate() {
-            id_to_index.insert(ev.event_id.as_str(), i);
-        }
+        let id_to_index = rezzy::index_by_event_id(events.iter());
 
         for (i, ev) in events.iter().enumerate() {
             for prev in &ev.prev_events {

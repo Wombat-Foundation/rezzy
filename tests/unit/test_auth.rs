@@ -1,7 +1,6 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-mod utils;
+use crate::utils;
 use rezzy::auth::*;
-use rezzy::basespec::event_types::M_ROOM_CREATE;
+use rezzy::basespec::event_types::{M_ROOM_CREATE, M_ROOM_MEMBER};
 use rezzy::*;
 use serde_json::json;
 
@@ -65,7 +64,7 @@ fn test_self_ban_rejected() {
 }
 
 #[test]
-fn test_flagged_events_are_not_auth_checked() {
+fn test_rejected_events_skip_auth_but_soft_failed_events_are_checked() {
     let mut state = RoomState::new();
     state.insert(
         (M_ROOM_CREATE.into(), String::new()),
@@ -106,15 +105,21 @@ fn test_flagged_events_are_not_auth_checked() {
     );
     soft_fail.soft_fail = true;
 
-    for event in [&rejected, &soft_fail] {
-        assert!(
-            matches!(
-                check_auth(event, &state, StateResVersion::V2_1, None),
-                Err(AuthError::InvalidSyntax(reason)) if reason.contains("rejected or soft-failed")
-            ),
-            "flagged events must not be auth-checked"
-        );
-    }
+    // Rejected events are never auth-checked (spec rooms/v9).
+    assert!(
+        matches!(
+            check_auth(&rejected, &state, StateResVersion::V2_1, None),
+            Err(AuthError::InvalidSyntax(reason)) if reason.contains("rejected")
+        ),
+        "rejected events must not be auth-checked"
+    );
+
+    // Soft-failed events are auth-checked as normal and participate in resolution
+    // (spec server-server-api "Soft failure"). This message from a joined user is valid.
+    assert!(
+        check_auth(&soft_fail, &state, StateResVersion::V2_1, None).is_ok(),
+        "a valid soft-failed event must pass auth rather than being blanket-rejected"
+    );
 }
 
 #[test]
@@ -523,6 +528,48 @@ fn test_auth_error_display_variants() {
     let err8: AuthError<String> = AuthError::MissingCreate;
     let msg8 = format!("{err8}");
     assert!(msg8.contains("m.room.create"));
+
+    let err9: AuthError<String> = AuthError::IncompleteAuthEvents {
+        event_type: "m.room.power_levels".into(),
+        state_key: String::new(),
+    };
+    let msg9 = format!("{err9}");
+    assert!(msg9.contains("m.room.power_levels"));
+    assert!(msg9.contains("auth_events omits required"));
+
+    let err10: AuthError<String> = AuthError::ForeignRoomEvent {
+        event_id: "$msg".into(),
+        auth_event_id: "$foreign".into(),
+        expected: "!room_a:x.com".into(),
+        actual: Some("!room_b:x.com".into()),
+    };
+    let msg10 = format!("{err10}");
+    assert!(msg10.contains("$msg"));
+    assert!(msg10.contains("$foreign"));
+    assert!(msg10.contains("!room_a:x.com"));
+    assert!(msg10.contains("!room_b:x.com"));
+
+    // `actual: None` (the cited auth event carries no room_id at all).
+    let err11: AuthError<String> = AuthError::ForeignRoomEvent {
+        event_id: "$msg".into(),
+        auth_event_id: "$untagged".into(),
+        expected: "!room_a:x.com".into(),
+        actual: None,
+    };
+    let msg11 = format!("{err11}");
+    assert!(msg11.contains("$msg"));
+    assert!(msg11.contains("$untagged"));
+    assert!(msg11.contains("!room_a:x.com"));
+    assert!(msg11.contains("no room_id"));
+
+    let err12: AuthError<String> = AuthError::RejectedAuthEvent {
+        event_id: "$citing".into(),
+        auth_event_id: "$rejected_auth".into(),
+    };
+    let msg12 = format!("{err12}");
+    assert!(msg12.contains("$citing"));
+    assert!(msg12.contains("$rejected_auth"));
+    assert!(msg12.contains("cites rejected auth event"));
 }
 
 #[test]
@@ -705,20 +752,214 @@ fn test_iterative_auth_chain() {
         "@alice:example.com",
         json!({"membership": "join"}),
     );
-    let msg = make_event(
+    let mut msg = make_event(
         "$msg",
         "m.room.message",
         None,
         "@alice:example.com",
         json!({"body": "hello"}),
     );
+    // Rule 2.2: auth_events must cite the sender's own current membership
+    // once it exists in state (added by $join).
+    msg.auth_events = vec!["$join".into()];
     let (accepted, rejected) = check_auth_chain(
         &[create, join, msg],
         &RoomState::new(),
         rezzy::basespec::rezzy_types::StateResVersion::V2_1,
     );
     assert_eq!(accepted, vec!["$create", "$join", "$msg"]);
-    assert!(rejected.is_empty());
+    assert_eq!(
+        rejected,
+        [] as [(std::string::String, rezzy::auth::AuthError); 0]
+    );
+}
+
+/// Rule 2.5: a citing event's `auth_events` entry pointing at an event with
+/// a *different* `room_id` must be rejected -- a rogue foreign-room event
+/// that leaked into the event map, defense-in-depth beyond whatever the
+/// caller's own ingest-time filtering already did.
+#[test]
+fn test_iterative_auth_chain_rejects_foreign_room_auth_event() {
+    let room_a = rezzy::RoomId::new("!room_a:example.com");
+    let room_b = rezzy::RoomId::new("!room_b:example.com");
+
+    let mut create = make_event(
+        "$create",
+        "m.room.create",
+        Some(""),
+        "@alice:example.com",
+        json!({}),
+    );
+    create.room_id = Some(room_a.clone());
+
+    // A second, independent m.room.create for a *different* room. Create
+    // events need no auth_events of their own (rule 2.4 doesn't apply to
+    // the create type) and aren't gated on sender membership, so this event
+    // passes its own auth check independently -- isolating the test to
+    // exactly one thing: does citing it from a different-room event trip
+    // rule 2.5.
+    let mut foreign_create = make_event(
+        "$foreign_create",
+        "m.room.create",
+        Some(""),
+        "@mallory:example.com",
+        json!({}),
+    );
+    foreign_create.room_id = Some(room_b);
+
+    let mut msg = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:example.com",
+        json!({"body": "hello"}),
+    );
+    msg.room_id = Some(room_a);
+    msg.auth_events = vec!["$create".into(), "$foreign_create".into()];
+
+    let (accepted, rejected) = check_auth_chain(
+        &[create, foreign_create, msg],
+        &RoomState::new(),
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
+
+    assert_eq!(
+        accepted,
+        vec!["$create", "$foreign_create"],
+        "both independent create events pass their own auth check"
+    );
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected[0].0, "$msg");
+    assert!(
+        matches!(
+            &rejected[0].1,
+            rezzy::auth::AuthError::ForeignRoomEvent { event_id, auth_event_id, .. }
+                if event_id == "$msg" && auth_event_id == "$foreign_create"
+        ),
+        "expected ForeignRoomEvent citing $foreign_create, got {:?}",
+        rejected[0].1
+    );
+}
+
+/// Once the citing event opts in (`Some(room_id)`), an `auth_events` entry
+/// with no `room_id` at all is *not* a free pass -- it's exactly the "leaked
+/// in without ever being tagged" case rule 2.5 exists to catch, so it must
+/// be rejected the same as a populated-but-different one. (This was
+/// previously the fail-open bypass: an untagged auth event sailed through
+/// silently, since the check only compared populated pairs.)
+#[test]
+fn test_iterative_auth_chain_rejects_untagged_auth_event_once_citing_side_populated() {
+    let room_a = rezzy::RoomId::new("!room_a:example.com");
+
+    let create = make_event(
+        "$create",
+        "m.room.create",
+        Some(""),
+        "@alice:example.com",
+        json!({}),
+    );
+    // create.room_id stays None -- caller never populated it for this event.
+
+    let join = make_event(
+        "$join",
+        "m.room.member",
+        Some("@alice:example.com"),
+        "@alice:example.com",
+        json!({"membership": "join"}),
+    );
+    // join.room_id also stays None -- untagged, e.g. leaked in without ever
+    // going through trusted ingest-time room_id assignment for this room.
+
+    let mut msg = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:example.com",
+        json!({"body": "hello"}),
+    );
+    msg.room_id = Some(room_a);
+    msg.auth_events = vec!["$join".into()];
+
+    let (accepted, rejected) = check_auth_chain(
+        &[create, join, msg],
+        &RoomState::new(),
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
+
+    assert_eq!(
+        accepted,
+        vec!["$create", "$join"],
+        "the untagged $join event still passes its own (unrelated) auth check"
+    );
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected[0].0, "$msg");
+    assert!(
+        matches!(
+            &rejected[0].1,
+            rezzy::auth::AuthError::ForeignRoomEvent { event_id, auth_event_id, actual: None, .. }
+                if event_id == "$msg" && auth_event_id == "$join"
+        ),
+        "expected ForeignRoomEvent{{actual: None}} citing $join, got {:?}",
+        rejected[0].1
+    );
+}
+
+/// `room_id` being `None` on the *citing* event's own side is never treated
+/// as a mismatch, even against a genuinely foreign-room auth event -- the
+/// check is opt-in per the citing event's own data, not a new hard
+/// requirement on every event that never populates `room_id` at all.
+#[test]
+fn test_iterative_auth_chain_room_id_none_on_citing_side_is_never_checked() {
+    let room_b = rezzy::RoomId::new("!room_b:example.com");
+
+    let create = make_event(
+        "$create",
+        "m.room.create",
+        Some(""),
+        "@alice:example.com",
+        json!({}),
+    );
+    // create.room_id stays None -- caller never populated it for this event.
+
+    // A foreign-room power_levels event, not a create -- citing *any*
+    // m.room.create in auth_events is independently forbidden under V2.1+
+    // (v12+ drops create from auth_events entirely), which would trip that
+    // unrelated rule first and defeat this test's isolation. Sender is
+    // alice (not a fresh mallory) so the implicit-creator-is-joined rule
+    // (matched against the *local* $create's sender) lets it pass its own
+    // auth check without needing a separate join event -- only `room_id`
+    // needs to be foreign for this test.
+    let mut foreign_pl = make_event(
+        "$foreign_pl",
+        "m.room.power_levels",
+        Some(""),
+        "@alice:example.com",
+        json!({}),
+    );
+    foreign_pl.room_id = Some(room_b);
+
+    let mut msg = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:example.com",
+        json!({"body": "hello"}),
+    );
+    // msg.room_id stays None -- caller never populated it, so rule 2.5
+    // never activates for this event regardless of what it cites.
+    msg.auth_events = vec!["$foreign_pl".into()];
+
+    let (accepted, rejected) = check_auth_chain(
+        &[create, foreign_pl, msg],
+        &RoomState::new(),
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
+
+    assert_eq!(accepted, vec!["$create", "$foreign_pl", "$msg"]);
+    assert_eq!(
+        rejected,
+        [] as [(std::string::String, rezzy::auth::AuthError); 0]
+    );
 }
 
 #[test]
@@ -729,7 +970,7 @@ fn test_auth_chain_rejects_unauthorized() {
 {"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:x.com","sender":"@alice:x.com","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":[]}
 {"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@alice:x.com","depth":2,"origin_server_ts":1002,"content":{"ban":50,"users":{"@alice:x.com":100}},"prev_events":["$alice_join"],"auth_events":["$alice_join"]}
 {"event_id":"$ban_bob","type":"m.room.member","state_key":"@bob:x.com","sender":"@alice:x.com","depth":3,"origin_server_ts":1003,"content":{"membership":"ban"},"prev_events":["$pl"],"auth_events":["$alice_join","$pl"]}
-{"event_id":"$bob_msg","type":"m.room.message","sender":"@bob:x.com","depth":4,"origin_server_ts":1004,"content":{"body":"I am banned"},"prev_events":["$ban_bob"],"auth_events":[]}
+{"event_id":"$bob_msg","type":"m.room.message","sender":"@bob:x.com","depth":4,"origin_server_ts":1004,"content":{"body":"I am banned"},"prev_events":["$ban_bob"],"auth_events":["$ban_bob","$pl"]}
     "#,
     );
 
@@ -800,6 +1041,34 @@ fn test_auth_error_display() {
     };
     let msg = format!("{err}");
     assert!(msg.contains("bob"));
+}
+
+/// Cover rule 10.8's notification-change branch: a notification key present in
+/// both the previous and new `m.room.power_levels` with a *different* value, set
+/// above the sender's PL.
+#[test]
+fn test_notifications_change_above_sender_pl_rejected() {
+    let state = utils::parse_jsonl_state(
+        r#"
+{"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@admin:x.com", "content": {"creator": "@admin:x.com"}}
+{"event_id": "$j1", "type": "m.room.member", "state_key": "@alice:x.com", "sender": "@alice:x.com", "content": {"membership": "join"}}
+{"event_id": "$j2", "type": "m.room.member", "state_key": "@admin:x.com", "sender": "@admin:x.com", "content": {"membership": "join"}}
+{"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x.com", "content": {"users": {"@admin:x.com": 100, "@alice:x.com": 50}, "notifications": {"room": 50}}}
+"#,
+    );
+    // Alice (PL 50) raises notifications.room from 50 -> 80 (above her PL):
+    // the key exists in both old and new, so the `|&ov| ov != new_val` closure
+    // runs and the rule-10.8 "exceeds sender PL" branch fires.
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl2", "type": "m.room.power_levels", "state_key": "", "sender": "@alice:x.com", "content": {"users": {"@admin:x.com": 100, "@alice:x.com": 50}, "notifications": {"room": 80}}}
+"#,
+    );
+    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    assert!(
+        matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("cannot set notifications[room]")),
+        "expected rule-10.8 notifications rejection, got: {res:?}"
+    );
 }
 
 /// Cover `get_required_power_level` → `get_event_power_level` return path:
@@ -1594,7 +1863,7 @@ fn test_v1_v11_missing_pl_event_creator_fallback() {
     assert!(
         matches!(
             res,
-            Err(crate::auth::AuthError::InsufficientPowerLevel {
+            Err(self::auth::AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,
                 ..
@@ -1874,8 +2143,9 @@ fn test_auth_types_for_event() {
         Some(""),
         &json!({}),
         StateResVersion::V2_1,
+        "11",
     );
-    assert!(types.is_empty());
+    assert_eq!(types, [] as [(std::string::String, std::string::String); 0]);
 
     let types = auth_types_for_event(
         "m.room.message",
@@ -1883,6 +2153,7 @@ fn test_auth_types_for_event() {
         None,
         &json!({}),
         StateResVersion::V2,
+        "11",
     );
     assert!(types.contains(&("m.room.create".to_string(), String::new())));
     assert!(types.contains(&("m.room.member".to_string(), "@alice:x.com".to_string())));
@@ -1894,6 +2165,7 @@ fn test_auth_types_for_event() {
         None,
         &json!({}),
         StateResVersion::V2_1,
+        "11",
     );
     assert!(!types.contains(&("m.room.create".to_string(), String::new())));
 
@@ -1911,9 +2183,34 @@ fn test_auth_types_for_event() {
         Some("@bob:x.com"),
         &content,
         StateResVersion::V2_1,
+        "11",
     );
     assert!(types.contains(&("m.room.member".to_string(), "@bob:x.com".to_string())));
     assert!(types.contains(&("m.room.join_rules".to_string(), String::new())));
+    // A join membership's token must NOT pull in the third-party invite auth
+    // event -- that auth type applies only to `membership: invite`.
+    assert!(!types.contains(&(
+        "m.room.third_party_invite".to_string(),
+        "token123".to_string()
+    )));
+
+    // An invite membership carrying a token DOES require the third-party invite.
+    let invite_content = json!({
+        "membership": "invite",
+        "third_party_invite": {
+            "signed": {
+                "token": "token123"
+            }
+        }
+    });
+    let types = auth_types_for_event(
+        "m.room.member",
+        "@alice:x.com",
+        Some("@bob:x.com"),
+        &invite_content,
+        StateResVersion::V2_1,
+        "11",
+    );
     assert!(types.contains(&(
         "m.room.third_party_invite".to_string(),
         "token123".to_string()
@@ -1926,6 +2223,7 @@ fn test_auth_types_for_event() {
         Some("@alice:x.com"),
         &json!({"membership": "knock"}),
         StateResVersion::V2,
+        "11",
     );
     assert!(
         types.contains(&("m.room.join_rules".to_string(), String::new())),
@@ -3509,7 +3807,7 @@ fn test_pl_validation_users_invalid_key_rejected() {
     );
     let err = res.unwrap_err();
     assert!(
-        matches!(err, crate::auth::AuthError::InvalidSyntax(ref s) if s.contains("not_a_user_id")),
+        matches!(err, self::auth::AuthError::InvalidSyntax(ref s) if s.contains("not_a_user_id")),
         "Error should mention the bad key: {err:?}"
     );
 }
@@ -3783,7 +4081,7 @@ fn test_pl_missing_create_event_returns_error() {
     );
     let result = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
     assert!(
-        matches!(result, Err(crate::auth::AuthError::MissingCreate)),
+        matches!(result, Err(self::auth::AuthError::MissingCreate)),
         "Missing create should return MissingCreate error, got: {result:?}"
     );
     // Exercise Display impl for coverage
@@ -4310,6 +4608,7 @@ fn test_auth_types_for_event_join_authorised_via_users_server() {
         Some("@alice:x.com"),
         &content,
         StateResVersion::V2_1,
+        "11",
     );
     assert!(types.contains(&("m.room.member".to_string(), "@admin:x.com".to_string())));
 }
@@ -4555,7 +4854,6 @@ fn test_rule_4_aliases_missing_state_key_rejected() {
 
 /// Builds room state (v1 by default) with a creator and a joined `@bob:domain1.com`.
 fn rule_11_base_state(room_version: &str) -> RoomState {
-    use rezzy::basespec::event_types::M_ROOM_MEMBER;
     let mut state = RoomState::new();
     state.insert(
         (M_ROOM_CREATE.into(), String::new()),
@@ -4711,6 +5009,127 @@ fn test_rule_2_1_duplicate_auth_event_pair_rejected() {
     assert!(
         matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("duplicate (type, state_key)")),
         "Duplicate auth events of same type and state_key must be rejected, got {res:?}"
+    );
+}
+
+/// Rule 2.2 completeness: an event that omits a required, already-existing
+/// citation (here, the target member event for a ban) must be hard-rejected
+/// -- not silently accepted the way pre-fix rezzy accepted it. This is the
+/// class of bug fixtures 19/20/21 hit: the omission was invisible because
+/// only cited entries were validated, never the completeness of the set.
+#[test]
+fn test_rule_2_2_omitted_target_member_rejected() {
+    let mut state = RoomState::new();
+    let create_ev = make_event(
+        "$c",
+        M_ROOM_CREATE,
+        Some(""),
+        "@admin:example.com",
+        json!({}),
+    );
+    state.insert((M_ROOM_CREATE.into(), String::new()), create_ev.clone());
+
+    let admin_join = make_event(
+        "$admin_join",
+        M_ROOM_MEMBER,
+        Some("@admin:example.com"),
+        "@admin:example.com",
+        json!({"membership": "join"}),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@admin:example.com".into()),
+        admin_join.clone(),
+    );
+
+    let bob_join = make_event(
+        "$bob_join",
+        M_ROOM_MEMBER,
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({"membership": "join"}),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@bob:example.com".into()),
+        bob_join.clone(),
+    );
+
+    let mut provider = rezzy::HashMap::new();
+    provider.insert("$c".to_string(), create_ev);
+    provider.insert("$admin_join".to_string(), admin_join);
+    provider.insert("$bob_join".to_string(), bob_join);
+
+    let mut ban_bob = make_event(
+        "$ban_bob",
+        M_ROOM_MEMBER,
+        Some("@bob:example.com"),
+        "@admin:example.com",
+        json!({"membership": "ban"}),
+    );
+    // Omits $bob_join -- the target's own membership -- even though it
+    // exists in state.
+    ban_bob.auth_events = vec!["$c".into(), "$admin_join".into()];
+
+    let res = check_auth_with_context(&ban_bob, &state, StateResVersion::V2, None, Some(&provider));
+    assert!(
+        matches!(
+            res,
+            Err(AuthError::IncompleteAuthEvents { ref event_type, ref state_key })
+                if event_type == "m.room.member" && state_key == "@bob:example.com"
+        ),
+        "Omitting the target member citation must be a hard rejection, got {res:?}"
+    );
+
+    // Citing it fixes the rejection (other rules -- PL sufficiency etc. --
+    // are irrelevant here since state has no power_levels event at all, so
+    // that requirement is correctly not demanded).
+    ban_bob.auth_events.push("$bob_join".into());
+    let res = check_auth_with_context(&ban_bob, &state, StateResVersion::V2, None, Some(&provider));
+    assert!(
+        res.is_ok(),
+        "citing the target member should pass rule 2.2, got {res:?}"
+    );
+}
+
+/// Rule 2.2 must not demand a citation for a required type that has no
+/// entry in the room's current state yet (e.g. `m.room.power_levels` before
+/// the room ever set one) -- the selection algorithm only cites types that
+/// actually exist, it doesn't manufacture placeholder requirements.
+#[test]
+fn test_rule_2_2_absent_from_state_not_required() {
+    let mut state = RoomState::new();
+    let create_ev = make_event(
+        "$c",
+        M_ROOM_CREATE,
+        Some(""),
+        "@alice:example.com",
+        json!({}),
+    );
+    state.insert((M_ROOM_CREATE.into(), String::new()), create_ev.clone());
+
+    let mut provider = rezzy::HashMap::new();
+    provider.insert("$c".to_string(), create_ev);
+
+    // Alice's own first join: no power_levels event exists yet in state, and
+    // alice has no prior membership to cite either.
+    let mut alice_join = make_event(
+        "$alice_join",
+        M_ROOM_MEMBER,
+        Some("@alice:example.com"),
+        "@alice:example.com",
+        json!({"membership": "join"}),
+    );
+    alice_join.auth_events = vec!["$c".into()];
+
+    let res = check_auth_with_context(
+        &alice_join,
+        &state,
+        StateResVersion::V2,
+        None,
+        Some(&provider),
+    );
+    assert!(
+        res.is_ok(),
+        "power_levels/self-member requirements absent from state must not be demanded, got {res:?}"
     );
 }
 
@@ -4961,4 +5380,212 @@ fn test_event_content_default_get_m_federate() {
 
     let dummy = DummyContent;
     assert_eq!(dummy.get_m_federate(), None);
+}
+
+/// Coverage: `RoomId`'s `AsRef<str>`, `Deref<Target = str>`, and
+/// `From<&str>`/`From<String>` impls -- exercised via `RoomId::new` elsewhere
+/// in this file, but never through these specific trait entry points.
+#[test]
+fn test_room_id_conversions_and_borrow_impls() {
+    let via_new = rezzy::RoomId::new("!room:example.com");
+    let via_from_str: rezzy::RoomId = "!room:example.com".into();
+    let via_from_string: rezzy::RoomId = String::from("!room:example.com").into();
+
+    // All three construction paths compare equal (content, not identity).
+    assert_eq!(via_new, via_from_str);
+    assert_eq!(via_new, via_from_string);
+
+    // AsRef<str>
+    assert_eq!(via_new.as_ref(), "!room:example.com");
+    // Deref<Target = str>
+    assert_eq!(&*via_new, "!room:example.com");
+    assert!(via_new.starts_with('!'));
+    // Display
+    assert_eq!(via_new.to_string(), "!room:example.com");
+}
+
+/// `InternedKey` satisfies `StateKey` and drops in as `LeanEvent`'s `K`
+/// exactly like `String` does, including the `K::default().as_ref() == ""`
+/// contract `StateKey` requires.
+#[test]
+fn test_interned_key_as_lean_event_state_key() {
+    let via_new = rezzy::InternedKey::new("@bob:example.com");
+    let via_from_str: rezzy::InternedKey = "@bob:example.com".into();
+    let via_from_string: rezzy::InternedKey = String::from("@bob:example.com").into();
+    assert_eq!(via_new, via_from_str);
+    assert_eq!(via_new, via_from_string);
+    assert_eq!(via_new.as_ref(), "@bob:example.com");
+    assert_eq!(&*via_new, "@bob:example.com");
+    assert_eq!(via_new.to_string(), "@bob:example.com");
+
+    // `Ord` matches lexicographic `AsRef<str>` order, per `StateKey`'s contract.
+    let a: rezzy::InternedKey = "a".into();
+    let b: rezzy::InternedKey = "b".into();
+    assert!(a < b);
+
+    // The `StateKey` contract: `K::default().as_ref() == ""`.
+    assert_eq!(rezzy::InternedKey::default().as_ref(), "");
+
+    // Drops in as LeanEvent's K generic parameter directly.
+    let ev: LeanEvent<String, serde_json::Value, rezzy::InternedKey> = LeanEvent {
+        event_id: "$m:example.com".into(),
+        event_type: "m.room.member".into(),
+        state_key: Some(rezzy::InternedKey::new("@bob:example.com")),
+        sender: "@alice:example.com".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        ev.state_key.as_ref().map(AsRef::as_ref),
+        Some("@bob:example.com")
+    );
+    // A cheap clone (refcount bump, not a string copy) still compares equal.
+    let cloned = ev.state_key.clone();
+    assert_eq!(cloned, ev.state_key);
+}
+
+#[test]
+fn test_msc4242_prev_state_events_limit_in_check_auth() {
+    struct EventWithSeparateStateEdges {
+        event_id: String,
+        auth_events: Vec<String>,
+        prev_state_events: Vec<String>,
+        content: serde_json::Value,
+    }
+
+    impl DagNode for EventWithSeparateStateEdges {
+        type Id = String;
+
+        fn event_id(&self) -> &Self::Id {
+            &self.event_id
+        }
+
+        fn depth(&self) -> u64 {
+            0
+        }
+
+        fn prev_events(&self) -> &[Self::Id] {
+            &[]
+        }
+
+        fn auth_events(&self) -> &[Self::Id] {
+            &self.auth_events
+        }
+
+        fn prev_state_events(&self) -> &[Self::Id] {
+            &self.prev_state_events
+        }
+    }
+
+    impl EventLike for EventWithSeparateStateEdges {
+        type Content = serde_json::Value;
+
+        fn event_type(&self) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed("m.room.message")
+        }
+
+        fn sender(&self) -> &'static str {
+            "@alice:example.com"
+        }
+
+        fn state_key(&self) -> Option<&str> {
+            None
+        }
+
+        fn power_level(&self) -> i64 {
+            0
+        }
+
+        fn origin_server_ts(&self) -> u64 {
+            0
+        }
+
+        fn content(&self) -> &Self::Content {
+            &self.content
+        }
+    }
+
+    struct EmptyState;
+
+    impl StateProvider<String, serde_json::Value, EventWithSeparateStateEdges> for EmptyState {
+        fn get_event(
+            &self,
+            _event_type: &str,
+            _state_key: &str,
+        ) -> Option<&EventWithSeparateStateEdges> {
+            None
+        }
+    }
+
+    let ev = EventWithSeparateStateEdges {
+        event_id: "$ev:example.com".into(),
+        auth_events: Vec::new(),
+        prev_state_events: (0..21).map(|i| format!("$state{i}")).collect(),
+        content: json!({}),
+    };
+    let state = EmptyState;
+    let res = rezzy::auth::check_auth(&ev, &state, StateResVersion::V2_2, None);
+    assert!(matches!(
+        res,
+        Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("prev_state_events exceeds maximum allowed length of 20")
+    ));
+}
+
+/// Rules 2.1–2.4 (`auth_events` selection/whitelist) must not run against
+/// `LeanEvent` under V2.2: `DagNode::prev_state_events` aliases the same
+/// `auth_events` storage (MSC4242 has no separate field on `LeanEvent`), so
+/// `event.auth_events()` under V2.2 is really the wire-level
+/// `prev_state_events` list — up to 20 entries of arbitrary state-event
+/// types. Before the version gate, `check_auth_with_context` misapplied the
+/// classic `auth_events` selection algorithm to that list (10-entry citation
+/// count, `VALID_AUTH_TYPES` whitelist), incorrectly rejecting valid State
+/// DAG events. See cubic PR review on `src/basespec/rezzy_types.rs:1104`.
+#[test]
+fn test_v2_2_auth_context_skips_auth_events_selection_rules() {
+    let mut provider: rezzy::HashMap<String, LeanEvent> = rezzy::HashMap::new();
+    // 15 non-whitelisted-type "auth_events" entries: more than the classic
+    // 10-citation cap and none in VALID_AUTH_TYPES, which the pre-fix code
+    // path would have rejected on both counts.
+    let prev_state: Vec<String> = (0..15)
+        .map(|i| {
+            let id = format!("$state{i}:example.com");
+            provider.insert(
+                id.clone(),
+                make_event(
+                    &id,
+                    "m.room.topic",
+                    Some(""),
+                    "@admin:example.com",
+                    json!({}),
+                ),
+            );
+            id
+        })
+        .collect();
+
+    let create = make_event(
+        "$create:example.com",
+        M_ROOM_CREATE,
+        Some(""),
+        "@admin:example.com",
+        json!({"room_version": "org.matrix.msc4242.12"}),
+    );
+    let mut state = RoomState::new();
+    state.insert((M_ROOM_CREATE.to_string(), String::new()), create);
+
+    let event = LeanEvent {
+        event_id: "$msg:example.com".to_string(),
+        event_type: "m.room.message".into(),
+        sender: "@admin:example.com".into(),
+        auth_events: prev_state,
+        content: json!({}),
+        ..Default::default()
+    };
+
+    let result =
+        check_auth_with_context(&event, &state, StateResVersion::V2_2, None, Some(&provider));
+    assert!(
+        result.is_ok(),
+        "V2.2 auth_context checks must not validate prev_state_events against the \
+         classic auth_events selection algorithm: {result:?}"
+    );
 }

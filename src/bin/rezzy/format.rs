@@ -14,6 +14,7 @@
 
 use crate::utils::{compute_state_hash, epoch_days_to_ymd, resolve_parent_states, SharedStateMap};
 use crate::{Args, OutputFormat};
+use rezzy::auth::{apply_authorized_redactions, RedactionReport, RoomState};
 use rezzy::basespec::event_types::EventType;
 use rezzy::{resolved_state_entries, LeanEvent, StateResVersion};
 use std::collections::HashMap;
@@ -27,6 +28,7 @@ pub struct FormattingContext<'a> {
     pub resolved_state_list: &'a [String],
     pub auth_chain_ids: &'a [String],
     pub version: StateResVersion,
+    pub room_version: Option<&'a str>,
     pub duration: std::time::Duration,
     pub event_count: usize,
 }
@@ -147,12 +149,8 @@ pub fn compute_component_roots(
     let mut component_roots = Vec::new();
     if !events_map.is_empty() {
         let mut parent: Vec<usize> = (0..events_map.len()).collect();
-        let mut id_to_index: HashMap<&str, usize> = HashMap::with_capacity(events_map.len());
-        let mut index_to_ev: Vec<&LeanEvent> = Vec::with_capacity(events_map.len());
-        for (i, ev) in events_map.values().enumerate() {
-            id_to_index.insert(ev.event_id.as_str(), i);
-            index_to_ev.push(ev);
-        }
+        let index_to_ev: Vec<&LeanEvent> = events_map.values().collect();
+        let id_to_index = rezzy::index_by_event_id(index_to_ev.iter().copied());
         let find_root = |mut node: usize, parent: &mut Vec<usize>| -> usize {
             while parent[node] != node {
                 parent[node] = parent[parent[node]];
@@ -448,11 +446,51 @@ pub fn format_event_description(
 }
 
 /// Format the timeline output.
-pub fn format_timeline_output(ctx: &FormattingContext) -> serde_json::Value {
-    let mut displaynames: HashMap<String, String> = HashMap::new();
-    let mut sorted_events: Vec<&LeanEvent> = ctx.events_map.values().collect();
+/// Render the timeline to a string, applying only authorized redactions.
+fn render_timeline(ctx: &FormattingContext) -> String {
+    // Owned copy of the events so the authorized redaction pass can mutate the
+    // in-set targets in place. The resolved room state below is what the
+    // redaction pass needs to authorize each redaction.
+    let mut sorted_events: Vec<LeanEvent> = ctx.events_map.values().cloned().collect();
+    let room_version = ctx.room_version.unwrap_or("1");
+
+    // Resolved room state (event type + state_key -> event), used to check the
+    // `redact` power level and each redaction sender's own power level.
+    let mut room_state: RoomState<String, serde_json::Value, String> = RoomState::new();
+    for ((typ, sk), eid) in ctx.final_state_map {
+        if let Some(ev) = ctx.events_map.get(eid) {
+            room_state.insert((typ.as_str().to_string(), sk.clone()), ev.clone());
+        }
+    }
+
+    // Apply redactions resolvable within the input set, but only when the
+    // sender is authorized: the target's own sender, a sender holding the
+    // `redact` power level, or (room v1/v2) a same-domain sender. An
+    // unauthorized redaction leaves the target untouched. The returned report
+    // drives the --debug diagnostics below.
+    let redaction_report = if sorted_events.iter().any(LeanEvent::is_redaction) {
+        apply_authorized_redactions(&mut sorted_events, &room_state, ctx.version, room_version)
+    } else {
+        RedactionReport::default()
+    };
+
+    if ctx.args.debug {
+        for (rid, tid) in &redaction_report.applied {
+            eprintln!("[INFO] redaction {rid} stripped {tid}");
+        }
+        for (rid, tid) in &redaction_report.skipped_unauthorized {
+            eprintln!("[WARN] redaction {rid} rejected for {tid}: sender lacks authorization");
+        }
+        for (rid, tid) in &redaction_report.target_not_in_batch {
+            eprintln!(
+                "[WARN] redaction {rid} targets {tid}, absent from the input set; redaction deferred"
+            );
+        }
+    }
+
     sorted_events.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.event_id.cmp(&b.event_id)));
 
+    let mut displaynames: HashMap<String, String> = HashMap::new();
     for ev in &sorted_events {
         if ev.event_type == "m.room.member" {
             if let Some(dn) = ev.content.get("displayname").and_then(|v| v.as_str()) {
@@ -470,6 +508,21 @@ pub fn format_timeline_output(ctx: &FormattingContext) -> serde_json::Value {
         let sender = get_user_displayname(&ev.sender, &displaynames);
         let Some(desc) = format_event_description(ev, &sender, &displaynames) else {
             continue;
+        };
+        let desc = if ev.soft_fail {
+            // Hide soft-failed and rejected events from the default timeline;
+            // only surface them under --debug, flagged, as they're diagnostic.
+            if !ctx.args.debug {
+                continue;
+            }
+            format!("[SOFT-FAIL] {desc}")
+        } else if ev.rejected {
+            if !ctx.args.debug {
+                continue;
+            }
+            format!("[REJECTED] {desc}")
+        } else {
+            desc
         };
 
         let ts_ms = ev.origin_server_ts;
@@ -511,7 +564,12 @@ pub fn format_timeline_output(ctx: &FormattingContext) -> serde_json::Value {
         output.push('\n');
     }
 
-    eprint!("{output}");
+    output
+}
+
+/// Format the timeline output, printing the rendered timeline to stderr.
+pub fn format_timeline_output(ctx: &FormattingContext) -> serde_json::Value {
+    eprint!("{}", render_timeline(ctx));
     serde_json::json!({
         "status": "success",
         "format": "timeline",
@@ -586,7 +644,6 @@ pub fn format_cli_output(ctx: &FormattingContext) -> serde_json::Value {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use rezzy::StateResVersion;
 
     #[test]
     fn resolve_state_output_exposes_the_resolved_state_entries() {
@@ -621,6 +678,7 @@ mod tests {
             resolved_state_list: &resolved_state_list,
             auth_chain_ids: &auth_chain_ids,
             version: StateResVersion::V2,
+            room_version: Some("11"),
             duration: std::time::Duration::from_millis(0),
             event_count: 2,
         };
@@ -642,6 +700,102 @@ mod tests {
                     "event_id": "$join",
                 }
             ])
+        );
+    }
+
+    /// The CLI timeline applies a redaction only when it is authorized against
+    /// the resolved room state: an unrelated sender with no `redact` power must
+    /// not strip the target, while the target's own sender may.
+    #[test]
+    fn timeline_redaction_requires_authorization() {
+        let render = |events: Vec<LeanEvent>| -> String {
+            let mut events_map = HashMap::new();
+            for ev in &events {
+                events_map.insert(ev.event_id.clone(), ev.clone());
+            }
+            let args = Args {
+                input: Vec::new(),
+                room: None,
+                homeserver: None,
+                token: None,
+                output: None,
+                state_res: None,
+                format: OutputFormat::Timeline,
+                debug: false,
+                quiet: false,
+                origin: "matrix.org".to_string(),
+            };
+            let raw_map = HashMap::new();
+            let heads = Vec::new();
+            let mut final_state_map = imbl::OrdMap::new();
+            final_state_map.insert(("m.room.power_levels".into(), String::new()), "$pl".into());
+            let resolved_state_list: Vec<String> = Vec::new();
+            let auth_chain_ids: Vec<String> = Vec::new();
+            let ctx = FormattingContext {
+                args: &args,
+                events_map: &events_map,
+                raw_map: &raw_map,
+                heads: &heads,
+                final_state_map: &final_state_map,
+                resolved_state_list: &resolved_state_list,
+                auth_chain_ids: &auth_chain_ids,
+                version: StateResVersion::V2,
+                room_version: Some("11"),
+                duration: std::time::Duration::from_millis(0),
+                event_count: events.len(),
+            };
+            render_timeline(&ctx)
+        };
+
+        let pl: LeanEvent = LeanEvent {
+            event_id: "$pl".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:x".into(),
+            content: serde_json::json!({
+                "users": { "@admin:x": 100, "@bob:x": 0, "@mallory:x": 0 },
+                "redact": 50
+            }),
+            ..Default::default()
+        };
+        let msg: LeanEvent = LeanEvent {
+            event_id: "$msg".into(),
+            event_type: "m.room.message".into(),
+            sender: "@bob:x".into(),
+            origin_server_ts: 10,
+            content: serde_json::json!({ "body": "secret" }),
+            ..Default::default()
+        };
+        let mallory_redact: LeanEvent = LeanEvent {
+            event_id: "$r_mal".into(),
+            event_type: "m.room.redaction".into(),
+            sender: "@mallory:x".into(),
+            origin_server_ts: 11,
+            content: serde_json::json!({ "redacts": "$msg" }),
+            ..Default::default()
+        };
+        let self_redact: LeanEvent = LeanEvent {
+            event_id: "$r_self".into(),
+            event_type: "m.room.redaction".into(),
+            sender: "@bob:x".into(),
+            origin_server_ts: 12,
+            content: serde_json::json!({ "redacts": "$msg" }),
+            ..Default::default()
+        };
+
+        // Unauthorized: mallory (PL 0 < redact 50, not the target's sender)
+        // must NOT strip Bob's message.
+        let out = render(vec![pl.clone(), msg.clone(), mallory_redact.clone()]);
+        assert!(
+            out.contains("secret"),
+            "unauthorized redaction must not strip the target; got: {out:?}"
+        );
+
+        // Authorized: Bob redacts his own message -> content is stripped.
+        let out = render(vec![pl.clone(), msg.clone(), self_redact.clone()]);
+        assert!(
+            !out.contains("secret"),
+            "authorized self-redaction must strip the target content; got: {out:?}"
         );
     }
 }

@@ -60,6 +60,37 @@ pub fn detect_version(
     )
 }
 
+/// Detect `prev_events` and `auth_events` references that point to events
+/// absent from `events_map` and not known to the `exists` oracle.
+///
+/// This is the "warn surface" for DAG gaps. A reference to an unknown event is
+/// *not* necessarily a resolution failure — a missing `prev_event` is a backward
+/// extremity (incomplete timeline / backfill needed), while a missing
+/// `auth_event` means the event's authorization cannot be verified (potentially
+/// unsafe state). The two cases are reported separately so callers can treat
+/// them differently.
+///
+/// `exists` is the seam where a caller can plug in a richer notion of "known":
+/// e.g. a query against a homeserver's event store, a fetch attempt, or a
+/// compact accumulator (Bloom filter / 128-bit digest) of the known event set.
+/// A `|_| false` oracle means "known iff present in `events_map`".
+///
+/// Returns `(backward_extremities, missing_auth_events)`.
+pub fn report_gaps<F>(
+    events_map: &HashMap<String, LeanEvent>,
+    exists: F,
+) -> (
+    Vec<rezzy::state::BackwardExtremity<String>>,
+    Vec<rezzy::state::MissingAuthEvent<String>>,
+)
+where
+    F: Fn(&String) -> bool,
+{
+    let backward = rezzy::find_backward_extremities(events_map, &exists);
+    let missing_auth = rezzy::find_missing_auth_events(events_map, &exists);
+    (backward, missing_auth)
+}
+
 /// Computes an FNV-1a hash of `StateEntries`.
 pub fn compute_state_hash(state: &imbl::OrdMap<(EventType, String), String>) -> String {
     let mut hash: u64 = 14_695_981_039_346_656_037; // FNV offset basis
@@ -350,7 +381,7 @@ pub fn partition_and_resolve_state(
         let mut first = true;
 
         for head_id in heads {
-            if let Some(&idx) = auth_graph.id_to_index.get(head_id) {
+            if let Some(idx) = auth_graph.index.index_of(head_id) {
                 let chain_bitmap = &auth_graph.auth_bitmaps[idx as usize];
                 if first {
                     union.clone_from(chain_bitmap);
@@ -368,7 +399,13 @@ pub fn partition_and_resolve_state(
             &intersection,
         );
         for idx in diff {
-            auth_difference.insert(auth_graph.index_to_id[idx as usize].clone());
+            auth_difference.insert(
+                auth_graph
+                    .index
+                    .item_at(idx as usize)
+                    .cloned()
+                    .expect("auth-chain index came from this graph"),
+            );
         }
     }
 
@@ -394,11 +431,12 @@ pub fn partition_and_resolve_state(
 
     let mut pl_cache = HashMap::new();
     let final_state_map = rezzy::resolve_iterative_sort(
-        unconflicted_state,
-        conflicted_events,
+        &unconflicted_state,
+        &conflicted_events,
         events_map,
         version,
         &mut pl_cache,
+        &String::new(),
     );
 
     let duration = start.elapsed();
@@ -506,4 +544,89 @@ pub fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
     .unwrap();
     let y = if m <= 2 { y.wrapping_add(1) } else { y };
     (y, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rezzy::LeanEvent;
+
+    fn map_from_jsonl(jsonl: &str) -> HashMap<String, LeanEvent> {
+        jsonl
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let e: LeanEvent = serde_json::from_str(l).unwrap_or_else(|err| {
+                    panic!("failed to parse JSONL fixture line: {err}\nline: {l}")
+                });
+                (e.event_id.clone(), e)
+            })
+            .collect()
+    }
+
+    /// A gap in `auth_events` must be reported distinctly from a `prev_events`
+    /// gap, and both must be absent when no oracle gap exists.
+    #[test]
+    fn test_report_gaps_distinguishes_prev_vs_auth() {
+        let events = map_from_jsonl(
+            r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.member","state_key":"@x:x","sender":"@x:x","depth":2,"content":{"membership":"join"},"prev_events":["A"],"auth_events":["A"]}
+{"event_id":"C","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B","MISSING_PREV"],"auth_events":["A","B"]}
+{"event_id":"D","type":"m.room.message","sender":"@x:x","depth":4,"prev_events":["C"],"auth_events":["A","MISSING_AUTH"]}
+            "#,
+        );
+
+        let (backward, missing_auth) = report_gaps(&events, |_| false);
+
+        assert_eq!(backward.len(), 1);
+        assert_eq!(backward[0].event_id, "C");
+        assert_eq!(backward[0].missing_prev_events, vec!["MISSING_PREV"]);
+
+        assert_eq!(missing_auth.len(), 1);
+        assert_eq!(missing_auth[0].event_id, "D");
+        assert_eq!(missing_auth[0].missing_auth_events, vec!["MISSING_AUTH"]);
+    }
+
+    /// The `exists` oracle suppresses gaps for events the caller knows about
+    /// outside the map (the seam for a fetch check / 128-bit accumulator).
+    #[test]
+    fn test_report_gaps_uses_exists_oracle() {
+        let events = map_from_jsonl(
+            r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.message","sender":"@x:x","depth":2,"prev_events":["A"],"auth_events":["A"]}
+{"event_id":"C","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B","KNOWN_ELSEWHERE"],"auth_events":["A"]}
+            "#,
+        );
+
+        // No oracle: the reference to KNOWN_ELSEWHERE is a backward extremity.
+        let (backward, _) = report_gaps(&events, |_| false);
+        assert_eq!(backward.len(), 1);
+
+        // Oracle that knows KNOWN_ELSEWHERE: gap suppressed.
+        let (backward, _) = report_gaps(&events, |id| id == "KNOWN_ELSEWHERE");
+        assert!(backward.is_empty(), "oracle-known prev must not be a gap");
+    }
+
+    /// A fully-connected DAG reports no gaps.
+    #[test]
+    fn test_report_gaps_clean() {
+        let events = map_from_jsonl(
+            r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.member","state_key":"@x:x","sender":"@x:x","depth":2,"content":{"membership":"join"},"prev_events":["A"],"auth_events":["A"]}
+{"event_id":"C","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B"],"auth_events":["A","B"]}
+            "#,
+        );
+        let (backward, missing_auth) = report_gaps(&events, |_| false);
+        assert_eq!(
+            backward,
+            [] as [rezzy::BackwardExtremity<std::string::String>; 0]
+        );
+        assert_eq!(
+            missing_auth,
+            [] as [rezzy::MissingAuthEvent<std::string::String>; 0]
+        );
+    }
 }

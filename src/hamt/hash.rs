@@ -1,3 +1,5 @@
+//! Structural hashing and state-group identity for HAMT nodes.
+
 use blake2::{digest::Digest, Blake2b512};
 use core::hash::Hasher;
 
@@ -13,20 +15,49 @@ pub type StructuralHash = [u8; 16];
 /// must not be confused with the local-only `StructuralHash`.
 pub type StateGroupId = [u8; 32];
 
-/// A resolved root handle carrying both the local structural hash and the
-/// global state-group identifier.
+/// Default codec version (1 = dense v1 binary format).
+pub const HAMT_CODEC_VERSION_V1: u8 = 1;
+/// Default routing version (1 = full keyed structural hash routing).
+pub const HAMT_ROUTING_VERSION_V1: u8 = 1;
+
+/// A resolved root handle carrying the local structural hash, global state-group identifier,
+/// and explicit codec/routing version metadata for migration safety.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RootHandle {
+    pub codec_version: u8,
+    pub routing_version: u8,
+    pub routing_params: [u8; 4],
     pub structural_hash: StructuralHash,
     pub state_group_id: StateGroupId,
 }
 
 impl RootHandle {
-    /// Builds a root handle from a precomputed structural hash and a state
-    /// lattice.
+    /// Builds a root handle with default v1 codec and v1 routing from a precomputed
+    /// structural hash and a state lattice.
     #[must_use]
     pub fn from_lthash(structural_hash: StructuralHash, lattice: &crate::state::LtHash) -> Self {
+        Self::with_versions(
+            HAMT_CODEC_VERSION_V1,
+            HAMT_ROUTING_VERSION_V1,
+            [0; 4],
+            structural_hash,
+            lattice,
+        )
+    }
+
+    /// Builds a root handle with explicit codec and routing versioning.
+    #[must_use]
+    pub fn with_versions(
+        codec_version: u8,
+        routing_version: u8,
+        routing_params: [u8; 4],
+        structural_hash: StructuralHash,
+        lattice: &crate::state::LtHash,
+    ) -> Self {
         Self {
+            codec_version,
+            routing_version,
+            routing_params,
             structural_hash,
             state_group_id: state_group_id_from_lthash(lattice),
         }
@@ -78,6 +109,9 @@ mod tests {
     #[test]
     fn test_root_handle_hashable() {
         let handle = RootHandle {
+            codec_version: HAMT_CODEC_VERSION_V1,
+            routing_version: HAMT_ROUTING_VERSION_V1,
+            routing_params: [0; 4],
             structural_hash: [1; 16],
             state_group_id: [2; 32],
         };
