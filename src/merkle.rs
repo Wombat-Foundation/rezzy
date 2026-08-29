@@ -664,6 +664,12 @@ pub mod causal {
 
     /// Which side a sibling subtree sits on relative to the running node in
     /// a [`CausalProofStep`].
+    ///
+    /// Renamed from `Side` to `CausalSide` to avoid a naming clash with
+    /// [`crate::merkle::Side`] (the top-level, unrelated `Side` enum used by
+    /// the non-causal Merkle sum trie). Scoped to `merkle::causal` and not
+    /// re-exported at the crate root, so this is a breaking change only for
+    /// callers referencing `rezzy::merkle::causal::Side` directly.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum CausalSide {
         Left,

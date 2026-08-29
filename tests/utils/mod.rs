@@ -209,6 +209,29 @@ pub fn print_canonical_hash(json_str: &str) {
     std::println!("============================");
 }
 
+/// Field-by-field equality for [`LeanEvent`], for test assertions.
+///
+/// `LeanEvent`'s own `PartialEq` deliberately compares only `event_id` (it's
+/// used for `Ord`/set membership elsewhere in the crate), so it's blind to
+/// two same-id events differing in sender, content, type, etc. The JSONL
+/// asserters below need the stronger check: a fixture/actual pair should
+/// match on every field, not just carry the same id.
+fn lean_events_fully_eq(a: &LeanEvent, b: &LeanEvent) -> bool {
+    a.event_id == b.event_id
+        && a.event_type == b.event_type
+        && a.state_key == b.state_key
+        && a.power_level == b.power_level
+        && a.origin_server_ts == b.origin_server_ts
+        && a.sender == b.sender
+        && a.content == b.content
+        && a.prev_events == b.prev_events
+        && a.auth_events == b.auth_events
+        && a.depth == b.depth
+        && a.rejected == b.rejected
+        && a.soft_fail == b.soft_fail
+        && a.room_id == b.room_id
+}
+
 /// Asserts that a given `RoomState` exactly matches the state defined in a JSONL string.
 #[allow(dead_code)]
 pub fn assert_jsonl_state_eq(actual: &RoomState, expected_jsonl: &str) {
@@ -223,15 +246,15 @@ pub fn assert_jsonl_state_eq(actual: &RoomState, expected_jsonl: &str) {
         actual.len()
     );
 
-    // Then, assert each element matches precisely
+    // Then, assert each element matches precisely (all fields, not just event_id)
     for (key, expected_event) in &expected {
         let actual_event = actual.get(key).unwrap_or_else(|| {
             panic!("Actual state missing expected event at key {key:?}");
         });
 
-        assert_eq!(
-            actual_event, expected_event,
-            "Event mismatch at key {key:?}"
+        assert!(
+            lean_events_fully_eq(actual_event, expected_event),
+            "Event mismatch at key {key:?}\n  actual:   {actual_event:?}\n  expected: {expected_event:?}"
         );
     }
 }
@@ -250,9 +273,12 @@ pub fn assert_jsonl_events_eq(actual: &[LeanEvent], expected_jsonl: &str) {
         actual.len()
     );
 
-    // Then, assert each element matches precisely
+    // Then, assert each element matches precisely (all fields, not just event_id)
     for (i, (actual_event, expected_event)) in actual.iter().zip(expected.iter()).enumerate() {
-        assert_eq!(actual_event, expected_event, "Event mismatch at index {i}");
+        assert!(
+            lean_events_fully_eq(actual_event, expected_event),
+            "Event mismatch at index {i}\n  actual:   {actual_event:?}\n  expected: {expected_event:?}"
+        );
     }
 }
 
