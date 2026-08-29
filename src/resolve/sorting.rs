@@ -38,8 +38,8 @@ where
 {
     let mut pl_event = None;
 
-    // Spec compliance: only check immediate auth_events.
-    for aid in event.auth_chain_events(version) {
+    // Spec compliance: only check immediate auth_events (or prev_state_events for V2.2).
+    for aid in event.dag_edges(version) {
         if let Some(aev) = auth_context.get_event(aid) {
             if aev.event_type().as_ref() == M_ROOM_POWER_LEVELS && aev.state_key() == Some("") {
                 pl_event = Some(aev);
@@ -110,7 +110,7 @@ where
 
     for (id, event) in events {
         in_degree.entry(id).or_insert(0);
-        for auth in event.auth_chain_events(version) {
+        for auth in event.dag_edges(version) {
             if let Some((auth_key, _)) = events.get_key_value(auth) {
                 // Topological sort: ancestors come BEFORE descendants.
                 // But we want a REVERSE topological sort: descendants BEFORE ancestors.
@@ -303,7 +303,7 @@ where
         // BFS to find the nearest PL ancestor
         let mut found = None;
         if let Some(ev) = auth_context.get_event(&eid) {
-            let mut queue: VecDeque<&Id> = ev.auth_chain_events(version).iter().collect();
+            let mut queue: VecDeque<&Id> = ev.dag_edges(version).iter().collect();
             let mut visited = crate::FastSet::default();
             while let Some(q_id) = queue.pop_front() {
                 if !visited.insert(q_id) {
@@ -314,7 +314,7 @@ where
                         found = Some(q_id.clone());
                         break;
                     }
-                    for aid in auth_ev.auth_chain_events(version) {
+                    for aid in auth_ev.dag_edges(version) {
                         queue.push_back(aid);
                     }
                 }
@@ -370,7 +370,7 @@ where
             let mut min_pos = usize::MAX;
 
             if let Some(node) = auth_context.get_event(top) {
-                for aid in node.auth_chain_events(version) {
+                for aid in node.dag_edges(version) {
                     if let Some(&child_pos) = memo.get(aid) {
                         if child_pos != usize::MAX - 1 {
                             min_pos = min_pos.min(child_pos);
@@ -548,8 +548,12 @@ mod tests {
 
         let mainline = alloc::vec!["pl0".into()];
         let mut events = alloc::vec![&ev];
-        let dist =
-            compute_closest_mainline_positions(&mut events, &mainline, &auth_ctx, StateResVersion::V2);
+        let dist = compute_closest_mainline_positions(
+            &mut events,
+            &mainline,
+            &auth_ctx,
+            StateResVersion::V2,
+        );
         assert_eq!(dist["msg"], 0);
     }
 

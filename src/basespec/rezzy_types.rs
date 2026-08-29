@@ -1120,6 +1120,20 @@ pub trait DagNode {
             self.auth_events()
         }
     }
+
+    /// Dependency edges for the state-resolution graph at the given version.
+    ///
+    /// For V1–V2.1.1 this is `auth_events()` (the classic auth chain).
+    /// For V2.2 (MSC4242) this is `prev_state_events()` (the State DAG),
+    /// because MSC4242 replaces the auth chain with an explicit state DAG
+    /// and `auth_chain_events()` intentionally returns empty for that version.
+    fn dag_edges(&self, version: StateResVersion) -> &[Self::Id] {
+        if version == StateResVersion::V2_2 {
+            self.prev_state_events()
+        } else {
+            self.auth_events()
+        }
+    }
 }
 
 impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
