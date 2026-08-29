@@ -32,7 +32,7 @@ perf.data*
 /*.jsonl
 /*.html
 
-# assets and fixturs
+# assets and fixtures
 *.png
 
 # paper

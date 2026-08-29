@@ -80,7 +80,7 @@ def api_get(path, params=None, server=None):
         body = e.read().decode("utf-8", errors="replace")[:200]
         print(f"  HTTP {e.code}: {e.reason} — {body}", file=sys.stderr)
         return None
-    except urllib.error.URLError as e:
+    except (urllib.error.URLError, OSError) as e:
         print(f"  Error: {e}", file=sys.stderr)
         return None
     except (

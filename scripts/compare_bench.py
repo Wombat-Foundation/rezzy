@@ -28,11 +28,11 @@ import json
 import re
 import sys
 
-# `label: <number> ms` or `label: <number> ms/op`. Deliberately does NOT match
-# the ratio lines ("=> foo is 1.23x faster than bar") or the parenthesized
-# `label: (setup: ..., algo: ..., ...)` forms, so only the stable per-op/total
-# ms metrics are tracked.
-METRIC = re.compile(r"^(.+?):\s+([0-9]+(?:\.[0-9]+)?)\s*ms\b")
+# `label: <number> ms` or `label: <number> ms/op` or `label: <number> ns/op`.
+# Deliberately does NOT match the ratio lines ("=> foo is 1.23x faster than
+# bar") or the parenthesized `label: (setup: ..., algo: ..., ...)` forms,
+# so only the stable per-op/total metrics are tracked.
+METRIC = re.compile(r"^(.+?):\s+([0-9]+(?:\.[0-9]+)?)\s*(ns|ms)(?:/op)?\b")
 CHECKPOINT = re.compile(r"^\s*S=(\d+):\s*$")
 BENCHMARK_SECTION = re.compile(r"^\s*\[[^]]+\]\s+BENCHMARK:")
 
@@ -58,7 +58,12 @@ def extract(path: str) -> dict[str, float]:
                 label = f"S={checkpoint}: {label}"
             if label in metrics:
                 raise ValueError(f"duplicate benchmark label: {label}")
-            metrics[label] = float(m.group(2))
+            value = float(m.group(2))
+            unit = m.group(3)
+            # Normalise nanoseconds to milliseconds for consistent comparison.
+            if unit == "ns":
+                value /= 1_000_000.0
+            metrics[label] = value
     return metrics
 
 

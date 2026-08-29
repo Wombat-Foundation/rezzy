@@ -38,12 +38,16 @@ def fetch_and_save_room(room_id, output_path, homeserver, headers, full_pdus):
     """Fetch room state from the homeserver and write it to output_path."""
     # pylint: disable=too-many-locals,too-many-statements
     print(f"\nFetching room state for {room_id}...", file=sys.stderr)
-    state_res = requests.get(
-        f"{homeserver}/_matrix/client/v3/rooms/{room_id}/state",
-        headers=headers,
-        stream=True,
-        timeout=300,
-    )
+    try:
+        state_res = requests.get(
+            f"{homeserver}/_matrix/client/v3/rooms/{room_id}/state",
+            headers=headers,
+            stream=True,
+            timeout=300,
+        )
+    except requests.RequestException as e:
+        print(f"Failed to fetch state for {room_id}: {e}", file=sys.stderr)
+        return
 
     if state_res.status_code != 200:
         print(
@@ -57,26 +61,30 @@ def fetch_and_save_room(room_id, output_path, homeserver, headers, full_pdus):
     chunks = []
 
     print("Streaming state payload from Homeserver...", file=sys.stderr, flush=True)
-    for chunk in state_res.iter_content(chunk_size=1024 * 1024):
-        if chunk:
-            chunks.append(chunk)
-            downloaded += len(chunk)
-            mb = downloaded / (1024 * 1024)
-            if total_size > 0:
-                percent = (downloaded / total_size) * 100
-                print(
-                    f"\rDownloaded {mb:.2f} MB ({percent:.1f}%)...",
-                    end="",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            else:
-                print(
-                    f"\rDownloaded {mb:.2f} MB...",
-                    end="",
-                    file=sys.stderr,
-                    flush=True,
-                )
+    try:
+        for chunk in state_res.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                chunks.append(chunk)
+                downloaded += len(chunk)
+                mb = downloaded / (1024 * 1024)
+                if total_size > 0:
+                    percent = (downloaded / total_size) * 100
+                    print(
+                        f"\rDownloaded {mb:.2f} MB ({percent:.1f}%)...",
+                        end="",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"\rDownloaded {mb:.2f} MB...",
+                        end="",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+    except requests.RequestException as e:
+        print(f"Stream interrupted for {room_id}: {e}", file=sys.stderr)
+        return
 
     print("\nParsing JSON payload...", file=sys.stderr)
     raw_bytes = b"".join(chunks)
