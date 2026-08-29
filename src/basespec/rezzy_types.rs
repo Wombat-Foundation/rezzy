@@ -3490,7 +3490,35 @@ mod dag_node_tests {
     use super::*;
     use crate::basespec::event_types::M_ROOM_CREATE;
 
-    /// `auth_chain_events` returns `&[]` for `V2_2`.
+    /// A test double with separate `auth_events` and `prev_state_events`
+    /// storage, so the version-dispatch in `dag_edges` / `auth_chain_events`
+    /// is verifiable (`LeanEvent` aliases both accessors to the same field).
+    struct DualStorageNode {
+        event_id: String,
+        auth: Vec<String>,
+        prev_state: Vec<String>,
+    }
+
+    impl DagNode for DualStorageNode {
+        type Id = String;
+
+        fn event_id(&self) -> &String {
+            &self.event_id
+        }
+        fn depth(&self) -> u64 {
+            0
+        }
+        fn prev_events(&self) -> &[String] {
+            &[]
+        }
+        fn auth_events(&self) -> &[String] {
+            &self.auth
+        }
+        fn prev_state_events(&self) -> &[String] {
+            &self.prev_state
+        }
+    }
+
     #[test]
     fn auth_chain_events_returns_empty_for_v2_2() {
         let ev = LeanEvent::<String> {
@@ -3508,19 +3536,20 @@ mod dag_node_tests {
         assert!(ev.auth_chain_events(StateResVersion::V2_2).is_empty());
     }
 
-    /// `dag_edges` returns `prev_state_events` for `V2_2` and `auth_events` otherwise.
+    /// `dag_edges` returns `prev_state_events` for `V2_2` and `auth_events`
+    /// otherwise. Uses a test double with *distinct* `auth` and `prev_state`
+    /// lists so a dispatch regression is caught (`LeanEvent` aliases both).
     #[test]
     fn dag_edges_returns_correct_edges_per_version() {
-        let ev = LeanEvent::<String> {
+        let node = DualStorageNode {
             event_id: "$ev:example".into(),
-            event_type: "m.room.message".into(),
-            auth_events: alloc::vec!["$auth:example".into()],
-            ..Default::default()
+            auth: alloc::vec!["$auth:example".into()],
+            prev_state: alloc::vec!["$ps:example".into()],
         };
         // V2: dag_edges returns auth_events
-        assert_eq!(ev.dag_edges(StateResVersion::V2), &["$auth:example"]);
-        // V2_2: dag_edges returns prev_state_events (same underlying storage)
-        assert_eq!(ev.dag_edges(StateResVersion::V2_2), &["$auth:example"]);
+        assert_eq!(node.dag_edges(StateResVersion::V2), &["$auth:example"]);
+        // V2_2: dag_edges returns prev_state_events
+        assert_eq!(node.dag_edges(StateResVersion::V2_2), &["$ps:example"]);
     }
 }
 
