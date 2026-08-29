@@ -217,17 +217,17 @@ fn bench_state_groups(n: usize, steps: usize) {
     let op_count = mutations.len() as u32;
     println!("  write cost per mutation:");
     println!(
-        "    hamt (persist new spine nodes): {:.1} ns/op, {:.1} bytes/op",
+        "    hamt (persist new spine nodes, n={n}): {:.1} ns/op, {:.1} bytes/op",
         (hamt_write_elapsed.as_nanos() as f64) / f64::from(op_count),
         hamt_bytes_total as f64 / f64::from(op_count)
     );
     println!(
-        "    synapse-style unbounded chain (1 delta row/op): {:.1} ns/op, {:.1} bytes/op",
+        "    synapse-style unbounded chain (1 delta row/op, n={n}): {:.1} ns/op, {:.1} bytes/op",
         (chain_unbounded_write_elapsed.as_nanos() as f64) / f64::from(op_count),
         chain_unbounded_bytes as f64 / f64::from(op_count)
     );
     println!(
-        "    synapse-style chain + snapshot every {SNAPSHOT_EVERY} hops: {:.1} ns/op, {:.1} bytes/op",
+        "    synapse-style chain + snapshot every {SNAPSHOT_EVERY} hops (n={n}): {:.1} ns/op, {:.1} bytes/op",
         (chain_bounded_write_elapsed.as_nanos() as f64) / f64::from(op_count),
         chain_bounded_bytes as f64 / f64::from(op_count)
     );
@@ -296,15 +296,15 @@ fn bench_state_groups(n: usize, steps: usize) {
 
     println!("  cold-key point lookup after {steps} mutations (key untouched since genesis):");
     println!(
-        "    hamt::get: {:.1} ns/op, O(log32 N) always",
+        "    hamt::get (n={n}): {:.1} ns/op, O(log32 N) always",
         (hamt_lookup_elapsed.as_nanos() as f64) / f64::from(LOOKUP_REPS)
     );
     println!(
-        "    synapse-style unbounded chain walk: {:.1} ns/op, {unbounded_hops} hops walked",
+        "    synapse-style unbounded chain walk (n={n}): {:.1} ns/op, {unbounded_hops} hops walked",
         (unbounded_lookup_elapsed.as_nanos() as f64) / f64::from(LOOKUP_REPS)
     );
     println!(
-        "    synapse-style chain walk (snapshot every {SNAPSHOT_EVERY}): {:.1} ns/op, {bounded_hops} hops walked",
+        "    synapse-style chain walk (snapshot every {SNAPSHOT_EVERY}, n={n}): {:.1} ns/op, {bounded_hops} hops walked",
         (bounded_lookup_elapsed.as_nanos() as f64) / f64::from(LOOKUP_REPS)
     );
     report_speedup(

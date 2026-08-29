@@ -131,13 +131,13 @@ fn bench_incremental_persist(n: usize, steps: usize) {
 
     let op_count = mutations.len() as u32;
     println!(
-        "  legacy (full re-serialize every step): {:.1} ns/op, {:.1} bytes/op, {:.3} MiB total",
+        "  legacy (full re-serialize every step, n={n}): {:.1} ns/op, {:.1} bytes/op, {:.3} MiB total",
         (legacy_elapsed.as_nanos() as f64) / f64::from(op_count),
         legacy_bytes as f64 / f64::from(op_count),
         legacy_bytes as f64 / (1024.0 * 1024.0)
     );
     println!(
-        "  hamt (persist only new spine nodes): {:.1} ns/op, {:.1} bytes/op, {:.3} MiB total",
+        "  hamt (persist only new spine nodes, n={n}): {:.1} ns/op, {:.1} bytes/op, {:.3} MiB total",
         (hamt_elapsed.as_nanos() as f64) / f64::from(op_count),
         hamt_bytes as f64 / f64::from(op_count),
         hamt_bytes as f64 / (1024.0 * 1024.0)
@@ -234,13 +234,13 @@ fn bench_batched_persist(n: usize, steps: usize, batch: usize) {
 
     let batch_count = (steps / batch) as u32;
     println!(
-        "  legacy ({batch_count} full snapshots): {:.1} ns/snapshot, {:.1} bytes/snapshot, {:.3} MiB total",
+        "  legacy ({batch_count} full snapshots, n={n}): {:.1} ns/snapshot, {:.1} bytes/snapshot, {:.3} MiB total",
         (legacy_elapsed.as_nanos() as f64) / f64::from(batch_count),
         legacy_bytes as f64 / f64::from(batch_count),
         legacy_bytes as f64 / (1024.0 * 1024.0)
     );
     println!(
-        "  hamt ({batch_count} batch diffs): {:.1} ns/snapshot, {:.1} bytes/snapshot, {:.3} MiB total",
+        "  hamt ({batch_count} batch diffs, n={n}): {:.1} ns/snapshot, {:.1} bytes/snapshot, {:.3} MiB total",
         (hamt_elapsed.as_nanos() as f64) / f64::from(batch_count),
         hamt_bytes as f64 / f64::from(batch_count),
         hamt_bytes as f64 / (1024.0 * 1024.0)
