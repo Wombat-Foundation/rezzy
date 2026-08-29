@@ -960,7 +960,7 @@ fn run_candidate_sweep_suite() {
     benchmark_candidate_sweep(&fixture, &seeds, &[1, 4, 16, 64, 256, 1024]);
 }
 
-pub fn run() {
+fn main() {
     run_branchy_exact_suite();
     run_branchy_low_memory_suite();
     run_branchy_forward_reachable_ids_suite();

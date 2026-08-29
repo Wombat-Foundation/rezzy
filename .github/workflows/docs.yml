@@ -33,7 +33,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build rustdoc
-        run: make doc
+        run: make rust/doc
 
       - name: Delete stale github-pages artifact
         # `deploy-pages` requires exactly one `github-pages` artifact; a

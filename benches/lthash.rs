@@ -24,7 +24,7 @@
 //! `O(S log S)`), which is what actually determines how these scale as
 //! room state grows, not which exact hash function each project picks.
 //!
-//! Run with: `cargo bench --bench rezzy -- lthash`
+//! Run with: `cargo bench --bench lthash`
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -268,7 +268,7 @@ fn report_speedup_two(label: &str, slower_baseline: Duration, faster_baseline: D
     }
 }
 
-pub fn run() {
+fn main() {
     for &n in &[
         16usize, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
     ] {

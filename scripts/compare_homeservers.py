@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-"""Compare resolved state across three homeservers using rezzy.
-
-Fetches room state from dev/nightly/unredacted servers and measures each
-server's state resolution accuracy against a merged canonical DAG.
-"""
-
 import json
 import os
 import subprocess
@@ -26,7 +19,6 @@ SERVERS = {
 
 
 def fetch_state(server_url, room_id, token):
-    """Fetch the current resolved state for a room from a homeserver."""
     print(f"Fetching state from {server_url}...")
     headers = {"Authorization": f"Bearer {token}"}
     try:
@@ -37,14 +29,14 @@ def fetch_state(server_url, room_id, token):
         )
         if res.status_code == 200:
             return res.json()
-        print(f"Error from {server_url}: {res.status_code} {res.text}")
-    except requests.RequestException as e:
+        else:
+            print(f"Error from {server_url}: {res.status_code} {res.text}")
+    except Exception as e:
         print(f"Failed to connect to {server_url}: {e}")
     return None
 
 
 def run_ruma_lean(file_path):
-    """Run rezzy on a state file and return the parsed summary."""
     cmd = [
         "cargo",
         "run",
@@ -57,24 +49,22 @@ def run_ruma_lean(file_path):
         "--format",
         "default",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0:
         try:
             return json.loads(result.stdout)
-        except json.JSONDecodeError:
+        except:
             print(f"Failed to parse JSON output from rezzy for {file_path}")
             return None
-    print(f"Error running rezzy on {file_path}: {result.stderr}")
-    return None
+    else:
+        print(f"Error running rezzy on {file_path}: {result.stderr}")
+        return None
 
 
 def main():
-    """Drive the three-way fork accuracy analysis."""
-    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
     if not TOKEN_DEV or not TOKEN_NIGHTLY or not TOKEN_UNREDACTED:
         print(
-            "Error: Required environment variables (MATRIX_TOKEN, "
-            "MATRIX_TOKEN_NIGHTLY, and MATRIX_TOKEN_UNREDACTED) are not set."
+            "Error: Required environment variables (MATRIX_TOKEN, MATRIX_TOKEN_NIGHTLY, and MATRIX_TOKEN_UNREDACTED) are not set."
         )
         sys.exit(1)
 
@@ -89,7 +79,7 @@ def main():
         state = fetch_state(url, ROOM_ID, tokens[name])
         if state:
             file_path = f"res/state_{name}.json"
-            with open(file_path, "w", encoding="utf-8") as f:
+            with open(file_path, "w") as f:
                 json.dump(state, f)
             states[name] = file_path
 
@@ -113,13 +103,13 @@ def main():
     print("\nMerging all DAGs to find the mathematically canonical state...")
     unified_map = {}
     for name, path in states.items():
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r") as f:
             events = json.load(f)
             for ev in events:
                 unified_map[ev["event_id"]] = ev
 
     unified_path = "res/state_unified_3way.json"
-    with open(unified_path, "w", encoding="utf-8") as f:
+    with open(unified_path, "w") as f:
         json.dump(list(unified_map.values()), f)
 
     canonical_res = run_ruma_lean(unified_path)
@@ -147,7 +137,7 @@ def main():
     target_user = "@sukidusk6125:matrix.org"
     print(f"\nTarget Analysis: {target_user}")
     for name, path in states.items():
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r") as f:
             events = json.load(f)
             member_ev = next(
                 (
@@ -160,15 +150,13 @@ def main():
             )
             if member_ev:
                 print(
-                    f" - {name.capitalize()}: "
-                    f"{member_ev['content'].get('membership')} "
-                    f"(ID: {member_ev['event_id'][:12]}...)"
+                    f" - {name.capitalize()}: {member_ev['content'].get('membership')} (ID: {member_ev['event_id'][:12]}...)"
                 )
             else:
                 print(f" - {name.capitalize()}: MISSING")
 
     # Canonical view
-    with open(unified_path, "r", encoding="utf-8") as f:
+    with open(unified_path, "r") as f:
         all_events = json.load(f)
         canonical_event_id = next(
             (
@@ -188,8 +176,7 @@ def main():
                 ev for ev in all_events if ev["event_id"] == canonical_event_id
             )
             print(
-                f" - CANONICAL: {canon_ev['content'].get('membership')} "
-                f"(ID: {canon_ev['event_id'][:12]}...)"
+                f" - CANONICAL: {canon_ev['content'].get('membership')} (ID: {canon_ev['event_id'][:12]}...)"
             )
         else:
             print(" - CANONICAL: MISSING")

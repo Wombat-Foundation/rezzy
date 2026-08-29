@@ -4,8 +4,6 @@ E2E Test Runner for Rezzy.
 Verifies that the resolution output is consistent and follows Matrix protocol rules.
 """
 
-# pylint: disable=duplicate-code
-
 import json
 import os
 import subprocess
@@ -13,7 +11,6 @@ import sys
 
 
 def run_ruma_lean(input_file, hs_name):
-    """Run the rezzy binary against input_file and return the parsed JSON output."""
     print(f"Running E2E test for homeserver: {hs_name} using {input_file}")
 
     cmd = [
@@ -37,7 +34,6 @@ def run_ruma_lean(input_file, hs_name):
 
 
 def verify_resolution(output, input_data, hs_name):
-    """Verify the resolution output is consistent and follows Matrix protocol rules."""
     print(f"Verifying resolution for {hs_name}...")
 
     if "state" not in output or "auth_chain" not in output:
@@ -81,7 +77,6 @@ def verify_resolution(output, input_data, hs_name):
 
 
 def main():
-    """Run the E2E test for a given input file and homeserver name."""
     if len(sys.argv) < 3:
         print("Usage: e2e_test.py <input_file> <hs_name>")
         sys.exit(1)
@@ -93,7 +88,7 @@ def main():
         print(f"Error: Input file {input_file} not found")
         sys.exit(1)
 
-    with open(input_file, "r", encoding="utf-8") as f:
+    with open(input_file, "r") as f:
         input_data = json.load(f)
 
     output = run_ruma_lean(input_file, hs_name)

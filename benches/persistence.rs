@@ -19,7 +19,7 @@
 //! to durably record one mutation" — that's a function of path-copying
 //! depth, not of whichever crate is faster at cloning in RAM.
 //!
-//! Run with: `cargo bench --bench rezzy -- persistence`
+//! Run with: `cargo bench --bench persistence`
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -34,7 +34,8 @@ use std::time::{Duration, Instant};
 
 use rezzy::hamt::{self, codec::HamtCodec, HamtNode};
 
-use crate::common::{collect_new_nodes, to_persisted, Xorshift128};
+mod common;
+use common::{collect_new_nodes, to_persisted, Xorshift128};
 
 // String keys/values keep this bench decoupled from rezzy's real `Key`/`Value`
 // aliases (which don't implement `HamtCodec`) while still exercising the same
@@ -262,7 +263,7 @@ fn report_ratio(label: &str, legacy: f64, hamt: f64) {
     }
 }
 
-pub fn run() {
+fn main() {
     for &n in &[
         16usize, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
     ] {

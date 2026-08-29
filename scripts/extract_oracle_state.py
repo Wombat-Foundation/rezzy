@@ -12,11 +12,8 @@ Usage:
   python3 scripts/extract_oracle_state.py '!roomid:server' -o res/expected/oracle_room.json
 
 Or, to extract directly from the conduwuit RocksDB (offline):
-  python3 scripts/extract_oracle_state.py --from-db '!roomid:server' \\
-      -o res/expected/oracle_room.json
+  python3 scripts/extract_oracle_state.py --from-db '!roomid:server' -o res/expected/oracle_room.json
 """
-
-# pylint: disable=duplicate-code
 
 import argparse
 import json
@@ -79,7 +76,6 @@ def get_state_from_db(room_id):
     a simpler approach: find ALL state events for the room and take
     the latest one per (type, state_key) pair.
     """
-    # pylint: disable=too-many-locals
     print(f"Extracting oracle state from DB for {room_id}...")
     state_map = {}  # (type, state_key) -> event with highest depth
 
@@ -93,54 +89,53 @@ def get_state_from_db(room_id):
         "--hex",
     ]
 
-    with subprocess.Popen(
+    proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=LDB_ENV
-    ) as proc:
-        scanned = 0
-        state_events = 0
-        for line in proc.stdout:
-            line = line.decode("utf-8", errors="replace").strip()
-            if " ==> " not in line:
-                continue
-            _, val_hex = line.split(" ==> ", 1)
-            scanned += 1
+    )
 
-            try:
-                raw = bytes.fromhex(
-                    val_hex[2:] if val_hex.startswith("0x") else val_hex
-                )
-                pdu = json.loads(raw)
-            except (json.JSONDecodeError, ValueError):
-                continue
+    scanned = 0
+    state_events = 0
+    for line in proc.stdout:
+        line = line.decode("utf-8", errors="replace").strip()
+        if " ==> " not in line:
+            continue
+        _, val_hex = line.split(" ==> ", 1)
+        scanned += 1
 
-            if pdu.get("room_id") != room_id:
-                continue
+        try:
+            raw = bytes.fromhex(val_hex[2:] if val_hex.startswith("0x") else val_hex)
+            pdu = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
 
-            # Only state events have state_key
-            if "state_key" not in pdu:
-                continue
+        if pdu.get("room_id") != room_id:
+            continue
 
-            event_type = pdu.get("type", "")
-            state_key = pdu.get("state_key", "")
-            depth = pdu.get("depth", 0)
-            event_id = pdu.get("event_id", "")
-            key = f"{event_type}|{state_key}"
+        # Only state events have state_key
+        if "state_key" not in pdu:
+            continue
 
-            # Keep the event with the highest depth (most recent)
-            existing = state_map.get(key)
-            if existing is None or depth > existing.get("_depth", 0):
-                state_map[key] = {
-                    "type": event_type,
-                    "state_key": state_key,
-                    "event_id": event_id,
-                    "_depth": depth,
-                }
-                state_events += 1
+        event_type = pdu.get("type", "")
+        state_key = pdu.get("state_key", "")
+        depth = pdu.get("depth", 0)
+        event_id = pdu.get("event_id", "")
+        key = f"{event_type}|{state_key}"
 
-            if scanned % 50000 == 0:
-                print(f"  Scanned {scanned} PDUs, found {state_events} state events...")
+        # Keep the event with the highest depth (most recent)
+        existing = state_map.get(key)
+        if existing is None or depth > existing.get("_depth", 0):
+            state_map[key] = {
+                "type": event_type,
+                "state_key": state_key,
+                "event_id": event_id,
+                "_depth": depth,
+            }
+            state_events += 1
 
-        proc.wait()
+        if scanned % 50000 == 0:
+            print(f"  Scanned {scanned} PDUs, found {state_events} state events...")
+
+    proc.wait()
 
     # Remove internal _depth field
     for v in state_map.values():
@@ -169,7 +164,7 @@ def write_oracle(state_map, room_id, output_path):
         "total_resolved": len(state_list),
     }
 
-    with open(output_path, "w", encoding="utf-8") as f:
+    with open(output_path, "w") as f:
         json.dump(output, f, indent=2, sort_keys=False)
 
     print(f"\nOracle state written to {output_path}")
@@ -184,7 +179,6 @@ def write_oracle(state_map, room_id, output_path):
 
 
 def main():
-    """Extract oracle resolved state from a Matrix server or the DB."""
     parser = argparse.ArgumentParser(
         description="Extract oracle resolved state from a Matrix server"
     )

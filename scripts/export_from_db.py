@@ -13,8 +13,6 @@ Known Boss Battle rooms:
   !TwEgjBFdNHBaaFqzEt:matrix.org  — Element Web
 """
 
-# pylint: disable=duplicate-code
-
 import argparse
 import json
 import os
@@ -29,13 +27,11 @@ SECONDARY_PATH = "/tmp/conduwuit_secondary"
 LDB_ENV = {"LD_LIBRARY_PATH": "/usr/local/lib", "PATH": os.environ.get("PATH", "")}
 
 
-def ldb_scan(column_family, max_keys=None, from_hex=None, db_path=None):
+def ldb_scan(column_family, max_keys=None, from_hex=None):
     """Scan a column family using ldb, yielding (key_hex, value_hex) tuples."""
-    if db_path is None:
-        db_path = DB_PATH
     cmd = [
         "ldb",
-        f"--db={db_path}",
+        f"--db={DB_PATH}",
         "--ignore_unknown_options",
         f"--secondary_path={SECONDARY_PATH}",
         "scan",
@@ -47,19 +43,20 @@ def ldb_scan(column_family, max_keys=None, from_hex=None, db_path=None):
     if from_hex:
         cmd.append(f"--from={from_hex}")
 
-    with subprocess.Popen(
+    proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=LDB_ENV,
-    ) as proc:
-        for line in proc.stdout:
-            line = line.decode("utf-8", errors="replace").strip()
-            if " ==> " in line:
-                parts = line.split(" ==> ", 1)
-                yield parts[0].strip(), parts[1].strip()
+    )
 
-        proc.wait()
+    for line in proc.stdout:
+        line = line.decode("utf-8", errors="replace").strip()
+        if " ==> " in line:
+            parts = line.split(" ==> ", 1)
+            yield parts[0].strip(), parts[1].strip()
+
+    proc.wait()
 
 
 def hex_to_bytes(hex_str):
@@ -78,9 +75,8 @@ def hex_to_json(hex_str):
         return None
 
 
-def export_room(room_id, max_events=10000, output_path=None, db_path=None):
+def export_room(room_id, max_events=10000, output_path=None):
     """Export events for a specific room from both pduid_pdu and outliers."""
-    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
     events = {}
 
     # Phase 1: Scan pduid_pdu (main timeline events)
@@ -89,7 +85,7 @@ def export_room(room_id, max_events=10000, output_path=None, db_path=None):
     matched = 0
     # We need to scan ALL keys since pduid keys are (short_room_id, count)
     # and we don't know the short_room_id mapping without querying roomid_shortroomid
-    for _, val_hex in ldb_scan("pduid_pdu", db_path=db_path):
+    for key_hex, val_hex in ldb_scan("pduid_pdu"):
         scanned += 1
         pdu = hex_to_json(val_hex)
         if pdu and pdu.get("room_id") == room_id:
@@ -109,7 +105,7 @@ def export_room(room_id, max_events=10000, output_path=None, db_path=None):
         print(f"[2/3] Scanning eventid_outlierpdu for room {room_id}...")
         outlier_scanned = 0
         outlier_matched = 0
-        for _, val_hex in ldb_scan("eventid_outlierpdu", db_path=db_path):
+        for key_hex, val_hex in ldb_scan("eventid_outlierpdu"):
             outlier_scanned += 1
             pdu = hex_to_json(val_hex)
             if pdu and pdu.get("room_id") == room_id:
@@ -137,7 +133,7 @@ def export_room(room_id, max_events=10000, output_path=None, db_path=None):
         # List some rooms we can see
         print("\n  Rooms found in DB (first 10 unique):")
         seen_rooms = set()
-        for _, val_hex in ldb_scan("pduid_pdu", max_keys=1000, db_path=db_path):
+        for _, val_hex in ldb_scan("pduid_pdu", max_keys=1000):
             pdu = hex_to_json(val_hex)
             if pdu:
                 rid = pdu.get("room_id", "")
@@ -164,13 +160,13 @@ def export_room(room_id, max_events=10000, output_path=None, db_path=None):
         while missing_auth and rounds < 3:
             rounds += 1
             newly_found = {}
-            for _, val_hex in ldb_scan("pduid_pdu", db_path=db_path):
+            for key_hex, val_hex in ldb_scan("pduid_pdu"):
                 pdu = hex_to_json(val_hex)
                 if pdu and pdu.get("room_id") == room_id:
                     eid = pdu.get("event_id", "")
                     if eid in missing_auth and eid not in events:
                         newly_found[eid] = normalize_pdu(pdu, room_id)
-            for _, val_hex in ldb_scan("eventid_outlierpdu", db_path=db_path):
+            for key_hex, val_hex in ldb_scan("eventid_outlierpdu"):
                 pdu = hex_to_json(val_hex)
                 if pdu and pdu.get("room_id") == room_id:
                     eid = pdu.get("event_id", "")
@@ -271,13 +267,13 @@ def write_output(events, room_id, output_path):
         safe = room_id.replace("!", "").replace(":", "_").replace(".", "-")
         output_path = f"res/real_dag_{safe}.json"
 
-    with open(output_path, "w", encoding="utf-8") as f:
+    with open(output_path, "w") as f:
         json.dump(output, f, separators=(",", ":"))
 
     size_kb = os.path.getsize(output_path) // 1024
-    print(f"\n{'=' * 60}")
+    print(f"\n{'='*60}")
     print(f"Exported {len(events)} REAL events from {room_id}")
-    print(f"{'=' * 60}")
+    print(f"{'='*60}")
     print(f"Events with auth_events: {has_auth}/{len(events)}")
     print(f"Events with prev_events: {has_prev}/{len(events)}")
     print(f"DAG heads: {len(heads)}")
@@ -287,11 +283,11 @@ def write_output(events, room_id, output_path):
     print(f"\nOutput: {output_path} ({size_kb}KB)")
 
 
-def list_rooms(max_scan=5000, db_path=None):
+def list_rooms(max_scan=5000):
     """List unique rooms found in the DB."""
     print(f"Scanning first {max_scan} PDUs for unique rooms...")
     rooms = {}
-    for _, val_hex in ldb_scan("pduid_pdu", max_keys=max_scan, db_path=db_path):
+    for _, val_hex in ldb_scan("pduid_pdu", max_keys=max_scan):
         pdu = hex_to_json(val_hex)
         if pdu:
             rid = pdu.get("room_id", "")
@@ -304,7 +300,6 @@ def list_rooms(max_scan=5000, db_path=None):
 
 
 def main():
-    """Parse CLI args and drive the export."""
     parser = argparse.ArgumentParser(
         description="Export room DAG from conduwuit RocksDB"
     )
@@ -319,18 +314,18 @@ def main():
     parser.add_argument("--db", help="Override DB path")
     args = parser.parse_args()
 
-    db_path = args.db or DB_PATH
+    if args.db:
+        global DB_PATH
+        DB_PATH = args.db
 
     if args.list_rooms:
-        list_rooms(db_path=db_path)
+        list_rooms()
         return
 
     if not args.room_id:
         parser.error("room_id required (or use --list-rooms)")
 
-    export_room(
-        args.room_id, max_events=args.limit, output_path=args.output, db_path=db_path
-    )
+    export_room(args.room_id, max_events=args.limit, output_path=args.output)
 
 
 if __name__ == "__main__":

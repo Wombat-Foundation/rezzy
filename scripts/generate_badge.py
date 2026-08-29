@@ -37,7 +37,7 @@ svg = f"""<svg xmlns="http://www.w3.org/2000/svg"
   </mask>
   <g mask="url(#a)">\n"""
 
-x = 0.0
+x = 0
 for b in blocks:
     w = text_width(b["text"])
     svg += f'<rect x="{x}" width="{w}" height="20" fill="{b["color"]}"/>'
@@ -49,7 +49,7 @@ svg += (
     'font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11">'
 )
 
-x = 0.0
+x = 0
 for b in blocks:
     w = text_width(b["text"])
     cx = x + w / 2

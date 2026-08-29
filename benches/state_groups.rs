@@ -32,7 +32,7 @@
 //! - worst-case point-lookup cost for a key set once at genesis and never
 //!   touched again, read back after the whole mutation stream has run
 //!
-//! Run with: `cargo bench --bench rezzy -- state_groups`
+//! Run with: `cargo bench --bench state_groups`
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -47,7 +47,8 @@ use std::time::{Duration, Instant};
 
 use rezzy::hamt::{self, codec::HamtCodec, HamtNode};
 
-use crate::common::{collect_new_nodes, to_persisted, Xorshift128};
+mod common;
+use common::{collect_new_nodes, to_persisted, Xorshift128};
 
 type Key = String;
 type Value = String;
@@ -343,7 +344,7 @@ fn report_ratio_bytes(label: &str, hamt: f64, other: f64) {
     }
 }
 
-pub fn run() {
+fn main() {
     // 550, not 500: deliberately mid-window (50 hops past the snapshot at
     // 500) so the bounded chain's lookup isn't measured at its trivial
     // best case of landing exactly on a snapshot. See the assertion in

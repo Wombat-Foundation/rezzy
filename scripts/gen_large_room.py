@@ -17,7 +17,7 @@ Output: res/realistic_large_room.json
 import hashlib
 import json
 import random
-from typing import Any
+import sys
 
 random.seed(42)  # Deterministic for reproducibility
 
@@ -32,23 +32,21 @@ BOTS = [f"@bot{i}:bridge.matrix.org" for i in range(20)]
 SPAMMERS = [f"@spam{i}:evil.example" for i in range(10)]
 ALL_USERS = ADMINS + MODS + REGULARS + BOTS + SPAMMERS
 
-events: list[dict[str, Any]] = []
-event_ids: list[str] = []
-state: dict[tuple[str, str], str] = {}  # (type, state_key) -> event_id
+events = []
+event_ids = []
+state = {}  # (type, state_key) -> event_id
 joined_users = set()
-power_levels: dict[str, int] = {}
-current_ts = 1700000000000  # pylint: disable=invalid-name
-event_counter = 0  # pylint: disable=invalid-name
+power_levels = {}
+current_ts = 1700000000000
+event_counter = 0
 
 
 def make_event_id():
-    """Generate a deterministic event ID and bump the global counter."""
-    # pylint: disable=global-statement
     global event_counter
     h = hashlib.sha256(f"event_{event_counter}".encode()).hexdigest()[:20]
-    event_id = f"${h}"
+    eid = f"${h}"
     event_counter += 1
-    return event_id
+    return eid
 
 
 def get_auth_events():
@@ -64,7 +62,6 @@ def get_auth_events():
 
 
 def get_auth_for_member(sender, target_user):
-    """Build the auth events required for a membership change."""
     auths = get_auth_events()
     if ("m.room.member", sender) in state:
         auths.append(state[("m.room.member", sender)])
@@ -74,10 +71,8 @@ def get_auth_for_member(sender, target_user):
 
 
 def add_event(event_type, state_key, sender, content, prev=None):
-    """Append a synthetic event to the room DAG and update tracked state."""
-    # pylint: disable=global-statement
     global current_ts
-    event_id = make_event_id()
+    eid = make_event_id()
 
     if prev is None:
         # Default: reference the last 1-2 events
@@ -96,7 +91,7 @@ def add_event(event_type, state_key, sender, content, prev=None):
             auth.append(state[("m.room.member", sender)])
 
     event = {
-        "event_id": event_id,
+        "event_id": eid,
         "room_id": ROOM_ID,
         "sender": sender,
         "type": event_type,
@@ -110,11 +105,11 @@ def add_event(event_type, state_key, sender, content, prev=None):
     }
 
     events.append(event)
-    event_ids.append(event_id)
-    state[(event_type, state_key)] = event_id
+    event_ids.append(eid)
+    state[(event_type, state_key)] = eid
     current_ts += random.randint(100, 30000)
 
-    return event_id
+    return eid
 
 
 # ============================================================================
@@ -275,7 +270,7 @@ print("Phase 4: Federation forks...")
 fork_point = event_ids[-1]
 
 # Fork A: Server 1 sees these events
-fork_a_ids: list[str] = []
+fork_a_ids = []
 for i in range(200):
     user = random.choice(list(joined_users - set(ADMINS)))
     eid = add_event(
@@ -290,7 +285,7 @@ for i in range(200):
     fork_a_ids.append(eid)
 
 # Fork B: Server 2 sees different events (concurrent with fork A)
-fork_b_ids: list[str] = []
+fork_b_ids = []
 for i in range(200):
     user = random.choice(list(joined_users - set(ADMINS)))
     eid = add_event(
@@ -361,8 +356,8 @@ for i in range(500):
 # Phase 6: Final Churn + Wrap Up (events ~8000-10000)
 # ============================================================================
 print("Phase 6: Final churn...")
-REMAINING = NUM_EVENTS - len(events)
-for _i in range(REMAINING):
+remaining = NUM_EVENTS - len(events)
+for i in range(remaining):
     r = random.random()
     if r < 0.6:
         pool = [u for u in ALL_USERS if u not in joined_users]
@@ -385,7 +380,7 @@ for _i in range(REMAINING):
 # ============================================================================
 # Compute stats
 # ============================================================================
-types: dict[str, int] = {}
+types = {}
 for e in events:
     t = e["type"]
     types[t] = types.get(t, 0) + 1
@@ -421,7 +416,7 @@ output = {
     },
 }
 
-with open("res/realistic_large_room.json", "w", encoding="utf-8") as f:
+with open("res/realistic_large_room.json", "w") as f:
     json.dump(output, f, separators=(",", ":"))
 
 print(

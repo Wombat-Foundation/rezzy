@@ -1,15 +1,15 @@
 # Architecture: The I/O Sandwich
 
-Rezzy uses a **synchronous, pure-compute** design — it accepts a fully
-materialized `HashMap` of events and returns the resolved state without
-performing any I/O. This is intentional and architecturally superior to an async
-lazy-loading design.
+Rezzy uses a **synchronous, pure-compute** design — it accepts a fully materialized
+`HashMap` of events and returns the resolved state without performing any I/O.
+This is intentional and architecturally superior to an async lazy-loading design.
 
 ## The Auth Difference
 
-Matrix state resolution does not operate on the entire room history. It operates
-on the **Auth Difference**: the set of auth-chain events reachable from the
-conflicted set that are _not_ already in the unconflicted (agreed-upon) state.
+Matrix state resolution does not operate on the entire room history.
+It operates on the **Auth Difference**: the set of auth-chain events reachable
+from the conflicted set that are _not_ already in the unconflicted (agreed-upon)
+state.
 
 $$\text{Auth Difference} = \text{auth}(C) - \text{auth}(U)$$
 
@@ -18,9 +18,9 @@ Where:
 - **U** (Unconflicted State): events that all forks agree on — already trusted.
 - **C** (Conflicted Events): events where the forks disagree.
 
-Because the unconflicted state `U` is already mathematically proven valid, any
-auth event inside `U` acts as a **hard stop** for the auth-chain traversal. You
-never need to fetch the full historical auth chain back to `m.room.create`.
+Because the unconflicted state `U` is already mathematically proven valid,
+any auth event inside `U` acts as a **hard stop** for the auth-chain traversal.
+You never need to fetch the full historical auth chain back to `m.room.create`.
 
 ## How Homeservers Fetch the Auth Difference
 
@@ -35,8 +35,8 @@ that complete in 1–3 database round-trips:
 4. Extract `auth_events` from the new batch, filter against `U`, repeat.
 
 Auth chains are shallow (Create → PL → Join → event), so this BFS hits the
-unconflicted boundary in **2–3 iterations**. Total: ~3 database queries for even
-massive forks.
+unconflicted boundary in **2–3 iterations**. Total: ~3 database queries for
+even massive forks.
 
 ### Method 2: Auth-Chain Indexing (Synapse, Tuwunel, Continuwuity)
 
@@ -48,8 +48,7 @@ context. Total: **1 database query**.
 
 ## Why Async State Resolution is an Anti-Pattern
 
-If `resolve_iterative_sort` were `async` and lazy-loaded events during
-resolution:
+If `resolve_iterative_sort` were `async` and lazy-loaded events during resolution:
 
 1. Process an event, see an `auth_event` ID, `await` a database fetch.
 2. Process the next event, `await` another fetch.
@@ -61,8 +60,8 @@ algorithm dependent on the database driver's latency characteristics.
 
 ## The I/O Sandwich
 
-By keeping `resolve_iterative_sort` strictly synchronous, the architecture
-naturally splits into three clean layers:
+By keeping `resolve_iterative_sort` strictly synchronous, the architecture naturally
+splits into three clean layers:
 
 ```text
 ┌─────────────────────────────────────────────┐
@@ -83,24 +82,25 @@ naturally splits into three clean layers:
 └─────────────────────────────────────────────┘
 ```
 
-The homeserver owns all I/O and uses its database's batching capabilities. Rezzy
-owns all CPU-bound computation and uses its `#![no_std]` + `imbl` stack for
-maximum cache locality and zero-allocation structural sharing.
+The homeserver owns all I/O and uses its database's batching capabilities.
+Rezzy owns all CPU-bound computation and uses its `#![no_std]` + `imbl` stack
+for maximum cache locality and zero-allocation structural sharing.
 
 ## Internal Implementation
 
 The bounded dual-heap traversal in `src/state_at.rs` is the in-memory equivalent
 of the homeserver's BFS fetch. When `rezzy` processes a batch, it dynamically
-computes `auth(C) \ auth(U)` internally and terminates traversal the instant it
-touches the unconflicted boundary — preventing unbounded memory crawls even on
-rooms with millions of events.
+computes `auth(C) \ auth(U)` internally and terminates traversal the instant
+it touches the unconflicted boundary — preventing unbounded memory crawls even
+on rooms with millions of events.
 
 ## The Transitive Closure Index
 
-The I/O sandwich above describes the **normal case**: a single fork arrives, the
-homeserver bulk-fetches the auth difference, and `resolve_iterative_sort` runs
-once. But there's a second scenario that demands a fundamentally different
-strategy: **full room state rebuilds**.
+The I/O sandwich above describes the **normal case**: a single fork arrives,
+the homeserver bulk-fetches the auth difference, and
+`resolve_iterative_sort` runs once.
+But there's a second scenario that demands a fundamentally different strategy:
+**full room state rebuilds**.
 
 ### The Problem: O(F × D) Auth Chain Walks
 
@@ -112,9 +112,9 @@ the auth difference, the total cost becomes:
 
 $$O(F \times D)$$
 
-Where _F_ is the number of forks and _D_ is the average auth chain depth. For a
-60K-event room with 5,000 forks, this means millions of redundant traversals
-through heavily overlapping auth chains.
+Where _F_ is the number of forks and _D_ is the average auth chain depth.
+For a 60K-event room with 5,000 forks, this means millions of redundant
+traversals through heavily overlapping auth chains.
 
 ### The Solution: Pre-Computed Roaring Bitmaps
 
@@ -153,17 +153,17 @@ Continuwuity uses three complementary representations:
 #### 2. Transitive Closure Cache: `shorteventid_authchain` (Derived)
 
 - Stores the **full transitive closure** as serialized `RoaringTreemap`
-- Precomputed from the adjacency list to turn N-hop BFS into a single lookup —
-  critical for the live federation path where `get_auth_chain` needs the full
-  closure immediately
+- Precomputed from the adjacency list to turn N-hop BFS into a single
+  lookup — critical for the live federation path where `get_auth_chain`
+  needs the full closure immediately
 - Can become stale/corrupt; regenerated by `reindex-short`
 
 #### 3. Ephemeral Rebuild Index: `rebuild_auth_chains()` (In-Memory)
 
 - Computed as `Vec<RoaringBitmap>` with `u32` temporary array indices
 - Built from scratch via single `O(V+E)` DFS over raw event JSON
-- **Does NOT read either DB table** — computing a throwaway index from the
-  in-memory event cache is faster than 60K async DB lookups
+- **Does NOT read either DB table** — computing a throwaway index from
+  the in-memory event cache is faster than 60K async DB lookups
 - Used only by `resolve_fork_with_states()` during full room rebuilds
 
 The architecture is:
@@ -177,14 +177,12 @@ rebuild bitmaps  = ephemeral index (throwaway, built from JSON, O(V+E))
 ### Why This Lives in the Homeserver, Not Rezzy
 
 The transitive closure index is a homeserver-level optimization for batch
-workloads. Rezzy's `resolve_iterative_sort` API is designed for
-single-invocation resolution with a pre-materialized `HashMap`. The homeserver
-is responsible for:
+workloads. Rezzy's `resolve_iterative_sort` API is designed for single-invocation
+resolution with a pre-materialized `HashMap`. The homeserver is responsible for:
 
 1. **Building the index** during the streaming phase (one `O(V+E)` DFS pass).
 2. **Using the index** to extract the minimal `HashMap` for each fork.
-3. **Passing the extract** to `resolve_iterative_sort` (which completes in
-   microseconds).
+3. **Passing the extract** to `resolve_iterative_sort` (which completes in microseconds).
 
 This keeps Rezzy's API clean and stateless while allowing homeservers to
 amortize auth chain computation across thousands of forks.
