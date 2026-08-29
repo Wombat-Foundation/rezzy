@@ -16,14 +16,8 @@ use alloc::vec::Vec;
 
 use super::{
     algebraic::SyndromeSketch, triage::BucketRequest, AlgebraicError, ElementHash, EventIdFormat,
-    RoomAccumulator,
+    RoomAccumulator, H64_TRIE_WIDTH,
 };
-
-/// Internal width for the H64 trie/index used to map requests to ranges.
-///
-/// The protocol request-depth cap is enforced separately at depth <= 32 by
-/// `triage::validate_bucket_requests`.
-use super::H64_TRIE_WIDTH;
 
 /// Read-only helper over a pre-sorted `h64` index.
 ///
@@ -47,12 +41,11 @@ impl<'a> H64Index<'a> {
 
         // A u128 safely handles (1 << 64) - 1, which cleanly downcasts to u64::MAX
         let prefix_mask = u64::try_from((1_u128 << depth).saturating_sub(1)).unwrap_or(u64::MAX);
-        let prefix = u64::from(request.prefix) & prefix_mask;
+        let prefix = request.prefix & prefix_mask;
 
         let start = u128::from(prefix) << shift;
 
         // When depth reaches the internal trie width, the shift collapses to 0.
-        // Request validation still caps protocol depth at 32.
         let end = start.saturating_add(1_u128 << shift);
 
         start..end
@@ -269,8 +262,6 @@ pub fn compute_frame_digest<Id: EventId, G: ForwardGraph<Id>>(
 /// # Errors
 /// Returns an error if any sketches exceed capacity limits or if requests are invalid.
 ///
-/// # Panics
-/// Panics if the calculated prefix falls out of the bounds of a `u32`.
 pub fn build_bucket_sketches(
     sorted_h64: &[u64],
     requests: &[BucketRequest],
@@ -305,7 +296,7 @@ pub struct SketchPolicy {
 }
 
 pub enum SketchResult {
-    Success(Vec<SyndromeSketch>),
+    Success(Vec<(SyndromeSketch, BucketRequest)>),
     FallbackToRangeSync,
 }
 
@@ -353,7 +344,7 @@ impl<'a> SketchBuilder<'a> {
             for &h64 in self.index.bucket_slice_unchecked(req) {
                 sketch.toggle(h64)?;
             }
-            sketches.push(sketch);
+            sketches.push((sketch, *req));
         }
 
         Ok(SketchResult::Success(sketches))
@@ -565,7 +556,7 @@ mod tests {
         use crate::reconcile::triage::BucketRequest;
         let h1 = ElementHash::from_matrix_event_id("$1", EventIdFormat::Legacy).unwrap();
 
-        let bucket_idx = (h1.h64 >> 56) as u32;
+        let bucket_idx = h1.h64 >> 56;
         let requests = [BucketRequest {
             depth: 8,
             prefix: bucket_idx,
@@ -700,7 +691,7 @@ mod tests {
 
         let depth: u8 = 16;
         let shift = u32::from(H64_TRIE_WIDTH) - u32::from(depth);
-        let prefix = u32::try_from(h1.h64 >> shift).unwrap();
+        let prefix = h1.h64 >> shift;
 
         let requests = [BucketRequest {
             depth,
@@ -785,6 +776,7 @@ mod tests {
         let result = builder.build(&requests).unwrap();
         if let SketchResult::Success(sketches) = result {
             assert_eq!(sketches.len(), 1);
+            assert_eq!(sketches[0].1, requests[0]);
         } else {
             panic!("Expected Success");
         }
@@ -937,6 +929,29 @@ mod tests {
         assert!(matches!(
             builder.build(&requests),
             Err(AlgebraicError::InvalidSketchCapacity)
+        ));
+    }
+
+    #[test]
+    fn test_sketch_builder_rejects_depth_above_maximum() {
+        let sorted_h64 = [1_u64];
+        let index = H64Index::new(&sorted_h64);
+        let builder = SketchBuilder::new(
+            &index,
+            SketchPolicy {
+                max_aggregate_work: 1_000,
+                hard_fallback_threshold: 1_000,
+            },
+        );
+        let requests = [BucketRequest {
+            depth: crate::reconcile::MAX_DEPTH.saturating_add(1),
+            prefix: 0,
+            capacity: 1,
+        }];
+
+        assert!(matches!(
+            builder.build(&requests),
+            Err(AlgebraicError::InvalidBucketIndex)
         ));
     }
 }

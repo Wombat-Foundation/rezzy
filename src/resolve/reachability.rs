@@ -1,11 +1,31 @@
 //! Pure reachability contract for room DAG accelerators.
 //!
+//! # Choosing an index
+//!
+//! [`ForwardReachabilityIndex`] stores a descendant closure. It is excellent
+//! for repeated broad queries over a sealed DAG snapshot, but must not be used
+//! as a live room index: appending an event changes the descendant closure of
+//! every ancestor, so its maintenance cost is unbounded with room history.
+//!
+//! [`RangePrefilterReachability`] is the default snapshot accelerator. It
+//! stores indexed adjacency, conservative descendant ranges, and linear
+//! segments; ranges and segments only prune its exact BFS, never decide
+//! reachability by themselves.
+//!
+//! For MSC4297, this module expects a graph snapshot that already contains the
+//! direct auth edges needed to form reverse adjacency. It cannot discover a
+//! persisted event's children from that event's `auth_events`; a storage-backed
+//! caller needs a reverse-edge index, a chain cover, or a loaded query
+//! envelope. Use [`RangePrefilterReachability::filter_reachable`] for a sparse
+//! candidate set and [`RangePrefilterReachability::forward_reachable_ids`] when
+//! every node in the snapshot is a candidate.
+//!
 //! This module intentionally stays free of storage, threading, and cache
 //! policy. It defines only the query result type and the minimal trait that a
 //! drop-in accelerator must satisfy.
 
 use crate::basespec::rezzy_types::LeanEvent;
-use crate::{FastMap, HashMap};
+use crate::{DenseIndex, FastMap, HashMap};
 use alloc::collections::{BTreeSet, VecDeque};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -111,7 +131,7 @@ pub trait Reachability {
 #[cfg(feature = "std")]
 #[derive(Debug, Clone)]
 pub struct ForwardReachabilityIndex<Id> {
-    id_to_index: FastMap<Id, u32>,
+    index: DenseIndex<Id>,
     descendant_bitmaps: Vec<RoaringBitmap>,
     cyclic_nodes: BTreeSet<u32>,
 }
@@ -134,20 +154,17 @@ where
         graph: &HashMap<Id, LeanEvent<Id, C>, S>,
     ) -> Self {
         let (topo, children, leftover_nodes) = collect_topology(graph);
-        let mut id_to_index = FastMap::with_capacity(topo.len());
-        for (idx, &id) in topo.iter().enumerate() {
-            let idx = u32::try_from(idx).expect("graph too large for roaring bitmap index");
-            id_to_index.insert(id.clone(), idx);
-        }
+        let index = DenseIndex::try_build(topo.iter().map(|&id| id.clone()))
+            .expect("graph too large for roaring bitmap index");
 
         let mut children_by_index = vec![Vec::<u32>::new(); topo.len()];
         for (parent_id, child_ids) in children {
-            let Some(&parent_idx) = id_to_index.get(parent_id) else {
+            let Some(parent_idx) = index.index_of(parent_id) else {
                 continue;
             };
             let parent_slot = &mut children_by_index[parent_idx as usize];
             for child_id in child_ids {
-                if let Some(&child_idx) = id_to_index.get(child_id) {
+                if let Some(child_idx) = index.index_of(child_id) {
                     parent_slot.push(child_idx);
                 }
             }
@@ -165,11 +182,11 @@ where
 
         let cyclic_nodes = leftover_nodes
             .iter()
-            .filter_map(|id| id_to_index.get(*id).copied())
+            .filter_map(|id| index.index_of(*id))
             .collect();
 
         Self {
-            id_to_index,
+            index,
             descendant_bitmaps,
             cyclic_nodes,
         }
@@ -188,7 +205,7 @@ where
     {
         let mut reachable = RoaringBitmap::new();
         for seed in seeds {
-            let Some(&idx) = self.id_to_index.get(seed) else {
+            let Some(idx) = self.index.index_of(seed) else {
                 continue;
             };
             reachable.insert(idx);
@@ -198,9 +215,8 @@ where
             .into_iter()
             .enumerate()
             .filter_map(|(idx, candidate)| {
-                self.id_to_index
-                    .get(candidate)
-                    .copied()
+                self.index
+                    .index_of(candidate)
                     .filter(|candidate_idx| reachable.contains(*candidate_idx))
                     .map(|_| idx)
             })
@@ -397,11 +413,7 @@ impl CandidateQuery {
 /// it now uses `forward_reachable_ids` and pays none of this cost.
 #[derive(Debug, Clone)]
 pub struct RangePrefilterReachability<Id> {
-    id_to_index: FastMap<Id, u32>,
-    /// Inverse of `id_to_index`, ordered by node index. Lets
-    /// [`RangePrefilterReachability::forward_reachable_ids`] map visited
-    /// node indices back to `Id`s without a hash lookup.
-    index_to_id: Vec<Id>,
+    index: DenseIndex<Id>,
     children_by_index: Vec<Vec<u32>>,
     descendant_ranges: Vec<(u32, u32)>,
     segments: Vec<Segment>,
@@ -467,31 +479,20 @@ where
     (topo, children, leftover_nodes)
 }
 
-fn index_topology<Id: crate::basespec::rezzy_types::EventId + Ord>(
-    topo: &[&Id],
-) -> FastMap<Id, u32> {
-    let mut id_to_index = FastMap::with_capacity(topo.len());
-    for (idx, &id) in topo.iter().enumerate() {
-        let idx = u32::try_from(idx).expect("graph too large for index space");
-        id_to_index.insert(id.clone(), idx);
-    }
-    id_to_index
-}
-
 fn build_indexed_children<'a, Id: crate::basespec::rezzy_types::EventId + Ord>(
     topo_len: usize,
     children: FastMap<&'a Id, Vec<&'a Id>>,
-    id_to_index: &FastMap<Id, u32>,
+    index: &DenseIndex<Id>,
 ) -> (Vec<Vec<u32>>, Vec<usize>) {
     let mut children_by_index = vec![Vec::<u32>::new(); topo_len];
     let mut in_degree_by_index = vec![0_usize; topo_len];
     for (parent_id, child_ids) in children {
-        let Some(&parent_idx) = id_to_index.get(parent_id) else {
+        let Some(parent_idx) = index.index_of(parent_id) else {
             continue;
         };
         let parent_slot = &mut children_by_index[parent_idx as usize];
         for child_id in child_ids {
-            if let Some(&child_idx) = id_to_index.get(child_id) {
+            if let Some(child_idx) = index.index_of(child_id) {
                 parent_slot.push(child_idx);
                 in_degree_by_index[child_idx as usize] =
                     in_degree_by_index[child_idx as usize].saturating_add(1);
@@ -595,10 +596,10 @@ where
         graph: &HashMap<Id, LeanEvent<Id, C>, S>,
     ) -> Self {
         let (topo, children, leftover_nodes) = collect_topology(graph);
-        let id_to_index = index_topology(&topo);
-        let index_to_id: Vec<Id> = topo.iter().map(|&id| id.clone()).collect();
+        let index = DenseIndex::try_build(topo.iter().map(|&id| id.clone()))
+            .expect("graph too large for index space");
         let (children_by_index, in_degree_by_index) =
-            build_indexed_children(topo.len(), children, &id_to_index);
+            build_indexed_children(topo.len(), children, &index);
         let descendant_ranges = build_descendant_ranges(&children_by_index);
         let (segments, node_segment, node_segment_offset, segment_stats) =
             build_segments(&children_by_index, &in_degree_by_index);
@@ -609,12 +610,11 @@ where
         };
         let cyclic_nodes = leftover_nodes
             .iter()
-            .filter_map(|id| id_to_index.get(*id).copied())
+            .filter_map(|id| index.index_of(*id))
             .collect();
 
         Self {
-            id_to_index,
-            index_to_id,
+            index,
             children_by_index,
             descendant_ranges,
             segments,
@@ -679,7 +679,7 @@ where
         let mut max_candidate_index = None;
         for (idx, candidate) in candidates.into_iter().enumerate() {
             candidate_count = idx.saturating_add(1);
-            let Some(&candidate_idx) = self.id_to_index.get(candidate) else {
+            let Some(candidate_idx) = self.index.index_of(candidate) else {
                 continue;
             };
             let positions = &mut candidate_positions[candidate_idx as usize];
@@ -711,7 +711,7 @@ where
     {
         let mut queue = VecDeque::new();
         for seed in seeds {
-            let Some(&idx) = self.id_to_index.get(seed) else {
+            let Some(idx) = self.index.index_of(seed) else {
                 continue;
             };
             if !reachable[idx as usize] {
@@ -1009,7 +1009,7 @@ where
         }
         visited_indices
             .into_iter()
-            .map(move |idx| &self.index_to_id[idx as usize])
+            .map(move |idx| &self.index.items()[idx as usize])
     }
 
     /// Returns the descendants of a seed set as candidate indices.
@@ -1069,10 +1069,10 @@ where
     type Id = Id;
 
     fn reaches(&self, from: &Self::Id, to: &Self::Id) -> Reach {
-        let Some(&from_idx) = self.id_to_index.get(from) else {
+        let Some(from_idx) = self.index.index_of(from) else {
             return Reach::Unknown;
         };
-        let Some(&to_idx) = self.id_to_index.get(to) else {
+        let Some(to_idx) = self.index.index_of(to) else {
             return Reach::Unknown;
         };
         if self.cyclic_nodes.contains(&from_idx) || self.cyclic_nodes.contains(&to_idx) {
@@ -1094,10 +1094,10 @@ where
     type Id = Id;
 
     fn reaches(&self, from: &Self::Id, to: &Self::Id) -> Reach {
-        let Some(&from_idx) = self.id_to_index.get(from) else {
+        let Some(from_idx) = self.index.index_of(from) else {
             return Reach::Unknown;
         };
-        let Some(&to_idx) = self.id_to_index.get(to) else {
+        let Some(to_idx) = self.index.index_of(to) else {
             return Reach::Unknown;
         };
         if from_idx == to_idx {
@@ -1242,9 +1242,9 @@ mod tests {
             .enumerate()
             .filter_map(|(position, candidate)| {
                 index
-                    .id_to_index
-                    .get(candidate)
-                    .and_then(|&idx| reachable[idx as usize].then_some(position))
+                    .index
+                    .index_of(candidate)
+                    .and_then(|idx| reachable[idx as usize].then_some(position))
             })
             .collect()
     }

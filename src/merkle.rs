@@ -31,6 +31,7 @@ pub enum MerkleError {
     EmptyFieldName,
     InvalidFieldName,
     DuplicateField(String),
+    FieldNotFound(String),
     NoLeaves,
     IntegerRange,
     UnsupportedNumber,
@@ -42,6 +43,7 @@ impl fmt::Display for MerkleError {
             Self::EmptyFieldName => f.write_str("merkle: empty field name"),
             Self::InvalidFieldName => f.write_str("merkle: invalid field name"),
             Self::DuplicateField(name) => write!(f, "merkle: duplicate field: {name}"),
+            Self::FieldNotFound(name) => write!(f, "merkle: field not found: {name}"),
             Self::NoLeaves => f.write_str("merkle: no leaves"),
             Self::IntegerRange => f.write_str("canonical json integer out of range"),
             Self::UnsupportedNumber => f.write_str("unsupported canonical json number"),
@@ -49,8 +51,7 @@ impl fmt::Display for MerkleError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for MerkleError {}
+impl core::error::Error for MerkleError {}
 
 /// One named metadata value. The value is Matrix Canonical JSON encoded before hashing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,10 +71,16 @@ impl Field {
 }
 
 /// Fields committed by [`header_root`].
+///
+/// `sender_localpart` and `sender_domain` are committed as independent leaves
+/// (rather than a single combined `sender` leaf) so that a proof can disclose
+/// and verify the sending server's identity without disclosing the sender's
+/// localpart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub room_id: String,
-    pub sender: String,
+    pub sender_localpart: String,
+    pub sender_domain: String,
     pub event_type: String,
     pub state_key: Option<String>,
     pub redacts: Option<String>,
@@ -158,6 +165,59 @@ pub fn component_hash(field_name: &str, value: &Value) -> Result<Hash, MerkleErr
     Ok(leaf_hash_unchecked(field_name.as_bytes(), &canonical))
 }
 
+/// Computes the `redacted_content_hash` leaf for MSC4511's `content_hash`
+/// split: the leaf hash of the event body fields that survive redaction.
+///
+/// # Errors
+///
+/// Returns a [`MerkleError`] if `value` cannot be canonically encoded.
+pub fn redacted_content_hash(value: &Value) -> Result<Hash, MerkleError> {
+    component_hash("redacted_content", value)
+}
+
+/// Computes the `redactable_content_hash` leaf for MSC4511's `content_hash`
+/// split: the leaf hash of the event body fields that redaction strips.
+///
+/// # Errors
+///
+/// Returns a [`MerkleError`] if `value` cannot be canonically encoded.
+pub fn redactable_content_hash(value: &Value) -> Result<Hash, MerkleError> {
+    component_hash("redactable_content", value)
+}
+
+/// Splits event content using the room-version redaction rules and hashes both
+/// halves required by MSC4511's content-hash construction.
+///
+/// The split itself remains in [`crate::basespec::rezzy_types::split_redaction_content`],
+/// where the Matrix redaction tables live; this helper keeps merkle callers
+/// from accidentally hashing the unsplit content.  The returned pair is
+/// `(redacted_content_hash, redactable_content_hash)`.
+///
+/// # Errors
+///
+/// Returns [`MerkleError`] if either split content value cannot be encoded as
+/// Matrix Canonical JSON.
+pub fn split_content_hashes(
+    content: &Value,
+    event_type: &str,
+    room_version: &str,
+) -> Result<(Hash, Hash), MerkleError> {
+    let (redacted, redactable) =
+        crate::basespec::rezzy_types::split_redaction_content(content, event_type, room_version);
+    Ok((
+        redacted_content_hash(&redacted)?,
+        redactable_content_hash(&redactable)?,
+    ))
+}
+
+/// Combines `redacted_content_hash` and `redactable_content_hash` into the
+/// top-level `content_hash` component, per MSC4511's split-canonicalization
+/// redaction fix.
+#[must_use]
+pub fn content_hash(redacted_content_hash: Hash, redactable_content_hash: Hash) -> ContentHash {
+    ContentHash(inner_hash(redacted_content_hash, redactable_content_hash))
+}
+
 /// Computes the RFC6962-shaped Merkle root over sorted MSC4511 field leaves.
 ///
 /// # Errors
@@ -169,9 +229,9 @@ pub fn root(fields: &[Field]) -> Result<Hash, MerkleError> {
     root_from_leaves(&leaves)
 }
 
-/// Computes `header_root` over `room_id`, `sender`, `type`, `state_key`,
-/// `redacts`, `depth`, and `origin_server_ts`. Missing optional fields are
-/// encoded as `null`.
+/// Computes `header_root` over `room_id`, `sender_localpart`,
+/// `sender_domain`, `type`, `state_key`, `redacts`, `depth`, and
+/// `origin_server_ts`. Missing optional fields are encoded as `null`.
 ///
 /// # Errors
 ///
@@ -186,7 +246,11 @@ pub fn header_root(header: &Header) -> Result<Hash, MerkleError> {
             header.redacts.clone().map_or(Value::Null, Value::from),
         ),
         Field::new("room_id", Value::from(header.room_id.clone())),
-        Field::new("sender", Value::from(header.sender.clone())),
+        Field::new("sender_domain", Value::from(header.sender_domain.clone())),
+        Field::new(
+            "sender_localpart",
+            Value::from(header.sender_localpart.clone()),
+        ),
         Field::new(
             "state_key",
             header.state_key.clone().map_or(Value::Null, Value::from),
@@ -220,6 +284,113 @@ pub fn event_root(
 #[must_use]
 pub fn event_id(event_root: Hash) -> String {
     format!("${}", URL_SAFE_NO_PAD.encode(event_root))
+}
+
+/// Which side a sibling hash sits on relative to the running hash in a
+/// [`ProofStep`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+/// One sibling hash in a header-tree Merkle path, ordered leaf-to-root:
+/// applying each step in order (combining the running hash with `hash` on
+/// the named `side`) reconstructs the tree root.
+#[derive(Debug, Clone, Copy)]
+pub struct ProofStep {
+    pub side: Side,
+    pub hash: Hash,
+}
+
+/// Computes the ordered (leaf-to-root) sibling path proving `field_name`'s
+/// leaf is included in the RFC 6962-shaped root over `fields`, along with
+/// that root. This is the `leaf_paths` construction MSC4511's "Cryptographic
+/// proof responses" section describes.
+///
+/// # Errors
+///
+/// Returns a [`MerkleError`] if `fields` cannot be canonicalized or contains
+/// a duplicate field name, or [`MerkleError::FieldNotFound`] if no field
+/// named `field_name` is present.
+pub fn leaf_path(
+    fields: &[Field],
+    field_name: &str,
+) -> Result<(Vec<ProofStep>, Hash), MerkleError> {
+    let ls = leaves(fields)?;
+    let idx = ls
+        .iter()
+        .position(|l| l.name == field_name)
+        .ok_or_else(|| MerkleError::FieldNotFound(field_name.into()))?;
+    let hashes = ls.iter().map(|l| l.hash).collect::<Vec<_>>();
+    let (root, path) = merkle_root_and_path(&hashes, idx).ok_or(MerkleError::NoLeaves)?;
+    Ok((path, root))
+}
+
+/// Recomputes the root from `leaf_hash` and `path` (leaf-to-root ordered
+/// siblings) and reports whether it matches `root`.
+#[must_use]
+pub fn verify_leaf_path(leaf_hash: Hash, path: &[ProofStep], root: Hash) -> bool {
+    let mut cur = leaf_hash;
+    for step in path {
+        cur = match step.side {
+            Side::Left => inner_hash(step.hash, cur),
+            Side::Right => inner_hash(cur, step.hash),
+        };
+    }
+    cur == root
+}
+
+/// Computes the RFC 6962 root over `hashes` and the ordered (leaf-to-root)
+/// sibling path for `hashes[target]`, mirroring [`merkle_root`]'s
+/// largest-power-of-two split so the two stay consistent.
+fn merkle_root_and_path(hashes: &[Hash], target: usize) -> Option<(Hash, Vec<ProofStep>)> {
+    match hashes.len() {
+        0 => None,
+        1 => Some((hashes[0], Vec::new())),
+        2 => {
+            if target == 0 {
+                Some((
+                    inner_hash(hashes[0], hashes[1]),
+                    alloc::vec![ProofStep {
+                        side: Side::Right,
+                        hash: hashes[1]
+                    }],
+                ))
+            } else {
+                Some((
+                    inner_hash(hashes[0], hashes[1]),
+                    alloc::vec![ProofStep {
+                        side: Side::Left,
+                        hash: hashes[0]
+                    }],
+                ))
+            }
+        }
+        len => {
+            let k = largest_power_of_two_less_than(len);
+            if target < k {
+                let (left_root, mut path) = merkle_root_and_path(&hashes[..k], target)?;
+                let right_root = merkle_root(&hashes[k..])?;
+                path.push(ProofStep {
+                    side: Side::Right,
+                    hash: right_root,
+                });
+                Some((inner_hash(left_root, right_root), path))
+            } else {
+                // `target >= k` here (the `target < k` branch above already
+                // handled the other case), so this never saturates.
+                let (right_root, mut path) =
+                    merkle_root_and_path(&hashes[k..], target.saturating_sub(k))?;
+                let left_root = merkle_root(&hashes[..k])?;
+                path.push(ProofStep {
+                    side: Side::Left,
+                    hash: left_root,
+                });
+                Some((inner_hash(left_root, right_root), path))
+            }
+        }
+    }
 }
 
 fn leaves(fields: &[Field]) -> Result<Vec<Leaf>, MerkleError> {
@@ -387,4 +558,463 @@ fn hash_parts(parts: &[&[u8]]) -> Hash {
         hasher.update(part);
     }
     hasher.finalize().into()
+}
+
+/// MSC4511's causal sparse Merkle sum trie: a reference 256-level structure
+/// committing the set of event IDs in an event's strict causal past.
+///
+/// This provides a reference implementation matching `gomatrixcrypto`'s `merkle.CausalSet`.
+pub mod causal {
+    use super::{hash_parts, Hash};
+    use alloc::{collections::BTreeSet, vec::Vec};
+
+    /// The number of bit-levels in the causal sparse Merkle sum trie: one
+    /// level per bit of a 32-byte (256-bit) event-ID digest key.
+    pub const CAUSAL_DEPTH: usize = 256;
+
+    const CAUSAL_LEAF_DST: &[u8] = b"msc4511:causal-leaf:v1";
+    const CAUSAL_NODE_DST: &[u8] = b"msc4511:causal-node:v1";
+    const CAUSAL_EMPTY_LEAF_DST: &[u8] = b"msc4511:causal-empty-leaf:v1";
+
+    /// Computes SHA3-256("msc4511:causal-leaf:v1" || `key`).
+    fn causal_leaf(key: Hash) -> Hash {
+        hash_parts(&[CAUSAL_LEAF_DST, &key])
+    }
+
+    /// Computes SHA3-256("msc4511:causal-node:v1" || `u16be(depth)` ||
+    /// `left_hash` || `u64be(left_count)` || `right_hash` ||
+    /// `u64be(right_count)`).
+    fn causal_node(
+        depth: u16,
+        left_hash: Hash,
+        left_count: u64,
+        right_hash: Hash,
+        right_count: u64,
+    ) -> Hash {
+        hash_parts(&[
+            CAUSAL_NODE_DST,
+            &depth.to_be_bytes(),
+            &left_hash,
+            &left_count.to_be_bytes(),
+            &right_hash,
+            &right_count.to_be_bytes(),
+        ])
+    }
+
+    /// Returns the bit of `key` at depth `d` (0 = most significant bit of
+    /// byte 0), matching the MSB-to-LSB traversal defined for the causal
+    /// trie. `d % 8` is always in `0..=7`, so the subtraction from 7 never
+    /// underflows; `saturating_sub` documents that instead of asserting it.
+    fn causal_bit(key: &Hash, d: usize) -> u8 {
+        let byte_idx = d / 8;
+        let bit_idx = 7_usize.saturating_sub(d % 8);
+        (key[byte_idx] >> bit_idx) & 1
+    }
+
+    /// Converts a trie depth (always `< CAUSAL_DEPTH`, i.e. `<= 255`) to the
+    /// `u16` `causal_node` hashes over. `unwrap_or(u16::MAX)` is unreachable
+    /// in practice but keeps this a checked, non-panicking conversion rather
+    /// than a silent truncating `as` cast.
+    fn depth_u16(depth: usize) -> u16 {
+        u16::try_from(depth).unwrap_or(u16::MAX)
+    }
+
+    /// The canonical empty-subtree hash at every depth in `[0, CAUSAL_DEPTH]`,
+    /// indexed by depth. Index `CAUSAL_DEPTH` is the distinguished empty
+    /// leaf; every other index is derived from `causal_node` of two empty
+    /// children at the next depth.
+    ///
+    /// Built once per top-level call (see [`empty_table`]) rather than
+    /// recomputed recursively per lookup: a naive `empty_hash(depth)` that
+    /// recurses to `CAUSAL_DEPTH` on every call is called at nearly every
+    /// level of [`subtree_root`]/[`descend`]'s own recursion, which blows up
+    /// to roughly `CAUSAL_DEPTH^2` hash calls for one root computation.
+    /// Building this table bottom-up costs exactly `CAUSAL_DEPTH` hash calls
+    /// total.
+    type EmptyTable = [Hash; CAUSAL_DEPTH.saturating_add(1)];
+
+    /// Builds [`EmptyTable`] bottom-up: one pass, `CAUSAL_DEPTH` `causal_node`
+    /// calls plus one leaf hash.
+    fn empty_table() -> EmptyTable {
+        let mut table = [[0_u8; super::HASH_SIZE]; CAUSAL_DEPTH.saturating_add(1)];
+        table[CAUSAL_DEPTH] = hash_parts(&[CAUSAL_EMPTY_LEAF_DST]);
+        let mut depth = CAUSAL_DEPTH;
+        while depth > 0 {
+            depth = depth.saturating_sub(1);
+            let child = table[depth.saturating_add(1)];
+            table[depth] = causal_node(depth_u16(depth), child, 0, child, 0);
+        }
+        table
+    }
+
+    /// An in-memory population of event-ID keys committed by an MSC4511
+    /// 256-level sparse Merkle sum trie.
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    pub struct CausalSet {
+        keys: BTreeSet<Hash>,
+    }
+
+    /// Which side a sibling subtree sits on relative to the running node in
+    /// a [`CausalProofStep`].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Side {
+        Left,
+        Right,
+    }
+
+    /// One sibling in a causal sparse Merkle sum trie path, ordered
+    /// leaf-to-root: applying each step in order (combining the running
+    /// hash/count with `hash`/`count` on the named `side`, via
+    /// `causal_node`) reconstructs the trie root and count.
+    #[derive(Debug, Clone, Copy)]
+    pub struct CausalProofStep {
+        pub side: Side,
+        pub hash: Hash,
+        pub count: u64,
+    }
+
+    #[derive(PartialEq, Eq)]
+    enum TerminalKind {
+        Leaf,
+        Empty,
+    }
+
+    impl CausalSet {
+        /// Returns the canonical empty causal set: root `empty_hash(0)`,
+        /// count 0.
+        #[must_use]
+        pub fn empty() -> Self {
+            Self {
+                keys: BTreeSet::new(),
+            }
+        }
+
+        /// Inserts a key into `self` in place without cloning.
+        pub fn insert_mut(&mut self, key: Hash) -> bool {
+            self.keys.insert(key)
+        }
+
+        /// Extends `self` with keys from an iterator in place.
+        pub fn extend<I: IntoIterator<Item = Hash>>(&mut self, iter: I) {
+            self.keys.extend(iter);
+        }
+
+        /// Returns a new [`CausalSet`] containing every key in `self` plus
+        /// `key`. A no-op (returns an equal set) if `key` is already a
+        /// member.
+        #[must_use]
+        pub fn insert(&self, key: Hash) -> Self {
+            let mut next = self.keys.clone();
+            next.insert(key);
+            Self { keys: next }
+        }
+
+        /// Returns the set union of `self` and `other`, eliminating
+        /// duplicates, as required for a multi-predecessor merge event's
+        /// `causal_set` transition.
+        #[must_use]
+        pub fn union(&self, other: &Self) -> Self {
+            let mut next = self.keys.clone();
+            for k in &other.keys {
+                next.insert(*k);
+            }
+            Self { keys: next }
+        }
+
+        /// Reports whether `key` is a member of `self`.
+        #[must_use]
+        pub fn contains(&self, key: &Hash) -> bool {
+            self.keys.contains(key)
+        }
+
+        /// Returns the number of distinct keys committed by `self`.
+        #[must_use]
+        pub fn count(&self) -> u64 {
+            self.keys.len() as u64
+        }
+
+        /// Computes the canonical sparse Merkle sum trie root for `self`.
+        #[must_use]
+        pub fn root(&self) -> Hash {
+            let empty = empty_table();
+            if self.keys.is_empty() {
+                return empty[0];
+            }
+            let keys: Vec<Hash> = self.keys.iter().copied().collect();
+            subtree_root(&keys, 0, &empty).0
+        }
+
+        /// Returns the ordered (leaf-to-root) sibling path proving `key` is a
+        /// member of `self`, along with `self`'s root and count. Returns
+        /// [`None`] if `key` is not a member; there is no inclusion proof for
+        /// a non-member.
+        #[must_use]
+        pub fn inclusion_proof(&self, key: &Hash) -> Option<(Vec<CausalProofStep>, Hash, u64)> {
+            if self.keys.is_empty() {
+                return None;
+            }
+            let keys: Vec<Hash> = self.keys.iter().copied().collect();
+            let empty = empty_table();
+            let (node_hash, node_count, path, kind, _depth) = descend(&keys, 0, key, &empty);
+            if kind != TerminalKind::Leaf {
+                return None;
+            }
+            Some((path, node_hash, node_count))
+        }
+
+        /// Returns the ordered (leaf-to-root) sibling path proving `key` is
+        /// NOT a member of `self` (the key-directed path terminates in a
+        /// canonical empty subtree at the returned depth), along with
+        /// `self`'s root and count. Returns [`None`] if `key` IS a member; no
+        /// non-inclusion proof exists for a member.
+        #[must_use]
+        pub fn non_inclusion_proof(
+            &self,
+            key: &Hash,
+        ) -> Option<(Vec<CausalProofStep>, usize, Hash, u64)> {
+            let empty = empty_table();
+            if self.keys.is_empty() {
+                return Some((Vec::new(), 0, empty[0], 0));
+            }
+            let keys: Vec<Hash> = self.keys.iter().copied().collect();
+            let (node_hash, node_count, path, kind, depth) = descend(&keys, 0, key, &empty);
+            if kind != TerminalKind::Empty {
+                return None;
+            }
+            Some((path, depth, node_hash, node_count))
+        }
+    }
+
+    /// Recomputes `s`'s root from `key`'s `causal_leaf` and `path`
+    /// (leaf-to-root ordered siblings) and reports whether it matches `root`
+    /// and `count`.
+    #[must_use]
+    pub fn verify_causal_inclusion(
+        key: &Hash,
+        path: &[CausalProofStep],
+        root: Hash,
+        count: u64,
+    ) -> bool {
+        verify_causal_path(
+            causal_leaf(*key),
+            1,
+            CAUSAL_DEPTH,
+            Some(key),
+            path,
+            root,
+            count,
+        )
+    }
+
+    /// Recomputes a root from the canonical empty hash at `terminal_depth`
+    /// and `path` (leaf-to-root ordered siblings) and reports whether it
+    /// matches `root` and `count`.
+    #[must_use]
+    pub fn verify_causal_non_inclusion(
+        key: &Hash,
+        terminal_depth: usize,
+        path: &[CausalProofStep],
+        root: Hash,
+        count: u64,
+    ) -> bool {
+        if terminal_depth > CAUSAL_DEPTH {
+            return false;
+        }
+        verify_causal_path(
+            empty_table()[terminal_depth],
+            0,
+            terminal_depth,
+            Some(key),
+            path,
+            root,
+            count,
+        )
+    }
+
+    /// Sums two subtree/sibling counts. A locally built causal set's
+    /// population is bounded by the number of distinct 32-byte keys held in
+    /// memory, so this sum cannot reach `u64::MAX`; `saturating_add` avoids a
+    /// panic path without changing any reachable result. Verification of an
+    /// untrusted path uses `checked_add` in `verify_causal_path` and rejects
+    /// overflow, as the draft's "Room-version validity" section requires.
+    fn count_sum(a: u64, b: u64) -> u64 {
+        a.saturating_add(b)
+    }
+
+    /// Recomputes a causal trie root from a terminal node (either a
+    /// `causal_leaf` and count 1, or a canonical empty hash and count 0) by
+    /// applying `path`'s siblings from the level just above the terminal
+    /// depth up to the root. `path` is ordered leaf-to-root (deepest sibling
+    /// first), so `depth` walks downward from `terminal_depth - 1` to 0;
+    /// `path.len() == terminal_depth` is checked first, so the decrement
+    /// below never underflows past 0.
+    fn verify_causal_path(
+        terminal_hash: Hash,
+        terminal_count: u64,
+        terminal_depth: usize,
+        key: Option<&Hash>,
+        path: &[CausalProofStep],
+        root: Hash,
+        count: u64,
+    ) -> bool {
+        if path.len() != terminal_depth {
+            return false;
+        }
+        let mut cur_hash = terminal_hash;
+        let mut cur_count = terminal_count;
+        let mut depth = terminal_depth;
+        for step in path {
+            depth = depth.saturating_sub(1);
+            if let Some(key) = key {
+                let expected_side = if causal_bit(key, depth) == 0 {
+                    Side::Right
+                } else {
+                    Side::Left
+                };
+                if step.side != expected_side {
+                    return false;
+                }
+            }
+            cur_hash = match step.side {
+                Side::Left => {
+                    causal_node(depth_u16(depth), step.hash, step.count, cur_hash, cur_count)
+                }
+                Side::Right => {
+                    causal_node(depth_u16(depth), cur_hash, cur_count, step.hash, step.count)
+                }
+            };
+            cur_count = match cur_count.checked_add(step.count) {
+                Some(sum) => sum,
+                None => return false,
+            };
+        }
+        cur_hash == root && cur_count == count
+    }
+
+    /// `subtree_root`, generalized to accept an empty key set, returning the
+    /// canonical empty subtree at `depth` from the precomputed `empty` table.
+    fn subtree_root_or_empty(keys: &[Hash], depth: usize, empty: &EmptyTable) -> (Hash, u64) {
+        if keys.is_empty() {
+            (empty[depth], 0)
+        } else {
+            subtree_root(keys, depth, empty)
+        }
+    }
+
+    /// Computes the (hash, count) of the subtree rooted at `depth` that
+    /// contains exactly the given non-empty key set. `depth` is always
+    /// `< CAUSAL_DEPTH` here (the `depth == CAUSAL_DEPTH` case returns
+    /// above), so `saturating_add(1)` never actually saturates.
+    fn subtree_root(keys: &[Hash], depth: usize, empty: &EmptyTable) -> (Hash, u64) {
+        if depth == CAUSAL_DEPTH {
+            return (causal_leaf(keys[0]), 1);
+        }
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for k in keys {
+            if causal_bit(k, depth) == 0 {
+                left.push(*k);
+            } else {
+                right.push(*k);
+            }
+        }
+        let next_depth = depth.saturating_add(1);
+        let (left_hash, left_count) = subtree_root_or_empty(&left, next_depth, empty);
+        let (right_hash, right_count) = subtree_root_or_empty(&right, next_depth, empty);
+        (
+            causal_node(
+                depth_u16(depth),
+                left_hash,
+                left_count,
+                right_hash,
+                right_count,
+            ),
+            count_sum(left_count, right_count),
+        )
+    }
+
+    /// Recursively computes the (hash, count) of the subtree over `keys` at
+    /// `depth`, plus the ordered leaf-to-root sibling path along `target`'s
+    /// bit-directed descent, stopping early when the descent reaches an
+    /// empty subtree. Returns the terminal node's kind (`Leaf` if `target`
+    /// was found, `Empty` if the descent ran out of keys before
+    /// `CAUSAL_DEPTH`) and the depth at which that terminal node sits.
+    fn descend(
+        keys: &[Hash],
+        depth: usize,
+        target: &Hash,
+        empty: &EmptyTable,
+    ) -> (Hash, u64, Vec<CausalProofStep>, TerminalKind, usize) {
+        if keys.is_empty() {
+            return (empty[depth], 0, Vec::new(), TerminalKind::Empty, depth);
+        }
+        if depth == CAUSAL_DEPTH {
+            return (
+                causal_leaf(keys[0]),
+                1,
+                Vec::new(),
+                TerminalKind::Leaf,
+                depth,
+            );
+        }
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for k in keys {
+            if causal_bit(k, depth) == 0 {
+                left.push(*k);
+            } else {
+                right.push(*k);
+            }
+        }
+        // `depth < CAUSAL_DEPTH` here (checked above), so this never
+        // actually saturates.
+        let next_depth = depth.saturating_add(1);
+        if causal_bit(target, depth) == 0 {
+            let (left_hash, left_count, mut path, kind, term_depth) =
+                descend(&left, next_depth, target, empty);
+            let (right_hash, right_count) = subtree_root_or_empty(&right, next_depth, empty);
+            let node = causal_node(
+                depth_u16(depth),
+                left_hash,
+                left_count,
+                right_hash,
+                right_count,
+            );
+            path.push(CausalProofStep {
+                side: Side::Right,
+                hash: right_hash,
+                count: right_count,
+            });
+            (
+                node,
+                count_sum(left_count, right_count),
+                path,
+                kind,
+                term_depth,
+            )
+        } else {
+            let (right_hash, right_count, mut path, kind, term_depth) =
+                descend(&right, next_depth, target, empty);
+            let (left_hash, left_count) = subtree_root_or_empty(&left, next_depth, empty);
+            let node = causal_node(
+                depth_u16(depth),
+                left_hash,
+                left_count,
+                right_hash,
+                right_count,
+            );
+            path.push(CausalProofStep {
+                side: Side::Left,
+                hash: left_hash,
+                count: left_count,
+            });
+            (
+                node,
+                count_sum(left_count, right_count),
+                path,
+                kind,
+                term_depth,
+            )
+        }
+    }
 }

@@ -7,7 +7,7 @@
 
 use alloc::vec::Vec;
 
-use super::{pinsketch, AlgebraicError, SyndromeSketch, STRATA_COUNT, STRATUM_CAPACITY};
+use super::{pinsketch, AlgebraicError, SyndromeSketch, MAX_DEPTH, STRATA_COUNT, STRATUM_CAPACITY};
 
 /// Maximum sum of capacities in one bucketed sketch request.
 pub const MAX_BUCKETED_SKETCH_CAPACITY: usize = 4_096;
@@ -22,7 +22,7 @@ const OVER_CAPACITY_DELTA_FLOOR: u64 = (STRATUM_CAPACITY as u64) + 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BucketRequest {
     pub depth: u8,
-    pub prefix: u32,
+    pub prefix: u64,
     pub capacity: usize,
 }
 
@@ -30,7 +30,7 @@ pub struct BucketRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BucketDecodeSuccess {
     pub depth: u8,
-    pub prefix: u32,
+    pub prefix: u64,
     pub roots: Vec<u64>,
 }
 
@@ -39,7 +39,7 @@ pub struct BucketDecodeSuccess {
 pub struct BucketDecodeBatch {
     pub successful_buckets: Vec<BucketDecodeSuccess>,
     /// Each entry is `(depth, prefix)` — the full bucket identifier, not prefix alone.
-    pub failed_buckets: Vec<(u8, u32)>,
+    pub failed_buckets: Vec<(u8, u64)>,
 }
 
 /// Returns the canonical start of a bucket's key-space range.
@@ -47,9 +47,9 @@ pub struct BucketDecodeBatch {
 /// This is shared between bucket ordering and request validation so the two
 /// paths stay aligned if the bucket geometry changes.
 #[must_use]
-pub(crate) fn bucket_range_start(request: &BucketRequest) -> u64 {
-    let shift = 32_u8.saturating_sub(request.depth);
-    u64::from(request.prefix) << shift
+pub(crate) fn bucket_range_start(request: &BucketRequest) -> u128 {
+    let shift = u32::from(MAX_DEPTH.saturating_sub(request.depth));
+    u128::from(request.prefix) << shift
 }
 
 /// Estimated symmetric-difference cardinality derived from the strata sketches.
@@ -235,16 +235,16 @@ pub fn decode_bucket_sketches(
 /// overlap.
 pub fn validate_bucket_requests(requests: &[BucketRequest]) -> Result<(), AlgebraicError> {
     let mut total_capacity = 0_usize;
-    let mut previous_end = 0_u64;
+    let mut previous_end = 0_u128;
     for request in requests {
         if request.capacity == 0 || request.capacity > MAX_BUCKET_SKETCH_CAPACITY {
             return Err(AlgebraicError::InvalidSketchCapacity);
         }
-        if request.depth > 32 {
+        if request.depth > MAX_DEPTH {
             return Err(AlgebraicError::InvalidBucketIndex);
         }
 
-        if request.depth < 32 && request.prefix >= (1_u32 << request.depth) {
+        if request.depth < MAX_DEPTH && request.prefix >= (1_u64 << request.depth) {
             return Err(AlgebraicError::InvalidBucketIndex);
         }
 
@@ -256,9 +256,9 @@ pub fn validate_bucket_requests(requests: &[BucketRequest]) -> Result<(), Algebr
         }
 
         let start = bucket_range_start(request);
-        let shift = 32_u8.saturating_sub(request.depth);
+        let shift = u32::from(MAX_DEPTH.saturating_sub(request.depth));
         let end = start
-            .checked_add(1_u64 << shift)
+            .checked_add(1_u128 << shift)
             .ok_or(AlgebraicError::InvalidBucketIndex)?;
 
         if start < previous_end {
@@ -352,7 +352,7 @@ mod tests {
     fn test_validate_bucket_requests_enforces_depth_31_prefix_bounds() {
         assert!(validate_bucket_requests(&[BucketRequest {
             depth: 31,
-            prefix: (1_u32 << 31) - 1,
+            prefix: (1_u64 << 31) - 1,
             capacity: 4,
         }])
         .is_ok());
@@ -360,11 +360,21 @@ mod tests {
         assert_eq!(
             validate_bucket_requests(&[BucketRequest {
                 depth: 31,
-                prefix: 1_u32 << 31,
+                prefix: 1_u64 << 31,
                 capacity: 4,
             }]),
             Err(AlgebraicError::InvalidBucketIndex)
         );
+    }
+
+    #[test]
+    fn test_validate_bucket_requests_accepts_full_h64_depth() {
+        assert!(validate_bucket_requests(&[BucketRequest {
+            depth: MAX_DEPTH,
+            prefix: u64::MAX,
+            capacity: 4,
+        }])
+        .is_ok());
     }
 
     fn toggle_stratum(strata: &mut [[u64; STRATUM_CAPACITY]; STRATA_COUNT], value: u64) {

@@ -28,7 +28,7 @@
 
 use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
-use crate::{FastMap, HashMap};
+use crate::{DenseIndex, FastMap, HashMap};
 use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::string::String;
@@ -94,12 +94,12 @@ impl<
         K,
     > crate::auth::StateProvider<Id, C, LeanEvent<Id, C, K>> for OverlayState<'_, Id, C, S1, S2, K>
 where
-    K: Ord + Clone + Default + AsRef<str> + 'static,
+    K: Ord + Clone + AsRef<str>,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     /// Returns the resolved event or a limited local-auth fallback for the query.
     fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C, K>> {
-        use crate::basespec::event_types::{M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
+        use crate::basespec::event_types::{M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
 
         let query: &dyn crate::auth::StateKeyDyn = &(event_type, state_key);
 
@@ -124,47 +124,31 @@ where
             // Under Matrix State Resolution, during the power phase, a required auth event in the conflicted set
             // can ONLY be used if it has been successfully authorized and resolved
             // (i.e. is present in the resolved state).
-            let is_required_type = event_type == M_ROOM_POWER_LEVELS
-                || event_type == crate::basespec::event_types::M_ROOM_JOIN_RULES;
+            let is_required_type =
+                event_type == M_ROOM_POWER_LEVELS || event_type == M_ROOM_JOIN_RULES;
 
-            // Gate the power-phase fallback behind V2.1+ (MSC4297) so it
-            // behaves consistently across V2.1 and V2.1.1: in the power
-            // phase, a required auth key in the conflicted set is only used
-            // via the local-auth fallback under the narrow conditions below,
-            // rather than being trusted unconditionally.
-            let is_v2_1_plus = self.version.is_v2_1_plus();
-
-            if self.is_power_phase
-                && is_v2_1_plus
-                && is_required_type
-                && self.sort_set.contains_key(&ev.event_id)
-            {
-                if let Some(resolved_id) = self.resolved.get(query) {
-                    if let Some(resolved_ev) = self
-                        .auth_context
-                        .get(resolved_id)
-                        .or_else(|| self.sort_set.get(resolved_id))
-                    {
-                        return Some(resolved_ev);
-                    }
-                    None
+            // Gate the power-phase fallback behind V2.1.1+ only: per
+            // `StateResVersion::has_ban_evasion_hardening`'s documentation,
+            // this is rezzy-internal hardening V2.1.1 adds over stock V2.1,
+            // not something V2.1 also does. Stock V2.1 falls through to the
+            // unconditional `Some(ev)` below. Go through the shared method
+            // (not a local `matches!` copy) so this can't silently drift
+            // from `resolve::iterative`'s `is_sender_banned` gate again.
+            if self.is_power_phase && self.version.has_ban_evasion_hardening() && is_required_type {
+                if self.resolved.contains_key(query) {
+                    // A resolved ID that cannot be found in either backing
+                    // collection is not safe to replace with local auth.
+                    return None;
+                }
+                // No resolved event was found above. Under V2.1+, allow the
+                // local auth event only while resolving a power/required event.
+                let candidate_is_power = self.candidate_event_type == M_ROOM_POWER_LEVELS
+                    || self.candidate_event_type == M_ROOM_JOIN_RULES
+                    || self.candidate_event_type == M_ROOM_MEMBER;
+                if candidate_is_power {
+                    Some(ev)
                 } else {
-                    // Under V2.1+, during the power phase, we fall back to the local auth event
-                    // if NO event of this type has been resolved yet, BUT only if we are currently
-                    // resolving a power/required event itself. This prevents non-power events from
-                    // bypass-authorizing against unresolved/conflicted power events.
-                    // Type-level approximation: a plain join isn't a power event in the spec's
-                    // sense, but only power-phase candidates reach this branch, so the
-                    // content-level ban/kick distinction is unnecessary here.
-                    let candidate_is_power = self.candidate_event_type == M_ROOM_POWER_LEVELS
-                        || self.candidate_event_type
-                            == crate::basespec::event_types::M_ROOM_JOIN_RULES
-                        || self.candidate_event_type == M_ROOM_MEMBER;
-                    if candidate_is_power {
-                        Some(ev)
-                    } else {
-                        None
-                    }
+                    None
                 }
             } else {
                 Some(ev)
@@ -184,12 +168,13 @@ where
 /// Evaluates whether an event passes authentication checks given a resolved state map,
 /// delegating to the core `crate::auth::check_auth` logic via a temporary `OverlayState` view.
 ///
+/// Authenticates an event against the current resolved state and an optional local auth context.
+/// Ensures the event complies with the Matrix spec rules for its given type.
+///
 /// NOTE: In V2.1/MSC4297, progressive state starts empty. The first event's sender membership
 /// check must use its own `auth_events` (via `local_auth` / `OverlayState` fallback), not the
 /// empty state. This is critical for competing bans where both senders need membership validation.
 #[allow(clippy::too_many_arguments)]
-/// Authenticates an event against the current resolved state and an optional local auth context.
-/// Ensures the event complies with the Matrix spec rules for its given type.
 pub(crate) fn iterative_auth_ok<Id, C, S1, S2, K>(
     ev: &LeanEvent<Id, C, K>,
     resolved: &crate::state::at::SharedState<Id, K>,
@@ -208,7 +193,12 @@ where
     K: crate::basespec::rezzy_types::StateKey,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    if ev.rejected || ev.soft_fail {
+    // Rejected events must never be admitted into state (spec rooms/v9). Soft-failed
+    // events, however, participate in state resolution as normal (spec server-server-api
+    // "Soft failure"): they are auth-checked like any other event and admitted if they
+    // pass. Blanket-rejecting them here would diverge from Synapse/spec, which re-auth-checks
+    // them during `_iterative_auth_checks`.
+    if ev.rejected {
         return false;
     }
 
@@ -281,21 +271,21 @@ where
     let mut local_auth: BTreeMap<(EventType, K), LocalAuthEntry<Id, C, K>> = BTreeMap::new();
     let mut queue = alloc::collections::VecDeque::new();
     for aid in &event.auth_events {
-        queue.push_back((aid.clone(), 1));
+        queue.push_back((aid, 1));
     }
-    let mut visited = BTreeSet::new();
+    // Membership-only dedup; do NOT iterate (foldhash seed is per-process,
+    // so iteration order is non-deterministic). Traversal order is strictly
+    // driven by the FIFO VecDeque queue.
+    let mut visited = crate::FastSet::default();
 
     while let Some((aid, current_depth)) = queue.pop_front() {
-        if !visited.insert(aid.clone()) {
+        if !visited.insert(aid) {
             continue;
         }
 
-        if let Some(cached_ancestor) = cache.map.get(&aid) {
+        if let Some(cached_ancestor) = cache.map.get(aid) {
             // The cache only contains the parents of `aid`. We must also insert `aid` itself!
-            if let Some(aev) = auth_context
-                .get(&aid)
-                .or_else(|| conflicted_events.get(&aid))
-            {
+            if let Some(aev) = auth_context.get(aid).or_else(|| conflicted_events.get(aid)) {
                 update_local_auth(&mut local_auth, aev, current_depth);
             }
 
@@ -325,17 +315,14 @@ where
             continue;
         }
 
-        if let Some(aev) = auth_context
-            .get(&aid)
-            .or_else(|| conflicted_events.get(&aid))
-        {
+        if let Some(aev) = auth_context.get(aid).or_else(|| conflicted_events.get(aid)) {
             update_local_auth(&mut local_auth, aev, current_depth);
 
             // TODO: confirm the V2.2 auth traversal rule remains aligned with V2.1.1.
             // For V2.1 and below, we only check the immediate auth_events.
             if matches!(version, StateResVersion::V2_1_1 | StateResVersion::V2_2) {
                 for parent_id in &aev.auth_events {
-                    queue.push_back((parent_id.clone(), current_depth.saturating_add(1)));
+                    queue.push_back((parent_id, current_depth.saturating_add(1)));
                 }
             }
         }
@@ -385,6 +372,7 @@ pub fn compute_state_at<Id, C, Q, S, K>(
     target_event_id: &Q,
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
+    empty_key: &K,
 ) -> Option<BTreeMap<(EventType, K), Id>>
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
@@ -399,9 +387,15 @@ where
     }
 
     let mut result = None;
-    compute_state_at_streaming(&[target_event_id], events_map, version, |_, state| {
-        result = Some(state.into_iter().collect());
-    });
+    compute_state_at_streaming(
+        &[target_event_id],
+        events_map,
+        version,
+        |_, state| {
+            result = Some(state.into_iter().collect());
+        },
+        empty_key,
+    );
     result
 }
 
@@ -425,7 +419,6 @@ where
 /// For processing multiple events in production (e.g., full room rebuilds),
 /// use [`compute_state_at_streaming`] instead to stream states via a callback
 /// and keep memory bounded to the DAG's width.
-/// Computes the state of a room at multiple target events concurrently.
 ///
 /// # Panics
 ///
@@ -436,6 +429,7 @@ pub fn compute_state_at_batch<Id, C, Q, S, K>(
     target_event_ids: &[&Q],
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
+    empty_key: &K,
 ) -> HashMap<Id, BTreeMap<(EventType, K), Id>>
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
@@ -447,9 +441,15 @@ where
 {
     let mut results = HashMap::with_capacity(target_event_ids.len());
 
-    compute_state_at_streaming(target_event_ids, events_map, version, |id, state| {
-        results.insert(id, state.into_iter().collect());
-    });
+    compute_state_at_streaming(
+        target_event_ids,
+        events_map,
+        version,
+        |id, state| {
+            results.insert(id, state.into_iter().collect());
+        },
+        empty_key,
+    );
 
     results
 }
@@ -474,8 +474,7 @@ impl<E: core::fmt::Display> core::fmt::Display for StateComputationError<E> {
     }
 }
 
-#[cfg(feature = "std")]
-impl<E: core::fmt::Debug + core::fmt::Display> std::error::Error for StateComputationError<E> {}
+impl<E: core::fmt::Debug + core::fmt::Display> core::error::Error for StateComputationError<E> {}
 
 /// Same as [`compute_state_at_batch`] but yields each resolved room state
 /// to a callback (as soon as it is ready).
@@ -500,6 +499,7 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F, K>(
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
+    empty_key: &K,
 ) where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
@@ -517,6 +517,7 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F, K>(
             on_target_resolved(id, state);
             Ok(())
         },
+        empty_key,
     );
 
     match result {
@@ -544,6 +545,7 @@ pub fn try_compute_state_at_streaming<Id, C, Q, S, F, E, K>(
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
+    empty_key: &K,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
@@ -569,25 +571,25 @@ where
     }
 
     let target_refs: Vec<&Id> = actual_target_ids.iter().collect();
-    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&target_refs, events_map);
+    let index = collect_ancestor_short_ids_batch(&target_refs, events_map);
 
-    let mut is_target = alloc::vec![false; index_to_id.len()];
+    let mut is_target = alloc::vec![false; index.len()];
     for tid in &actual_target_ids {
-        if let Some(&idx) = id_to_index.get(tid) {
+        if let Some(idx) = index.index_of(&tid) {
             is_target[idx] = true;
         }
     }
 
     run_state_pipeline_streaming(
-        &index_to_id,
-        &id_to_index,
+        &index,
         &is_target,
         events_map,
         version,
         |idx, shared_state| {
-            let id = index_to_id[idx].clone();
+            let id = index.items()[idx].clone();
             on_target_resolved(id, shared_state)
         },
+        empty_key,
     )
 }
 
@@ -595,13 +597,13 @@ where
 ///
 /// Topologically sorts all reachable ancestors, incrementally merges state at forks,
 /// and yields the target states as they are completed.
-fn run_state_pipeline_streaming<'a, Id, C, S, F, E, K>(
-    index_to_id: &[&'a Id],
-    id_to_index: &FastMap<&'a Id, usize>,
+fn run_state_pipeline_streaming<Id, C, S, F, E, K>(
+    index: &DenseIndex<&Id, usize>,
     is_target: &[bool],
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target: F,
+    empty_key: &K,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -611,27 +613,25 @@ where
     K: crate::basespec::rezzy_types::StateKey,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    let (sorted_ancestors, mut out_degree) =
-        topological_sort_short_ids(index_to_id, id_to_index, events_map);
+    let (sorted_ancestors, mut out_degree) = topological_sort_short_ids(index, events_map);
 
-    if sorted_ancestors.len() != index_to_id.len() {
+    if sorted_ancestors.len() != index.len() {
         return Err(StateComputationError::CycleDetected);
     }
 
     let mut global_auth_cache = LocalAuthCache::new(version);
     let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
 
-    let mut state_after_map: Vec<Option<SharedState<Id, K>>> = core::iter::repeat_with(|| None)
-        .take(index_to_id.len())
-        .collect();
+    let mut state_after_map: Vec<Option<SharedState<Id, K>>> =
+        core::iter::repeat_with(|| None).take(index.len()).collect();
 
     for idx in sorted_ancestors {
-        let id_val = index_to_id[idx];
+        let id_val = index.items()[idx];
         let ev = events_map.get(id_val).unwrap();
 
         let mut prev_states = Vec::with_capacity(ev.prev_events.len());
         for pe in &ev.prev_events {
-            let Some(&pe_idx) = id_to_index.get(pe) else {
+            let Some(pe_idx) = index.index_of(&pe) else {
                 continue;
             };
             if out_degree[pe_idx] == 0 {
@@ -658,15 +658,13 @@ where
                 &mut global_auth_cache,
                 &mut mainline_cache,
                 version,
+                empty_key,
             )
         };
 
-        if ev.state_key.is_some() {
+        if let Some(state_key) = ev.state_key.as_ref().filter(|_| !ev.rejected) {
             state_before.insert(
-                (
-                    EventType::from(ev.event_type.as_str()),
-                    ev.state_key.clone().unwrap_or_default(),
-                ),
+                (EventType::from(ev.event_type.as_str()), state_key.clone()),
                 ev.event_id.clone(),
             );
         }
@@ -775,10 +773,10 @@ where
 
     // Max-heap: (depth, &Id) — highest depth pops first.
     let mut queue: BinaryHeap<(u64, &Id)> = BinaryHeap::new();
-    let mut masks: HashMap<&Id, u8> = HashMap::new();
+    let mut masks: FastMap<&Id, u8> = FastMap::default();
 
     // Track the highest-depth (closest to tips) junction found per mask.
-    let mut best_junction: HashMap<u8, (&Id, u64)> = HashMap::new();
+    let mut best_junction: FastMap<u8, (&Id, u64)> = FastMap::default();
 
     for (i, &head) in extremities.iter().enumerate() {
         if let Some((k, ev)) = events_map.get_key_value(head) {
@@ -909,7 +907,6 @@ where
 /// let merge_base = compute_merge_base(&tips, &events);
 /// ```
 #[must_use]
-/// Computes the merge base (common ancestors) of a set of target events in the DAG.
 #[cfg(feature = "std")]
 pub fn compute_merge_base<'a, Id, Q, S, Node>(
     extremities: &[&Q],
@@ -939,7 +936,7 @@ where
     // Max-heap: (depth, &Id) — highest depth pops first, ensuring a parent
     // is never processed until all of its descendants have propagated bits.
     let mut queue: BinaryHeap<(u64, &Id)> = BinaryHeap::new();
-    let mut masks: HashMap<&Id, RoaringBitmap> = HashMap::new();
+    let mut masks: FastMap<&Id, RoaringBitmap> = FastMap::default();
 
     for (i, &head) in extremities.iter().enumerate() {
         if let Some((k, ev)) = events_map.get_key_value(head) {
@@ -990,20 +987,18 @@ where
 fn collect_ancestor_short_ids_batch<'a, Id, C, S, K>(
     target_event_ids: &[&'a Id],
     events_map: &'a HashMap<Id, LeanEvent<Id, C, K>, S>,
-) -> (FastMap<&'a Id, usize>, Vec<&'a Id>)
+) -> DenseIndex<&'a Id, usize>
 where
     Id: crate::basespec::rezzy_types::EventId,
     S: core::hash::BuildHasher,
     C: Clone,
 {
-    let mut id_to_index: FastMap<&Id, usize> = FastMap::default();
-    let mut index_to_id: Vec<&Id> = Vec::new();
+    let mut index_to_id: Vec<&'a Id> = Vec::new();
+    let mut seen: crate::FastSet<&'a Id> = crate::FastSet::default();
     let mut queue = Vec::new();
 
     for &tid in target_event_ids {
-        if !id_to_index.contains_key(tid) {
-            let next_idx = index_to_id.len();
-            id_to_index.insert(tid, next_idx);
+        if seen.insert(tid) {
             index_to_id.push(tid);
             queue.push(tid);
         }
@@ -1018,24 +1013,22 @@ where
             continue;
         };
         for pe in &ev.prev_events {
-            if events_map.contains_key(pe) && !id_to_index.contains_key(pe) {
-                let next_idx = index_to_id.len();
-                id_to_index.insert(pe, next_idx);
+            if events_map.contains_key(pe) && seen.insert(pe) {
                 index_to_id.push(pe);
                 queue.push(pe);
             }
         }
     }
 
-    (id_to_index, index_to_id)
+    DenseIndex::try_build(index_to_id)
+        .expect("ancestor short-id index exceeds the usize address space")
 }
 
 /// Performs a topological sort of the graph represented by short `usize` indexes.
 /// Performs Kahn's topological sort on the collected ancestor graph.
 /// Returns the events sorted such that parents always appear before their children.
 fn topological_sort_short_ids<Id, C, S, K>(
-    index_to_id: &[&Id],
-    id_to_index: &FastMap<&Id, usize>,
+    index: &DenseIndex<&Id, usize>,
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
 ) -> (Vec<usize>, Vec<usize>)
 where
@@ -1043,12 +1036,12 @@ where
     S: core::hash::BuildHasher,
     C: Clone,
 {
-    let num_reachable = index_to_id.len();
+    let num_reachable = index.len();
     let mut in_degree = alloc::vec![0usize; num_reachable];
     let mut adjacency = alloc::vec![Vec::new(); num_reachable];
     let mut out_degree = alloc::vec![0usize; num_reachable];
 
-    for (i, id) in index_to_id.iter().enumerate() {
+    for (i, id) in index.items().iter().enumerate() {
         let Some(ev) = events_map.get(*id) else {
             continue;
         };
@@ -1058,7 +1051,7 @@ where
             None
         };
         for parent in &ev.prev_events {
-            if let Some(&parent_idx) = id_to_index.get(parent) {
+            if let Some(parent_idx) = index.index_of(&parent) {
                 // Dedup: only count each parent edge once, even if prev_events has duplicates.
                 if let Some(seen_set) = &mut seen {
                     if !seen_set.insert(parent_idx) {
@@ -1095,12 +1088,13 @@ where
 
 /// Fast-path resolution for merging multiple states when they are all structurally identical.
 /// Bypasses full state resolution by simply returning one of the identical parent states.
-fn resolve_merge_fast_path<Id, C, S, K>(
+pub(crate) fn resolve_merge_fast_path<Id, C, S, K>(
     prev_states: &[SharedState<Id, K>],
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
+    empty_key: &K,
 ) -> SharedState<Id, K>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -1121,6 +1115,7 @@ where
             global_auth_cache,
             mainline_cache,
             version,
+            empty_key,
         )
         .into_iter()
         .collect()
@@ -1136,6 +1131,7 @@ fn resolve_multiple_prev_states<Id, C, S, K>(
     global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
+    empty_key: &K,
 ) -> SharedState<Id, K>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -1172,7 +1168,7 @@ where
         unconflicted_state.remove(k);
     }
 
-    let mut conflicted_events = HashMap::new();
+    let mut conflicted_events = HashMap::with_capacity(conflicted_state_set.len());
     for id_val in &conflicted_state_set {
         if let Some(event) = events_map.get(id_val) {
             conflicted_events.insert(id_val.clone(), event.clone());
@@ -1187,16 +1183,17 @@ where
         }
     }
 
-    let mut pl_cache = HashMap::new();
+    let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
     crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
-        unconflicted_state,
-        conflicted_events,
+        &unconflicted_state,
+        &conflicted_events,
         events_map,
         Some(global_auth_cache),
         version,
         &mut pl_cache,
         mainline_cache,
         &conflicted_keys,
+        empty_key,
     )
 }
 
@@ -1532,12 +1529,12 @@ where
     }
 
     let all_ids: Vec<&Id> = events_map.keys().collect();
-    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&all_ids, events_map);
-    let (sorted, _) = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
+    let index = collect_ancestor_short_ids_batch(&all_ids, events_map);
+    let (sorted, _) = topological_sort_short_ids(&index, events_map);
 
     debug_assert_eq!(
         sorted.len(),
-        index_to_id.len(),
+        index.len(),
         "compute_topo_positions: Kahn sort returned fewer nodes than expected — \
          the input graph contains a cycle"
     );
@@ -1545,15 +1542,15 @@ where
     // Kahn sort gives a valid topological order; apply tiebreak within
     // each topological level for deterministic output.
     // First compute parent-max depths to identify levels.
-    let mut depth_by_idx = alloc::vec![0u64; index_to_id.len()];
+    let mut depth_by_idx = alloc::vec![0u64; index.len()];
     for &idx in &sorted {
-        let id = index_to_id[idx];
+        let id = index.items()[idx];
         if let Some(ev) = events_map.get(id) {
             let max_parent = ev
                 .prev_events
                 .iter()
-                .filter_map(|pe| id_to_index.get(pe))
-                .map(|&pi| depth_by_idx[pi])
+                .filter_map(|pe| index.index_of(&pe))
+                .map(|pi| depth_by_idx[pi])
                 .max()
                 .unwrap_or(0);
             depth_by_idx[idx] = max_parent.saturating_add(1);
@@ -1561,11 +1558,14 @@ where
     }
 
     // Sort by depth ascending (parents first), tiebreak within level.
-    let mut result: Vec<Id> = sorted.iter().map(|&idx| index_to_id[idx].clone()).collect();
+    let mut result: Vec<Id> = sorted
+        .iter()
+        .map(|&idx| index.items()[idx].clone())
+        .collect();
 
     result.sort_by(|a, b| {
-        let da = id_to_index.get(a).map_or(0, |&i| depth_by_idx[i]);
-        let db = id_to_index.get(b).map_or(0, |&i| depth_by_idx[i]);
+        let da = index.index_of(&a).map_or(0, |i| depth_by_idx[i]);
+        let db = index.index_of(&b).map_or(0, |i| depth_by_idx[i]);
         da.cmp(&db).then_with(|| tiebreak(a, b))
     });
 
@@ -1605,26 +1605,26 @@ where
     }
 
     let all_ids: Vec<&Id> = events_map.keys().collect();
-    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&all_ids, events_map);
-    let (sorted, _) = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
+    let index = collect_ancestor_short_ids_batch(&all_ids, events_map);
+    let (sorted, _) = topological_sort_short_ids(&index, events_map);
 
-    let mut depths = alloc::vec![0u64; index_to_id.len()];
+    let mut depths = alloc::vec![0u64; index.len()];
 
     for idx in &sorted {
-        let id = index_to_id[*idx];
+        let id = index.items()[*idx];
         let ev = events_map.get(id).unwrap();
         let max_parent_depth = ev
             .prev_events
             .iter()
-            .filter_map(|pe| id_to_index.get(pe))
-            .map(|&pi| depths[pi])
+            .filter_map(|pe| index.index_of(&pe))
+            .map(|pi| depths[pi])
             .max()
             .unwrap_or(0);
         depths[*idx] = max_parent_depth.saturating_add(1);
     }
 
-    let mut result = HashMap::with_capacity(index_to_id.len());
-    for (i, &id) in index_to_id.iter().enumerate() {
+    let mut result = HashMap::with_capacity(index.len());
+    for (i, &id) in index.items().iter().enumerate() {
         result.insert(id.clone(), depths[i]);
     }
     result
@@ -1790,19 +1790,19 @@ where
     };
 
     let targets = [tip_key];
-    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&targets, events_map);
-    let (sorted, _) = topological_sort_short_ids(&index_to_id, &id_to_index, events_map);
+    let index = collect_ancestor_short_ids_batch(&targets, events_map);
+    let (sorted, _) = topological_sort_short_ids(&index, events_map);
 
     // Compute depths inline using the index arrays
-    let mut depth_by_idx = alloc::vec![0u64; index_to_id.len()];
+    let mut depth_by_idx = alloc::vec![0u64; index.len()];
     for &idx in &sorted {
-        let id = index_to_id[idx];
+        let id = index.items()[idx];
         if let Some(ev) = events_map.get(id.borrow()) {
             let max_parent = ev
                 .prev_events
                 .iter()
-                .filter_map(|pe| id_to_index.get(pe))
-                .map(|&pi| depth_by_idx[pi])
+                .filter_map(|pe| index.index_of(&pe))
+                .map(|pi| depth_by_idx[pi])
                 .max()
                 .unwrap_or(0);
 
@@ -1815,12 +1815,12 @@ where
     let mut result: Vec<Id> = sorted
         .iter()
         .rev()
-        .map(|&idx| index_to_id[idx].clone())
+        .map(|&idx| index.items()[idx].clone())
         .collect();
 
     result.sort_by(|a, b| {
-        let da = id_to_index.get(a).map_or(0, |&i| depth_by_idx[i]);
-        let db = id_to_index.get(b).map_or(0, |&i| depth_by_idx[i]);
+        let da = index.index_of(&a).map_or(0, |i| depth_by_idx[i]);
+        let db = index.index_of(&b).map_or(0, |i| depth_by_idx[i]);
         db.cmp(&da).then_with(|| tiebreak(a, b))
     });
 
@@ -1877,7 +1877,7 @@ where
     let mut violations = Vec::new();
 
     // 1. Check for duplicates
-    let mut seen: HashMap<&Id, usize> = HashMap::new();
+    let mut seen: FastMap<&Id, usize> = FastMap::default();
     for (page_idx, page) in pages.iter().enumerate() {
         for id in page {
             if let Some(&first_page) = seen.get(id) {
@@ -2142,6 +2142,7 @@ pub fn resolve_merge_fast_path_hashed<Id, C, S, K>(
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     version: StateResVersion,
+    empty_key: &K,
 ) -> HashedState<Id, K>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -2156,6 +2157,7 @@ where
         global_auth_cache,
         &mut FastMap::default(),
         version,
+        empty_key,
     )
 }
 
@@ -2170,6 +2172,7 @@ fn resolve_merge_fast_path_hashed_with_cache<Id, C, S, K>(
     global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
+    empty_key: &K,
 ) -> HashedState<Id, K>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -2200,6 +2203,7 @@ where
             global_auth_cache,
             mainline_cache,
             version,
+            empty_key,
         );
 
         // Incremental LtHash update from the first parent state!
@@ -2230,12 +2234,12 @@ where
 }
 
 fn run_state_pipeline_streaming_optimized<'a, Id, C, S, F, E, K>(
-    index_to_id: &[&'a Id],
-    id_to_index: &FastMap<&'a Id, usize>,
+    index: &DenseIndex<&'a Id, usize>,
     is_target: &[bool],
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target: F,
+    empty_key: &K,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -2245,22 +2249,20 @@ where
     K: crate::basespec::rezzy_types::StateKey,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    let (sorted_ancestors, mut out_degree) =
-        topological_sort_short_ids(index_to_id, id_to_index, events_map);
+    let (sorted_ancestors, mut out_degree) = topological_sort_short_ids(index, events_map);
 
-    if sorted_ancestors.len() != index_to_id.len() {
+    if sorted_ancestors.len() != index.len() {
         return Err(StateComputationError::CycleDetected);
     }
 
     let mut global_auth_cache = LocalAuthCache::new(version);
     let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
 
-    let mut state_after_map: Vec<Option<HashedState<Id, K>>> = core::iter::repeat_with(|| None)
-        .take(index_to_id.len())
-        .collect();
+    let mut state_after_map: Vec<Option<HashedState<Id, K>>> =
+        core::iter::repeat_with(|| None).take(index.len()).collect();
 
     for idx in sorted_ancestors {
-        let id_val = index_to_id[idx];
+        let id_val = index.items()[idx];
         let ev = events_map.get(id_val).unwrap();
 
         let mut prev_states = Vec::with_capacity(ev.prev_events.len());
@@ -2270,7 +2272,7 @@ where
             None
         };
         for pe in &ev.prev_events {
-            let Some(&pe_idx) = id_to_index.get(pe) else {
+            let Some(pe_idx) = index.index_of(&pe) else {
                 continue;
             };
             // Dedup: adversarial events may carry duplicate prev_events.
@@ -2305,8 +2307,10 @@ where
                         parent_event_id: ev
                             .prev_events
                             .iter()
-                            .find(|pe| id_to_index.contains_key(*pe))
-                            .expect("has_single_parent implies at least one prev_event is in id_to_index"),
+                            .find(|pe| index.index_of(pe).is_some())
+                            .expect(
+                                "has_single_parent implies at least one prev_event is in the index",
+                            ),
                         hash: &parent_state.hash,
                     },
                 )
@@ -2325,14 +2329,12 @@ where
                 &mut global_auth_cache,
                 &mut mainline_cache,
                 version,
+                empty_key,
             )
         };
 
-        if is_state {
-            let key = (
-                EventType::from(ev.event_type.as_str()),
-                ev.state_key.clone().unwrap_or_default(),
-            );
+        if let Some(state_key) = ev.state_key.as_ref().filter(|_| !ev.rejected) {
+            let key = (EventType::from(ev.event_type.as_str()), state_key.clone());
             state_before.insert(key, ev.event_id.clone());
         }
 
@@ -2374,6 +2376,7 @@ pub fn try_compute_state_at_streaming_optimized<Id, C, Q, S, F, E, K>(
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
+    empty_key: &K,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
@@ -2399,25 +2402,25 @@ where
     }
 
     let target_refs: Vec<&Id> = actual_target_ids.iter().collect();
-    let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&target_refs, events_map);
+    let index = collect_ancestor_short_ids_batch(&target_refs, events_map);
 
-    let mut is_target = alloc::vec![false; index_to_id.len()];
+    let mut is_target = alloc::vec![false; index.len()];
     for tid in &actual_target_ids {
-        if let Some(&idx) = id_to_index.get(tid) {
+        if let Some(idx) = index.index_of(&tid) {
             is_target[idx] = true;
         }
     }
 
     run_state_pipeline_streaming_optimized(
-        &index_to_id,
-        &id_to_index,
+        &index,
         &is_target,
         events_map,
         version,
         |idx, update| {
-            let id = index_to_id[idx].clone();
+            let id = index.items()[idx].clone();
             on_target_resolved(id, update)
         },
+        empty_key,
     )
 }
 
@@ -2432,6 +2435,7 @@ pub fn compute_state_at_streaming_optimized<Id, C, Q, S, F, K>(
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
+    empty_key: &K,
 ) -> bool
 where
     Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
@@ -2450,6 +2454,7 @@ where
             on_target_resolved(id, update);
             Ok(())
         },
+        empty_key,
     );
 
     match result {
@@ -2630,6 +2635,86 @@ mod tests {
         );
     }
 
+    /// Direct `V2.1` vs `V2.1.1` comparison for `OverlayState::get_event`'s
+    /// power-phase local-auth fallback (lines ~122-168): confirms the *real*
+    /// polarity of the version gate. Per this crate's own `StateResVersion`
+    /// documentation, the "ban evasion fix: restricts power-phase state
+    /// supplementation" is V2.1.1's defining delta over V2.1 -- not
+    /// something V2.1 also does, and not an MSC4297 requirement (MSC4297
+    /// only changes which events are selected for replay; it explicitly
+    /// does not touch the iterative auth checks). So V2.1 has no
+    /// power-phase gate at all here -- it falls back to local auth
+    /// unconditionally, regardless of what kind of event is asking -- while
+    /// V2.1.1 is the version that narrows the fallback to the conditions
+    /// checked below.
+    #[test]
+    fn test_overlay_state_v2_1_vs_v2_1_1_power_phase_fallback_polarity() {
+        let create_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            sender: "@creator:example.com".into(),
+            ..Default::default()
+        };
+        let pl_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
+            event_id: "$pl".into(),
+            event_type: "m.room.power_levels".into(),
+            sender: "@creator:example.com".into(),
+            ..Default::default()
+        };
+
+        // A required-type (PL) query, present in local_auth but not yet in
+        // `resolved`, requested on behalf of a non-power candidate
+        // (`m.room.message`) during the power phase.
+        let build_overlay = |version: StateResVersion| {
+            let resolved = imbl::OrdMap::new();
+            let auth_context = HashMap::new();
+            let sort_set = HashMap::new();
+            let mut local_auth = BTreeMap::new();
+            local_auth.insert(
+                (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
+                pl_ev.clone(),
+            );
+            (resolved, auth_context, sort_set, local_auth, version)
+        };
+
+        let (resolved, auth_context, sort_set, local_auth, version) =
+            build_overlay(StateResVersion::V2_1);
+        let overlay_v21 = OverlayState {
+            resolved: &resolved,
+            auth_context: &auth_context,
+            sort_set: &sort_set,
+            local_auth,
+            create_ev: Some(&create_ev),
+            version,
+            is_power_phase: true,
+            candidate_event_type: "m.room.message",
+        };
+        assert!(
+            overlay_v21.get_event(M_ROOM_POWER_LEVELS, "").is_some(),
+            "V2.1 has no power-phase gate at all here -- it falls back to local \
+             auth unconditionally, regardless of what kind of event is asking"
+        );
+
+        let (resolved, auth_context, sort_set, local_auth, version) =
+            build_overlay(StateResVersion::V2_1_1);
+        let overlay_v211 = OverlayState {
+            resolved: &resolved,
+            auth_context: &auth_context,
+            sort_set: &sort_set,
+            local_auth,
+            create_ev: Some(&create_ev),
+            version,
+            is_power_phase: true,
+            candidate_event_type: "m.room.message",
+        };
+        assert!(
+            overlay_v211.get_event(M_ROOM_POWER_LEVELS, "").is_none(),
+            "V2.1.1 is the *stricter* one here: a non-power candidate (a plain \
+             message) may not bypass-authorize against an unresolved, only \
+             locally-known power_levels event"
+        );
+    }
+
     /// Exercises the overlay-state fallback paths for resolved required events
     /// across all supported state-resolution versions.
     #[test]
@@ -2700,9 +2785,10 @@ mod tests {
         // 2. Test case: resolved_id is NOT found, and candidate_is_power is true (returns Some(ev)).
         {
             let resolved = imbl::OrdMap::new();
-            let auth_context = HashMap::new();
+            let mut auth_context = HashMap::new();
+            auth_context.insert("$jr".to_string(), jr_ev.clone());
             let mut sort_set = HashMap::new();
-            sort_set.insert("$pl".to_string(), pl_ev.clone());
+            sort_set.insert("$jr".to_string(), jr_ev.clone());
 
             let mut local_auth = BTreeMap::new();
             local_auth.insert(
@@ -2765,12 +2851,16 @@ mod tests {
                     EventType::from(crate::basespec::event_types::M_ROOM_JOIN_RULES),
                     String::new(),
                 ),
-                "$jr".to_string(),
+                "$jr_resolved".to_string(),
             );
 
-            let auth_context = HashMap::new();
-            let mut sort_set = HashMap::new();
-            sort_set.insert("$jr".to_string(), jr_ev.clone());
+            let mut auth_context = HashMap::new();
+            let resolved_jr = LeanEvent {
+                event_id: "$jr_resolved".to_string(),
+                ..jr_ev.clone()
+            };
+            auth_context.insert("$jr_resolved".to_string(), resolved_jr.clone());
+            let sort_set = HashMap::new();
 
             let mut local_auth = BTreeMap::new();
             local_auth.insert(
@@ -2794,7 +2884,7 @@ mod tests {
 
             let res = overlay.get_event(crate::basespec::event_types::M_ROOM_JOIN_RULES, "");
             assert!(res.is_some());
-            assert_eq!(res.unwrap().event_id, "$jr");
+            assert_eq!(res.unwrap().event_id, "$jr_resolved");
         }
 
         // 5. Test case: a resolved member ban is returned directly during
@@ -2840,11 +2930,13 @@ mod tests {
         }
 
         // 6. Test case: no resolved event, but a matching local-auth candidate
-        // for a required type, with a NON-power candidate. Under the V2.1+ gate
-        // the unresolved conflicted power-level auth event must be rejected
-        // (None) identically for V2.1 and V2.1.1. This diverges from the old
-        // code, which returned the local-auth event for V2.1 (its gate excluded
-        // V2.1), so the test fails against the previous implementation.
+        // for a required type, with a NON-power candidate. The V2.1.1+ gate
+        // (V2.1.1's own defining "ban evasion fix", per `StateResVersion`'s
+        // docs) rejects the unresolved conflicted power-level auth event
+        // (None); stock V2.1 predates that gate and falls back to the
+        // local-auth candidate unconditionally (Some) -- see
+        // `test_overlay_state_v2_1_vs_v2_1_1_power_phase_fallback_polarity`
+        // for the direct comparison.
         {
             let resolved = imbl::OrdMap::new();
             let auth_context = HashMap::new();
@@ -2857,7 +2949,10 @@ mod tests {
                 pl_ev.clone(),
             );
 
-            for version in [StateResVersion::V2_1, StateResVersion::V2_1_1] {
+            for (version, expect_some) in [
+                (StateResVersion::V2_1, true),
+                (StateResVersion::V2_1_1, false),
+            ] {
                 let overlay = OverlayState {
                     resolved: &resolved,
                     auth_context: &auth_context,
@@ -2869,9 +2964,12 @@ mod tests {
                     candidate_event_type: "m.room.message",
                 };
                 let res = overlay.get_event(M_ROOM_POWER_LEVELS, "");
-                assert!(
-                    res.is_none(),
-                    "a non-power candidate must not authorize an unresolved conflicted power-level auth event (V2.1 and V2.1.1 alike)"
+                assert_eq!(
+                    res.is_some(),
+                    expect_some,
+                    "{version:?}: a non-power candidate's access to an unresolved \
+                     conflicted power-level auth event must match V2.1.1's gate \
+                     (rejected) vs V2.1's unconditional fallback (allowed)"
                 );
             }
         }
@@ -2883,7 +2981,7 @@ mod tests {
     #[test]
     fn test_find_forward_extremities_roaring_empty() {
         let extremities = find_forward_extremities_roaring::<String, _, Vec<String>>(Vec::new());
-        assert!(extremities.is_empty());
+        assert_eq!(extremities, [] as [std::string::String; 0]);
     }
 
     #[test]
@@ -3135,7 +3233,7 @@ mod tests {
     fn test_compute_topo_positions_empty() {
         let events_map: HashMap<String, LeanEvent> = HashMap::new();
         let result = compute_topo_positions(&events_map, core::cmp::Ord::cmp);
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [std::string::String; 0]);
     }
 
     /// Coverage: `compute_depths` with empty input (line 1520).
@@ -3316,7 +3414,7 @@ mod tests {
             },
         );
         let result = reverse_topological_order("missing_tip", &events_map, core::cmp::Ord::cmp);
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [std::string::String; 0]);
     }
 
     /// Coverage: `compute_auth_chain_diff` prune-early when conflicted ID
@@ -3483,7 +3581,12 @@ mod tests {
         events_map.insert("A".into(), a);
         events_map.insert("D".into(), d);
 
-        let result = compute_state_at(&"D".to_string(), &events_map, crate::StateResVersion::V2);
+        let result = compute_state_at(
+            &"D".to_string(),
+            &events_map,
+            crate::StateResVersion::V2,
+            &String::new(),
+        );
         assert!(result.is_some());
     }
 
@@ -3560,7 +3663,12 @@ mod tests {
         // compute_state_at traverses backwards from D. When both B and C
         // reference A, the out_degree bookkeeping must handle the second
         // reference finding out_degree[A] == 0.
-        let result = compute_state_at(&"D".to_string(), &events_map, crate::StateResVersion::V2);
+        let result = compute_state_at(
+            &"D".to_string(),
+            &events_map,
+            crate::StateResVersion::V2,
+            &String::new(),
+        );
         assert!(result.is_some(), "should reconstruct state at D");
         let state = result.unwrap();
         // create event should be in state
@@ -3619,6 +3727,7 @@ mod tests {
             &events_map,
             StateResVersion::V2_1_1,
             |_, _| {},
+            &String::new(),
         );
         assert!(
             !completed,
@@ -3730,6 +3839,7 @@ mod tests {
                 }
                 _ => {}
             },
+            &String::new(),
         );
 
         // Assert updates are correct
@@ -3786,7 +3896,12 @@ mod tests {
         events_map.insert("D".into(), d);
 
         // Must not panic (e.g. double-take on B's state) and must resolve.
-        let result = compute_state_at(&"D".to_string(), &events_map, crate::StateResVersion::V2);
+        let result = compute_state_at(
+            &"D".to_string(),
+            &events_map,
+            crate::StateResVersion::V2,
+            &String::new(),
+        );
         assert!(result.is_some());
     }
 
@@ -3813,6 +3928,7 @@ mod tests {
                 &events_map,
                 crate::StateResVersion::V2,
                 |_, _| Err("callback aborted"),
+                &String::new(),
             );
 
         assert_eq!(
@@ -3836,6 +3952,7 @@ mod tests {
                 callback_called = true;
                 Ok::<(), &'static str>(())
             },
+            &String::new(),
         );
 
         assert_eq!(result, Ok(()));
@@ -3866,17 +3983,16 @@ mod tests {
         let ghost = "ghost".to_string();
         let targets: Vec<&String> = alloc::vec![&ghost];
 
-        let (id_to_index, index_to_id) = collect_ancestor_short_ids_batch(&targets, &events_map);
+        let index = collect_ancestor_short_ids_batch(&targets, &events_map);
         assert_eq!(
-            index_to_id.len(),
+            index.len(),
             1,
             "the unresolvable target still gets a short id"
         );
-        assert!(id_to_index.contains_key(&ghost));
+        assert!(index.index_of(&&ghost).is_some());
 
         // Must not panic when the topological sort walks an id absent from events_map.
-        let (sorted, out_degree) =
-            topological_sort_short_ids(&index_to_id, &id_to_index, &events_map);
+        let (sorted, out_degree) = topological_sort_short_ids(&index, &events_map);
         assert_eq!(sorted.len(), 1);
         assert_eq!(out_degree.len(), 1);
     }
@@ -3942,12 +4058,84 @@ mod tests {
             &events_map,
             &mut cache,
             crate::StateResVersion::V2,
+            &String::new(),
         );
 
         assert_eq!(
             result.state, state_a,
             "matching content must take the fast path rather than re-resolving"
         );
+    }
+
+    /// Differential guard for Path A (identical-fork fast path): for a set of
+    /// identical parent states, `resolve_merge_fast_path_hashed` must produce
+    /// exactly the state the uncached full-resolution entry point
+    /// `resolve_multiple_prev_states` would, and the carried `LtHash` must
+    /// equal a from-scratch hash of the result (guards accumulator drift).
+    #[test]
+    fn test_fast_path_differential_matches_full_resolution_on_identical_forks() {
+        use crate::basespec::event_types::EventType;
+
+        let entries: Vec<((EventType, String), String)> = alloc::vec![
+            (("m.room.topic".into(), String::new()), "t1".to_string()),
+            (("m.room.name".into(), String::new()), "r1".to_string()),
+            (("m.room.avatar".into(), String::new()), "a1".to_string()),
+        ];
+        let base: SharedState<String> = entries.iter().cloned().collect();
+
+        for forks in [2usize, 3, 5] {
+            let mut prev_states: Vec<HashedState<String>> = Vec::new();
+            let mut prev_plain: Vec<SharedState<String>> = Vec::new();
+            for i in 0..forks {
+                // First two forks share the base root (ptr_eq true); the rest
+                // are independently built (ptr_eq false) with identical
+                // content, so both fast-path branches (ptr_eq and the full
+                // equality fallback) are exercised.
+                let state: SharedState<String> = if i <= 1 {
+                    base.clone()
+                } else {
+                    entries.iter().cloned().collect()
+                };
+                let hash = crate::state::lthash::LtHash::from_state(&state);
+                prev_states.push(HashedState {
+                    state: state.clone(),
+                    hash,
+                });
+                prev_plain.push(state);
+            }
+
+            let events_map: HashMap<String, LeanEvent> = HashMap::new();
+            let mut fast_cache = LocalAuthCache::new(crate::StateResVersion::V2);
+            let fast = resolve_merge_fast_path_hashed(
+                &prev_states,
+                &events_map,
+                &mut fast_cache,
+                crate::StateResVersion::V2,
+                &String::new(),
+            );
+
+            let mut full_cache = LocalAuthCache::new(crate::StateResVersion::V2);
+            let mut mainline_cache: crate::FastMap<String, Option<String>> =
+                crate::FastMap::default();
+            let full = resolve_multiple_prev_states(
+                &prev_plain,
+                &events_map,
+                &mut full_cache,
+                &mut mainline_cache,
+                crate::StateResVersion::V2,
+                &String::new(),
+            );
+
+            assert_eq!(
+                fast.state, full,
+                "fast path must agree with full resolution for identical forks (forks={forks})"
+            );
+            assert_eq!(
+                fast.hash,
+                crate::state::lthash::LtHash::from_state(&fast.state),
+                "carried LtHash must match a from-scratch hash (forks={forks})"
+            );
+        }
     }
 
     /// Coverage: the deterministic sort comparator in `find_depth_divergences`
@@ -4214,6 +4402,7 @@ mod tests {
                     callback_called = true;
                     Ok(())
                 },
+                &String::new(),
             );
 
         assert_eq!(result, Ok(()));
@@ -4266,6 +4455,7 @@ mod tests {
                     saw_new = true;
                 }
             },
+            &String::new(),
         );
 
         assert!(ok, "must complete without panicking");
@@ -4274,11 +4464,43 @@ mod tests {
         assert!(saw_new, "B's state is new, not inherited");
     }
 
-    /// Coverage: `iterative_auth_ok`'s rejected/soft-fail short-circuit (line 240).
+    /// Coverage: `iterative_auth_ok` — rejected events short-circuit (never admitted);
+    /// soft-failed events are auth-checked as normal and admitted when they pass.
     #[test]
     fn test_iterative_auth_ok_rejected_and_soft_fail() {
-        let resolved: SharedState<String, String> = SharedState::new();
-        let auth_context: HashMap<String, LeanEvent> = HashMap::new();
+        use crate::basespec::event_types::M_ROOM_CREATE;
+
+        let create_ev = LeanEvent {
+            event_id: "$create".into(),
+            event_type: M_ROOM_CREATE.into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            content: json!({ "room_version": "10", "creator": "@alice:x" }),
+            ..Default::default()
+        };
+        let join_rules_ev = LeanEvent {
+            event_id: "$jr".into(),
+            event_type: "m.room.join_rules".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:x".into(),
+            content: json!({ "join_rule": "public" }),
+            ..Default::default()
+        };
+        let mut resolved: SharedState<String, String> = SharedState::new();
+        resolved.insert(
+            (EventType::from(M_ROOM_CREATE), String::new()),
+            "$create".into(),
+        );
+        resolved.insert(
+            (EventType::from("m.room.join_rules"), String::new()),
+            "$jr".into(),
+        );
+        let auth_context: HashMap<String, LeanEvent> = [
+            ("$create".into(), create_ev.clone()),
+            ("$jr".into(), join_rules_ev),
+        ]
+        .into_iter()
+        .collect();
         let sort_set: HashMap<String, LeanEvent> = HashMap::new();
 
         let rejected = LeanEvent {
@@ -4294,26 +4516,36 @@ mod tests {
             &sort_set,
             BTreeMap::new(),
             None,
-            crate::StateResVersion::V2,
+            crate::StateResVersion::V2_1,
             false,
         ));
 
-        let soft_failed = LeanEvent {
+        // A soft-failed event is NOT blanket-rejected: it is auth-checked as normal and
+        // admitted if it passes (spec server-server-api "Soft failure"). This join is valid
+        // (public join rules, sender not banned), so it must be accepted despite soft_fail.
+        let soft_failed_join = LeanEvent {
             event_id: "Y".into(),
-            event_type: "m.room.message".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@alice:x".into()),
+            sender: "@alice:x".into(),
+            content: json!({ "membership": "join" }),
+            auth_events: vec!["$create".into(), "$jr".into()],
             soft_fail: true,
             ..Default::default()
         };
-        assert!(!iterative_auth_ok(
-            &soft_failed,
-            &resolved,
-            &auth_context,
-            &sort_set,
-            BTreeMap::new(),
-            None,
-            crate::StateResVersion::V2,
-            false,
-        ));
+        assert!(
+            iterative_auth_ok(
+                &soft_failed_join,
+                &resolved,
+                &auth_context,
+                &sort_set,
+                BTreeMap::new(),
+                Some(&create_ev),
+                crate::StateResVersion::V2_1,
+                false,
+            ),
+            "a soft-failed event that passes auth must be admitted into state"
+        );
     }
 
     /// Coverage: `update_local_auth` — the no-state-key early return (line 265)
@@ -4409,7 +4641,9 @@ mod tests {
             event_id: "E2".into(),
             event_type: "m.room.message".into(),
             sender: "@x:x".into(),
-            auth_events: vec!["X".into()],
+            // Include an absent auth ID so the missing-event branch in
+            // `compute_local_auth` is exercised as part of this traversal.
+            auth_events: vec!["X".into(), "MISSING".into()],
             depth: 3,
             ..Default::default()
         };
