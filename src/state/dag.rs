@@ -109,6 +109,11 @@ pub enum StateDagValidationError<Id = String> {
     },
     /// An event referenced in `prev_state_events` is missing from the provided event context.
     MissingReferencedEvent { citing_event: Id, missing_id: Id },
+    /// `compute_state_before_from_dag` was called with a pre-V2.2 room
+    /// version.  State-DAG traversal requires `prev_state_events` edges
+    /// that only exist in room versions 2.2 and later; earlier versions
+    /// use auth-chain state resolution and should not call this function.
+    UnsupportedVersionForDag { version: String },
 }
 
 impl<Id: fmt::Display> fmt::Display for StateDagValidationError<Id> {
@@ -166,6 +171,12 @@ impl<Id: fmt::Display> fmt::Display for StateDagValidationError<Id> {
                 write!(
                     f,
                     "event {citing_event} references missing event {missing_id} in prev_state_events"
+                )
+            }
+            Self::UnsupportedVersionForDag { version } => {
+                write!(
+                    f,
+                    "State-DAG traversal requires room version 2.2 or later, got {version}"
                 )
             }
         }
@@ -247,6 +258,8 @@ pub enum StateDagError<Id = String> {
     Validation(StateDagValidationError<Id>),
     /// State DAG is incomplete / missing required ancestor events.
     IncompleteDag { missing_event_ids: Vec<Id> },
+    /// Too many distinct ancestor events to index (exceeds `usize` capacity).
+    AncestorIndexOverflow,
     /// Cycle detected in `prev_state_events` graph.
     CycleDetected,
 }
@@ -263,6 +276,9 @@ impl<Id: fmt::Display> fmt::Display for StateDagError<Id> {
                 )
             }
             Self::CycleDetected => write!(f, "cycle detected in state DAG"),
+            Self::AncestorIndexOverflow => {
+                write!(f, "too many distinct ancestor events to index")
+            }
         }
     }
 }
@@ -677,7 +693,7 @@ mod state_dag_branch_coverage_tests {
         let events = crate::HashMap::<String, LeanEvent<String, Value, String>>::default();
         let targets = [&unknown, &unknown];
         let missing = collect_state_dag_ancestor_short_ids_batch(&targets, &events).unwrap_err();
-        assert_eq!(missing, vec![unknown]);
+        assert_eq!(missing, AncestorCollectError::Missing(vec![unknown]));
 
         let mut parent = event("$parent", Some(""));
         parent.auth_events.push("$nested-missing".into());
@@ -686,13 +702,7 @@ mod state_dag_branch_coverage_tests {
         let target = "$parent".to_string();
         assert_eq!(
             collect_state_dag_ancestor_short_ids_batch(&[&target], &events).unwrap_err(),
-            vec!["$nested-missing".to_string()]
-        );
-        assert_eq!(
-            incomplete_dag_error(vec!["$nested-missing".to_string()]),
-            StateDagError::IncompleteDag {
-                missing_event_ids: vec!["$nested-missing".to_string()]
-            }
+            AncestorCollectError::Missing(vec!["$nested-missing".to_string()])
         );
 
         let mut create = event("$create", None);
@@ -868,13 +878,6 @@ where
             if disconnected_set.insert(ev.event_id.clone()) {
                 disconnected.push(ev.event_id.clone());
             }
-            if options.stop_on_first_missing {
-                return StateDagCompleteness::Incomplete {
-                    missing_event_ids: missing,
-                    disconnected_event_ids: disconnected,
-                    reachable_event_ids: reachable,
-                };
-            }
             continue;
         }
 
@@ -1000,11 +1003,20 @@ where
     ordered.into_iter().map(|(id, _)| id).collect()
 }
 
+/// Error from [`collect_state_dag_ancestor_short_ids_batch`].
+#[derive(Debug, PartialEq, Eq)]
+enum AncestorCollectError<Id> {
+    /// Required ancestor events are missing from `events_map`.
+    Missing(Vec<Id>),
+    /// Too many distinct ancestors to index (exceeds `usize` capacity).
+    IndexOverflow,
+}
+
 /// Collects all state DAG ancestors reachable from `targets` via `prev_state_events`.
 fn collect_state_dag_ancestor_short_ids_batch<'a, Id, C, S, K>(
     targets: &[&'a Id],
     events_map: &'a HashMap<Id, LeanEvent<Id, C, K>, S>,
-) -> Result<DenseIndex<&'a Id, usize>, Vec<Id>>
+) -> Result<DenseIndex<&'a Id, usize>, AncestorCollectError<Id>>
 where
     Id: EventId,
     S: core::hash::BuildHasher,
@@ -1045,9 +1057,9 @@ where
     }
 
     if missing.is_empty() {
-        DenseIndex::try_build(index_to_id).map_err(|_| Vec::new())
+        DenseIndex::try_build(index_to_id).map_err(|_| AncestorCollectError::IndexOverflow)
     } else {
-        Err(missing)
+        Err(AncestorCollectError::Missing(missing))
     }
 }
 
@@ -1120,6 +1132,17 @@ where
     S: core::hash::BuildHasher,
     for<'q> (EventType, K): core::borrow::Borrow<dyn StateKeyDyn + 'q>,
 {
+    // State-DAG traversal (prev_state_events edges) is only defined for
+    // room versions that use MSC4242 (V2.2). Earlier versions use auth-
+    // chain state resolution and must not call this function.
+    if version != StateResVersion::V2_2 {
+        return Err(StateDagError::Validation(
+            StateDagValidationError::UnsupportedVersionForDag {
+                version: alloc::format!("{version:?}"),
+            },
+        ));
+    }
+
     if event.event_type == M_ROOM_CREATE {
         if !event.prev_state_events().is_empty() {
             return Err(StateDagError::Validation(
@@ -1133,8 +1156,14 @@ where
 
     let parent_refs: Vec<&Id> = event.prev_state_events().iter().collect();
     validate_state_dag_ancestors(event, events_map)?;
-    let index = collect_state_dag_ancestor_short_ids_batch(&parent_refs, events_map)
-        .map_err(incomplete_dag_error)?;
+    let index = collect_state_dag_ancestor_short_ids_batch(&parent_refs, events_map).map_err(
+        |e| match e {
+            AncestorCollectError::Missing(ids) => StateDagError::IncompleteDag {
+                missing_event_ids: ids,
+            },
+            AncestorCollectError::IndexOverflow => StateDagError::AncestorIndexOverflow,
+        },
+    )?;
 
     let (sorted_ancestors, mut out_degree) =
         topological_sort_state_dag_short_ids(&index, events_map);
@@ -1222,10 +1251,6 @@ where
         version,
         empty_key,
     )
-}
-
-fn incomplete_dag_error<Id>(missing_event_ids: Vec<Id>) -> StateDagError<Id> {
-    StateDagError::IncompleteDag { missing_event_ids }
 }
 
 fn validate_state_dag_ancestors<Id, C, S, K>(
@@ -1428,7 +1453,7 @@ mod targeted_coverage_tests {
         let result = collect_state_dag_ancestor_short_ids_batch(&[&target], &events);
         crate::dense_index::set_force_allocation_failure(false);
 
-        assert_eq!(result, Err(Vec::new()));
+        assert_eq!(result, Err(AncestorCollectError::IndexOverflow));
     }
 
     #[test]
