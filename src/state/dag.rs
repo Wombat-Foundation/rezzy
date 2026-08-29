@@ -827,6 +827,17 @@ where
             continue;
         }
 
+        // Enforce max_steps BEFORE processing so that `Some(0)` is a
+        // no-op: no event is dequeued, looked up, or added to `reachable`.
+        if let Some(max) = options.max_steps {
+            if steps >= max {
+                if !queue.is_empty() {
+                    truncated = true;
+                }
+                break;
+            }
+        }
+
         let Some(ev) = events_map.get(&current_id) else {
             if missing_set.insert(current_id.clone()) {
                 missing.push(current_id);
@@ -870,15 +881,6 @@ where
         for pe in ev.prev_state_events() {
             if !visited.contains(pe) {
                 queue.push_back(pe.clone());
-            }
-        }
-
-        if let Some(max) = options.max_steps {
-            if steps >= max {
-                if !queue.is_empty() {
-                    truncated = true;
-                }
-                break;
             }
         }
     }
@@ -1384,6 +1386,8 @@ where
                         auth_event_id: auth_id.clone(),
                     });
                 }
+            } else {
+                return Err(AuthError::MissingAuthEvent(auth_id.clone()));
             }
             derived_auth.push(auth_id.clone());
         }
