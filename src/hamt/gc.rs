@@ -52,13 +52,24 @@
 //! the caller's responsibility to only retire a root through this path when
 //! retirement is a strict linear chain.
 //!
-//! TODO: To fully fix this, add per-root reference tracking to `RefcountTable`.
-//! This would require:
+//! A full structural fix would add per-root reference tracking to
+//! `RefcountTable`. This would require:
 //! 1. Adding a `root_reach: HashMap<StructuralHash, Vec<StructuralHash>>` field
 //! 2. Modifying `bootstrap`, `apply_new`, and `apply_superseded` to track which
 //!    hashes belong to which root
 //! 3. In `apply_superseded`, checking that no other live root references a node
 //!    before reporting it as zeroed
+//!
+//! That's a real refcounting redesign, out of scope here. Short of it,
+//! [`RefcountTable::debug_assert_zeroed_not_reachable_elsewhere`] gives
+//! callers a cheap way to *catch* a violation in tests/debug builds: hand it
+//! the hashes [`apply_superseded`](RefcountTable::apply_superseded) just
+//! reported as zeroed, plus a reachability set walked from every other
+//! currently-live root, and it asserts the two don't intersect. It is
+//! `debug_assert!`-gated (a no-op in release builds) because computing that
+//! reachability set is an `O(|universe|)` walk — exactly the per-call cost
+//! this module exists to avoid paying in production; it's affordable only
+//! as a debug/test-time correctness check, not on the hot path.
 
 use alloc::vec::Vec;
 use core::fmt;
@@ -198,6 +209,40 @@ impl RefcountTable {
             }
         }
         Ok(zeroed)
+    }
+
+    /// Debug/test-only hazard check for the branching case documented in the
+    /// module docs: asserts that none of `zeroed` (the hashes
+    /// [`apply_superseded`](Self::apply_superseded) just reported as
+    /// reclaimable) is also reachable from `other_live_roots_reachable` —
+    /// the set of hashes reachable from every *other* currently-live root
+    /// (typically via [`reachable_node_hashes`](super::delta::reachable_node_hashes)),
+    /// i.e. every root besides the one whose retirement produced `zeroed`.
+    ///
+    /// A no-op in release builds (`debug_assert!`, not `assert!`): building
+    /// `other_live_roots_reachable` is an `O(|universe|)` walk per call,
+    /// which is exactly the cost this module's incremental design exists to
+    /// avoid paying on the hot path. Call this from tests, and optionally
+    /// from debug-build integration code, right after a call to
+    /// `apply_superseded` whose safety you want double-checked.
+    ///
+    /// # Panics
+    /// In debug builds, panics if any hash in `zeroed` is also present in
+    /// `other_live_roots_reachable` — i.e. `apply_superseded` would have
+    /// reclaimed a node a different live root still needs.
+    pub fn debug_assert_zeroed_not_reachable_elsewhere(
+        zeroed: &[StructuralHash],
+        other_live_roots_reachable: &HashSet<StructuralHash>,
+    ) {
+        for hash in zeroed {
+            debug_assert!(
+                !other_live_roots_reachable.contains(hash),
+                "GC branching hazard: {hash:?} was reported zeroed by \
+                 apply_superseded but is still reachable from another \
+                 live root -- see the module docs' \"Branching hazard\" \
+                 section"
+            );
+        }
     }
 
     /// The current tracked count for `hash` (0 if untracked).

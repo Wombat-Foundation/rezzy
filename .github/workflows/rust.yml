@@ -22,6 +22,21 @@ jobs:
         include:
           - rust: "1.81.0"
             label: "MSRV (default features)"
+          # NOTE: the `cli` feature is intentionally tested starting at
+          # 1.82.0, one point release above the crate's declared library
+          # MSRV (`rust-version = "1.81"` in Cargo.toml). This is not an
+          # oversight. The 5 direct `cli`-only deps (clap, anyhow, ureq,
+          # idna_adapter, mimalloc) each declare a lower MSRV as locked in
+          # Cargo.lock (highest of the five is clap 4.5.48 at 1.74), but the
+          # *transitive* tree pulled in by `ureq/tls` goes higher: zeroize
+          # 1.9.0 (via rustls, locked in Cargo.lock) declares
+          # `rust-version = "1.85"` -- above even this job's 1.82.0. So the
+          # true floor for `cli` may sit at 1.85, not 1.82; 1.82.0 is kept
+          # here as a previously-chosen value that has not been re-derived
+          # against the current lockfile, not a verified-passing floor.
+          # Re-run `cargo tree -e normal --features cli` against
+          # Cargo.lock and check each locked package's declared
+          # `rust-version` before changing either bound in this matrix.
           - rust: "1.82.0"
             label: "cli feature"
           - rust: "1.85.0"

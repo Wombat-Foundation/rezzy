@@ -530,17 +530,45 @@ fn test_anomaly_18_unauthorized_admin_amplification() {
 #[test]
 fn test_anomaly_19_demoted_but_still_authorized() {
     let (resolved, map) = assert_benign_convergence("19_demoted_but_still_authorized.jsonl");
+    // Pin the actual *winning event id*, not just the derived "ban" string.
+    // get_user_power_level's return of 0 for Priya below is ambiguous by
+    // itself -- it fires identically whether Priya was genuinely demoted to
+    // 0 *or* whether the m.room.power_levels key simply never resolved to
+    // any winner (both $pl_grant_priya and $pl_demote_priya are candidates
+    // on divergent branches here, and this fixture's resolution leaves that
+    // key unresolved). Asserting the winning event id for the ban directly
+    // proves the load-bearing claim of this anomaly -- that
+    // $priya_bans_troll (authorized against her earlier PL-50 grant) is the
+    // event that survived -- independent of whether the PL default-0
+    // fallback is masking anything.
+    assert_eq!(
+        resolved
+            .get(&(
+                "m.room.member".to_string(),
+                "@troll:example.com".to_string()
+            ))
+            .map(String::as_str),
+        Some("$priya_bans_troll"),
+        "Priya's ban of the troll must be the event that actually won resolution, \
+         not merely have membership == \"ban\" via some other path"
+    );
     assert_eq!(get_membership(&resolved, &map, "@troll:example.com"), "ban");
     assert_eq!(
         get_membership(&resolved, &map, "@priya:example.com"),
         "join"
     );
-    // Weak assertion (see TODO): get_user_power_level returns 0 both when
-    // Priya is explicitly demoted AND when no PL event resolves. In anomaly 19
-    // the PL event is on a conflicting fork and doesn't resolve, so the
-    // default-0 path fires. Strengthening this requires the PL event content
-    // to be accessible from the resolved state, which the current API doesn't
-    // support for non-resolving conflicting events.
+    // The m.room.power_levels key does not resolve to a single winner on
+    // this fixture ($pl_grant_priya and $pl_demote_priya are candidates on
+    // non-comparable branches), so get_user_power_level's 0 here is the
+    // helper's "no entry" default, not evidence that Priya was actually
+    // demoted. Assert that explicitly so this can't be confused with -- or
+    // silently regress into -- a bug that treats "no PL entry" as PL 0.
+    assert!(
+        !resolved.contains_key(&("m.room.power_levels".to_string(), String::new())),
+        "power_levels should not resolve to a single winner in this fixture; \
+         if it starts resolving, replace this with a direct assertion on the \
+         winning event's content instead of the ambiguous get_user_power_level default"
+    );
     assert_eq!(
         get_user_power_level(&resolved, &map, "@priya:example.com"),
         0

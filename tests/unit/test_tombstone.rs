@@ -57,11 +57,20 @@ fn test_tombstone_auth() {
     state.insert(("m.room.power_levels".into(), String::new()), pl);
 
     let r1 = check_auth(&tombstone, &state, StateResVersion::V2, None);
-    println!("V2:     {r1:?}");
+    assert!(
+        r1.is_ok(),
+        "PL-100 sender must be authorized to send a tombstone under V2, got: {r1:?}"
+    );
 
     let r2 = check_auth(&tombstone, &state, StateResVersion::V2_1, None);
-    println!("V2_1:   {r2:?}");
+    assert!(
+        r2.is_ok(),
+        "PL-100 sender must be authorized to send a tombstone under V2.1, got: {r2:?}"
+    );
 
     let r3 = check_auth(&tombstone, &state, StateResVersion::V2_1_1, None);
-    println!("V2_1_1: {r3:?}");
+    assert!(
+        r3.is_ok(),
+        "PL-100 sender must be authorized to send a tombstone under V2.1.1, got: {r3:?}"
+    );
 }

@@ -665,7 +665,7 @@ pub mod causal {
     /// Which side a sibling subtree sits on relative to the running node in
     /// a [`CausalProofStep`].
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum Side {
+    pub enum CausalSide {
         Left,
         Right,
     }
@@ -676,7 +676,7 @@ pub mod causal {
     /// `causal_node`) reconstructs the trie root and count.
     #[derive(Debug, Clone, Copy)]
     pub struct CausalProofStep {
-        pub side: Side,
+        pub side: CausalSide,
         pub hash: Hash,
         pub count: u64,
     }
@@ -882,19 +882,19 @@ pub mod causal {
             depth = depth.saturating_sub(1);
             if let Some(key) = key {
                 let expected_side = if causal_bit(key, depth) == 0 {
-                    Side::Right
+                    CausalSide::Right
                 } else {
-                    Side::Left
+                    CausalSide::Left
                 };
                 if step.side != expected_side {
                     return false;
                 }
             }
             cur_hash = match step.side {
-                Side::Left => {
+                CausalSide::Left => {
                     causal_node(depth_u16(depth), step.hash, step.count, cur_hash, cur_count)
                 }
-                Side::Right => {
+                CausalSide::Right => {
                     causal_node(depth_u16(depth), cur_hash, cur_count, step.hash, step.count)
                 }
             };
@@ -996,7 +996,7 @@ pub mod causal {
                 right_count,
             );
             path.push(CausalProofStep {
-                side: Side::Right,
+                side: CausalSide::Right,
                 hash: right_hash,
                 count: right_count,
             });
@@ -1019,7 +1019,7 @@ pub mod causal {
                 right_count,
             );
             path.push(CausalProofStep {
-                side: Side::Left,
+                side: CausalSide::Left,
                 hash: left_hash,
                 count: left_count,
             });

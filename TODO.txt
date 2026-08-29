@@ -14,7 +14,7 @@ Still open, confirmed against current code:
 - tests/unit/test_critique.rs:534 — test_anomaly_19 has a self-acknowledged weak assertion (// Weak assertion (see TODO)).
 - tests/unit/test_causal.rs:153 — causal_proof_step_sides_are_distinct is a tautological assert that can never fail.
 - src/signing/dalek.rs:158-166 — verify_batch is still a sequential verify_strict loop, not real batch verification (now just documented as a NOTE rather than fixed — same gap the benchmark in PR #10 still measures misleadingly).
-- TODO.txt — contradiction between line ~229 (claims CDO screening done) and lines 349-350 (claims it was never built) — not reconciled.
+- TODO.txt — RECONCILED: the "never built" framing referred to the 08/22 entry below, written before the resolved-state screening pass landed in 080fd2a; that same entry already self-annotates itself as historical ("CDO thread (still unbuilt as of this entry — see 080fd2a below, which built it)"). Ground truth as of this session, checked against code: the CDO screening pass IS built — see `is_sender_banned` in `src/resolve/iterative.rs` (module docs there: "the sound resolved-state screening pass runs after the power phase via `is_sender_banned`, replacing the retired CDO pre-filter") and `docs/cdo_soundness_anomalies.md`. No remaining contradiction.
 - .github/workflows/rust.yml — cli-feature MSRV coverage relabeled to 1.82.0 rather than actually tested at the declared 1.81 MSRV; unclear if that's a real fix or just a rename.
 
 I still have two more agents running (groups 1-4 and 11-13) that haven't reported back yet — real answer isn't final until those land. Want me to wait for them before you act on anything, or do you want to start on the confirmed list above?
@@ -64,7 +64,7 @@ Weak/tautological tests (won't catch regressions)
 
 Docs / minor
 
-- TODO.txt — line ~229 says CDO screening is done; lines 349-350 say it was never built. Still contradictory.
+- TODO.txt — RECONCILED (see the matching entry at the top of this file): the "never built" line was a historical 08/22 log entry, already self-annotated as superseded by 080fd2a. Ground truth confirmed against current code: CDO screening pass is built (`is_sender_banned` in `src/resolve/iterative.rs`).
 - .github/workflows/rust.yml — cli feature MSRV coverage relabeled to 1.82.0 rather than tested at the crate's declared 1.81 rust-version; unclear if that's a real fix or just a rename.
 - src/auth/mod.rs — prev_state_events error message hardcodes "20" instead of interpolating MAX_PREV_STATE_EVENTS.
 - src/resolve/multi.rs — pointer-identity fast path still gated to exactly 2 state maps, not generalized to N.

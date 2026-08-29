@@ -1027,7 +1027,7 @@ fn test_auth_chain_propagates_rejection_via_auth_events() {
     );
     assert_eq!(rejected[1].0, "$downstream");
     assert!(
-        matches!(rejected[1].1, AuthError::InvalidSyntax(ref msg) if msg.contains("auth_event was previously rejected")),
+        matches!(rejected[1].1, AuthError::RejectedAuthEvent { .. }),
         "Expected propagated rejection for $downstream, got: {:?}",
         rejected[1].1
     );
@@ -5090,6 +5090,93 @@ fn test_rule_2_2_omitted_target_member_rejected() {
     );
 }
 
+/// Rule 2.2/2.3: `auth_events` must cite the *current state's* event for a
+/// required `(type, state_key)` tuple, not merely a stale/superseded event
+/// with the same tuple. A ban that cites bob's now-superseded first join
+/// (rather than his current, second join) must be rejected exactly as if
+/// the citation were omitted entirely.
+#[test]
+fn test_rule_2_2_stale_auth_event_citation_rejected() {
+    let mut state = RoomState::new();
+    let create_ev = make_event(
+        "$c",
+        M_ROOM_CREATE,
+        Some(""),
+        "@admin:example.com",
+        json!({}),
+    );
+    state.insert((M_ROOM_CREATE.into(), String::new()), create_ev.clone());
+
+    let admin_join = make_event(
+        "$admin_join",
+        M_ROOM_MEMBER,
+        Some("@admin:example.com"),
+        "@admin:example.com",
+        json!({"membership": "join"}),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@admin:example.com".into()),
+        admin_join.clone(),
+    );
+
+    // Bob joins, leaves, then re-joins. The room's *current* state for
+    // (m.room.member, @bob:example.com) is `$bob_rejoin`, not the original
+    // `$bob_join`.
+    let bob_join = make_event(
+        "$bob_join",
+        M_ROOM_MEMBER,
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({"membership": "join"}),
+    );
+    let bob_rejoin = make_event(
+        "$bob_rejoin",
+        M_ROOM_MEMBER,
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({"membership": "join"}),
+    );
+    state.insert(
+        (M_ROOM_MEMBER.into(), "@bob:example.com".into()),
+        bob_rejoin.clone(),
+    );
+
+    let mut provider = rezzy::HashMap::new();
+    provider.insert("$c".to_string(), create_ev);
+    provider.insert("$admin_join".to_string(), admin_join);
+    provider.insert("$bob_join".to_string(), bob_join);
+    provider.insert("$bob_rejoin".to_string(), bob_rejoin);
+
+    let mut ban_bob = make_event(
+        "$ban_bob",
+        M_ROOM_MEMBER,
+        Some("@bob:example.com"),
+        "@admin:example.com",
+        json!({"membership": "ban"}),
+    );
+    // Cites the correct (type, state_key) tuple, but the *stale* event ID
+    // for it -- `$bob_join` rather than the current `$bob_rejoin`.
+    ban_bob.auth_events = vec!["$c".into(), "$admin_join".into(), "$bob_join".into()];
+
+    let res = check_auth_with_context(&ban_bob, &state, StateResVersion::V2, None, Some(&provider));
+    assert!(
+        matches!(
+            res,
+            Err(AuthError::IncompleteAuthEvents { ref event_type, ref state_key })
+                if event_type == "m.room.member" && state_key == "@bob:example.com"
+        ),
+        "Citing a stale event ID for a required tuple must be rejected like an omission, got {res:?}"
+    );
+
+    // Citing the current event fixes the rejection.
+    ban_bob.auth_events = vec!["$c".into(), "$admin_join".into(), "$bob_rejoin".into()];
+    let res = check_auth_with_context(&ban_bob, &state, StateResVersion::V2, None, Some(&provider));
+    assert!(
+        res.is_ok(),
+        "citing the current target member event should pass rule 2.2, got {res:?}"
+    );
+}
+
 /// Rule 2.2 must not demand a citation for a required type that has no
 /// entry in the room's current state yet (e.g. `m.room.power_levels` before
 /// the room ever set one) -- the selection algorithm only cites types that
@@ -5231,7 +5318,7 @@ fn test_rule_2_3_rejected_auth_event() {
 
     let res = check_auth_with_context(&msg, &state, StateResVersion::V2, None, Some(&provider));
     assert!(
-        matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("was previously rejected")),
+        matches!(res, Err(AuthError::RejectedAuthEvent { .. })),
         "Auth check must reject when an auth_event was previously rejected, got {res:?}"
     );
 }

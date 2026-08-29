@@ -41,7 +41,7 @@ use crate::basespec::rezzy_types::{canonical_redacted_json, EventVerifier};
 #[cfg(any(feature = "signing", feature = "signing-dalek"))]
 mod dalek;
 #[cfg(any(feature = "signing", feature = "signing-dalek"))]
-pub use dalek::{verify_batch, DalekVerifier};
+pub use dalek::{verify_sequential_strict, DalekVerifier};
 
 /// A backend able to verify one Ed25519 signature over a message.
 ///
@@ -339,12 +339,12 @@ mod dalek_tests {
             })
             .collect();
 
-        verify_batch(&events, "10", &keys).unwrap();
+        verify_sequential_strict(&events, "10", &keys).unwrap();
 
         // Tampering with one event's preserved field must fail the whole batch.
         let mut tampered = events.clone();
         tampered[3]["origin_server_ts"] = json!(999);
-        assert!(verify_batch(&tampered, "10", &keys).is_err());
+        assert!(verify_sequential_strict(&tampered, "10", &keys).is_err());
     }
 
     #[test]
@@ -373,7 +373,7 @@ mod dalek_tests {
             .insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
             .unwrap();
         verify_event_signatures(&raw_upper_sig, "1", &keys_lower).unwrap();
-        verify_batch(core::slice::from_ref(&raw_upper_sig), "1", &keys_lower).unwrap();
+        verify_sequential_strict(core::slice::from_ref(&raw_upper_sig), "1", &keys_lower).unwrap();
 
         // 2. Signature map has lowercase server, keyring registered uppercase
         let raw_lower_sig = signed_event(
@@ -396,7 +396,7 @@ mod dalek_tests {
             .insert_public_key("EXAMPLE.COM", "ed25519:0", &vk.to_bytes())
             .unwrap();
         verify_event_signatures(&raw_lower_sig, "1", &keys_upper).unwrap();
-        verify_batch(&[raw_lower_sig], "1", &keys_upper).unwrap();
+        verify_sequential_strict(&[raw_lower_sig], "1", &keys_upper).unwrap();
     }
 
     #[test]
@@ -462,8 +462,8 @@ mod dalek_tests {
             .insert_public_key("example.com", "ed25519:2", &vk2.to_bytes())
             .unwrap();
 
-        // Both verify_event_signatures and verify_batch must reject the event
+        // Both verify_event_signatures and verify_sequential_strict must reject the event
         assert!(verify_event_signatures(&event, "1", &verifier).is_err());
-        assert!(verify_batch(&[event], "1", &verifier).is_err());
+        assert!(verify_sequential_strict(&[event], "1", &verifier).is_err());
     }
 }

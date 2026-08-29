@@ -75,6 +75,55 @@ fn test_jsonl_asserters() {
 }
 
 #[test]
+#[should_panic(expected = "Event mismatch")]
+fn test_assert_jsonl_state_eq_detects_mismatch() {
+    let state = utils::parse_jsonl_state(
+        r#"
+        {"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@alice:matrix.org"}
+        {"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@alice:matrix.org"}
+    "#,
+    );
+
+    // NOTE: `LeanEvent`'s `PartialEq` compares `event_id` only (see
+    // `impl PartialEq for LeanEvent` in src/basespec/rezzy_types.rs -- this
+    // is deliberate, so `LeanEvent` can be used as a set/map element keyed
+    // by event_id), so `assert_jsonl_state_eq`/`assert_jsonl_events_eq` can
+    // only detect mismatches that change which event_ids are present, not
+    // mismatches confined to other fields (e.g. sender/content) on an event
+    // with a matching event_id. This negative case therefore uses a
+    // different event_id to exercise what the asserter can actually catch.
+    utils::assert_jsonl_state_eq(
+        &state,
+        r#"
+        {"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@alice:matrix.org"}
+        {"event_id": "$pl_other", "type": "m.room.power_levels", "state_key": "", "sender": "@alice:matrix.org"}
+    "#,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Event mismatch")]
+fn test_assert_jsonl_events_eq_detects_mismatch() {
+    let events = utils::parse_jsonl_events(
+        r#"
+        {"event_id": "$msg1", "type": "m.room.message", "sender": "@alice:matrix.org"}
+        {"event_id": "$msg2", "type": "m.room.message", "sender": "@bob:matrix.org"}
+    "#,
+    );
+
+    // The expected fixture below has a different event_id for the second
+    // event, so this asserter MUST panic. If it doesn't, the asserter is a
+    // no-op and would silently accept any mismatched event list.
+    utils::assert_jsonl_events_eq(
+        &events,
+        r#"
+        {"event_id": "$msg1", "type": "m.room.message", "sender": "@alice:matrix.org"}
+        {"event_id": "$msg_other", "type": "m.room.message", "sender": "@bob:matrix.org"}
+    "#,
+    );
+}
+
+#[test]
 fn test_compute_local_naive_topological_depth() {
     let mut events = utils::parse_jsonl_events(
         r#"

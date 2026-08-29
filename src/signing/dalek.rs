@@ -81,7 +81,25 @@ impl SignatureVerifier for DalekVerifier {
 }
 
 /// Verifies every signature on each event in `events` whose key is held by
-/// `keys`, using sequential strict verification.
+/// `keys`, one signature at a time via [`VerifyingKey::verify_strict`].
+///
+/// # Not real batch verification
+/// Despite the name this superseded, this is a sequential loop, not
+/// [`ed25519_dalek::verify_batch`]. That distinction is load-bearing, not
+/// cosmetic: `ed25519_dalek::verify_batch` checks the batched (cofactored)
+/// verification equation, which is a *different* acceptance criterion than
+/// per-signature RFC 8032 strict verification — the two can disagree on the
+/// same input (see Chalkias et al., "Taming the many `EdDSAs`", on
+/// batch/single-verification mismatches for non-canonical inputs). Matrix
+/// federation signature verification promises strict verification (this
+/// backend's rejection of non-canonical `S`/malleable signatures), so
+/// silently switching the batch to the non-strict batched equation would
+/// change what counts as a valid signature. This function keeps the strict
+/// per-signature guarantee and pays for it with `O(n)` scalar
+/// multiplications instead of the roughly `O(1)`-amortized cost real batch
+/// verification can offer; callers who need actual batch throughput and can
+/// accept the batched-equation semantics can build on
+/// [`ed25519_dalek::verify_batch`] directly.
 ///
 /// For each event, **all** signatures whose key is held by `keys` are collected
 /// and must verify — if any held signature is invalid, the batch fails even if
@@ -90,8 +108,8 @@ impl SignatureVerifier for DalekVerifier {
 ///
 /// # Errors
 /// Returns `Err` if any event has no signature this verifier holds a key for,
-/// if a signature is malformed, or if the batch verification fails.
-pub fn verify_batch(
+/// if a signature is malformed, or if verification fails for any signature.
+pub fn verify_sequential_strict(
     events: &[Value],
     room_version: &str,
     keys: &DalekVerifier,
@@ -158,14 +176,13 @@ pub fn verify_batch(
         }
     }
 
+    // Sequential strict verification -- see the function doc's "Not real
+    // batch verification" section for why this doesn't call
+    // `ed25519_dalek::verify_batch`.
     let message_refs: Vec<&[u8]> = messages.iter().map(Vec::as_slice).collect();
-    // NOTE: `ed25519_dalek::verify_batch` uses non-strict verification, but
-    // this backend promises strict RFC 8032 checks.  Verify each item through
-    // the strict path sequentially.  Callers seeking true batch throughput can
-    // implement a custom `SignatureVerifier` that delegates to `verify_batch`.
     for ((message, signature), key) in message_refs.iter().zip(&signatures).zip(&verifying_keys) {
         key.verify_strict(message, signature)
-            .map_err(|e| alloc::format!("batch signature verification failed: {e}"))?;
+            .map_err(|e| alloc::format!("signature verification failed: {e}"))?;
     }
     Ok(())
 }

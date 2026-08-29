@@ -4,7 +4,7 @@
 //! join rules. `restricted` (V8+) and `knock_restricted` (V10+) join rules were
 //! rejected with `NotMember` errors. These tests verify the fix.
 
-use rezzy::auth::{check_auth, RoomState};
+use rezzy::auth::{check_auth, AuthError, RoomState};
 use rezzy::{LeanEvent, StateResVersion};
 use serde_json::json;
 
@@ -159,8 +159,12 @@ fn test_restricted_join_without_invite_or_authorized_rejected() {
     );
 
     let result = check_auth(&join_event, &state, StateResVersion::V2, None);
-    assert!(
-        result.is_err(),
+    assert_eq!(
+        result,
+        Err(AuthError::NotMember {
+            sender: "@bob:example.com".into(),
+            event_id: "$bob_join".into()
+        }),
         "user without invite or authorized_via must be rejected from restricted room"
     );
 }
@@ -253,8 +257,12 @@ fn test_restricted_knock_rejected() {
     );
 
     let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
-    assert!(
-        result.is_err(),
+    assert_eq!(
+        result,
+        Err(AuthError::NotMember {
+            sender: "@dave:example.com".into(),
+            event_id: "$dave_knock".into()
+        }),
         "knocking must NOT be allowed in plain restricted room (only knock_restricted)"
     );
 }
@@ -273,8 +281,12 @@ fn test_invite_only_knock_rejected() {
     );
 
     let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
-    assert!(
-        result.is_err(),
+    assert_eq!(
+        result,
+        Err(AuthError::NotMember {
+            sender: "@dave:example.com".into(),
+            event_id: "$dave_knock".into()
+        }),
         "knocking must NOT be allowed in invite-only room"
     );
 }
@@ -293,8 +305,12 @@ fn test_public_knock_rejected() {
     );
 
     let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
-    assert!(
-        result.is_err(),
+    assert_eq!(
+        result,
+        Err(AuthError::NotMember {
+            sender: "@dave:example.com".into(),
+            event_id: "$dave_knock".into()
+        }),
         "knocking must NOT be allowed in public room"
     );
 }
@@ -344,7 +360,14 @@ fn test_banned_user_cannot_knock() {
     );
 
     let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
-    assert!(result.is_err(), "banned user must NOT be able to knock");
+    assert_eq!(
+        result,
+        Err(AuthError::BannedUser {
+            sender: "@evil:example.com".into(),
+            event_id: "$evil_knock".into()
+        }),
+        "banned user must NOT be able to knock"
+    );
 }
 
 #[test]
@@ -375,8 +398,12 @@ fn test_restricted_banned_user_cannot_join_even_with_authorized_via() {
     );
 
     let result = check_auth(&join_event, &state, StateResVersion::V2, None);
-    assert!(
-        result.is_err(),
+    assert_eq!(
+        result,
+        Err(AuthError::BannedUser {
+            sender: "@evil:example.com".into(),
+            event_id: "$evil_join".into()
+        }),
         "banned user must NOT be able to join even with authorized_via"
     );
 }
@@ -401,8 +428,12 @@ fn test_restricted_join_rejected_when_authorising_user_not_joined() {
     );
 
     let result = check_auth(&join_event, &state, StateResVersion::V2, None);
-    assert!(
-        result.is_err(),
+    assert_eq!(
+        result,
+        Err(AuthError::NotMember {
+            sender: "@bob:example.com".into(),
+            event_id: "$bob_join".into()
+        }),
         "restricted join must be rejected when authorising user is not joined"
     );
 }
@@ -452,8 +483,12 @@ fn test_restricted_join_rejected_when_authorising_user_lacks_invite_pl() {
     );
 
     let result = check_auth(&join_event, &state, StateResVersion::V2, None);
-    assert!(
-        result.is_err(),
+    assert_eq!(
+        result,
+        Err(AuthError::NotMember {
+            sender: "@bob:example.com".into(),
+            event_id: "$bob_join".into()
+        }),
         "restricted join must be rejected when authorising user lacks invite PL"
     );
 }
@@ -566,9 +601,13 @@ fn test_joined_user_cannot_knock() {
     );
 
     let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
-    assert!(
-        result.is_err(),
-        "Joined user must NOT be able to knock: {result:?}"
+    assert_eq!(
+        result,
+        Err(AuthError::NotMember {
+            sender: "@alice:example.com".into(),
+            event_id: "$alice_knock".into()
+        }),
+        "Joined user must NOT be able to knock"
     );
 }
 
@@ -601,8 +640,12 @@ fn test_invited_user_cannot_knock() {
     );
 
     let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
-    assert!(
-        result.is_err(),
-        "Invited user must NOT be able to knock: {result:?}"
+    assert_eq!(
+        result,
+        Err(AuthError::NotMember {
+            sender: "@bob:example.com".into(),
+            event_id: "$bob_knock".into()
+        }),
+        "Invited user must NOT be able to knock"
     );
 }

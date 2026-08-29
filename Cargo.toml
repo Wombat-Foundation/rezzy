@@ -72,6 +72,13 @@ test = false
 default = ["std"]
 std = ["alloc", "serde_json/std", "serde/std", "dep:roaring"]
 alloc = []
+# NOTE: `cli` has a higher effective MSRV floor than the crate's declared
+# `rust-version` above -- not an oversight, only the default/library build
+# is held to `rust-version = "1.81"`. As locked in Cargo.lock, zeroize
+# 1.9.0 (transitive via ureq/tls -> rustls) declares `rust-version = "1.85"`,
+# above even the 1.82.0 CI job that currently tests this feature; see the
+# comment on the `cli feature` matrix entries in .github/workflows/rust.yml
+# for the full picture and how to re-derive this.
 cli = [
     "std",
     "dep:clap",

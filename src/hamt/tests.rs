@@ -765,6 +765,138 @@ fn test_hamt_remove_with_custom_key_hash_collapses_to_leaf() {
     assert_eq!(root.nodemap, expected.nodemap);
 }
 
+/// A custom routing hash spread enough to actually force multiple internal
+/// nodes (unlike `custom_routing_hash`, which is hardcoded to two keys) --
+/// puts `key`'s big-endian bytes straight into the hash so `persist_*`
+/// against a [`build_hamt_with_key_hash`] tree has real spine structure to
+/// get wrong if it ignores the custom routing.
+#[allow(clippy::trivially_copy_pass_by_ref)] // must match the `Fn(&K) -> StructuralHash` shape
+fn linear_key_hash(key: &u64) -> StructuralHash {
+    let mut hash = [0_u8; 16];
+    hash[..8].copy_from_slice(&key.to_be_bytes());
+    hash
+}
+
+/// `persist_mutation`/`persist_mutations`/`persist_chain` silently corrupt
+/// trees built with [`crate::hamt::build_hamt_with_key_hash`] because they
+/// always route with the default keyed structural hash. Their
+/// `_with_key_hash` counterparts must route mutations the same way
+/// `insert_with_key_hash`/`remove_with_key_hash` do, and produce a tree
+/// that agrees with an independent rebuild from the same final key set.
+#[test]
+fn test_persist_mutation_with_key_hash_matches_direct_mutation_and_rebuild() {
+    let key = b"dummy_server_key";
+    let mut resolver =
+        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+
+    let initial: Vec<(u64, u64)> = (0_u64..40).map(|i| (i, i * 10)).collect();
+    let root = crate::hamt::build_hamt_with_key_hash(key, initial.clone(), linear_key_hash)
+        .expect("build with custom hash should work");
+    // Sanity: this tree actually has internal structure, not just a leaf
+    // fan-out, so a wrong-hash persist has real spine nodes to get wrong.
+    assert!(root.nodemap != 0, "test setup needs a multi-level tree");
+
+    // persist_mutation_with_key_hash: insert a new key.
+    let (root, displaced, created) = crate::hamt::persist_mutation_with_key_hash(
+        &root,
+        key,
+        1000_u64,
+        Some(9999_u64),
+        linear_key_hash,
+        &mut resolver,
+    )
+    .expect("persist insert with custom hash should work");
+    assert_eq!(displaced, None);
+    assert!(!created.is_empty(), "insert should persist new spine nodes");
+    assert_eq!(
+        root.get_with_key_hash(&1000_u64, linear_key_hash),
+        Some(&9999_u64)
+    );
+    for &(k, v) in &initial {
+        assert_eq!(
+            root.get_with_key_hash(&k, linear_key_hash),
+            Some(&v),
+            "existing entry {k} must survive the custom-hash persist"
+        );
+    }
+
+    // persist_mutation_with_key_hash: remove an existing key.
+    let (root, removed, created) = crate::hamt::persist_mutation_with_key_hash(
+        &root,
+        key,
+        5_u64,
+        None,
+        linear_key_hash,
+        &mut resolver,
+    )
+    .expect("persist remove with custom hash should work");
+    assert_eq!(removed, Some(50_u64));
+    assert!(
+        !created.is_empty(),
+        "remove should persist rebuilt spine nodes"
+    );
+    assert_eq!(root.get_with_key_hash(&5_u64, linear_key_hash), None);
+
+    // Cross-check against an independent rebuild from the same final key set
+    // -- this is the real correctness bar, since a routing bug can silently
+    // "work" for `get_with_key_hash` immediately after insert while leaving
+    // the tree in a state that diverges from `build_hamt_with_key_hash`.
+    let mut expected_entries: Vec<(u64, u64)> =
+        initial.into_iter().filter(|&(k, _)| k != 5).collect();
+    expected_entries.push((1000, 9999));
+    let expected = crate::hamt::build_hamt_with_key_hash(key, expected_entries, linear_key_hash)
+        .expect("rebuild should work");
+    assert_eq!(root.structural_hash, expected.structural_hash);
+}
+
+/// `persist_mutations_with_key_hash` and `persist_chain_with_key_hash` must
+/// each also route through the custom hash for a whole batch, not just a
+/// single mutation.
+#[test]
+fn test_persist_mutations_and_chain_with_key_hash() {
+    let key = b"dummy_server_key";
+    let mut resolver =
+        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+
+    let initial: Vec<(u64, u64)> = (0_u64..20).map(|i| (i, i * 10)).collect();
+    let root = crate::hamt::build_hamt_with_key_hash(key, initial, linear_key_hash)
+        .expect("build with custom hash should work");
+
+    let batch: Vec<(u64, Option<u64>)> = alloc::vec![(100, Some(1)), (5, None), (101, Some(2)),];
+
+    let (batched_root, displaced_vec, created) = crate::hamt::persist_mutations_with_key_hash(
+        &root,
+        key,
+        batch.clone(),
+        linear_key_hash,
+        &mut resolver,
+    )
+    .expect("persist_mutations_with_key_hash should work");
+    assert_eq!(displaced_vec, alloc::vec![None, Some(50_u64), None]);
+    assert!(!created.is_empty());
+    assert_eq!(
+        batched_root.get_with_key_hash(&100_u64, linear_key_hash),
+        Some(&1_u64)
+    );
+    assert_eq!(
+        batched_root.get_with_key_hash(&101_u64, linear_key_hash),
+        Some(&2_u64)
+    );
+    assert_eq!(
+        batched_root.get_with_key_hash(&5_u64, linear_key_hash),
+        None
+    );
+
+    let chain_steps =
+        crate::hamt::persist_chain_with_key_hash(&root, key, batch, linear_key_hash, &mut resolver)
+            .expect("persist_chain_with_key_hash should work");
+    let chained_root = &chain_steps.last().expect("batch is non-empty").root;
+
+    // Both batch styles must converge to the same final structural hash as
+    // each other and as a direct rebuild.
+    assert_eq!(batched_root.structural_hash, chained_root.structural_hash);
+}
+
 #[test]
 fn test_hamt_search_propagates_resolver_error() {
     let key = b"dummy_server_key";
@@ -4675,6 +4807,43 @@ fn test_refcount_table_end_to_end_with_diff_node_hashes_matches_reachability() {
             );
         }
     }
+
+    // The debug-only hazard guard must accept this run: nothing zeroed is
+    // reachable from any *other* live root (there are none besides root_b
+    // here, so an empty "other roots" reachable set trivially passes).
+    RefcountTable::debug_assert_zeroed_not_reachable_elsewhere(&zeroed, &crate::HashSet::default());
+}
+
+/// [`RefcountTable::debug_assert_zeroed_not_reachable_elsewhere`] must catch
+/// the exact branching hazard the module docs describe: a hash reported
+/// zeroed by `apply_superseded` that is still reachable from a different
+/// live root should trip the guard rather than pass silently.
+#[test]
+#[cfg_attr(debug_assertions, should_panic(expected = "GC branching hazard"))]
+fn test_refcount_debug_guard_catches_branching_hazard() {
+    use crate::hamt::gc::RefcountTable;
+
+    let key = b"dummy_server_key";
+    let entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i)).collect();
+    let root = build_hamt(key, entries).expect("build root");
+    let hashes: Vec<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
+    assert!(!hashes.is_empty());
+
+    // Simulate: `apply_superseded` reported `hashes[0]` as zeroed, but it is
+    // in fact still reachable from a different, still-live root (the
+    // "forked resolution branch" case the module docs warn about).
+    let zeroed = alloc::vec![hashes[0]];
+    let mut other_live_roots_reachable = crate::HashSet::default();
+    other_live_roots_reachable.insert(hashes[0]);
+
+    // In release builds (`debug_assertions` off) this is a documented no-op;
+    // the `cfg_attr` above only expects a panic when debug assertions are
+    // compiled in.
+    RefcountTable::debug_assert_zeroed_not_reachable_elsewhere(
+        &zeroed,
+        &other_live_roots_reachable,
+    );
 }
 
 #[derive(Default)]

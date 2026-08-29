@@ -249,11 +249,12 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, Spl, K>(
     for id in &sorted_power_ids {
         // Every power event is drawn from the conflicted set or the auth
         // context (route_power_events + expand_v2 + route_msc4297), so a sorted
-        // id is always resolvable here.
-        let event = conflicted_events
-            .get(id)
-            .or_else(|| auth_context.get(id))
-            .expect("sorted power events are always present in conflicted_events or auth_context");
+        // id is normally resolvable here. Malformed input could still produce
+        // a sorted id that isn't backed by either map; skip it rather than
+        // panic (same graceful-skip pattern used for missing state_key below).
+        let Some(event) = conflicted_events.get(id).or_else(|| auth_context.get(id)) else {
+            continue;
+        };
         let local_auth = compute_local_auth(
             event,
             auth_context,
@@ -1339,6 +1340,59 @@ mod tests {
         assert!(
             !deltas.iter().any(|d| d.event_id == "$stateless"),
             "a non-power event without a state_key must be skipped (continue), not inserted"
+        );
+    }
+
+    /// Covers the `let Some(event) = ... else { continue }` guard in
+    /// `run_power_phase_iterative_checks`: a power event id that `lean_kahn_sort`
+    /// produced from `power_events` but that is absent from both
+    /// `conflicted_events` and `auth_context` (e.g. a malformed/inconsistent
+    /// `m.room.power_levels` event that slipped through routing without a
+    /// backing entry) must be skipped rather than panicking via `.expect(...)`.
+    #[test]
+    fn power_phase_skips_power_event_missing_from_conflicted_and_auth_context() {
+        let malformed_pl: LeanEvent = LeanEvent {
+            event_id: "$malformed_pl".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:example.com".into(),
+            // Malformed: not even a JSON object, so any content parsing on this
+            // event would also have to tolerate garbage.
+            content: serde_json::json!("not-an-object"),
+            ..Default::default()
+        };
+
+        let mut power_events = HashMap::new();
+        power_events.insert(malformed_pl.event_id.clone(), malformed_pl);
+
+        // Deliberately empty: the event is reachable via `power_events` (and
+        // thus via `lean_kahn_sort`'s output) but not via either lookup map,
+        // simulating routing producing an inconsistent power-event set.
+        let conflicted_events: HashMap<String, LeanEvent> = HashMap::new();
+        let auth_context: HashMap<String, LeanEvent> = HashMap::new();
+        let conflicted_keys = crate::FastSet::default();
+
+        let mut resolved: SharedState<String, String> = SharedState::new();
+        let mut local_auth_cache = LocalAuthCache::new(StateResVersion::V2_1_1);
+        let mut pl_cache = HashMap::new();
+
+        // Must not panic.
+        run_power_phase_iterative_checks(
+            &mut resolved,
+            &power_events,
+            &auth_context,
+            &auth_context,
+            &conflicted_events,
+            StateResVersion::V2_1_1,
+            &mut local_auth_cache,
+            None,
+            &mut pl_cache,
+            &conflicted_keys,
+        );
+
+        assert!(
+            resolved.is_empty(),
+            "an unresolvable power event must not contribute to the resolved state"
         );
     }
 

@@ -117,9 +117,10 @@ fn main() {
     let speedup = rm.as_secs_f64() / rz.as_secs_f64();
     println!("\nruma / rezzy = {speedup:.2}x");
 
-    // Batch vs sequential at two scales.
-    bench_batch(&value, &keys, 64, 1_000);
-    bench_batch(&value, &keys, 5_000, 20);
+    // Per-call vs batched-call overhead at two scales (both are `O(n)`
+    // sequential strict verification underneath -- see `bench_sequential`).
+    bench_sequential(&value, &keys, 64, 1_000);
+    bench_sequential(&value, &keys, 5_000, 20);
 
     // Parse: bytes -> Value, serde_json vs simd-json.
     let event_bytes = serde_json::to_vec(&value).expect("serialize");
@@ -138,9 +139,15 @@ fn main() {
     );
 }
 
-/// Times verifying `n` distinct signed PDUs (same server key) one-at-a-time vs
-/// a single `verify_batch` call.
-fn bench_batch(value: &Value, keys: &DalekVerifier, n: usize, iters: u32) {
+/// Times verifying `n` distinct signed PDUs (same server key) two ways --
+/// neither is real batch verification (`ed25519_dalek::verify_batch`'s
+/// batched cofactored equation): one calls `verify_event_signatures` once
+/// per event in a loop, the other calls `verify_sequential_strict` once for
+/// the whole slice, but `verify_sequential_strict` is *itself* a per-signature
+/// `verify_strict` loop internally (see its doc comment for why it isn't a
+/// true batch), so this measures per-call/allocation overhead of the two
+/// entry points, not a batch-verification speedup.
+fn bench_sequential(value: &Value, keys: &DalekVerifier, n: usize, iters: u32) {
     let sk = ed25519_dalek::SigningKey::from_bytes(&[42_u8; 32]);
     let events: Vec<Value> = (0..n)
         .map(|i| {
@@ -159,17 +166,25 @@ fn bench_batch(value: &Value, keys: &DalekVerifier, n: usize, iters: u32) {
         })
         .collect();
 
-    println!("\nbatch vs sequential: {n} signed PDUs, 1 server sig each");
-    let seq = time("sequential xN", iters, || {
+    println!(
+        "\nper-event loop vs verify_sequential_strict (both O(n) sequential): \
+         {n} signed PDUs, 1 server sig each"
+    );
+    let per_event = time("verify_event_signatures xN (loop)", iters, || {
         for e in &events {
             let _ = black_box(verify_event_signatures(e, ROOM_VERSION, keys));
         }
     });
-    let bat = time("verify_batch xN", iters, || {
-        let _ = black_box(rezzy::signing::verify_batch(&events, ROOM_VERSION, keys));
+    let one_call = time("verify_sequential_strict (1 call)", iters, || {
+        let _ = black_box(rezzy::signing::verify_sequential_strict(
+            &events,
+            ROOM_VERSION,
+            keys,
+        ));
     });
     println!(
-        "sequential / batch = {:.2}x",
-        seq.as_secs_f64() / bat.as_secs_f64()
+        "per-event loop / verify_sequential_strict = {:.2}x (call-site overhead only -- \
+         neither is real batch verification)",
+        per_event.as_secs_f64() / one_call.as_secs_f64()
     );
 }

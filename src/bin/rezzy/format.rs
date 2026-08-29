@@ -452,7 +452,18 @@ fn render_timeline(ctx: &FormattingContext) -> String {
     // in-set targets in place. The resolved room state below is what the
     // redaction pass needs to authorize each redaction.
     let mut sorted_events: Vec<LeanEvent> = ctx.events_map.values().cloned().collect();
-    let room_version = ctx.room_version.unwrap_or("1");
+
+    // Prefer the resolved `m.room.create` event's own `room_version` field
+    // over `ctx.room_version` (a pre-resolution guess derived from the raw
+    // input, before conflicts were settled). Fall back to `ctx.room_version`,
+    // then "1", only when no create event made it into the resolved state.
+    let create_room_version = ctx
+        .final_state_map
+        .get(&(EventType::from("m.room.create"), String::new()))
+        .and_then(|eid| ctx.events_map.get(eid))
+        .and_then(|ev| ev.content.get("room_version"))
+        .and_then(|v| v.as_str());
+    let room_version = create_room_version.or(ctx.room_version).unwrap_or("1");
 
     // Resolved room state (event type + state_key -> event), used to check the
     // `redact` power level and each redaction sender's own power level.

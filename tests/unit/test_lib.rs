@@ -12,6 +12,10 @@ mod tests {
     use super::utils;
     use core::cmp::Ordering;
     use rezzy::*;
+    // `apply_cdo_filter` is no longer re-exported into the flat public API
+    // (see src/resolve/mod.rs) since the CDO is retired/unsound legacy code;
+    // pull it in explicitly for the regression tests still exercising it.
+    use rezzy::resolve::cdo::apply_cdo_filter;
 
     #[cfg(not(feature = "std"))]
     use hashbrown::HashMap;
@@ -4340,6 +4344,179 @@ fn test_apply_authorized_redactions_redactor_with_power_level() {
         .find(|e| e.event_id == "$msg:example.com")
         .unwrap();
     assert_eq!(m.content, serde_json::json!({}));
+}
+
+/// `apply_authorized_redactions_with_state_at` authorizes each redaction
+/// against the state as of that redaction's own `prev_events`, not a single
+/// final/shared snapshot -- so a redaction sent while the sender still held
+/// the `redact` power level is authorized even though, by the time the
+/// caller's "final" snapshot was taken, that power level had been revoked.
+/// The single-state `apply_authorized_redactions` entry point, given only
+/// the final snapshot, gets this wrong: it rejects the same redaction.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_apply_authorized_redactions_event_time_vs_final_state_diverge() {
+    use rezzy::auth::{
+        apply_authorized_redactions, apply_authorized_redactions_with_state_at, RoomState,
+    };
+    use rezzy::StateResVersion;
+
+    // Event-time state: mallory (different domain from bob) holds redact-level PL.
+    let pl_event_time: LeanEvent = LeanEvent {
+        event_id: "$pl1:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": {
+                "@admin:example.com": 100,
+                "@mallory:other.example": 50,
+                "@bob:example.com": 0
+            },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut state_at_redaction = RoomState::new();
+    state_at_redaction.insert(
+        ("m.room.power_levels".to_string(), String::new()),
+        pl_event_time,
+    );
+
+    // Final state: mallory has since been demoted below the redact level.
+    let pl_final: LeanEvent = LeanEvent {
+        event_id: "$pl2:example.com".into(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:example.com".into(),
+        content: serde_json::json!({
+            "users": {
+                "@admin:example.com": 100,
+                "@mallory:other.example": 0,
+                "@bob:example.com": 0
+            },
+            "redact": 50
+        }),
+        ..Default::default()
+    };
+    let mut final_state = RoomState::new();
+    final_state.insert(("m.room.power_levels".to_string(), String::new()), pl_final);
+
+    let msg: LeanEvent = LeanEvent {
+        event_id: "$msg:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 10,
+        content: serde_json::json!({ "body": "secret" }),
+        ..Default::default()
+    };
+    // Cross-domain, non-self redactor, so only the PL branch of
+    // `redaction_is_authorized` can decide the outcome (not same-sender or
+    // the legacy v1/v2 same-domain rule).
+    let mallory_redact: LeanEvent = LeanEvent {
+        event_id: "$mallory_redact:other.example".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@mallory:other.example".into(),
+        origin_server_ts: 11,
+        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        ..Default::default()
+    };
+
+    // Event-time authorization: authorized (mallory had PL 50 at the time).
+    let mut events = vec![msg.clone(), mallory_redact.clone()];
+    let report = apply_authorized_redactions_with_state_at(
+        &mut events,
+        |_redaction_id| Some(&state_at_redaction),
+        StateResVersion::V2,
+        "11",
+    );
+    assert!(
+        report.applied.contains(&(
+            "$mallory_redact:other.example".into(),
+            "$msg:example.com".into()
+        )),
+        "redaction sent while sender held redact PL must be authorized against event-time state: {report:?}"
+    );
+
+    // Final-state authorization of the *same* redaction: rejected (mallory
+    // was demoted by the time the final snapshot was taken).
+    let mut events = vec![msg.clone(), mallory_redact.clone()];
+    let report = apply_authorized_redactions(&mut events, &final_state, StateResVersion::V2, "11");
+    assert!(
+        report.skipped_unauthorized.contains(&(
+            "$mallory_redact:other.example".into(),
+            "$msg:example.com".into()
+        )),
+        "the single-state entry point, given only the final (post-demotion) snapshot, incorrectly rejects the same redaction: {report:?}"
+    );
+
+    // A single call with a lookup that genuinely *varies* per redaction id
+    // (the realistic shape: a map from redaction event id to that
+    // redaction's own event-time state) must authorize each redaction
+    // independently -- one lands in `applied`, the other in
+    // `skipped_unauthorized`, from the same call.
+    let msg2: LeanEvent = LeanEvent {
+        event_id: "$msg2:example.com".into(),
+        event_type: "m.room.message".into(),
+        sender: "@bob:example.com".into(),
+        origin_server_ts: 20,
+        content: serde_json::json!({ "body": "secret2" }),
+        ..Default::default()
+    };
+    let mallory_redact2: LeanEvent = LeanEvent {
+        event_id: "$mallory_redact2:other.example".into(),
+        event_type: "m.room.redaction".into(),
+        sender: "@mallory:other.example".into(),
+        origin_server_ts: 21,
+        content: serde_json::json!({ "redacts": "$msg2:example.com" }),
+        ..Default::default()
+    };
+    let mut state_map: std::collections::HashMap<String, RoomState> =
+        std::collections::HashMap::new();
+    state_map.insert(
+        "$mallory_redact:other.example".to_string(),
+        state_at_redaction,
+    );
+    state_map.insert("$mallory_redact2:other.example".to_string(), final_state);
+
+    let mut events = vec![msg.clone(), mallory_redact.clone(), msg2, mallory_redact2];
+    let report = apply_authorized_redactions_with_state_at(
+        &mut events,
+        |redaction_id| state_map.get(redaction_id),
+        StateResVersion::V2,
+        "11",
+    );
+    assert!(
+        report.applied.contains(&(
+            "$mallory_redact:other.example".into(),
+            "$msg:example.com".into()
+        )),
+        "per-redaction event-time lookup must authorize the pre-demotion redaction: {report:?}"
+    );
+    assert!(
+        report.skipped_unauthorized.contains(&(
+            "$mallory_redact2:other.example".into(),
+            "$msg2:example.com".into()
+        )),
+        "per-redaction event-time lookup must reject the post-demotion redaction, from the same call: {report:?}"
+    );
+
+    // A `state_at` lookup that returns `None` for a redaction is treated as
+    // unauthorized, not guessed at.
+    let mut events = vec![msg, mallory_redact];
+    let report = apply_authorized_redactions_with_state_at(
+        &mut events,
+        |_redaction_id: &String| -> Option<&RoomState> { None },
+        StateResVersion::V2,
+        "11",
+    );
+    assert!(
+        report.skipped_unauthorized.contains(&(
+            "$mallory_redact:other.example".into(),
+            "$msg:example.com".into()
+        )),
+        "missing event-time state must be treated as unauthorized: {report:?}"
+    );
 }
 
 /// Legacy room-v1/v2 rule 11: a redactor (even low-PL, non-sender) is allowed

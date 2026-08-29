@@ -242,11 +242,15 @@ where
         "resolve_state_maps requires at least one state map"
     );
 
-    // Fast path: all maps identical. Check pointer identity first (O(1)):
-    // sibling forks derived from a common ancestor often share the same
-    // `imbl::OrdMap` root, so a full structural `==` comparison is wasted.
+    // Fast path: all maps identical. Check pointer identity first (O(1) per
+    // comparison, O(N) total): sibling forks derived from a common ancestor
+    // often share the same `imbl::OrdMap` root, so a full structural `==`
+    // comparison is wasted. Generalized to N maps -- not just the 2-map
+    // case -- since `ptr_eq` is cheap enough that checking every map against
+    // the first costs nothing extra when it hits, and only degrades to the
+    // structural comparison below when maps have diverged.
     let first = &state_maps[0];
-    if state_maps.len() == 2 && first.ptr_eq(&state_maps[1]) {
+    if state_maps[1..].iter().all(|m| first.ptr_eq(m)) {
         return (first.clone(), crate::FastSet::default());
     }
     let all_identical = state_maps[1..].iter().all(|m| m == first);

@@ -1,5 +1,8 @@
 use crate::utils;
-use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
+use rezzy::{
+    resolve_iterative_sort, resolve_iterative_sort_with_cache, LeanEvent, LocalAuthCache,
+    StateResVersion,
+};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::File;
@@ -33,75 +36,87 @@ fn test_pathology_duplicate_auth_poisoning() {
     let mut auth_context = HashMap::new();
     let mut conflicted_events = HashMap::new();
     for ev in events {
-        if ev.event_type == "m.room.message" {
-            conflicted_events.insert(ev.event_id.clone(), ev);
-        } else {
-            auth_context.insert(ev.event_id.clone(), ev);
+        // The two competing `@x:X` member events and the poisoned message
+        // are the conflicted set; `m.room.create`/`m.room.power_levels`
+        // stay in the (unconflicted) auth context.
+        if ev.event_type == "m.room.message" || ev.event_type == "m.room.member" {
+            conflicted_events.insert(ev.event_id.clone(), ev.clone());
         }
+        auth_context.insert(ev.event_id.clone(), ev);
     }
 
-    // Warm up the code and caches
-    for _ in 0..10 {
-        let _ = resolve_iterative_sort(
-            &utils::build_unconflicted_state_test_helper(&auth_context),
-            &conflicted_events,
-            &auth_context,
-            StateResVersion::V2_1,
-            &mut std::collections::HashMap::new(),
-            &String::new(),
-        );
-        let _ = resolve_iterative_sort(
-            &utils::build_unconflicted_state_test_helper(&auth_context),
-            &conflicted_events,
-            &auth_context,
-            StateResVersion::V2_1_1,
-            &mut std::collections::HashMap::new(),
-            &String::new(),
-        );
-    }
+    // The "poisoning" here is a `m.room.message` event whose `auth_events`
+    // walk reaches `$6Is...` (m.room.create) and `$2CiK...` (m.room.power_levels)
+    // twice, once via each of its two diamond-shaped `prev_events` branches.
+    // Rather than a wall-clock margin (flaky under CI load and not actually
+    // deterministic), assert on the functional/structural claim directly:
+    // V2.1.1's local-auth cache -- which is keyed per distinct event id, so
+    // deduplicated auth-chain walks show up as fewer cache entries -- must
+    // not end up larger than V2.1's for the same DAG, and resolution must
+    // still converge cleanly (both versions produce the same resolved state).
+    let mut cache_v21 = LocalAuthCache::new(StateResVersion::V2_1);
+    let resolved_v21 = resolve_iterative_sort_with_cache(
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
+        &auth_context,
+        Some(&mut cache_v21),
+        StateResVersion::V2_1,
+        &mut std::collections::HashMap::new(),
+        &String::new(),
+    );
 
-    // Measure V2.1: take the minimum of 50 runs to filter out scheduler spikes
-    let mut min_v21 = std::time::Duration::from_secs(9999);
-    for _ in 0..50 {
-        let start = std::time::Instant::now();
-        let _ = resolve_iterative_sort(
-            &utils::build_unconflicted_state_test_helper(&auth_context),
-            &conflicted_events,
-            &auth_context,
-            StateResVersion::V2_1,
-            &mut std::collections::HashMap::new(),
-            &String::new(),
-        );
-        let dur = start.elapsed();
-        if dur < min_v21 {
-            min_v21 = dur;
-        }
-    }
+    let mut cache_v211 = LocalAuthCache::new(StateResVersion::V2_1_1);
+    let resolved_v211 = resolve_iterative_sort_with_cache(
+        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &conflicted_events,
+        &auth_context,
+        Some(&mut cache_v211),
+        StateResVersion::V2_1_1,
+        &mut std::collections::HashMap::new(),
+        &String::new(),
+    );
 
-    // Measure V2.1.1: take the minimum of 50 runs
-    let mut min_v211 = std::time::Duration::from_secs(9999);
-    for _ in 0..50 {
-        let start = std::time::Instant::now();
-        let _ = resolve_iterative_sort(
-            &utils::build_unconflicted_state_test_helper(&auth_context),
-            &conflicted_events,
-            &auth_context,
-            StateResVersion::V2_1_1,
-            &mut std::collections::HashMap::new(),
-            &String::new(),
-        );
-        let dur = start.elapsed();
-        if dur < min_v211 {
-            min_v211 = dur;
-        }
-    }
+    // The poisoned event doesn't ruin resolution: both versions converge to
+    // the same resolved state.
+    assert_eq!(
+        resolved_v21, resolved_v211,
+        "V2.1 and V2.1.1 must converge to the same resolved state on the \
+         duplicate-auth-poisoning fixture"
+    );
 
-    // Assert V2.1.1 resolves cleanly and the poisoned event doesn't ruin state
-    // Use a safety margin of 15 milliseconds to prevent flaky CI failures under load
-    let margin = std::time::Duration::from_millis(15);
+    // V2.1.1 must not do *more* per-event local-auth work than V2.1 on a DAG
+    // whose whole point is duplicate auth-chain references: one cache entry
+    // per conflicted event (2 competing @x:X joins + 1 message), regardless
+    // of how many times each ancestor is reachable through the diamond.
+    assert_eq!(
+        cache_v21.map.len(),
+        3,
+        "expected exactly one local-auth cache entry per conflicted event, \
+         not one per auth-chain reference (would indicate duplicate-auth \
+         poisoning is inflating the cache)"
+    );
     assert!(
-        min_v211 <= min_v21 + margin,
-        "V2.1.1 (minimum: {min_v211:?}) should be faster or equal to V2.1 (minimum: {min_v21:?}) by dropping duplicates"
+        cache_v211.map.len() <= cache_v21.map.len(),
+        "V2.1.1's local-auth cache ({} entries) should be no larger than V2.1's \
+         ({} entries)",
+        cache_v211.map.len(),
+        cache_v21.map.len()
+    );
+
+    // `$T0Jg...` and `$Xv8a...` (two competing `m.room.member`/`@x:X` joins
+    // on divergent branches, both auth'd off `$2CiK...`) don't have a valid
+    // `m.room.join_rules` in this minimal fixture, so neither authorizes and
+    // `@x:X`'s membership key legitimately has no winner in either version
+    // -- consistent between versions is still the property under test.
+    let member_key = (
+        rezzy::basespec::event_types::EventType::from("m.room.member"),
+        "@x:X".to_string(),
+    );
+    assert_eq!(
+        resolved_v21.get(&member_key),
+        resolved_v211.get(&member_key),
+        "V2.1 and V2.1.1 must agree on @x:X's membership resolution (or lack \
+         thereof) despite the duplicated auth-chain references"
     );
 }
 

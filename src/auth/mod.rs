@@ -66,7 +66,13 @@ pub enum AuthError<Id = String> {
     InvalidSyntax(String),
     /// Rule 2.2: `auth_events` omits a `(type, state_key)` pair required by
     /// the auth-events selection algorithm (e.g. the target member event for
-    /// a membership change, or the room's power levels).
+    /// a membership change, or the room's power levels) -- **or** cites a
+    /// *stale* event ID for that pair (one that isn't the room's current
+    /// state entry for the tuple). Both are the same failure from the
+    /// selection algorithm's point of view: the event doesn't cite what the
+    /// algorithm currently requires. This variant doesn't distinguish
+    /// "missing" from "stale citation" -- both name the same `(event_type,
+    /// state_key)`.
     IncompleteAuthEvents {
         event_type: String,
         state_key: String,
@@ -514,9 +520,10 @@ pub fn check_auth_with_context<
     if is_msc4242
         && event.prev_state_events().len() > crate::basespec::event_types::MAX_PREV_STATE_EVENTS
     {
-        return Err(AuthError::InvalidSyntax(
-            "prev_state_events exceeds maximum allowed length of 20".into(),
-        ));
+        return Err(AuthError::InvalidSyntax(alloc::format!(
+            "prev_state_events exceeds maximum allowed length of {}",
+            crate::basespec::event_types::MAX_PREV_STATE_EVENTS
+        )));
     }
 
     // Cache event_type once — avoids repeated Cow allocations for
@@ -673,17 +680,20 @@ pub fn check_auth_with_context<
             }
         }
 
-        let mut seen_tuples = crate::HashSet::new();
+        let mut seen_tuples = crate::HashMap::new();
 
         for auth_id in event.auth_events() {
             let Some(auth_ev) = provider.get_event(auth_id) else {
                 return Err(AuthError::MissingAuthEvent(auth_id.clone()));
             };
 
+            // MSC4242 Rule 4.3: an event citing an auth event that was
+            // itself rejected during PDU receipt is rejected in turn.
             if auth_ev.rejected() {
-                return Err(AuthError::InvalidSyntax(alloc::format!(
-                    "auth event {auth_id:?} was previously rejected"
-                )));
+                return Err(AuthError::RejectedAuthEvent {
+                    event_id: event.event_id().clone(),
+                    auth_event_id: auth_id.clone(),
+                });
             }
 
             let auth_type = auth_ev.event_type();
@@ -702,7 +712,7 @@ pub fn check_auth_with_context<
 
             let sk = auth_ev.state_key().unwrap_or("");
             let key = (auth_type.into_owned(), alloc::string::String::from(sk));
-            if !seen_tuples.insert(key) {
+            if seen_tuples.insert(key, auth_id.clone()).is_some() {
                 return Err(AuthError::InvalidSyntax(
                     "auth_events contains duplicate (type, state_key) pair".into(),
                 ));
@@ -724,20 +734,28 @@ pub fn check_auth_with_context<
         let room_version = room_version_str_or_warn(state, "Rule 2.2 (auth_events selection)");
         for (req_type, req_key) in required_auth_types_for(event, event_type, version, room_version)
         {
-            if state.get_event(req_type, req_key).is_none() {
+            let Some(state_ev) = state.get_event(req_type, req_key) else {
                 continue;
-            }
-            // TODO: Auth events tuple validation
-            // When `auth_events` cites an older event with the same
-            // `(type, state_key)` as the current state entry, this check
-            // accepts it because it validates only the tuple, not the selected
-            // event ID. Compare each cited ID with the current state's event
-            // ID for every required tuple.
-            if !seen_tuples.contains(&(req_type.to_string(), req_key.to_string())) {
-                return Err(AuthError::IncompleteAuthEvents {
-                    event_type: req_type.to_string(),
-                    state_key: req_key.to_string(),
-                });
+            };
+            // Rule 2.2/2.3: `auth_events` must not only cite the right
+            // `(type, state_key)` tuple but must cite the *current state's*
+            // event for that tuple — citing a stale/superseded event ID for
+            // an otherwise-correct tuple is exactly as unauthorized as
+            // omitting the tuple altogether.
+            match seen_tuples.get(&(req_type.to_string(), req_key.to_string())) {
+                None => {
+                    return Err(AuthError::IncompleteAuthEvents {
+                        event_type: req_type.to_string(),
+                        state_key: req_key.to_string(),
+                    });
+                }
+                Some(cited_id) if cited_id != state_ev.event_id() => {
+                    return Err(AuthError::IncompleteAuthEvents {
+                        event_type: req_type.to_string(),
+                        state_key: req_key.to_string(),
+                    });
+                }
+                Some(_) => {}
             }
         }
     }
@@ -1212,15 +1230,22 @@ pub(crate) fn event_id_to_wire_cow<Id: core::fmt::Display + 'static>(
 /// - `events`: the slice of events to redact, including both the redaction
 ///   events and their targets. Targets outside `events` are left for a later
 ///   pass (a redaction and its target may arrive in different batches).
-/// - `state`: the resolved room state used to authorize each redaction.
+/// - `state`: the room state used to authorize *every* redaction in the
+///   batch, against the *same* snapshot.
 ///
-/// # TODO: Event-time state authorization
-/// Currently, all redactions are authorized against the final resolved state.
-/// If a sender's power level changes between sending a redaction and the final
-/// resolution, this may incorrectly accept or reject redactions. The Matrix
-/// spec requires redaction authorization to use the state at each redaction's
-/// `prev_events`. A future fix should pass a per-redaction state lookup closure
-/// instead of a single state parameter.
+/// # Event-time state (single-state caveat)
+/// This entry point authorizes every redaction against the one `state`
+/// snapshot passed in, which is correct **only** when that snapshot equals
+/// the state at each redaction's own `prev_events` for every redaction in
+/// the batch (e.g. a batch of redactions with no intervening power-level or
+/// membership changes at the time each was sent). If a sender's power level
+/// changed between sending a redaction and the snapshot `state` represents,
+/// this can incorrectly accept or reject that redaction — the Matrix spec
+/// requires redaction authorization to use the state as of each redaction's
+/// own `prev_events`, not a single shared snapshot. When callers can
+/// reconstruct a per-redaction snapshot (e.g. by replaying `sorted_events`
+/// forward the way [`check_auth_chain`] does), use
+/// [`apply_authorized_redactions_with_state_at`] instead.
 ///
 /// The function mutates `events` in place, replacing each authorized target
 /// with its redacted form. Callers can use
@@ -1240,6 +1265,42 @@ where
     Id: crate::basespec::rezzy_types::EventId + Clone + 'static,
     E: EventLike<Id = Id, Content = serde_json::Value>,
     K: crate::basespec::rezzy_types::StateKey + Clone,
+{
+    apply_authorized_redactions_with_state_at(
+        events,
+        |_redaction_id| Some(state),
+        version,
+        room_version,
+    )
+}
+
+/// Like [`apply_authorized_redactions`], but authorizes each redaction
+/// against the state **as of that redaction's own `prev_events`** (per the
+/// Matrix spec), rather than a single shared snapshot.
+///
+/// `state_at(redaction_event_id)` is called once per redaction event whose
+/// target is present in this batch (a redaction deferred because its target
+/// is absent never triggers a lookup) and must return the room state at
+/// that redaction's `prev_events`. Returning `None` (no event-time state
+/// available for that redaction) is
+/// treated the same as authorization failing: the redaction is recorded in
+/// [`RedactionReport::skipped_unauthorized`] and its target is left
+/// untouched, rather than guessing or falling back to another snapshot.
+///
+/// See [`apply_authorized_redactions`] for the rest of the memory contract
+/// (the `events` slice, in-place mutation, rejected/soft-failed handling).
+#[must_use]
+pub fn apply_authorized_redactions_with_state_at<'s, Id, E, K, S>(
+    events: &mut [LeanEvent<Id, serde_json::Value, K>],
+    state_at: impl Fn(&Id) -> Option<&'s S>,
+    version: StateResVersion,
+    room_version: &str,
+) -> RedactionReport<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId + Clone + 'static,
+    E: EventLike<Id = Id, Content = serde_json::Value>,
+    K: crate::basespec::rezzy_types::StateKey + Clone,
+    S: StateProvider<Id, serde_json::Value, E> + 's,
 {
     // Collect active redaction positions first. If there are no redactions
     // in this batch, return immediately without constructing the index map.
@@ -1341,7 +1402,21 @@ where
     pairs = ordered_pairs;
 
     for (rp, tp) in pairs {
-        if !redaction_is_authorized(&events[rp], &events[tp], state, version, room_version) {
+        // Event-time state: authorize against the state as of this
+        // redaction's own `prev_events`, not a shared/final snapshot. A
+        // missing lookup result is treated as unauthorized rather than
+        // guessed at.
+        let authorized = match state_at(&events[rp].event_id) {
+            Some(state_at_redaction) => redaction_is_authorized(
+                &events[rp],
+                &events[tp],
+                state_at_redaction,
+                version,
+                room_version,
+            ),
+            None => false,
+        };
+        if !authorized {
             report
                 .skipped_unauthorized
                 .push((events[rp].event_id.clone(), events[tp].event_id.clone()));
@@ -1964,14 +2039,19 @@ pub fn check_auth_chain<
     let mut rejected_ids = crate::HashSet::new();
 
     for event in sorted_events {
-        // Rule 2.3: Check if any auth event was previously rejected
-        let has_rejected_auth_event = event
+        // Rule 2.3 / MSC4242 Rule 4.3: an event citing an auth event that
+        // was itself rejected during PDU receipt is rejected in turn (see
+        // `AuthError::RejectedAuthEvent`'s docs).
+        if let Some(auth_event_id) = event
             .auth_events
             .iter()
-            .any(|auth_id| rejected_ids.contains(auth_id));
-
-        if has_rejected_auth_event {
-            let err = AuthError::InvalidSyntax("auth_event was previously rejected".into());
+            .find(|auth_id| rejected_ids.contains(*auth_id))
+            .cloned()
+        {
+            let err = AuthError::RejectedAuthEvent {
+                event_id: event.event_id.clone(),
+                auth_event_id,
+            };
             rejected.push((event.event_id.clone(), err));
             rejected_ids.insert(event.event_id.clone());
             continue;

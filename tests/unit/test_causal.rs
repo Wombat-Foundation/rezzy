@@ -1,5 +1,6 @@
 use rezzy::merkle::causal::{
-    empty_root, verify_causal_inclusion, verify_causal_non_inclusion, CausalSet, Side, CAUSAL_DEPTH,
+    empty_root, verify_causal_inclusion, verify_causal_non_inclusion, CausalSet, CausalSide,
+    CAUSAL_DEPTH,
 };
 use rezzy::merkle::Hash;
 
@@ -153,11 +154,6 @@ fn verify_causal_non_inclusion_rejects_out_of_range_depth() {
 }
 
 #[test]
-fn causal_proof_step_sides_are_distinct() {
-    assert_ne!(Side::Left, Side::Right);
-}
-
-#[test]
 fn verify_causal_inclusion_rejects_count_forgery() {
     let (a, b) = (key(0xa1), key(0xb2));
     let s = CausalSet::empty().insert(a).insert(b);
@@ -184,8 +180,8 @@ fn verify_causal_inclusion_rejects_side_forgery() {
     let (mut path, root, count) = s.inclusion_proof(&a).unwrap();
     if !path.is_empty() {
         path[0].side = match path[0].side {
-            Side::Left => Side::Right,
-            Side::Right => Side::Left,
+            CausalSide::Left => CausalSide::Right,
+            CausalSide::Right => CausalSide::Left,
         };
         assert!(!verify_causal_inclusion(&a, &path, root, count));
     }

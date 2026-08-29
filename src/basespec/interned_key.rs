@@ -8,24 +8,29 @@
 //! and converts the query `&str` into an OWNED key on the spot via the
 //! interner — no borrowed trait-object lookup, no `for<'q>`, no `'static`.
 //!
-//! The map key is `(InternId<'a>, InternId<'a>)` — BOTH halves are `Copy` and
-//! ranked from a single arena interned in sorted string order, so `get_event`
-//! resolves both `&str` halves through `id_of` with ZERO allocation (the same
-//! cost profile as the `Borrow<dyn StateKeyDyn>` path it replaces), and the
-//! tuple's rank `Ord` agrees with the `StateKeyDyn` `(ev_type, state_key)`
-//! lexicographic ordering contract.
+//! The map key is `(InternId<'a>, InternId<'a>)` — BOTH halves are `Copy`, so
+//! `get_event` resolves both `&str` halves through `id_of` with ZERO
+//! allocation (the same cost profile as the `Borrow<dyn StateKeyDyn>` path it
+//! replaces). `InternId`'s `Ord` always compares the resolved strings (not
+//! the interner's discovery-order index), so the tuple's `Ord` agrees with
+//! the `StateKeyDyn` `(ev_type, state_key)` lexicographic ordering contract
+//! unconditionally — independent of interning order.
 
-use alloc::borrow::ToOwned;
+use alloc::rc::Rc;
 use core::fmt;
 
 use crate::auth::StateProvider;
 use crate::basespec::rezzy_types::LeanEvent;
 
 /// Owns the string arena + `string -> id` map. Slot 0 reserved for "".
+///
+/// Each interned string is allocated exactly once, as an `Rc<str>`; both
+/// `id_to_str` and `str_to_id` hold clones of that same `Rc` (a refcount
+/// bump, not a fresh allocation).
 #[derive(Debug, Clone)]
 pub struct Interner {
-    id_to_str: alloc::vec::Vec<alloc::string::String>,
-    str_to_id: crate::HashMap<alloc::string::String, u32>,
+    id_to_str: alloc::vec::Vec<Rc<str>>,
+    str_to_id: crate::HashMap<Rc<str>, u32>,
 }
 
 impl Default for Interner {
@@ -40,10 +45,11 @@ impl Default for Interner {
 impl Interner {
     #[must_use]
     pub fn new() -> Self {
+        let empty: Rc<str> = Rc::from("");
         let mut str_to_id = crate::HashMap::new();
-        str_to_id.insert(alloc::string::String::new(), 0);
+        str_to_id.insert(Rc::clone(&empty), 0);
         Self {
-            id_to_str: alloc::vec![alloc::string::String::new()],
+            id_to_str: alloc::vec![empty],
             str_to_id,
         }
     }
@@ -58,8 +64,12 @@ impl Interner {
             return id;
         }
         let id = u32::try_from(self.id_to_str.len()).expect("interner overflow");
-        self.id_to_str.push(s.to_owned());
-        self.str_to_id.insert(s.to_owned(), id);
+        // Single allocation: `s` is converted to an `Rc<str>` once, and
+        // `id_to_str`/`str_to_id` each hold a cheap `Rc::clone` (refcount
+        // bump) of it rather than a second independent copy of the string.
+        let rc: Rc<str> = Rc::from(s);
+        self.id_to_str.push(Rc::clone(&rc));
+        self.str_to_id.insert(rc, id);
         id
     }
 
@@ -78,6 +88,19 @@ impl Interner {
     pub fn get(&self, id: u32) -> &str {
         &self.id_to_str[usize::try_from(id).expect("non-negative")]
     }
+
+    /// Number of distinct strings interned so far (including the reserved
+    /// slot 0 for `""`).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.id_to_str.len()
+    }
+
+    /// Whether any strings beyond the reserved slot 0 have been interned.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.id_to_str.is_empty()
+    }
 }
 
 /// A `Copy` interned state key: `u32` into an [`Interner`]. `Ord` by rank.
@@ -87,25 +110,36 @@ pub struct InternId<'a> {
     interner: &'a Interner,
 }
 
-// Equality/order/hash are by the dense index only (the interner reference is
-// not part of the key's identity). Ids must be assigned in sorted string order
-// (sort-once) for this rank `Ord` to agree with the `StateKeyDyn` ordering
-// contract.
+// RESOLVED: Cross-interner collision
+// Two different `Interner`s can hand out the same dense index to different
+// strings, so comparing indices alone would let unrelated `InternId`s from
+// different arenas compare equal and collapse map entries. `InternId` now
+// carries the `&Interner` it was minted from (it always did, via
+// `from_index`/`interner()`), so equality takes arena identity into account:
+// same arena compares by index (cheap, and unambiguous because one arena
+// never assigns the same index to two different strings); different arenas
+// fall back to comparing the resolved strings, which is always correct
+// regardless of which arena assigned which index.
 //
-// TODO: Cross-interner collision
-// When two interners assign the same index to different strings, their
-// `InternId` values compare equal and collapse map entries despite resolving
-// to different keys. Include arena identity in equality, ordering, and hashing,
-// or prevent IDs from different arenas from being mixed by construction.
-//
-// TODO: Ordering mismatch
-// When callers intern keys in discovery order, `InternId` ordering differs
-// from string ordering, so borrowed `BTreeMap` lookups can miss existing state
-// entries. Assign IDs from a sorted input or compare strings, and enforce the
-// invariant in release builds rather than only with `debug_assert!`.
+// RESOLVED: Ordering mismatch
+// `Interner::intern` assigns indices in first-use (discovery) order, not
+// sorted string order, so index order need not agree with string order.
+// Relying on `debug_assert!`-checked "callers must sort before inserting"
+// would silently misorder `BTreeMap` keys in release builds whenever that
+// invariant slipped. Instead `Ord` always compares the resolved strings
+// (never the index), so the ordering is correct unconditionally, independent
+// of interning order or which arena(s) the operands came from — no invariant
+// to violate.
 impl PartialEq for InternId<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.idx == other.idx
+        if core::ptr::eq(self.interner, other.interner) {
+            // Same arena: `Interner::intern` never assigns the same index to
+            // two different strings, so index equality is exactly string
+            // equality here, without resolving either side.
+            self.idx == other.idx
+        } else {
+            self.as_ref() == other.as_ref()
+        }
     }
 }
 impl Eq for InternId<'_> {}
@@ -116,18 +150,33 @@ impl PartialOrd for InternId<'_> {
 }
 impl Ord for InternId<'_> {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.idx.cmp(&other.idx)
+        // Always compare the resolved strings: index order tracks discovery
+        // (first-use) order, not string order, so it cannot be trusted for
+        // `Ord` even within a single arena.
+        self.as_ref().cmp(other.as_ref())
     }
 }
 impl core::hash::Hash for InternId<'_> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.idx.hash(state);
+        // Must hash the same value `eq` compares on some path for any pair
+        // of (possibly cross-arena) equal `InternId`s, so hash the resolved
+        // string unconditionally rather than the index.
+        self.as_ref().hash(state);
     }
 }
 
 impl<'a> InternId<'a> {
+    /// # Panics
+    ///
+    /// Panics if `idx` was not issued by `interner` (i.e. is out of bounds
+    /// for it).
     #[must_use]
     pub fn from_index(interner: &'a Interner, idx: u32) -> Self {
+        assert!(
+            (idx as usize) < interner.len(),
+            "InternId::from_index: idx {idx} out of bounds for interner of len {}",
+            interner.len()
+        );
         Self { idx, interner }
     }
 
@@ -168,12 +217,13 @@ impl<'a, Id, C> InternedRoomState<'a, Id, C> {
     /// without reaching into private fields.
     ///
     /// # Panics
-    /// `InternId`'s `Eq`/`Ord`/`Hash` compare only the dense index, not which
-    /// `Interner` produced it (see the note beside those impls) -- so a map
-    /// keyed by `InternId`s from a DIFFERENT arena than `interner` would let
-    /// `get_event` resolve a query through `interner` and silently return the
-    /// wrong event for it. Panics if any key or state-key value in `map` was
-    /// not produced by `interner`.
+    /// `InternId`'s `Eq`/`Ord`/`Hash` fall back to comparing resolved strings
+    /// across different arenas (see the note beside those impls), so mixing
+    /// arenas is no longer a correctness hazard by itself -- but it silently
+    /// forfeits the zero-cost index fast path on every comparison and usually
+    /// indicates a bug (an `InternId` escaping the arena it was meant to
+    /// belong to). Panics if any key or state-key value in `map` was not
+    /// produced by `interner`.
     #[must_use]
     pub fn new(
         interner: &'a Interner,
@@ -193,14 +243,10 @@ impl<'a, Id, C> InternedRoomState<'a, Id, C> {
                  different Interner than the one supplied"
             );
         }
-        // The key `Ord` is rank-based, so ranks must follow byte order for the
-        // `StateKeyDyn` lexicographic contract to hold.
-        debug_assert!(
-            map.keys()
-                .zip(map.keys().skip(1))
-                .all(|(a, b)| (a.0.as_ref(), a.1.as_ref()) < (b.0.as_ref(), b.1.as_ref())),
-            "InternedRoomState::new: interner ranks are not in sorted string order"
-        );
+        // No sortedness invariant to check here: `InternId::cmp` always
+        // compares resolved strings (never the interner's discovery-order
+        // index), so `BTreeMap`'s key order already agrees with the
+        // `StateKeyDyn` lexicographic contract unconditionally.
         Self { interner, map }
     }
 }
@@ -400,6 +446,85 @@ mod tests {
             build_hasher.hash_one(key),
             build_hasher.hash_one(key2),
             "equal InternIds must hash identically"
+        );
+    }
+
+    /// `from_index` must reject an index that was never issued by the given
+    /// interner instead of building an `InternId` that panics later (or
+    /// worse, silently reads someone else's slot) the first time it is
+    /// resolved.
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn from_index_rejects_out_of_bounds_idx() {
+        let interner = Interner::new(); // len() == 1 (slot 0 == "")
+        let _ = InternId::from_index(&interner, 1);
+    }
+
+    /// `Interner::intern` assigns ids in first-use (discovery) order, not
+    /// sorted string order. `InternId::Ord` must still agree with plain
+    /// string ordering even though the indices here are deliberately
+    /// out of string order (unlike the sorted-insertion spike test above).
+    #[test]
+    fn ord_follows_string_order_even_when_indices_are_unsorted() {
+        let mut interner = Interner::new();
+        // Discovery order gives "zebra" index 1 and "apple" index 2, i.e.
+        // index order is the OPPOSITE of string order.
+        let idx_zebra = interner.intern("zebra");
+        let idx_apple = interner.intern("apple");
+        assert!(idx_zebra < idx_apple, "sanity: indices are unsorted");
+
+        let zebra = InternId::from_index(&interner, idx_zebra);
+        let apple = InternId::from_index(&interner, idx_apple);
+
+        // Despite zebra's index being smaller, "apple" < "zebra" as strings.
+        assert!(apple < zebra);
+        assert_eq!(apple.cmp(&zebra), core::cmp::Ordering::Less);
+    }
+
+    /// Two different `Interner`s can (and, with discovery-order assignment,
+    /// routinely do) hand out the same dense index to different strings.
+    /// `InternId`'s `Eq`/`Ord`/`Hash` must resolve this via the strings
+    /// rather than treating same-index `InternId`s from different arenas as
+    /// interchangeable.
+    #[test]
+    fn cross_interner_same_index_does_not_collide() {
+        let mut arena_a = Interner::new();
+        let idx_a = arena_a.intern("aaa"); // idx 1
+
+        let mut arena_b = Interner::new();
+        let idx_b = arena_b.intern("zzz"); // also idx 1
+
+        assert_eq!(idx_a, idx_b, "sanity: same dense index in both arenas");
+
+        let a = InternId::from_index(&arena_a, idx_a);
+        let b = InternId::from_index(&arena_b, idx_b);
+
+        // Must NOT compare equal just because the raw indices match.
+        assert_ne!(a, b);
+        assert_eq!(a.cmp(&b), core::cmp::Ordering::Less, "\"aaa\" < \"zzz\"");
+        assert!(a < b);
+
+        let build_hasher = crate::HashSet::<()>::default().hasher().clone();
+        assert_ne!(
+            build_hasher.hash_one(a),
+            build_hasher.hash_one(b),
+            "unequal cross-arena InternIds should (almost certainly) hash \
+             differently"
+        );
+
+        // Same string, different arenas, same index -> still equal, since
+        // equality falls back to comparing resolved strings across arenas.
+        let mut arena_c = Interner::new();
+        let idx_c = arena_c.intern("aaa");
+        let c = InternId::from_index(&arena_c, idx_c);
+        assert_eq!(
+            a, c,
+            "equal strings from different arenas must compare equal"
+        );
+        assert_eq!(
+            build_hasher.hash_one(a),
+            build_hasher.hash_one(c),
+            "equal cross-arena InternIds must hash identically"
         );
     }
 }
