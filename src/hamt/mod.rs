@@ -1193,6 +1193,7 @@ where
 }
 
 /// What remains of a subtree after a leaf was removed from it.
+#[derive(Debug)]
 enum RemoveOutcome<K, V> {
     /// The subtree has no entries left.
     Empty,
@@ -1308,7 +1309,7 @@ where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     if depth >= HAMT_MAX_DEPTH {
-        return Ok((RemoveOutcome::Node(node.clone()), None));
+        return Err(HamtMutateError::MaxDepthExceeded { depth });
     }
 
     let slot = bucket_index(path_hash, depth);
@@ -1350,7 +1351,7 @@ where
 
     let next_depth = depth.saturating_add(1);
     if next_depth >= HAMT_MAX_DEPTH {
-        return Ok((RemoveOutcome::Node(node.clone()), None));
+        return Err(HamtMutateError::MaxDepthExceeded { depth: next_depth });
     }
     let (child_outcome, old_value) = remove_node_with_ctx(&child, key, path_hash, next_depth, ctx)?;
     if old_value.is_none() {

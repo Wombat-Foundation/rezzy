@@ -1498,10 +1498,12 @@ fn test_insert_node_with_ctx_guards_max_depth_reentry() {
 }
 
 /// Covers the `depth >= HAMT_MAX_DEPTH` entry guard in `remove_node_with_ctx`
-/// (mod.rs:1189-1191): a removal invoked already at max depth must return the
-/// node untouched (nothing removed) instead of descending. This is the
-/// defensive re-entry check; `remove` always starts at depth 0, so it is only
-/// reachable by calling the context function directly.
+/// (mod.rs:1189-1191): a removal invoked already at max depth must report
+/// `MaxDepthExceeded` instead of silently returning a no-op success, so
+/// callers like `persist_mutation` cannot mistake exhausted depth for "key
+/// not found". This is the defensive re-entry check; `remove` always starts
+/// at depth 0, so it is only reachable by calling the context function
+/// directly.
 #[test]
 fn test_remove_node_with_ctx_guards_max_depth_entry() {
     let key = b"dummy_server_key";
@@ -1524,19 +1526,22 @@ fn test_remove_node_with_ctx_guards_max_depth_entry() {
         sink: &mut sink,
     };
 
-    let (outcome, removed) =
-        remove_node_with_ctx(&node, &1_u64, &[0u8; 16], HAMT_MAX_DEPTH, &mut ctx)
-            .expect("guard returns Ok, not Err");
-    assert!(matches!(outcome, RemoveOutcome::Node(_)));
-    assert_eq!(removed, None);
+    let result = remove_node_with_ctx(&node, &1_u64, &[0u8; 16], HAMT_MAX_DEPTH, &mut ctx);
+    assert_eq!(
+        result.unwrap_err(),
+        HamtMutateError::MaxDepthExceeded {
+            depth: HAMT_MAX_DEPTH,
+        }
+    );
 }
 
 /// Covers the `next_depth >= HAMT_MAX_DEPTH` re-entry guard in
 /// `remove_node_with_ctx` (mod.rs:1228-1230): a removal that resolved a child
-/// at depth `HAMT_MAX_DEPTH - 1` must bail before recursing one level too
-/// deep. The caller must land on the nodemap branch (a child at the routed
-/// slot) so `depth.checked_add(1)` is actually reached; a zero path-hash
-/// routes slot 0 at every depth.
+/// at depth `HAMT_MAX_DEPTH - 1` must report `MaxDepthExceeded` before
+/// recursing one level too deep, rather than silently returning a no-op
+/// success. The caller must land on the nodemap branch (a child at the
+/// routed slot) so `depth.checked_add(1)` is actually reached; a zero
+/// path-hash routes slot 0 at every depth.
 #[test]
 fn test_remove_node_with_ctx_guards_max_depth_reentry() {
     let key = b"dummy_server_key";
@@ -1566,10 +1571,13 @@ fn test_remove_node_with_ctx_guards_max_depth_reentry() {
         resolver: &mut resolver,
         sink: &mut sink,
     };
-    let (outcome, removed) = remove_node_with_ctx(&node, &2_u64, &[0u8; 16], depth, &mut ctx)
-        .expect("re-entry guard returns Ok, not Err");
-    assert!(matches!(outcome, RemoveOutcome::Node(_)));
-    assert_eq!(removed, None);
+    let result = remove_node_with_ctx(&node, &2_u64, &[0u8; 16], depth, &mut ctx);
+    assert_eq!(
+        result.unwrap_err(),
+        HamtMutateError::MaxDepthExceeded {
+            depth: HAMT_MAX_DEPTH,
+        }
+    );
 }
 
 #[test]
