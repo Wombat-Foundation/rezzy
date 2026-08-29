@@ -3751,6 +3751,20 @@ fn test_universe_too_large_display() {
 }
 
 #[test]
+fn test_universe_too_large_display_allocation_failed() {
+    use alloc::string::ToString;
+
+    let err = crate::hamt::audit::UniverseTooLarge {
+        distinct_count: 123,
+        allocation_failed: true,
+    };
+    assert_eq!(
+        err.to_string(),
+        "universe has at least 123 distinct hashes (allocation failed before scanning complete), more than u32::MAX can index"
+    );
+}
+
+#[test]
 fn test_bitmap_audit_error_display_and_conversions() {
     use alloc::string::ToString;
 
