@@ -9,7 +9,7 @@
 //! insert/remove during resolution, and cheap clone-and-diverge across
 //! conflict branches.
 //!
-//! Run with: `cargo bench --bench state_backend`
+//! Run with: `cargo bench --bench rezzy -- state_backend`
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -351,7 +351,7 @@ fn report_speedup(ordmap: Duration, hamt: Duration) {
     }
 }
 
-fn main() {
+pub fn run() {
     for &n in &[16usize, 128, 1024, 8192] {
         let entries = make_entries(n, 0x5EED_0000 + n as u64);
         bench_bulk_build(n, &entries);

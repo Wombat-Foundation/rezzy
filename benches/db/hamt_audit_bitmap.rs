@@ -82,8 +82,8 @@ fn report_case(universe_len: u32, missing_stride: u32, iters: usize) {
     );
 }
 
-/// Entry point for the standalone bitmap benchmark.
-fn main() {
+/// Entry point for the bitmap benchmark.
+pub fn run() {
     println!("HAMT audit bitmap unreachable-construction benchmark");
     report_case(8_192, 2, 200);
     report_case(8_192, 4, 200);

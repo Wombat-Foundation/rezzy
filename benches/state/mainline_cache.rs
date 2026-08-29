@@ -71,6 +71,7 @@ fn insert_pl_auth_chain(
             depth,
             rejected: false,
             soft_fail: false,
+            room_id: None,
         },
     );
 
@@ -101,6 +102,7 @@ fn insert_pl_auth_chain(
                 depth: depth + hop as u64 + 1,
                 rejected: false,
                 soft_fail: false,
+                room_id: None,
             },
         );
         prev_auth.clone_from(&helper_id);
@@ -136,6 +138,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
             depth: 0,
             rejected: false,
             soft_fail: false,
+            room_id: None,
         },
     );
 
@@ -167,6 +170,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                 depth: pl_depth,
                 rejected: false,
                 soft_fail: false,
+                room_id: None,
             },
         );
         prev_pl = id;
@@ -200,6 +204,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                 depth,
                 rejected: false,
                 soft_fail: false,
+                room_id: None,
             },
         );
         events.insert(
@@ -220,6 +225,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                 depth,
                 rejected: false,
                 soft_fail: false,
+                room_id: None,
             },
         );
         events.insert(
@@ -240,6 +246,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                 depth: depth + 1,
                 rejected: false,
                 soft_fail: false,
+                room_id: None,
             },
         );
         targets.push(merge_id);
@@ -256,7 +263,7 @@ fn measure(label: &str, f: impl FnOnce()) -> Duration {
     elapsed
 }
 
-fn main() {
+pub fn run() {
     for &(pl_chain_len, fork_count) in &[(200usize, 500usize), (1_000, 2_000), (2_000, 5_000)] {
         println!("--- pl_chain_len={pl_chain_len} fork_count={fork_count} ---");
         let (events, targets) = build_dag(pl_chain_len, fork_count);
@@ -265,7 +272,12 @@ fn main() {
         measure(
             &format!("compute_state_at_batch (L={pl_chain_len}, M={fork_count})"),
             || {
-                let result = compute_state_at_batch(&target_refs, &events, StateResVersion::V2_1);
+                let result = compute_state_at_batch(
+                    &target_refs,
+                    &events,
+                    StateResVersion::V2_1,
+                    &String::new(),
+                );
                 assert_eq!(result.len(), target_refs.len(), "all targets must resolve");
                 std::hint::black_box(&result);
             },
@@ -280,6 +292,7 @@ fn main() {
                         target,
                         &events,
                         StateResVersion::V2_1,
+                        &String::new(),
                     )
                     .expect("every benchmark target must resolve");
                     total_states += state.len();

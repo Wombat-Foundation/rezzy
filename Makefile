@@ -21,7 +21,7 @@ format: ##H Format codebase (Rust + Lean + scripts)
 	-black $(LINT_LOCS_PY)
 	-isort $(LINT_LOCS_PY)
 	-shfmt -w $(LINT_LOCS_SH)
-	cargo sort --workspace --grouped
+	$(CARGO) sort --workspace --grouped
 
 .PHONY: fix
 fix:	##H Clippy auto-fix
@@ -30,12 +30,13 @@ fix:	##H Clippy auto-fix
 
 .PHONY: lint
 lint: ##H Run all linters
-	@if $(CARGO) clippy --version >/dev/null 2>&1; then \
-		$(CARGO) clippy --all-targets $(CARGO_FEATURE_ARGS); \
-	else \
-		echo "warning: Clippy is unavailable; running cargo check only"; \
-		$(CARGO) check --all-targets $(CARGO_FEATURE_ARGS); \
-	fi
+	$(CARGO) clippy --all-targets $(CARGO_FEATURE_ARGS); \
+
+.PHONY: doc rust/doc
+doc: rust/doc ##H Alias for rust/doc
+rust/doc: ##H Generate rustdoc API documentation
+	$(CARGO) doc --no-deps
+	echo '<meta http-equiv="refresh" content="0;url=rezzy/index.html">' > target/doc/index.html
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Lean targets
@@ -78,33 +79,33 @@ lint: ##H Run all linters
 rust/build: ##H Compile Rust binary (release)
 	$(CARGO) build --locked --release --timings --features cli
 
-.PHONY: rust/doc
-rust/doc: ##H Generate rustdoc API documentation
-	$(CARGO) doc --no-deps
-	echo '<meta http-equiv="refresh" content="0;url=rezzy/index.html">' > target/doc/index.html
+.PHONY: rust/so
+rust/so: ##H Compile shared object (librezzy.so) from the library
+	$(CARGO) rustc --locked --release --lib --crate-type cdylib $(CARGO_FEATURE_ARGS)
+	@echo "Built: target/release/librezzy.so"
 
 .PHONY: rust/test
 rust/test: ##H Run Rust tests (p=NAME for specific test, a=ARGS for test binary args)
 ifdef p
-	$(CARGO) test --test $(p) $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
+	$(CARGO) test --timings --test $(p) $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
 else
-	$(CARGO) test --lib --tests $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
+	$(CARGO) test --timings --lib --tests $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
 endif
 
 .PHONY: rust/bench
 rust/bench: ##H Run benchmarks
-	#$(CARGO) bench --profile release --bench reconcile resolve
+	#$(CARGO) bench --profile release --bench rezzy -- resolve
 	$(CARGO) bench --profile release --benches
 
 .PHONY: rust/coverage
 rust/coverage: ##H Run code coverage and generate HTML report
 	# TODO: include `src/bin/` in coverage
 	# Run coverage
-	$(CARGO) +nightly llvm-cov --lib --tests \
+	$(CARGO) llvm-cov --lib --tests \
 		--html --output-dir .coverage \
 		--ignore-filename-regex 'src/bin/.*|scripts/.*'
 	# Process report to codecov-compatible JSON
-	$(CARGO) +nightly llvm-cov report \
+	$(CARGO) llvm-cov report \
 		--ignore-filename-regex 'src/bin/.*|scripts/.*' \
 		--codecov --output-path .coverage/codecov.json
 	@echo DONE. You may open it with:
@@ -144,13 +145,14 @@ rust/publish: ##H Preview package and simulate dry-run publish
 	$(CARGO) publish --dry-run
 
 # Convenience aliases
-.PHONY: build test bench install clean uninstall
+.PHONY: build test bench install clean uninstall so
 build:   rust/build   ##H Alias for rust/build
 test:    rust/test    ##H Alias for rust/test
 bench:   rust/bench   ##H Alias for rust/bench
 cov:     rust/coverage ##H Alias for rust/coverage
 install: rust/install ##H Alias for rust/install
 uninstall: rust/uninstall ##H Alias for rust/uninstall
+so:      rust/so      ##H Alias for rust/so
 
 .PHONY: clean
 clean:   rust/clean	##H Remove all build artifacts

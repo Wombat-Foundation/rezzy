@@ -389,7 +389,7 @@ fn benchmark_presplit_antichain_exchange_from_pool(
     let mut current_requests: Vec<BucketRequest> = (0..num_buckets)
         .map(|prefix| BucketRequest {
             depth: target_depth,
-            prefix: u32::try_from(prefix).unwrap_or(0),
+            prefix: u64::try_from(prefix).expect("benchmark bucket index fits u64"),
             capacity: 32,
         })
         .collect();
@@ -467,7 +467,7 @@ fn benchmark_presplit_antichain_exchange_from_pool(
 }
 
 #[allow(clippy::too_many_lines)]
-fn main() {
+pub fn run() {
     let elapsed = measure(1_000_000, || {
         black_box(gf64_mul(
             black_box(0x0123_4567_89ab_cdef),
@@ -691,7 +691,7 @@ fn main() {
         // Bottom HIGH_SHIFT bits mask — avoids `(1_u64 << 40) - 1` form.
         const LOW_MASK: u64 = u64::MAX >> 24_u32;
         const BUCKET_CAP: usize = 32; // MAX_BUCKET_SKETCH_CAPACITY per bucket
-        const BASE_PREFIX: u32 = 0x00_10_00; // arbitrary 24-bit starting prefix
+        const BASE_PREFIX: u64 = 0x00_10_00; // arbitrary 24-bit starting prefix
 
         let n: usize = 10_000_000;
 
@@ -702,9 +702,10 @@ fn main() {
         for n_buckets in [2_usize, 16, 128] {
             let delta = n_buckets.saturating_mul(BUCKET_CAP);
             // Consecutive depth-24 prefixes: each covers a disjoint h64 range.
-            let prefixes: Vec<u32> = (0..n_buckets)
+            let prefixes: Vec<u64> = (0..n_buckets)
                 .map(|i| {
-                    BASE_PREFIX.saturating_add(u32::try_from(i).expect("n_buckets always fits u32"))
+                    BASE_PREFIX
+                        .saturating_add(u64::try_from(i).expect("benchmark bucket index fits u64"))
                 })
                 .collect();
 
@@ -712,9 +713,9 @@ fn main() {
 
             // Plant BUCKET_CAP odd-h64 elements in each prefix range.
             for (&prefix, bucket_i) in prefixes.iter().zip(0_u64..) {
-                for j in 0_u64..BUCKET_CAP as u64 {
+                for j in 0_u64..u64::try_from(BUCKET_CAP).expect("bucket capacity fits u64") {
                     let suffix = (gen.next() ^ (bucket_i << 16) ^ j) & LOW_MASK;
-                    h64_index.push((u64::from(prefix) << HIGH_SHIFT) | suffix | 1);
+                    h64_index.push((prefix << HIGH_SHIFT) | suffix | 1);
                 }
             }
             // Uniform background noise filling the rest of the index.
@@ -742,15 +743,6 @@ fn main() {
     }
 
     // -------------------------------------------------------------------------
-    // Extraction + decode (triage pre-computed).
-    //
-    // `select_action` (which includes strata estimation) is called ONCE outside
-    // the timed loop so that only `build_bucket_sketches` + XOR + `decode` are
-    // measured. This isolates server-side extraction and client-side decode from
-    // the strata-estimation cost already benchmarked above.
-    // -------------------------------------------------------------------------
-    println!("\n--- extract + decode (triage pre-computed, N varies) ---");
-    // -------------------------------------------------------------------------
     // Extraction + decode (triage pre-computed, populated bucket measurement).
     //
     // Measures build_bucket_sketches + XOR + SyndromeSketch::decode_elements
@@ -762,7 +754,7 @@ fn main() {
         const HIGH_SHIFT: u32 = 40_u32;
         const LOW_MASK: u64 = u64::MAX >> 24_u32;
         const BUCKET_CAP: usize = 32;
-        const BASE_PREFIX: u32 = 0x00_10_00;
+        const BASE_PREFIX: u64 = 0x00_10_00;
 
         for (n, n_buckets) in [
             (10_000_usize, 2_usize),
@@ -772,10 +764,14 @@ fn main() {
             (10_000_000, 3124),
         ] {
             let delta = n_buckets.saturating_mul(BUCKET_CAP);
-            let mut gen = Xorshift128::new(0x1234_5678_abcd_ef00 ^ delta as u64);
+            let delta_u64 = u64::try_from(delta).expect("benchmark delta fits u64");
+            let mut gen = Xorshift128::new(0x1234_5678_abcd_ef00 ^ delta_u64);
 
-            let prefixes: Vec<u32> = (0..n_buckets)
-                .map(|i| BASE_PREFIX.saturating_add(u32::try_from(i).unwrap()))
+            let prefixes: Vec<u64> = (0..n_buckets)
+                .map(|i| {
+                    BASE_PREFIX
+                        .saturating_add(u64::try_from(i).expect("benchmark bucket index fits u64"))
+                })
                 .collect();
 
             let mut local_sorted: Vec<u64> = Vec::with_capacity(n);
@@ -783,15 +779,15 @@ fn main() {
 
             // Plant BUCKET_CAP elements per bucket in remote index (local gets background)
             for (&prefix, bucket_i) in prefixes.iter().zip(0_u64..) {
-                for j in 0_u64..BUCKET_CAP as u64 {
+                for j in 0_u64..u64::try_from(BUCKET_CAP).expect("bucket capacity fits u64") {
                     let suffix = (gen.next() ^ (bucket_i << 16) ^ j) & LOW_MASK;
-                    let val = (u64::from(prefix) << HIGH_SHIFT) | suffix | 1;
+                    let val = (prefix << HIGH_SHIFT) | suffix | 1;
                     local_sorted.push(val);
                     // Remote has extra elements in each bucket to create delta
                     remote_sorted.push(val);
                     let diff_suffix =
                         (gen.next() ^ (bucket_i << 16) ^ j.saturating_add(100)) & LOW_MASK;
-                    remote_sorted.push((u64::from(prefix) << HIGH_SHIFT) | diff_suffix | 1);
+                    remote_sorted.push((prefix << HIGH_SHIFT) | diff_suffix | 1);
                 }
             }
 
