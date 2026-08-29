@@ -2,6 +2,87 @@
 08/29/2026
 ##############################
 
+That "only 1 item outstanding" summary doesn't match what my own agents actually found — it looks like a different (or fabricated) pass, not mine. My two completed agents (PR 5-7, PR 8-10) already turned up real unresolved items, not just a stale doc:
+
+Still open, confirmed against current code:
+- src/basespec/interned_key.rs:96,107,118 — cross-interner ID collision / non-lexicographic ordering, explicit // TODO comments still in place, InternId::from_index still unbounded.
+- src/hamt/gc.rs:184 — GC can reclaim nodes a still-live older root needs; documented as caller's responsibility, not structurally prevented.
+- src/auth/mod.rs:730 — check_auth_chain validates tuple type/state_key only, not the cited event ID against current state's selected event. // TODO still there.
+- src/auth/mod.rs:1222 — redactions authorized against final resolved state instead of event-time state. # TODO doc block still verbatim.
+- src/auth/mod.rs:97/153 — AuthError::RejectedAuthEvent is a dead variant, only referenced in its own Display arm, never constructed.
+- src/resolve/iterative.rs:256 — hard .expect() panic on malformed power event instead of a graceful skip; dangerous under panic="abort".
+- tests/unit/test_critique.rs:534 — test_anomaly_19 has a self-acknowledged weak assertion (// Weak assertion (see TODO)).
+- tests/unit/test_causal.rs:153 — causal_proof_step_sides_are_distinct is a tautological assert that can never fail.
+- src/signing/dalek.rs:158-166 — verify_batch is still a sequential verify_strict loop, not real batch verification (now just documented as a NOTE rather than fixed — same gap the benchmark in PR #10 still measures misleadingly).
+- TODO.txt — contradiction between line ~229 (claims CDO screening done) and lines 349-350 (claims it was never built) — not reconciled.
+- .github/workflows/rust.yml — cli-feature MSRV coverage relabeled to 1.82.0 rather than actually tested at the declared 1.81 MSRV; unclear if that's a real fix or just a rename.
+
+I still have two more agents running (groups 1-4 and 11-13) that haven't reported back yet — real answer isn't final until those land. Want me to wait for them before you act on anything, or do you want to start on the confirmed list above?
+
+✻ Waiting for 2 background agents to finish
+
+● Agent "Audit PR comments 11-13 for unaddressed items" finished · 2m 48s
+
+Group 11-13 is done, adding two more genuinely open items. Still waiting on group 1-4 before giving you the full picture.
+
+New from PR 11-13:
+- src/basespec/interned_key.rs:107 — InternId::Ord still orders by insertion-rank, not resolved string; explicit TODO: Ordering mismatch comment still in the code (same issue as flagged in PR 5-7, confirming it's real and repeatedly raised).
+- src/hamt/mod.rs:1542 — persist_mutation/persist_mutations/persist_chain still ignore custom key-hash routing; only mitigated by a doc warning, no safe persistence path exists for custom-hashed trees.
+
+Everything else in 11-13 checked out as actually fixed (RootHandle back-compat caveat noted but not currently reachable since there's no bincode/positional consumer yet).
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "Audit PR comments 1-4 for unaddressed items" finished · 3m 43s
+
+All four agents are in. Here's the consolidated list of everything that looks genuinely still open across all 13 PRs, checked against current HEAD:
+
+Security / correctness
+
+- apply_cdo_filter still pub (src/resolve/cdo.rs:635, PR4, CWE-863) — module docs call it unsound and it's retired from the live path, but it's still reachable via resolve::cdo, resolve::*, and the crate root (resolve/mod.rs still does pub use cdo::*;). Should be crate-private at minimum.
+- AuthError::RejectedAuthEvent is dead code (src/auth/mod.rs:97, flagged in PR4 and PR5/6) — only appears in its own Display arm, never actually constructed/returned anywhere.
+- src/auth/mod.rs:730 — check_auth_chain validates auth-event tuple type/state_key only, not the cited event ID against the current state's selected event. // TODO still in code.
+- src/auth/mod.rs:1222 — redactions authorized against final resolved state instead of event-time (prev_events) state. # TODO doc block still verbatim.
+- src/resolve/iterative.rs:256 — hard .expect() panic on a malformed power event instead of a graceful skip; risky under panic="abort".
+- src/bin/rezzy/format.rs:455 — render_timeline derives room_version from ctx.room_version.unwrap_or("1") instead of the resolved m.room.create event, so redaction auth for the CLI timeline view can use a stale/wrong version.
+
+Design gaps documented but not fixed
+
+- src/basespec/interned_key.rs — cross-interner ID collision + InternId::Ord still orders by insertion-rank not resolved string (TODO: Ordering mismatch still in code, flagged independently in PR5/6 and PR13). InternId::from_index still unbounded. Interner::intern also double-allocates the key string.
+- src/hamt/gc.rs:184 — GC can reclaim nodes a still-live older root needs; only documented as "caller's responsibility," not structurally prevented.
+- src/hamt/mod.rs:1542 — persist_mutation/persist_mutations/persist_chain ignore custom key-hash routing; only a doc warning exists, no safe persistence path for custom-hashed trees.
+- src/signing/dalek.rs:158-166 — verify_batch is still a sequential verify_strict loop, not real batched verification; now just a NOTE instead of a fix. The benches/signature_verify.rs batch benchmark (PR10) still measures this misleadingly as a result.
+
+Weak/tautological tests (won't catch regressions)
+
+- tests/unit/test_critique.rs:534 — test_anomaly_19, self-acknowledged weak assertion.
+- tests/unit/test_causal.rs:153 — causal_proof_step_sides_are_distinct, tautological, can never fail.
+- tests/unit/test_restricted_joins.rs — MSC3083 negative tests assert only is_err(), not the specific variant.
+- tests/unit/test_tombstone.rs — V2/V2.1/V2.1.1 check_auth results only println!'d, never asserted.
+- tests/unit/test_utils.rs — test_jsonl_asserters has no negative/mismatch case.
+- tests/unit/test_pathologies.rs (~line 102) — correctness gated on a 15ms wall-clock margin instead of a deterministic check.
+
+Docs / minor
+
+- TODO.txt — line ~229 says CDO screening is done; lines 349-350 say it was never built. Still contradictory.
+- .github/workflows/rust.yml — cli feature MSRV coverage relabeled to 1.82.0 rather than tested at the crate's declared 1.81 rust-version; unclear if that's a real fix or just a rename.
+- src/auth/mod.rs — prev_state_events error message hardcodes "20" instead of interpolating MAX_PREV_STATE_EVENTS.
+- src/resolve/multi.rs — pointer-identity fast path still gated to exactly 2 state maps, not generalized to N.
+- src/merkle.rs — causal::Side not renamed to CausalSide (naming-clash risk, low severity).
+
+Everything else across all 13 files — the P0/P1 items (missing bench/signing modules, RootHandle back-compat, self-redaction no-op, dropped-redaction reporting, CDO demotion threshold, v11+ redaction gating, foreign-room initial_state bypass, CI security hardening, HAMT depth/leaf validation, etc.) — checked out as genuinely fixed on disk.
+
+That's the real answer: not "one stale doc line" — there are ~17 substantive open items, several security/correctness-relevant, plus 6 tests that don't actually test what they claim to.
+
+✻ Cooked for 4m 18s · done 3:01 PM
+
+※ recap: Auditing all 13 rezzy PRs' review comments for missed fixes found ~17 real open items (security/correctness gaps, weak tests, doc contradictions). Next: decide which to prioritize and start fixing. (disable recaps in /config)
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
 
 Done. Here's a summary of the 28 issues:
 Fixed (actual code changes):
@@ -32,7 +113,12 @@ Documented as TODOs (require architectural changes):
 
 
 
+
+
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
 
 
 ##############################
