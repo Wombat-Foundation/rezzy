@@ -4,6 +4,8 @@ E2E Test Runner for Rezzy: Order Independence.
 Verifies that the resolution output is identical regardless of input event order.
 """
 
+# pylint: disable=duplicate-code
+
 import json
 import os
 import random
@@ -13,6 +15,7 @@ import tempfile
 
 
 def run_ruma_lean(input_file):
+    """Run the rezzy binary against input_file and return the parsed JSON output."""
     cmd = [
         "./target/release/rezzy",
         "--input",
@@ -34,6 +37,7 @@ def run_ruma_lean(input_file):
 
 
 def main():
+    """Verify resolution output is identical regardless of input event order."""
     if len(sys.argv) < 2:
         print("Usage: e2e_shuffled.py <input_file>")
         sys.exit(1)
@@ -44,7 +48,7 @@ def main():
         print(f"Error: Input file {input_file} not found")
         sys.exit(1)
 
-    with open(input_file, "r") as f:
+    with open(input_file, "r", encoding="utf-8") as f:
         input_data = json.load(f)
 
     print(f"Running order independence test using {input_file}...")
@@ -71,10 +75,10 @@ def main():
         os.remove(tmp_name)
 
     if output1 == output2:
-        print(f"✓ Order independence verified! Outputs are identical.")
+        print("✓ Order independence verified! Outputs are identical.")
         sys.exit(0)
     else:
-        print(f"Error: Order independence failed! Outputs differ.")
+        print("Error: Order independence failed! Outputs differ.")
         sys.exit(1)
 
 

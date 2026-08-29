@@ -20,6 +20,9 @@ matrix-spec-txt/
 *cov
 .coverage
 /*.info
+# flamegraph
+perf.data*
+/*.svg
 
 # IDEs
 .idea/
@@ -28,6 +31,9 @@ matrix-spec-txt/
 /*.log
 /*.jsonl
 /*.html
+
+# assets and fixturs
+*.png
 
 # paper
 paper.aux

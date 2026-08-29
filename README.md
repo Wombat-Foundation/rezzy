@@ -1,10 +1,12 @@
 # Rezzy: Matrix State Resolution Engine
 
 [![CI](https://img.shields.io/github/actions/workflow/status/gamesguru/rezzy/rust.yml?branch=master&label=CI)](https://github.com/gamesguru/rezzy/actions/workflows/rust.yml)
-[![Tests](https://raw.githubusercontent.com/gamesguru/rezzy/badges/tests.svg)](https://github.com/gamesguru/rezzy/actions/workflows/rust.yml)
+[![Benchmarks](https://img.shields.io/github/actions/workflow/status/gamesguru/rezzy/benches.yml?branch=master&label=benchmarks)](https://github.com/gamesguru/rezzy/actions/workflows/benches.yml)
 [![codecov](https://codecov.io/gh/gamesguru/rezzy/graph/badge.svg)](https://codecov.io/gh/gamesguru/rezzy)
 [![crates.io](https://img.shields.io/crates/v/rezzy.svg)](https://crates.io/crates/rezzy)
 [![TDD](https://img.shields.io/badge/development-TDD-green.svg)](https://en.wikipedia.org/wiki/Test-driven_development)
+
+[![Tests](https://raw.githubusercontent.com/gamesguru/rezzy/badges/tests.svg)](https://github.com/gamesguru/rezzy/actions/workflows/rust.yml)
 [![Complement](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fgamesguru%2Fcontinuwuity%2F_metadata%2Fbadges%2Fbadge-guru-dev-2026-03-27-b1-presence-b2-federation.json)](https://github.com/gamesguru/continuwuity/actions/workflows/complement.yml?query=branch%3Aguru%2Fdev-2026-03-27%2Bb1-presence%2Bb2-federation)
 
 Rezzy is a high-performance, dependency-free Rust engine
@@ -17,15 +19,15 @@ resolution `v2`, `v2.1`, `v2.1.1` (experimental), and
 
 <!-- markdownlint-disable MD013 -->
 
-|      Room Version       | State Resolution | Notes                                   |
-| :---------------------: | :--------------: | --------------------------------------- |
-|         _1_ \*          |       _V1_       | _Legacy — depth-based ordering_         |
-|         _2_ \*          |       _V2_       | _Mainline sort + iterative auth_        |
-|           3–6           |        V2        | Event ID format changes only            |
-|          7–10           |        V2        | Knocking, restricted joins              |
-|           11            |        V2        | Redaction rules update                  |
-|         **12**          |     **V2.1**     | MSC4297 — conflicted subgraph expansion |
-| _org.matrix.msc4242_ \* |      _V2.2_      | Experimental — State DAGs               |
+|      Room Version       | State Resolution | Notes                                     |
+| :---------------------: | :--------------: | ----------------------------------------- |
+|         _1_ \*          |       _V1_       | _Legacy — depth-based ordering_           |
+|         _2_ \*          |       _V2_       | _Mainline sort + iterative auth_          |
+|           3–6           |        V2        | Event ID format changes only              |
+|          7–10           |        V2        | Knocking, restricted joins                |
+|           11            |        V2        | Redaction rules update                    |
+|         **12**          |     **V2.1**     | [MSC4297] — conflicted subgraph expansion |
+| _org.matrix.msc4242_ \* |      _V2.2_      | Experimental — State DAGs ([MSC4242])     |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -64,8 +66,9 @@ Everything re-exports from the crate root —
 `StateResVersion`, `HashMap`, the works.
 
 - **`resolve_iterative_sort`** — the main entry point.
-  Unconflicted state, conflicted events, auth context,
-  and version → winning `SharedState`.
+  Unconflicted baseline, conflicted events, auth
+  context, algorithm version, power-level cache, and
+  empty state key → winning `SharedState`.
 - **`resolve_lattice_fold`** — parallel alternative
   (lattice fold instead of sequential mainline sort).
 - **`resolve_iterative_sort_with_deltas`** — diagnostic
@@ -74,11 +77,15 @@ Everything re-exports from the crate root —
   **`compute_state_at_streaming`** — reconstruct resolved
   state at any DAG position. Streaming variant bounds
   memory to frontier width.
-- **`auth::check_auth`** — spec-compliant auth engine.
-  Implement `StateProvider` to plug in your own backend.
-- Generic `EventId` trait — `String`, `u32`, `u64`,
-  `ruma::OwnedEventId` all just work.
-- `EventContent` trait — skip JSON parsing in the hot
+- **`auth::check_auth`** /
+  **`auth::check_auth_with_context`** — spec-compliant
+  auth engine. Implement `StateProvider` to plug in your
+  own backend.
+- Generic **`EventId`** and **`StateKey`** traits —
+  `EventId` accepts `String`, `u32`, `u64`, or
+  `ruma::OwnedEventId`; `StateKey` accepts any string-like
+  key (`String`, `Arc<str>`, or interned arena keys).
+- **`EventContent`** trait — skip JSON parsing in the hot
   path. `serde_json::Value` works via default impl.
 - Generic `EventId` support across delta compression
   (`StateDelta`, `CompactedCheckpoint`) and core data
@@ -139,46 +146,36 @@ cargo install cargo-llvm-cov
 make cov
 ```
 
-## Algorithmic & architectural engineering
+## Architecture & Algorithms
 
-Because we care about raw performance and mechanical
-efficiency, `rezzy` is built on a foundation of
-blazingly fast ideas. Under the hood of our production
-code, you will find:
+Under the hood:
 
-- _Causal domination_ operator (CDO) pre-filtering
-- Experimental V2.1.1 State Resolution with
-  supplemental narrowing
-- Batched/strip-mined **SWAR** (SIMD within a register)
-  matrix sweeps
-- `O(1)` _causal coordinatization_ projection
-- Filtered _commutative join-semilattice_ folding
-- Integer "interning" (`ShortID`) graph-based traversal
-- Flat-array "stride matrices"
-- Fully-featured, spec-compliant authorization engine
-- Reverse topological power ordering (Kahn's algorithm)
-- `Arc`-based copy-on-write (CoW) structural sharing
-- `O(1)` fast-path _merge resolution_ via
-  "pointer-equality bypass"
-- Native **n-way state resolution** (resolve/merge
-  arbitrary DAG forks in a single pass)
-- Zero-allocation stack-safe DAG crawling
-- Generic `BuildHasher` decoupling
-- Supremum deletion attack (Byzantine fault mitigation)
-- Optimal conflicted state sub-graph computation
-  (MSC4297)
-- **Roaring bitmaps** (SIMD-optimized set operations)
-- `FNV-1a` 128-bit lexicographical state hashing
-- Compacted delta chains with auto-snapshot
-  (bounded reconstruction cost)
-- Per-event resolution tracing
-  (`ResolutionDelta` + phase tracking)
-- Checkpoint/partial-join resolution
-  (trusted snapshot as unconflicted base)
-- Batch state computation with shared topological
-  traversal
-- `no_std` compatible (`alloc`-only, no system
-  dependencies)
+- **MSC4297 / MSC4242 resolution**: Conflicted state subgraph expansion and
+  state DAG validation.
+- **Power ordering & mainline sort**: Reverse topological power sorting via
+  Kahn's algorithm and mainline distance ranking.
+- **Resolved-state screening**: Sound post-power ban enforcement
+  (`is_sender_banned`) for hardened state resolution.
+- **Structural sharing & merge fast-paths**: `Arc`-backed `SharedState` with
+  pointer-equality bypass for identical parent states.
+- **State DAG traversal**: Iterative, stack-safe ancestor crawling, merge base
+  computation, and extremity discovery.
+- **Native n-way resolution**: Resolve and merge arbitrary DAG forks in a single
+  pass.
+- **Streaming & batch state reconstruction**: `compute_state_at_streaming`
+  bounds peak memory to the DAG's active frontier width.
+- **Compacted state deltas**: Forward delta chains with auto-snapshotting for
+  fast checkpoint-based reconstruction.
+- **Roaring bitmaps & dense indexing**: SIMD-accelerated set operations for
+  reachability, auth differences, and HAMT node audits.
+- **Content-addressed state hashing**: Incremental lattice hashing (`LtHash`)
+  and Canonical JSON SHA-256 reference hashing.
+- **Minisketch set reconciliation**: GF(2^64) PinSketch with SIMD-accelerated
+  root finding for federation sync.
+- **Generic type decoupling**: Parameterized over `Id: EventId`,
+  `K: StateKey`, `C: EventContent`, and `S: BuildHasher`.
+- **`no_std` compatible**: Pure `#![no_std]` core with `alloc` support and zero
+  system dependencies.
 
 ## Synchronous model
 
@@ -304,17 +301,26 @@ for a given event type.
 
 `resolve_iterative_sort` is generic over `Id: EventId`,
 and `EventId` has a blanket impl for any
-`T: Clone + Eq + Hash + Ord + Debug`. This means `u32`,
+`T: Clone + Eq + Hash + Ord + Debug + Display`. This means `u32`,
 `u64`, and any interned short ID type work out of the
 box:
 
 ```rust
-let unconflicted: imbl::OrdMap<(String, String), u64> = /* ... */;
-let events: HashMap<u64, LeanEvent<u64>> = /* ... */;
-let auth_ctx: HashMap<u64, LeanEvent<u64>> = /* ... */;
+use rezzy::{resolve_iterative_sort, LeanEvent, SharedState, StateResVersion, HashMap};
 
-let resolved: imbl::OrdMap<(String, String), u64> =
-    resolve_iterative_sort(unconflicted, events, &auth_ctx, StateResVersion::V2);
+let unconflicted: SharedState<u64> = SharedState::new();
+let events: HashMap<u64, LeanEvent<u64>> = HashMap::new();
+let auth_ctx: HashMap<u64, LeanEvent<u64>> = HashMap::new();
+let mut pl_cache = HashMap::new();
+
+let resolved: SharedState<u64> = resolve_iterative_sort(
+    &unconflicted,
+    &events,
+    &auth_ctx,
+    StateResVersion::V2,
+    &mut pl_cache,
+    &String::new(),
+);
 ```
 
 ### Snapshot/checkpoint (partial-join support) ✓
@@ -338,3 +344,6 @@ Full delta chain support with Synapse-like compaction:
 - All checkpoint types derive `Serialize` /
   `Deserialize` for direct storage in RocksDB, bincode,
   etc.
+
+[MSC4242]: https://github.com/matrix-org/matrix-spec-proposals/pull/4242
+[MSC4297]: https://github.com/matrix-org/matrix-spec-proposals/pull/4297

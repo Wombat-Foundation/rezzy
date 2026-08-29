@@ -35,7 +35,10 @@ Usage:
   python3 scripts/export_federation_dag.py '#matrix:matrix.org' --limit 10000
 """
 
+# pylint: disable=duplicate-code
+
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -77,8 +80,15 @@ def api_get(path, params=None, server=None):
         body = e.read().decode("utf-8", errors="replace")[:200]
         print(f"  HTTP {e.code}: {e.reason} — {body}", file=sys.stderr)
         return None
-    except Exception as e:
+    except urllib.error.URLError as e:
         print(f"  Error: {e}", file=sys.stderr)
+        return None
+    except (
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        http.client.IncompleteRead,
+    ) as e:
+        print(f"  Invalid API response: {e}", file=sys.stderr)
         return None
 
 
@@ -126,9 +136,8 @@ def fetch_context(room_id, event_id, limit=50):
 def export_via_cs_api(room_id, max_events=5000):
     """Export using CS API — gets events but may lack auth/prev fields.
     We compensate by fetching each event individually for federation fields."""
-
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
     events = {}  # event_id -> normalized event
-    seen_ids = set()
 
     # Step 1: Current state
     print(f"[1/4] Fetching current state of {room_id}...")
@@ -291,18 +300,18 @@ def write_output(events, room_id, output_path):
         },
     }
 
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, separators=(",", ":"))
 
     size_kb = os.path.getsize(output_path) // 1024
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Exported {len(events)} events from {room_id}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Events with auth_events: {has_auth}/{len(events)}")
     print(f"Events with prev_events: {has_prev}/{len(events)}")
     print(f"DAG heads: {len(heads)}")
     print(f"Unique senders: {output['metadata']['unique_senders']}")
-    print(f"Event types:")
+    print("Event types:")
     for t in sorted(types, key=lambda x: -types[x])[:10]:
         print(f"  {t}: {types[t]}")
     print(f"\nOutput: {output_path} ({size_kb}KB)")
@@ -315,6 +324,7 @@ def write_output(events, room_id, output_path):
 
 
 def main():
+    """Parse CLI args, resolve aliases, and export the room DAG."""
     parser = argparse.ArgumentParser(
         description="Export a Matrix room DAG for rezzy stress testing"
     )
