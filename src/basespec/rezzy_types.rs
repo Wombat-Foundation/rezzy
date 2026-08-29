@@ -3486,6 +3486,46 @@ mod index_by_event_id_tests {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+mod dag_node_tests {
+    use super::*;
+    use crate::basespec::event_types::M_ROOM_CREATE;
+
+    /// `auth_chain_events` returns `&[]` for `V2_2`.
+    #[test]
+    fn auth_chain_events_returns_empty_for_v2_2() {
+        let ev = LeanEvent::<String> {
+            event_id: "$ev:example".into(),
+            event_type: M_ROOM_CREATE.into(),
+            auth_events: alloc::vec!["$prev1:example".into(), "$prev2:example".into()],
+            ..Default::default()
+        };
+        // V1–V2.1.1: returns the stored auth_events
+        assert_eq!(
+            ev.auth_chain_events(StateResVersion::V2),
+            &["$prev1:example", "$prev2:example"]
+        );
+        // V2_2: must return empty — callers must not walk these as auth-chain edges.
+        assert!(ev.auth_chain_events(StateResVersion::V2_2).is_empty());
+    }
+
+    /// `dag_edges` returns `prev_state_events` for `V2_2` and `auth_events` otherwise.
+    #[test]
+    fn dag_edges_returns_correct_edges_per_version() {
+        let ev = LeanEvent::<String> {
+            event_id: "$ev:example".into(),
+            event_type: "m.room.message".into(),
+            auth_events: alloc::vec!["$auth:example".into()],
+            ..Default::default()
+        };
+        // V2: dag_edges returns auth_events
+        assert_eq!(ev.dag_edges(StateResVersion::V2), &["$auth:example"]);
+        // V2_2: dag_edges returns prev_state_events (same underlying storage)
+        assert_eq!(ev.dag_edges(StateResVersion::V2_2), &["$auth:example"]);
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod canonical_parity_tests {
     use super::*;
     use alloc::string::String;
@@ -3543,6 +3583,25 @@ mod canonical_parity_tests {
         output.clear();
         write_redacted_canonical(&mut output, &json!(["non-object content"]), "11").unwrap();
         assert_eq!(output, "{}");
+
+        // No content field; auth_events (sorts before "content") then type (sorts after).
+        // BTreeMap iterates auth_events first → first=false, then type triggers the
+        // mid-loop empty-content insertion with the comma (line 852).
+        output.clear();
+        write_redacted_canonical(
+            &mut output,
+            &json!({"auth_events": ["$a"], "type": "m.room.message"}),
+            "10",
+        )
+        .unwrap();
+        assert!(
+            output.contains("\"content\":{}"),
+            "mid-insertion empty content: {output}"
+        );
+        // Trailing empty content: all kept keys sort ≤ "content" (only auth_events).
+        output.clear();
+        write_redacted_canonical(&mut output, &json!({"auth_events": ["$a"]}), "10").unwrap();
+        assert_eq!(output, r#"{"auth_events":["$a"],"content":{}}"#);
     }
 
     #[test]
