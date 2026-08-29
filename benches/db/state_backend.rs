@@ -151,12 +151,12 @@ fn bench_bulk_build(n: usize, entries: &[(Key, Value)]) {
     println!("bulk build (n={n}):");
     let reps = if n >= 4096 { 10 } else { 200 };
 
-    let ordmap_elapsed = time_repeated("OrdMap::from_iter", reps, || {
+    let ordmap_elapsed = time_repeated(&format!("OrdMap::from_iter (n={n})"), reps, || {
         let map: imbl::OrdMap<Key, Value> = entries.iter().cloned().collect();
         black_box(map);
     });
 
-    let hamt_elapsed = time_repeated("hamt::build_hamt", reps, || {
+    let hamt_elapsed = time_repeated(&format!("hamt::build_hamt (n={n})"), reps, || {
         let root = hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, entries.iter().cloned())
             .expect("build should not collide");
         black_box(root);
@@ -186,12 +186,12 @@ fn bench_point_lookup(n: usize, entries: &[(Key, Value)]) {
         .collect();
 
     let op_count = lookups.len() as u32;
-    let ordmap_elapsed = time_once("OrdMap::get", op_count, || {
+    let ordmap_elapsed = time_once(&format!("OrdMap::get (n={n})"), op_count, || {
         for k in &lookups {
             black_box(ordmap.get(k));
         }
     });
-    let hamt_elapsed = time_once("hamt::get", op_count, || {
+    let hamt_elapsed = time_once(&format!("hamt::get (n={n})"), op_count, || {
         for k in &lookups {
             black_box(hamt_root.get(STRUCTURAL_KEY, k));
         }
@@ -217,16 +217,20 @@ fn bench_incremental_insert(n: usize, entries: &[(Key, Value)]) {
         .collect();
 
     let op_count = new_keys.len() as u32;
-    let ordmap_elapsed = time_once("OrdMap::update (fresh clone each op)", op_count, || {
-        for k in &new_keys {
-            let mut m = ordmap.clone();
-            m.insert(k.clone(), "$new:example.org".to_string());
-            black_box(m);
-        }
-    });
+    let ordmap_elapsed = time_once(
+        &format!("OrdMap::update (fresh clone each op) (n={n})"),
+        op_count,
+        || {
+            for k in &new_keys {
+                let mut m = ordmap.clone();
+                m.insert(k.clone(), "$new:example.org".to_string());
+                black_box(m);
+            }
+        },
+    );
 
     let hamt_elapsed = time_once(
-        "hamt::insert (path-copy from shared root)",
+        &format!("hamt::insert (path-copy from shared root) (n={n})"),
         op_count,
         || {
             for k in &new_keys {
@@ -256,16 +260,20 @@ fn bench_incremental_remove(n: usize, entries: &[(Key, Value)]) {
     let victims: Vec<Key> = entries.iter().take(1000).map(|(k, _)| k.clone()).collect();
     let op_count = victims.len() as u32;
 
-    let ordmap_elapsed = time_once("OrdMap::remove (fresh clone each op)", op_count, || {
-        for k in &victims {
-            let mut m = ordmap.clone();
-            m.remove(k);
-            black_box(m);
-        }
-    });
+    let ordmap_elapsed = time_once(
+        &format!("OrdMap::remove (fresh clone each op) (n={n})"),
+        op_count,
+        || {
+            for k in &victims {
+                let mut m = ordmap.clone();
+                m.remove(k);
+                black_box(m);
+            }
+        },
+    );
 
     let hamt_elapsed = time_once(
-        "hamt::remove (path-copy from shared root)",
+        &format!("hamt::remove (path-copy from shared root) (n={n})"),
         op_count,
         || {
             for k in &victims {
@@ -294,7 +302,7 @@ fn bench_fork_and_diverge(n: usize, entries: &[(Key, Value)]) {
     const REPS: u32 = 50;
     let op_count = REPS * BRANCHES as u32 * EDITS_PER_BRANCH as u32;
 
-    let ordmap_elapsed = time_once("OrdMap fork+diverge", op_count, || {
+    let ordmap_elapsed = time_once(&format!("OrdMap fork+diverge (n={n})"), op_count, || {
         let mut rng = Xorshift128::new(0xABCD);
         for _ in 0..REPS {
             for b in 0..BRANCHES {
@@ -311,7 +319,7 @@ fn bench_fork_and_diverge(n: usize, entries: &[(Key, Value)]) {
         }
     });
 
-    let hamt_elapsed = time_once("hamt fork+diverge", op_count, || {
+    let hamt_elapsed = time_once(&format!("hamt fork+diverge (n={n})"), op_count, || {
         let mut rng = Xorshift128::new(0xABCD);
         for _ in 0..REPS {
             for b in 0..BRANCHES {
