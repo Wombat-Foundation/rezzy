@@ -64,11 +64,13 @@ impl DenseIndexWidth for usize {
 /// assigned to all of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IndexTooLarge {
-    /// The true total number of distinct items (which exceeds the bound). Not
-    /// a constant `bound + 1`: the builder keeps counting distinct items past
-    /// the bound before failing.
+    /// The number of distinct items counted before construction stopped.
+    /// When `allocation_failed` is false, this is the true total (which
+    /// exceeds the bound). When `allocation_failed` is true, this is a
+    /// partial count — the builder stopped before scanning the whole input.
     pub distinct_count: usize,
     /// True when construction stopped because memory allocation failed.
+    /// In this case, `distinct_count` is a partial count, not the true total.
     pub allocation_failed: bool,
 }
 

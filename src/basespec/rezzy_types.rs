@@ -495,7 +495,7 @@ fn redact_top_level(value: &Value, room_version: &str) -> serde_json::Map<String
     if is_msc4242_room_version(room_version) {
         take("prev_state_events", &mut out);
     }
-    if !is_msc4242_room_version(room_version) {
+    if !room_version_is_v11_or_later(room_version) {
         take("origin", &mut out);
         take("membership", &mut out);
         take("prev_state", &mut out);

@@ -322,7 +322,8 @@ fn resolve(p: &Problem, version: StateResVersion) -> SharedState {
 /// Differential coverage over the multi-level random DAG generator.
 ///
 /// Resolves each DAG with `V2_1` and `V2_1_1` and asserts the results are
-/// **identical**. V2.1.1 runs the CDO pre-filter; V2.1 does not, so the two
+/// **identical**. Neither version runs the CDO pre-filter in the live
+/// resolution path (`apply_cdo_filter` is only called from tests), so the two
 /// must agree on every DAG.
 ///
 /// Scope of this assertion: it fails only if a CDO drop *changes a resolved
@@ -460,6 +461,13 @@ fn cdo_drop_rate_measured() {
          ({dag_count} DAGs had a non-empty drop set, of {dags_with_conflict} with conflicted candidates); \
          {dropped_winners_total} dropped IDs appeared as winners in the resolved state \
          ({dropped_winner_dags} DAGs)"
+    );
+    // Assert that no CDO drop flipped an outcome -- the documented invariant.
+    // If this fails, the CDO dropped a winner, which would be a regression.
+    assert_eq!(
+        dropped_winners_total, 0,
+        "CDO dropped {dropped_winners_total} winner(s) across {dropped_winner_dags} DAG(s) -- \
+         this violates the documented invariant that CDO drops only losers"
     );
 }
 

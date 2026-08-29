@@ -51,6 +51,14 @@
 //! still-live descendant needs. This module cannot detect that case; it's
 //! the caller's responsibility to only retire a root through this path when
 //! retirement is a strict linear chain.
+//!
+//! TODO: To fully fix this, add per-root reference tracking to `RefcountTable`.
+//! This would require:
+//! 1. Adding a `root_reach: HashMap<StructuralHash, Vec<StructuralHash>>` field
+//! 2. Modifying `bootstrap`, `apply_new`, and `apply_superseded` to track which
+//!    hashes belong to which root
+//! 3. In `apply_superseded`, checking that no other live root references a node
+//!    before reporting it as zeroed
 
 use alloc::vec::Vec;
 use core::fmt;

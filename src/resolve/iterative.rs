@@ -426,6 +426,7 @@ where
 pub(crate) fn is_sender_banned<Id, C, K>(
     ev: &LeanEvent<Id, C, K>,
     resolved: &crate::state::at::SharedState<Id, K>,
+    unconflicted_state: &crate::state::at::SharedState<Id, K>,
     events: &impl crate::basespec::rezzy_types::EventProvider<Id, C, LeanEvent<Id, C, K>>,
 ) -> bool
 where
@@ -437,12 +438,19 @@ where
     use crate::auth::StateKeyDyn;
     use crate::basespec::event_types::{MEM_BAN, M_ROOM_MEMBER};
     let query: &dyn StateKeyDyn = &(M_ROOM_MEMBER, ev.sender.as_str());
-    match resolved.get(query) {
-        Some(member_id) => events
-            .get_event(member_id)
-            .is_some_and(|m| m.get_membership() == Some(MEM_BAN)),
-        None => false,
-    }
+    // Check resolved first (authoritative); fall back to unconflicted state
+    // so that an already-agreed ban absent from the auth diff is still visible
+    // to the screening pass. For V1/V2 resolved is a clone of unconflicted,
+    // making the fallback a no-op; for V2.1+ resolved starts empty so the
+    // fallback is the only path to unconflicted membership.
+    let member_id = resolved
+        .get(query)
+        .or_else(|| unconflicted_state.get(query));
+    member_id.is_some_and(|id| {
+        events
+            .get_event(id)
+            .is_some_and(|m| m.get_membership() == Some(MEM_BAN))
+    })
 }
 /// Resolves conflicted Matrix room state using the specified algorithm version.
 ///
@@ -691,7 +699,7 @@ where
     let mut non_power_list: Vec<&LeanEvent<Id, C, K>> = if version.has_ban_evasion_hardening() {
         non_power_events
             .iter()
-            .filter(|(_, ev)| !is_sender_banned(ev, &resolved, &sort_context))
+            .filter(|(_, ev)| !is_sender_banned(ev, &resolved, unconflicted_state, &sort_context))
             .map(|(_, ev)| ev)
             .collect()
     } else {
@@ -949,7 +957,9 @@ where
     for ev in non_power_list {
         let Some(sk) = &ev.state_key else { continue };
         let key = (EventType::from(ev.event_type.as_str()), sk.clone());
-        if version.has_ban_evasion_hardening() && is_sender_banned(ev, &resolved, &sort_context) {
+        if version.has_ban_evasion_hardening()
+            && is_sender_banned(ev, &resolved, &unconflicted_state, &sort_context)
+        {
             let replaced = resolved.get(&key).cloned();
             deltas.push(ResolutionDelta {
                 event_id: ev.event_id.clone(),
@@ -1059,7 +1069,12 @@ mod tests {
         );
 
         let ev = member_ev("$bob_msg", "@bob", "@bob", MEM_JOIN);
-        assert!(is_sender_banned(&ev, &resolved, &events));
+        assert!(is_sender_banned(
+            &ev,
+            &resolved,
+            &SharedState::new(),
+            &events
+        ));
     }
 
     #[test]
@@ -1076,10 +1091,20 @@ mod tests {
         );
 
         let ev = member_ev("$bob_msg", "@bob", "@bob", MEM_JOIN);
-        assert!(!is_sender_banned(&ev, &resolved, &events));
+        assert!(!is_sender_banned(
+            &ev,
+            &resolved,
+            &SharedState::new(),
+            &events
+        ));
 
         // No membership event at all -> not banned.
-        assert!(!is_sender_banned(&ev, &SharedState::new(), &HashMap::new()));
+        assert!(!is_sender_banned(
+            &ev,
+            &SharedState::new(),
+            &SharedState::new(),
+            &HashMap::new()
+        ));
     }
 
     /// A shared room for the resolved-state screening tests below: create,

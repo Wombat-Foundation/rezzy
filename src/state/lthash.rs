@@ -292,6 +292,11 @@ impl RedactionOverlay {
 
     const DST: &'static [u8] = b"msc4500_lthash16_redactions_v1\x00";
 
+    // TODO: The overlay duplicates `LtHash`'s tuple encoding, lattice updates,
+    // and digest serialization instead of sharing them. Future changes to
+    // framing, truncation, or byte order can update one path and silently make
+    // the two digest implementations inconsistent; factor the common
+    // accumulator/encoding logic and inject the domain-separation tag.
     fn seed(
         event_type: &str,
         state_key: &str,

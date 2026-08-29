@@ -727,6 +727,12 @@ pub fn check_auth_with_context<
             if state.get_event(req_type, req_key).is_none() {
                 continue;
             }
+            // TODO: Auth events tuple validation
+            // When `auth_events` cites an older event with the same
+            // `(type, state_key)` as the current state entry, this check
+            // accepts it because it validates only the tuple, not the selected
+            // event ID. Compare each cited ID with the current state's event
+            // ID for every required tuple.
             if !seen_tuples.contains(&(req_type.to_string(), req_key.to_string())) {
                 return Err(AuthError::IncompleteAuthEvents {
                     event_type: req_type.to_string(),
@@ -1207,6 +1213,14 @@ pub(crate) fn event_id_to_wire_cow<Id: core::fmt::Display + 'static>(
 ///   pass (a redaction and its target may arrive in different batches).
 /// - `state`: the resolved room state used to authorize each redaction.
 ///
+/// # TODO: Event-time state authorization
+/// Currently, all redactions are authorized against the final resolved state.
+/// If a sender's power level changes between sending a redaction and the final
+/// resolution, this may incorrectly accept or reject redactions. The Matrix
+/// spec requires redaction authorization to use the state at each redaction's
+/// `prev_events`. A future fix should pass a per-redaction state lookup closure
+/// instead of a single state parameter.
+///
 /// The function mutates `events` in place, replacing each authorized target
 /// with its redacted form. Callers can use
 /// [`LeanEvent::is_redaction`](crate::basespec::rezzy_types::LeanEvent::is_redaction)
@@ -1258,6 +1272,10 @@ where
         };
         match pos_by_id.get(target_id) {
             Some(&tp) if tp != rp => pairs.push((rp, tp)),
+            // Self-redaction (tp == rp): treat as a no-op, not a deferred
+            // target. The target is present in the batch, so the catch-all
+            // should not apply.
+            Some(_) => {}
             _ => deferred.push((rp, target_id.to_string())),
         }
     }
@@ -1340,6 +1358,13 @@ where
         if let Some(redacted) = apply_redaction(target, redaction, room_version) {
             *target = redacted;
             report.applied.push((redaction_id, target_id));
+        } else {
+            // An authorized redaction that failed to apply (e.g., its `redacts`
+            // field was already stripped by a prior redaction in the chain).
+            // Surface it rather than silently dropping it.
+            report
+                .target_not_in_batch
+                .push((redaction_id, target_id.to_string()));
         }
     }
 

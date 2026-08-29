@@ -535,6 +535,15 @@ fn test_anomaly_19_demoted_but_still_authorized() {
         get_membership(&resolved, &map, "@priya:example.com"),
         "join"
     );
+    // TODO: Weak assertion
+    // The assertion `get_user_power_level(...) == 0` cannot distinguish the
+    // intended outcome (Priya demoted to PL 0) from the fallback path where
+    // no `m.room.power_levels` resolves or Priya is absent from the `users`
+    // map, because `get_user_power_level` also returns 0 as its default.
+    // The test would still pass if the demotion event never took effect,
+    // weakening the 'demoted but still authorized' claim. Assert against
+    // the resolved power_levels event content (or assert PL 50 before and
+    // 0 after) so a failed demotion fails the test.
     assert_eq!(
         get_user_power_level(&resolved, &map, "@priya:example.com"),
         0

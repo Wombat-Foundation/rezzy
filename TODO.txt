@@ -1,6 +1,44 @@
 ##############################
+08/29/2026
+##############################
+
+
+Done. Here's a summary of the 28 issues:
+Fixed (actual code changes):
+#	File	Fix
+P1	iterative.rs	Added unconflicted state fallback to is_sender_banned
+P1	cdo.rs	Check PL against type-specific threshold, not just > 0
+P1	hamt/mod.rs	Leaf-slot validation + runtime mixed-depth check
+P1	rezzy_types.rs	Gate v11+ field preservation correctly
+P2	hamt/audit.rs	Replace panic with proper error for 2^32 universes
+P2	dense_index.rs	Document partial count on allocation failure
+P2	differential_harness.rs	Add missing assertion to CDO test
+P3	auth/mod.rs	Self-redaction no-op + surface unapplied redactions
+P3	resolve/multi.rs	Sort diff keys for deterministic output
+P3	test_causal.rs	Non-tautological empty root check
+P3	differential_harness.rs	Fix stale comment
+P3	main.rs	Fix file count comment
+False positives (no change needed):
+- Cargo.toml signing features — module already exists
+- .github/workflows/benches.yml — benchmark files already exist
+Documented as TODOs (require architectural changes):
+- auth/mod.rs — Event-time state for redaction authorization
+- hamt/gc.rs — Per-root reference tracking for shared nodes
+- hamt/hash.rs — Legacy-compatible deserializer
+- interned_key.rs — Cross-interner identity/ordering
+- lthash.rs — Factored overlay logic
+- merkle.rs — Cached empty_table
+- test_critique.rs — Stronger demotion assertion
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+##############################
 08/23/2026
 ##############################
+
 
 ❯ so are we actually collecting? or streaming?
 

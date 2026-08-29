@@ -22,6 +22,12 @@ pub const HAMT_ROUTING_VERSION_V1: u8 = 1;
 
 /// A resolved root handle carrying the local structural hash, global state-group identifier,
 /// and explicit codec/routing version metadata for migration safety.
+///
+/// TODO: Legacy deserializer
+/// When deserializing a handle persisted before this change, serde rejects
+/// the missing version fields, so legacy JSON or bincode handles cannot reach
+/// migration handling. Add an explicit legacy-compatible/versioned deserializer,
+/// or preserve the old wire shape in a separate type.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RootHandle {
     pub codec_version: u8,

@@ -1718,10 +1718,14 @@ where
     KeyHash: FnMut(&K) -> KeyPathHash,
 {
     if let Some(&(_, _, first_depth, _)) = nodes_and_keys.first() {
-        debug_assert!(
-            nodes_and_keys.iter().all(|&(_, _, d, _)| d == first_depth),
-            "all nodes in a single descend_level call must use the same depth"
-        );
+        // Runtime check: mixed-depth entries would merge requests from different
+        // levels into one frontier, misrouting subsequent lookups. The
+        // debug_assert! was previously only checked in debug builds.
+        if !nodes_and_keys.iter().all(|&(_, _, d, _)| d == first_depth) {
+            return Err(DescendError::CorruptNode(
+                "mixed-depth entries in a single descend_level call",
+            ));
+        }
     }
 
     let mut found = Vec::new();
@@ -1754,6 +1758,33 @@ where
             return Err(DescendError::CorruptNode(
                 "decoded node contents do not match structural hash",
             ));
+        }
+
+        // Validate every decoded leaf's routed slot before processing
+        // requests. In a correct CHAMP HAMT, a leaf stored at bit `s`
+        // of the datamap must satisfy
+        //     bucket_index(key_hash_fn(leaf_key), depth) == s.
+        // If persisted data placed a leaf under the wrong slot,
+        // descend_level would silently return false absences for lookups
+        // of that leaf's key.
+        if depth < HAMT_MAX_DEPTH {
+            let mut datamap_remaining = node.datamap;
+            let mut leaf_slot_idx = 0usize;
+            while datamap_remaining != 0 {
+                let s = datamap_remaining.trailing_zeros() as usize;
+                let (leaf_key, _) =
+                    node.leaves
+                        .get(leaf_slot_idx)
+                        .ok_or(DescendError::CorruptNode(
+                            "leaf index out of bounds during slot validation",
+                        ))?;
+                let expected_slot = bucket_index(&key_hash_fn(leaf_key), depth);
+                if expected_slot != s {
+                    return Err(DescendError::CorruptNode("leaf routed to wrong slot"));
+                }
+                leaf_slot_idx = leaf_slot_idx.saturating_add(1);
+                datamap_remaining &= datamap_remaining.saturating_sub(1);
+            }
         }
 
         for &req_hash in target_keys {

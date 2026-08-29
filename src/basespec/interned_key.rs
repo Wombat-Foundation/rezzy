@@ -91,6 +91,18 @@ pub struct InternId<'a> {
 // not part of the key's identity). Ids must be assigned in sorted string order
 // (sort-once) for this rank `Ord` to agree with the `StateKeyDyn` ordering
 // contract.
+//
+// TODO: Cross-interner collision
+// When two interners assign the same index to different strings, their
+// `InternId` values compare equal and collapse map entries despite resolving
+// to different keys. Include arena identity in equality, ordering, and hashing,
+// or prevent IDs from different arenas from being mixed by construction.
+//
+// TODO: Ordering mismatch
+// When callers intern keys in discovery order, `InternId` ordering differs
+// from string ordering, so borrowed `BTreeMap` lookups can miss existing state
+// entries. Assign IDs from a sorted input or compare strings, and enforce the
+// invariant in release builds rather than only with `debug_assert!`.
 impl PartialEq for InternId<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.idx == other.idx

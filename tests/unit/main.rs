@@ -1,11 +1,12 @@
 //! Merged entry point for the ungated integration test files.
 //!
-//! These 16 files used to each be their own `[[test]]` target (each a
-//! separately-compiled-and-linked binary). None of them need distinct
-//! `required-features`, so there's no reason for them to pay a separate
-//! link cost each: folding them into submodules of one binary cuts the
-//! number of link steps `cargo test`/`cargo build --tests` does for the
-//! default feature set from 16 down to 1.
+//! These 19 files (18 test files + the `differential_harness` module) used to
+//! each be their own `[[test]]` target (each a separately-compiled-and-linked
+//! binary). None of them need distinct `required-features`, so there's no
+//! reason for them to pay a separate link cost each: folding them into
+//! submodules of one binary cuts the number of link steps
+//! `cargo test`/`cargo build --tests` does for the default feature set from
+//! 19 down to 1.
 //!
 //! Files that still have their own `required-features` (`test_snapshots`,
 //! `stress_large_rooms`, `stress_unredacted_lounge`, `test_main`,

@@ -30,21 +30,31 @@ use super::{
 /// hashes, so no dense index could be assigned to all of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UniverseTooLarge {
-    /// The true total number of distinct hashes in `universe` (which exceeds
-    /// `u32::MAX`). Not a constant `u32::MAX + 1`: the builder keeps counting
-    /// distinct hashes past the bound before failing.
+    /// The number of distinct hashes counted before construction stopped.
+    /// When `allocation_failed` is false, this is the true total (which
+    /// exceeds `u32::MAX`). When `allocation_failed` is true, this is a
+    /// partial count — the builder stopped before scanning the whole universe.
     pub distinct_count: usize,
     /// True when construction stopped because memory allocation failed.
+    /// In this case, `distinct_count` is a partial count, not the true total.
     pub allocation_failed: bool,
 }
 
 impl fmt::Display for UniverseTooLarge {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "universe has {} distinct hashes, more than u32::MAX can index",
-            self.distinct_count
-        )
+        if self.allocation_failed {
+            write!(
+                f,
+                "universe has at least {} distinct hashes (allocation failed before scanning complete), more than u32::MAX can index",
+                self.distinct_count
+            )
+        } else {
+            write!(
+                f,
+                "universe has {} distinct hashes, more than u32::MAX can index",
+                self.distinct_count
+            )
+        }
     }
 }
 
@@ -243,8 +253,12 @@ where
         .map_err(BitmapAuditError::Traversal)?;
     }
 
-    let universe_len = u32::try_from(universe.len())
-        .expect("IndexedUniverse::try_build already bounds-checked this");
+    let universe_len = u32::try_from(universe.len()).map_err(|_| {
+        BitmapAuditError::Universe(crate::hamt::audit::UniverseTooLarge {
+            distinct_count: universe.len(),
+            allocation_failed: false,
+        })
+    })?;
     // `unreachable` is the full index range minus `reachable`; build the full
     // range as a bitmap and subtract. `MultiOps::difference` reduces over many
     // bitmaps; for a pair, call `Sub::sub` by name to sidestep clippy's

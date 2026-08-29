@@ -820,6 +820,13 @@ pub mod causal {
         if terminal_depth > CAUSAL_DEPTH {
             return false;
         }
+        // TODO: Performance issue
+        // `empty_table()` rebuilds all 257 empty-subtree hashes (256 SHA3-256
+        // `causal_node` calls) just to read a single entry, and `root()`/
+        // `inclusion_proof()`/`non_inclusion_proof()` rebuild the same table
+        // on every call. Cache it once (e.g. a `static EMPTY_TABLE: OnceLock<
+        // EmptyTable>` — available in no_std since Rust 1.70) and pass the
+        // reference through so verification and proof generation reuse it.
         verify_causal_path(
             empty_table()[terminal_depth],
             0,

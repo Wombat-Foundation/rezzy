@@ -457,7 +457,9 @@ where
 }
 
 /// Returns `true` if `target_ev` cites, in its own `auth_events`, a
-/// `power_levels` event under which its sender was *not* at PL 0.
+/// `power_levels` event under which its sender was empowered *sufficiently*
+/// for the target event's type (meeting the `events.{type}` /
+/// `state_default` / `events_default` threshold -- not merely positive).
 ///
 /// `is_demotion()` treats *any* `m.room.power_levels` event as a demotion
 /// (it does not check whether anyone was actually demoted), so
@@ -489,12 +491,28 @@ where
                     return false;
                 }
                 // Effective PL: explicit `users[sender]` wins; else
-                // `users_default`; else 0. Only a strictly-positive level
-                // counts as a pre-demotion grant -- an absent entry falls
-                // through to `users_default` (usually 0), not empowerment.
+                // `users_default`; else 0.
                 let explicit = ev.get_user_power_level(target_ev.sender.as_str());
                 let effective = explicit.or_else(|| ev.get_users_default()).unwrap_or(0);
-                effective > 0
+
+                // Required PL for the target event type under *this* PL event.
+                // Mirrors auth::get_required_power_level (spec rule 7 + rule 9):
+                //   events.{event_type}  ->  state_default (if state_key)  ->  events_default
+                // A positive but *insufficient* level must NOT count as a
+                // pre-demotion grant -- only meeting the required threshold does.
+                let required = if target_ev.event_type
+                    == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE
+                {
+                    ev.get_invite().unwrap_or(0)
+                } else if let Some(pl) = ev.get_event_power_level(&target_ev.event_type) {
+                    pl
+                } else if target_ev.state_key.is_some() {
+                    ev.get_state_default().unwrap_or(50)
+                } else {
+                    ev.get_events_default().unwrap_or(0)
+                };
+
+                effective >= required
             })
     })
 }

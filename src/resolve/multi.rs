@@ -358,7 +358,13 @@ where
         resolve_state_maps_generic(state_maps, event_context, version, empty_key);
 
     let mut entries = Vec::new();
-    for key in conflicted_keys {
+    // Sort keys to emit entries in a stable, deterministic order (matching
+    // compute_state_diff's sorted key order). Without this, the diff order
+    // depends on the hash-bucket iteration order of the HashSet, which is
+    // fragile and non-reproducible.
+    let mut sorted_keys: Vec<_> = conflicted_keys.into_iter().collect();
+    sorted_keys.sort();
+    for key in sorted_keys {
         match (base_state.get(&key), resolved.get(&key)) {
             (None, Some(new_id)) => entries.push(StateDiffEntry::Added {
                 key,
