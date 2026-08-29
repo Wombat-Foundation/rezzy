@@ -395,10 +395,10 @@ where
     let sort_set = &conflicted_events;
 
     // Coordinate Projection Phase (Mainline distance mapping)
-    let mainline = build_mainline(&resolved, &sort_context, &empty_key);
+    let mainline = build_mainline(&resolved, &sort_context, &empty_key, version);
     let mut target_events: alloc::vec::Vec<&LeanEvent<Id, C>> = non_power_events.values().collect();
     let mainline_distances =
-        compute_closest_mainline_positions(&mut target_events, &mainline, &sort_context);
+        compute_closest_mainline_positions(&mut target_events, &mainline, &sort_context, version);
     let mainline_len = mainline.len();
 
     // Semilattice Fold Phase

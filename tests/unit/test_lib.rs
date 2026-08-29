@@ -2172,7 +2172,7 @@ mod tests {
 
         let mut events_to_sort = vec![ev_old, ev_new, ev_no_pl];
 
-        mainline_sort(&mut events_to_sort, &mainline, &auth_context);
+        mainline_sort(&mut events_to_sort, &mainline, &auth_context, rezzy::StateResVersion::V2);
 
         let sorted_ids: Vec<String> = events_to_sort.iter().map(|e| e.event_id.clone()).collect();
         // Per spec, an event with i = ∞ (no mainline ancestor) sorts before all

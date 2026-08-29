@@ -1103,6 +1103,23 @@ pub trait DagNode {
     fn prev_state_events(&self) -> &[Self::Id] {
         &[]
     }
+
+    /// `auth_events()`, but empty under [`StateResVersion::V2_2`] (MSC4242).
+    ///
+    /// Implementations that share one field between `auth_events()` and
+    /// `prev_state_events()` (see [`LeanEvent`]'s impl) make `auth_events()`
+    /// return `prev_state_events` data under V2.2 -- meaningless to any
+    /// classic auth-chain algorithm (mainline computation, topological auth
+    /// sort, citation validation). Callers walking the auth chain for those
+    /// purposes should use this instead of `auth_events()` directly, so they
+    /// get the right answer without each needing its own version check.
+    fn auth_chain_events(&self, version: StateResVersion) -> &[Self::Id] {
+        if version == StateResVersion::V2_2 {
+            &[]
+        } else {
+            self.auth_events()
+        }
+    }
 }
 
 impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {

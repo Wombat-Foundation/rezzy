@@ -39,7 +39,7 @@ where
     let mut pl_event = None;
 
     // Spec compliance: only check immediate auth_events.
-    for aid in event.auth_events() {
+    for aid in event.auth_chain_events(version) {
         if let Some(aev) = auth_context.get_event(aid) {
             if aev.event_type().as_ref() == M_ROOM_POWER_LEVELS && aev.state_key() == Some("") {
                 pl_event = Some(aev);
@@ -110,7 +110,7 @@ where
 
     for (id, event) in events {
         in_degree.entry(id).or_insert(0);
-        for auth in event.auth_events() {
+        for auth in event.auth_chain_events(version) {
             if let Some((auth_key, _)) = events.get_key_value(auth) {
                 // Topological sort: ancestors come BEFORE descendants.
                 // But we want a REVERSE topological sort: descendants BEFORE ancestors.
@@ -237,6 +237,7 @@ pub(crate) fn build_mainline<Id, C, E, K>(
     resolved: &crate::state::at::SharedState<Id, K>,
     auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
     empty_key: &K,
+    version: StateResVersion,
 ) -> Vec<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -248,7 +249,13 @@ where
     // cache through `resolve_iterative_sort_with_all_caches`, so this fresh-cache
     // fallback only matters for one-shot callers (e.g. resolve_lattice_fold's V2
     // path, which calls build_mainline exactly once per resolution).
-    build_mainline_with_cache(resolved, auth_context, &mut FastMap::default(), empty_key)
+    build_mainline_with_cache(
+        resolved,
+        auth_context,
+        &mut FastMap::default(),
+        empty_key,
+        version,
+    )
 }
 
 /// Like [`build_mainline`], but populates a `pl_parent_cache` mapping each
@@ -262,6 +269,7 @@ pub(crate) fn build_mainline_with_cache<Id, C, E, K>(
     auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
     pl_parent_cache: &mut FastMap<Id, Option<Id>>,
     empty_key: &K,
+    version: StateResVersion,
 ) -> Vec<Id>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -295,7 +303,7 @@ where
         // BFS to find the nearest PL ancestor
         let mut found = None;
         if let Some(ev) = auth_context.get_event(&eid) {
-            let mut queue: VecDeque<&Id> = ev.auth_events().iter().collect();
+            let mut queue: VecDeque<&Id> = ev.auth_chain_events(version).iter().collect();
             let mut visited = crate::FastSet::default();
             while let Some(q_id) = queue.pop_front() {
                 if !visited.insert(q_id) {
@@ -306,7 +314,7 @@ where
                         found = Some(q_id.clone());
                         break;
                     }
-                    for aid in auth_ev.auth_events() {
+                    for aid in auth_ev.auth_chain_events(version) {
                         queue.push_back(aid);
                     }
                 }
@@ -329,6 +337,7 @@ pub(crate) fn compute_closest_mainline_positions<Id, C, E>(
     events: &mut [&E],
     mainline: &[Id],
     auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    version: StateResVersion,
 ) -> HashMap<Id, usize>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -361,7 +370,7 @@ where
             let mut min_pos = usize::MAX;
 
             if let Some(node) = auth_context.get_event(top) {
-                for aid in node.auth_events() {
+                for aid in node.auth_chain_events(version) {
                     if let Some(&child_pos) = memo.get(aid) {
                         if child_pos != usize::MAX - 1 {
                             min_pos = min_pos.min(child_pos);
@@ -406,13 +415,14 @@ pub fn mainline_sort<Id, C, E>(
     events: &mut [&E],
     mainline: &[Id],
     auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    version: StateResVersion,
 ) where
     Id: crate::basespec::rezzy_types::EventId,
     C: Clone + crate::basespec::rezzy_types::EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
     // O(V+E) iterative DFS to find the closest mainline index for all non-power events
-    let dist = compute_closest_mainline_positions(events, mainline, auth_context);
+    let dist = compute_closest_mainline_positions(events, mainline, auth_context, version);
 
     // Schwartzian transform: decorate each event with its precomputed mainline
     // position so the comparator performs zero hash lookups. This cuts the
@@ -478,7 +488,12 @@ mod tests {
         );
 
         // Before the fix, this would infinite loop!
-        let mainline = build_mainline(&resolved, &auth_context, &alloc::string::String::new());
+        let mainline = build_mainline(
+            &resolved,
+            &auth_context,
+            &alloc::string::String::new(),
+            StateResVersion::V2,
+        );
 
         // A and B should both be in the mainline exactly once.
         assert_eq!(
@@ -502,7 +517,12 @@ mod tests {
         let auth_ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
         let mainline: Vec<String> = alloc::vec!["pl0".into()];
         let mut events = alloc::vec![&ev];
-        let dist = compute_closest_mainline_positions(&mut events, &mainline, &auth_ctx);
+        let dist = compute_closest_mainline_positions(
+            &mut events,
+            &mainline,
+            &auth_ctx,
+            StateResVersion::V2,
+        );
         // No path found → clamped to mainline.len() = 1, not usize::MAX
         assert_eq!(dist["orphan"], 1);
     }
@@ -528,7 +548,8 @@ mod tests {
 
         let mainline = alloc::vec!["pl0".into()];
         let mut events = alloc::vec![&ev];
-        let dist = compute_closest_mainline_positions(&mut events, &mainline, &auth_ctx);
+        let dist =
+            compute_closest_mainline_positions(&mut events, &mainline, &auth_ctx, StateResVersion::V2);
         assert_eq!(dist["msg"], 0);
     }
 
@@ -560,7 +581,8 @@ mod tests {
 
         let mainline = alloc::vec!["pl0".into()];
         let mut events = alloc::vec![&leaf];
-        let dist = compute_closest_mainline_positions(&mut events, &mainline, &ctx);
+        let dist =
+            compute_closest_mainline_positions(&mut events, &mainline, &ctx, StateResVersion::V2);
         assert_eq!(dist["leaf"], 0);
     }
 
@@ -614,7 +636,7 @@ mod tests {
 
         let mainline = alloc::vec!["pl0".into(), "pl1".into()];
         let mut events = alloc::vec![&far, &far_early, &near];
-        mainline_sort(&mut events, &mainline, &ctx);
+        mainline_sort(&mut events, &mainline, &ctx, StateResVersion::V2);
 
         // Larger mainline position comes first: near (1), then far_early (ts
         // 50) before far (ts 200).
@@ -635,7 +657,8 @@ mod tests {
         let ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
         let mainline: Vec<String> = alloc::vec![];
         let mut events = alloc::vec![&ev];
-        let dist = compute_closest_mainline_positions(&mut events, &mainline, &ctx);
+        let dist =
+            compute_closest_mainline_positions(&mut events, &mainline, &ctx, StateResVersion::V2);
         assert_eq!(dist["x"], 0);
     }
 
@@ -671,7 +694,12 @@ mod tests {
 
         let mainline = alloc::vec!["pl0".into()];
         let mut events = alloc::vec![&topic];
-        let dist = compute_closest_mainline_positions(&mut events, &mainline, &sort_ctx);
+        let dist = compute_closest_mainline_positions(
+            &mut events,
+            &mainline,
+            &sort_ctx,
+            StateResVersion::V2,
+        );
         // topic's auth chain → pl0 (position 0)
         assert_eq!(dist["topic"], 0);
     }
@@ -710,12 +738,24 @@ mod tests {
 
         // First call: populates cache for PL2 → Some(PL1), PL1 → Some(PL0), PL0 → None
         let mut cache = FastMap::default();
-        let ml1 = build_mainline_with_cache(&resolved, &ctx, &mut cache, &String::new());
+        let ml1 = build_mainline_with_cache(
+            &resolved,
+            &ctx,
+            &mut cache,
+            &String::new(),
+            StateResVersion::V2,
+        );
         assert_eq!(ml1, alloc::vec!["PL2", "PL1", "PL0"]);
         assert_eq!(cache.len(), 3, "all 3 PL events must be cached");
 
         // Second call: hits cache immediately for PL2 → skips BFS
-        let ml2 = build_mainline_with_cache(&resolved, &ctx, &mut cache, &String::new());
+        let ml2 = build_mainline_with_cache(
+            &resolved,
+            &ctx,
+            &mut cache,
+            &String::new(),
+            StateResVersion::V2,
+        );
         assert_eq!(ml2, ml1, "cached mainline must match original");
     }
 

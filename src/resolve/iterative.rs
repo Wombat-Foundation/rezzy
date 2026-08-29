@@ -676,7 +676,8 @@ where
     merge_unconflicted_power_events(version, unconflicted_state, &mut resolved, empty_key);
 
     // Step 3: Build the power-level mainline for mainline sort
-    let mainline = build_mainline_with_cache(&resolved, &sort_context, mainline_cache, empty_key);
+    let mainline =
+        build_mainline_with_cache(&resolved, &sort_context, mainline_cache, empty_key, version);
 
     // Resolved-state screening pass (V2.1.1+): drop non-power conflicted events
     // whose sender is already banned in `resolved`, before mainline sort. Sound
@@ -696,7 +697,7 @@ where
     } else {
         non_power_events.values().collect()
     };
-    mainline_sort(&mut non_power_list, &mainline, &sort_context);
+    mainline_sort(&mut non_power_list, &mainline, &sort_context, version);
 
     for ev in non_power_list {
         let local_auth = compute_local_auth(ev, auth_context, sort_set, local_auth_cache, version);
@@ -929,7 +930,7 @@ where
 
     merge_unconflicted_power_events(version, &unconflicted_state, &mut resolved, empty_key);
 
-    let mainline = build_mainline(&resolved, &sort_context, empty_key);
+    let mainline = build_mainline(&resolved, &sort_context, empty_key, version);
     // Same resolved-state screening pass (V2.1.1+) as the main path in
     // `resolve_iterative_sort_with_all_caches`: drop non-power conflicted
     // events whose sender is already banned in `resolved` before mainline sort,
@@ -943,7 +944,7 @@ where
     // documented mainline ordering.
     let mut non_power_list: alloc::vec::Vec<&LeanEvent<Id, C, K>> =
         non_power_events.values().collect();
-    mainline_sort(&mut non_power_list, &mainline, &sort_context);
+    mainline_sort(&mut non_power_list, &mainline, &sort_context, version);
 
     for ev in non_power_list {
         let Some(sk) = &ev.state_key else { continue };
