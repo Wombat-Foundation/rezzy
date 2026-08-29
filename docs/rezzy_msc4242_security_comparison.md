@@ -121,20 +121,20 @@ Both `validate_state_dag_ancestors` (V2.2) and the plain BFS in
 `compute_local_auth` (V2.1.1) only ever reason about the local map of events
 handed to them. A completeness check — V2.2's hard `IncompleteDag` error, or
 V2.1.1's absent-tuple default-deny — proves the _local_ DAG is connected (or
-isn't). Neither proves the sender's claimed DAG is _exhaustive_: a malicious
-or buggy sender can omit a legitimate concurrent branch entirely, and the
-receiver's local view will look complete — connected back to `m.room.create`,
-no missing ancestors — while still being smaller than the room's real history.
+isn't). Neither proves the sender's claimed DAG is _exhaustive_: a malicious or
+buggy sender can omit a legitimate concurrent branch entirely, and the
+receiver's local view will look complete — connected back to `m.room.create`, no
+missing ancestors — while still being smaller than the room's real history.
 
-That is a different problem from the connectivity gap above (DAG _honesty_,
-not DAG _connectivity_), and V2.2's state-derivation design does not close
-it: deriving auth from `state_before` only helps once the receiver already
-has the right ancestors in hand. Whether it has all of them is bounded by
-ordinary federation event-fetching/backfill (`/get_missing_events`,
-`get_missing_state_events`, and the room's real DAG as held by other
-servers), not by anything a local completeness check can catch. No local
-validator — in either V2.1.1 or V2.2 — can distinguish "the sender's DAG is
-this small" from "the receiver hasn't fetched everything yet."
+That is a different problem from the connectivity gap above (DAG _honesty_, not
+DAG _connectivity_), and V2.2's state-derivation design does not close it:
+deriving auth from `state_before` only helps once the receiver already has the
+right ancestors in hand. Whether it has all of them is bounded by ordinary
+federation event-fetching/backfill (`/get_missing_events`,
+`get_missing_state_events`, and the room's real DAG as held by other servers),
+not by anything a local completeness check can catch. No local validator — in
+either V2.1.1 or V2.2 — can distinguish "the sender's DAG is this small" from
+"the receiver hasn't fetched everything yet."
 
 ## Source pointers
 

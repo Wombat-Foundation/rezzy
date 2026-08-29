@@ -146,6 +146,11 @@ fn bench_batch(value: &Value, keys: &DalekVerifier, n: usize, iters: u32) {
         .map(|i| {
             let mut v = value.clone();
             v["origin_server_ts"] = json!(i);
+            // Recompute the content hash after mutating origin_server_ts so each
+            // batch event is a self-consistent PDU, not just signature-valid.
+            let content_hash = rezzy::basespec::rezzy_types::compute_content_hash(&v, ROOM_VERSION)
+                .expect("content hash computation is infallible");
+            v["hashes"] = json!({ "sha256": content_hash });
             let canonical = rezzy::basespec::rezzy_types::canonical_redacted_json(&v, ROOM_VERSION);
             let sig = sk.sign(canonical.as_bytes());
             let sig_b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(sig.to_bytes());

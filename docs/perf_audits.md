@@ -50,7 +50,9 @@ three optimizations that bypass Ruma's bottlenecks:
     - Ruma does iterative `HashSet`/`BTreeSet` intersections and unions over
       string event IDs (O(N log N) allocations).
     - Rezzy / Roaring does bitwise `&`, `|`, and `^` directly on integer bitsets
-      (as proven by `run_bench_auth_difference.sh`: 218µs vs 5.3ms).
+      (218µs vs 5.3ms; `run_bench_auth_difference.sh` doesn't exist in the repo
+      — this number traces to `scripts/bench_ruma_vs_rezzy.rs`, the benchmark
+      that actually exists).
 2. **RocksDB Compressed RoaringTreemap Caching**:
     - Instead of querying RocksDB 500 times to traverse an auth chain, Tuwunel
       reads a single ~200-byte compressed roaring bitmap from disk.
@@ -115,7 +117,10 @@ scenarios in `scripts/bench_ruma_vs_rezzy.rs`.
 The benchmark has been expanded with large-scale multi-branch topologies and
 massive rebuild scenarios.
 
-### Large-Scale Shootout Results (`run_bench_ruma_vs_rezzy.sh`)
+### Large-Scale Shootout Results (`scripts/bench_ruma_vs_rezzy.rs`)
+
+<!-- there is no `run_bench_ruma_vs_rezzy.sh` shell runner in the repo; the
+     benchmark itself lives at `scripts/bench_ruma_vs_rezzy.rs` -->
 
 <!-- markdownlint-disable MD013 -->
 
@@ -252,15 +257,17 @@ removed from the harness and the partition scan flattened.
 
 ### Deferred: in-flight `EventType` threading
 
-Re-examined the `TODO(perf)` at `iterative.rs:89` (re-deriving
+Re-examined the `TODO(perf)` at `iterative.rs:92` (re-deriving
 `EventType::from(ev.event_type.as_str())` per event across
-`derive_all_conflicted_keys` and the insertion loops). **Not worth the churn**:
-`EventType::Custom(Box<str>)` deep-copies on every owned `(EventType, K)` key,
-and each conflicted event's key is owned in _two_ places (the `conflicted_keys`
-gate set and `resolved`), so threading a memo does not reduce allocations and
-adds a hash lookup per event. The genuinely effective fix would be making
-`Custom` cheaply cloneable (`Arc<str>`), which is a public `EventType` API break
-— deferred pending that trade-off.
+`derive_all_conflicted_keys` and the insertion loops). **Not worth the churn at
+the time**: `EventType::Custom(Box<str>)` deep-copied on every owned
+`(EventType, K)` key, and each conflicted event's key is owned in _two_ places
+(the `conflicted_keys` gate set and `resolved`), so threading a memo would not
+have reduced allocations and would add a hash lookup per event. The genuinely
+effective fix was making `Custom` cheaply cloneable (`Arc<str>`), a public
+`EventType` API break — that landed separately as `f418952` (see the "Landed"
+table below). The memo-threading follow-up itself is still deferred; see "Not
+done — with reason" below for its current (now more favorable) cost/benefit.
 
 ---
 
@@ -289,7 +296,7 @@ through the cracks.
 
 ### Not done — with reason
 
-- **In-flight `EventType` threading** (`iterative.rs:89` TODO). Earlier rejected
+- **In-flight `EventType` threading** (`iterative.rs:92` TODO). Earlier rejected
   as net-neutral: the memo doesn't cut `Custom` deep-copies because
   `(EventType, K)` keys are owned in two places (gate set + `resolved`). **Now
   the calculus changed**: `f418952` made `EventType::Custom` an O(1) `Arc<str>`
@@ -344,10 +351,10 @@ through the cracks.
 
 ### Empirically resolved / rejected
 
-- **HAMT as `SharedState` backend**: `benches/state_backend.rs` fork-and-diverge
-  benchmark shows the in-tree HAMT is **6–27x SLOWER** than `imbl::OrdMap`
-  (282ns vs 7.8µs @ n=16; ~1µs vs ~9–11µs at larger n) for the exact
-  clone-and-diverge pattern state resolution uses. This resolves the
+- **HAMT as `SharedState` backend**: `benches/db/state_backend.rs`
+  fork-and-diverge benchmark shows the in-tree HAMT is **6–27x SLOWER** than
+  `imbl::OrdMap` (282ns vs 7.8µs @ n=16; ~1µs vs ~9–11µs at larger n) for the
+  exact clone-and-diverge pattern state resolution uses. This resolves the
   `state/at.rs:2134` TODO ("swap the state payload over to the HAMT"):
   **don't**. The real incremental win is LtHash state hashing + `state/delta.rs`
   delta compaction (already present), not a HAMT swap.

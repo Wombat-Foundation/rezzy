@@ -2,7 +2,9 @@
 """Compare resolved state across three homeservers using rezzy.
 
 Fetches room state from dev/nightly/unredacted servers and measures each
-server's state resolution accuracy against a merged canonical DAG.
+server's state resolution accuracy against a merged set of resolved state
+events. Note: the `/state` endpoint returns Client-Server API state events,
+which strip `auth_events`/`prev_events` — this is not a full canonical DAG.
 """
 
 import json

@@ -18,21 +18,24 @@ independently at five logical locations (seven distinct implementations once the
 two-in-one files below are counted), with real, meaningful variation between
 copies:
 
-1. `src/auth/roaring.rs`, `AuthGraph`: `id_to_index: HashMap<Id, u32>` +
-   `index_to_id: Vec<Id>` (owned `Id`), feeds
-   `auth_bitmaps: Vec<RoaringBitmap>`. Overflow handling:
-   `u32::try_from(idx).unwrap()` -- **panics** past `u32::MAX` entries, doesn't
-   return an error.
+1. `src/auth/roaring.rs`, `AuthGraph`: **migrated onto the shared
+   [`DenseIndex`](crate::DenseIndex) primitive** — now `index: DenseIndex<Id>`,
+   built via `DenseIndex::try_build(...).expect(...)`, feeding
+   `auth_bitmaps: Vec<RoaringBitmap>`. The overflow handling is the generic
+   engine's `Result`-based copy, same as (2) below.
 2. `src/hamt/audit.rs`, `IndexedUniverse`: **migrated onto the shared
    [`DenseIndex`](crate::DenseIndex) primitive** (`src/dense_index.rs`) — now a
    thin wrapper over `DenseIndex<StructuralHash>` (generic indexed type, `u32`
    width). `IndexedUniverse`/`UniverseTooLarge` public API is unchanged; the
    overflow handling (the one correct, `Result`-based copy) now lives once in
    the generic engine.
-3. `src/resolve/reachability.rs`: **two separate versions in the same file** --
-   a standalone `index_topology()` (owned `Id`, `FastMap<Id, u32>`) and a struct
-   at lines ~400-404 with its own `id_to_index`/`index_to_id` pair, both
-   `u32`-indexed like (1). Not yet migrated.
+3. `src/resolve/reachability.rs`: **migrated onto `DenseIndex`** —
+   `collect_topology` (~line 427) and `build_indexed_children` (~line 482) index
+   through a `&DenseIndex<Id>` rather than hand-rolled
+   `id_to_index`/`index_to_id`. Note `DenseIndex`'s internal `index_by_item`
+   uses the crate's default `HashMap` hasher (std/hashbrown), not the crate's
+   `FastMap` (foldhash-based) — a real, still-open perf tradeoff, just not the
+   duplication this item originally tracked.
 4. `src/state/at.rs`, `collect_ancestor_short_ids_batch`:
    `FastMap<&Id, usize>` + `Vec<&Id>` -- **borrowed** `&Id` (not owned),
    **`usize`** indices (not `u32`, so no overflow risk in practice). Used at 8+
@@ -54,16 +57,16 @@ one over another at a given call site.
 now exists (`src/dense_index.rs`) with `Result`-based overflow handling (from
 `IndexedUniverse`'s corrected counting) as the baseline, generic over both the
 indexed type `T` and the index width `Idx`, with owned and borrowed (`&T`)
-construction paths. **Done so far:** `IndexedUniverse` (item 2) migrated onto
-it, preserving its public API and behavior (895 tests pass; clippy clean).
-**Remaining (do one at a time, verifying no behavioral change at each step):**
-migrate items 1 (`AuthGraph`), 3 (`reachability`'s `index_topology` + the `~400`
-struct), and 5 (`format.rs`/`stress_large_rooms.rs`) onto `DenseIndex`; item 4
-(`at.rs` BFS) is the weakest fit and should only be migrated if the
-borrowed/`usize` path proves clean, otherwise leave as-is. Do NOT copy any one
-of the remaining implementations directly into another's call site as a shortcut
--- the ownership/width mismatches make that actively wrong at at least the
-(1)-into-(4) and (4)-into-(1) directions.
+construction paths. **Done so far:** items 1 (`AuthGraph`), 2
+(`IndexedUniverse`), and 3 (`reachability`'s
+`collect_topology`/`build_indexed_children`) are migrated onto it, preserving
+public API and behavior. **Remaining:** item 5
+(`format.rs`/`stress_large_rooms.rs`) onto `DenseIndex`; item 4 (`at.rs` BFS) is
+the weakest fit and should only be migrated if the borrowed/`usize` path proves
+clean, otherwise leave as-is. Do NOT copy any one of the remaining
+implementations directly into another's call site as a shortcut -- the
+ownership/width mismatches make that actively wrong at at least the (1)-into-(4)
+and (4)-into-(1) directions.
 
 ### `K` genericity: `InternedKey` isn't threaded through yet
 
@@ -76,9 +79,9 @@ Circle back for the full generic refactor: thread it through call sites, add the
 wire-format conversions, and benchmark the actual win before recommending it
 broadly. (See the `TODO` comment directly above `InternedKey`'s definition.)
 
-`benches/interned_key.rs` also carries a `K = InternedKey` (`Arc<str>`) variant
-alongside plain `String`, benchmarked across room sizes 100/1000/5000: it wins
-at small N (-9 to -11%) but the atomic refcount's cross-core cache-line
+`benches/state/interned_key.rs` also carries a `K = InternedKey` (`Arc<str>`)
+variant alongside plain `String`, benchmarked across room sizes 100/1000/5000:
+it wins at small N (-9 to -11%) but the atomic refcount's cross-core cache-line
 contention under the parallel `thread::scope` fold erodes and then reverses the
 win at 5000 members (+3 to +16%). So `InternedKey`'s value is real but
 size-dependent — don't default to it without checking the target workload's room
@@ -87,12 +90,12 @@ sizes.
 #### Investigated: `u32`-arena-interned `K` (`InternId`) — perf win confirmed, parked on one lifetime bound
 
 A no-atomics, `Copy` `u32` index into a string arena (`InternId`, prototyped in
-`benches/interned_key.rs` at commit `fdddb31`) was investigated as a genuinely
-C-style alternative to `InternedKey`'s `Arc<str>` — the motivating idea being
-that integer compare/copy should beat both allocation (`String`) and atomic
-refcounting (`Arc<str>`) regardless of key collisions. The prototype (sorted
-first-seen ids, no lifetime constraint) confirmed the hypothesis: -17% to -23%
-across all three room sizes, unlike `InternedKey`'s reversal at 5000.
+`benches/state/interned_key.rs` at commit `fdddb31`) was investigated as a
+genuinely C-style alternative to `InternedKey`'s `Arc<str>` — the motivating
+idea being that integer compare/copy should beat both allocation (`String`) and
+atomic refcounting (`Arc<str>`) regardless of key collisions. The prototype
+(sorted first-seen ids, no lifetime constraint) confirmed the hypothesis: -17%
+to -23% across all three room sizes, unlike `InternedKey`'s reversal at 5000.
 
 That result does not survive contact with the real pipeline — but only one of
 the two reasons originally logged here is actually structural. The other was an
@@ -151,16 +154,16 @@ it without either relaxing that bound to a concrete lifetime or replacing the
 `InternId`, unchanged borrowed lookup for `String`) — see
 `src/basespec/interned_key.rs`'s `InternedRoomState` spike, which sidesteps the
 shared blanket impl entirely rather than relaxing it. The sort-once redo was
-run: the current `u32`-rank variant in `benches/interned_key.rs` (collect every
-`state_key` in the call's `events_map`, sort once, assign rank ids — `Ord`
+run: the current `u32`-rank variant in `benches/state/interned_key.rs` (collect
+every `state_key` in the call's `events_map`, sort once, assign rank ids — `Ord`
 genuinely `u32`-cheap) reproduces **-13% to -21%** against `String` across room
 sizes 100/1000/5000, batch and serial, with no reversal at 5000. The performance
 case is therefore met; the only open question is whether threading a `'static`
 interner (or a lifetime/redesigned `Borrow<dyn StateKeyDyn>` bound) through the
 public API is worth that cost. Revisit if either lands. The Phase 1 prototype
 work (`8bf6680`, `99d1cfb`, `9fa73b3`, `39dd517`) was reverted from `dev`;
-`benches/interned_key.rs` still carries both variants from `fdddb31` side by
-side: `InternedKey` (`Arc<str>`), whose win over `String` reverses at 5000
+`benches/state/interned_key.rs` still carries both variants from `fdddb31` side
+by side: `InternedKey` (`Arc<str>`), whose win over `String` reverses at 5000
 members (+3% to +16%, the erosion described above), and the separate `InternId`
 (`u32`-rank) variant, whose -13% to -21% figure is the one quoted above and does
 not reverse.
@@ -186,7 +189,7 @@ a dependency, before attempting this.
 
 ### `derive_all_conflicted_keys` double-derives `EventType`
 
-`src/resolve/iterative.rs:83` (pre-existing `TODO(perf)`): calls
+`src/resolve/iterative.rs:92` (pre-existing `TODO(perf)`): calls
 `EventType::from(ev.event_type.as_str())` once to build the gate set, then again
 later when actually inserting into `resolved`. Cheap for well-known types, a
 duplicate `Box<str>` heap allocation per conflicted event for

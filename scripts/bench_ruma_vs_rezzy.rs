@@ -9,7 +9,7 @@
 //! output. The speedup column is secondary and, for this particular
 //! in-memory `String`-ID fixture, is not where rezzy's performance advantage
 //! lives: rezzy's large speedups are in bitwise auth-difference and Roaring
-//! reachability/transitive-closure, measured by `run_bench_auth_difference.sh`
+//! reachability/transitive-closure, measured by the bitwise-auth-difference micro-benchmark
 //! and `cargo bench --bench rezzy -- resolve`. Both engines here resolve a pre-computed
 //! in-memory DAG with no database I/O, and rezzy uses its zero-copy borrowed
 //! entry point so the timed loop does not pay a per-iteration `serde_json`
@@ -336,6 +336,23 @@ fn build_multi_fork_dag(
                 ),
             };
 
+            // The sender's own membership (creator's `alice_join`, or the
+            // relevant `join_{f-1}` for a non-Alice fork admin) must be cited
+            // so the sender-is-joined auth rule can be checked. Bans/leaves
+            // additionally need the target's current membership cited so the
+            // target-PL comparison rule has something to look up.
+            let sender_membership_id = if f == 0 {
+                "alice_join".to_string()
+            } else {
+                format!("join_{}", f.saturating_sub(1))
+            };
+            let mut fork_ev_auth_events: Vec<&str> =
+                vec!["create", &sender_membership_id, fork_pl.event_id.as_ref()];
+            let target_membership_id = format!("join_{target_idx}");
+            if c % 4 == 0 {
+                fork_ev_auth_events.push(&target_membership_id);
+            }
+
             let fork_ev_id = format!("fork_{f}_ev_{c}");
             let ev = make_event(EventInit {
                 id: &fork_ev_id,
@@ -344,7 +361,7 @@ fn build_multi_fork_dag(
                 state_key: Some(&state_key),
                 content_json: &content,
                 prev_events: &[fork_last_prev.as_ref()],
-                auth_events: &["create", "alice_join", fork_pl.event_id.as_ref()],
+                auth_events: &fork_ev_auth_events,
                 ts: current_ts,
             });
             fork_last_prev = ev.event_id.clone();
@@ -482,14 +499,20 @@ fn run_shootout(
 
     // 1. Benchmark ruma-state-res
     let fork_state_refs: Vec<&StateMap<OwnedEventId>> = dag.fork_states.iter().collect();
+    // `resolve` consumes `auth_chains` by value, so each call needs its own
+    // copy — but that clone doesn't have to happen *inside* the timed loop.
+    // Pre-clone one copy per run up front so the timer only measures
+    // resolution work, not the per-iteration deep clone of `fork_auth_chains`.
+    let mut auth_chains_per_run: Vec<Vec<EventIdSet<OwnedEventId>>> =
+        (0..runs).map(|_| dag.fork_auth_chains.clone()).collect();
     let start_ruma = Instant::now();
     let mut ruma_result = None;
-    for _ in 0..runs {
+    for auth_chains in auth_chains_per_run.drain(..) {
         let res = ruma_state_res::resolve(
             &AuthorizationRules::V10,
             &StateResolutionV2Rules::V2_0,
             fork_state_refs.clone(),
-            dag.fork_auth_chains.clone(),
+            auth_chains,
             fetch_event,
             |_| unreachable!(),
         );
@@ -583,7 +606,7 @@ fn run_shootout(
 fn main() {
     println!("================================================================================");
     println!("  MATRIX STATE RESOLUTION LARGE-SCALE SHOOTOUT: ruma-state-res vs rezzy");
-    println!("  (correctness-parity oracle; perf claims belong in run_bench_auth_difference.sh");
+    println!("  (correctness-parity oracle; perf claims belong in the bitwise-auth-difference micro-bench");
     println!("   and cargo bench --bench rezzy -- resolve, not this in-memory String-ID fixture)");
     println!("================================================================================\n");
 

@@ -213,8 +213,36 @@ fn build_room(member_count: usize) -> (HashMap<String, LeanEvent>, Vec<String>) 
         },
     );
 
-    let mut prev = pl_id.clone();
-    let mut depth: u64 = 2;
+    let join_rules_id = "$join_rules".to_string();
+    events.insert(
+        join_rules_id.clone(),
+        LeanEvent {
+            event_id: join_rules_id.clone(),
+            event_type: "m.room.join_rules".to_string(),
+            state_key: Some(String::new()),
+            power_level: 100,
+            origin_server_ts: {
+                ts += 1;
+                ts
+            },
+            sender: "@creator:example.org".to_string(),
+            content: serde_json::json!({ "join_rule": "public" }),
+            prev_events: vec![pl_id.clone()],
+            auth_events: vec![pl_id.clone()],
+            depth: 2,
+            rejected: false,
+            soft_fail: false,
+            room_id: None,
+        },
+    );
+
+    // Without a public `m.room.join_rules`, the default join rule is
+    // `invite`, so a fresh join with no prior invite would be rejected --
+    // that would make every member below `rejected: true` and the bench
+    // would only ever be exercising the tiny create+power_levels state, not
+    // materializing/merging `member_count` distinct state keys as intended.
+    let mut prev = join_rules_id.clone();
+    let mut depth: u64 = 3;
     let mut targets = Vec::new();
     for i in 0..member_count {
         let id = format!("$member_{i}");
@@ -233,15 +261,15 @@ fn build_room(member_count: usize) -> (HashMap<String, LeanEvent>, Vec<String>) 
                 sender: user,
                 content: serde_json::json!({ "membership": "join" }),
                 prev_events: vec![prev.clone()],
-                // For `i == 0`, `prev` is `pl_id` itself (the loop's initial
-                // value) -- `vec![pl_id.clone(), prev.clone()]` would cite the
-                // same event twice. Dedup so the first member only cites
-                // power_levels once, and later members cite power_levels plus
-                // the previous member event.
-                auth_events: if prev == pl_id {
-                    vec![pl_id.clone()]
+                // For `i == 0`, `prev` is `join_rules_id` itself (the loop's
+                // initial value) -- citing it twice would be a duplicate.
+                // Dedup so the first member cites power_levels + join_rules
+                // once each, and later members additionally cite the
+                // previous member event.
+                auth_events: if prev == join_rules_id {
+                    vec![pl_id.clone(), join_rules_id.clone()]
                 } else {
-                    vec![pl_id.clone(), prev.clone()]
+                    vec![pl_id.clone(), join_rules_id.clone(), prev.clone()]
                 },
                 depth,
                 rejected: false,
@@ -411,24 +439,27 @@ fn build_conflicting_room(conflict_count: usize) -> (HashMap<String, LeanEvent>,
         );
 
         depth += 1;
+        // A distinct state key from the conflict itself so the merge event
+        // doesn't overwrite the very key it's meant to reconcile -- it just
+        // threads the DAG forward. It must be a *self*-join (sender ==
+        // state_key, rule 5.3.2) to be authorized; a creator-sent join for
+        // some other user's key would fail InvalidStateKey.
+        let merge_user = format!("@merge{i}:example.org");
         events.insert(
             merge_id.clone(),
             LeanEvent {
                 event_id: merge_id.clone(),
                 event_type: "m.room.member".to_string(),
-                // Distinct state key from the conflict itself so the merge
-                // event doesn't overwrite the very key it's meant to
-                // reconcile -- it just threads the DAG forward.
-                state_key: Some(format!("@merge{i}:example.org")),
+                state_key: Some(merge_user.clone()),
                 power_level: 0,
                 origin_server_ts: {
                     ts += 1;
                     ts
                 },
-                sender: "@creator:example.org".to_string(),
+                sender: merge_user,
                 content: serde_json::json!({ "membership": "join" }),
                 prev_events: vec![a_id.clone(), b_id.clone()],
-                auth_events: vec![pl_id.clone()],
+                auth_events: vec![pl_id.clone(), join_rules_id.clone()],
                 depth,
                 rejected: false,
                 soft_fail: false,

@@ -346,7 +346,7 @@ Hash/redaction thread
 - ✅ create-guard removal confirmed against v11 spec.
 - ⚠️ Ingest path unwired — verify_content_hash/redact_json are exposed boundary tools but nothing connects them to EventProvider ingestion. The "no-op wtf" you raised: the EventVerifier trait is a no-op default. This is the real design hole. (Decided: document as homeserver hook; but the end-to-end flow is still unbuilt.)
 - ⚠️ Deserialize hard-errors on missing event_id — right call, but a breaking change; needs a changelog line if the crate keeps one.
-CDO thread (still unbuilt)
+CDO thread (still unbuilt as of this entry — see 080fd2a below, which built it)
 - ⚠️ Resolved-state screening pass — the actual CDO replacement, never built. The three pre-prototype checks (phase-2 mutation visibility, mainline-order perturbation, cost ratio) still stand.
 - ⚠️ at.rs power-phase fallback never exercised by the generator — real coverage gap; needs ban-evasion DAG shapes the generator doesn't produce.
 - ⚠️ Paper/REPORT.md/WRITEUP.md coherence — advisor bundle still describes the pre-screening world.

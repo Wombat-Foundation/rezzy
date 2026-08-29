@@ -185,7 +185,7 @@ fn main() {
             || filters.iter().any(|&f| {
                 b.domain.eq_ignore_ascii_case(f)
                     || b.name.eq_ignore_ascii_case(f)
-                    || b.name.contains(f)
+                    || b.name.starts_with(&format!("{f}/"))
             });
 
         if should_run {
