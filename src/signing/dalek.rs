@@ -80,17 +80,13 @@ impl SignatureVerifier for DalekVerifier {
     }
 }
 
-/// Verifies the first supported signature on each event in `events` in a single
-/// [`ed25519_dalek::verify_batch`] call.
+/// Verifies every signature on each event in `events` whose key is held by
+/// `keys`, using sequential strict verification.
 ///
-/// For a federation transaction carrying many PDUs from one server, this uses
-/// one multiscalar (Straus/Pippenger) operation instead of N sequential
-/// Ed25519 verifications — the primary throughput lever over the per-event
-/// [`verify_event_signatures`](super::verify_event_signatures) path.
-///
-/// For each event, the first signature whose key is held by `keys` is selected
-/// (mirroring ruma's "first one found" rule) and verified over that event's
-/// canonical redacted JSON.
+/// For each event, **all** signatures whose key is held by `keys` are collected
+/// and must verify — if any held signature is invalid, the batch fails even if
+/// other held signatures for the same event are valid. This matches the
+/// behavior of [`super::verify_event_signatures`] applied per event.
 ///
 /// # Errors
 /// Returns `Err` if any event has no signature this verifier holds a key for,
@@ -101,6 +97,12 @@ pub fn verify_batch(
     keys: &DalekVerifier,
 ) -> Result<(), String> {
     use base64::Engine as _;
+
+    if crate::basespec::rezzy_types::StateResVersion::from_room_version(room_version).is_none() {
+        return Err(alloc::format!(
+            "unsupported room version {room_version}: cannot verify signatures over an undefined format"
+        ));
+    }
 
     let mut messages: Vec<Vec<u8>> = Vec::with_capacity(events.len());
     let mut signatures: Vec<Signature> = Vec::with_capacity(events.len());
@@ -114,10 +116,14 @@ pub fn verify_batch(
             ));
         };
 
-        let origin = super::expected_event_signer(value);
+        let Some(origin) = super::expected_event_signer(value) else {
+            return Err(alloc::string::String::from(
+                "could not derive expected event signer from event_id or sender",
+            ));
+        };
         let mut event_verified_any = false;
         for (server, key_set) in sigs_map {
-            if origin.is_some_and(|expected| !expected.eq_ignore_ascii_case(server)) {
+            if !origin.eq_ignore_ascii_case(server) {
                 continue;
             }
             let Some(key_set) = key_set.as_object() else {
@@ -153,8 +159,10 @@ pub fn verify_batch(
     }
 
     let message_refs: Vec<&[u8]> = messages.iter().map(Vec::as_slice).collect();
-    // Batch verification does not enforce the strict RFC 8032 checks that
-    // this backend promises, so verify each item through the strict path.
+    // NOTE: `ed25519_dalek::verify_batch` uses non-strict verification, but
+    // this backend promises strict RFC 8032 checks.  Verify each item through
+    // the strict path sequentially.  Callers seeking true batch throughput can
+    // implement a custom `SignatureVerifier` that delegates to `verify_batch`.
     for ((message, signature), key) in message_refs.iter().zip(&signatures).zip(&verifying_keys) {
         key.verify_strict(message, signature)
             .map_err(|e| alloc::format!("batch signature verification failed: {e}"))?;

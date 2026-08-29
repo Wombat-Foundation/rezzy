@@ -109,17 +109,27 @@ pub fn verify_event_signatures(
 ) -> Result<(), String> {
     use base64::Engine as _;
 
+    if crate::basespec::rezzy_types::StateResVersion::from_room_version(room_version).is_none() {
+        return Err(alloc::format!(
+            "unsupported room version {room_version}: cannot verify signatures over an undefined format"
+        ));
+    }
+
     let message = canonical_redacted_json(value, room_version).into_bytes();
     let Some(signatures) = value.get("signatures").and_then(Value::as_object) else {
         return Err(alloc::string::String::from(
             "event has no signatures object",
         ));
     };
-    let origin = expected_event_signer(value);
+    let Some(origin) = expected_event_signer(value) else {
+        return Err(alloc::string::String::from(
+            "could not derive expected event signer from event_id or sender",
+        ));
+    };
 
     let mut verified_any = false;
     for (server, keys) in signatures {
-        if origin.is_some_and(|expected| !expected.eq_ignore_ascii_case(server)) {
+        if !origin.eq_ignore_ascii_case(server) {
             continue;
         }
         let Some(keys_obj) = keys.as_object() else {
