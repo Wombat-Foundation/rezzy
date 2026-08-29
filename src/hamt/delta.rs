@@ -1,4 +1,7 @@
-use std::{fmt, hash::Hash, sync::Arc, vec::Vec};
+//! Subtree differencing and mutation delta tracking for HAMT tries.
+
+use alloc::{sync::Arc, vec::Vec};
+use core::{fmt, hash::Hash};
 
 use crate::state::LtHash;
 
@@ -134,15 +137,20 @@ where
                 removed.push((k_a.clone(), v_a.clone()));
                 added.push((k_b.clone(), v_b.clone()));
             }
-        } else if in_a {
+            continue;
+        }
+        if in_a {
             let idx_a = map_index(d_a, slot);
             let (k_a, v_a) = &node_a.leaves[idx_a];
             removed.push((k_a.clone(), v_a.clone()));
-        } else if in_b {
-            let idx_b = map_index(d_b, slot);
-            let (k_b, v_b) = &node_b.leaves[idx_b];
-            added.push((k_b.clone(), v_b.clone()));
+            continue;
         }
+        // `bit` is in `union`, and reaching here means it was neither the
+        // `in_a && in_b` nor the `in_a`-only case above, so `in_b` is
+        // guaranteed true -- no need to re-test it.
+        let idx_b = map_index(d_b, slot);
+        let (k_b, v_b) = &node_b.leaves[idx_b];
+        added.push((k_b.clone(), v_b.clone()));
     }
 
     // Traverse nodemaps
@@ -166,17 +174,22 @@ where
                 let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
                 diff_nodes(&res_a, &res_b, added, removed, resolver, next_depth)?;
             }
-        } else if in_a {
+            continue;
+        }
+        if in_a {
             let cidx_a = map_index(n_a, slot);
             let child_a = &node_a.children[cidx_a];
             let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
             collect_all_leaves(&res_a, removed, resolver, next_depth)?;
-        } else if in_b {
-            let cidx_b = map_index(n_b, slot);
-            let child_b = &node_b.children[cidx_b];
-            let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-            collect_all_leaves(&res_b, added, resolver, next_depth)?;
+            continue;
         }
+        // `bit` is in `union`, and reaching here means it was neither the
+        // `in_a && in_b` nor the `in_a`-only case above, so `in_b` is
+        // guaranteed true -- no need to re-test it.
+        let cidx_b = map_index(n_b, slot);
+        let child_b = &node_b.children[cidx_b];
+        let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
+        collect_all_leaves(&res_b, added, resolver, next_depth)?;
     }
 
     Ok(())
@@ -232,12 +245,11 @@ where
     }
 }
 
-#[cfg(feature = "std")]
-impl<E> std::error::Error for HamtTraversalError<E>
+impl<E> core::error::Error for HamtTraversalError<E>
 where
-    E: std::error::Error + 'static,
+    E: core::error::Error + 'static,
 {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Resolve(err) => Some(err),
             Self::MaxDepthExceeded { .. } => None,
@@ -264,68 +276,17 @@ pub struct NodeHashDelta {
     pub new_node_hashes: Vec<StructuralHash>,
 }
 
-/// Diffs the internal node hashes between two HAMT roots produced by a
-/// *single* path-copying mutation (e.g. before/after an
-/// [`insert`](super::insert) or [`remove`](super::remove) call), identifying
-/// which persisted nodes the mutation superseded and which it newly created.
+/// Returns the internal-node hash delta for one path-copying mutation.
+/// `new_node_hashes` are incremented when `root_b` is persisted;
+/// `superseded_node_hashes` are decremented only when `root_a` is retired.
+/// See [`RefcountTable`](super::gc::RefcountTable).
 ///
-/// Because HAMT nodes are content-addressed by [`StructuralHash`], the two
-/// lists are exactly what a storage backend needs to maintain per-hash
-/// refcounts for garbage collection — but the two halves fire at *different
-/// times*, not in the same transaction as the mutation:
+/// Pairwise retirement is safe only for a linear root history. If `root_a`
+/// has multiple live descendants, use [`walk_reachable_node_hashes`] across
+/// every live root: a two-root diff cannot see sharing through a third root.
+/// Use [`reachable_node_hashes`] to bootstrap or verify absolute refcounts.
 ///
-/// - Increment every hash in `new_node_hashes` when the new root is
-///   persisted. This is always safe to do immediately, since `root_a`'s
-///   nodes are already counted from when *it* was persisted.
-/// - Decrement every hash in `superseded_node_hashes` only when `root_a`
-///   itself is retired (e.g. an old state generation aging out of history),
-///   **not** when `root_b` is written — `root_a` is typically still a live,
-///   independently-referenced root at that point (that's the entire reason
-///   path copying returns a new root instead of mutating in place), and
-///   decrementing its spine early will drive still-referenced nodes to a
-///   refcount of zero while other roots still point at them.
-///
-/// A hash reaching a refcount of zero has no live root referencing it and is
-/// safe to delete. If increments and decrements for the same transition
-/// ever do land in one batch, apply the increments first, so a hash that
-/// appears in both lists can't transiently hit zero.
-///
-/// Bootstrapping refcounts for nodes that already exist in a store (or
-/// verifying they haven't drifted) needs a separate, one-time reachability
-/// walk over every currently-live root — see
-/// [`reachable_node_hashes`] — since this
-/// function only reports the delta between two adjacent roots, not absolute
-/// counts.
-///
-/// A `superseded` hash is only a GC *candidate* even after its root is
-/// retired, not certain garbage — structural sharing means the same subtree
-/// can still be reachable from another live root (a different room's
-/// snapshot, a sibling branch, ...), which is exactly what the refcount is
-/// for.
-///
-/// # Branching hazard — read before wiring this into retirement
-///
-/// This function is only safe as the *sole* source of what to decrement
-/// when `root_a` is retired if `root_b` is `root_a`'s **one and only** live
-/// successor. If `root_a` has more than one live descendant at retirement
-/// time — a forked resolution branch, a forward-extremity that hasn't
-/// converged yet, anything where two different roots both path-copied out
-/// of `root_a` — diffing against just one of them will report a subtree as
-/// `superseded` even though a *different* still-live descendant still needs
-/// it, and decrementing on that basis can zero out and delete live data.
-/// This isn't a bug fixable in this function: a two-root diff structurally
-/// cannot see a third root. When retirement can't be modeled as a strict
-/// linear chain, use [`walk_reachable_node_hashes`] to mark-sweep across
-/// *every* currently-live root instead of decrementing from a pairwise
-/// diff — it's the only way to know a hash is truly unreachable from
-/// anywhere live.
-///
-/// Runs in `O(|spine|)` when `root_a` and `root_b` are adjacent (one
-/// mutation apart), the same `O(log32 N)` path the mutation itself touched,
-/// since unrelated subtrees short-circuit on the first matching
-/// `structural_hash`. For roots that are unrelated or many mutations apart,
-/// this degrades to `O(N)` and may resolve every lazy node in the entire
-/// divergent region — it is not a general-purpose tree diff.
+/// Adjacent roots take `O(|spine|)`; unrelated roots may take `O(N)`.
 ///
 /// # Errors
 /// Returns [`HamtTraversalError::Resolve`] if `resolver` fails, or
@@ -406,17 +367,22 @@ where
                 let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
                 diff_node_hashes_rec(&res_a, &res_b, superseded, new, resolver, next_depth)?;
             }
-        } else if in_a {
+            continue;
+        }
+        if in_a {
             let cidx_a = map_index(n_a, slot);
             let child_a = &node_a.children[cidx_a];
             let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
             append_reachable_node_hashes(&res_a, superseded, resolver, next_depth)?;
-        } else if in_b {
-            let cidx_b = map_index(n_b, slot);
-            let child_b = &node_b.children[cidx_b];
-            let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-            append_reachable_node_hashes(&res_b, new, resolver, next_depth)?;
+            continue;
         }
+        // `bit` is in `union`, and reaching here means it was neither the
+        // `in_a && in_b` nor the `in_a`-only case above, so `in_b` is
+        // guaranteed true -- no need to re-test it.
+        let cidx_b = map_index(n_b, slot);
+        let child_b = &node_b.children[cidx_b];
+        let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
+        append_reachable_node_hashes(&res_b, new, resolver, next_depth)?;
     }
 
     Ok(())
@@ -431,7 +397,7 @@ where
 /// [`diff_node_hashes`] alone cannot provide since it only reports the delta
 /// between two adjacent roots.
 ///
-/// Runs in `O(N)` in the number of internal nodes reachable from `root` and
+/// Runs in `O(N)` time where `N` is the number of internal nodes reachable from `root` and
 /// may resolve every lazy child along the way.
 ///
 /// # Errors
@@ -450,45 +416,18 @@ where
     Ok(hashes)
 }
 
-/// Walks the internal-node reachability graph of `root`, calling `mark` on
-/// every node hash encountered and skipping recursion into any subtree
-/// whose hash `mark` reports as already seen.
-///
-/// Built for sweeping reachability across *many* roots that share most of
-/// their structure (e.g. every historical root recorded for a room, or
-/// every room's current root): call this once per root against the same
-/// `mark` closure backed by one shared set, and every subtree already
-/// accounted for by an earlier root is skipped in O(1) instead of
-/// re-resolved and re-walked. This is the same content-addressing property
-/// [`diff_node_hashes`] uses to short-circuit its two-root comparison,
-/// generalized from 2 roots to N.
-///
-/// `mark(hash)` must record `hash` as seen in the caller's set and return
-/// `true` if it was newly inserted (not previously present), `false` if it
-/// was already there. Returning `false` stops this call from resolving or
-/// descending into that node's children at all — the caller-owned set,
-/// not this function, is the single source of truth for "already
-/// accounted for," so callers are free to back it with a `BTreeSet`, a
-/// `HashSet`, or anything else that fits their scale.
-///
-/// [`reachable_node_hashes`] covers the single-root case and does not
-/// require a `mark` closure; reach for this one directly once you're
-/// sweeping more than one root and want the shared subtrees between them
-/// walked only once in total.
+/// Walks `root`'s internal-node graph, calling `mark` for every hash.
+/// Reuse one caller-owned mark set across roots: `false` skips an already
+/// visited subtree, so shared structure is walked once. Use
+/// [`reachable_node_hashes`] for a single root.
 ///
 /// # Errors
 /// Returns [`HamtTraversalError::Resolve`] if `resolver` fails, or
 /// [`HamtTraversalError::MaxDepthExceeded`] if the walk recurses past the
 /// deepest depth a legitimately-built HAMT can have.
 ///
-/// On either error, `mark` may already have recorded the hash of the node
-/// that failed to resolve (or of nodes deeper in an aborted branch) as
-/// "seen," even though its subtree was never walked and its descendants
-/// were never marked. Retrying the sweep against that same set would then
-/// skip that subtree as already-accounted-for, silently omitting live
-/// descendants from the result. Do not reuse a `mark` set after an error —
-/// discard it and rebuild from scratch (or restart the whole sweep) instead
-/// of retrying with it in place.
+/// Do not reuse the mark set after an error: it may contain an unresolved
+/// node whose descendants were never visited.
 pub fn walk_reachable_node_hashes<K, V, F, E, M>(
     root: &Arc<HamtNode<K, V>>,
     resolver: &mut F,

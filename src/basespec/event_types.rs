@@ -1,7 +1,7 @@
 //! Matrix Event Type Constants
 
-use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use core::fmt;
 
 pub const M_ROOM_MEMBER: &str = "m.room.member";
@@ -41,9 +41,12 @@ pub const M_EMPTY_STATE_KEY: &str = "";
 /// closed enum: anything outside the known set falls back to `Custom`, which
 /// still round-trips exactly via [`Display`](fmt::Display)/[`EventType::as_str`].
 ///
-/// `Custom` stores a `Box<str>` rather than `String` — event types are
+/// `Custom` stores an `Arc<str>` rather than `String` — event types are
 /// immutable once interned, so the extra `capacity` field a `String` carries
-/// is dead weight here.
+/// is dead weight here. `Arc` (not `Box`) is used so that `EventType::clone`
+/// is an O(1) refcount increment rather than a heap copy; the resolved-state
+/// and gate-set maps clone `(EventType, K)` keys freely without re-copying the
+/// underlying string buffer.
 ///
 /// `Eq`/`Ord`/`Hash` are hand-written against [`Self::as_str`] rather than
 /// derived. A derived `Ord` would order by variant declaration position, not
@@ -76,7 +79,13 @@ pub enum EventType {
     SpaceChild,
     SpaceParent,
     /// Any event type outside the well-known set above, preserved verbatim.
-    Custom(Box<str>),
+    ///
+    /// The payload is an `Arc<str>` (commit `f418952`; previously `Box<str>`),
+    /// so constructing `Custom` from an owned string now clones the `Arc`
+    /// rather than allocating a fresh `Box`. Pattern-matching
+    /// `EventType::Custom(inner)` binds `inner: Arc<str>` (not `Box<str>`);
+    /// the `From<&str>` and `From<String>` conversions remain available.
+    Custom(Arc<str>),
 }
 
 impl EventType {
@@ -133,7 +142,7 @@ impl From<&str> for EventType {
             M_ROOM_ALIASES => Self::RoomAliases,
             M_SPACE_CHILD => Self::SpaceChild,
             M_SPACE_PARENT => Self::SpaceParent,
-            other => Self::Custom(Box::from(other)),
+            other => Self::Custom(Arc::from(other)),
         }
     }
 }
@@ -161,7 +170,7 @@ impl From<String> for EventType {
             M_ROOM_ALIASES => Self::RoomAliases,
             M_SPACE_CHILD => Self::SpaceChild,
             M_SPACE_PARENT => Self::SpaceParent,
-            _ => Self::Custom(s.into_boxed_str()),
+            _ => Self::Custom(Arc::from(s)),
         }
     }
 }
@@ -239,6 +248,7 @@ pub const FIELD_DISPLAY_NAME: &str = "display_name";
 pub const FIELD_JOIN_AUTHORISED_VIA_USERS_SERVER: &str = "join_authorised_via_users_server";
 pub const FIELD_MXID: &str = "mxid";
 pub const FIELD_SIGNATURES: &str = "signatures";
+pub const FIELD_HASHES: &str = "hashes";
 pub const FIELD_NOTIFICATIONS: &str = "notifications";
 // Note: Part of canonical JSON in pre-v3 rooms
 pub const FIELD_EVENT_ID: &str = "event_id";
@@ -251,6 +261,8 @@ pub const FIELD_SENDER: &str = "sender";
 pub const FIELD_CONTENT: &str = "content";
 pub const FIELD_PREV_EVENTS: &str = "prev_events";
 pub const FIELD_AUTH_EVENTS: &str = "auth_events";
+pub const FIELD_PREV_STATE_EVENTS: &str = "prev_state_events";
+pub const MAX_PREV_STATE_EVENTS: usize = 20;
 pub const FIELD_DEPTH: &str = "depth";
 pub const FIELD_REJECTED: &str = "__rejected";
 pub const FIELD_SOFT_FAIL: &str = "__soft_fail";
@@ -360,6 +372,16 @@ mod event_type_tests {
         let custom = EventType::from(owned.clone());
         assert_eq!(custom.as_str(), owned.as_str());
         assert!(matches!(custom, EventType::Custom(_)));
+    }
+
+    #[test]
+    fn custom_clone_preserves_round_trip() {
+        // Cloning a Custom event type (backed by Arc<str>) must preserve the
+        // wire string — `Eq`/`Hash`/`Display` all route through `as_str`.
+        let custom = EventType::from("org.matrix.msc9999.custom");
+        let cloned = custom.clone();
+        assert_eq!(cloned, custom);
+        assert_eq!(cloned.as_str(), "org.matrix.msc9999.custom");
     }
 
     #[test]

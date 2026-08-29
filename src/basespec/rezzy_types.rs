@@ -15,12 +15,13 @@
 //! Core data types for Matrix state resolution.
 
 use alloc::string::String;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER};
+use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER, M_ROOM_REDACTION};
 
 /// Trait alias for types that can serve as event identifiers.
 ///
@@ -35,8 +36,7 @@ use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER};
 /// canonical wire-format representation of the event ID. This is relied upon
 /// by `LtHash::seed()` in [`crate::state::lthash`] for
 /// content-addressed state hashing — if two implementations produce different
-/// `Display` output for the same logical event ID, state hashes will diverge
-/// across homeservers.
+/// `Display` output for the same logical event ID, state hashes will diverge.
 pub trait EventId:
     Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display
 {
@@ -46,38 +46,53 @@ impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Disp
 /// Trait alias for types that can serve as the "key" half of a Matrix state
 /// tuple `(event_type, state_key)`.
 ///
-/// Any type that is `Clone + Eq + Hash + Ord + AsRef<str> + Default + 'static` automatically
+/// Any type that is `Clone + Eq + Hash + Ord + AsRef<str>` automatically
 /// implements this trait via a blanket impl. In practice, this is `String`
 /// (the default everywhere in this crate), but it can be substituted with a
-/// lighter interned/`Arc<str>`-style key by downstream homeservers.
+/// lighter interned/`Arc<str>`-style key by downstream homeservers -- including
+/// a *borrowing* key tied to a `&'a` interner arena, which is why this trait
+/// no longer requires `Default` or `'static`: neither can be produced from
+/// nothing by a key that borrows from an arena the caller owns. Callers that
+/// need "the empty state key" (e.g. to look up `m.room.create`) now pass one
+/// explicitly (see `empty_key` parameters on the resolution entry points)
+/// instead of relying on `K::default()`.
 ///
 /// **Contract:**
-/// - `K::default().as_ref()` **must** equal the empty string `""`.
 /// - Any implementor's `Ord` ordering **must** match the lexicographic byte ordering of
 ///   its `AsRef<str>` representation. This contract is required for `Borrow`-based
 ///   `BTreeMap` lookups to function correctly.
-pub trait StateKey: Clone + Eq + core::hash::Hash + Ord + AsRef<str> + Default + 'static {}
-impl<T: Clone + Eq + core::hash::Hash + Ord + AsRef<str> + Default + 'static> StateKey for T {}
+pub trait StateKey: Clone + Eq + core::hash::Hash + Ord + AsRef<str> {}
+impl<T: Clone + Eq + core::hash::Hash + Ord + AsRef<str>> StateKey for T {}
 
 /// Selects which state resolution algorithm to use.
 ///
-/// Each variant corresponds to a set of Matrix room versions and spec behaviors:
+/// Only [`V1`](Self::V1), [`V2`](Self::V2), and [`V2_1`](Self::V2_1) correspond
+/// to actual Matrix spec / MSC content. [`V2_1_1`](Self::V2_1_1) and
+/// [`V2_2`](Self::V2_2) are rezzy-internal designations for hardening beyond
+/// what MSC4297 itself specifies -- MSC4297's text covers only two changes
+/// (starting iterative auth checks from an empty state map, and widening the
+/// full conflicted set to include the conflicted-state subgraph) and
+/// explicitly does not touch the iterative auth checks or event sorting
+/// themselves; it says nothing about CDO, power-phase local-auth fallback
+/// gating, or ban-evasion screening. Those are rezzy's own choices, encoded
+/// as separate variants specifically because they are *not* uniformly part
+/// of stock V2.1:
 ///
 /// | Variant | Room Versions | Key Change |
 /// |---------|:---:|---|
 /// | [`V1`](Self::V1) | 1 | Depth-based topological sort, all `m.room.member` events are power events. |
 /// | [`V2`](Self::V2) | 2–11 | Reverse topological power ordering via Kahn's algorithm, mainline sort. |
-/// | [`V2_1`](Self::V2_1) | 12+ ([MSC4297]) | Empty initial state, conflicted subgraph extraction, CDO filtering. |
-/// | [`V2_1_1`](Self::V2_1_1) | — | Ban evasion fix: restricts power-phase state supplementation. |
-/// | [`V2_2`](Self::V2_2) | — | Reserved for State DAGs ([MSC4242]). |
+/// | [`V2_1`](Self::V2_1) | 12+ ([MSC4297]) | Empty initial state for iterative auth checks; full conflicted set widened to include the conflicted state subgraph. |
+/// | [`V2_1_1`](Self::V2_1_1) | — (rezzy-internal) | Ban evasion fix: resolved-state screening pass + power-phase local-auth gating, beyond what V2.1/MSC4297 itself specifies. |
+/// | [`V2_2`](Self::V2_2) | — (rezzy-internal) | Reserved for State DAGs ([MSC4242]). |
 ///
 /// [MSC4297]: https://github.com/matrix-org/matrix-spec-proposals/pull/4297
 /// [MSC4242]: https://github.com/matrix-org/matrix-spec-proposals/pull/4242
 ///
-/// ## TODO: Redaction preserved keys
+/// ## Redaction preserved keys
 ///
-/// Rezzy does not implement redaction stripping. The spec defines which content
-/// keys survive redaction per event type, evolving across room versions:
+/// The spec defines which content keys survive redaction per event type,
+/// evolving across room versions:
 ///
 /// | Fragment | Room Versions | Delta from previous |
 /// |----------|:---:|---|
@@ -116,16 +131,106 @@ impl StateResVersion {
             "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" => Some(Self::V2),
             "12" => Some(Self::V2_1),
             "12.1" => Some(Self::V2_1_1),
+            "org.matrix.msc4242.12" => Some(Self::V2_2),
             _ => None,
         }
     }
 
     /// Returns `true` for V2.1 and above (MSC4297+).
     ///
-    /// Use this instead of manually matching `V2_1 | V2_1_1 | V2_2`.
+    /// Use this instead of manually matching `V2_1 | V2_1_1 | V2_2`. This is
+    /// for MSC4297-scoped behavior (empty initial state, ban/kick
+    /// supplementation direction, rule 2.4's create-citation exemption,
+    /// v12+ create/`auth_events` rules, ...) that genuinely applies starting
+    /// at stock V2.1. For rezzy-internal hardening that V2.1 predates, use
+    /// [`Self::has_ban_evasion_hardening`] instead -- conflating the two is
+    /// exactly the bug class this distinction exists to prevent (see
+    /// `docs/tech_debt.md` / the `state/at.rs` and `resolve/iterative.rs`
+    /// commits that fixed a silent merge widening the latter to match the
+    /// former).
     #[must_use]
     pub const fn is_v2_1_plus(&self) -> bool {
         matches!(self, Self::V2_1 | Self::V2_1_1 | Self::V2_2)
+    }
+
+    /// Returns `true` for V2.1.1 and above.
+    ///
+    /// This is **not** an MSC4297 requirement -- "V2.1.1" is a rezzy-internal
+    /// designation (it appears nowhere in the Matrix spec) for hardening
+    /// beyond what stock V2.1 does: dropping non-power conflicted events
+    /// whose sender is already banned/under-powered in the resolved state
+    /// before mainline sort (the sound replacement for the retired CDO
+    /// pre-filter, which itself was gated `== V2_1_1` strictly, never
+    /// `V2_1`), and narrowing `OverlayState::get_event`'s power-phase
+    /// local-auth fallback. `V2_1` and `V2_1_1` are separate enum variants
+    /// specifically because `V2_1_1` does this and `V2_1` doesn't -- every
+    /// call site gating this behavior must go through this one function
+    /// (not its own `matches!`/`is_v2_1_plus` copy) so there is exactly one
+    /// place a future merge (or anyone) can get this polarity wrong, and one
+    /// place a test pins it. See `has_ban_evasion_hardening_table` below.
+    #[must_use]
+    pub const fn has_ban_evasion_hardening(&self) -> bool {
+        matches!(self, Self::V2_1_1 | Self::V2_2)
+    }
+
+    /// Returns `true` for room versions that support the
+    /// `join_authorised_via_users_server` restricted-join field (MSC3089, room
+    /// version 8+).
+    ///
+    /// The enum collapses room versions 2–11 into [`Self::V2`], so "v8+"
+    /// cannot be expressed precisely here: this returns `true` for every `V2`
+    /// and above. That is safe in practice because pre-v8 members of `V2`
+    /// never carry the field (it did not exist before v8), so the field's
+    /// presence is an additional guard on top of this predicate.
+    #[must_use]
+    pub const fn has_join_authorised_via_users_server(&self) -> bool {
+        !matches!(self, Self::V1)
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod state_res_version_gate_tests {
+    use super::StateResVersion;
+
+    /// Pins the gate-polarity table for every `StateResVersion` variant, for
+    /// both `is_v2_1_plus` (real MSC4297 scope) and
+    /// `has_ban_evasion_hardening` (rezzy-internal scope). This is the
+    /// safeguard `docs/tech_debt.md` calls for: a silent 3-way merge that
+    /// widens/narrows either gate's scope (no conflict marker raised,
+    /// because the changed side hadn't touched those exact lines) fails this
+    /// test immediately, whether or not the change is otherwise observable
+    /// in any behavioral test's output -- which a purely optimization-scoped
+    /// gate (like `has_ban_evasion_hardening`'s use in the resolved-state
+    /// screening pass) never is.
+    #[test]
+    fn test_gate_polarity_table() {
+        let table = [
+            // (version, is_v2_1_plus, has_ban_evasion_hardening,
+            //  has_join_authorised_via_users_server)
+            (StateResVersion::V1, false, false, false),
+            (StateResVersion::V2, false, false, true),
+            (StateResVersion::V2_1, true, false, true),
+            (StateResVersion::V2_1_1, true, true, true),
+            (StateResVersion::V2_2, true, true, true),
+        ];
+        for (version, expect_v2_1_plus, expect_ban_evasion, expect_join_authorised) in table {
+            assert_eq!(
+                version.is_v2_1_plus(),
+                expect_v2_1_plus,
+                "{version:?}.is_v2_1_plus() polarity changed"
+            );
+            assert_eq!(
+                version.has_ban_evasion_hardening(),
+                expect_ban_evasion,
+                "{version:?}.has_ban_evasion_hardening() polarity changed"
+            );
+            assert_eq!(
+                version.has_join_authorised_via_users_server(),
+                expect_join_authorised,
+                "{version:?}.has_join_authorised_via_users_server() polarity changed"
+            );
+        }
     }
 }
 
@@ -167,7 +272,7 @@ pub fn redaction_preserved_keys(event_type: &str, room_version: &str) -> Redacti
         "10" => 10,
         // v12 inherits v11's redaction rules verbatim (v12.txt includes the
         // v11-redactions spec fragment rather than defining its own).
-        "11" | "12" | "12.1" => 11,
+        "11" | "12" | "12.1" | "org.matrix.msc4242.12" => 11,
         _ => return RedactionRule::None,
     };
     match event_type {
@@ -243,6 +348,655 @@ pub fn redaction_preserved_keys(event_type: &str, room_version: &str) -> Redacti
         }
         _ => RedactionRule::None,
     }
+}
+
+/// Splits `content` into MSC4511's `redacted_content` (the fields this room
+/// version's redaction algorithm preserves) and `redactable_content` (every
+/// remaining field, i.e. what redaction strips), for the given event type and
+/// room version. `redacted_content` is exactly the output of the internal
+/// `redact_content` helper;
+/// `redactable_content` is the complement needed to recover `content` from the
+/// two pieces.
+#[must_use]
+pub fn split_redaction_content(
+    content: &Value,
+    event_type: &str,
+    room_version: &str,
+) -> (Value, Value) {
+    let rule = redaction_preserved_keys(event_type, room_version);
+    let redacted = redact_content(content, rule);
+    let redactable = redactable_content_remainder(content, &redacted);
+    (redacted, redactable)
+}
+
+/// Returns the content present in `content` but not preserved in `redacted`,
+/// recursing one level for the `third_party_invite`-shaped nested-path case.
+fn redactable_content_remainder(content: &Value, redacted: &Value) -> Value {
+    let Value::Object(content_obj) = content else {
+        return Value::Object(serde_json::Map::default());
+    };
+    let empty = serde_json::Map::default();
+    let redacted_obj = match redacted {
+        Value::Object(m) => m,
+        _ => &empty,
+    };
+    let mut out = serde_json::Map::new();
+    for (key, value) in content_obj {
+        match (redacted_obj.get(key), value) {
+            (Some(preserved), _) if preserved == value => {}
+            (Some(Value::Object(preserved_inner)), Value::Object(full_inner)) => {
+                let mut remainder = serde_json::Map::new();
+                for (inner_key, inner_value) in full_inner {
+                    if preserved_inner.get(inner_key) != Some(inner_value) {
+                        remainder.insert(inner_key.clone(), inner_value.clone());
+                    }
+                }
+                if !remainder.is_empty() {
+                    out.insert(key.clone(), Value::Object(remainder));
+                }
+            }
+            _ => {
+                out.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    Value::Object(out)
+}
+
+/// Filters `content` down to exactly the keys a redaction preserves, per the
+/// given rule. Top-level keys are copied as-is; dotted paths (e.g.
+/// `third_party_invite.signed`) keep only the nested key under the parent
+/// object. `RedactionRule::All` returns the content untouched; `None` yields
+/// an empty object.
+fn redact_content(content: &Value, rule: RedactionRule) -> Value {
+    match rule {
+        RedactionRule::None => Value::Object(serde_json::Map::default()),
+        RedactionRule::All => content.clone(),
+        RedactionRule::Keys(paths) => {
+            let mut out = serde_json::Map::new();
+            for path in paths {
+                if let Some((top, rest)) = path.split_once('.') {
+                    if let Some(Value::Object(inner)) = content.get(top) {
+                        if let Some(v) = inner.get(rest) {
+                            // Accumulate into the existing parent so paths sharing
+                            // a parent (e.g. `a.b` and `a.c`) both survive.
+                            if let Some(Value::Object(parent)) = out.get_mut(top) {
+                                parent.insert(rest.to_string(), v.clone());
+                            } else {
+                                let mut parent = serde_json::Map::new();
+                                parent.insert(rest.to_string(), v.clone());
+                                out.insert(top.to_string(), Value::Object(parent));
+                            }
+                        }
+                    }
+                } else if let Some(v) = content.get(*path) {
+                    out.insert((*path).to_string(), v.clone());
+                }
+            }
+            Value::Object(out)
+        }
+    }
+}
+
+/// The top-level PDU keys a redaction preserves, per room version.
+///
+/// Content is stripped separately by [`redact_content`]; this is the second
+/// half of the spec's redaction algorithm. v11+ no longer protects
+/// `origin`/`membership`/`prev_state` at the top level; pre-v11 versions keep
+/// them. v12+ (MSC4291) drops `room_id` on `m.room.create` (the room ID is
+/// derived from the event ID, so the create carries none).
+///
+/// The unstable-version deviations are intentionally not modeled — rezzy
+/// handles the stable v1-v12 set, and their redaction identifiers
+/// (`org.matrix.msc3389.10` preserving `m.relates_to.{rel_type,event_id}`)
+/// are unrecognized and fail closed. `org.matrix.msc4242.12`'s swap of
+/// `auth_events` for `prev_state_events` is modeled in `redact_top_level`:
+/// the swapped-in field is preserved alongside `auth_events`.
+#[must_use]
+fn redact_top_level(value: &Value, room_version: &str) -> serde_json::Map<String, Value> {
+    use crate::basespec::event_types::{
+        FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_HASHES,
+        FIELD_ORIGIN_SERVER_TS, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_SIGNATURES, FIELD_STATE_KEY,
+        FIELD_TYPE,
+    };
+    let Value::Object(obj) = value else {
+        return serde_json::Map::new();
+    };
+    // MSC4291 (room IDs as hashes, room v12+): the create event carries no
+    // room_id, so it must not be preserved on redaction.
+    let is_v12_create = obj.get(FIELD_TYPE).and_then(Value::as_str)
+        == Some(crate::basespec::event_types::M_ROOM_CREATE)
+        && room_version_is_v12_or_later(room_version);
+    let mut out = serde_json::Map::new();
+    let take = |key: &str, out: &mut serde_json::Map<String, Value>| {
+        if let Some(v) = obj.get(key) {
+            out.insert(String::from(key), v.clone());
+        }
+    };
+    take(FIELD_EVENT_ID, &mut out);
+    take(FIELD_TYPE, &mut out);
+    if !is_v12_create {
+        take("room_id", &mut out);
+    }
+    take(FIELD_SENDER, &mut out);
+    take(FIELD_STATE_KEY, &mut out);
+    take(FIELD_CONTENT, &mut out);
+    take(FIELD_HASHES, &mut out);
+    take(FIELD_SIGNATURES, &mut out);
+    take(FIELD_DEPTH, &mut out);
+    take(FIELD_PREV_EVENTS, &mut out);
+    take(FIELD_AUTH_EVENTS, &mut out);
+    take(FIELD_ORIGIN_SERVER_TS, &mut out);
+    // MSC4242 (org.matrix.msc4242.12, room v11+/v12) swaps `auth_events`
+    // for `prev_state_events`. Preserve the swapped-in field so events signed
+    // under that format survive redaction with their hashes/signatures intact.
+    // `take` is a no-op when the field is absent, so stable v11/v12 events
+    // (which never carry it) are unaffected.
+    if is_msc4242_room_version(room_version) {
+        take("prev_state_events", &mut out);
+    }
+    if !is_msc4242_room_version(room_version) {
+        take("origin", &mut out);
+        take("membership", &mut out);
+        take("prev_state", &mut out);
+    }
+    out
+}
+/// The base64 engine used for Matrix hash encodings, derived from the room
+/// version. Room v3 uses the STANDARD alphabet; room v4+ uses URL-safe. Both
+/// are unpadded. Mirrors Synapse's Rust (`ROOM_V3 -> STANDARD`, else
+/// `URL_SAFE`) and its `unpaddedbase64.encode_base64` (default STANDARD).
+#[must_use]
+fn hash_base64_engine(room_version: &str) -> base64::engine::GeneralPurpose {
+    use base64::engine::{general_purpose::NO_PAD, GeneralPurpose};
+    let is_v3 = room_version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major == 3);
+    let alphabet = if is_v3 {
+        &base64::alphabet::STANDARD
+    } else {
+        &base64::alphabet::URL_SAFE
+    };
+    GeneralPurpose::new(alphabet, NO_PAD)
+}
+
+/// The Matrix redaction algorithm applied to a raw PDU `Value`, both halves:
+///
+/// 1. Drop every top-level key outside the preserved whitelist (see the
+///    private `redact_top_level` helper below).
+/// 2. Strip `content` down to the keys [`redaction_preserved_keys`] preserves
+///    for `room_version`.
+///
+/// This is the primitive the reference-hash (event ID for room v4+) path and
+/// the lean-model [`LeanEvent::redacted`] both build on.
+#[must_use]
+pub fn redact_json(value: &Value, room_version: &str) -> Value {
+    let event_type = value
+        .get(crate::basespec::event_types::FIELD_TYPE)
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let rule = redaction_preserved_keys(event_type, room_version);
+    let mut out = redact_top_level(value, room_version);
+    let content = out
+        .get(crate::basespec::event_types::FIELD_CONTENT)
+        .map_or_else(
+            || Value::Object(serde_json::Map::default()),
+            |c| redact_content(c, rule),
+        );
+    out.insert(
+        String::from(crate::basespec::event_types::FIELD_CONTENT),
+        content,
+    );
+    Value::Object(out)
+}
+
+/// Computes the Matrix **reference hash** of a PDU `Value` — the event ID for
+/// room versions 4+: SHA-256 of the canonical JSON of the *redacted* event
+/// (with `signatures`/`unsigned`/legacy `age_ts` removed; `hashes` is
+/// retained), encoded with the room version's base64 alphabet (STANDARD for
+/// v3, URL-safe for v4+; no `$` prefix).
+///
+/// Canonicalization is tolerant of out-of-range integers (like Synapse's
+/// `relaxed` mode): `serde_json::to_string` serializes whatever numbers are
+/// present rather than rejecting them. Keys are already lexicographically
+/// sorted because `serde_json::Map` is a `BTreeMap`.
+///
+/// # Errors
+/// Returns `Err` when the room version has no reference hash (v1/v2, whose
+/// event IDs are opaque server-assigned strings, not hashes).
+///
+/// # Panics
+/// Panics if the canonical JSON cannot be serialized. This is unreachable in
+/// practice: a `serde_json::Value` serializes infallibly (a safe `Value`
+/// cannot hold a non-finite number), so `expect` is used instead of a
+/// recoverable `?` to keep the error branch out of the coverage report.
+pub fn reference_hash(
+    value: &Value,
+    room_version: &str,
+) -> Result<alloc::string::String, alloc::string::String> {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+
+    let major = room_version
+        .split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok());
+    if major.is_some_and(|m| m <= 2) {
+        return Err(alloc::format!(
+            "no reference hash for room version {room_version}: v1/v2 event IDs are opaque server-assigned strings, not hashes"
+        ));
+    }
+
+    if StateResVersion::from_room_version(room_version).is_none() {
+        return Err(alloc::format!(
+            "no reference hash for unsupported room version {room_version}: its event ID hash rules are undefined"
+        ));
+    }
+
+    let mut hasher = Sha256::new();
+    {
+        let mut w = ShaWriter(&mut hasher);
+        write_redacted_canonical(&mut w, value, room_version)
+            .expect("writing canonical JSON into the hasher is infallible");
+    }
+    Ok(hash_base64_engine(room_version).encode(hasher.finalize()))
+}
+
+/// Computes the Matrix **content hash** of a PDU `Value` (`hashes.sha256`):
+/// SHA-256 of the canonical JSON of the *unredacted* event with `unsigned`,
+/// `signatures`, and `hashes` removed, encoded with standard unpadded base64
+/// for every room version.
+///
+/// # Errors
+/// Always returns `Ok`. The `Result` return type is retained for API symmetry
+/// with [`reference_hash`]; a `serde_json::Value` serializes infallibly (a safe
+/// `Value` cannot hold a non-finite number), so the serialize call uses
+/// `expect` rather than a recoverable `?`.
+///
+/// # Panics
+/// Panics only if the canonical JSON cannot be serialized, which is unreachable
+/// for the reason above.
+pub fn compute_content_hash(
+    value: &Value,
+    _room_version: &str,
+) -> Result<alloc::string::String, alloc::string::String> {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    {
+        let mut w = ShaWriter(&mut hasher);
+        write_content_hash_canonical(&mut w, value)
+            .expect("writing canonical JSON into the hasher is infallible");
+    }
+    Ok(base64::engine::general_purpose::STANDARD_NO_PAD.encode(hasher.finalize()))
+}
+
+/// Verifies a raw PDU `Value`'s `hashes.sha256` against its recomputed content
+/// hash. This is a PDU-boundary check: it must run on the raw, unredacted
+/// event (the content hash covers the unredacted content), before the event is
+/// converted into a lean form that drops the hashed content.
+///
+/// # Errors
+/// Returns `Err` when `hashes.sha256` is missing/not a string, or when the
+/// recomputed content hash does not match.
+pub fn verify_content_hash(value: &Value, room_version: &str) -> Result<(), alloc::string::String> {
+    let Some(expected) = value
+        .get(crate::basespec::event_types::FIELD_HASHES)
+        .and_then(|h| h.get("sha256"))
+        .and_then(Value::as_str)
+    else {
+        return Err(alloc::string::String::from(
+            "hashes.sha256 is missing or not a string",
+        ));
+    };
+    let computed = compute_content_hash(value, room_version)?;
+    if computed != expected {
+        return Err(alloc::format!(
+            "content hash mismatch: hashes.sha256={expected}, computed={computed}"
+        ));
+    }
+    Ok(())
+}
+
+/// Produces the canonical JSON bytes an ed25519 PDU signature covers: the
+/// redacted event with `unsigned` and `signatures` stripped and object keys
+/// recursively sorted (the Matrix "Signing Events" canonicalization).
+///
+/// This is the string that [`reference_hash`] hashes to form an event ID and
+/// that signature verification signs — so it must be redacted first, otherwise
+/// a redaction-vs-signer mismatch (like the MSC4242 `prev_state_events` bug)
+/// makes verification fail.
+///
+/// # Errors
+/// Returns `Err` when the redacted `Value` cannot be serialized (unreachable
+/// for a safe `Value`), or when `room_version` is unsupported and `redact_json`
+/// fails closed to an empty object.
+///
+/// # Panics
+/// Panics only if the canonical JSON cannot be serialized, which is unreachable
+/// for a `serde_json::Value` (a safe `Value` cannot hold a non-finite number).
+#[must_use]
+pub fn canonical_redacted_json(value: &Value, room_version: &str) -> alloc::string::String {
+    let mut out = alloc::string::String::new();
+    write_redacted_canonical(&mut out, value, room_version)
+        .expect("writing canonical JSON into a String is infallible");
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Zero-copy canonical JSON writer.
+//
+// `serde_json::Map` is a `BTreeMap`, so object keys are already sorted. This
+// writer emits canonical JSON by descending the tree directly into a
+// `core::fmt::Write` sink — skipping the intermediate `Value` clone + re-sort
+// that `redact_json`/`value.clone()` + `serde_json::to_string` would pay, and
+// feeding bytes straight into the hasher or a `String`.
+//
+// Byte-parity with `serde_json` is load-bearing (hashes/signatures cover these
+// exact bytes), so it is pinned by `canonical_parity_tests` and every
+// reference-hash vector. Number formatting is delegated to
+// `serde_json::Number::to_string` (identical to what serde_json emits, incl.
+// ryu float formatting), which removes any float/`-0`/exponent divergence risk.
+// ---------------------------------------------------------------------------
+
+/// A `core::fmt::Write` sink that feeds bytes straight into a SHA-256 hasher.
+struct ShaWriter<'a>(&'a mut sha2::Sha256);
+
+impl core::fmt::Write for ShaWriter<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        use sha2::Digest as _;
+        self.0.update(s.as_bytes());
+        Ok(())
+    }
+}
+
+/// Writes a JSON string with `serde_json`-identical escaping.
+///
+/// Non-special runs are emitted in bulk (one `write_str` per escaped char
+/// boundary) instead of per character, matching `serde_json`'s fragment
+/// batching.
+fn write_json_string<W: core::fmt::Write>(out: &mut W, s: &str) -> core::fmt::Result {
+    out.write_str("\"")?;
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        let escape = matches!(b, b'"' | b'\\' | 0x00..=0x1f);
+        if !escape {
+            i = i.saturating_add(1);
+            continue;
+        }
+        if i > start {
+            // ASCII bytes (the only escaped ones) never occur inside a UTF-8
+            // multibyte sequence, so this is a valid char boundary.
+            out.write_str(&s[start..i])?;
+        }
+        match b {
+            b'"' => out.write_str("\\\"")?,
+            b'\\' => out.write_str("\\\\")?,
+            0x08 => out.write_str("\\b")?,
+            0x09 => out.write_str("\\t")?,
+            0x0a => out.write_str("\\n")?,
+            0x0c => out.write_str("\\f")?,
+            0x0d => out.write_str("\\r")?,
+            _ => write!(out, "\\u{b:04x}")?,
+        }
+        i = i.saturating_add(1);
+        start = i;
+    }
+    if start < bytes.len() {
+        out.write_str(&s[start..])?;
+    }
+    out.write_str("\"")
+}
+
+/// Recursively writes a JSON value in canonical (key-sorted) form.
+fn write_json_value<W: core::fmt::Write>(out: &mut W, v: &Value) -> core::fmt::Result {
+    match v {
+        Value::Null => out.write_str("null"),
+        Value::Bool(true) => out.write_str("true"),
+        Value::Bool(false) => out.write_str("false"),
+        Value::Number(n) => out.write_str(&n.to_string()),
+        Value::String(s) => write_json_string(out, s),
+        Value::Array(items) => {
+            out.write_str("[")?;
+            let mut first = true;
+            for item in items {
+                if !first {
+                    out.write_str(",")?;
+                }
+                first = false;
+                write_json_value(out, item)?;
+            }
+            out.write_str("]")
+        }
+        Value::Object(map) => {
+            out.write_str("{")?;
+            let mut first = true;
+            for (k, val) in map {
+                if !first {
+                    out.write_str(",")?;
+                }
+                first = false;
+                write_json_string(out, k)?;
+                out.write_str(":")?;
+                write_json_value(out, val)?;
+            }
+            out.write_str("}")
+        }
+    }
+}
+
+/// Writes the canonical JSON of an **unredacted** event with the top-level
+/// `unsigned`, `signatures`, and `hashes` keys omitted — the content-hash input.
+fn write_content_hash_canonical<W: core::fmt::Write>(
+    out: &mut W,
+    value: &Value,
+) -> core::fmt::Result {
+    let Value::Object(obj) = value else {
+        return out.write_str("{}");
+    };
+    out.write_str("{")?;
+    let mut first = true;
+    for (key, v) in obj {
+        if matches!(key.as_str(), "unsigned" | "signatures" | "hashes") {
+            continue;
+        }
+        if !first {
+            out.write_str(",")?;
+        }
+        first = false;
+        write_json_string(out, key)?;
+        out.write_str(":")?;
+        write_json_value(out, v)?;
+    }
+    out.write_str("}")
+}
+
+/// Writes the canonical JSON of a redacted event with `unsigned`/`signatures`
+/// omitted — the reference-hash and PDU-signature input. Mirrors
+/// [`redact_top_level`] + [`redact_content`] exactly, emitting only preserved
+/// keys in `BTreeMap` (sorted) order without building an intermediate `Value`.
+fn write_redacted_canonical<W: core::fmt::Write>(
+    out: &mut W,
+    value: &Value,
+    room_version: &str,
+) -> core::fmt::Result {
+    use crate::basespec::event_types::{
+        FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_HASHES,
+        FIELD_ORIGIN_SERVER_TS, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_STATE_KEY, FIELD_TYPE,
+        M_ROOM_CREATE,
+    };
+
+    let Value::Object(obj) = value else {
+        return out.write_str("{}");
+    };
+    let event_type = obj.get(FIELD_TYPE).and_then(Value::as_str).unwrap_or("");
+    let rule = redaction_preserved_keys(event_type, room_version);
+    let is_v12_create = event_type == M_ROOM_CREATE && room_version_is_v12_or_later(room_version);
+    let msc4242 = is_msc4242_room_version(room_version);
+
+    out.write_str("{")?;
+    let mut first = true;
+    let mut content_written = false;
+    for (key, v) in obj {
+        // `redact_json` always materializes an empty `content` object, even
+        // when the input omitted the field. Insert it before the first later
+        // key so the streaming output remains in canonical key order.
+        if !content_written && key.as_str() > FIELD_CONTENT {
+            if !first {
+                out.write_str(",")?;
+            }
+            first = false;
+            write_json_string(out, FIELD_CONTENT)?;
+            out.write_str(":{}")?;
+            content_written = true;
+        }
+        let keep = match key.as_str() {
+            FIELD_EVENT_ID
+            | FIELD_TYPE
+            | FIELD_SENDER
+            | FIELD_STATE_KEY
+            | FIELD_HASHES
+            | FIELD_DEPTH
+            | FIELD_PREV_EVENTS
+            | FIELD_AUTH_EVENTS
+            | FIELD_ORIGIN_SERVER_TS
+            | FIELD_CONTENT => true,
+            "room_id" => !is_v12_create,
+            "prev_state_events" => msc4242,
+            "origin" | "membership" | "prev_state" => !msc4242,
+            // `unsigned`, `signatures`, and any unrecognized key are dropped.
+            _ => false,
+        };
+        if !keep {
+            continue;
+        }
+        if !first {
+            out.write_str(",")?;
+        }
+        first = false;
+        write_json_string(out, key)?;
+        out.write_str(":")?;
+        if key == FIELD_CONTENT {
+            write_json_value(out, &redact_content(v, rule))?;
+            content_written = true;
+        } else {
+            write_json_value(out, v)?;
+        }
+    }
+    if !content_written {
+        if !first {
+            out.write_str(",")?;
+        }
+        write_json_string(out, FIELD_CONTENT)?;
+        out.write_str(":{}")?;
+    }
+    out.write_str("}")
+}
+
+impl<Id: Clone, K: Clone> LeanEvent<Id, Value, K> {
+    /// Returns a redacted copy of this event: `content` is stripped down to the
+    /// keys preserved by [`redaction_preserved_keys`] for `room_version`.
+    /// The event envelope (`event_id`, `sender`, `type`, `state_key`,
+    /// `origin_server_ts`, `prev_events`, `auth_events`, `depth`) is untouched.
+    #[must_use]
+    pub fn redacted(&self, room_version: &str) -> LeanEvent<Id, Value, K> {
+        let rule = redaction_preserved_keys(&self.event_type, room_version);
+        LeanEvent {
+            event_id: self.event_id.clone(),
+            event_type: self.event_type.clone(),
+            state_key: self.state_key.clone(),
+            power_level: self.power_level,
+            origin_server_ts: self.origin_server_ts,
+            sender: self.sender.clone(),
+            content: redact_content(&self.content, rule),
+            prev_events: self.prev_events.clone(),
+            auth_events: self.auth_events.clone(),
+            depth: self.depth,
+            rejected: self.rejected,
+            soft_fail: self.soft_fail,
+            room_id: self.room_id.clone(),
+        }
+    }
+}
+
+/// Applies `redaction` to `target`, returning the redacted event.
+///
+/// Returns `None` when the redaction does not actually target `target` (its
+/// `redacts` does not equal `target.event_id`). `m.room.create` is redactable
+/// like any other event — the spec does not forbid it; its content is simply
+/// preserved by [`redaction_preserved_keys`] (all keys in v11+, `creator`
+/// before that). The caller is responsible for having already auth-checked
+/// `redaction` (see [`crate::auth::check_auth`]) — this function performs the
+/// structural application only.
+///
+/// `room_version` selects the preserved-key rule; obtain it from the room's
+/// `m.room.create` content (`get_room_version`).
+#[must_use]
+pub fn apply_redaction<Id: Clone + core::fmt::Display, K: Clone>(
+    target: &LeanEvent<Id, Value, K>,
+    redaction: &LeanEvent<Id, Value, K>,
+    room_version: &str,
+) -> Option<LeanEvent<Id, Value, K>> {
+    if !redaction
+        .get_redacts()
+        .is_some_and(|target_id| target_id == target.event_id.to_string())
+    {
+        return None;
+    }
+    Some(target.redacted(room_version))
+}
+
+/// Ingest path: turns a batch of raw PDUs into lean events ready for state
+/// resolution, wiring the PDU-boundary checks a homeserver performs on receipt.
+///
+/// For each PDU, in order:
+///
+/// 1. **Content-hash verification** — if the PDU carries a `hashes` dict,
+///    [`verify_content_hash`] is run against it (the unredacted content hash,
+///    `hashes.sha256`). Events without a `hashes` dict are skipped (not every
+///    caller feeds full signed PDUs).
+/// 2. **Parsing** — each PDU is converted to a [`LeanEvent`] with
+///    [`LeanEvent::from_value`], deriving a missing `event_id` from the room
+///    version's reference hash.
+///
+/// This function does **not** apply redactions. Applying a redaction requires
+/// authorization against the room's resolved state (the redact power level and
+/// the target's sender), which does not exist at ingest time. Callers that want
+/// in-batch redaction applied must run
+/// [`crate::auth::apply_authorized_redactions`] once they hold the resolved
+/// state.
+///
+/// # Errors
+/// Returns `Err` if a PDU fails content-hash verification, or cannot be parsed
+/// to a `LeanEvent` (including a missing `event_id` for a room version with no
+/// reference hash, i.e. v1/v2).
+pub fn ingest_events(
+    pdus: &[Value],
+    room_version: &str,
+) -> Result<Vec<LeanEvent<String, Value, String>>, alloc::string::String> {
+    for pdu in pdus {
+        if pdu
+            .get(crate::basespec::event_types::FIELD_HASHES)
+            .is_some()
+        {
+            verify_content_hash(pdu, room_version)?;
+        }
+    }
+
+    let mut events: Vec<LeanEvent<String, Value, String>> = Vec::with_capacity(pdus.len());
+    for pdu in pdus {
+        // TODO: `?` here is reachable (malformed PDU) — candidate to soften
+        // into a `Warning` + skip rather than abort the whole batch.
+        events.push(LeanEvent::from_value(pdu, Some(room_version)).map_err(|e| e.to_string())?);
+    }
+
+    Ok(events)
 }
 
 impl serde::Serialize for StateResVersion {
@@ -344,6 +1098,42 @@ pub trait DagNode {
 
     /// Event IDs of the authorization events for this event.
     fn auth_events(&self) -> &[Self::Id];
+
+    /// Event IDs of the previous state events in the state DAG (MSC4242).
+    fn prev_state_events(&self) -> &[Self::Id] {
+        &[]
+    }
+
+    /// `auth_events()`, but empty under [`StateResVersion::V2_2`] (MSC4242).
+    ///
+    /// Implementations that share one field between `auth_events()` and
+    /// `prev_state_events()` (see [`LeanEvent`]'s impl) make `auth_events()`
+    /// return `prev_state_events` data under V2.2 -- meaningless to any
+    /// classic auth-chain algorithm (mainline computation, topological auth
+    /// sort, citation validation). Callers walking the auth chain for those
+    /// purposes should use this instead of `auth_events()` directly, so they
+    /// get the right answer without each needing its own version check.
+    fn auth_chain_events(&self, version: StateResVersion) -> &[Self::Id] {
+        if version == StateResVersion::V2_2 {
+            &[]
+        } else {
+            self.auth_events()
+        }
+    }
+
+    /// Dependency edges for the state-resolution graph at the given version.
+    ///
+    /// For V1–V2.1.1 this is `auth_events()` (the classic auth chain).
+    /// For V2.2 (MSC4242) this is `prev_state_events()` (the State DAG),
+    /// because MSC4242 replaces the auth chain with an explicit state DAG
+    /// and `auth_chain_events()` intentionally returns empty for that version.
+    fn dag_edges(&self, version: StateResVersion) -> &[Self::Id] {
+        if version == StateResVersion::V2_2 {
+            self.prev_state_events()
+        } else {
+            self.auth_events()
+        }
+    }
 }
 
 impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
@@ -359,6 +1149,12 @@ impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
         &self.prev_events
     }
     fn auth_events(&self) -> &[Id] {
+        &self.auth_events
+    }
+    fn prev_state_events(&self) -> &[Id] {
+        // MSC4242 replaces the wire-level auth_events list with
+        // prev_state_events. LeanEvent stores that shared list in auth_events;
+        // callers select its meaning by room version.
         &self.auth_events
     }
 }
@@ -380,15 +1176,32 @@ impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// // Recommended: use RawEvent + ParsedEvent (see RawEvent docs).
-/// // Direct impl only needed for custom Content types:
+/// ```rust,no_run
+/// use std::borrow::Cow;
+/// use rezzy::{DagNode, EventLike};
+///
+/// struct MyEvent {
+///     event_id: String,
+///     sender: String,
+///     parsed_content: serde_json::Value,
+/// }
+///
+/// impl DagNode for MyEvent {
+///     type Id = String;
+///     fn event_id(&self) -> &String { &self.event_id }
+///     fn depth(&self) -> u64 { 0 }
+///     fn prev_events(&self) -> &[String] { &[] }
+///     fn auth_events(&self) -> &[String] { &[] }
+/// }
+///
 /// impl EventLike for MyEvent {
 ///     type Content = serde_json::Value;
-///     fn event_type(&self) -> Cow<'_, str> { /* ... */ }
-///     fn sender(&self) -> &str { /* ... */ }
+///     fn event_type(&self) -> Cow<'_, str> { Cow::Borrowed("m.room.message") }
+///     fn sender(&self) -> &str { &self.sender }
+///     fn state_key(&self) -> Option<&str> { None }
+///     fn power_level(&self) -> i64 { 0 }
+///     fn origin_server_ts(&self) -> u64 { 0 }
 ///     fn content(&self) -> &serde_json::Value { &self.parsed_content }
-///     // ... remaining structural accessors
 /// }
 /// ```
 pub trait EventLike: DagNode {
@@ -573,37 +1386,54 @@ impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEvent<Id, C,
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// impl rezzy::RawEvent for Pdu {
-///     type Id = OwnedEventId;
+/// ```rust,no_run
+/// use std::borrow::Cow;
+/// use rezzy::{RawEvent, ParsedEvent};
 ///
-///     fn raw_event_id(&self) -> &OwnedEventId { &self.event_id }
+/// struct Pdu {
+///     event_id: String,
+///     sender: String,
+///     kind: String,
+///     state_key: Option<String>,
+///     content: String,
+///     prev_events: Vec<String>,
+///     auth_events: Vec<String>,
+///     depth: u64,
+///     origin_server_ts: u64,
+///     rejected: bool,
+///     soft_fail: bool,
+/// }
 ///
-///     /// `TimelineEventType` enum → `"m.room.member"` etc.
-///     fn raw_event_type(&self) -> Cow<'_, str> {
-///         Cow::Owned(self.kind.to_string())
-///     }
+/// impl RawEvent for Pdu {
+///     type Id = String;
 ///
-///     /// `OwnedUserId` → `"@user:server"`
-///     fn raw_sender(&self) -> &str { self.sender.as_str() }
-///
-///     /// `Option<StateKey>` → `Option<&str>`
+///     fn raw_event_id(&self) -> &String { &self.event_id }
+///     fn raw_event_type(&self) -> Cow<'_, str> { Cow::Borrowed(&self.kind) }
+///     fn raw_sender(&self) -> &str { &self.sender }
 ///     fn raw_state_key(&self) -> Option<&str> { self.state_key.as_deref() }
-///
-///     /// `Box<RawJsonValue>` → raw JSON string
-///     fn raw_content_json(&self) -> &str { self.content.get() }
-///
-///     fn raw_prev_events(&self) -> &[OwnedEventId] { &self.prev_events }
-///     fn raw_auth_events(&self) -> &[OwnedEventId] { &self.auth_events }
-///     fn raw_depth(&self) -> u64 { self.depth.into() }
-///     fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts.into() }
+///     fn raw_content_json(&self) -> &str { &self.content }
+///     fn raw_prev_events(&self) -> &[String] { &self.prev_events }
+///     fn raw_auth_events(&self) -> &[String] { &self.auth_events }
+///     fn raw_depth(&self) -> u64 { self.depth }
+///     fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts }
 ///     fn raw_rejected(&self) -> bool { self.rejected }
 ///     fn raw_soft_fail(&self) -> bool { self.soft_fail }
 /// }
 ///
-/// // Usage — zero boilerplate, one JSON parse:
-/// let event = rezzy::ParsedEvent::new(&pdu);
-/// rezzy::auth::check_auth(&event, &state, version, None)?;
+/// let pdu = Pdu {
+///     event_id: "$abc:example.com".into(),
+///     sender: "@alice:example.com".into(),
+///     kind: "m.room.message".into(),
+///     state_key: None,
+///     content: "{}".into(),
+///     prev_events: vec![],
+///     auth_events: vec![],
+///     depth: 1,
+///     origin_server_ts: 1000,
+///     rejected: false,
+///     soft_fail: false,
+/// };
+/// let _event = ParsedEvent::new(&pdu);
 /// ```
 pub trait RawEvent {
     /// The event ID type (e.g. `OwnedEventId`, `String`).
@@ -629,6 +1459,11 @@ pub trait RawEvent {
 
     /// References to auth event IDs.
     fn raw_auth_events(&self) -> &[Self::Id];
+
+    /// References to previous state event IDs in the state DAG (MSC4242).
+    fn raw_prev_state_events(&self) -> &[Self::Id] {
+        &[]
+    }
 
     /// DAG depth.
     fn raw_depth(&self) -> u64;
@@ -710,6 +1545,10 @@ impl<T: RawEvent> DagNode for ParsedEvent<'_, T> {
     fn auth_events(&self) -> &[T::Id] {
         self.raw.raw_auth_events()
     }
+
+    fn prev_state_events(&self) -> &[T::Id] {
+        self.raw.raw_prev_state_events()
+    }
 }
 
 impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
@@ -760,8 +1599,9 @@ impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
 /// # Deserialization
 ///
 /// `LeanEvent<String>` implements `Deserialize` with the following behaviors:
-/// - `event_id`: If absent and the `hashing` feature is enabled, a SHA-256
-///   content hash is computed and used as the ID.
+/// - `event_id`: Required. `Deserialize` parses without a `room_version`, so an
+///   absent `event_id` is an error (no reference/content hash is derived; use
+///   [`LeanEvent::from_value`] with a `room_version` to derive one).
 /// - `power_level`: Accepts integers, unsigned integers, or string-encoded
 ///   integers, clamped to [`MAX_POWER_LEVEL_JSON`].
 /// - `typed_content`: Populated from `content` for auth-relevant events.
@@ -769,13 +1609,15 @@ impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
 ///
 /// # Note on Room ID
 ///
-/// `LeanEvent` omits `room_id`. `rezzy` is a specialized algorithmic engine
-/// that expects the host homeserver (e.g., Synapse, Conduit) to perform initial
-/// database-level filtering. The host is responsible for verifying cryptographic
-/// signatures and filtering events by `room_id` *before* passing them to `resolve_iterative_sort`.
-///
-/// TODO: Consider adding optional `room_id` validation or a dedicated `ForeignEvent`
-/// error check, in case rogue "foreign room" events leak into the `auth_context`.
+/// `LeanEvent` carries `room_id` as an optional, cheaply-shared [`RoomId`]
+/// (see [`Self::room_id`]) rather than requiring it. `rezzy` remains a
+/// specialized algorithmic engine that expects the host homeserver (e.g.,
+/// Synapse, Conduit) to perform initial database-level filtering by room --
+/// this field is defense-in-depth for [`check_auth_chain`](crate::auth::check_auth_chain),
+/// not a replacement for that filtering, and every existing caller that
+/// leaves it `None` behaves exactly as before (the field is additive and
+/// opts out of the check entirely when absent on either side of a
+/// comparison — see [`Self::room_id`]'s docs).
 #[derive(Debug, Clone, Default)]
 pub struct LeanEvent<Id = String, C = Value, K = String> {
     /// Unique event identifier (e.g. `$abc123:example.com`).
@@ -811,6 +1653,193 @@ pub struct LeanEvent<Id = String, C = Value, K = String> {
     /// Whether this event was soft-failed.
     /// TODO: Add dedicated test coverage for soft-failed events to ensure they are handled according to spec (especially vs rejected).
     pub soft_fail: bool,
+    /// The room this event belongs to, if the caller populated it.
+    ///
+    /// When populated, every event ingested together in one call shares the
+    /// *same* `RoomId` allocation via `Arc::clone` -- one string, cheaply
+    /// refcounted across however many events are in the batch, not duplicated
+    /// per event.
+    ///
+    /// `None` is the default and means the foreign-room check is *not*
+    /// exercised from this event's side: [`check_auth_chain`](crate::auth::check_auth_chain)
+    /// only inspects room IDs on an event that itself carries `Some`. A caller
+    /// that never populates the field gets identical behavior to before it
+    /// existed.
+    ///
+    /// Once a citing event carries `Some`, *every* event it cites must also
+    /// carry `Some` with the same value: a cited auth event with a different
+    /// `Some`, or with `None` at all, is a `ForeignRoomEvent` rejection. A
+    /// `None` on the *cited* side is not a free pass -- it is exactly the
+    /// "untagged" leak rule 2.5 exists to catch. So the field is opt-in on the
+    /// citing side, but it is not additive to the cited side.
+    ///
+    /// Note that [`ingest_events`] does **not** populate this field -- it has
+    /// no room ID parameter, so events it returns always carry `None`. A
+    /// caller that wants the foreign-room check in
+    /// [`check_auth_chain`](crate::auth::check_auth_chain) to fire must set
+    /// `room_id` on the citing event itself after ingest, and must populate it
+    /// on every cited auth event too (or those citations are rejected).
+    pub room_id: Option<RoomId>,
+}
+
+/// A room identifier, cheaply shared across every [`LeanEvent`] from the same
+/// ingest batch.
+///
+/// Wraps `Arc<str>` rather than `String` (one allocation, `Arc::clone` is a
+/// refcount bump, not a copy) and rather than `Rc<str>` (this crate uses
+/// `std::thread::scope` for parallel resolution, so anything shared across
+/// events must be `Send + Sync`, which `Rc` is not). Compares by string
+/// value (via `Deref`), not pointer identity, so two `RoomId`s built from
+/// separate allocations still compare equal if their content matches.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RoomId(alloc::sync::Arc<str>);
+
+impl RoomId {
+    /// Builds a `RoomId` from any string-like value, allocating once.
+    #[must_use]
+    pub fn new(id: impl AsRef<str>) -> Self {
+        Self(alloc::sync::Arc::from(id.as_ref()))
+    }
+}
+
+impl AsRef<str> for RoomId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl core::ops::Deref for RoomId {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl core::fmt::Display for RoomId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<&str> for RoomId {
+    fn from(id: &str) -> Self {
+        Self::new(id)
+    }
+}
+
+impl From<String> for RoomId {
+    fn from(id: String) -> Self {
+        Self(alloc::sync::Arc::from(id.as_str()))
+    }
+}
+
+// TODO: this is a standalone opt-in type, not yet the default `K` anywhere,
+// nor threaded through resolution/HAMT/auth call sites or exposed via any
+// crate convenience alias. Circle back for the full generic refactor: wire
+// this (or something like it) through as an actual default/recommended `K`
+// for callers that want it, add conversions to/from the plain-`String` wire
+// format at the ingest/checkpoint boundary, and benchmark the win before
+// recommending it broadly -- see the `StateKey` trait docs above for the
+// contract any replacement `K` must uphold.
+/// A lighter-weight, cheaply-cloneable [`StateKey`] for the `state_key` half
+/// of a Matrix `(event_type, state_key)` tuple, for callers who want to avoid
+/// `String`'s per-clone allocation.
+///
+/// Same rationale and tradeoffs as [`RoomId`] (`Arc<str>` over `String` for
+/// O(1) clones, over `Rc<str>` for `Send + Sync` under `std::thread::scope`
+/// parallel resolution) -- see its docs for the full explanation. Unlike
+/// `RoomId`, this is meant to be used as the `K` type parameter of
+/// [`LeanEvent`] itself (`LeanEvent<Id, C, InternedKey>`), not as a
+/// standalone field.
+///
+/// This is *not* the same kind of interning [`crate::basespec::event_types::EventType`]
+/// does: `EventType` is a small, closed, compile-time-known set, so its
+/// `as_str()` returns `&'static str` constants with zero allocation and no
+/// shared pool. `state_key` values (MXIDs, server names, arbitrary strings)
+/// are open-ended, so there is no fixed enum to match on here -- this only
+/// gets you a single shared allocation per distinct key value (via `Arc`'s
+/// refcount), not a flat integer id backed by a shared intern pool. A true
+/// numeric intern id would need a shared table threaded through every call
+/// site (since `AsRef<str>` takes no external context to resolve an id back
+/// to its string), which is real new plumbing, not a drop-in type swap.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InternedKey(alloc::sync::Arc<str>);
+
+impl InternedKey {
+    /// Builds an `InternedKey` from any string-like value, allocating once.
+    #[must_use]
+    pub fn new(key: impl AsRef<str>) -> Self {
+        Self(alloc::sync::Arc::from(key.as_ref()))
+    }
+}
+
+impl Default for InternedKey {
+    /// The empty key, matching `StateKey`'s `K::default().as_ref() == ""` contract.
+    fn default() -> Self {
+        Self(alloc::sync::Arc::from(""))
+    }
+}
+
+impl AsRef<str> for InternedKey {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl core::ops::Deref for InternedKey {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl core::fmt::Display for InternedKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<&str> for InternedKey {
+    fn from(key: &str) -> Self {
+        Self::new(key)
+    }
+}
+
+impl From<String> for InternedKey {
+    fn from(key: String) -> Self {
+        Self(alloc::sync::Arc::from(key.as_str()))
+    }
+}
+
+impl<Id, C> LeanEvent<Id, C, String> {
+    /// Converts this event's `state_key` half to an [`InternedKey`], yielding a
+    /// `LeanEvent` that is usable as `K = InternedKey` in the resolution
+    /// pipeline (`compute_state_at` / `SharedState<Id, InternedKey>`).
+    ///
+    /// This is the ingest-boundary bridge between the plain-`String` wire
+    /// format and the interned representation: `state_key` is rebuilt once via
+    /// [`InternedKey::from`], so repeated clones during resolution share a
+    /// single `Arc` allocation instead of copying the string. Every other field
+    /// is moved through unchanged, so the conversion is a pure type change with
+    /// no behavioral difference.
+    #[must_use]
+    pub fn into_interned_state_key(self) -> LeanEvent<Id, C, InternedKey> {
+        LeanEvent {
+            event_id: self.event_id,
+            event_type: self.event_type,
+            state_key: self.state_key.map(InternedKey::from),
+            power_level: self.power_level,
+            origin_server_ts: self.origin_server_ts,
+            sender: self.sender,
+            content: self.content,
+            prev_events: self.prev_events,
+            auth_events: self.auth_events,
+            depth: self.depth,
+            rejected: self.rejected,
+            soft_fail: self.soft_fail,
+            room_id: self.room_id,
+        }
+    }
 }
 
 /// Borrowed view over a [`LeanEvent`] that avoids cloning event envelopes.
@@ -830,6 +1859,7 @@ pub struct LeanEventRef<'a, Id = String, C = Value, K = String> {
     pub prev_events: &'a [Id],
     pub auth_events: &'a [Id],
     pub depth: u64,
+    pub room_id: Option<&'a RoomId>,
     pub rejected: bool,
     pub soft_fail: bool,
 }
@@ -856,6 +1886,7 @@ impl<Id: EventId, C, K> LeanEventRef<'_, Id, C, K> {
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
+            room_id: self.room_id.cloned(),
         }
     }
 }
@@ -877,6 +1908,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
             depth: self.depth,
             rejected: self.rejected,
             soft_fail: self.soft_fail,
+            room_id: self.room_id.as_ref(),
         }
     }
 }
@@ -894,6 +1926,11 @@ impl<Id: EventId, C: EventContent, K> DagNode for LeanEventRef<'_, Id, C, K> {
         self.prev_events
     }
     fn auth_events(&self) -> &[Id] {
+        self.auth_events
+    }
+    fn prev_state_events(&self) -> &[Id] {
+        // See LeanEvent::prev_state_events: this borrowed view uses the same
+        // compatibility storage for the MSC4242 replacement field.
         self.auth_events
     }
 }
@@ -942,7 +1979,9 @@ impl<Id: serde::Serialize, C: serde::Serialize, K: AsRef<str>> serde::Serialize
             FIELD_STATE_KEY, FIELD_TYPE,
         };
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("LeanEvent", 12)?;
+        // TODO: trait forces `Result` here, so `?` shows as dead coverage; see
+        // docs/tech_debt.md for the refactor investigation.
+        let mut state = serializer.serialize_struct("LeanEvent", 13)?;
         state.serialize_field(FIELD_EVENT_ID, &self.event_id)?;
         state.serialize_field(FIELD_TYPE, &self.event_type)?;
         if let Some(ref sk) = self.state_key {
@@ -954,6 +1993,10 @@ impl<Id: serde::Serialize, C: serde::Serialize, K: AsRef<str>> serde::Serialize
         state.serialize_field(FIELD_CONTENT, &self.content)?;
         state.serialize_field(FIELD_PREV_EVENTS, &self.prev_events)?;
         state.serialize_field(FIELD_AUTH_EVENTS, &self.auth_events)?;
+        state.serialize_field(
+            crate::basespec::event_types::FIELD_PREV_STATE_EVENTS,
+            &self.auth_events,
+        )?;
         state.serialize_field(FIELD_DEPTH, &self.depth)?;
         state.serialize_field(FIELD_REJECTED, &self.rejected)?;
         state.serialize_field(FIELD_SOFT_FAIL, &self.soft_fail)?;
@@ -1407,6 +2450,22 @@ fn room_version_is_v11_or_later(room_version: &str) -> bool {
         .next()
         .and_then(|major| major.parse::<u32>().ok())
         .is_some_and(|major| major >= 11)
+        || StateResVersion::from_room_version(room_version).is_some_and(|v| v.is_v2_1_plus())
+}
+
+fn is_msc4242_room_version(room_version: &str) -> bool {
+    room_version == "org.matrix.msc4242.12"
+}
+
+/// Returns `true` if `room_version`'s major version is 12 or later (the
+/// `org.matrix.hydra.11`/v12 event format where room IDs are hashes, MSC4291).
+fn room_version_is_v12_or_later(room_version: &str) -> bool {
+    room_version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 12)
+        || StateResVersion::from_room_version(room_version).is_some_and(|v| v.is_v2_1_plus())
 }
 
 /// Returns `true` if `id` is a syntactically valid Matrix user ID: `@` prefix,
@@ -1437,6 +2496,25 @@ pub(crate) fn is_valid_mxid(id: &str) -> bool {
 #[must_use]
 pub fn extract_domain(id: &str) -> Option<&str> {
     id.split_once(':').map(|(_, domain)| domain)
+}
+
+/// Assign every event a dense `usize` index keyed by its `event_id`, in
+/// iteration order.
+///
+/// Shared by the CLI formatter and the stress tests, which previously
+/// copy-pasted this exact loop. Indices are assigned in iteration order, so a
+/// caller that also collects the same events in the same order can address the
+/// events directly by index.
+#[must_use]
+pub fn index_by_event_id<'a>(
+    events: impl IntoIterator<Item = &'a LeanEvent>,
+) -> crate::HashMap<&'a str, usize> {
+    let iter = events.into_iter();
+    let mut index = crate::HashMap::with_capacity(iter.size_hint().0);
+    for (i, ev) in iter.enumerate() {
+        index.insert(ev.event_id.as_str(), i);
+    }
+    index
 }
 
 /// Returns `true` if `id1` and `id2` have matching domains (ASCII case-insensitive match).
@@ -1475,20 +2553,41 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
     ///
     /// # Errors
     /// Returns an error if the event violates spec invariants (e.g. >20 `prev_events`).
-    pub fn validate_syntactic(&self, room_version: &str) -> Result<(), &'static str>
+    ///
+    /// The `Ok` side carries a [`crate::warnings::Outcome`] rather than a
+    /// bare `()`: the pre-v11 byte-limit case below is not itself a spec
+    /// violation (Synapse only warns pre-v11 too, deliberately, to avoid
+    /// splitting the DAG against legacy oversized fields already baked into
+    /// existing room history) -- it's a condition the caller may want to
+    /// know about and apply its own policy to, not one rezzy hard-fails on.
+    /// See [`crate::warnings`]'s module docs for the full rationale.
+    pub fn validate_syntactic(
+        &self,
+        room_version: &str,
+    ) -> Result<crate::warnings::Outcome<(), Id>, &'static str>
     where
-        Id: core::fmt::Display,
+        Id: core::fmt::Display + Clone,
         C: EventContent,
         K: AsRef<str>,
     {
+        let mut warnings = alloc::vec::Vec::new();
         if StateResVersion::from_room_version(room_version).is_none() {
             return Err("unsupported room_version");
         }
         if self.prev_events.len() > 20 {
             return Err("prev_events exceeds maximum allowed length of 20");
         }
-        if self.auth_events.len() > 10 {
+        let is_msc4242 = matches!(
+            StateResVersion::from_room_version(room_version),
+            Some(StateResVersion::V2_2)
+        );
+        if !is_msc4242 && self.auth_events.len() > 10 {
             return Err("auth_events exceeds maximum allowed length of 10");
+        }
+        if is_msc4242
+            && self.auth_events.len() > crate::basespec::event_types::MAX_PREV_STATE_EVENTS
+        {
+            return Err("prev_state_events exceeds maximum allowed length of 20");
         }
         if self.event_type.is_empty() {
             return Err("event_type cannot be empty");
@@ -1543,16 +2642,20 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         let strict_length_limits = room_version_is_v11_or_later(room_version);
         macro_rules! check_length {
             ($field:expr, $name:literal) => {
-                if $field.len() > 255 {
+                let len = $field.len();
+                if len > 255 {
                     if strict_length_limits {
-                        return Err(concat!($name, " exceeds maximum allowed length of 255 bytes"));
+                        return Err(concat!(
+                            $name,
+                            " exceeds maximum allowed length of 255 bytes"
+                        ));
                     }
-                    #[cfg(feature = "std")]
-                    std::eprintln!(
-                        "rezzy::validate_syntactic: {} exceeds 255 bytes in pre-v11 room version {:?}; allowed for backwards compatibility",
-                        $name,
-                        room_version
-                    );
+                    warnings.push(crate::warnings::Warning::OversizedFieldPreV11 {
+                        event_id: self.event_id.clone(),
+                        field: $name,
+                        len,
+                        limit: 255,
+                    });
                 }
             };
         }
@@ -1566,7 +2669,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
             check_length!(state_key.as_ref(), "state_key");
         }
 
-        Ok(())
+        Ok(crate::warnings::Outcome::with_warnings((), warnings))
     }
 
     // --- Typed Content Accessors (delegate to EventContent) ---
@@ -1691,6 +2794,18 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         self.content.get_redacts()
     }
 
+    /// Whether this event is an `m.room.redaction` carrying a `redacts` field.
+    ///
+    /// Callers can use this to cheaply detect that a batch contains redaction
+    /// work before deciding whether to run
+    /// [`crate::auth::apply_authorized_redactions`] against the resolved state.
+    pub fn is_redaction(&self) -> bool
+    where
+        C: EventContent,
+    {
+        self.event_type == M_ROOM_REDACTION && self.get_redacts().is_some()
+    }
+
     /// Check if the sender is an additional creator.
     pub fn has_additional_creator(&self, sender: &str) -> bool
     where
@@ -1700,73 +2815,42 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
     }
 }
 
-#[cfg(feature = "hashing")]
-fn sort_json_value_keys(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            let mut sorted = alloc::collections::BTreeMap::new();
-            let taken = core::mem::take(map);
-            for (k, mut v) in taken {
-                sort_json_value_keys(&mut v);
-                sorted.insert(k, v);
-            }
-            for (k, v) in sorted {
-                map.insert(k, v);
-            }
-        }
-        Value::Array(arr) => {
-            for v in arr {
-                sort_json_value_keys(v);
-            }
-        }
-        _ => {}
-    }
-}
-
-impl<'de> Deserialize<'de> for LeanEvent<String, Value, String> {
+impl LeanEvent<String, Value, String> {
+    /// Parses a lean event from a raw PDU `Value`, optionally deriving a
+    /// missing `event_id` from the room version's reference hash (see
+    /// [`reference_hash`]).
+    ///
+    /// This performs **parsing only — not content-hash/signature verification**.
+    /// Verification is a homeserver ingest responsibility, invoked via
+    /// [`verify_content_hash`] (or the [`EventVerifier`] hook) on the raw PDU
+    /// *before* calling this; `from_value` does not auto-verify so it remains
+    /// usable on partial PDUs and after the homeserver has already checked.
+    ///
+    /// # Errors
+    /// Returns `Err` when `event_type` is empty/missing, `power_level` has an
+    /// unsupported type, `depth` is invalid, an `m.room.redaction` has a
+    /// malformed/mismatched `redacts`, or an `event_id` is absent while no
+    /// `room_version` is given (or the reference hash cannot be computed).
     #[allow(clippy::too_many_lines)]
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
+    pub fn from_value(
+        value: &Value,
+        room_version: Option<&str>,
+    ) -> Result<LeanEvent<String, Value, String>, serde_json::Error> {
         use crate::basespec::event_types::{
             FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
             FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_REDACTS, FIELD_REJECTED, FIELD_SENDER,
             FIELD_SOFT_FAIL, FIELD_STATE_KEY, FIELD_TYPE, M_ROOM_REDACTION,
         };
 
-        let value = Value::deserialize(deserializer)?;
-
         let event_id = if let Some(id) = value.get(FIELD_EVENT_ID).and_then(|v| v.as_str()) {
             String::from(id)
+        } else if let Some(ver) = room_version {
+            let rh = reference_hash(value, ver).map_err(serde::de::Error::custom)?;
+            alloc::format!("${rh}")
         } else {
-            #[cfg(feature = "hashing")]
-            {
-                use crate::basespec::event_types::{FIELD_SIGNATURES, FIELD_UNSIGNED};
-                use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-                use sha2::{Digest, Sha256};
-
-                let mut hash_value = value.clone();
-                if let Some(obj) = hash_value.as_object_mut() {
-                    obj.remove(FIELD_UNSIGNED);
-                    obj.remove(FIELD_SIGNATURES);
-                }
-                sort_json_value_keys(&mut hash_value);
-
-                let canonical_json =
-                    serde_json::to_string(&hash_value).map_err(serde::de::Error::custom)?;
-                let mut hasher = Sha256::new();
-                hasher.update(canonical_json.as_bytes());
-                let hash = hasher.finalize();
-
-                alloc::format!("${}", URL_SAFE_NO_PAD.encode(hash))
-            }
-            #[cfg(not(feature = "hashing"))]
-            {
-                return Err(serde::de::Error::custom(
-                    "event_id is missing and 'hashing' feature is disabled",
-                ));
-            }
+            return Err(serde::de::Error::custom(
+                "event_id is required; pass `room_version` to `from_value` to derive it via the reference hash",
+            ));
         };
 
         let event_type: String = value
@@ -1878,7 +2962,17 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value, String> {
         };
 
         let prev_events = parse_string_array(FIELD_PREV_EVENTS);
-        let auth_events = parse_string_array(FIELD_AUTH_EVENTS);
+        let auth_events = value
+            .get(FIELD_AUTH_EVENTS)
+            .map(|_| parse_string_array(FIELD_AUTH_EVENTS))
+            .or_else(|| {
+                room_version
+                    .filter(|version| is_msc4242_room_version(version))
+                    .map(|_| {
+                        parse_string_array(crate::basespec::event_types::FIELD_PREV_STATE_EVENTS)
+                    })
+            })
+            .unwrap_or_default();
         let depth = match value.get(FIELD_DEPTH) {
             Some(depth) => depth
                 .as_u64()
@@ -1911,7 +3005,25 @@ impl<'de> Deserialize<'de> for LeanEvent<String, Value, String> {
             depth,
             rejected,
             soft_fail,
+            // Deliberately not read from `value`: the whole point of
+            // `room_id` is to check an event against a room the *caller*
+            // already knows and trusts, not to trust whatever room a raw
+            // PDU JSON claims for itself -- deriving it from the same
+            // untrusted payload it's meant to validate would defeat that.
+            // Callers that want it populated do so explicitly (e.g.
+            // `ingest_events`), after this deserialize step.
+            room_id: None,
         })
+    }
+}
+
+impl<'de> Deserialize<'de> for LeanEvent<String, Value, String> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        LeanEvent::from_value(&value, None).map_err(serde::de::Error::custom)
     }
 }
 
@@ -2059,8 +3171,6 @@ pub struct SortPriority<'a, E = LeanEvent<String, Value>> {
     pub event: &'a E,
     /// The sender's power level, derived from the auth chain (not `event.power_level`).
     pub power_level: i64,
-    /// Shortest auth-chain distance to the `m.room.create` event (V2.2 only).
-    pub auth_chain_distance: u64,
     /// The resolution version, which selects the comparison strategy.
     pub version: StateResVersion,
 }
@@ -2123,18 +3233,6 @@ impl<E: EventLike> Ord for SortPriority<'_, E> {
                 // makes Alice's ban appear before Bob's concurrent PL change).
                 match self.power_level.cmp(&other.power_level) {
                     Ordering::Equal => {
-                        // V2.1.1: prioritize topological depth over `origin_server_ts`.
-                        // Smaller Depth -> Greater TieBreaker -> Pops First -> Loses.
-                        // Larger Depth -> Smaller TieBreaker -> Pops Last -> Wins.
-                        if self.version == StateResVersion::V2_1_1
-                            || self.version == StateResVersion::V2_2
-                        {
-                            match other.auth_chain_distance.cmp(&self.auth_chain_distance) {
-                                Ordering::Equal => {}
-                                ord => return ord,
-                            }
-                        }
-
                         match other
                             .event
                             .origin_server_ts()
@@ -2167,15 +3265,22 @@ impl<E: EventLike> PartialOrd for SortPriority<'_, E> {
 /// and strings in the JSON, which is why `rezzy` has this `coerce_json_to_i64`
 /// function in the first place!
 #[must_use]
+// Truncating a legacy float power level toward zero is intentional, and Rust's
+// `f64 as i64` is saturating (no UB out of range), so the casts are deliberate.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
     let val = pl
         .as_i64()
         .or_else(|| pl.as_u64().map(|u| i64::try_from(u).unwrap_or(i64::MAX)))
-        // Legacy float power levels (e.g. 50.0) — truncate toward zero
+        // Legacy float power levels (e.g. 50.0) — truncate toward zero.
         .or_else(|| {
-            pl.as_f64()
-                .and_then(|f| serde_json::Number::from_f64(f.trunc()))
-                .and_then(|n| n.as_i64())
+            pl.as_f64().and_then(|f| {
+                // `Number::from_f64(...).as_i64()` can't be used here: serde_json
+                // returns `None` for float-backed numbers. Truncate the f64 and
+                // range-check before casting instead.
+                let t = f.trunc();
+                (t >= i64::MIN as f64 && t <= i64::MAX as f64).then_some(t as i64)
+            })
         })
         .or_else(|| pl.as_str().and_then(|s| s.parse::<i64>().ok()));
     // Matrix Spec (Client-Server API) — m.room.power_levels:
@@ -2225,5 +3330,396 @@ impl<
 {
     fn get_event(&self, id: &Id) -> Option<&E> {
         self.primary.get(id).or_else(|| self.secondary.get(id))
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod redaction_preserved_keys_tests {
+    use super::{redaction_preserved_keys, RedactionRule};
+
+    /// `org.matrix.msc4242.12` is one of the unstable room-version identifiers
+    /// recognized by [`RoomVersion::from_str`] (mapped to `V2_2`, whose
+    /// serialization format is v12's). Its redaction rules must therefore
+    /// match v12's (i.e. v11's, verbatim) rather than falling through to the
+    /// fail-closed `RedactionRule::None` default for unrecognized versions.
+    #[test]
+    fn test_redaction_preserved_keys_recognizes_msc4242_12_as_v11_rules() {
+        assert_eq!(
+            redaction_preserved_keys(
+                crate::basespec::event_types::M_ROOM_CREATE,
+                "org.matrix.msc4242.12"
+            ),
+            RedactionRule::All
+        );
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod redact_content_tests {
+    use super::{redact_content, RedactionRule};
+    use serde_json::json;
+
+    /// Coverage for `redact_content`'s "existing parent" accumulation branch
+    /// (a second dotted-path key merging into a parent object already
+    /// populated by an earlier one): no real `redaction_preserved_keys`
+    /// rule table has two dotted paths sharing a parent today (`Keys`
+    /// exercised through `redact_json` -- see `test_redact_json_preserves_dotted_nested_key`
+    /// in `tests/unit/test_hashing.rs` -- only ever has one:
+    /// `third_party_invite.signed`), so this branch is unreachable through
+    /// the public API. `redact_content` is private but its accumulation
+    /// logic is real, general-purpose behavior independent of what today's
+    /// rule tables happen to use -- exercised directly here with a synthetic
+    /// two-key rule instead of leaving it permanently uncovered.
+    #[test]
+    fn test_coverage_redact_content_accumulates_multiple_dotted_keys_under_one_parent() {
+        let content = json!({
+            "parent": {
+                "a": 1,
+                "b": 2,
+                "c": 3,
+            }
+        });
+        let rule = RedactionRule::Keys(&["parent.a", "parent.b"]);
+        let redacted = redact_content(&content, rule);
+        assert_eq!(redacted, json!({ "parent": { "a": 1, "b": 2 } }));
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod redact_top_level_tests {
+    use super::redact_top_level;
+    use serde_json::json;
+
+    /// MSC4242's unstable `org.matrix.msc4242.12` room version swaps
+    /// `auth_events` for `prev_state_events`. Redaction must preserve the
+    /// swapped-in field so events signed under that format keep their
+    /// hashes/signatures valid; stable v11/v12 events (which never carry it)
+    /// must remain unaffected.
+    #[test]
+    fn preserves_prev_state_events_for_msc4242_room_version() {
+        let ev = json!({
+            "type": "m.room.message",
+            "content": { "body": "hi" },
+            "auth_events": ["$A"],
+            "prev_state_events": ["$B"],
+            "depth": 5,
+            "foo": "dropped",
+        });
+        let redacted = redact_top_level(&ev, "org.matrix.msc4242.12");
+        assert_eq!(redacted.get("prev_state_events"), Some(&json!(["$B"])));
+        assert_eq!(redacted.get("auth_events"), Some(&json!(["$A"])));
+        assert!(redacted.get("foo").is_none());
+    }
+
+    #[test]
+    fn stable_v12_events_are_unaffected() {
+        let ev = json!({
+            "type": "m.room.message",
+            "content": { "body": "hi" },
+            "auth_events": ["$A"],
+            "foo": "dropped",
+        });
+        let redacted = redact_top_level(&ev, "12");
+        assert_eq!(redacted.get("auth_events"), Some(&json!(["$A"])));
+        assert!(redacted.get("prev_state_events").is_none());
+        assert!(redacted.get("foo").is_none());
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod index_by_event_id_tests {
+    use super::*;
+
+    /// `index_by_event_id` assigns indices in iteration order, keyed by each
+    /// event's `event_id`.
+    #[test]
+    fn test_index_by_event_id_assigns_indices_in_iteration_order() {
+        let events = [
+            LeanEvent {
+                event_id: "$c:example".into(),
+                ..Default::default()
+            },
+            LeanEvent {
+                event_id: "$a:example".into(),
+                ..Default::default()
+            },
+            LeanEvent {
+                event_id: "$b:example".into(),
+                ..Default::default()
+            },
+        ];
+        let index = index_by_event_id(events.iter());
+        assert_eq!(index.len(), 3);
+        assert_eq!(index.get("$c:example"), Some(&0));
+        assert_eq!(index.get("$a:example"), Some(&1));
+        assert_eq!(index.get("$b:example"), Some(&2));
+    }
+
+    /// Duplicate `event_id`s collapse: the later occurrence wins, matching
+    /// the insert-based build the formatter and stress test rely on.
+    #[test]
+    fn test_index_by_event_id_keeps_last_duplicate_index() {
+        let events = [
+            LeanEvent {
+                event_id: "$a:example".into(),
+                ..Default::default()
+            },
+            LeanEvent {
+                event_id: "$a:example".into(),
+                ..Default::default()
+            },
+            LeanEvent {
+                event_id: "$b:example".into(),
+                ..Default::default()
+            },
+        ];
+        let index = index_by_event_id(events.iter());
+        assert_eq!(index.len(), 2);
+        assert_eq!(index.get("$a:example"), Some(&1));
+        assert_eq!(index.get("$b:example"), Some(&2));
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod dag_node_tests {
+    use super::*;
+    use crate::basespec::event_types::M_ROOM_CREATE;
+
+    /// A test double with separate `auth_events` and `prev_state_events`
+    /// storage, so the version-dispatch in `dag_edges` / `auth_chain_events`
+    /// is verifiable (`LeanEvent` aliases both accessors to the same field).
+    struct DualStorageNode {
+        event_id: String,
+        auth: Vec<String>,
+        prev_state: Vec<String>,
+    }
+
+    impl DagNode for DualStorageNode {
+        type Id = String;
+
+        fn event_id(&self) -> &String {
+            &self.event_id
+        }
+        fn depth(&self) -> u64 {
+            0
+        }
+        fn prev_events(&self) -> &[String] {
+            &[]
+        }
+        fn auth_events(&self) -> &[String] {
+            &self.auth
+        }
+        fn prev_state_events(&self) -> &[String] {
+            &self.prev_state
+        }
+    }
+
+    #[test]
+    fn auth_chain_events_returns_empty_for_v2_2() {
+        let ev = LeanEvent::<String> {
+            event_id: "$ev:example".into(),
+            event_type: M_ROOM_CREATE.into(),
+            auth_events: alloc::vec!["$prev1:example".into(), "$prev2:example".into()],
+            ..Default::default()
+        };
+        // V1–V2.1.1: returns the stored auth_events
+        assert_eq!(
+            ev.auth_chain_events(StateResVersion::V2),
+            &["$prev1:example", "$prev2:example"]
+        );
+        // V2_2: must return empty — callers must not walk these as auth-chain edges.
+        assert!(ev.auth_chain_events(StateResVersion::V2_2).is_empty());
+    }
+
+    /// `dag_edges` returns `prev_state_events` for `V2_2` and `auth_events`
+    /// otherwise. Uses a test double with *distinct* `auth` and `prev_state`
+    /// lists so a dispatch regression is caught (`LeanEvent` aliases both).
+    #[test]
+    fn dag_edges_returns_correct_edges_per_version() {
+        let node = DualStorageNode {
+            event_id: "$ev:example".into(),
+            auth: alloc::vec!["$auth:example".into()],
+            prev_state: alloc::vec!["$ps:example".into()],
+        };
+        // V2: dag_edges returns auth_events
+        assert_eq!(node.dag_edges(StateResVersion::V2), &["$auth:example"]);
+        // V2_2: dag_edges returns prev_state_events
+        assert_eq!(node.dag_edges(StateResVersion::V2_2), &["$ps:example"]);
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod canonical_parity_tests {
+    use super::*;
+    use alloc::string::String;
+    use serde_json::json;
+
+    fn content_hash_writer(v: &Value) -> String {
+        let mut out = String::new();
+        write_content_hash_canonical(&mut out, v).expect("infallible");
+        out
+    }
+
+    fn content_hash_serde(v: &Value) -> String {
+        let mut c = v.clone();
+        if let Some(o) = c.as_object_mut() {
+            o.remove("unsigned");
+            o.remove("signatures");
+            o.remove("hashes");
+        }
+        serde_json::to_string(&c).expect("infallible")
+    }
+
+    fn redacted_writer(v: &Value, rv: &str) -> String {
+        let mut out = String::new();
+        write_redacted_canonical(&mut out, v, rv).expect("infallible");
+        out
+    }
+
+    fn redacted_serde(v: &Value, rv: &str) -> String {
+        let mut r = redact_json(v, rv);
+        if let Some(o) = r.as_object_mut() {
+            o.remove("unsigned");
+            o.remove("signatures");
+        }
+        serde_json::to_string(&r).expect("infallible")
+    }
+
+    /// The zero-copy writers must be byte-identical to what `serde_json` emits
+    /// for the same logical canonical form — hashes/signatures cover these exact
+    /// bytes, so any divergence is a federation-breaking bug.
+    #[test]
+    fn content_hash_writer_is_byte_identical_to_serde() {
+        let cases = [
+            json!({ "type":"m.room.message","room_id":"!r:x","sender":"@a:x","origin_server_ts":1,"content":{"body":"hi"},"hashes":{"sha256":"abc"},"unsigned":{"age_ts":5},"signatures":{"x":{"ed25519:0":"sig"}} }),
+            json!({ "a":1,"b":{"c":[1,2,3],"d":"x\ny\tz\u{0001}\u{000c}\u{000d}"},"e":1.5,"f":null,"g":true }),
+            json!({ "s":"unicode \u{e9}\u{fc} \u{1F600}","ctrl":"\u{0000}\u{001f}","q":"\"quoted\"","bs":"a\\b" }),
+            json!({ "negative":-42,"big":9_007_199_254_740_993_u64,"float":-0.0,"arr":[true,false,null,1] }),
+        ];
+        for c in cases {
+            assert_eq!(content_hash_writer(&c), content_hash_serde(&c), "case: {c}");
+        }
+
+        let mut output = String::new();
+        write_content_hash_canonical(&mut output, &json!(null)).unwrap();
+        assert_eq!(output, "{}");
+        output.clear();
+        write_redacted_canonical(&mut output, &json!(["non-object content"]), "11").unwrap();
+        assert_eq!(output, "{}");
+
+        // No content field; auth_events (sorts before "content") then type (sorts after).
+        // BTreeMap iterates auth_events first → first=false, then type triggers the
+        // mid-loop empty-content insertion with the comma (line 852).
+        output.clear();
+        write_redacted_canonical(
+            &mut output,
+            &json!({"auth_events": ["$a"], "type": "m.room.message"}),
+            "10",
+        )
+        .unwrap();
+        assert!(
+            output.contains("\"content\":{}"),
+            "mid-insertion empty content: {output}"
+        );
+        // Trailing empty content: all kept keys sort ≤ "content" (only auth_events).
+        output.clear();
+        write_redacted_canonical(&mut output, &json!({"auth_events": ["$a"]}), "10").unwrap();
+        assert_eq!(output, r#"{"auth_events":["$a"],"content":{}}"#);
+    }
+
+    #[test]
+    fn redacted_writer_is_byte_identical_to_serde() {
+        let cases = [
+            (
+                json!({ "type":"m.room.message","room_id":"!r:x","sender":"@a:x","origin_server_ts":1,"content":{"body":"hi","extra":"x"},"hashes":{"sha256":"abc"},"unsigned":{"age_ts":5},"signatures":{"x":{"ed25519:0":"sig"}},"unknown_key":9 }),
+                "10",
+            ),
+            (
+                json!({ "type":"m.room.member","sender":"@a:x","state_key":"@a:x","content":{"membership":"join","foo":"bar","third_party_invite":{"signed":{"x":1}}},"membership":"top" }),
+                "10",
+            ),
+            (
+                json!({ "type":"m.room.create","room_id":"!r:x","sender":"@a:x","content":{"creator":"@a:x","x":1} }),
+                "11",
+            ),
+            (
+                json!({ "type":"m.room.join_rules","content":{"join_rule":"invite","allow":[]} }),
+                "9",
+            ),
+            (
+                json!({ "type":"m.room.message","sender":"@a:x","depth":1 }),
+                "10",
+            ),
+            (
+                json!({ "type":"m.room.power_levels","content":{"users":{"@a:x":100},"ban":50,"extra":1} }),
+                "11",
+            ),
+            (
+                json!({ "type":"m.room.message","prev_state_events":["$B"],"auth_events":["$A"],"content":{} }),
+                "org.matrix.msc4242.12",
+            ),
+            (
+                json!({ "type":"m.room.message","origin":"x","membership":"join","prev_state":["$P"],"content":{} }),
+                "5",
+            ),
+            (
+                json!({ "type":"m.room.redaction","content":{"redacts":"$X"},"sender":"@a:x" }),
+                "11",
+            ),
+        ];
+        for (c, rv) in cases {
+            assert_eq!(
+                redacted_writer(&c, rv),
+                redacted_serde(&c, rv),
+                "case: {c} rv={rv}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod canonical_redacted_json_tests {
+    use super::{canonical_redacted_json, redactable_content_remainder, split_redaction_content};
+    use serde_json::json;
+
+    #[test]
+    fn canonical_redacted_json_returns_redacted_canonical_bytes() {
+        let event = json!({
+            "type": "m.room.member",
+            "sender": "@alice:example.org",
+            "state_key": "@bob:example.org",
+            "content": {"membership": "join", "not_preserved": true},
+            "signatures": {"example.org": {"ed25519:0": "ignored"}},
+            "unsigned": {"age": 1}
+        });
+
+        assert_eq!(
+            canonical_redacted_json(&event, "10"),
+            r#"{"content":{"membership":"join"},"sender":"@alice:example.org","state_key":"@bob:example.org","type":"m.room.member"}"#
+        );
+
+        let escaped = json!({
+            "type": "m.room.member",
+            "content": {"membership": "\u{0008}"}
+        });
+        assert!(canonical_redacted_json(&escaped, "10").contains(r"\b"));
+    }
+
+    #[test]
+    fn redaction_remainder_handles_non_object_inputs() {
+        assert_eq!(
+            split_redaction_content(&json!(null), "m.room.message", "10"),
+            (json!({}), json!({}))
+        );
+        assert_eq!(
+            redactable_content_remainder(&json!({"extra": 1}), &json!(null)),
+            json!({"extra": 1})
+        );
     }
 }
