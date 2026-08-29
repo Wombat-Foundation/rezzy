@@ -2237,6 +2237,8 @@ pub fn auth_types_for_event_like<'a, E: EventLike + ?Sized>(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::basespec::event_types::M_ROOM_ALIASES;
+    use alloc::vec;
     use serde_json::json;
 
     fn make_test_event(
@@ -2653,6 +2655,217 @@ mod tests {
         assert!(
             !required.contains(&(M_ROOM_THIRD_PARTY_INVITE, "abc123")),
             "a non-invite membership's token must not require the third-party invite auth event: {required:?}"
+        );
+    }
+
+    /// Coverage: `room_version_str_or_warn` — state has no `m.room.create`.
+    /// Exercises the `create.is_none()` branch (line 337) via Rule 4
+    /// (m.room.aliases) which calls `room_version_str_or_warn`.
+    #[test]
+    fn test_room_version_warn_no_create_in_state() {
+        let mut state: RoomState = RoomState::new();
+        // Need a member event so Rule 2 (sender must be joined) passes.
+        state.insert(
+            (M_ROOM_MEMBER.into(), "@alice:example.com".into()),
+            make_test_event(
+                "$member",
+                M_ROOM_MEMBER,
+                "@alice:example.com",
+                json!({ "membership": "join" }),
+            ),
+        );
+        // Need a power_levels event so Rule 7 (sender PL check) passes.
+        state.insert(
+            (M_ROOM_POWER_LEVELS.into(), String::new()),
+            make_test_event(
+                "$pl",
+                M_ROOM_POWER_LEVELS,
+                "@alice:example.com",
+                json!({ "users": { "@alice:example.com": 100 } }),
+            ),
+        );
+
+        // An m.room.aliases event triggers Rule 4, which calls
+        // room_version_str_or_warn. The state has no m.room.create, so
+        // the "no m.room.create in state" branch fires.
+        let aliases_ev = LeanEvent {
+            event_id: "$aliases".into(),
+            event_type: M_ROOM_ALIASES.into(),
+            state_key: Some("#test:example.com".into()),
+            sender: "@alice:example.com".into(),
+            content: json!({}),
+            ..Default::default()
+        };
+        let result = check_auth_with_context(&aliases_ev, &state, StateResVersion::V1, None, None);
+        // Rule 4 fires for v1-v5; it calls room_version_str_or_warn which
+        // defaults to "1" and passes the aliases domain check. The event
+        // itself is still authorized (the warning path is not an error).
+        assert!(
+            result.is_ok(),
+            "aliases event should still auth OK with default room version: {result:?}"
+        );
+    }
+
+    /// Coverage: `apply_authorized_redactions` — self-redaction no-op (line 1279).
+    /// A redaction whose `redacts` field points to its own `event_id` is a
+    /// no-op: the pair is skipped (`Some(_) => {}`), not deferred.
+    #[test]
+    fn test_self_redaction_is_no_op() {
+        use crate::auth::{apply_authorized_redactions, RoomState};
+
+        let pl: LeanEvent = LeanEvent {
+            event_id: "$pl:example.com".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:example.com".into(),
+            content: serde_json::json!({
+                "users": { "@admin:example.com": 100 },
+                "redact": 0
+            }),
+            ..Default::default()
+        };
+        let mut state = RoomState::new();
+        state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+        // A redaction that targets itself.
+        let self_redact: LeanEvent = LeanEvent {
+            event_id: "$self_redact:example.com".into(),
+            event_type: "m.room.redaction".into(),
+            sender: "@alice:example.com".into(),
+            origin_server_ts: 10,
+            content: serde_json::json!({ "redacts": "$self_redact:example.com" }),
+            ..Default::default()
+        };
+
+        let mut events = vec![self_redact.clone()];
+        let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+
+        assert!(
+            report.applied.is_empty(),
+            "self-redaction must not be applied: {report:?}"
+        );
+        assert!(
+            report.target_not_in_batch.is_empty(),
+            "self-redaction must not be deferred either: {report:?}"
+        );
+        assert!(
+            report.skipped_unauthorized.is_empty(),
+            "self-redaction must not be reported unauthorized: {report:?}"
+        );
+        // The event content must be unchanged.
+        assert_eq!(events[0].content, self_redact.content);
+    }
+
+    /// Coverage: `apply_authorized_redactions` — authorized redaction that
+    /// failed to apply because its `redacts` field was already stripped by
+    /// a prior redaction in the chain (lines 1363-1369).
+    ///
+    /// Scenario: a cycle — R1 redacts R2 and R2 redacts R1, using a pre-v11
+    /// room version where `m.room.redaction` has no preserved keys (so
+    /// redacting an `m.room.redaction` strips its `redacts` field). The topo
+    /// sort can't break the cycle, so pairs are emitted in original order. R1
+    /// runs first, stripping R2 (including its `redacts` field). R2 then
+    /// tries to redact R1 but `get_redacts()` returns None, so
+    /// `apply_redaction` returns None.
+    #[test]
+    fn test_authorized_redaction_failed_to_apply_surfaces_in_report() {
+        use crate::auth::{apply_authorized_redactions, RoomState};
+
+        let pl: LeanEvent = LeanEvent {
+            event_id: "$pl:example.com".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:example.com".into(),
+            content: serde_json::json!({
+                "users": { "@alice:example.com": 50 },
+                "redact": 0
+            }),
+            ..Default::default()
+        };
+        let mut state = RoomState::new();
+        state.insert(("m.room.power_levels".to_string(), String::new()), pl);
+
+        // R1 redacts R2.
+        let r1: LeanEvent = LeanEvent {
+            event_id: "$r1:example.com".into(),
+            event_type: "m.room.redaction".into(),
+            sender: "@alice:example.com".into(),
+            origin_server_ts: 10,
+            content: serde_json::json!({ "redacts": "$r2:example.com" }),
+            ..Default::default()
+        };
+        // R2 redacts R1 — a cycle.
+        let r2: LeanEvent = LeanEvent {
+            event_id: "$r2:example.com".into(),
+            event_type: "m.room.redaction".into(),
+            sender: "@alice:example.com".into(),
+            origin_server_ts: 11,
+            content: serde_json::json!({ "redacts": "$r1:example.com" }),
+            ..Default::default()
+        };
+
+        // Use room version "1" where m.room.redaction preserves no keys —
+        // so redacting R2 strips its `redacts` field.
+        let mut events = vec![r1.clone(), r2.clone()];
+        let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V1, "1");
+
+        // R1 applied (redacted R2).
+        assert!(
+            report
+                .applied
+                .contains(&("$r1:example.com".into(), "$r2:example.com".into())),
+            "R1's redaction of R2 must be applied: {report:?}"
+        );
+        // R2's redaction of R1 failed because R2 was stripped by R1.
+        assert!(
+            report
+                .target_not_in_batch
+                .iter()
+                .any(|(rid, tid)| rid == "$r2:example.com" && tid == "$r1:example.com"),
+            "R2's failed redaction of R1 must surface in target_not_in_batch: {report:?}"
+        );
+    }
+
+    /// Coverage: `check_auth_chain` — `initial_state` events included in
+    /// Rule 2.5 foreign-room check (lines 1959-1961).
+    ///
+    /// An auth event present only in `initial_state` (not in `sorted_events`)
+    /// with a foreign `room_id` must be caught by Rule 2.5.
+    #[test]
+    fn test_check_auth_chain_foreign_room_in_initial_state() {
+        // A create event from a different room, living only in initial_state.
+        let foreign_create = make_test_event(
+            "$foreign_create:other.org",
+            M_ROOM_CREATE,
+            "@admin:other.org",
+            json!({ "room_version": "11", "room_id": "!other:other.org" }),
+        );
+        let mut initial_state: RoomState = RoomState::new();
+        initial_state.insert(
+            (M_ROOM_CREATE.into(), String::new()),
+            foreign_create.clone(),
+        );
+
+        // An event that cites the foreign create in its auth_events.
+        let mut citing_event = make_test_event(
+            "$citing:example.com",
+            M_ROOM_POWER_LEVELS,
+            "@alice:example.com",
+            json!({ "users": { "@alice:example.com": 100 } }),
+        );
+        citing_event.auth_events = vec!["$foreign_create:other.org".into()];
+        citing_event.room_id = Some("!myroom:example.com".into());
+
+        let sorted_events = vec![citing_event];
+        let (_accepted, rejected) =
+            check_auth_chain(&sorted_events, &initial_state, StateResVersion::V2);
+
+        assert!(
+            rejected.iter().any(|(_, err)| matches!(
+                err,
+                AuthError::ForeignRoomEvent { .. }
+            )),
+            "event citing a foreign-room auth event from initial_state must be rejected: {rejected:?}"
         );
     }
 }
