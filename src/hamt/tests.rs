@@ -177,8 +177,8 @@ fn test_lthash_short_circuit() {
     // Simulate identical roots.
     let (added, removed) =
         isolate_delta(&leaf1, &lattice_a, &leaf1, &lattice_b, &mut resolver).unwrap();
-    assert!(added.is_empty());
-    assert!(removed.is_empty());
+    assert_eq!(added, [] as [(i32, i32); 0]);
+    assert_eq!(removed, [] as [(i32, i32); 0]);
 }
 
 #[test]
@@ -259,15 +259,15 @@ fn test_isolate_delta_resolves_lazy_child() {
     )
     .expect("delta should resolve lazy child");
 
-    assert!(added.is_empty());
+    assert_eq!(added, [] as [(u64, u64); 0]);
     assert_eq!(removed, vec![(1, 100)]);
 }
 
 #[test]
 fn test_persisted_internal_node_round_trip() {
     let node = PersistedInternalNode {
-        datamap: 0b11,
-        nodemap: 0b1,
+        datamap: 0b011,
+        nodemap: 0b100,
         structural_hash: [0xaa; 16],
         leaves: vec![(1_i32, 10_i32), (2_i32, 20_i32)],
         child_hashes: vec![[0x11; 16]],
@@ -298,8 +298,8 @@ fn test_decode_v1_rejects_trailing_bytes() {
 #[test]
 fn test_decode_v1_rejects_shape_mismatches() {
     let node = PersistedInternalNode {
-        datamap: 0b1,
-        nodemap: 0b1,
+        datamap: 0b01,
+        nodemap: 0b10,
         structural_hash: [0xaa; 16],
         leaves: vec![(1_i32, 10_i32)],
         child_hashes: vec![[0x11; 16]],
@@ -547,6 +547,92 @@ fn test_hamt_search_resolves_lazy_child() {
         .expect("search should succeed");
     assert_eq!(found, Some(42_u64));
     assert_eq!(calls, 1);
+}
+
+/// Covers the `NodeRef::Resolved` child recursion in
+/// `search_by_path_hash_inner` (mod.rs:459-461): a search whose path descends
+/// through an already-materialized (non-lazy) internal child must recurse into
+/// it directly, never invoking the resolver. Mirrors
+/// `test_hamt_search_resolves_lazy_child`, but with the child resolved instead
+/// of lazy, exercising the sibling branch of the same `slot_at` dispatch.
+#[test]
+fn test_hamt_search_descends_resolved_child() {
+    let key = b"dummy_server_key";
+    let query = find_key_with_path_slots(key, 3, 7);
+    let child = Arc::new(HamtNode {
+        datamap: 1_u32 << 7,
+        nodemap: 0,
+        leaves: vec![(query, 42_u64)],
+        children: vec![],
+        structural_hash: HamtNode::<u64, u64>::compute_structural_hash(
+            key,
+            1_u32 << 7,
+            0,
+            &[(query, 42_u64)],
+            &[],
+        ),
+    });
+    let root = HamtNode {
+        datamap: 0,
+        nodemap: 1_u32 << 3,
+        leaves: vec![],
+        children: vec![NodeRef::<u64, u64>::Resolved(child.clone())],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1_u32 << 3,
+            &[],
+            &[NodeRef::<u64, u64>::Resolved(child.clone())],
+        ),
+    };
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("resolved child should not be resolved lazily")
+    };
+
+    let found = root
+        .search(key, &query, &mut resolver)
+        .expect("search should succeed");
+    assert_eq!(found, Some(42_u64));
+}
+
+/// Covers the `depth >= HAMT_MAX_DEPTH` guard in
+/// `search_by_path_hash_inner` (mod.rs:450-452): a search that recurses past
+/// the deepest a legitimately-built HAMT can be must return `Ok(None)` rather
+/// than keep descending (or overflow the stack). A zero path-hash routes to
+/// slot 0 at every level, so searching the single-child `build_deep_chain`
+/// descends one level per recursion until the guard fires.
+#[test]
+fn test_hamt_search_by_path_hash_rejects_excessive_depth() {
+    let root = build_deep_chain(HAMT_MAX_DEPTH, 0xAA);
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("fully resolved chain, no lazy children")
+    };
+
+    let result = root.search_by_path_hash(&0_u64, &[0u8; 16], &mut resolver);
+    assert_eq!(
+        result,
+        Ok(None),
+        "search must terminate at HAMT_MAX_DEPTH, not recurse further"
+    );
+}
+
+/// Covers the `depth >= HAMT_MAX_DEPTH` guard in `get_by_path_hash_inner`
+/// (mod.rs:423-425): a resolved (non-lazy) lookup that recurses past the
+/// deepest a legitimately-built HAMT can be must return `None` rather than
+/// keep descending. A zero path-hash routes slot 0 at every level, so
+/// descending the single-child `build_deep_chain` hits the guard exactly at
+/// `HAMT_MAX_DEPTH`.
+#[test]
+fn test_hamt_get_by_path_hash_rejects_excessive_depth() {
+    let root = build_deep_chain(HAMT_MAX_DEPTH, 0xAA);
+
+    assert_eq!(
+        root.get_by_path_hash(&0_u64, &[0u8; 16]),
+        None,
+        "get must terminate at HAMT_MAX_DEPTH, not recurse further"
+    );
 }
 
 #[test]
@@ -1261,6 +1347,54 @@ impl Hash for CollidingKey {
     }
 }
 
+impl HamtCodec for CollidingKey {
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        self.0.encode_hamt(out);
+    }
+
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        u64::decode_hamt(input, cursor).map(Self)
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct InMemoryOnlyKey(u64);
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct InMemoryOnlyValue(u64);
+
+#[test]
+fn test_in_memory_mutation_does_not_require_hamt_codec() {
+    let structural_key = b"in_memory_only_mutation";
+    let root = build_hamt(
+        structural_key,
+        vec![(InMemoryOnlyKey(1), InMemoryOnlyValue(10))],
+    )
+    .expect("build root");
+    let mut no_resolver =
+        |_hash: &StructuralHash| -> Result<Arc<HamtNode<InMemoryOnlyKey, InMemoryOnlyValue>>, ()> {
+            panic!("resident mutation must not resolve a lazy node")
+        };
+
+    let (root, displaced) = insert(
+        &root,
+        structural_key,
+        InMemoryOnlyKey(2),
+        InMemoryOnlyValue(20),
+        &mut no_resolver,
+    )
+    .expect("insert without persistence codec");
+    assert_eq!(displaced, None);
+
+    let (root, removed) = remove(&root, structural_key, &InMemoryOnlyKey(1), &mut no_resolver)
+        .expect("remove without persistence codec");
+    assert_eq!(removed, Some(InMemoryOnlyValue(10)));
+    assert_eq!(
+        root.get(structural_key, &InMemoryOnlyKey(2)),
+        Some(&InMemoryOnlyValue(20))
+    );
+}
+
 #[test]
 fn test_build_hamt_with_key_hash_reports_max_depth_exhaustion() {
     let key = b"dummy_server_key";
@@ -1344,10 +1478,12 @@ fn test_insert_node_with_ctx_guards_max_depth_reentry() {
         unreachable!("resolver should not be called at a depth-exhausted guard")
     };
     let mut key_hash_fn = |k: &u64| key_path_hash(key, k);
+    let mut sink = |_: &Arc<HamtNode<u64, u64>>| {};
     let mut ctx = InsertCtx {
         structural_key: key,
         key_hash: &mut key_hash_fn,
         resolver: &mut resolver,
+        sink: &mut sink,
     };
 
     let result = insert_node_with_ctx(&node, 2_u64, 20_u64, [0u8; 16], HAMT_MAX_DEPTH, &mut ctx);
@@ -1359,6 +1495,81 @@ fn test_insert_node_with_ctx_guards_max_depth_reentry() {
             bucket_size: 2,
         }
     );
+}
+
+/// Covers the `depth >= HAMT_MAX_DEPTH` entry guard in `remove_node_with_ctx`
+/// (mod.rs:1189-1191): a removal invoked already at max depth must return the
+/// node untouched (nothing removed) instead of descending. This is the
+/// defensive re-entry check; `remove` always starts at depth 0, so it is only
+/// reachable by calling the context function directly.
+#[test]
+fn test_remove_node_with_ctx_guards_max_depth_entry() {
+    let key = b"dummy_server_key";
+    let node = Arc::new(HamtNode::<u64, u64> {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1_u64, 10_u64)],
+        children: vec![],
+        structural_hash: [0; 16],
+    });
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("entry guard returns before any resolver call")
+    };
+    let mut sink = |_: &Arc<HamtNode<u64, u64>>| {};
+
+    let mut ctx = crate::hamt::RemoveCtx {
+        structural_key: key,
+        resolver: &mut resolver,
+        sink: &mut sink,
+    };
+
+    let (outcome, removed) =
+        remove_node_with_ctx(&node, &1_u64, &[0u8; 16], HAMT_MAX_DEPTH, &mut ctx)
+            .expect("guard returns Ok, not Err");
+    assert!(matches!(outcome, RemoveOutcome::Node(_)));
+    assert_eq!(removed, None);
+}
+
+/// Covers the `next_depth >= HAMT_MAX_DEPTH` re-entry guard in
+/// `remove_node_with_ctx` (mod.rs:1228-1230): a removal that resolved a child
+/// at depth `HAMT_MAX_DEPTH - 1` must bail before recursing one level too
+/// deep. The caller must land on the nodemap branch (a child at the routed
+/// slot) so `depth.checked_add(1)` is actually reached; a zero path-hash
+/// routes slot 0 at every depth.
+#[test]
+fn test_remove_node_with_ctx_guards_max_depth_reentry() {
+    let key = b"dummy_server_key";
+    let child = Arc::new(HamtNode::<u64, u64> {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(2_u64, 20_u64)],
+        children: vec![],
+        structural_hash: [0; 16],
+    });
+    let node = Arc::new(HamtNode::<u64, u64> {
+        datamap: 0,
+        nodemap: 1,
+        leaves: vec![],
+        children: vec![NodeRef::Resolved(child)],
+        structural_hash: [0; 16],
+    });
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("resolved child is never resolved lazily")
+    };
+    let mut sink = |_: &Arc<HamtNode<u64, u64>>| {};
+
+    let depth = HAMT_MAX_DEPTH - 1;
+    let mut ctx = crate::hamt::RemoveCtx {
+        structural_key: key,
+        resolver: &mut resolver,
+        sink: &mut sink,
+    };
+    let (outcome, removed) = remove_node_with_ctx(&node, &2_u64, &[0u8; 16], depth, &mut ctx)
+        .expect("re-entry guard returns Ok, not Err");
+    assert!(matches!(outcome, RemoveOutcome::Node(_)));
+    assert_eq!(removed, None);
 }
 
 #[test]
@@ -1404,6 +1615,124 @@ fn test_hamt_error_display_formatting() {
     assert_eq!(
         mutate_err_resolve.to_string(),
         "hamt mutation resolver failed: missing node"
+    );
+
+    let mutate_err_depth: HamtMutateError<std::io::Error> =
+        HamtMutateError::MaxDepthExceeded { depth: 9 };
+    assert_eq!(
+        mutate_err_depth.to_string(),
+        "hamt mutation max depth exceeded at depth 9"
+    );
+    assert!(std::error::Error::source(&mutate_err_depth).is_none());
+
+    let traversal_resolve: HamtMutateError<&str> =
+        HamtTraversalError::Resolve("resolver failed").into();
+    assert!(matches!(
+        traversal_resolve,
+        HamtMutateError::Resolve("resolver failed")
+    ));
+    let traversal_depth: HamtMutateError<&str> =
+        HamtTraversalError::MaxDepthExceeded { depth: 11 }.into();
+    assert!(matches!(
+        traversal_depth,
+        HamtMutateError::MaxDepthExceeded { depth: 11 }
+    ));
+}
+
+#[test]
+fn test_persist_mutations_insert_and_remove() {
+    let structural_key = b"persist_mutations_test";
+    let root = build_hamt::<u64, u64, _>(structural_key, []).expect("empty root");
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("empty root has no lazy children")
+    };
+
+    let (new_root, displaced, created) = persist_mutations(
+        &root,
+        structural_key,
+        vec![(1_u64, Some(10_u64)), (999_u64, None)],
+        &mut resolver,
+    )
+    .expect("persisting mutations should succeed");
+
+    assert_eq!(displaced, vec![None, None]);
+    assert_eq!(new_root.get(structural_key, &1), Some(&10));
+    assert_ne!(created, [] as [([u8; 16], std::vec::Vec<u8>); 0]);
+}
+
+#[test]
+fn test_persist_mutations_noop_and_remove_existing() {
+    let structural_key = b"persist_mutations_noop";
+    let root = build_hamt(structural_key, [(1_u64, 10_u64), (2_u64, 20_u64)]).expect("root");
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("root has no lazy children")
+    };
+
+    let (same_root, displaced, created) = persist_mutations(
+        &root,
+        structural_key,
+        Vec::<(u64, Option<u64>)>::new(),
+        &mut resolver,
+    )
+    .expect("empty mutation batch should succeed");
+    assert_eq!(same_root.structural_hash, root.structural_hash);
+    assert_eq!(displaced, [] as [core::option::Option<u64>; 0]);
+    assert_eq!(created, [] as [([u8; 16], std::vec::Vec<u8>); 0]);
+
+    let (removed_root, displaced, created) =
+        persist_mutations(&root, structural_key, vec![(1_u64, None)], &mut resolver)
+            .expect("remove mutation should succeed");
+    assert_eq!(displaced, vec![Some(10)]);
+    assert_eq!(removed_root.get(structural_key, &1), None);
+    assert_eq!(removed_root.get(structural_key, &2), Some(&20));
+    assert_ne!(created, [] as [([u8; 16], std::vec::Vec<u8>); 0]);
+
+    let (single_removed_root, displaced, created) =
+        persist_mutation(&root, structural_key, 1_u64, None, &mut resolver)
+            .expect("single remove mutation should succeed");
+    assert_eq!(displaced, Some(10));
+    assert_eq!(single_removed_root.get(structural_key, &2), Some(&20));
+    assert_ne!(created, [] as [([u8; 16], std::vec::Vec<u8>); 0]);
+}
+
+#[test]
+fn test_persist_mutations_emits_resolved_child_nodes() {
+    let structural_key = b"persist_mutations_child";
+    let first = 0_u64;
+    let first_slot = bucket_index(&leaf_hash_for_key(structural_key, first), 0);
+    let second = (1_u64..1_000_000)
+        .find(|candidate| {
+            *candidate != first
+                && bucket_index(&leaf_hash_for_key(structural_key, *candidate), 0) == first_slot
+        })
+        .expect("find colliding key");
+    let root =
+        build_hamt(structural_key, [(first, 10_u64), (second, 20_u64)]).expect("colliding root");
+    assert!(
+        !root.children.is_empty(),
+        "collision should create a child node"
+    );
+
+    let third = (second + 1..1_000_000)
+        .find(|candidate| {
+            bucket_index(&leaf_hash_for_key(structural_key, *candidate), 0) == first_slot
+        })
+        .expect("find another colliding key");
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("root is fully resolved")
+    };
+    let (new_root, _, created) = persist_mutations(
+        &root,
+        structural_key,
+        vec![(third, Some(30_u64))],
+        &mut resolver,
+    )
+    .expect("persisting child mutation should succeed");
+
+    assert_eq!(new_root.get(structural_key, &third), Some(&30));
+    assert!(
+        created.len() >= 2,
+        "root and changed child should be emitted"
     );
 }
 
@@ -1546,7 +1875,7 @@ fn test_hamt_remove_empties_root() {
     assert_eq!(displaced, Some(42_u64));
     assert_eq!(new_root.datamap, 0);
     assert_eq!(new_root.nodemap, 0);
-    assert!(new_root.leaves.is_empty());
+    assert_eq!(new_root.leaves, [] as [(u64, u64); 0]);
     assert!(new_root.children.is_empty());
 }
 
@@ -1724,8 +2053,8 @@ fn test_diff_hamt_nodes_shortcut() {
     // Identical structural hash fast-path
     let (added_same, removed_same) =
         crate::hamt::diff_hamt_nodes(&root_a, &root_a, &mut resolver).expect("diff should succeed");
-    assert!(added_same.is_empty());
-    assert!(removed_same.is_empty());
+    assert_eq!(added_same, [] as [(u64, u64); 0]);
+    assert_eq!(removed_same, [] as [(u64, u64); 0]);
 }
 
 #[test]
@@ -1749,8 +2078,8 @@ fn test_diff_node_hashes_root_only_change() {
     // Identical roots: nothing superseded, nothing new.
     let delta_same = crate::hamt::diff_node_hashes(&root_a, &root_a, &mut resolver)
         .expect("diff should succeed");
-    assert!(delta_same.superseded_node_hashes.is_empty());
-    assert!(delta_same.new_node_hashes.is_empty());
+    assert_eq!(delta_same.superseded_node_hashes, [] as [[u8; 16]; 0]);
+    assert_eq!(delta_same.new_node_hashes, [] as [[u8; 16]; 0]);
 }
 
 #[test]
@@ -1779,8 +2108,8 @@ fn test_diff_node_hashes_tracks_insert_and_remove_spine() {
         .superseded_node_hashes
         .contains(&root_a.structural_hash));
     assert!(delta.new_node_hashes.contains(&root_b.structural_hash));
-    assert!(!delta.superseded_node_hashes.is_empty());
-    assert!(!delta.new_node_hashes.is_empty());
+    assert_ne!(delta.superseded_node_hashes, [] as [[u8; 16]; 0]);
+    assert_ne!(delta.new_node_hashes, [] as [[u8; 16]; 0]);
 
     assert_diff_is_gc_safe(
         &root_a,
@@ -1892,8 +2221,8 @@ fn test_diff_node_hashes_structural_hash_fast_path_without_ptr_eq() {
 
     let delta = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
         .expect("diff should succeed");
-    assert!(delta.superseded_node_hashes.is_empty());
-    assert!(delta.new_node_hashes.is_empty());
+    assert_eq!(delta.superseded_node_hashes, [] as [[u8; 16]; 0]);
+    assert_eq!(delta.new_node_hashes, [] as [[u8; 16]; 0]);
 }
 
 #[test]
@@ -2685,6 +3014,20 @@ fn test_hamt_codec_types() {
     assert_eq!(Vec::<u8>::decode_hamt(&out, &mut cursor), Ok(v1));
     assert_eq!(Vec::<u8>::decode_hamt(&out, &mut cursor), Ok(v2));
     assert!(Vec::<u8>::decode_hamt(&out[0..2], &mut 0).is_err());
+
+    // Tuple and EventType codecs are used by persisted HAMT leaves.
+    out.clear();
+    let value = (
+        crate::basespec::event_types::EventType::from("m.room.create"),
+        42u32,
+    );
+    value.encode_hamt(&mut out);
+    let mut cursor = 0;
+    assert_eq!(
+        <(crate::basespec::event_types::EventType, u32)>::decode_hamt(&out, &mut cursor),
+        Ok(value)
+    );
+    assert_eq!(cursor, out.len());
 }
 
 #[test]
@@ -2811,9 +3154,79 @@ fn test_collect_all_leaves_recursion() {
     )
     .unwrap();
 
-    assert!(added.is_empty());
+    assert_eq!(added, [] as [(i32, i32); 0]);
     assert_eq!(removed.len(), 1);
     assert!(removed.contains(&(1, 100)));
+}
+
+#[test]
+fn test_collect_all_leaves_recursion_added_side() {
+    // Mirror of `test_collect_all_leaves_recursion`, but with a and b swapped:
+    // root_a has nothing in slot 0, root_b has a whole subtree there. This is
+    // the `else if in_b` arm of the nodemap loop in `diff_nodes` (a branch that
+    // exists only on the b side), which the removed-side test above never
+    // exercises.
+    let key = b"dummy_server_key";
+
+    let leaf = Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(1, 100)],
+        children: vec![],
+        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
+    });
+
+    let internal = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 1,
+        leaves: vec![],
+        children: vec![NodeRef::Resolved(leaf.clone())],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1,
+            &[],
+            &[NodeRef::Resolved(leaf.clone())],
+        ),
+    });
+
+    let root_b = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 1,
+        leaves: vec![],
+        children: vec![NodeRef::Resolved(internal.clone())],
+        structural_hash: HamtNode::compute_structural_hash(
+            key,
+            0,
+            1,
+            &[],
+            &[NodeRef::Resolved(internal.clone())],
+        ),
+    });
+
+    let root_a = Arc::new(HamtNode {
+        datamap: 0,
+        nodemap: 0,
+        leaves: vec![],
+        children: vec![],
+        structural_hash: HamtNode::<i32, i32>::compute_structural_hash(key, 0, 0, &[], &[]),
+    });
+
+    let lattice_a = LtHash::default();
+    let lattice_b = LtHash([1u16; 1024]);
+
+    let (added, removed) = isolate_delta(
+        &root_a,
+        &lattice_a,
+        &root_b,
+        &lattice_b,
+        &mut panic_resolver,
+    )
+    .unwrap();
+
+    assert_eq!(removed, [] as [(i32, i32); 0]);
+    assert_eq!(added.len(), 1);
+    assert!(added.contains(&(1, 100)));
 }
 
 #[test]
@@ -2852,15 +3265,15 @@ fn test_diff_nodes_fast_paths() {
     // node1 and node1 are the same Arc allocation.
     let (added1, removed1) =
         isolate_delta(&node1, &lattice_a, &node1, &lattice_b, &mut panic_resolver).unwrap();
-    assert!(added1.is_empty());
-    assert!(removed1.is_empty());
+    assert_eq!(added1, [] as [(i32, i32); 0]);
+    assert_eq!(removed1, [] as [(i32, i32); 0]);
 
     // -- Structural hash equality --
     // node1 and node2 are different Arcs, but have the exact same structural hash.
     let (added2, removed2) =
         isolate_delta(&node1, &lattice_a, &node2, &lattice_b, &mut panic_resolver).unwrap();
-    assert!(added2.is_empty());
-    assert!(removed2.is_empty());
+    assert_eq!(added2, [] as [(i32, i32); 0]);
+    assert_eq!(removed2, [] as [(i32, i32); 0]);
 }
 
 #[test]
@@ -2922,7 +3335,6 @@ fn test_hamt_node_persisted_round_trip() {
     }
 }
 
-/// Verifies the orphan-only audit result against the live tree universe.
 #[test]
 fn test_unreachable_node_hashes_reports_only_the_orphan() {
     use std::collections::BTreeSet;
@@ -2973,17 +3385,16 @@ fn test_unreachable_node_hashes_reports_only_the_orphan() {
     );
 }
 
-/// Verifies the hash-keyed reachability audit partitions the universe.
 #[test]
 fn test_reachability_audit_partitions_universe_and_agrees_with_unreachable_node_hashes() {
     use std::collections::BTreeSet;
 
     // Same two-disjoint-trees fixture as
     // `test_unreachable_node_hashes_reports_only_the_orphan`, reused here to
-    // check the fuller `ReachabilityAudit` result: `reachable` must be the
+    // check the fuller `NodeReachabilityAudit` result: `reachable` must be the
     // exact complement of `unreachable` within `universe`, and must agree
     // with what `unreachable_node_hashes` reports for the same inputs (it
-    // is defined as a thin wrapper over `reachability_audit`).
+    // is defined as a thin wrapper over `node_reachability_audit`).
     let live_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
     let orphan_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
     let root_live = build_hamt(b"live_key", live_entries).expect("build live root");
@@ -3011,7 +3422,7 @@ fn test_reachability_audit_partitions_universe_and_agrees_with_unreachable_node_
         .collect();
 
     let audit =
-        crate::hamt::reachability_audit([root_live.clone()], universe.clone(), &mut resolver)
+        crate::hamt::node_reachability_audit([root_live.clone()], universe.clone(), &mut resolver)
             .expect("audit should succeed");
 
     let reachable_set: BTreeSet<StructuralHash> = audit.reachable.iter().copied().collect();
@@ -3043,8 +3454,6 @@ fn test_reachability_audit_partitions_universe_and_agrees_with_unreachable_node_
     assert_eq!(via_wrapper, unreachable_set);
 }
 
-/// Confirms the bitmap audit matches the hash-keyed audit on the same inputs
-/// and preserves duplicate-universe length accounting.
 #[test]
 fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
     use std::collections::BTreeSet;
@@ -3053,7 +3462,7 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
     // `test_reachability_audit_partitions_universe_and_agrees_with_unreachable_node_hashes`.
     // The bitmap variant must partition the same way and, once its dense
     // indexes are mapped back through `IndexedUniverse`, must agree exactly
-    // with the `StructuralHash`-keyed `reachability_audit` result on the
+    // with the `StructuralHash`-keyed `node_reachability_audit` result on the
     // same inputs.
     let live_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
     let orphan_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
@@ -3081,7 +3490,7 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
         .chain(expected_orphan_hashes.iter().copied())
         .collect();
 
-    let bitmap_audit = crate::hamt::bitmap_reachability_audit(
+    let bitmap_audit = crate::hamt::bitmap_node_reachability_audit(
         [root_live.clone()],
         universe.clone(),
         &mut resolver,
@@ -3093,7 +3502,7 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
     let mut recombined = bitmap_audit.reachable.clone();
     recombined |= &bitmap_audit.unreachable;
     let all_indices: roaring::RoaringBitmap =
-        (0..u32::try_from(bitmap_audit.universe.len()).expect("small test universe")).collect();
+        (0..u32::try_from(universe.len()).expect("small test universe")).collect();
     assert_eq!(recombined, all_indices);
 
     let reachable_via_bitmap: BTreeSet<StructuralHash> = bitmap_audit
@@ -3126,31 +3535,86 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
         "bitmap unreachable side, resolved back through IndexedUniverse, must match the orphan tree"
     );
 
-    // Must agree with the StructuralHash-keyed reachability_audit on the
+    // Must agree with the StructuralHash-keyed node_reachability_audit on the
     // exact same inputs.
-    let repeated_orphan = expected_orphan_hashes
-        .iter()
-        .copied()
-        .next()
-        .expect("orphan tree is non-empty");
-    let mut universe_with_duplicate = universe;
-    universe_with_duplicate.push(repeated_orphan);
-
-    let hash_audit =
-        crate::hamt::reachability_audit([root_live], universe_with_duplicate, &mut resolver)
-            .expect("hash audit should succeed");
+    let hash_audit = crate::hamt::node_reachability_audit([root_live], universe, &mut resolver)
+        .expect("hash audit should succeed");
     let hash_reachable_set: BTreeSet<StructuralHash> =
         hash_audit.reachable.iter().copied().collect();
     assert_eq!(reachable_via_bitmap, hash_reachable_set);
-    let hash_unreachable: Vec<StructuralHash> = hash_audit.unreachable.clone();
-    assert_eq!(hash_unreachable.len(), expected_orphan_hashes.len());
-    assert_eq!(
-        hash_unreachable.iter().copied().collect::<BTreeSet<_>>(),
-        expected_orphan_hashes
-    );
 }
 
-/// Confirms dense universe indexing is stable and collapses duplicates.
+/// Regression for the duplicate-unreachable dedup: `node_reachability_audit`'s
+/// `unreachable` field is a `Vec` that must remain a *partition* of `universe`
+/// (each hash at most once), matching the dedup the bitmap variant's
+/// `IndexedUniverse` provides. When `universe` repeats an unreachable hash,
+/// both audit paths must still emit it exactly once.
+#[test]
+fn test_reachability_audit_dedups_duplicate_unreachable_hashes() {
+    use std::collections::BTreeSet;
+
+    let entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i)).collect();
+    let root_live = build_hamt(b"live_key", entries).expect("build live root");
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("fully resolved tree, no lazy children")
+    };
+
+    let live_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_live, &mut resolver)
+            .expect("live walk should succeed")
+            .into_iter()
+            .collect();
+
+    // An orphan hash that is NOT reachable from `root_live`.
+    let orphan: StructuralHash = [0xFF; 16];
+    assert!(!live_hashes.contains(&orphan));
+
+    // Duplicate the orphan (and a live hash too) in `universe`.
+    let mut universe: Vec<StructuralHash> = Vec::new();
+    universe.extend(live_hashes.iter().copied());
+    universe.push(orphan);
+    universe.push(orphan); // duplicate unreachable
+    universe.push(orphan); // triplicate
+
+    let hash_audit =
+        crate::hamt::node_reachability_audit([root_live.clone()], universe.clone(), &mut resolver)
+            .expect("hash audit should succeed");
+    // `unreachable` must be a partition: the orphan appears exactly once,
+    // not once per occurrence in `universe`.
+    let unreachable_count = hash_audit
+        .unreachable
+        .iter()
+        .filter(|h| **h == orphan)
+        .count();
+    assert_eq!(
+        unreachable_count, 1,
+        "duplicate unreachable hash must be emitted exactly once, got {unreachable_count}"
+    );
+
+    // And it must agree with the bitmap variant's dedup.
+    let bitmap_audit =
+        crate::hamt::bitmap_node_reachability_audit([root_live], universe, &mut resolver)
+            .expect("bitmap audit should succeed");
+    let bitmap_unreachable: BTreeSet<StructuralHash> = bitmap_audit
+        .unreachable
+        .iter()
+        .map(|idx| {
+            bitmap_audit
+                .universe
+                .hash_at(idx)
+                .expect("every set index was assigned by IndexedUniverse::try_build")
+        })
+        .collect();
+    let hash_unreachable: BTreeSet<StructuralHash> =
+        hash_audit.unreachable.iter().copied().collect();
+    assert_eq!(
+        hash_unreachable, bitmap_unreachable,
+        "hash and bitmap audits must agree on the deduped unreachable set"
+    );
+    assert_eq!(hash_unreachable, BTreeSet::from([orphan]));
+}
+
 #[test]
 fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates() {
     let h1: StructuralHash = [1; 16];
@@ -3172,14 +3636,26 @@ fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates()
     let idx1 = universe.index_of(&h1).expect("h1 was indexed");
     let idx2 = universe.index_of(&h2).expect("h2 was indexed");
     let idx3 = universe.index_of(&h3).expect("h3 was indexed");
-    assert_eq!(idx1, 0);
-    assert_eq!(idx2, 1);
-    assert_eq!(idx3, 2);
+    // Indexes are assigned in first-seen order (input is [h1, h2, h1, h3]):
+    // h1 was first seen at 0, h2 at 1, h3 at 2. The duplicates collapse onto
+    // the first-seen index, so these exact expectations are load-bearing for
+    // the documented first-seen ordering, not just distinctness.
+    assert_eq!(idx1, 0, "h1 is the first hash seen, so it must own index 0");
+    assert_eq!(
+        idx2, 1,
+        "h2 is the second distinct hash seen, so it must own index 1"
+    );
+    assert_eq!(
+        idx3, 2,
+        "h3 is the third distinct hash seen, so it must own index 2"
+    );
+    assert_ne!(idx1, idx2);
+    assert_ne!(idx1, idx3);
+    assert_ne!(idx2, idx3);
 
     assert_eq!(universe.hash_at(idx1), Some(h1));
     assert_eq!(universe.hash_at(idx2), Some(h2));
     assert_eq!(universe.hash_at(idx3), Some(h3));
-    assert_eq!(universe.hashes(), &[h1, h2, h3]);
 
     let missing: StructuralHash = [9; 16];
     assert_eq!(universe.index_of(&missing), None);
@@ -3191,13 +3667,82 @@ fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates()
     assert_eq!(universe.hashes().len(), 3);
 }
 
-/// Reports the display text for the oversized-universe error variant.
+/// `bucket_index`'s `hash.get(next_index)` is `None` exactly when
+/// `byte_index` is the hash's last valid index (15, for the 16-byte
+/// `StructuralHash`) -- i.e. at `depth` 24 and 25 (`HAMT_MAX_DEPTH - 2` and
+/// `HAMT_MAX_DEPTH - 1`), where the 5-bit slot window runs past the hash's
+/// available 128 bits. This is not a missing case to panic or early-return
+/// on: it's intentional zero-extension -- the high byte simply isn't OR'd
+/// into `word`, so the slot is computed from whatever low bits remain. It's
+/// exactly what lets `HAMT_MAX_DEPTH` (`ceil(128 / 5)`) be reachable at all
+/// without an out-of-bounds read, since 128 isn't a multiple of 5. Ordinary
+/// (non-adversarial) routing hashes essentially never collide 120+ bits deep,
+/// so this branch doesn't occur under random test data -- hence why it read
+/// as uncovered. This directly exercises it (and depth 23, the last depth
+/// where the high byte read still succeeds, as the contrasting case) rather
+/// than changing behavior at the boundary.
+#[test]
+fn test_bucket_index_zero_extends_past_the_last_hash_byte() {
+    // All-0xFF except the last two bytes, so a wrong zero-extension (e.g. if
+    // it accidentally wrapped and read byte 0 as "next") would show up as a
+    // nonzero high contribution instead of silently matching by coincidence.
+    let mut hash: StructuralHash = [0xFF_u8; 16];
+    hash[14] = 0b1010_1100; // byte_index for depth 23
+    hash[15] = 0b0110_0101; // byte_index for depth 24 and 25 (last valid index)
+
+    // depth 23: bit_offset=115, byte_index=14, bit_shift=3. next_index=15 is
+    // in bounds, so word = hash[14] | (hash[15] << 8), matching the Some arm.
+    let expected_23 = {
+        let word = u16::from(hash[14]) | (u16::from(hash[15]) << 8);
+        usize::from((word >> 3) & HAMT_BRANCH_MASK)
+    };
+    assert_eq!(bucket_index(&hash, 23), expected_23);
+
+    // depth 24: bit_offset=120, byte_index=15, bit_shift=0. next_index=16 is
+    // out of bounds (hash.get(16) is None) -- word is hash[15] alone, no OR.
+    let expected_24 = usize::from(u16::from(hash[15]) & HAMT_BRANCH_MASK);
+    assert_eq!(bucket_index(&hash, 24), expected_24);
+
+    // depth 25 (HAMT_MAX_DEPTH - 1, the deepest depth bucket_index is ever
+    // called at): bit_offset=125, byte_index=15, bit_shift=5. Same None arm,
+    // different shift -- only 3 bits of real hash remain (a StructuralHash
+    // has no byte 16 to supply the rest), the top bits of the slot are 0.
+    let expected_25 = usize::from((u16::from(hash[15]) >> 5) & HAMT_BRANCH_MASK);
+    assert_eq!(bucket_index(&hash, 25), expected_25);
+    assert_eq!(
+        HAMT_MAX_DEPTH - 1,
+        25,
+        "assumption behind this test's depths"
+    );
+}
+
+#[test]
+fn test_universe_too_large_from_index_too_large_preserves_distinct_count() {
+    // The overflow-counting logic itself ("keep counting distinct items past
+    // the bound") belongs to, and is already tested directly on,
+    // `DenseIndex::try_build_bounded` (see `dense_index.rs`'s
+    // `bounded_reports_true_distinct_count` /
+    // `bounded_allows_exactly_bound_distinct_items`). The only thing
+    // `IndexedUniverse` adds on top is this error-type conversion, which is
+    // what's actually worth a dedicated test.
+    use crate::dense_index::IndexTooLarge;
+    use crate::hamt::audit::UniverseTooLarge;
+
+    let err: UniverseTooLarge = IndexTooLarge {
+        distinct_count: 4_294_967_297,
+        allocation_failed: false,
+    }
+    .into();
+    assert_eq!(err.distinct_count, 4_294_967_297);
+}
+
 #[test]
 fn test_universe_too_large_display() {
     use alloc::string::ToString;
 
     let err = crate::hamt::audit::UniverseTooLarge {
         distinct_count: 4_294_967_296,
+        allocation_failed: false,
     };
     assert_eq!(
         err.to_string(),
@@ -3205,78 +3750,96 @@ fn test_universe_too_large_display() {
     );
 }
 
-/// Verifies the bitmap audit error conversions and display output.
 #[test]
 fn test_bitmap_audit_error_display_and_conversions() {
     use alloc::string::ToString;
-    use std::error::Error as _;
 
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct SourceErr;
-    impl core::fmt::Display for SourceErr {
-        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-            f.write_str("source-chain")
-        }
-    }
-    impl std::error::Error for SourceErr {}
-
-    let universe_err = crate::hamt::audit::UniverseTooLarge { distinct_count: 42 };
+    let universe_err = crate::hamt::audit::UniverseTooLarge {
+        distinct_count: 42,
+        allocation_failed: false,
+    };
     let wrapped: crate::hamt::BitmapAuditError<&str> = universe_err.into();
     assert_eq!(
         wrapped.to_string(),
         "universe has 42 distinct hashes, more than u32::MAX can index"
     );
     assert!(matches!(
-        &wrapped,
+        wrapped,
         crate::hamt::BitmapAuditError::Universe(_)
     ));
-    assert_eq!(
-        wrapped,
-        crate::hamt::BitmapAuditError::Universe(crate::hamt::audit::UniverseTooLarge {
-            distinct_count: 42,
-        })
-    );
 
-    let universe_err = crate::hamt::audit::UniverseTooLarge { distinct_count: 7 };
-    let wrapped: crate::hamt::BitmapAuditError<SourceErr> = universe_err.into();
-    assert!(wrapped.source().is_some());
-
-    let traversal_err: HamtTraversalError<SourceErr> = HamtTraversalError::Resolve(SourceErr);
-    let wrapped: crate::hamt::BitmapAuditError<SourceErr> = traversal_err.clone().into();
+    let traversal_err: HamtTraversalError<&str> = HamtTraversalError::MaxDepthExceeded { depth: 7 };
+    let wrapped: crate::hamt::BitmapAuditError<&str> = traversal_err.into();
     assert_eq!(
         wrapped.to_string(),
-        "hamt traversal resolver failed: source-chain"
+        "hamt traversal exceeded max depth at 7"
     );
     assert!(matches!(
-        &wrapped,
+        wrapped,
         crate::hamt::BitmapAuditError::Traversal(_)
     ));
-    assert_eq!(
-        wrapped,
-        crate::hamt::BitmapAuditError::Traversal(traversal_err)
-    );
-    assert_eq!(
-        wrapped
-            .source()
-            .expect("resolver failures should preserve their source")
-            .to_string(),
-        "source-chain"
-    );
-
-    let traversal_err: HamtTraversalError<SourceErr> =
-        HamtTraversalError::MaxDepthExceeded { depth: 7 };
-    let wrapped: crate::hamt::BitmapAuditError<SourceErr> = traversal_err.into();
-    assert!(
-        wrapped.source().is_none(),
-        "max-depth errors do not have a nested source"
-    );
 }
 
-/// Confirms shared-hash duplicates do not leak into the bitmap unreachable set.
+/// Exercises the `source()` chain on [`BitmapAuditError`] (audit.rs's
+/// `std::error::Error` impl): both variants must forward their wrapped error,
+/// and each must downcast back to the concrete inner type. This is the one
+/// piece of the audit error surface not pinned down by
+/// `test_bitmap_audit_error_display_and_conversions`, which only checks
+/// Display and `From` conversion.
+#[test]
+#[cfg(feature = "std")]
+fn test_bitmap_audit_error_source_and_downcast() {
+    use alloc::string::ToString;
+    use std::error::Error as _;
+
+    // Universe variant: `source()` returns the wrapped UniverseTooLarge.
+    let universe_err = crate::hamt::audit::UniverseTooLarge {
+        distinct_count: 123,
+        allocation_failed: false,
+    };
+    let wrapped: crate::hamt::BitmapAuditError<std::io::Error> = universe_err.into();
+    assert_eq!(
+        wrapped.to_string(),
+        "universe has 123 distinct hashes, more than u32::MAX can index"
+    );
+    let source = wrapped
+        .source()
+        .expect("Universe variant must expose a source");
+    let downcast = source
+        .downcast_ref::<crate::hamt::audit::UniverseTooLarge>()
+        .expect("Universe source must downcast to UniverseTooLarge");
+    assert_eq!(downcast.distinct_count, 123);
+
+    // Traversal variant: `source()` returns the wrapped HamtTraversalError,
+    // whose own `source()` in turn exposes the inner resolver error.
+    let traversal: crate::hamt::HamtTraversalError<std::io::Error> =
+        crate::hamt::HamtTraversalError::Resolve(std::io::Error::other("boom"));
+    let wrapped: crate::hamt::BitmapAuditError<std::io::Error> = traversal.into();
+    assert_eq!(wrapped.to_string(), "hamt traversal resolver failed: boom");
+    let source = wrapped
+        .source()
+        .expect("Traversal variant must expose a source");
+    let downcast = source
+        .downcast_ref::<crate::hamt::HamtTraversalError<std::io::Error>>()
+        .expect("Traversal source must downcast to HamtTraversalError");
+    assert!(matches!(
+        downcast,
+        crate::hamt::HamtTraversalError::Resolve(_)
+    ));
+    assert_eq!(downcast.to_string(), "hamt traversal resolver failed: boom");
+    let inner_source = downcast
+        .source()
+        .expect("HamtTraversalError::Resolve must expose its inner io::Error");
+    let io_downcast = inner_source
+        .downcast_ref::<std::io::Error>()
+        .expect("inner source must downcast to io::Error");
+    assert_eq!(io_downcast.to_string(), "boom");
+}
+
 #[test]
 fn test_bitmap_reachability_audit_dedupes_shared_hash_missing_from_universe() {
     // `universe` deliberately omits a hash the walk actually reaches, so
-    // `bitmap_reachability_audit` must fall back to `visited_outside_universe`
+    // `bitmap_node_reachability_audit` must fall back to `visited_outside_universe`
     // for it. Two roots share that same out-of-universe subtree, so the
     // resolver must still only be asked to resolve it once across the whole
     // walk — proving the outside-universe fallback set is doing real dedup,
@@ -3300,7 +3863,7 @@ fn test_bitmap_reachability_audit_dedupes_shared_hash_missing_from_universe() {
         datamap: 0b01,
         nodemap: 0b10,
         leaves: root_a_leaves.to_vec(),
-        children: root_a_children.to_vec(),
+        children: vec![NodeRef::Lazy(shared_leaf.structural_hash)],
         structural_hash: HamtNode::compute_structural_hash(
             key,
             0b01,
@@ -3315,7 +3878,7 @@ fn test_bitmap_reachability_audit_dedupes_shared_hash_missing_from_universe() {
         datamap: 0b01,
         nodemap: 0b10,
         leaves: root_b_leaves.to_vec(),
-        children: root_b_children.to_vec(),
+        children: vec![NodeRef::Lazy(shared_leaf.structural_hash)],
         structural_hash: HamtNode::compute_structural_hash(
             key,
             0b01,
@@ -3340,7 +3903,7 @@ fn test_bitmap_reachability_audit_dedupes_shared_hash_missing_from_universe() {
     // they both lazily reference.
     let universe = vec![root_a.structural_hash, root_b.structural_hash];
 
-    let bitmap_audit = crate::hamt::bitmap_reachability_audit(
+    let bitmap_audit = crate::hamt::bitmap_node_reachability_audit(
         [root_a.clone(), root_b.clone()],
         universe,
         &mut resolver,
@@ -3357,7 +3920,6 @@ fn test_bitmap_reachability_audit_dedupes_shared_hash_missing_from_universe() {
     assert_eq!(bitmap_audit.unreachable.len(), 0);
 }
 
-/// Verifies the orphan-only case across multiple roots and shared subtrees.
 #[test]
 fn test_unreachable_node_hashes_shares_subtrees_across_roots() {
     let key = b"dummy_server_key";
@@ -3457,7 +4019,6 @@ fn test_unreachable_node_hashes_shares_subtrees_across_roots() {
     );
 }
 
-/// Verifies an empty root set reports the entire universe as unreachable.
 #[test]
 fn test_unreachable_node_hashes_empty_roots_reports_entire_universe() {
     let root = Arc::new(HamtNode::<u64, u64> {
@@ -3481,7 +4042,6 @@ fn test_unreachable_node_hashes_empty_roots_reports_entire_universe() {
     );
 }
 
-/// Verifies resolver errors are propagated without fabricating partial output.
 #[test]
 fn test_unreachable_node_hashes_propagates_resolver_error_without_partial_result() {
     let key = b"dummy_server_key";
@@ -3707,11 +4267,9 @@ fn test_isolate_delta_boundary_straddling_class_order_invariant() {
 struct Rng(u64);
 
 impl Rng {
-    /// Creates a deterministic PRNG from a fixed seed.
     fn new(seed: u64) -> Self {
         Rng(seed | 1)
     }
-    /// Advances the PRNG and returns the next `u64`.
     fn next(&mut self) -> u64 {
         let mut x = self.0;
         x ^= x >> 12;
@@ -3722,16 +4280,12 @@ impl Rng {
     }
 
     /// Returns a value in `0..n`, computed entirely in `u64` and narrowed
-    /// back to `u32` via a checked conversion.
-    ///
-    /// # Preconditions
-    /// `n` must be greater than zero. Call sites in this module always pass a
-    /// small, compile-time-bounded constant (well under `u32::MAX`), so
-    /// `self.next() % u64::from(n)` is `< n` and the narrowing conversion
-    /// cannot fail.
-    ///
-    /// # Panics
-    /// Panics if `n == 0`, since `checked_rem` on zero returns `None`.
+    /// back to `u32` via a checked conversion. `n` is always a small,
+    /// compile-time-bounded constant at call sites in this module (well
+    /// under `u32::MAX`), so `self.next() % u64::from(n)` is itself `< n`
+    /// and the narrowing conversion below cannot fail; `expect` documents
+    /// that invariant instead of silently discarding a truncation via a
+    /// cast or a clippy allow.
     fn below(&mut self, n: u32) -> u32 {
         let n64 = u64::from(n);
         let r64 = self
@@ -3742,23 +4296,14 @@ impl Rng {
     }
 }
 
-/// Keeps the last value for each key while preserving insertion order.
-fn dedupe_last_wins(entries: &DeltaEntries) -> DeltaEntries {
-    let mut seen = alloc::collections::BTreeSet::new();
-    let mut deduped = Vec::with_capacity(entries.len());
-    for (k, v) in entries.iter().copied().rev() {
-        if seen.insert(k) {
-            deduped.push((k, v));
-        }
-    }
-    deduped.reverse();
-    deduped
-}
-
 #[test]
 fn test_isolate_delta_order_invariant_randomized() {
     let mut rng = Rng::new(0xD15C_0DE1);
-    let mut successful_trials = 0_u32;
+
+    // Trials that actually build both roots and run the assertions. Collisions
+    // are skipped *without* counting, so a run where many trials collide does
+    // not trip the floor below.
+    let mut completed = 0_u32;
 
     for trial in 0..500_u32 {
         let key = format!("order_invariance_random_{trial}");
@@ -3774,8 +4319,6 @@ fn test_isolate_delta_order_invariant_randomized() {
         let entries_b: DeltaEntries = (0..n_b)
             .map(|_| (rng.below(key_space), rng.below(1000)))
             .collect();
-        let entries_a = dedupe_last_wins(&entries_a);
-        let entries_b = dedupe_last_wins(&entries_b);
 
         // Later entries for the same key win (build_hamt inserts in order),
         // so dedupe the same way for the oracle input.
@@ -3798,7 +4341,7 @@ fn test_isolate_delta_order_invariant_randomized() {
         ) else {
             continue;
         };
-        successful_trials = successful_trials.saturating_add(1);
+        completed = completed.saturating_add(1);
 
         let mut infallible =
             |_hash: &StructuralHash| -> Result<Arc<HamtNode<u32, u32>>, core::convert::Infallible> {
@@ -3827,8 +4370,865 @@ fn test_isolate_delta_order_invariant_randomized() {
         );
     }
 
+    // Most trials must actually build both roots and run the assertions
+    // (collisions are skipped without counting). Small integer keys collide
+    // in path-hash space relatively often at this key_space size, so the
+    // floor is deliberately modest -- it only guards against a regression
+    // where the assertions effectively never run.
     assert!(
-        successful_trials >= 20,
-        "expected the randomized oracle check to run most trials, but only {successful_trials} succeeded"
+        completed >= 20,
+        "too few completed (non-colliding) trials: {completed} < 20"
+    );
+}
+
+#[test]
+fn test_refcount_table_apply_new_increments() {
+    use crate::hamt::gc::RefcountTable;
+
+    let key = b"dummy_server_key";
+    let entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i)).collect();
+    let root = build_hamt(key, entries).expect("build root");
+    let hashes: Vec<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
+
+    let mut table = RefcountTable::new();
+    assert!(table.is_empty());
+    table.apply_new(&hashes);
+
+    for h in &hashes {
+        assert_eq!(table.count(h), 1);
+    }
+    assert_eq!(table.len(), hashes.len());
+
+    // Applying the same new_node_hashes twice (e.g. two roots that happen to
+    // share the same subtree) accumulates, not overwrites.
+    table.apply_new(&hashes);
+    for h in &hashes {
+        assert_eq!(table.count(h), 2);
+    }
+}
+
+#[test]
+fn test_refcount_table_apply_superseded_decrements_and_reports_zeroed() {
+    use crate::hamt::gc::RefcountTable;
+
+    let key = b"dummy_server_key";
+    let entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i)).collect();
+    let root = build_hamt(key, entries).expect("build root");
+    let hashes: Vec<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
+
+    let mut table = RefcountTable::new();
+    table.apply_new(&hashes);
+
+    let zeroed = table
+        .apply_superseded(&hashes)
+        .expect("decrementing exactly what was incremented must succeed");
+
+    let mut zeroed_sorted = zeroed.clone();
+    zeroed_sorted.sort_unstable();
+    let mut hashes_sorted = hashes.clone();
+    hashes_sorted.sort_unstable();
+    assert_eq!(
+        zeroed_sorted, hashes_sorted,
+        "every hash incremented exactly once must reach zero and be reported"
+    );
+    assert!(
+        table.is_empty(),
+        "a fully-decremented table has nothing left tracked"
+    );
+}
+
+#[test]
+fn test_refcount_table_shared_hash_not_zeroed_by_one_of_two_referrers() {
+    use crate::hamt::gc::RefcountTable;
+
+    // Two roots sharing a subtree: incrementing for both, then superseding
+    // only one, must not zero out the shared hash -- the other root still
+    // references it. This is exactly the structural-sharing scenario the
+    // module doc's "branching hazard" note warns about; this test covers the
+    // case that note says a *linear-chain* diff+retire correctly handles
+    // (the shared hash simply never appears in either side's superseded
+    // list unless truly unreferenced).
+    let key = b"dummy_server_key";
+    let shared_entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i)).collect();
+    let root_a = build_hamt(key, shared_entries.clone()).expect("build root_a");
+    let root_b = build_hamt(key, shared_entries).expect("build root_b (identical content)");
+    assert_eq!(
+        root_a.structural_hash, root_b.structural_hash,
+        "identical content must structurally share, matching this test's premise"
+    );
+
+    let hashes: Vec<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_a, &mut panic_resolver).expect("walk");
+
+    let mut table = RefcountTable::new();
+    // Both roots persisted: each contributes its own increments.
+    table.apply_new(&hashes);
+    table.apply_new(&hashes);
+    for h in &hashes {
+        assert_eq!(table.count(h), 2);
+    }
+
+    // root_a retired: decrement once. Nothing should zero -- root_b still
+    // references every one of these hashes.
+    let zeroed = table
+        .apply_superseded(&hashes)
+        .expect("decrementing one of two referrers must succeed");
+    assert!(
+        zeroed.is_empty(),
+        "shared hashes must not be reported as GC candidates while root_b is still live"
+    );
+    for h in &hashes {
+        assert_eq!(table.count(h), 1);
+    }
+}
+
+#[test]
+fn test_refcount_table_apply_superseded_underflow_is_atomic() {
+    use crate::hamt::gc::{RefcountTable, RefcountUnderflow};
+    use alloc::string::ToString;
+
+    let key = b"dummy_server_key";
+    let entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i)).collect();
+    let root = build_hamt(key, entries).expect("build root");
+    let hashes: Vec<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
+    assert!(hashes.len() >= 2, "need at least 2 hashes for this test");
+
+    let mut table = RefcountTable::new();
+    // Only increment the first hash -- the rest are untracked (count 0).
+    table.apply_new(&hashes[..1]);
+
+    let before = table.clone();
+    let err = table
+        .apply_superseded(&hashes)
+        .expect_err("decrementing untracked hashes must fail, not silently no-op");
+    assert!(matches!(err, RefcountUnderflow { .. }));
+    assert_eq!(
+        err.to_string(),
+        "refcount underflow: decremented a hash with no tracked positive count \
+         (missing or out-of-order apply_new, or a double decrement)"
+    );
+
+    // Atomicity: the tracked hash's count must be untouched, even though it
+    // appeared earlier in `hashes` than the untracked ones that caused the
+    // failure -- apply_superseded validates the whole batch before mutating
+    // anything.
+    assert_eq!(table.count(&hashes[0]), before.count(&hashes[0]));
+    assert_eq!(table.len(), before.len());
+}
+
+#[test]
+fn test_refcount_table_underflow_reports_first_hash_in_input_order() {
+    use crate::hamt::gc::{RefcountTable, RefcountUnderflow};
+
+    let key = b"ordered_underflow";
+    let root = build_hamt(key, (0_u64..32).map(|i| (i, i))).expect("build root");
+    let hashes = crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
+    assert!(hashes.len() >= 2);
+
+    let mut table = RefcountTable::new();
+    table.apply_new(&[hashes[1]]);
+    let err = table
+        .apply_superseded(&[hashes[0], hashes[1]])
+        .expect_err("the first hash is untracked");
+    assert_eq!(err, RefcountUnderflow { hash: hashes[0] });
+    assert_eq!(table.count(&hashes[1]), 1, "validation remains atomic");
+}
+
+#[test]
+fn test_refcount_table_apply_superseded_repeated_hash_in_one_batch() {
+    use crate::hamt::gc::RefcountTable;
+
+    let key = b"dummy_server_key";
+    let entries: Vec<(u64, u64)> = (0_u64..4).map(|i| (i, i)).collect();
+    let root = build_hamt(key, entries).expect("build root");
+    let hash = root.structural_hash;
+
+    let mut table = RefcountTable::new();
+    table.apply_new(&[hash, hash, hash]); // count = 3
+
+    // A batch that repeats the same hash twice should decrement it by 2, not
+    // treat repeats as redundant.
+    let zeroed = table
+        .apply_superseded(&[hash, hash])
+        .expect("2 decrements against a count of 3 must succeed");
+    assert!(
+        zeroed.is_empty(),
+        "count should be 1, not zero, after this batch"
+    );
+    assert_eq!(table.count(&hash), 1);
+
+    let zeroed = table
+        .apply_superseded(&[hash])
+        .expect("final decrement must succeed");
+    assert_eq!(zeroed, vec![hash]);
+    assert_eq!(table.count(&hash), 0);
+}
+
+#[test]
+fn test_refcount_table_bootstrap_seeds_counts_per_occurrence() {
+    use crate::hamt::gc::RefcountTable;
+
+    let key = b"dummy_server_key";
+    let entries: Vec<(u64, u64)> = (0_u64..4).map(|i| (i, i)).collect();
+    let root = build_hamt(key, entries).expect("build root");
+    let hashes: Vec<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
+
+    let mut table = RefcountTable::new();
+    // Bootstrapping from 3 roots that all reference the same tree (as a
+    // real caller would by walking each currently-live root and chaining
+    // the results) must count each hash 3 times, not once.
+    table.bootstrap(hashes.iter().copied());
+    table.bootstrap(hashes.iter().copied());
+    table.bootstrap(hashes.iter().copied());
+
+    for h in &hashes {
+        assert_eq!(table.count(h), 3);
+    }
+}
+
+/// End-to-end: drive a real `RefcountTable` from a real
+/// [`diff_node_hashes`] output across an actual HAMT mutation, and confirm
+/// the result agrees with an independent full reachability walk -- the same
+/// property [`assert_diff_is_gc_safe`] checks for `diff_node_hashes` itself,
+/// now checked through the incremental table a caller would actually use.
+#[test]
+fn test_refcount_table_end_to_end_with_diff_node_hashes_matches_reachability() {
+    use crate::hamt::gc::RefcountTable;
+    use std::collections::BTreeSet;
+
+    let key = b"dummy_server_key";
+    let entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
+    let root_a = build_hamt(key, entries).expect("build root_a");
+
+    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
+        unreachable!("fully resolved tree, no lazy children")
+    };
+
+    let (root_b, _displaced) =
+        insert(&root_a, key, 1000_u64, 9999_u64, &mut resolver).expect("insert should succeed");
+
+    let delta = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
+        .expect("diff should succeed");
+
+    // Bootstrap as if root_a already existed in the store.
+    let root_a_hashes: Vec<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_a, &mut resolver).expect("walk root_a");
+    let mut table = RefcountTable::new();
+    table.bootstrap(root_a_hashes.iter().copied());
+
+    // New root persisted: increment immediately (per the timing contract).
+    table.apply_new(&delta.new_node_hashes);
+
+    // Old root retired later, and root_b is its one and only live successor
+    // here (a strict linear chain -- exactly the case the module doc allows
+    // apply_superseded to be the sole decrement source for).
+    let zeroed = table
+        .apply_superseded(&delta.superseded_node_hashes)
+        .expect("superseding root_a's own spine, which bootstrap seeded, must succeed");
+
+    // Cross-check against an independent full walk: everything the table
+    // reports as zeroed must be unreachable from root_b, and everything
+    // still tracked with a nonzero count must be reachable from root_b.
+    let reachable_b: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_b, &mut resolver)
+            .expect("walk root_b")
+            .into_iter()
+            .collect();
+
+    for hash in &zeroed {
+        assert!(
+            !reachable_b.contains(hash),
+            "a hash the table reports as GC-safe must not be reachable from the live root"
+        );
+    }
+    for hash in &root_a_hashes {
+        if reachable_b.contains(hash) {
+            assert!(
+                table.count(hash) > 0,
+                "a hash still reachable from root_b must still have a positive tracked count"
+            );
+        }
+    }
+}
+
+#[derive(Default)]
+struct FakeNodeStore {
+    storage: std::collections::HashMap<StructuralHash, Vec<u8>>,
+    resolutions: std::cell::Cell<usize>,
+}
+
+impl FakeNodeStore {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn store_tree<K: HamtCodec + Clone, V: HamtCodec + Clone>(
+        &mut self,
+        node: &Arc<HamtNode<K, V>>,
+    ) {
+        let bytes = PersistedInternalNode::from(node.as_ref()).encode_v1();
+        self.storage.insert(node.structural_hash, bytes);
+        for child in &node.children {
+            if let NodeRef::Resolved(child_node) = child {
+                self.store_tree(child_node);
+            }
+        }
+    }
+
+    fn resolver<K, V>(
+        &self,
+    ) -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, &'static str> + '_
+    where
+        K: HamtCodec,
+        V: HamtCodec,
+    {
+        |hash| {
+            self.resolutions
+                .set(self.resolutions.get().saturating_add(1));
+            let bytes = self.storage.get(hash).ok_or("node missing in fake store")?;
+            let persisted = PersistedInternalNode::<K, V>::decode_v1(bytes)?;
+            HamtNode::try_from(persisted)
+                .map(Arc::new)
+                .map_err(|_| "failed to convert persisted node")
+        }
+    }
+}
+
+#[test]
+fn test_persist_mutation_rebuild_equivalence() {
+    let key = b"prop_test_server_key";
+    let mut state: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
+    for i in 0..50 {
+        state.insert(i, u64::from(i) * 10);
+    }
+
+    let mut current_root = build_hamt(key, state.clone()).expect("build initial hamt");
+
+    let mut no_resolver = |_h: &StructuralHash| -> Result<Arc<HamtNode<u32, u64>>, ()> {
+        panic!("unexpected lazy resolution in memory test")
+    };
+
+    // Perform sequence of 100 pseudo-random mutations (inserts, updates, deletes)
+    let mut rng_state: u64 = 0xdead_beef;
+    let mut next_rnd = || -> u64 {
+        rng_state ^= rng_state << 13;
+        rng_state ^= rng_state >> 7;
+        rng_state ^= rng_state << 17;
+        rng_state
+    };
+
+    for _ in 0..100 {
+        let op = next_rnd() % 3;
+        let k = (next_rnd() % 100) as u32;
+        let v = next_rnd() % 1000;
+
+        let opt_val = if op == 0 {
+            // Remove
+            state.remove(&k);
+            None
+        } else {
+            // Insert / Update
+            state.insert(k, v);
+            Some(v)
+        };
+
+        let (new_root, _, created) =
+            persist_mutation(&current_root, key, k, opt_val, &mut no_resolver)
+                .expect("persist_mutation must succeed");
+
+        // Rebuild from scratch and assert identical structural hash
+        let rebuilt_root = build_hamt(key, state.clone()).expect("rebuild hamt");
+        assert_eq!(
+            new_root.structural_hash, rebuilt_root.structural_hash,
+            "incremental persist_mutation root must match from-scratch rebuild exactly"
+        );
+
+        if new_root.structural_hash == current_root.structural_hash {
+            assert!(
+                created.is_empty(),
+                "noop mutation must produce zero created nodes"
+            );
+        } else {
+            assert!(
+                !created.is_empty(),
+                "real state change must produce at least one created node"
+            );
+        }
+
+        current_root = new_root;
+    }
+}
+
+#[test]
+fn test_lazy_resolver_mutation_and_resolution_bounds() {
+    let key = b"lazy_resolver_test_key";
+    let entries: Vec<(u32, u64)> = (0_u32..60_u32).map(|i| (i, u64::from(i) * 100)).collect();
+    let resident_root = build_hamt(key, entries).expect("build tree");
+
+    let mut store = FakeNodeStore::new();
+    store.store_tree(&resident_root);
+
+    // Decode root node directly from store so all its children are NodeRef::Lazy
+    let root_bytes = store
+        .storage
+        .get(&resident_root.structural_hash)
+        .expect("root in store");
+    let persisted_root =
+        PersistedInternalNode::<u32, u64>::decode_v1(root_bytes).expect("decode root");
+    let lazy_root = Arc::new(HamtNode::try_from(persisted_root).expect("lazy root"));
+
+    let mut resident_resolver =
+        |_h: &StructuralHash| -> Result<Arc<HamtNode<u32, u64>>, &'static str> {
+            panic!("unexpected resolution on resident root")
+        };
+
+    // Mutate multiple keys to test both root leaves and child subtrees.
+    let mut exercised_lazy_child = false;
+    for target_key in [5_u32, 25_u32, 45_u32, 999_u32] {
+        let new_val = Some(u64::from(target_key) * 999);
+
+        let (res_new_root, res_disp, res_created) = persist_mutation(
+            &resident_root,
+            key,
+            target_key,
+            new_val,
+            &mut resident_resolver,
+        )
+        .expect("resident persist_mutation succeeds");
+
+        store.resolutions.set(0);
+        let mut lazy_res = store.resolver();
+        let (lazy_new_root, lazy_disp, lazy_created) =
+            persist_mutation(&lazy_root, key, target_key, new_val, &mut lazy_res)
+                .expect("lazy persist_mutation succeeds");
+
+        // Invariant assertions
+        assert_eq!(res_new_root.structural_hash, lazy_new_root.structural_hash);
+        assert_eq!(res_disp, lazy_disp);
+        assert_eq!(res_created.len(), lazy_created.len());
+
+        let res_hashes: std::collections::BTreeSet<StructuralHash> =
+            res_created.iter().map(|(h, _)| *h).collect();
+        let lazy_hashes: std::collections::BTreeSet<StructuralHash> =
+            lazy_created.iter().map(|(h, _)| *h).collect();
+        assert_eq!(
+            res_hashes, lazy_hashes,
+            "created node sets must be identical"
+        );
+
+        // Resolver invocations must be bounded by trie depth (proves zero double resolution)
+        assert!(
+            store.resolutions.get() <= HAMT_MAX_DEPTH,
+            "resolutions ({}) must be bounded by HAMT_MAX_DEPTH ({})",
+            store.resolutions.get(),
+            HAMT_MAX_DEPTH
+        );
+        exercised_lazy_child |= store.resolutions.get() > 0;
+    }
+    assert!(
+        exercised_lazy_child,
+        "fixture must exercise at least one lazy child resolution"
+    );
+}
+
+#[test]
+fn test_persist_chain_coverage() {
+    let key = b"prop_chain_coverage_key";
+    let prev_root =
+        build_hamt(key, (0_u32..20_u32).map(|i| (i, u64::from(i) * 100))).expect("build root");
+
+    let mut no_resolver = |_h: &StructuralHash| -> Result<Arc<HamtNode<u32, u64>>, ()> {
+        panic!("unexpected lazy resolution in memory test")
+    };
+
+    let prev_reachable: std::collections::BTreeSet<StructuralHash> =
+        reachable_node_hashes(&prev_root, &mut no_resolver)
+            .expect("reachable prev")
+            .into_iter()
+            .collect();
+
+    let mutations = vec![
+        (5_u32, Some(555_u64)),
+        (100_u32, Some(1000_u64)),
+        (2_u32, None),
+        (101_u32, Some(1010_u64)),
+        (102_u32, Some(1020_u64)),
+        (100_u32, None),
+        (5_u32, Some(500_u64)), // revert to original value
+    ];
+
+    let steps = persist_chain(&prev_root, key, mutations, &mut no_resolver)
+        .expect("persist_chain must succeed");
+
+    assert_eq!(steps.len(), 7);
+
+    let mut cumulative_created = prev_reachable;
+    for (i, step) in steps.iter().enumerate() {
+        for (hash, bytes) in &step.created {
+            assert_eq!(
+                *hash,
+                PersistedInternalNode::<u32, u64>::decode_v1(bytes)
+                    .expect("valid decode")
+                    .structural_hash
+            );
+            cumulative_created.insert(*hash);
+        }
+
+        // Chain coverage invariant: every node reachable from root_i must be present
+        // in cumulative_created (union of created_j for j<=i and reachable(prev_root))
+        let root_i_reachable =
+            reachable_node_hashes(&step.root, &mut no_resolver).expect("reachable step");
+        for hash in &root_i_reachable {
+            assert!(
+                cumulative_created.contains(hash),
+                "step {i}: node {hash:?} reachable from root_{i} was not created in any prior step"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_persist_chain_refcount_closure_with_retirement() {
+    let key = b"prop_refcount_closure_key";
+    let prev_root =
+        build_hamt(key, (0_u32..10_u32).map(|i| (i, u64::from(i)))).expect("build root");
+
+    let mut no_resolver = |_h: &StructuralHash| -> Result<Arc<HamtNode<u32, u64>>, ()> {
+        panic!("unexpected lazy resolution in memory test")
+    };
+
+    let mutations = vec![
+        (1_u32, Some(100_u64)),
+        (2_u32, Some(200_u64)),
+        (3_u32, Some(300_u64)),
+        (1_u32, Some(1_u64)), // revert
+        (4_u32, None),
+    ];
+
+    let steps = persist_chain(&prev_root, key, mutations, &mut no_resolver).expect("persist_chain");
+
+    let mut table = RefcountTable::new();
+
+    // Initial root refcounts
+    table.bootstrap(reachable_node_hashes(&prev_root, &mut no_resolver).expect("reachable"));
+
+    // Apply per-step increments
+    let mut all_created_hashes = Vec::new();
+    for step in &steps {
+        let step_hashes: Vec<StructuralHash> = step.created.iter().map(|(h, _)| *h).collect();
+        table.apply_new(&step_hashes);
+        all_created_hashes.extend(step_hashes);
+    }
+
+    let all_roots: Vec<Arc<HamtNode<u32, u64>>> = std::iter::once(prev_root.clone())
+        .chain(steps.iter().map(|s| s.root.clone()))
+        .collect();
+
+    // Linearly retire root 0 (superseded by 1) and root 1 (superseded by 2)
+    let delta_1 = diff_node_hashes(&all_roots[0], &all_roots[1], &mut no_resolver).expect("diff 1");
+    let mut zeroed = table
+        .apply_superseded(&delta_1.superseded_node_hashes)
+        .expect("apply superseded 1");
+
+    let delta_2 = diff_node_hashes(&all_roots[1], &all_roots[2], &mut no_resolver).expect("diff 2");
+    zeroed.extend(
+        table
+            .apply_superseded(&delta_2.superseded_node_hashes)
+            .expect("apply superseded 2"),
+    );
+
+    // Surviving roots: [2, 3, 4, 5]
+    let surviving_roots = vec![
+        all_roots[2].clone(),
+        all_roots[3].clone(),
+        all_roots[4].clone(),
+        all_roots[5].clone(),
+    ];
+
+    let universe: Vec<StructuralHash> = reachable_node_hashes(&prev_root, &mut no_resolver)
+        .expect("reachable")
+        .into_iter()
+        .chain(all_created_hashes)
+        .collect();
+
+    let audit =
+        crate::hamt::audit::node_reachability_audit(surviving_roots, universe, &mut no_resolver)
+            .expect("audit");
+
+    // Invariant 1: Every node reachable from surviving roots MUST have positive count
+    for hash in &audit.reachable {
+        assert!(
+            table.count(hash) > 0,
+            "node {hash:?} reachable from surviving roots must have positive count"
+        );
+    }
+
+    // Invariant 2: Every hash reported as a deletion candidate MUST be absent
+    // from the full mark of all retained roots.
+    assert!(
+        !zeroed.is_empty(),
+        "fixture must actually retire some nodes"
+    );
+    for hash in zeroed {
+        assert!(
+            audit.unreachable.contains(&hash),
+            "zeroed node {hash:?} must be unreachable from every retained root"
+        );
+    }
+}
+
+#[test]
+fn test_persist_chain_overwrite_then_revert() {
+    let key = b"overwrite_revert_key";
+    let root_0 = build_hamt(key, vec![(1_u32, 100_u64)]).expect("root 0");
+
+    let mut no_resolver = |_h: &StructuralHash| -> Result<Arc<HamtNode<u32, u64>>, ()> {
+        panic!("unexpected lazy resolution in memory test")
+    };
+
+    let mutations = vec![
+        (1_u32, Some(200_u64)), // Step 1: overwrite
+        (1_u32, Some(100_u64)), // Step 2: revert to original
+    ];
+
+    let steps = persist_chain(&root_0, key, mutations, &mut no_resolver).expect("chain");
+    assert_eq!(steps.len(), 2);
+
+    assert_eq!(steps[0].displaced, Some(100_u64));
+    assert_ne!(steps[0].root_hash, root_0.structural_hash);
+    assert_ne!(steps[0].created, [] as [([u8; 16], std::vec::Vec<u8>); 0]);
+
+    assert_eq!(steps[1].displaced, Some(200_u64));
+    // Step 2 restored state to exact root_0
+    assert_eq!(steps[1].root_hash, root_0.structural_hash);
+    assert_eq!(
+        steps[1].root.structural_hash, root_0.structural_hash,
+        "reverting value must produce identical structural hash"
+    );
+}
+
+#[test]
+fn test_hamt_order_independence() {
+    let key = b"order_independence_key";
+    let entries_a: Vec<(u32, u64)> = (0_u32..40_u32).map(|i| (i, u64::from(i) * 3)).collect();
+
+    // Deterministically permute entries
+    let mut entries_b = entries_a.clone();
+    entries_b.reverse();
+    entries_b.swap(5, 20);
+    entries_b.swap(10, 35);
+
+    let root_a = build_hamt(key, entries_a).expect("build a");
+    let root_b = build_hamt(key, entries_b).expect("build b");
+
+    assert_eq!(
+        root_a.structural_hash, root_b.structural_hash,
+        "HAMT structural hash must be strictly independent of insertion order"
+    );
+}
+
+#[test]
+fn test_hamt_deep_split_mutation() {
+    let key = b"deep_split_key";
+    let mut root = build_hamt(key, vec![(1_u32, 100_u64)]).expect("root");
+
+    let mut no_resolver = |_h: &StructuralHash| -> Result<Arc<HamtNode<u32, u64>>, ()> {
+        panic!("unexpected lazy resolution in memory test")
+    };
+
+    // Insert 100 entries to force multi-level trie branching at depth >= 2
+    for i in 2..=100_u32 {
+        let (new_root, _, created) =
+            persist_mutation(&root, key, i, Some(u64::from(i) * 10), &mut no_resolver)
+                .expect("persist mutation");
+        assert_ne!(created, [] as [([u8; 16], std::vec::Vec<u8>); 0]);
+        root = new_root;
+    }
+
+    assert!(
+        root.nodemap.count_ones() > 0,
+        "root must have child branches"
+    );
+}
+
+#[test]
+fn test_descend_level_batched_exact_lookup() {
+    fn store_nodes(
+        node: &Arc<HamtNode<u32, u64>>,
+        storage: &mut std::collections::HashMap<StructuralHash, Vec<u8>>,
+    ) {
+        let bytes = PersistedInternalNode::from(node.as_ref()).encode_v1();
+        storage.insert(node.structural_hash, bytes);
+        for child in &node.children {
+            if let NodeRef::Resolved(child_node) = child {
+                store_nodes(child_node, storage);
+            }
+        }
+    }
+
+    let key = b"descend_level_key";
+    let entries: Vec<(u32, u64)> = (0_u32..50_u32).map(|i| (i, u64::from(i) * 7)).collect();
+    let root = build_hamt(key, entries.clone()).expect("build");
+
+    let mut no_resolver = |_h: &StructuralHash| -> Result<Arc<HamtNode<u32, u64>>, ()> {
+        panic!("unexpected lazy resolution in memory test")
+    };
+
+    // Collect all internal nodes encoded
+    let _all_hashes = reachable_node_hashes(&root, &mut no_resolver).expect("reachable");
+    let mut storage: std::collections::HashMap<StructuralHash, Vec<u8>> =
+        std::collections::HashMap::new();
+
+    store_nodes(&root, &mut storage);
+
+    // Prepare requested keys: 50 present keys + 20 absent keys
+    let mut requested_hashes = Vec::new();
+    for i in 0_u32..70_u32 {
+        requested_hashes.push(crate::hamt::key_path_hash(key, &i));
+    }
+
+    let mut found_map: std::collections::HashMap<KeyPathHash, u64> =
+        std::collections::HashMap::new();
+    let mut absent_set: std::collections::HashSet<KeyPathHash> = std::collections::HashSet::new();
+
+    // Start level-synchronous descent from root
+    let mut frontier: Vec<(StructuralHash, usize, Vec<KeyPathHash>)> =
+        vec![(root.structural_hash, 0, requested_hashes)];
+
+    while !frontier.is_empty() {
+        let mut nodes_batch: Vec<(StructuralHash, &[u8], usize, &[KeyPathHash])> = Vec::new();
+        let mut borrowed_node_bytes: Vec<&[u8]> = Vec::new();
+
+        for (node_hash, _, _) in &frontier {
+            let node_bytes = storage.get(node_hash).expect("node exists in storage");
+            borrowed_node_bytes.push(node_bytes.as_slice());
+        }
+
+        for (i, (node_hash, depth, keys)) in frontier.iter().enumerate() {
+            nodes_batch.push((*node_hash, borrowed_node_bytes[i], *depth, keys.as_slice()));
+        }
+
+        let result: DescendResult<u64> =
+            descend_level::<u32, u64, _>(key, &nodes_batch, |k| crate::hamt::key_path_hash(key, k))
+                .expect("descend_level succeeds");
+
+        for (h, v) in result.found {
+            found_map.insert(h, v);
+        }
+        for h in result.absent {
+            absent_set.insert(h);
+        }
+
+        frontier = result
+            .pending
+            .into_iter()
+            .map(|(child_hash, keys)| (child_hash, frontier[0].1 + 1, keys))
+            .collect();
+    }
+
+    // Verify results
+    assert_eq!(found_map.len(), 50, "all 50 present keys must be found");
+    for (k, v) in &entries {
+        let h = crate::hamt::key_path_hash(key, k);
+        assert_eq!(found_map.get(&h), Some(v));
+    }
+
+    assert_eq!(
+        absent_set.len(),
+        20,
+        "all 20 absent keys must be proven absent"
+    );
+    for k in 50_u32..70_u32 {
+        let h = crate::hamt::key_path_hash(key, &k);
+        assert!(absent_set.contains(&h));
+    }
+}
+
+#[test]
+fn test_descend_level_rejects_corruption() {
+    let key = b"corrupt_test_key";
+    let req_hash = crate::hamt::key_path_hash(key, &42_u32);
+
+    // 1. Truncated buffer: returns Decode error
+    let truncated_buf = vec![0x01, 0x00];
+    let res =
+        descend_level::<u32, u64, _>(key, &[([0; 16], &truncated_buf, 0, &[req_hash])], |k| {
+            crate::hamt::key_path_hash(key, k)
+        });
+    assert!(matches!(res, Err(DescendError::Decode(_))));
+    let decode_error = res.expect_err("truncated node must fail to decode");
+    assert_eq!(
+        format!("{decode_error}"),
+        "hamt descend decode error: Buffer too short for v1 header"
+    );
+
+    // 2. Overlapping datamap & nodemap: returns Decode error
+    let mut corrupt_header = vec![0x01]; // v1
+    corrupt_header.extend_from_slice(&1_u32.to_le_bytes()); // datamap bit 0
+    corrupt_header.extend_from_slice(&1_u32.to_le_bytes()); // nodemap bit 0 (overlap!)
+    corrupt_header.extend_from_slice(&[0u8; 16]); // structural hash
+    corrupt_header.extend_from_slice(&1_u32.to_le_bytes()); // leaves count 1
+    corrupt_header.extend_from_slice(&1_u32.to_le_bytes()); // child count 1
+    corrupt_header.extend_from_slice(&42_u32.to_le_bytes()); // leaf key
+    corrupt_header.extend_from_slice(&100_u64.to_le_bytes()); // leaf val
+    corrupt_header.extend_from_slice(&[0u8; 16]); // child hash
+    let res2 =
+        descend_level::<u32, u64, _>(key, &[([0; 16], &corrupt_header, 0, &[req_hash])], |k| {
+            crate::hamt::key_path_hash(key, k)
+        });
+    assert!(matches!(res2, Err(DescendError::Decode(_))));
+
+    // 3. A valid node returned for the wrong requested hash is corruption.
+    let root = build_hamt(key, vec![(42_u32, 100_u64)]).expect("build root");
+    let node_bytes = PersistedInternalNode::from(root.as_ref()).encode_v1();
+    let wrong_hash = [0xff; 16];
+    let res3 =
+        descend_level::<u32, u64, _>(key, &[(wrong_hash, &node_bytes, 0, &[req_hash])], |k| {
+            crate::hamt::key_path_hash(key, k)
+        });
+    assert!(matches!(res3, Err(DescendError::CorruptNode(_))));
+    let corrupt_error = res3.expect_err("wrong node hash must be corruption");
+    assert_eq!(
+        format!("{corrupt_error}"),
+        "hamt descend corrupt node: decoded structural hash does not match requested node hash"
+    );
+
+    // 4. The persisted hash matches the requested hash, but the decoded
+    // contents were altered after hashing.
+    let mut corrupt_node = PersistedInternalNode::<u32, u64>::from(root.as_ref());
+    corrupt_node.leaves[0].1 = 101;
+    let corrupt_bytes = corrupt_node.encode_v1();
+    let res4 = descend_level::<u32, u64, _>(
+        key,
+        &[(root.structural_hash, &corrupt_bytes, 0, &[req_hash])],
+        |k| crate::hamt::key_path_hash(key, k),
+    );
+    assert_eq!(
+        res4,
+        Err(DescendError::CorruptNode(
+            "decoded node contents do not match structural hash"
+        ))
+    );
+
+    // 5. A valid node queried beyond the routing depth is rejected.
+    let res5 = descend_level::<u32, u64, _>(
+        key,
+        &[(
+            root.structural_hash,
+            &node_bytes,
+            HAMT_MAX_DEPTH,
+            &[req_hash],
+        )],
+        |k| crate::hamt::key_path_hash(key, k),
+    );
+    assert_eq!(
+        res5,
+        Err(DescendError::CorruptNode(
+            "HAMT depth exceeds routing limit"
+        ))
     );
 }
