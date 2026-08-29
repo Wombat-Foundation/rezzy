@@ -5529,3 +5529,63 @@ fn test_msc4242_prev_state_events_limit_in_check_auth() {
         Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("prev_state_events exceeds maximum allowed length of 20")
     ));
 }
+
+/// Rules 2.1–2.4 (`auth_events` selection/whitelist) must not run against
+/// `LeanEvent` under V2.2: `DagNode::prev_state_events` aliases the same
+/// `auth_events` storage (MSC4242 has no separate field on `LeanEvent`), so
+/// `event.auth_events()` under V2.2 is really the wire-level
+/// `prev_state_events` list — up to 20 entries of arbitrary state-event
+/// types. Before the version gate, `check_auth_with_context` misapplied the
+/// classic `auth_events` selection algorithm to that list (10-entry citation
+/// count, `VALID_AUTH_TYPES` whitelist), incorrectly rejecting valid State
+/// DAG events. See cubic PR review on `src/basespec/rezzy_types.rs:1104`.
+#[test]
+fn test_v2_2_auth_context_skips_auth_events_selection_rules() {
+    let mut provider: rezzy::HashMap<String, LeanEvent> = rezzy::HashMap::new();
+    // 15 non-whitelisted-type "auth_events" entries: more than the classic
+    // 10-citation cap and none in VALID_AUTH_TYPES, which the pre-fix code
+    // path would have rejected on both counts.
+    let prev_state: Vec<String> = (0..15)
+        .map(|i| {
+            let id = format!("$state{i}:example.com");
+            provider.insert(
+                id.clone(),
+                make_event(
+                    &id,
+                    "m.room.topic",
+                    Some(""),
+                    "@admin:example.com",
+                    json!({}),
+                ),
+            );
+            id
+        })
+        .collect();
+
+    let create = make_event(
+        "$create:example.com",
+        M_ROOM_CREATE,
+        Some(""),
+        "@admin:example.com",
+        json!({"room_version": "org.matrix.msc4242.12"}),
+    );
+    let mut state = RoomState::new();
+    state.insert((M_ROOM_CREATE.to_string(), String::new()), create);
+
+    let event = LeanEvent {
+        event_id: "$msg:example.com".to_string(),
+        event_type: "m.room.message".into(),
+        sender: "@admin:example.com".into(),
+        auth_events: prev_state,
+        content: json!({}),
+        ..Default::default()
+    };
+
+    let result =
+        check_auth_with_context(&event, &state, StateResVersion::V2_2, None, Some(&provider));
+    assert!(
+        result.is_ok(),
+        "V2.2 auth_context checks must not validate prev_state_events against the \
+         classic auth_events selection algorithm: {result:?}"
+    );
+}

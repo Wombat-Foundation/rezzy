@@ -297,7 +297,50 @@ where
             return Ok(12);
         }
     }
-    Ok(1) // V1 rooms didn't have a room_version field
+    // V1 rooms didn't have a room_version field, so an absent (or
+    // unparsable, non-v2.1+ label) value is spec-legal -- but it's rare
+    // enough in practice that it's worth flagging loudly rather than
+    // silently defaulting.
+    #[cfg(feature = "std")]
+    std::eprintln!(
+        "REZZY_WARN: get_room_version_num: no usable content.room_version on m.room.create {:?} -- defaulting to 1",
+        create.event_id()
+    );
+    Ok(1)
+}
+
+/// Reads `content.room_version` off the room's `m.room.create` event, as a
+/// raw string, for the version-string-keyed rules below (Rules 4, 11, 2.2)
+/// that must branch on the literal spec label rather than the collapsed
+/// [`StateResVersion`] enum.
+///
+/// Defaults to `"1"` when the create event is missing or its
+/// `content.room_version` is absent -- both spec-legal (real v1 rooms never
+/// had the field), but rare enough in live traffic that a silent default is
+/// worth flagging loudly rather than passing through unnoticed. `rule` names
+/// the calling rule for the warning.
+fn room_version_str_or_warn<'s, Id, C, E, S>(state: &'s S, rule: &str) -> &'s str
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent + 's,
+    E: EventLike<Id = Id, Content = C> + 's,
+    S: StateProvider<Id, C, E>,
+{
+    let create = state.get_event(M_ROOM_CREATE, "");
+    if let Some(v) = create.and_then(|create_ev| create_ev.content().get_room_version()) {
+        v
+    } else {
+        #[cfg(feature = "std")]
+        std::eprintln!(
+            "REZZY_WARN: {rule}: {} -- defaulting room_version to \"1\"",
+            if create.is_none() {
+                "no m.room.create in state"
+            } else {
+                "m.room.create has no content.room_version"
+            }
+        );
+        "1"
+    }
 }
 
 fn reject_if_flagged_auth_state<
@@ -547,10 +590,7 @@ pub fn check_auth_with_context<
     // gating on `version == StateResVersion::V1` would only ever match real
     // room version "1" and silently skip versions 2-5.
     if event_type == crate::basespec::event_types::M_ROOM_ALIASES {
-        let room_version = state
-            .get_event(M_ROOM_CREATE, "")
-            .and_then(|create_ev| create_ev.content().get_room_version())
-            .unwrap_or("1");
+        let room_version = room_version_str_or_warn(state, "Rule 4 (m.room.aliases)");
         if matches!(room_version, "1" | "2" | "3" | "4" | "5") {
             let Some(state_key) = event.state_key() else {
                 return Err(AuthError::InvalidSyntax(
@@ -573,10 +613,7 @@ pub fn check_auth_with_context<
     // Rule 4 above, from the m.room.create event's content, not the
     // collapsed `StateResVersion` enum.
     if event_type == M_ROOM_REDACTION {
-        let room_version = state
-            .get_event(M_ROOM_CREATE, "")
-            .and_then(|create_ev| create_ev.content().get_room_version())
-            .unwrap_or("1");
+        let room_version = room_version_str_or_warn(state, "Rule 11 (m.room.redaction)");
         if matches!(room_version, "1" | "2") {
             let sender_pl = user::get_sender_power_level(event.sender(), state, version);
             let redact_pl = get_redact_power_level(state);
@@ -595,7 +632,20 @@ pub fn check_auth_with_context<
     }
 
     // Rules 2.1, 2.2, 2.3, 2.4 checks via auth_context
-    if let Some(provider) = auth_context {
+    //
+    // MSC4242 (V2.2) does not apply here: `LeanEvent` has no separate
+    // `prev_state_events` storage, so `DagNode::prev_state_events` aliases
+    // `auth_events` (see its impl above) and `event.auth_events()` returns
+    // that same shared field. Running this block against it would validate
+    // the wire-level `prev_state_events` list — up to `MAX_PREV_STATE_EVENTS`
+    // (20) entries of arbitrary state-event types — against the classic
+    // auth_events selection algorithm (`VALID_AUTH_TYPES` whitelist,
+    // `required_auth_types_for`), incorrectly rejecting valid State DAG
+    // events. MSC4242's own auth-relevant checks live in
+    // `validate_msc4242_prev_state_events` (`src/state/dag.rs`), which
+    // operates on `prev_state_events()` directly rather than through this
+    // legacy citation-selection path.
+    if let Some(provider) = auth_context.filter(|_| version != StateResVersion::V2_2) {
         const VALID_AUTH_TYPES: &[&str] = &[
             M_ROOM_CREATE,
             M_ROOM_MEMBER,
@@ -671,10 +721,7 @@ pub fn check_auth_with_context<
         // The selection is room-version-aware (the v8+ restricted-join
         // authorising member), so read the actual version from the create
         // event rather than the collapsed `StateResVersion` enum.
-        let room_version = state
-            .get_event(M_ROOM_CREATE, "")
-            .and_then(|create_ev| create_ev.content().get_room_version())
-            .unwrap_or("1");
+        let room_version = room_version_str_or_warn(state, "Rule 2.2 (auth_events selection)");
         for (req_type, req_key) in required_auth_types_for(event, event_type, version, room_version)
         {
             if state.get_event(req_type, req_key).is_none() {
