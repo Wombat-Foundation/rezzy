@@ -1,3 +1,5 @@
+//! SIMD-accelerated GF(2^64) polynomial evaluation for minisketch reconciliation.
+
 #![allow(unsafe_code)]
 
 #[cfg(all(target_arch = "x86_64", has_avx512_support))]
@@ -182,23 +184,90 @@ pub enum EvaluatorBackend {
 }
 
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
-pub fn get_evaluator() -> EvaluatorBackend {
-    use std::sync::OnceLock;
-    static BACKEND: OnceLock<EvaluatorBackend> = OnceLock::new();
-    *BACKEND.get_or_init(get_evaluator_internal)
+static BACKEND: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+fn get_evaluator_with_cache(cache: &core::sync::atomic::AtomicU8) -> EvaluatorBackend {
+    use core::sync::atomic::Ordering;
+
+    let val = cache.load(Ordering::Relaxed);
+    if val != 0 {
+        return cached_evaluator(val, EvaluatorBackend::Scalar);
+    }
+
+    let backend = get_evaluator_internal();
+    let encoded = encode_backend(backend);
+    // Only the thread that wins initialization emits the diagnostic. Other
+    // concurrent callers use the winner's cached backend and must not repeat
+    // the scalar warning.
+    if cache
+        .compare_exchange(0, encoded, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        let cached = cache.load(Ordering::Acquire);
+        return cached_evaluator(cached, backend);
+    }
+    warn_if_scalar(backend);
+    backend
 }
 
-#[cfg(all(feature = "std", not(target_arch = "x86_64")))]
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+#[must_use]
 pub fn get_evaluator() -> EvaluatorBackend {
-    EvaluatorBackend::Scalar
+    get_evaluator_with_cache(&BACKEND)
 }
 
-#[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
-pub fn get_evaluator() -> EvaluatorBackend {
-    EvaluatorBackend::Scalar
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+fn cached_evaluator(cached: u8, fallback: EvaluatorBackend) -> EvaluatorBackend {
+    match cached {
+        1 => EvaluatorBackend::Scalar,
+        2 => EvaluatorBackend::Sse,
+        #[cfg(has_avx512_support)]
+        3 => EvaluatorBackend::Avx512,
+        _ => fallback,
+    }
 }
 
-#[cfg(all(not(feature = "std"), not(target_arch = "x86_64")))]
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+fn encode_backend(backend: EvaluatorBackend) -> u8 {
+    match backend {
+        EvaluatorBackend::Scalar => 1,
+        EvaluatorBackend::Sse => 2,
+        #[cfg(has_avx512_support)]
+        EvaluatorBackend::Avx512 => 3,
+    }
+}
+
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+const SCALAR_EVALUATOR_WARNING: &str =
+    "rezzy: WARN: GF64 non-SIMD (scalar) evaluator in use; PCLMULQDQ/AVX-512 not detected on this CPU";
+
+#[cfg(all(feature = "std", target_arch = "x86_64", test))]
+fn write_scalar_evaluator_warning<W: core::fmt::Write>(out: &mut W) {
+    let _ = out.write_str(SCALAR_EVALUATOR_WARNING);
+}
+
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+fn warn_scalar_evaluator() {
+    std::eprintln!("{SCALAR_EVALUATOR_WARNING}");
+}
+
+#[cfg(all(feature = "std", target_arch = "x86_64", test))]
+fn warn_if_scalar_to<W: core::fmt::Write>(backend: EvaluatorBackend, out: &mut W) {
+    if matches!(backend, EvaluatorBackend::Scalar) {
+        write_scalar_evaluator_warning(out);
+    }
+}
+
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+fn warn_if_scalar(backend: EvaluatorBackend) {
+    if matches!(backend, EvaluatorBackend::Scalar) {
+        warn_scalar_evaluator();
+    }
+}
+
+#[cfg(any(not(feature = "std"), not(target_arch = "x86_64")))]
+#[must_use]
 pub fn get_evaluator() -> EvaluatorBackend {
     EvaluatorBackend::Scalar
 }
@@ -222,7 +291,7 @@ fn get_evaluator_features() -> (bool, bool) {
     (has_avx512, has_pclmul)
 }
 
-#[cfg(all(target_arch = "x86_64", has_avx512_support))]
+#[cfg(all(feature = "std", target_arch = "x86_64", has_avx512_support))]
 fn select_evaluator_backend(has_avx512: bool, has_pclmul: bool) -> EvaluatorBackend {
     if has_avx512 {
         EvaluatorBackend::Avx512
@@ -233,7 +302,7 @@ fn select_evaluator_backend(has_avx512: bool, has_pclmul: bool) -> EvaluatorBack
     }
 }
 
-#[cfg(all(target_arch = "x86_64", not(has_avx512_support)))]
+#[cfg(all(feature = "std", target_arch = "x86_64", not(has_avx512_support)))]
 fn select_evaluator_backend(_has_avx512: bool, has_pclmul: bool) -> EvaluatorBackend {
     if has_pclmul {
         EvaluatorBackend::Sse
@@ -242,19 +311,14 @@ fn select_evaluator_backend(_has_avx512: bool, has_pclmul: bool) -> EvaluatorBac
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-fn select_evaluator_backend(_has_avx512: bool, _has_pclmul: bool) -> EvaluatorBackend {
-    EvaluatorBackend::Scalar
-}
-
 #[cfg(test)]
 #[cfg(not(tarpaulin_include))]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use alloc::vec::Vec;
+    use alloc::{string::String, vec::Vec};
 
-    #[cfg(any(not(target_arch = "x86_64"), not(has_avx512_support)))]
+    #[cfg(all(target_arch = "x86_64", not(has_avx512_support)))]
     #[test]
     fn select_evaluator_backend_prefers_sse_then_scalar() {
         assert_eq!(select_evaluator_backend(true, true), EvaluatorBackend::Sse);
@@ -281,6 +345,7 @@ mod tests {
 
     #[test]
     fn test_evaluators_match_scalar() {
+        let _ = get_evaluator();
         let term = 0x8000_0000_0000_0000;
         let source: Vec<u64> = (0..20_u64).map(|i| i * 0x0123_4567_89ab_cdef).collect();
         let mut expected = alloc::vec![0u64; 20];
@@ -306,6 +371,76 @@ mod tests {
                 assert_eq!(target_avx, expected, "Avx512Evaluator results mismatch");
             }
         }
+    }
+
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    #[test]
+    fn cached_backend_values_decode_with_the_requested_fallback() {
+        assert_eq!(
+            cached_evaluator(1, EvaluatorBackend::Sse),
+            EvaluatorBackend::Scalar
+        );
+        assert_eq!(
+            cached_evaluator(2, EvaluatorBackend::Scalar),
+            EvaluatorBackend::Sse
+        );
+        assert_eq!(
+            cached_evaluator(255, EvaluatorBackend::Sse),
+            EvaluatorBackend::Sse
+        );
+        #[cfg(has_avx512_support)]
+        assert_eq!(
+            cached_evaluator(3, EvaluatorBackend::Scalar),
+            EvaluatorBackend::Avx512
+        );
+    }
+
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    #[test]
+    fn evaluator_backends_encode_to_cache_values() {
+        assert_eq!(encode_backend(EvaluatorBackend::Scalar), 1);
+        assert_eq!(encode_backend(EvaluatorBackend::Sse), 2);
+        #[cfg(has_avx512_support)]
+        assert_eq!(encode_backend(EvaluatorBackend::Avx512), 3);
+    }
+
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    #[test]
+    fn scalar_backend_warning_is_emitted() {
+        let mut warning = String::new();
+        warn_if_scalar_to(EvaluatorBackend::Scalar, &mut warning);
+        assert_eq!(warning, SCALAR_EVALUATOR_WARNING);
+        warning.clear();
+        warn_if_scalar_to(EvaluatorBackend::Sse, &mut warning);
+        assert_eq!(warning, "");
+    }
+
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    #[test]
+    fn warning_writer_matches_the_real_scalar_warning() {
+        warn_scalar_evaluator();
+    }
+
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    #[test]
+    fn concurrent_initialization_uses_the_acquire_cached_backend() {
+        use std::sync::Barrier;
+
+        let test_cache = core::sync::atomic::AtomicU8::new(0);
+        let cache_ref = &test_cache;
+        let barrier = std::sync::Arc::new(Barrier::new(16));
+        std::thread::scope(|scope| {
+            for _ in 0..15 {
+                let barrier = std::sync::Arc::clone(&barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    let _ = get_evaluator_with_cache(cache_ref);
+                });
+            }
+            barrier.wait();
+            let _ = get_evaluator_with_cache(cache_ref);
+        });
+        assert_ne!(test_cache.load(core::sync::atomic::Ordering::Acquire), 0);
     }
 
     /// Regression test for a missing second-order field reduction in

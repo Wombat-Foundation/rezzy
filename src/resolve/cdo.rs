@@ -12,47 +12,66 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Causal Domination Operator (CDO) — vectorized pre-filter for conflicted events.
+//! Causal Domination Operator (CDO) — vectorized conflicted-event filter.
+//! **Retired from the live path and retained as design history.**
 //!
-//! The CDO is a V2.1.1 optimization that runs *before* the main resolution
-//! algorithm. It identifies conflicted events that are **causally dominated**
-//! by a higher-priority administrative action (ban, kick, PL demotion, or
-//! join-rules lockdown) and removes them from the conflicted set entirely.
+//! This module is no longer called by resolution: the V2.1.1 pre-filter was
+//! removed from `prepare_conflicted_and_keys` (see the soundness note there)
+//! because it was unsound. It is kept here, with its tests, as the record of
+//! what was tried and why it failed, and as a reference for the replacement
+//! (a resolved-state screening pass that *applies* auth predicates instead of
+//! approximating domination).
 //!
-//! An event is "causally dominated" if:
-//! 1. A higher-priority admin action *restricts* it (see [`LeanEvent::restricts_event`]).
-//! 2. The admin action is **not** an ancestor or descendant of the event
-//!    (i.e. they are on independent causal branches).
+//! ## What the CDO was
 //!
-//! ## Implementation
+//! A V2.1.1 optimization that ran *before* the main resolution algorithm. It
+//! identified conflicted events **causally dominated** by a higher-priority
+//! administrative action (ban, kick, PL demotion, or join-rules lockdown) and
+//! removed them from the conflicted set. An event was "causally dominated" if
+//! a higher-priority admin action *restricted* it (see
+//! [`LeanEvent::restricts_event`]) and was **not** an ancestor or descendant
+//! of it (independent causal branches). Ancestor/descendant relationships were
+//! computed via SWAR bitmask sweeps over a topologically-sorted event array.
 //!
-//! Ancestor/descendant relationships are computed via SWAR (SIMD-within-a-register)
-//! bitmask sweeps over a topologically-sorted event array. The chunk size is
-//! auto-selected at compile time: 512 bits on AVX-512, 256 bits otherwise.
+//! ## Why it is unsound
 //!
-//! ## Soundness: domination must never diverge from full resolution
+//! **A drop is sound iff `IterativeAuthChecks` would have rejected the event.**
+//! The CDO ran pre-auth, before `resolved` held the authoritative power state,
+//! so it could never establish that. Three independent violations were found,
+//! each by an adversarial fixture rather than by reasoning:
+//! - **Dominator-validity (the decisive one):** the CDO trusted a dominator's
+//!   *structural* shape (ban/kick/lockdown/demotion) without verifying the
+//!   dominator itself passes auth. An auth-invalid, low-power user's forged
+//!   ban erases a legitimate membership on CDO-running servers while non-CDO
+//!   (Synapse) servers keep it — a permanent federation fork. This falsifies
+//!   the earlier claim (below) that `is_ban_or_kick` domination "did not
+//!   reproduce a divergence." Reachable across all three admin classes; see
+//!   `cdo_dominator_validity_gap_scope_inverted` in the differential harness.
+//! - **Join-rules lockdown:** `is_lockdown()` fired on independent branches
+//!   without checking the target was actually unauthorized (mitigated for a
+//!   target that cites prior authorization, but bypassable).
+//! - **Transitive propagation:** an event dropped via a dropped dominator
+//!   cascaded drops transitively (fixed, then the whole filter retired).
+//! - **Forgeable priority:** `sort_cdo_events` ordered dominators by the
+//!   author-supplied `event.power_level` (see the note on that function),
+//!   never validated against auth — a second, independent trust-of-input hole,
+//!   the same class the resolver refuses to tolerate for `depth`.
 //!
-//! An independent-branch admin action must never dominate a target event
-//! that already carries its own, separate authorization for the state the
-//! admin action would otherwise contest. The join-authorization fix and the
-//! sender power-level fix both cover cases where the
-//! `restricts_event`/`restricts_sender` structural check fired without
-//! verifying the target was actually unauthorized. Two related classes of
-//! this were audited and found *not* to need a fix:
-//! - **`is_ban_or_kick()` domination**: unlike `is_lockdown()`/`is_demotion()`,
-//!   its structural check (`state_key == sender`) is already exact, not a
-//!   coarse over-approximation, so it did not reproduce a divergence from
-//!   full V2.1 resolution in the topology tested (see
-//!   `test_cdo_ban_domination_benign_convergence` in `tests/test_critique.rs`).
-//! - **Restricted/knock-restricted `join_rules`**: `is_lockdown()` only fires
-//!   for `join_rule == "invite"`, so those never enter `admin_actions` at
-//!   all and always fall through to full resolution, which already models
-//!   `join_authorised_via_users_server` correctly.
+//! ## What the replacement must be
+//!
+//! Not "the CDO moved later." Once `resolved` holds authoritative
+//! `power_levels`/`join_rules`/`bans`, the sound predicate is the auth rule itself
+//! ("is this sender banned / under-powered in `resolved`?"), applied directly
+//! as an O(N) screening pass over remaining candidates — not a domination test.
+//! Concurrency-implies-domination was the unsound core; it does not come back
+//! post-power-phase, it stops being needed. The replacement must also check
+//! what phase-2 (non-power) acceptance can still mutate that another event's
+//! auth reads, and must not change mainline ordering of the surviving set.
 
 use crate::basespec::event_types::{
-    MEM_BAN, MEM_INVITE, MEM_JOIN, MEM_LEAVE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
+    MEM_INVITE, MEM_JOIN, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
 };
-use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
+use crate::basespec::rezzy_types::LeanEvent;
 use crate::HashMap;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
@@ -108,12 +127,12 @@ where
     false
 }
 
-#[cfg(target_feature = "avx512f")]
 /// Number of `u64` words per bitmask chunk (8 × 64 = 512 bits on AVX-512).
+#[cfg(target_feature = "avx512f")]
 const WORDS_PER_CHUNK: usize = 8;
 
-#[cfg(not(target_feature = "avx512f"))]
 /// Number of `u64` words per bitmask chunk (4 × 64 = 256 bits on AVX2/NEON).
+#[cfg(not(target_feature = "avx512f"))]
 const WORDS_PER_CHUNK: usize = 4;
 
 fn compute_cdo_bit_masks_chunk<Id, C, S: core::hash::BuildHasher, K>(
@@ -166,6 +185,14 @@ fn compute_cdo_bit_masks_chunk<Id, C, S: core::hash::BuildHasher, K>(
 fn sort_cdo_events<'a, Id: Ord + Clone, C: Clone, K>(
     events: &[&'a LeanEvent<Id, C, K>],
 ) -> Vec<&'a LeanEvent<Id, C, K>> {
+    // Trusts the author-supplied `event.power_level` (cdo.rs) rather than the
+    // auth-derived sender level the resolver uses via `SortPriority.power_level`
+    // (rezzy_types.rs). This field is never populated from auth before the
+    // filter runs (see prepare_conflicted_and_keys), so an attacker can forge a
+    // high `power_level` to hoist their structural admin event ahead of the
+    // victim's — a second, independent trust-of-input hole, the same class the
+    // Kahn sort below refuses to tolerate for `depth`. Retained as design
+    // history; the replacement must order by the auth-derived level.
     let mut sorted = events.to_vec();
     sorted.sort_by(|a, b| {
         let type_priority = |t: &str| match t {
@@ -199,6 +226,10 @@ struct AdjacencyStructures<'a, Id, C, K> {
     sorted_events: Vec<(usize, &'a LeanEvent<Id, C, K>)>,
     parents: Vec<Vec<usize>>,
     children: Vec<Vec<usize>>,
+    /// IDs appended after Kahn's algorithm failed to reach in-degree zero
+    /// (i.e. the input contained a cycle). These have no true topological
+    /// position, so the SWAR ancestor/descendant bitmasks are unreliable for
+    /// them; domination decisions must not be made from their ordering.
     unordered_ids: BTreeSet<Id>,
 }
 
@@ -277,7 +308,6 @@ where
         .collect();
     let mut sorted_ids: Vec<Id> = Vec::with_capacity(relevant_events.len());
     let mut included: BTreeSet<Id> = BTreeSet::new();
-    let mut unordered_ids: BTreeSet<Id> = BTreeSet::new();
     while let Some(id) = ready.iter().next().cloned() {
         ready.remove(&id);
         included.insert(id.clone());
@@ -297,6 +327,10 @@ where
     // referential integrity is somehow violated (e.g. a maliciously crafted
     // cycle) and some ids never reach in-degree zero, append them in a
     // deterministic order rather than silently dropping them from the sweep.
+    // Track them as `unordered_ids`: their array position is not a real
+    // topological order, so the domination sweeps must not draw conclusions
+    // from it (they treat them as neither dominator nor dominatee).
+    let mut unordered_ids = BTreeSet::new();
     if sorted_ids.len() < relevant_events.len() {
         let mut leftover: Vec<Id> = relevant_events
             .keys()
@@ -423,7 +457,7 @@ where
 }
 
 /// Returns `true` if `target_ev` cites, in its own `auth_events`, a
-/// `power_levels` event under which its sender had an effective PL above 0.
+/// `power_levels` event under which its sender was *not* at PL 0.
 ///
 /// `is_demotion()` treats *any* `m.room.power_levels` event as a demotion
 /// (it does not check whether anyone was actually demoted), so
@@ -431,125 +465,9 @@ where
 /// independent branch, regardless of whether the target's own authorization
 /// predates it. This mirrors `join_has_prior_authorization`: an independent
 /// branch's demotion must not retroactively invalidate an action the sender
-/// took while validly empowered under the cited power-level state, if that
-/// empowerment is what the action's own `auth_events` actually cite. See
+/// took while validly empowered, if that empowerment is what the action's
+/// own `auth_events` actually cite. See
 /// `test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action`.
-///
-/// Returns the power level required to send `target_ev` under the power-level
-/// event `pl_ev`, mirroring the auth engine's `get_required_power_level` rule:
-/// `m.room.member` events are exempt from the generic PL check (auth Rule 4),
-/// though ban/kick still need the ban/kick level; state events fall back to
-/// `state_default`, message events to `events_default`.
-fn required_power_level_for<Id, C, K>(
-    target_ev: &LeanEvent<Id, C, K>,
-    pl_ev: &LeanEvent<Id, C, K>,
-    current_membership: Option<&str>,
-) -> i64
-where
-    C: crate::basespec::rezzy_types::EventContent,
-    K: AsRef<str>,
-{
-    if target_ev.event_type.as_str() == M_ROOM_MEMBER {
-        // Mirror the auth engine's member-transition PL rules. Self
-        // transitions (join/leave/knock) need no PL; invite needs the invite
-        // level; ban needs the ban level; a leave of another user is either a
-        // kick (target joined, needs the kick level) or an unban (target
-        // currently banned, needs the ban level).
-        match target_ev.get_membership() {
-            Some(MEM_BAN) => pl_ev.get_ban().unwrap_or(50),
-            Some(MEM_INVITE) => pl_ev.get_invite().unwrap_or(0),
-            Some(MEM_LEAVE) if target_ev.is_ban_or_kick() => {
-                if current_membership == Some(MEM_BAN) {
-                    pl_ev.get_ban().unwrap_or(50)
-                } else {
-                    pl_ev.get_kick().unwrap_or(50)
-                }
-            }
-            _ => i64::MIN,
-        }
-    } else if target_ev.event_type.as_str()
-        == crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE
-    {
-        pl_ev.get_invite().unwrap_or(0)
-    } else if let Some(pl) = pl_ev.get_event_power_level(target_ev.event_type.as_str()) {
-        pl
-    } else if target_ev.state_key.is_some() {
-        pl_ev.get_state_default().unwrap_or(50)
-    } else {
-        pl_ev.get_events_default().unwrap_or(0)
-    }
-}
-
-/// Returns the target user's current membership, if a member event for them is
-/// present in the conflicted or auth context. Used to distinguish a kick (target
-/// joined) from an unban (target currently banned).
-fn target_current_membership<'a, Id, C, K, S1, S2>(
-    target_ev: &LeanEvent<Id, C, K>,
-    conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
-) -> Option<&'a str>
-where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent,
-    K: AsRef<str>,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
-{
-    let target = target_ev.state_key.as_ref()?.as_ref();
-    // Restrict the lookup to the target's own cited auth events so selection is
-    // deterministic: among multiple candidate membership events for the target,
-    // only the one the leave event is actually authorized against decides
-    // kick-vs-unban. A map-wide scan would be nondeterministic (HashMap order)
-    // and could flip the level between ban and kick.
-    target_ev.auth_events.iter().find_map(|aid| {
-        conflicted_events
-            .get(aid)
-            .or_else(|| auth_context.get(aid))
-            .filter(|ev| {
-                ev.event_type == M_ROOM_MEMBER
-                    && ev.state_key.as_ref().map(AsRef::as_ref) == Some(target)
-            })
-            .and_then(|ev| ev.get_membership())
-    })
-}
-
-/// Returns `true` if `create_ev` is reachable as an ancestor of `target_ev`
-/// through the `prev_events`/`auth_events` edges present in the conflicted and
-/// auth context.
-fn create_is_ancestor<Id, C, K, S1, S2>(
-    target_ev: &LeanEvent<Id, C, K>,
-    create_ev: &LeanEvent<Id, C, K>,
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
-) -> bool
-where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: Clone,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
-{
-    if target_ev.event_id == create_ev.event_id {
-        return true;
-    }
-    let mut stack = alloc::vec![target_ev.event_id.clone()];
-    let mut visited = BTreeSet::new();
-    visited.insert(target_ev.event_id.clone());
-    while let Some(id) = stack.pop() {
-        if id == create_ev.event_id {
-            return true;
-        }
-        if let Some(ev) = conflicted_events.get(&id).or_else(|| auth_context.get(&id)) {
-            for parent in ev.prev_events.iter().chain(ev.auth_events.iter()) {
-                if visited.insert(parent.clone()) {
-                    stack.push(parent.clone());
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Checks whether the sender was already empowered by the cited power-level state.
 fn sender_has_pre_demotion_pl<Id, C, K, S1, S2>(
     target_ev: &LeanEvent<Id, C, K>,
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
@@ -562,62 +480,25 @@ where
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 {
-    // For V12+ the spec removes `m.room.create` from `auth_events` (see
-    // spec_audit.md rule 2.4, V1-V11 only), so the create event must be found
-    // from the room/auth context rather than the target's own auth list.
-    // Prefer a create that is an ancestor of the target (the room's own
-    // create), falling back deterministically to the smallest event_id when the
-    // context is ambiguous, so creator authority never comes from an arbitrary
-    // branch.
-    let create_event = conflicted_events
-        .values()
-        .chain(auth_context.values())
-        .filter(|ev| ev.event_type == crate::basespec::event_types::M_ROOM_CREATE)
-        .min_by_key(|ev| {
-            (
-                core::cmp::Reverse(create_is_ancestor(
-                    target_ev,
-                    ev,
-                    conflicted_events,
-                    auth_context,
-                )),
-                &ev.event_id,
-            )
-        });
-
-    let target_membership = target_current_membership(target_ev, conflicted_events, auth_context);
-
     target_ev.auth_events.iter().any(|aid| {
         conflicted_events
             .get(aid)
             .or_else(|| auth_context.get(aid))
             .is_some_and(|ev| {
-                ev.event_type == M_ROOM_POWER_LEVELS && {
-                    let sender_pl = if create_event
-                        .and_then(|create_ev| {
-                            create_ev
-                                .get_room_version()
-                                .and_then(StateResVersion::from_room_version)
-                        })
-                        .is_some_and(|version| version.is_v2_1_plus())
-                        && (create_event.is_some_and(|create_ev| {
-                            create_ev.sender.as_str() == target_ev.sender.as_str()
-                                || create_ev.has_additional_creator(target_ev.sender.as_str())
-                        })) {
-                        i64::MAX
-                    } else {
-                        ev.get_user_power_level(target_ev.sender.as_str())
-                            .or_else(|| ev.get_users_default())
-                            .unwrap_or(0)
-                    };
-                    let required_pl = required_power_level_for(target_ev, ev, target_membership);
-                    sender_pl >= required_pl
+                if ev.event_type != M_ROOM_POWER_LEVELS {
+                    return false;
                 }
+                // Effective PL: explicit `users[sender]` wins; else
+                // `users_default`; else 0. Only a strictly-positive level
+                // counts as a pre-demotion grant -- an absent entry falls
+                // through to `users_default` (usually 0), not empowerment.
+                let explicit = ev.get_user_power_level(target_ev.sender.as_str());
+                let effective = explicit.or_else(|| ev.get_users_default()).unwrap_or(0);
+                effective > 0
             })
     })
 }
 
-/// Applies direct domination over the sorted conflicted events in chunked form.
 fn process_direct_domination_chunks<
     Id,
     C: crate::basespec::rezzy_types::EventContent + Clone,
@@ -661,26 +542,20 @@ where
         // Build a map of active admin actions in this chunk to their relative index within the chunk
         let mut chunk_admin_to_pos = HashMap::new();
         for (i, admin_id) in chunk.iter().enumerate() {
-            if !dropped_ids.contains(admin_id) {
+            if !dropped_ids.contains(admin_id) && !adj.unordered_ids.contains(admin_id) {
                 chunk_admin_to_pos.insert(admin_id, i);
             }
         }
 
         // Check for direct domination against all non-dropped events
         for event_id in &priority_ordered_ids {
-            if dropped_ids.contains(*event_id) {
-                continue;
-            }
-            if adj.unordered_ids.contains(*event_id) {
+            if dropped_ids.contains(*event_id) || adj.unordered_ids.contains(*event_id) {
                 continue;
             }
 
             if let Some(&ev_idx) = adj.id_to_idx.get(*event_id) {
                 for (&admin_id, &orig_idx) in &chunk_admin_to_pos {
                     if dropped_ids.contains(admin_id) {
-                        continue;
-                    }
-                    if adj.unordered_ids.contains(admin_id) {
                         continue;
                     }
                     // Only higher-priority admin actions (occurring earlier in the sorted list) can dominate
@@ -731,38 +606,6 @@ where
     dropped_ids
 }
 
-/// Transitively propagate dependencies to safely drop them.
-fn propagate_transitive_dependencies<Id, C: Clone, S1: core::hash::BuildHasher, K>(
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    mut dropped_ids: BTreeSet<Id>,
-) -> BTreeSet<Id>
-where
-    Id: crate::basespec::rezzy_types::EventId,
-{
-    let mut dependents: HashMap<Id, Vec<Id>> = HashMap::new();
-    for (id, event) in conflicted_events {
-        for auth_id in &event.auth_events {
-            dependents
-                .entry(auth_id.clone())
-                .or_default()
-                .push(id.clone());
-        }
-    }
-
-    let mut queue: Vec<Id> = dropped_ids.iter().cloned().collect();
-    while let Some(current_dropped) = queue.pop() {
-        if let Some(children) = dependents.get(&current_dropped) {
-            for child in children {
-                if !dropped_ids.contains(child) {
-                    dropped_ids.insert(child.clone());
-                    queue.push(child.clone());
-                }
-            }
-        }
-    }
-    dropped_ids
-}
-
 /// Cycle-0 Topological Filter: Vectorized Causal Domination Operator (CDO).
 ///
 /// Executes strictly on the conflicted state subgraph. Returns the **safe set**
@@ -775,7 +618,6 @@ where
 ///    and sort all events by priority.
 /// 3. **Chunk-process** — compute ancestor/descendant bitmasks in SWAR chunks
 ///    and mark dominated events.
-/// 4. **Propagate** — transitively drop any event whose auth dependency was dropped.
 // jscpd:ignore-start
 #[must_use]
 pub fn apply_cdo_filter<
@@ -797,12 +639,11 @@ where
     let prioritized = prioritize_events(conflicted_events);
     let dropped_ids =
         process_direct_domination_chunks(&adj, &prioritized, conflicted_events, auth_context);
-    let final_dropped_ids = propagate_transitive_dependencies(conflicted_events, dropped_ids);
 
-    // Return strictly the transitively safe set
+    // Return strictly the safe set
     let mut safe_set = HashMap::new();
     for (id, event) in conflicted_events {
-        if !final_dropped_ids.contains(id) {
+        if !dropped_ids.contains(id) {
             safe_set.insert(id.clone(), event.clone());
         }
     }

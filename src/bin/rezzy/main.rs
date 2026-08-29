@@ -70,6 +70,7 @@ pub struct Args {
 }
 
 /// Run the CLI application.
+#[allow(clippy::too_many_lines)]
 fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
     let input_val = load_or_fetch_input_value(args)?;
     let (raw_events, heads) = parse_and_extract_heads(&input_val)?;
@@ -139,6 +140,47 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
         );
     }
 
+    if !args.quiet {
+        // No external event store is available; every referenced-but-absent event is a gap.
+        let (backward, missing_auth) = utils::report_gaps(&events_map, |_| false);
+        let describe = |id: &str| -> String {
+            match events_map.get(id) {
+                Some(ev) => {
+                    format!("{} {} ts={}", ev.event_type, ev.sender, ev.origin_server_ts)
+                }
+                None => String::from("<?>"),
+            }
+        };
+        if !missing_auth.is_empty() {
+            eprintln!(
+                "[WARN] {} event(s) reference auth_events absent from local set (auth cannot be fully verified):",
+                missing_auth.len()
+            );
+            for gap in missing_auth.iter().take(20) {
+                eprintln!(
+                    "    {} ({}) -> missing auth {}",
+                    gap.event_id,
+                    describe(&gap.event_id),
+                    gap.missing_auth_events.join(", ")
+                );
+            }
+        }
+        if !backward.is_empty() {
+            eprintln!(
+                "[WARN] {} event(s) reference prev_events absent from local set (backfill/backward extremity):",
+                backward.len()
+            );
+            for gap in backward.iter().take(20) {
+                eprintln!(
+                    "    {} ({}) -> missing prev {}",
+                    gap.event_id,
+                    describe(&gap.event_id),
+                    gap.missing_prev_events.join(", ")
+                );
+            }
+        }
+    }
+
     let state_maps = compute_state_maps(&heads, &events_map, &raw_map);
 
     if version != rezzy::StateResVersion::V2_1 && version != rezzy::StateResVersion::V2_1_1 {
@@ -153,13 +195,19 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
     let resolved_state_list: Vec<String> = final_state_map.values().cloned().collect();
     let mut auth_chain_bitmap = roaring::RoaringBitmap::new();
     for id in &resolved_state_list {
-        if let Some(&idx) = auth_graph.id_to_index.get(id) {
+        if let Some(idx) = auth_graph.index.index_of(id) {
             auth_chain_bitmap |= &auth_graph.auth_bitmaps[idx as usize];
         }
     }
     let auth_chain_ids: Vec<String> = auth_chain_bitmap
         .into_iter()
-        .map(|idx| auth_graph.index_to_id[idx as usize].clone())
+        .map(|idx| {
+            auth_graph
+                .index
+                .item_at(idx as usize)
+                .cloned()
+                .expect("auth-chain index came from this graph")
+        })
         .collect();
 
     let ctx = FormattingContext {
@@ -171,6 +219,7 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
         resolved_state_list: &resolved_state_list,
         auth_chain_ids: &auth_chain_ids,
         version,
+        room_version: room_version.as_deref(),
         duration,
         event_count,
     };
