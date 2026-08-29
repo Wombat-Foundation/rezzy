@@ -2,6 +2,9 @@
 
 #![allow(unsafe_code)]
 
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+use std::io::Write as _;
+
 #[cfg(all(target_arch = "x86_64", has_avx512_support))]
 use core::arch::x86_64::{
     __m512i, _mm512_and_si512, _mm512_bsrli_epi128, _mm512_clmulepi64_epi128, _mm512_set_epi64,
@@ -249,7 +252,8 @@ fn write_scalar_evaluator_warning<W: core::fmt::Write>(out: &mut W) {
 
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 fn warn_scalar_evaluator() {
-    std::eprintln!("{SCALAR_EVALUATOR_WARNING}");
+    // Ignore stderr write errors — this is a diagnostic, not a correctness path.
+    let _ = writeln!(std::io::stderr(), "{SCALAR_EVALUATOR_WARNING}");
 }
 
 #[cfg(all(feature = "std", target_arch = "x86_64", test))]

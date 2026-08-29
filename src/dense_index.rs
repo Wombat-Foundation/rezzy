@@ -67,7 +67,8 @@ pub struct IndexTooLarge {
     /// The number of distinct items counted before construction stopped.
     /// When `allocation_failed` is false, this is the true total (which
     /// exceeds the bound). When `allocation_failed` is true, this is a
-    /// partial count — the builder stopped before scanning the whole input.
+    /// partial count — the builder stopped before scanning the whole input
+    /// (due to memory allocation failure or index width overflow).
     pub distinct_count: usize,
     /// True when construction stopped because memory allocation failed.
     /// In this case, `distinct_count` is a partial count, not the true total.
@@ -209,8 +210,12 @@ impl<T: Eq + Clone + core::hash::Hash, Idx: Copy + TryFrom<usize> + DenseIndexWi
                 });
             }
             let idx = Idx::try_from(items.len()).map_err(|_| IndexTooLarge {
+                // The count is partial: we stopped scanning at the index
+                // overflow, so there may be more distinct items in the
+                // remaining iterator.  allocation_failed=true signals this
+                // even though the cause is index width, not memory.
                 distinct_count: items.len(),
-                allocation_failed: false,
+                allocation_failed: true,
             })?;
             index_by_item.insert(item.clone(), idx);
             items.push(item);

@@ -1117,8 +1117,9 @@ pub(crate) fn get_redact_power_level<
 /// - the target's own sender may always redact their own event;
 /// - a sender whose power level is at least the `redact` level may redact
 ///   others' events;
-/// - room versions 1–2 additionally allow a redaction whose sender shares a
-///   domain with the target's sender (federation rule 11).
+/// - room versions 1–2 additionally allow a redaction whose `redacts` target
+///   event ID shares a domain with the redaction's own event ID (federation
+///   rule 11).
 fn redaction_is_authorized<Id, C, E, K>(
     redaction: &LeanEvent<Id, C, K>,
     target: &LeanEvent<Id, C, K>,
@@ -1948,10 +1949,17 @@ pub fn check_auth_chain<
     let mut accepted = Vec::new();
     let mut rejected = Vec::new();
 
-    let event_map: crate::HashMap<Id, LeanEvent<Id, C>> = sorted_events
+    let mut event_map: crate::HashMap<Id, LeanEvent<Id, C>> = sorted_events
         .iter()
         .map(|ev| (ev.event_id.clone(), ev.clone()))
         .collect();
+    // Include initial-state events so Rule 2.5 foreign-room checks cannot be
+    // bypassed by citing an auth event that lives only in initial_state.
+    for ev in initial_state.values() {
+        event_map
+            .entry(ev.event_id.clone())
+            .or_insert_with(|| ev.clone());
+    }
 
     let mut rejected_ids = crate::HashSet::new();
 

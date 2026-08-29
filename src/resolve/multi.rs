@@ -94,9 +94,9 @@ where
     // nested `HashMap` per `(event_type, state_key)` slot, zero `String`/`Id`
     // clones during the pass, and one hash lookup per `(key, id)` pair (no
     // double hashing). Conflict vectors are allocated only on actual
-    // disagreement. `foldhash` (hashbrown's default hasher) hashes the
-    // attacker-chosen state keys faster than SipHash while staying randomized
-    // enough for these internal-only maps.
+    // disagreement. `foldhash` (hashbrown's default hasher) uses a random seed
+    // per instance, preventing precomputed collision sets for these
+    // internal-only maps.
     let mut occurrences: FastMap<&'a (EventType, K), Occurrence<'a, Id>> = FastMap::default();
 
     for map in state_maps {

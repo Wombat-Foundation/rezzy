@@ -232,6 +232,18 @@ pub fn bitmap_node_reachability_audit<K, V, F, E>(
 where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
+    // Unreachable in practice: `IndexedUniverse::try_build` above already
+    // guarantees `universe.len()` fits `u32`. Local fn (not a closure) so
+    // `coverage(off)` — item-only — can mark it dead without hiding the
+    // reachable code around it.
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn universe_overflow<E>(universe: &IndexedUniverse) -> BitmapAuditError<E> {
+        BitmapAuditError::Universe(UniverseTooLarge {
+            distinct_count: universe.len(),
+            allocation_failed: false,
+        })
+    }
+
     let universe = IndexedUniverse::try_build(universe)?;
 
     let mut reachable = RoaringBitmap::new();
@@ -252,17 +264,6 @@ where
         .map_err(BitmapAuditError::Traversal)?;
     }
 
-    // Unreachable in practice: `IndexedUniverse::try_build` above already
-    // guarantees `universe.len()` fits `u32`. Local fn (not a closure) so
-    // `coverage(off)` — item-only — can mark it dead without hiding the
-    // reachable code around it.
-    #[cfg_attr(coverage_nightly, coverage(off))]
-    fn universe_overflow<E>(universe: &IndexedUniverse) -> BitmapAuditError<E> {
-        BitmapAuditError::Universe(UniverseTooLarge {
-            distinct_count: universe.len(),
-            allocation_failed: false,
-        })
-    }
     let universe_len = u32::try_from(universe.len()).map_err(|_| universe_overflow(&universe))?;
     // `unreachable` is the full index range minus `reachable`; build the full
     // range as a bitmap and subtract. `MultiOps::difference` reduces over many

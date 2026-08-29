@@ -1981,7 +1981,7 @@ impl<Id: serde::Serialize, C: serde::Serialize, K: AsRef<str>> serde::Serialize
         use serde::ser::SerializeStruct;
         // TODO: trait forces `Result` here, so `?` shows as dead coverage; see
         // docs/tech_debt.md for the refactor investigation.
-        let mut state = serializer.serialize_struct("LeanEvent", 13)?;
+        let mut state = serializer.serialize_struct("LeanEvent", 12)?;
         state.serialize_field(FIELD_EVENT_ID, &self.event_id)?;
         state.serialize_field(FIELD_TYPE, &self.event_type)?;
         if let Some(ref sk) = self.state_key {
@@ -1993,10 +1993,9 @@ impl<Id: serde::Serialize, C: serde::Serialize, K: AsRef<str>> serde::Serialize
         state.serialize_field(FIELD_CONTENT, &self.content)?;
         state.serialize_field(FIELD_PREV_EVENTS, &self.prev_events)?;
         state.serialize_field(FIELD_AUTH_EVENTS, &self.auth_events)?;
-        state.serialize_field(
-            crate::basespec::event_types::FIELD_PREV_STATE_EVENTS,
-            &self.auth_events,
-        )?;
+        // NOTE: `prev_state_events` is MSC4242-only (room v11+/v12). It must
+        // NOT be emitted here — the generic serializer is room-version-neutral.
+        // Room-version-specific serialization handles this field when needed.
         state.serialize_field(FIELD_DEPTH, &self.depth)?;
         state.serialize_field(FIELD_REJECTED, &self.rejected)?;
         state.serialize_field(FIELD_SOFT_FAIL, &self.soft_fail)?;
