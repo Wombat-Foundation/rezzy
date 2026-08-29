@@ -200,20 +200,6 @@ impl<E> From<HamtTraversalError<E>> for BitmapAuditError<E> {
     }
 }
 
-/// Builds the [`BitmapAuditError::Universe`] reported when `universe.len()`
-/// doesn't fit `u32`. Split out from [`bitmap_node_reachability_audit`] so
-/// this unreachable-in-practice path (see that function's `# Panics` note)
-/// can be excluded from coverage without hiding the reachable code around it.
-#[cfg(feature = "std")]
-#[cfg_attr(coverage_nightly, coverage(off))]
-#[cold]
-fn universe_len_overflow<E>(universe: &IndexedUniverse) -> BitmapAuditError<E> {
-    BitmapAuditError::Universe(UniverseTooLarge {
-        distinct_count: universe.len(),
-        allocation_failed: false,
-    })
-}
-
 /// Partitions `universe` into reachable/unreachable [`RoaringBitmap`]s over a
 /// freshly built [`IndexedUniverse`].
 ///
@@ -233,12 +219,10 @@ fn universe_len_overflow<E>(universe: &IndexedUniverse) -> BitmapAuditError<E> {
 ///
 /// # Panics
 /// Does not panic on any caller-controlled input — an oversized `universe`
-/// is reported as [`BitmapAuditError::Universe`], not a panic. This
-/// function's `universe_len_overflow` fallback re-derives `universe.len()`
-/// as a `u32` for bitmap construction, which [`IndexedUniverse::try_build`]
-/// (called just above it, and propagated with `?` on failure) already
-/// guarantees fits — that fallback is unreachable in practice, hence
-/// `coverage(off)` on it below.
+/// is reported as [`BitmapAuditError::Universe`], not a panic. The
+/// `u32::try_from(universe.len())` fallback below re-derives that length,
+/// which [`IndexedUniverse::try_build`] (called just above it, and
+/// propagated with `?` on failure) already guarantees fits.
 #[cfg(feature = "std")]
 pub fn bitmap_node_reachability_audit<K, V, F, E>(
     roots: impl IntoIterator<Item = Arc<HamtNode<K, V>>>,
@@ -268,8 +252,13 @@ where
         .map_err(BitmapAuditError::Traversal)?;
     }
 
-    let universe_len =
-        u32::try_from(universe.len()).map_err(|_| universe_len_overflow(&universe))?;
+    let universe_len = u32::try_from(universe.len()).map_err(|_| {
+        #[cfg_attr(coverage_nightly, coverage(off))]
+        BitmapAuditError::Universe(UniverseTooLarge {
+            distinct_count: universe.len(),
+            allocation_failed: false,
+        })
+    })?;
     // `unreachable` is the full index range minus `reachable`; build the full
     // range as a bitmap and subtract. `MultiOps::difference` reduces over many
     // bitmaps; for a pair, call `Sub::sub` by name to sidestep clippy's
