@@ -74,7 +74,7 @@ std = ["alloc", "serde_json/std", "serde/std", "dep:roaring"]
 alloc = []
 # NOTE: `cli` has a higher effective MSRV floor than the crate's declared
 # `rust-version` above -- not an oversight, only the default/library build
-# is held to `rust-version = "1.81"`. As locked in Cargo.lock, zeroize
+# is held to `rust-version = "1.81"`. `zeroize` is pinned below because
 # 1.9.0 (transitive via ureq/tls -> rustls) declares `rust-version = "1.85"`,
 # above even the 1.82.0 CI job that currently tests this feature; see the
 # comment on the `cli feature` matrix entries in .github/workflows/rust.yml
@@ -85,6 +85,7 @@ cli = [
     "dep:anyhow",
     "dep:ureq",
     "dep:idna_adapter",
+    "dep:zeroize",
     "mimalloc",
     "ureq/tls",
 ]
@@ -156,6 +157,9 @@ test-log = { version = "0.2.20", optional = true }
 ureq = { version = "2.9", optional = true, default-features = false, features = [
     "json",
 ] }
+# Keep the transitive TLS dependency compatible with the CLI's Rust 1.82 CI.
+# The exact requirement prevents `cargo update` from selecting zeroize 1.9+.
+zeroize = { version = "=1.8.1", optional = true }
 [dev-dependencies]
 ed25519-consensus = { version = "2.1", default-features = false, features = ["std"] }
 rand_08 = { package = "rand", version = "0.8" }

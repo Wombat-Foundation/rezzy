@@ -22,24 +22,25 @@ jobs:
         include:
           - rust: "1.81.0"
             label: "MSRV (default features)"
-          # NOTE: the `cli` feature is intentionally tested starting at
-          # 1.82.0, one point release above the crate's declared library
-          # MSRV (`rust-version = "1.81"` in Cargo.toml). This is not an
-          # oversight. The 5 direct `cli`-only deps (clap, anyhow, ureq,
-          # idna_adapter, mimalloc) each declare a lower MSRV as locked in
-          # Cargo.lock (highest of the five is clap 4.5.48 at 1.74), but the
-          # *transitive* tree pulled in by `ureq/tls` goes higher: zeroize
-          # 1.9.0 (via rustls, locked in Cargo.lock) declares
-          # `rust-version = "1.85"` -- above even this job's 1.82.0. So the
-          # true floor for `cli` may sit at 1.85, not 1.82; 1.82.0 is kept
-          # here as a previously-chosen value that has not been re-derived
-          # against the current lockfile, not a verified-passing floor.
-          # Re-run `cargo tree -e normal --features cli` against
-          # Cargo.lock and check each locked package's declared
-          # `rust-version` before changing either bound in this matrix.
-          - rust: "1.82.0"
-            label: "cli feature"
-          - rust: "1.85.0"
+          # `cli` is tested at the same 1.81.0 MSRV as the default build.
+          # This used to be pinned higher (1.82.0, briefly investigated as
+          # possibly needing 1.85.0) because of a transitive `zeroize` 1.9.0
+          # (declares `rust-version = "1.85"`) that had crept into
+          # Cargo.lock. That zeroize edge turned out to come from
+          # `ed25519-consensus` (a *dev*-dependency used for differential
+          # signing tests, unrelated to `cli`/ureq), not from ureq/rustls,
+          # and it broke even the plain 1.81.0 default-features job once
+          # `cargo clippy --all-targets` pulled dev-deps in. Fixed by
+          # pinning zeroize back to 1.8.1 (`rust-version = "1.60"`) via
+          # `cargo update -p zeroize --precise 1.8.1`. With that pin,
+          # `cargo metadata --features cli` shows the highest declared
+          # `rust-version` in the whole `cli` dependency tree is `clap` at
+          # 1.74, below the crate's own 1.81 -- so 1.81.0 is the verified
+          # real floor for `cli`, not just a re-labeling. Re-run
+          # `cargo metadata --format-version=1 --features cli` and check
+          # each package's `rust_version` before loosening the zeroize pin
+          # or changing this bound.
+          - rust: "1.81.0"
             label: "cli feature"
     steps:
       - uses: actions/checkout@v4
@@ -55,32 +56,35 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: rust-${{ matrix.rust }}
+          key: rust-${{ matrix.rust }}-${{ matrix.label }}
 
       - name: Toolchain Versions
         run: |
           rustc --version
           cargo --version
 
-      # rustc 1.81.0 is the library's MSRV (enables core::error::Error).
+      # rustc 1.81.0 is the library's MSRV (enables core::error::Error), and
+      # (as of the zeroize 1.8.1 pin above) also the verified floor for the
+      # `cli` feature -- so both matrix rows share this toolchain and are
+      # distinguished by `matrix.label`, not `matrix.rust`.
       - name: Lint (default features)
-        if: matrix.rust == '1.81.0'
+        if: matrix.label == 'MSRV (default features)'
         run: CARGO_FEATURE_ARGS="--locked" make lint
 
       - name: Test (default features)
-        if: matrix.rust == '1.81.0'
+        if: matrix.label == 'MSRV (default features)'
         run: CARGO_FEATURE_ARGS="--locked" make rust/test
 
       - name: Lint (cli feature)
-        if: matrix.rust != '1.81.0'
+        if: matrix.label == 'cli feature'
         run: CARGO_FEATURE_ARGS="--locked --features cli" make lint
 
       - name: Test (cli feature)
-        if: matrix.rust != '1.81.0'
+        if: matrix.label == 'cli feature'
         run: CARGO_FEATURE_ARGS="--locked --features cli" make rust/test
 
       - name: Build CLI
-        if: matrix.rust != '1.81.0'
+        if: matrix.label == 'cli feature'
         run: make build
 
   all-features:
