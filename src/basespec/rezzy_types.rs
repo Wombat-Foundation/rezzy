@@ -896,20 +896,15 @@ pub fn verify_content_hash(value: &Value, room_version: &str) -> Result<(), allo
 /// a redaction-vs-signer mismatch (like the MSC4242 `prev_state_events` bug)
 /// makes verification fail.
 ///
-/// # Errors
-/// Returns `Err` when the redacted `Value` cannot be serialized (unreachable
-/// for a safe `Value`), or when `room_version` is unsupported and `redact_json`
-/// fails closed to an empty object.
+/// Infallible version of [`try_canonical_redacted_json`] for already-validated
+/// input. Prefer [`try_canonical_redacted_json`] when processing untrusted
+/// events.
 ///
 /// # Panics
 /// Panics if strict-number validation fails (fractional numbers in v6+
 /// rooms) or if the canonical JSON cannot be serialized. The latter is
 /// unreachable for a `serde_json::Value` (a safe `Value` cannot hold a
 /// non-finite number); the former is a caller invariant.
-/// Infallible version of [`try_canonical_redacted_json`] for
-/// already-validated input. **Panics** on strict-number validation failure
-/// (fractional numbers in v6+ rooms). Prefer [`try_canonical_redacted_json`]
-/// when processing untrusted events.
 #[must_use]
 pub fn canonical_redacted_json(value: &Value, room_version: &str) -> alloc::string::String {
     let mut out = alloc::string::String::new();
