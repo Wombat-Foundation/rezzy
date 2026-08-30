@@ -3,7 +3,6 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::vec::Vec;
 
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde_json::Value;
@@ -122,10 +121,6 @@ pub fn verify_sequential_strict(
         ));
     }
 
-    let mut messages: Vec<Vec<u8>> = Vec::with_capacity(events.len());
-    let mut signatures: Vec<Signature> = Vec::with_capacity(events.len());
-    let mut verifying_keys: Vec<VerifyingKey> = Vec::with_capacity(events.len());
-
     for value in events {
         let message = super::canonical_redacted_json(value, room_version).into_bytes();
         let Some(sigs_map) = value.get("signatures").and_then(Value::as_object) else {
@@ -162,10 +157,14 @@ pub fn verify_sequential_strict(
                 let sig_bytes: [u8; 64] = raw
                     .try_into()
                     .map_err(|_| alloc::string::String::from("signature must be 64 bytes"))?;
+                let signature = Signature::from_bytes(&sig_bytes);
+                // Sequential strict verification -- see the function doc's
+                // "Not real batch verification" section for why this calls
+                // `verify_strict` immediately per signature instead of
+                // buffering everything for `ed25519_dalek::verify_batch`.
+                key.verify_strict(&message, &signature)
+                    .map_err(|e| alloc::format!("signature verification failed: {e}"))?;
                 event_verified_any = true;
-                messages.push(message.clone());
-                signatures.push(Signature::from_bytes(&sig_bytes));
-                verifying_keys.push(*key);
             }
         }
 
@@ -176,13 +175,5 @@ pub fn verify_sequential_strict(
         }
     }
 
-    // Sequential strict verification -- see the function doc's "Not real
-    // batch verification" section for why this doesn't call
-    // `ed25519_dalek::verify_batch`.
-    let message_refs: Vec<&[u8]> = messages.iter().map(Vec::as_slice).collect();
-    for ((message, signature), key) in message_refs.iter().zip(&signatures).zip(&verifying_keys) {
-        key.verify_strict(message, signature)
-            .map_err(|e| alloc::format!("signature verification failed: {e}"))?;
-    }
     Ok(())
 }
