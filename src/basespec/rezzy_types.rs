@@ -620,15 +620,16 @@ pub fn reference_hash(
 /// for the reason above.
 pub fn compute_content_hash(
     value: &Value,
-    _room_version: &str,
+    room_version: &str,
 ) -> Result<alloc::string::String, alloc::string::String> {
     use base64::Engine as _;
     use sha2::{Digest, Sha256};
 
+    let strict_numbers = room_version_is_v6_or_later(room_version);
     let mut hasher = Sha256::new();
     {
         let mut w = ShaWriter(&mut hasher);
-        write_content_hash_canonical(&mut w, value)
+        write_content_hash_canonical(&mut w, value, strict_numbers)
             .expect("writing canonical JSON into the hasher is infallible");
     }
     Ok(base64::engine::general_purpose::STANDARD_NO_PAD.encode(hasher.finalize()))
@@ -754,13 +755,55 @@ fn write_json_string<W: core::fmt::Write>(out: &mut W, s: &str) -> core::fmt::Re
     out.write_str("\"")
 }
 
+/// Returns `Ok(())` if `n` is a valid Matrix Canonical JSON integer for
+/// room versions v6 and later. Rejects fractional values, negative zero,
+/// exponent notation, and out-of-range (beyond ±(2^53 − 1)) numbers.
+///
+/// For legacy room versions (pre-v6) no validation is performed.
+fn validate_canonical_number(n: &serde_json::Number) -> Result<(), &'static str> {
+    let s = n.to_string();
+    // Fractional or exponent form.
+    if s.contains('.') || s.contains('e') || s.contains('E') {
+        return Err("fractional or exponent-form number in canonical JSON");
+    }
+    // Negative zero.
+    if s == "-0" {
+        return Err("negative zero in canonical JSON");
+    }
+    // Range check: must fit within ±(2^53 − 1).
+    if let Some(v) = n.as_i64() {
+        if !(-(1_i64 << 53) + 1..=(1_i64 << 53) - 1).contains(&v) {
+            return Err("out-of-range number in canonical JSON");
+        }
+    } else if let Some(v) = n.as_u64() {
+        if v > (1_u64 << 53) - 1 {
+            return Err("out-of-range number in canonical JSON");
+        }
+    }
+    Ok(())
+}
+
 /// Recursively writes a JSON value in canonical (key-sorted) form.
-fn write_json_value<W: core::fmt::Write>(out: &mut W, v: &Value) -> core::fmt::Result {
+///
+/// When `strict_numbers` is `true`, numbers are validated against Matrix
+/// Canonical JSON rules (v6+): only integers within ±(2^53 − 1), no
+/// fractional values, no negative zero, and no exponent notation.
+fn write_json_value<W: core::fmt::Write>(
+    out: &mut W,
+    v: &Value,
+    strict_numbers: bool,
+) -> core::fmt::Result {
     match v {
         Value::Null => out.write_str("null"),
         Value::Bool(true) => out.write_str("true"),
         Value::Bool(false) => out.write_str("false"),
-        Value::Number(n) => out.write_str(&n.to_string()),
+        Value::Number(n) => {
+            if strict_numbers {
+                validate_canonical_number(n)
+                    .expect("invalid number in canonical JSON for strict room version");
+            }
+            out.write_str(&n.to_string())
+        }
         Value::String(s) => write_json_string(out, s),
         Value::Array(items) => {
             out.write_str("[")?;
@@ -770,7 +813,7 @@ fn write_json_value<W: core::fmt::Write>(out: &mut W, v: &Value) -> core::fmt::R
                     out.write_str(",")?;
                 }
                 first = false;
-                write_json_value(out, item)?;
+                write_json_value(out, item, strict_numbers)?;
             }
             out.write_str("]")
         }
@@ -784,7 +827,7 @@ fn write_json_value<W: core::fmt::Write>(out: &mut W, v: &Value) -> core::fmt::R
                 first = false;
                 write_json_string(out, k)?;
                 out.write_str(":")?;
-                write_json_value(out, val)?;
+                write_json_value(out, val, strict_numbers)?;
             }
             out.write_str("}")
         }
@@ -793,9 +836,14 @@ fn write_json_value<W: core::fmt::Write>(out: &mut W, v: &Value) -> core::fmt::R
 
 /// Writes the canonical JSON of an **unredacted** event with the top-level
 /// `unsigned`, `signatures`, and `hashes` keys omitted — the content-hash input.
+///
+/// When `strict_numbers` is `true`, numbers are validated against Matrix
+/// Canonical JSON rules (v6+): only integers within ±(2^53 − 1), no
+/// fractional values, no negative zero, and no exponent notation.
 fn write_content_hash_canonical<W: core::fmt::Write>(
     out: &mut W,
     value: &Value,
+    strict_numbers: bool,
 ) -> core::fmt::Result {
     let Value::Object(obj) = value else {
         return out.write_str("{}");
@@ -812,7 +860,7 @@ fn write_content_hash_canonical<W: core::fmt::Write>(
         first = false;
         write_json_string(out, key)?;
         out.write_str(":")?;
-        write_json_value(out, v)?;
+        write_json_value(out, v, strict_numbers)?;
     }
     out.write_str("}")
 }
@@ -839,6 +887,7 @@ fn write_redacted_canonical<W: core::fmt::Write>(
     let rule = redaction_preserved_keys(event_type, room_version);
     let is_v12_create = event_type == M_ROOM_CREATE && room_version_is_v12_or_later(room_version);
     let msc4242 = is_msc4242_room_version(room_version);
+    let strict_numbers = room_version_is_v6_or_later(room_version);
 
     out.write_str("{")?;
     let mut first = true;
@@ -883,10 +932,10 @@ fn write_redacted_canonical<W: core::fmt::Write>(
         write_json_string(out, key)?;
         out.write_str(":")?;
         if key == FIELD_CONTENT {
-            write_json_value(out, &redact_content(v, rule))?;
+            write_json_value(out, &redact_content(v, rule), strict_numbers)?;
             content_written = true;
         } else {
-            write_json_value(out, v)?;
+            write_json_value(out, v, strict_numbers)?;
         }
     }
     if !content_written {
@@ -2454,6 +2503,17 @@ fn room_version_is_v11_or_later(room_version: &str) -> bool {
         || StateResVersion::from_room_version(room_version).is_some_and(|v| v.is_v2_1_plus())
 }
 
+/// Returns `true` if `room_version`'s major version is 6 or later (the
+/// room versions that enforce strict canonical JSON number rules: no
+/// fractional values, no negative zero, no exponent notation).
+fn room_version_is_v6_or_later(room_version: &str) -> bool {
+    room_version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 6)
+}
+
 fn is_msc4242_room_version(room_version: &str) -> bool {
     room_version == "org.matrix.msc4242.12"
 }
@@ -3563,7 +3623,7 @@ mod canonical_parity_tests {
 
     fn content_hash_writer(v: &Value) -> String {
         let mut out = String::new();
-        write_content_hash_canonical(&mut out, v).expect("infallible");
+        write_content_hash_canonical(&mut out, v, false).expect("infallible");
         out
     }
 
@@ -3608,7 +3668,7 @@ mod canonical_parity_tests {
         }
 
         let mut output = String::new();
-        write_content_hash_canonical(&mut output, &json!(null)).unwrap();
+        write_content_hash_canonical(&mut output, &json!(null), false).unwrap();
         assert_eq!(output, "{}");
         output.clear();
         write_redacted_canonical(&mut output, &json!(["non-object content"]), "11").unwrap();
@@ -3681,6 +3741,63 @@ mod canonical_parity_tests {
                 "case: {c} rv={rv}"
             );
         }
+    }
+
+    /// For room versions v6+, the canonical writer must reject fractional numbers.
+    #[test]
+    #[should_panic(expected = "fractional or exponent-form number in canonical JSON")]
+    fn strict_version_rejects_fractional_number() {
+        let fractional = json!({"n": 1.5});
+        let mut out = String::new();
+        write_content_hash_canonical(&mut out, &fractional, true).expect("infallible");
+    }
+
+    /// For room versions v6+, the canonical writer must reject out-of-range numbers.
+    #[test]
+    #[should_panic(expected = "out-of-range number in canonical JSON")]
+    fn strict_version_rejects_out_of_range() {
+        let oor = json!({"n": 9_007_199_254_740_993_u64});
+        let mut out = String::new();
+        write_content_hash_canonical(&mut out, &oor, true).expect("infallible");
+    }
+
+    /// Valid integers must pass strict v6+ validation.
+    #[test]
+    fn strict_version_accepts_valid_integers() {
+        let valid = json!({"n": 42, "big": 9_007_199_254_740_991_i64, "neg": -1});
+        let mut out = String::new();
+        write_content_hash_canonical(&mut out, &valid, true).expect("infallible");
+        assert!(out.contains("42"), "valid int should pass: {out}");
+        assert!(out.contains("-1"), "negative int should pass: {out}");
+    }
+
+    /// Non-strict mode must accept fractional numbers (parity with `serde_json`).
+    #[test]
+    fn non_strict_version_accepts_fractional() {
+        let fractional = json!({"n": 1.5});
+        let mut out = String::new();
+        write_content_hash_canonical(&mut out, &fractional, false).expect("infallible");
+        assert!(
+            out.contains("1.5"),
+            "non-strict should accept fractional: {out}"
+        );
+    }
+
+    /// Negative zero is caught by the canonical number validator (defense-in-depth
+    /// for environments with `arbitrary_precision` enabled). Without that feature,
+    /// `serde_json` normalises -0.0 to "0" so the check is unreachable; verify the
+    /// function itself is correct.
+    #[test]
+    fn validate_canonical_number_rejects_negative_zero_string() {
+        use super::validate_canonical_number;
+        let neg_zero = serde_json::Number::from_f64(-0.0).expect("from_f64");
+        // from_f64(-0.0) preserves the sign as "-0.0" which contains '.', so
+        // the fractional check catches it even before the explicit "-0" guard.
+        assert!(
+            neg_zero.to_string().contains('.'),
+            "from_f64(-0.0) should produce a string with '.'"
+        );
+        assert!(validate_canonical_number(&neg_zero).is_err());
     }
 }
 

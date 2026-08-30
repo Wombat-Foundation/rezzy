@@ -88,6 +88,10 @@ pub enum StateDagValidationError<Id = String> {
     FanoutExceeded { count: usize, limit: usize },
     /// `m.room.create` has `prev_state_events`, which is forbidden.
     CreateWithPrevStateEvents,
+    /// `m.room.create` is missing the required `state_key` field.
+    CreateWithMissingStateKey,
+    /// `m.room.create` has a non-empty `state_key` value.
+    CreateWithNonEmptyStateKey { state_key: String },
     /// A non-create event in an MSC4242 room has empty `prev_state_events`.
     NonCreateWithoutPrevStateEvents { event_id: Id },
     /// `prev_state_events` contains an event that is not a state event (missing `state_key`).
@@ -124,6 +128,15 @@ impl<Id: fmt::Display> fmt::Display for StateDagValidationError<Id> {
             }
             Self::CreateWithPrevStateEvents => {
                 write!(f, "m.room.create must not have prev_state_events")
+            }
+            Self::CreateWithMissingStateKey => {
+                write!(f, "m.room.create must have a state_key field")
+            }
+            Self::CreateWithNonEmptyStateKey { state_key } => {
+                write!(
+                    f,
+                    "m.room.create must have an empty state_key, got {state_key}"
+                )
             }
             Self::NonCreateWithoutPrevStateEvents { event_id } => {
                 write!(
@@ -199,6 +212,14 @@ mod validation_error_display_tests {
             (
                 StateDagValidationError::<&str>::CreateWithPrevStateEvents,
                 "m.room.create must not have prev_state_events",
+            ),
+            (
+                StateDagValidationError::<&str>::CreateWithMissingStateKey,
+                "m.room.create must have a state_key field",
+            ),
+            (
+                StateDagValidationError::CreateWithNonEmptyStateKey { state_key: "not-empty".into() },
+                "m.room.create must have an empty state_key, got not-empty",
             ),
             (
                 StateDagValidationError::NonCreateWithoutPrevStateEvents { event_id: "$e" },
@@ -382,6 +403,32 @@ mod state_dag_branch_coverage_tests {
     }
 
     #[test]
+    fn validates_create_event_requires_present_and_empty_state_key() {
+        let events: TestMap = crate::HashMap::default();
+
+        // Valid create: empty prev_events, state_key = Some("")
+        let mut valid_create = event("$vc", Some(""));
+        valid_create.event_type = M_ROOM_CREATE.into();
+        assert!(validate_msc4242_prev_state_events(&valid_create, &events).is_ok());
+
+        // Create with missing state_key must be rejected.
+        let mut no_sk = event("$no-sk", None);
+        no_sk.event_type = M_ROOM_CREATE.into();
+        assert!(matches!(
+            validate_msc4242_prev_state_events(&no_sk, &events),
+            Err(StateDagValidationError::CreateWithMissingStateKey)
+        ));
+
+        // Create with non-empty state_key must be rejected.
+        let mut non_empty = event("$ne", Some("not-empty"));
+        non_empty.event_type = M_ROOM_CREATE.into();
+        assert!(matches!(
+            validate_msc4242_prev_state_events(&non_empty, &events),
+            Err(StateDagValidationError::CreateWithNonEmptyStateKey { .. })
+        ));
+    }
+
+    #[test]
     fn walk_handles_duplicate_start_and_stop_on_missing() {
         let missing: String = "$missing".into();
         let mut events: TestMap = crate::HashMap::default();
@@ -520,7 +567,7 @@ mod state_dag_branch_coverage_tests {
         let valid_create = event("$valid-create", Some(""));
         let mut valid_create = valid_create;
         valid_create.event_type = M_ROOM_CREATE.into();
-        valid_create.state_key = None;
+        valid_create.state_key = Some(String::new());
         assert_eq!(
             compute_state_before_from_dag(
                 &valid_create,
@@ -531,6 +578,37 @@ mod state_dag_branch_coverage_tests {
             .unwrap(),
             SharedState::new()
         );
+
+        // Create with missing state_key must be rejected.
+        let mut no_state_key = event("$no-state-key", Some(""));
+        no_state_key.event_type = M_ROOM_CREATE.into();
+        no_state_key.state_key = None;
+        assert!(matches!(
+            compute_state_before_from_dag(
+                &no_state_key,
+                &events,
+                StateResVersion::V2_2,
+                &empty_key
+            ),
+            Err(StateDagError::Validation(
+                StateDagValidationError::CreateWithMissingStateKey
+            ))
+        ));
+
+        // Create with non-empty state_key must be rejected.
+        let mut non_empty_sk = event("$non-empty-sk", Some("not-empty"));
+        non_empty_sk.event_type = M_ROOM_CREATE.into();
+        assert!(matches!(
+            compute_state_before_from_dag(
+                &non_empty_sk,
+                &events,
+                StateResVersion::V2_2,
+                &empty_key
+            ),
+            Err(StateDagError::Validation(
+                StateDagValidationError::CreateWithNonEmptyStateKey { .. }
+            ))
+        ));
 
         let non_create = event("$event", Some(""));
         assert!(matches!(
@@ -738,6 +816,15 @@ where
     if event.event_type == M_ROOM_CREATE {
         if !event.prev_state_events().is_empty() {
             return Err(StateDagValidationError::CreateWithPrevStateEvents);
+        }
+        match &event.state_key {
+            None => return Err(StateDagValidationError::CreateWithMissingStateKey),
+            Some(sk) if sk.as_ref().is_empty() => {}
+            Some(sk) => {
+                return Err(StateDagValidationError::CreateWithNonEmptyStateKey {
+                    state_key: sk.as_ref().to_string(),
+                });
+            }
         }
         return Ok(());
     }
@@ -1148,6 +1235,21 @@ where
             return Err(StateDagError::Validation(
                 StateDagValidationError::CreateWithPrevStateEvents,
             ));
+        }
+        match &event.state_key {
+            None => {
+                return Err(StateDagError::Validation(
+                    StateDagValidationError::CreateWithMissingStateKey,
+                ));
+            }
+            Some(sk) if sk.as_ref().is_empty() => {}
+            Some(sk) => {
+                return Err(StateDagError::Validation(
+                    StateDagValidationError::CreateWithNonEmptyStateKey {
+                        state_key: sk.as_ref().to_string(),
+                    },
+                ));
+            }
         }
         return Ok(SharedState::new());
     }
