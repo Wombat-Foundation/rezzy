@@ -131,7 +131,7 @@ pub fn verify_sequential_strict(
             ));
         };
 
-        let Some(origin) = super::expected_event_signer(value) else {
+        let Some(origin) = super::expected_event_signer(value, room_version) else {
             return Err(alloc::string::String::from(
                 "could not derive expected event signer from event_id or sender",
             ));

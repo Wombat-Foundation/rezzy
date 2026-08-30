@@ -36,9 +36,10 @@ use alloc::string::String;
 use alloc::string::ToString;
 use serde_json::Value;
 
-use crate::basespec::rezzy_types::{
-    canonical_redacted_json, try_canonical_redacted_json, EventVerifier,
-};
+use crate::basespec::rezzy_types::{try_canonical_redacted_json, EventVerifier};
+
+#[cfg(all(test, feature = "signing-dalek"))]
+use crate::basespec::rezzy_types::canonical_redacted_json;
 
 #[cfg(any(feature = "signing", feature = "signing-dalek"))]
 mod dalek;
@@ -69,14 +70,16 @@ pub trait SignatureVerifier {
     ) -> Result<(), String>;
 }
 
-/// Extracts the expected homeserver domain that should sign `value`.
+/// Extracts the expected homeserver domain that should sign `value` in
+/// `room_version`.
 ///
 /// For room versions 1 and 2, event IDs have the form `$localpart:domain.com` and
 /// the domain is extracted from the event ID. For room versions 3+, event IDs are
 /// content hashes, so the signer is the sender's homeserver (extracted from `@user:domain.com`).
 #[must_use]
-pub(crate) fn expected_event_signer(value: &Value) -> Option<&str> {
-    if let Some(event_id) = value.get("event_id").and_then(Value::as_str) {
+pub(crate) fn expected_event_signer<'a>(value: &'a Value, room_version: &str) -> Option<&'a str> {
+    if matches!(room_version, "1" | "2") {
+        let event_id = value.get("event_id").and_then(Value::as_str)?;
         if let Some((_, server)) = event_id
             .strip_prefix('$')
             .unwrap_or(event_id)
@@ -84,13 +87,14 @@ pub(crate) fn expected_event_signer(value: &Value) -> Option<&str> {
         {
             return Some(server);
         }
+        return None;
     }
-    if let Some(sender) = value.get("sender").and_then(Value::as_str) {
-        if let Some((_, server)) = sender.strip_prefix('@').unwrap_or(sender).split_once(':') {
-            return Some(server);
-        }
-    }
-    None
+    let sender = value.get("sender").and_then(Value::as_str)?;
+    sender
+        .strip_prefix('@')
+        .unwrap_or(sender)
+        .split_once(':')
+        .map(|(_, server)| server)
 }
 
 /// Verifies every signature in `value["signatures"][server][key_id]` that
@@ -109,15 +113,13 @@ pub fn verify_event_signatures(
     room_version: &str,
     verifier: &dyn SignatureVerifier,
 ) -> Result<(), String> {
-    use base64::Engine as _;
-
     if crate::basespec::rezzy_types::StateResVersion::from_room_version(room_version).is_none() {
         return Err(alloc::format!(
             "unsupported room version {room_version}: cannot verify signatures over an undefined format"
         ));
     }
 
-    let Some(origin) = expected_event_signer(value) else {
+    let Some(origin) = expected_event_signer(value, room_version) else {
         return Err(alloc::string::String::from(
             "could not derive expected event signer from event_id or sender",
         ));
@@ -434,6 +436,53 @@ mod dalek_tests {
             .unwrap();
         verify_event_signatures(&raw_lower_sig, "1", &keys_upper).unwrap();
         verify_sequential_strict(&[raw_lower_sig], "1", &keys_upper).unwrap();
+    }
+
+    #[test]
+    fn dalek_uses_sender_domain_for_v3_and_later() {
+        let sender_key = SigningKey::from_bytes(&[12_u8; 32]);
+        let attacker_key = SigningKey::from_bytes(&[13_u8; 32]);
+        let event = json!({
+            // v3+ PDUs do not carry event_id over federation. If an input does
+            // include one, it must not change which homeserver is required to
+            // sign the event.
+            "event_id": "$legacy:attacker.example",
+            "type": "m.room.message",
+            "room_id": "!r:sender.example",
+            "sender": "@a:sender.example",
+            "origin_server_ts": 1,
+            "content": { "body": "hi" },
+        });
+
+        let attacker_signed = signed_event(
+            event.clone(),
+            "3",
+            "attacker.example",
+            "ed25519:0",
+            &attacker_key,
+        );
+        let mut attacker_keys = DalekVerifier::new();
+        attacker_keys
+            .insert_public_key(
+                "attacker.example",
+                "ed25519:0",
+                &attacker_key.verifying_key().to_bytes(),
+            )
+            .unwrap();
+        assert!(verify_event_signatures(&attacker_signed, "3", &attacker_keys).is_err());
+        assert!(verify_sequential_strict(&[attacker_signed], "3", &attacker_keys).is_err());
+
+        let sender_signed = signed_event(event, "3", "sender.example", "ed25519:0", &sender_key);
+        let mut sender_keys = DalekVerifier::new();
+        sender_keys
+            .insert_public_key(
+                "sender.example",
+                "ed25519:0",
+                &sender_key.verifying_key().to_bytes(),
+            )
+            .unwrap();
+        verify_event_signatures(&sender_signed, "3", &sender_keys).unwrap();
+        verify_sequential_strict(&[sender_signed], "3", &sender_keys).unwrap();
     }
 
     #[test]
