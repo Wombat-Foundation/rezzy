@@ -97,9 +97,13 @@ impl Interner {
     }
 
     /// Whether any strings beyond the reserved slot 0 have been interned.
+    ///
+    /// Slot 0 (`""`) is always present after [`Self::new`]/[`Self::default`],
+    /// so `id_to_str` itself is never actually empty — this compares against
+    /// `1`, not `0`, to match the doc's "beyond slot 0" contract.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.id_to_str.is_empty()
+        self.id_to_str.len() <= 1
     }
 }
 
@@ -281,6 +285,35 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use core::hash::BuildHasher;
+
+    /// `is_empty()` must return `true` for a freshly-constructed interner
+    /// even though slot 0 (`""`) is already reserved — it means "nothing
+    /// beyond the reserved slot has been interned", not "the backing vec is
+    /// literally empty" (which never happens after `new()`/`Default`).
+    #[test]
+    fn test_is_empty_true_for_fresh_interner() {
+        assert!(Interner::new().is_empty());
+        assert!(Interner::default().is_empty());
+    }
+
+    /// Interning any real string — even `""` again, which is idempotent with
+    /// the reserved slot 0 — must not make `is_empty()` incorrectly flip; but
+    /// interning a genuinely new string must flip it to `false`, and `len()`
+    /// must track the count of distinct strings including the reserved slot.
+    #[test]
+    fn test_is_empty_false_after_intern() {
+        let mut interner = Interner::new();
+        assert_eq!(interner.len(), 1);
+
+        // Re-interning the already-reserved "" is a no-op: still empty.
+        interner.intern("");
+        assert!(interner.is_empty());
+        assert_eq!(interner.len(), 1);
+
+        interner.intern("m.room.create");
+        assert!(!interner.is_empty());
+        assert_eq!(interner.len(), 2);
+    }
 
     /// `Default` must uphold the same "slot 0 is the empty string" invariant
     /// as `new()` — a derived `Default` would instead produce an empty
