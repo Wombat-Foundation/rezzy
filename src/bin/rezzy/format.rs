@@ -445,8 +445,6 @@ pub fn format_event_description(
     }
 }
 
-/// Format the timeline output.
-/// Render the timeline to a string, applying only authorized redactions.
 /// Logs a redaction application report's outcomes to stderr under `--debug`.
 fn log_redaction_report<Id: std::fmt::Display>(redaction_report: &RedactionReport<Id>) {
     for (rid, tid) in &redaction_report.applied {
@@ -467,6 +465,8 @@ fn log_redaction_report<Id: std::fmt::Display>(redaction_report: &RedactionRepor
     }
 }
 
+/// Format the timeline output.
+/// Render the timeline to a string, applying only authorized redactions.
 fn render_timeline(ctx: &FormattingContext) -> String {
     // Owned copy of the events so the authorized redaction pass can mutate the
     // in-set targets in place. The resolved room state below is what the
