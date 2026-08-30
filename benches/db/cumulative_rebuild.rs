@@ -54,6 +54,7 @@ const CHECKPOINTS: &[usize] = &[16, 64, 256, 1024, 2048, 4096];
 type Key = String;
 type Value = String;
 
+/// Encodes one state row in the benchmark's deterministic wire form.
 fn canonical_row(k: &str, v: &str) -> Vec<u8> {
     let mut buf = Vec::with_capacity(k.len() + v.len() + 8);
     buf.extend_from_slice(&(k.len() as u32).to_le_bytes());
@@ -63,6 +64,7 @@ fn canonical_row(k: &str, v: &str) -> Vec<u8> {
     buf
 }
 
+/// Computes the sorted-row hash used by the Conduwuit-style baseline.
 fn conduwuit_style_hash(state: &HashMap<Key, Value>) -> [u8; 32] {
     let mut rows: Vec<Vec<u8>> = state.iter().map(|(k, v)| canonical_row(k, v)).collect();
     rows.sort_unstable();
@@ -73,6 +75,7 @@ fn conduwuit_style_hash(state: &HashMap<Key, Value>) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// Computes the XOR-accumulated hash used by the Synapse-style baseline.
 fn synapse_style_hash(state: &HashMap<Key, Value>) -> [u8; 32] {
     let mut acc = [0u8; 32];
     for (k, v) in state {
@@ -84,15 +87,18 @@ fn synapse_style_hash(state: &HashMap<Key, Value>) -> [u8; 32] {
     acc
 }
 
+/// Provides the resolver used by fully materialized benchmark trees.
 fn unreachable_resolver(
 ) -> impl FnMut(&hamt::hash::StructuralHash) -> Result<Arc<HamtNode<Key, Value>>, ()> {
     |_hash| unreachable!("bench trees are always fully resolved")
 }
 
+/// Returns the encoded size of a persisted HAMT node.
 fn node_bytes(node: &HamtNode<Key, Value>) -> usize {
     to_persisted(node).encode_v1().len()
 }
 
+/// Returns the byte size of a full-map serialization.
 fn encode_full_map(state: &HashMap<Key, Value>) -> usize {
     let mut buf = Vec::new();
     for (k, v) in state {
@@ -102,6 +108,7 @@ fn encode_full_map(state: &HashMap<Key, Value>) -> usize {
     buf.len()
 }
 
+/// Runs the cumulative-rebuild benchmark suite.
 #[allow(clippy::too_many_lines)]
 pub fn run() {
     println!(

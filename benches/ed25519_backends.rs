@@ -27,6 +27,7 @@ struct Fixture {
     consensus_key: VerificationKey,
 }
 
+/// Builds signed messages and verification keys for one benchmark case.
 fn fixture(size: usize) -> Fixture {
     let signing_key = SigningKey::from_bytes(&[42_u8; 32]);
     let dalek_key = signing_key.verifying_key();
@@ -53,6 +54,7 @@ fn fixture(size: usize) -> Fixture {
     }
 }
 
+/// Measures `operation` after a short warm-up.
 fn time(mut operation: impl FnMut(), iterations: u32) -> Duration {
     for _ in 0..10 {
         black_box(operation());
@@ -64,12 +66,14 @@ fn time(mut operation: impl FnMut(), iterations: u32) -> Duration {
     start.elapsed()
 }
 
+/// Prints the per-signature timing for one backend operation.
 fn report(label: &str, duration: Duration, iterations: u32, signatures: usize) {
     let operations = f64::from(iterations) * signatures as f64;
     let nanos_per_signature = duration.as_secs_f64() * 1_000_000_000.0 / operations;
     println!("{label:<24} {nanos_per_signature:>10.1} ns/signature");
 }
 
+/// Runs all Ed25519 backend variants for a fixture size.
 fn benchmark(size: usize, iterations: u32) {
     let fixture = fixture(size);
     let message_refs: Vec<&[u8]> = fixture.messages.iter().map(Vec::as_slice).collect();
@@ -134,6 +138,7 @@ fn benchmark(size: usize, iterations: u32) {
     );
 }
 
+/// Runs the standalone Ed25519 backend benchmark executable.
 fn main() {
     benchmark(1, 10_000);
     benchmark(64, 1_000);

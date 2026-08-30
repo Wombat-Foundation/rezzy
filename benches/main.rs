@@ -112,6 +112,7 @@ const BENCHMARKS: &[BenchmarkEntry] = &[
     },
 ];
 
+/// Prints the available benchmarks grouped by domain.
 fn print_list() {
     println!("Available benchmarks in rezzy:\n");
     let domains = ["state", "db", "math"];
@@ -130,6 +131,7 @@ fn print_list() {
     }
 }
 
+/// Prints command-line usage and the benchmark list.
 fn print_help() {
     println!("rezzy benchmark suite\n");
     println!("Usage:");
@@ -142,6 +144,7 @@ fn print_help() {
     print_list();
 }
 
+/// Returns whether an argument belongs to Cargo's benchmark harness.
 fn is_cargo_harness_flag(arg: &str) -> bool {
     matches!(
         arg,
@@ -157,6 +160,7 @@ fn is_cargo_harness_flag(arg: &str) -> bool {
         || arg.starts_with("--format")
 }
 
+/// Dispatches the requested benchmark suite or command-line action.
 fn main() {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
 

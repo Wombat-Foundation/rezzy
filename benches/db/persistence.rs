@@ -44,6 +44,7 @@ type Value = String;
 
 const STRUCTURAL_KEY: &[u8] = b"bench-persistence";
 
+/// Builds a deterministic fixture of distinct state entries.
 fn make_entries(n: usize, seed: u64) -> Vec<(Key, Value)> {
     let mut rng = Xorshift128::new(seed);
     let mut entries = Vec::with_capacity(n);
@@ -59,11 +60,13 @@ fn make_entries(n: usize, seed: u64) -> Vec<(Key, Value)> {
     entries
 }
 
+/// Provides the resolver used by fully materialized benchmark trees.
 fn unreachable_resolver(
 ) -> impl FnMut(&hamt::hash::StructuralHash) -> Result<Arc<HamtNode<Key, Value>>, ()> {
     |_hash| unreachable!("bench trees are always fully resolved")
 }
 
+/// Returns the byte size of a full-map serialization.
 fn encode_full_map(entries: &[(Key, Value)]) -> usize {
     let mut buf = Vec::new();
     for (k, v) in entries {
@@ -147,6 +150,7 @@ fn bench_incremental_persist(n: usize, steps: usize) {
     println!();
 }
 
+/// Prints the relative elapsed-time result for a benchmark operation.
 fn report_speedup(label: &str, legacy: Duration, hamt: Duration) {
     let legacy_ns = legacy.as_nanos() as f64;
     let hamt_ns = hamt.as_nanos() as f64;
@@ -250,6 +254,7 @@ fn bench_batched_persist(n: usize, steps: usize, batch: usize) {
     println!();
 }
 
+/// Prints the relative byte-count result for a benchmark operation.
 fn report_ratio(label: &str, legacy: f64, hamt: f64) {
     let ratio = legacy / hamt;
     if ratio >= 1.0 {
@@ -262,6 +267,7 @@ fn report_ratio(label: &str, legacy: f64, hamt: f64) {
     }
 }
 
+/// Runs the persistence benchmark suite.
 pub fn run() {
     for &n in &[
         16usize, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,

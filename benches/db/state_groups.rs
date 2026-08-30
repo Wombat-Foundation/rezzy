@@ -55,6 +55,7 @@ type Value = String;
 const STRUCTURAL_KEY: &[u8] = b"bench-state-groups";
 const SNAPSHOT_EVERY: usize = 100;
 
+/// Builds a deterministic fixture of distinct state entries.
 fn make_entries(n: usize, seed: u64) -> Vec<(Key, Value)> {
     let mut rng = Xorshift128::new(seed);
     let mut entries = Vec::with_capacity(n);
@@ -70,6 +71,7 @@ fn make_entries(n: usize, seed: u64) -> Vec<(Key, Value)> {
     entries
 }
 
+/// Provides the resolver used by fully materialized benchmark trees.
 fn unreachable_resolver(
 ) -> impl FnMut(&hamt::hash::StructuralHash) -> Result<std::sync::Arc<HamtNode<Key, Value>>, ()> {
     |_hash| unreachable!("bench trees are always fully resolved")
@@ -105,6 +107,7 @@ fn chain_lookup(groups: &[Group], group_idx: usize, key: &str) -> (Option<Value>
     }
 }
 
+/// Returns the encoded size of one state row.
 fn encode_row(k: &Key, v: &Value) -> usize {
     let mut buf = Vec::new();
     k.encode_hamt(&mut buf);
@@ -112,6 +115,7 @@ fn encode_row(k: &Key, v: &Value) -> usize {
     buf.len()
 }
 
+/// Returns the encoded size of a complete state map.
 fn encode_full_map(state: &HashMap<Key, Value>) -> usize {
     let mut buf = Vec::new();
     for (k, v) in state {
@@ -121,6 +125,7 @@ fn encode_full_map(state: &HashMap<Key, Value>) -> usize {
     buf.len()
 }
 
+/// Compares state-group chain operations with persistent HAMT operations.
 #[allow(clippy::too_many_lines)]
 fn bench_state_groups(n: usize, steps: usize) {
     println!("state groups: hamt vs synapse-style delta chain (n={n}, steps={steps}):");
@@ -320,6 +325,7 @@ fn bench_state_groups(n: usize, steps: usize) {
     println!();
 }
 
+/// Prints the relative elapsed-time result for a state-group comparison.
 fn report_speedup(label: &str, slow: Duration, fast: Duration) {
     let slow_ns = slow.as_nanos() as f64;
     let fast_ns = fast.as_nanos() as f64;
@@ -331,6 +337,7 @@ fn report_speedup(label: &str, slow: Duration, fast: Duration) {
     }
 }
 
+/// Prints the relative storage result for a state-group comparison.
 fn report_ratio_bytes(label: &str, hamt: f64, other: f64) {
     let ratio = hamt / other;
     if ratio >= 1.0 {
@@ -343,6 +350,7 @@ fn report_ratio_bytes(label: &str, hamt: f64, other: f64) {
     }
 }
 
+/// Runs the state-groups benchmark suite.
 pub fn run() {
     // 550, not 500: deliberately mid-window (50 hops past the snapshot at
     // 500) so the bounded chain's lookup isn't measured at its trivial

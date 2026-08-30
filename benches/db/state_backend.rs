@@ -147,6 +147,7 @@ fn time_once(label: &str, op_count: u32, mut f: impl FnMut()) -> Duration {
     per_op
 }
 
+/// Compares bulk construction of the two state-map representations.
 fn bench_bulk_build(n: usize, entries: &[(Key, Value)]) {
     println!("bulk build (n={n}):");
     let reps = if n >= 4096 { 10 } else { 200 };
@@ -165,6 +166,7 @@ fn bench_bulk_build(n: usize, entries: &[(Key, Value)]) {
     report_speedup(ordmap_elapsed, hamt_elapsed);
 }
 
+/// Compares mixed hit and miss point lookups.
 fn bench_point_lookup(n: usize, entries: &[(Key, Value)]) {
     println!("point lookup (n={n}, 50% hit / 50% miss):");
     let ordmap: imbl::OrdMap<Key, Value> = entries.iter().cloned().collect();
@@ -200,6 +202,7 @@ fn bench_point_lookup(n: usize, entries: &[(Key, Value)]) {
     report_speedup(ordmap_elapsed, hamt_elapsed);
 }
 
+/// Compares path-copy inserts into an existing state map.
 fn bench_incremental_insert(n: usize, entries: &[(Key, Value)]) {
     println!("incremental insert on top of full map (n={n}):");
     let ordmap: imbl::OrdMap<Key, Value> = entries.iter().cloned().collect();
@@ -251,6 +254,7 @@ fn bench_incremental_insert(n: usize, entries: &[(Key, Value)]) {
     report_speedup(ordmap_elapsed, hamt_elapsed);
 }
 
+/// Compares path-copy removals from an existing state map.
 fn bench_incremental_remove(n: usize, entries: &[(Key, Value)]) {
     println!("incremental remove from full map (n={n}):");
     let ordmap: imbl::OrdMap<Key, Value> = entries.iter().cloned().collect();
@@ -348,6 +352,7 @@ fn bench_fork_and_diverge(n: usize, entries: &[(Key, Value)]) {
     report_speedup(ordmap_elapsed, hamt_elapsed);
 }
 
+/// Prints the relative elapsed-time result for a backend comparison.
 fn report_speedup(ordmap: Duration, hamt: Duration) {
     let ordmap_ns = ordmap.as_nanos() as f64;
     let hamt_ns = hamt.as_nanos() as f64;
@@ -359,6 +364,7 @@ fn report_speedup(ordmap: Duration, hamt: Duration) {
     }
 }
 
+/// Runs the state-backend benchmark suite.
 pub fn run() {
     for &n in &[16usize, 128, 1024, 8192] {
         let entries = make_entries(n, 0x5EED_0000 + n as u64);
