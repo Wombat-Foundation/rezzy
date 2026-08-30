@@ -185,7 +185,10 @@ fn main() {
             || filters.iter().any(|&f| {
                 b.domain.eq_ignore_ascii_case(f)
                     || b.name.eq_ignore_ascii_case(f)
-                    || b.name.starts_with(&format!("{f}/"))
+                    || b.name
+                        .get(..f.len())
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(f))
+                        && b.name.as_bytes().get(f.len()) == Some(&b'/')
             });
 
         if should_run {

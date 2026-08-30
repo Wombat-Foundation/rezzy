@@ -938,14 +938,16 @@ impl<Id: Clone, K: Clone> LeanEvent<Id, Value, K> {
 /// `room_version` selects the preserved-key rule; obtain it from the room's
 /// `m.room.create` content (`get_room_version`).
 #[must_use]
-pub fn apply_redaction<Id: Clone + core::fmt::Display, K: Clone>(
+pub fn apply_redaction<Id: Clone + core::fmt::Display + 'static, K: Clone>(
     target: &LeanEvent<Id, Value, K>,
     redaction: &LeanEvent<Id, Value, K>,
     room_version: &str,
 ) -> Option<LeanEvent<Id, Value, K>> {
+    // Compares against a borrowed wire representation of target.event_id
+    // instead of allocating a fresh String via to_string() on every call.
     if !redaction
         .get_redacts()
-        .is_some_and(|target_id| target_id == target.event_id.to_string())
+        .is_some_and(|target_id| target_id == crate::auth::event_id_to_wire_cow(&target.event_id))
     {
         return None;
     }

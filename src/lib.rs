@@ -15,6 +15,8 @@
 //! | `cli`       | ✗       | Builds the `rezzy` CLI binary and merge utilities. |
 //! | `mock-ruma` | ✗       | Enables Ruma SDK interop for upstream parity testing. |
 //! | `regen`     | ✗       | Builds the `regen_oracles` snapshot regeneration binary. |
+//! | `signing`   | ✗       | Signature-verification traits (`SignatureVerifier` et al.), backend-agnostic. |
+//! | `signing-dalek` | ✗   | `ed25519-dalek`-backed `SignatureVerifier` implementation. |
 //!
 //! Canonical-JSON SHA-256 hashing is always compiled in — see [`reference_hash`]
 //! and [`verify_content_hash`].
