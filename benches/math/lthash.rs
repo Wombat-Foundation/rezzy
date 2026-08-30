@@ -225,15 +225,15 @@ fn bench_incremental_hash(n: usize, steps: usize) {
 
     let op_count = ops.len() as u32;
     println!(
-        "  conduwuit-style (O(S log S), sort + SHA-256 every step): {:.1} ns/op",
+        "  conduwuit-style (O(S log S), sort + SHA-256 every step) (n={n}): {:.1} ns/op",
         (conduwuit_elapsed.as_nanos() as f64) / f64::from(op_count)
     );
     println!(
-        "  synapse-style (O(S), unsorted XOR-fold of SHA-256 every step): {:.1} ns/op",
+        "  synapse-style (O(S), unsorted XOR-fold of SHA-256 every step) (n={n}): {:.1} ns/op",
         (synapse_elapsed.as_nanos() as f64) / f64::from(op_count)
     );
     println!(
-        "  LtHash (O(1), lattice add/sub + BLAKE2b digest): {:.1} ns/op",
+        "  LtHash (O(1), lattice add/sub + BLAKE2b digest) (n={n}): {:.1} ns/op",
         (lt_elapsed.as_nanos() as f64) / f64::from(op_count)
     );
     report_speedup("conduwuit-style", conduwuit_elapsed, lt_elapsed);
