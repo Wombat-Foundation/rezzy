@@ -37,7 +37,7 @@ fn room_with_join_rule(join_rule: &str) -> RoomState {
             "m.room.create",
             Some(""),
             "@admin:example.com",
-            json!({}),
+            json!({"room_version": "10"}),
         ),
     );
 
@@ -85,6 +85,25 @@ fn room_with_join_rule(join_rule: &str) -> RoomState {
     );
 
     state
+}
+
+fn set_room_version(state: &mut RoomState, room_version: &str) {
+    state
+        .get_mut(&(String::from("m.room.create"), String::new()))
+        .expect("test room has a create event")
+        .content = json!({"room_version": room_version});
+}
+
+struct RejectAuthorisingSignature;
+
+impl rezzy::EventVerifier<String> for RejectAuthorisingSignature {
+    fn verify_join_authorised_via_users_server(
+        &self,
+        _event_id: &String,
+        _authorising_user: &str,
+    ) -> Result<(), String> {
+        Err("missing authorising-server signature".into())
+    }
 }
 
 // ─── Restricted join rules (room version 8+) ────────────────────────────
@@ -143,6 +162,68 @@ fn test_restricted_join_with_authorized_via_allowed() {
         result.is_ok(),
         "user with join_authorised_via_users_server should be able to join restricted room, got: {result:?}"
     );
+}
+
+#[test]
+fn test_restricted_join_requires_authorising_server_signature_when_verified() {
+    let state = room_with_join_rule("restricted");
+    let join_event = make_event(
+        "$bob_join",
+        "m.room.member",
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({
+            "membership": "join",
+            "join_authorised_via_users_server": "@admin:example.com"
+        }),
+    );
+
+    let result = check_auth(
+        &join_event,
+        &state,
+        StateResVersion::V2,
+        Some(&RejectAuthorisingSignature),
+    );
+    assert!(
+        matches!(result, Err(AuthError::InvalidSyntax(ref reason)) if reason.contains("authorising-server signature")),
+        "a restricted join must require the authorising user's server signature: {result:?}"
+    );
+}
+
+#[test]
+fn test_restricted_rules_are_rejected_before_v8() {
+    let mut state = room_with_join_rule("restricted");
+    set_room_version(&mut state, "7");
+    let join_event = make_event(
+        "$bob_join",
+        "m.room.member",
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({"membership": "join", "join_authorised_via_users_server": "@admin:example.com"}),
+    );
+
+    assert!(matches!(
+        check_auth(&join_event, &state, StateResVersion::V2, None),
+        Err(AuthError::NotMember { .. })
+    ));
+}
+
+#[test]
+fn test_knock_restricted_is_rejected_before_v10() {
+    let mut state = room_with_join_rule("knock_restricted");
+    set_room_version(&mut state, "9");
+    let knock_event = make_event(
+        "$bob_knock",
+        "m.room.member",
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({"membership": "knock"}),
+    );
+
+    assert!(matches!(
+        check_auth(&knock_event, &state, StateResVersion::V2, None),
+        Err(AuthError::NotMember { .. })
+    ));
 }
 
 #[test]
@@ -508,7 +589,7 @@ fn test_msc4289_restricted_join_v12_creator_authorising() {
             "m.room.create",
             Some(""),
             "@creator:example.com",
-            json!({}),
+            json!({"room_version": "12"}),
         ),
     );
     state.insert(

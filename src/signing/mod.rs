@@ -117,6 +117,30 @@ pub fn verify_event_signatures(
         ));
     }
 
+    let Some(origin) = expected_event_signer(value) else {
+        return Err(alloc::string::String::from(
+            "could not derive expected event signer from event_id or sender",
+        ));
+    };
+    verify_event_signatures_from_server(value, room_version, origin, verifier)
+}
+
+/// Verifies a signature on `value` from one specific server.
+///
+/// This is used for restricted joins, where Matrix requires a signature from
+/// the homeserver of `join_authorised_via_users_server`, not merely the
+/// joining event's origin server.
+///
+/// # Errors
+/// Returns `Err` if the expected server has no supported valid signature.
+pub fn verify_event_signatures_from_server(
+    value: &Value,
+    room_version: &str,
+    expected_server: &str,
+    verifier: &dyn SignatureVerifier,
+) -> Result<(), String> {
+    use base64::Engine as _;
+
     let message = try_canonical_redacted_json(value, room_version)
         .map_err(|e| alloc::format!("failed to compute canonical redacted JSON: {e}"))?
         .into_bytes();
@@ -125,15 +149,9 @@ pub fn verify_event_signatures(
             "event has no signatures object",
         ));
     };
-    let Some(origin) = expected_event_signer(value) else {
-        return Err(alloc::string::String::from(
-            "could not derive expected event signer from event_id or sender",
-        ));
-    };
-
     let mut verified_any = false;
     for (server, keys) in signatures {
-        if !origin.eq_ignore_ascii_case(server) {
+        if !expected_server.eq_ignore_ascii_case(server) {
             continue;
         }
         let Some(keys_obj) = keys.as_object() else {
@@ -157,8 +175,8 @@ pub fn verify_event_signatures(
     }
 
     if !verified_any {
-        return Err(alloc::string::String::from(
-            "no supported signatures present on event",
+        return Err(alloc::format!(
+            "no supported signature from required server {expected_server}"
         ));
     }
     Ok(())
@@ -226,6 +244,21 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
             .get(event_id)
             .ok_or_else(|| alloc::format!("unknown event {}", event_id.as_ref()))?;
         verify_event_signatures(value, &self.room_version, &self.verifier)
+    }
+
+    fn verify_join_authorised_via_users_server(
+        &self,
+        event_id: &Id,
+        authorising_user: &str,
+    ) -> Result<(), String> {
+        let server = crate::basespec::rezzy_types::extract_domain(authorising_user)
+            .filter(|server| !server.is_empty())
+            .ok_or_else(|| alloc::format!("invalid authorising user ID {authorising_user}"))?;
+        let value = self
+            .events
+            .get(event_id)
+            .ok_or_else(|| alloc::format!("unknown event {}", event_id.as_ref()))?;
+        verify_event_signatures_from_server(value, &self.room_version, server, &self.verifier)
     }
 
     fn verify_content_hash(&self, event_id: &Id) -> Result<(), String> {

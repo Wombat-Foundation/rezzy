@@ -315,6 +315,21 @@ where
     Ok(1)
 }
 
+/// Returns whether the room's explicit version supports a feature introduced
+/// in `minimum_version`.
+fn room_version_at_least<Id, C, E, S>(
+    state: &S,
+    minimum_version: u32,
+) -> Result<bool, AuthError<Id>>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+    E: EventLike<Id = Id, Content = C>,
+    S: StateProvider<Id, C, E>,
+{
+    Ok(get_room_version_num(state)? >= minimum_version)
+}
+
 /// Reads `content.room_version` off the room's `m.room.create` event, as a
 /// raw string, for the version-string-keyed rules below (Rules 4, 11, 2.2)
 /// that must branch on the literal spec label rather than the collapsed
@@ -1774,7 +1789,7 @@ fn check_membership_rules<
     }
 
     match new_membership {
-        MEM_JOIN => check_join_rules(event, state, target_user, version)?,
+        MEM_JOIN => check_join_rules(event, state, target_user, version, verifier)?,
         MEM_LEAVE => check_leave_rules(event, state, target_user, current_membership, version)?,
         MEM_BAN => check_ban_rules(event, state, version)?,
         MEM_INVITE => check_invite_rules(
@@ -1808,6 +1823,7 @@ fn check_join_rules<
     state: &impl StateProvider<Id, C, E>,
     target_user: &str,
     version: StateResVersion,
+    verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
 ) -> Result<(), AuthError<Id>> {
     // A user can only join as themselves
     if target_user != event.sender() {
@@ -1837,6 +1853,9 @@ fn check_join_rules<
         .and_then(EventLike::get_join_rule)
         .unwrap_or(RULE_INVITE); // Default to invite
 
+    let supports_restricted = room_version_at_least(state, 8)?;
+    let supports_knock_restricted = room_version_at_least(state, 10)?;
+
     let is_creator = state
         .get_event(M_ROOM_CREATE, "")
         .is_some_and(|ev| ev.sender() == event.sender());
@@ -1852,7 +1871,9 @@ fn check_join_rules<
                 event_id: event.event_id().clone(),
             });
         }
-    } else if join_rule == RULE_RESTRICTED || join_rule == RULE_KNOCK_RESTRICTED {
+    } else if (join_rule == RULE_RESTRICTED && supports_restricted)
+        || (join_rule == RULE_KNOCK_RESTRICTED && supports_knock_restricted)
+    {
         // Restricted/knock_restricted (room version 8+/10+):
         // Allow if user is already invited/joined. Otherwise, require a valid
         // join_authorised_via_users_server field whose referenced user is:
@@ -1861,7 +1882,7 @@ fn check_join_rules<
         if current_membership == MEM_INVITE || current_membership == MEM_JOIN {
             // Already invited or joined — allowed without further checks.
         } else if let Some(authorising_user) = event.get_join_authorised_via_users_server() {
-            check_authorising_user(event, state, authorising_user, version)?;
+            check_authorising_user(event, state, authorising_user, version, verifier)?;
         } else {
             return Err(AuthError::NotMember {
                 sender: event.sender().into(),
@@ -1888,6 +1909,7 @@ fn check_authorising_user<
     state: &impl StateProvider<Id, C, E>,
     authorising_user: &str,
     version: StateResVersion,
+    verifier: Option<&dyn crate::basespec::rezzy_types::EventVerifier<Id>>,
 ) -> Result<(), AuthError<Id>> {
     let auth_membership = state
         .get_event(M_ROOM_MEMBER, authorising_user)
@@ -1908,6 +1930,17 @@ fn check_authorising_user<
             sender: event.sender().into(),
             event_id: event.event_id().clone(),
         });
+    }
+
+    // The normal verification pipeline checks the joining event's origin
+    // signature. A restricted join additionally needs a signature from the
+    // authorising user's homeserver. State-resolution callers deliberately
+    // pass no verifier; PDU-receipt callers that do supply one get this
+    // additional check.
+    if let Some(verifier) = verifier {
+        verifier
+            .verify_join_authorised_via_users_server(event.event_id(), authorising_user)
+            .map_err(AuthError::InvalidSyntax)?;
     }
 
     Ok(())
@@ -1959,7 +1992,9 @@ fn check_knock_rules<
         .and_then(EventLike::get_join_rule)
         .unwrap_or(RULE_INVITE);
 
-    if join_rule != RULE_KNOCK && join_rule != RULE_KNOCK_RESTRICTED {
+    let supports_knock_restricted = room_version_at_least(state, 10)?;
+    if join_rule != RULE_KNOCK && !(join_rule == RULE_KNOCK_RESTRICTED && supports_knock_restricted)
+    {
         return Err(AuthError::NotMember {
             sender: event.sender().into(),
             event_id: event.event_id().clone(),
@@ -2467,7 +2502,7 @@ mod tests {
             },
         );
 
-        let result = check_join_rules(&join_event, &state, "@evil:x", StateResVersion::V2);
+        let result = check_join_rules(&join_event, &state, "@evil:x", StateResVersion::V2, None);
         assert!(
             matches!(result, Err(AuthError::BannedUser { .. })),
             "Must reject join from banned user: {result:?}"

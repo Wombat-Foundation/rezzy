@@ -2447,6 +2447,7 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
 /// | 2 | [`verify_signatures`](Self::verify_signatures) | Server ed25519 signatures on the PDU |
 /// | 3 | [`verify_content_hash`](Self::verify_content_hash) | `hashes.sha256` matches canonical JSON hash |
 /// | 4 | [`verify_third_party_invite`](Self::verify_third_party_invite) | 3PI `signed.signatures` against TPI public keys |
+/// | 5 | [`verify_join_authorised_via_users_server`](Self::verify_join_authorised_via_users_server) | Restricted-join authorising server signature |
 pub trait EventVerifier<Id> {
     /// Step 1: Verify event ID matches the SHA256 hash of the canonical JSON
     /// (with `signatures` and `unsigned` stripped). For room versions 4+.
@@ -2486,6 +2487,24 @@ pub trait EventVerifier<Id> {
         _tpi_token: &str,
     ) -> Result<(), alloc::string::String> {
         Ok(())
+    }
+
+    /// Step 5: Verify that a restricted join is signed by the homeserver of
+    /// the user named in `join_authorised_via_users_server`.
+    ///
+    /// The default rejects because ordinary origin-signature verification
+    /// cannot establish this additional authorization.
+    ///
+    /// # Errors
+    /// Return `Err(reason)` to reject the event.
+    fn verify_join_authorised_via_users_server(
+        &self,
+        _event_id: &Id,
+        _authorising_user: &str,
+    ) -> Result<(), alloc::string::String> {
+        Err(alloc::string::String::from(
+            "verifier does not support join_authorised_via_users_server signatures",
+        ))
     }
 }
 
