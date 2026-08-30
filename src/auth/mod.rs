@@ -1187,6 +1187,13 @@ pub struct RedactionReport<Id> {
     /// `String` because an out-of-batch target may not be representable as
     /// `Id` (e.g. an interned/numeric id that can only be resolved in storage).
     pub target_not_in_batch: Vec<(Id, String)>,
+    /// `(redaction_id, target_id)` pairs that were authorized AND had their
+    /// target present in this batch, but still failed to apply -- e.g. the
+    /// target's `redacts` field was already stripped by an earlier redaction
+    /// in the same batch (a redaction cycle). Distinct from
+    /// `target_not_in_batch`: a caller should not retry these by waiting for
+    /// the target to "arrive", since it's already here and won't change.
+    pub failed_to_apply: Vec<(Id, Id)>,
 }
 
 impl<Id> Default for RedactionReport<Id> {
@@ -1195,6 +1202,7 @@ impl<Id> Default for RedactionReport<Id> {
             applied: Vec::new(),
             skipped_unauthorized: Vec::new(),
             target_not_in_batch: Vec::new(),
+            failed_to_apply: Vec::new(),
         }
     }
 }
@@ -1435,12 +1443,12 @@ where
             *target = redacted;
             report.applied.push((redaction_id, target_id));
         } else {
-            // An authorized redaction that failed to apply (e.g., its `redacts`
-            // field was already stripped by a prior redaction in the chain).
-            // Surface it rather than silently dropping it.
-            report
-                .target_not_in_batch
-                .push((redaction_id, target_id.to_string()));
+            // An authorized redaction whose target WAS present in this batch
+            // but still failed to apply (e.g., its `redacts` field was
+            // already stripped by a prior redaction in the chain). Distinct
+            // from `target_not_in_batch`, which means "not present yet, try
+            // again later" -- this target is present and won't change.
+            report.failed_to_apply.push((redaction_id, target_id));
         }
     }
 
@@ -2896,13 +2904,14 @@ mod tests {
                 .contains(&("$r1:example.com".into(), "$r2:example.com".into())),
             "R1's redaction of R2 must be applied: {report:?}"
         );
-        // R2's redaction of R1 failed because R2 was stripped by R1.
+        // R2's redaction of R1 failed because R2 was stripped by R1. R1 (the
+        // target) IS present in the batch, so this is `failed_to_apply`, not
+        // `target_not_in_batch` (which means "target not present yet").
         assert!(
             report
-                .target_not_in_batch
-                .iter()
-                .any(|(rid, tid)| rid == "$r2:example.com" && tid == "$r1:example.com"),
-            "R2's failed redaction of R1 must surface in target_not_in_batch: {report:?}"
+                .failed_to_apply
+                .contains(&("$r2:example.com".into(), "$r1:example.com".into())),
+            "R2's failed redaction of R1 must surface in failed_to_apply: {report:?}"
         );
     }
 

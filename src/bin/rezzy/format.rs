@@ -447,6 +447,26 @@ pub fn format_event_description(
 
 /// Format the timeline output.
 /// Render the timeline to a string, applying only authorized redactions.
+/// Logs a redaction application report's outcomes to stderr under `--debug`.
+fn log_redaction_report<Id: std::fmt::Display>(redaction_report: &RedactionReport<Id>) {
+    for (rid, tid) in &redaction_report.applied {
+        eprintln!("[INFO] redaction {rid} stripped {tid}");
+    }
+    for (rid, tid) in &redaction_report.skipped_unauthorized {
+        eprintln!("[WARN] redaction {rid} rejected for {tid}: sender lacks authorization");
+    }
+    for (rid, tid) in &redaction_report.target_not_in_batch {
+        eprintln!(
+            "[WARN] redaction {rid} targets {tid}, absent from the input set; redaction deferred"
+        );
+    }
+    for (rid, tid) in &redaction_report.failed_to_apply {
+        eprintln!(
+            "[WARN] redaction {rid} targets {tid}, present but failed to apply (e.g. already redacted by a cycle)"
+        );
+    }
+}
+
 fn render_timeline(ctx: &FormattingContext) -> String {
     // Owned copy of the events so the authorized redaction pass can mutate the
     // in-set targets in place. The resolved room state below is what the
@@ -486,17 +506,7 @@ fn render_timeline(ctx: &FormattingContext) -> String {
     };
 
     if ctx.args.debug {
-        for (rid, tid) in &redaction_report.applied {
-            eprintln!("[INFO] redaction {rid} stripped {tid}");
-        }
-        for (rid, tid) in &redaction_report.skipped_unauthorized {
-            eprintln!("[WARN] redaction {rid} rejected for {tid}: sender lacks authorization");
-        }
-        for (rid, tid) in &redaction_report.target_not_in_batch {
-            eprintln!(
-                "[WARN] redaction {rid} targets {tid}, absent from the input set; redaction deferred"
-            );
-        }
+        log_redaction_report(&redaction_report);
     }
 
     sorted_events.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.event_id.cmp(&b.event_id)));
