@@ -122,7 +122,9 @@ pub fn verify_sequential_strict(
     }
 
     for value in events {
-        let message = super::canonical_redacted_json(value, room_version).into_bytes();
+        let message = super::try_canonical_redacted_json(value, room_version)
+            .map_err(|e| alloc::format!("failed to compute canonical redacted JSON: {e}"))?
+            .into_bytes();
         let Some(sigs_map) = value.get("signatures").and_then(Value::as_object) else {
             return Err(alloc::string::String::from(
                 "event has no signatures object",

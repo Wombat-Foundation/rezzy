@@ -124,16 +124,23 @@ impl StateResVersion {
     /// state resolution algorithm version.
     ///
     /// Returns `None` for unrecognized room versions.
+    ///
+    /// Delegates to the crate-internal `RoomVersionFormat::parse` as the
+    /// single source of truth for which room versions are supported.
     #[must_use]
     pub fn from_room_version(ver: &str) -> Option<Self> {
-        match ver {
-            "1" => Some(Self::V1),
-            "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" => Some(Self::V2),
-            "12" => Some(Self::V2_1),
-            "12.1" => Some(Self::V2_1_1),
-            "org.matrix.msc4242.12" => Some(Self::V2_2),
-            _ => None,
-        }
+        let format = RoomVersionFormat::parse(ver)?;
+        Some(match format {
+            RoomVersionFormat::Numeric(1) => Self::V1,
+            RoomVersionFormat::Numeric(2..=11) => Self::V2,
+            RoomVersionFormat::Numeric(12) if ver == "12.1" => Self::V2_1_1,
+            RoomVersionFormat::Numeric(12) => Self::V2_1,
+            RoomVersionFormat::Msc4242 => Self::V2_2,
+            // Numeric(12) is the only other numeric variant; covered above.
+            RoomVersionFormat::Numeric(_) => {
+                unreachable!("RoomVersionFormat::parse returned unexpected variant")
+            }
+        })
     }
 
     /// Returns `true` for V2.1 and above (MSC4297+).
@@ -278,7 +285,7 @@ impl RoomVersionFormat {
     }
 
     /// Returns `true` for room versions that enforce strict Matrix Canonical
-    /// JSON number rules: no fractional values, no negative zero, no exponent
+    /// JSON number rules: no fractional values, no exponent
     /// notation, and values within ±(2^53 − 1).
     ///
     /// Strict numbers apply to numeric versions 6+ and to MSC4242.
@@ -312,8 +319,6 @@ enum CanonicalizationError {
     /// A fractional or exponent-form number was encountered in a strict room
     /// version that requires integer-only canonical JSON.
     FractionalOrExponentNumber,
-    /// A negative zero (`-0`) was encountered in a strict room version.
-    NegativeZero,
     /// A number outside the ±(2^53 − 1) safe-integer range was encountered.
     OutOfRangeNumber,
     /// The underlying `core::fmt::Write` sink failed.
@@ -326,7 +331,6 @@ impl core::fmt::Display for CanonicalizationError {
             Self::FractionalOrExponentNumber => {
                 write!(f, "fractional or exponent-form number in canonical JSON")
             }
-            Self::NegativeZero => write!(f, "negative zero in canonical JSON"),
             Self::OutOfRangeNumber => write!(f, "out-of-range number in canonical JSON"),
             Self::FmtError => write!(f, "canonical JSON write failed"),
         }
@@ -345,31 +349,30 @@ mod room_version_format_tests {
     use super::RoomVersionFormat;
 
     #[test]
-    fn parse_numeric_versions() {
-        assert_eq!(
-            RoomVersionFormat::parse("1"),
-            Some(RoomVersionFormat::Numeric(1))
-        );
-        assert_eq!(
-            RoomVersionFormat::parse("10"),
-            Some(RoomVersionFormat::Numeric(10))
-        );
-        assert_eq!(
-            RoomVersionFormat::parse("11"),
-            Some(RoomVersionFormat::Numeric(11))
-        );
-        assert_eq!(
-            RoomVersionFormat::parse("12.1"),
-            Some(RoomVersionFormat::Numeric(12))
-        );
-    }
-
-    #[test]
-    fn parse_msc4242() {
-        assert_eq!(
-            RoomVersionFormat::parse("org.matrix.msc4242.12"),
-            Some(RoomVersionFormat::Msc4242)
-        );
+    fn parse_all_known_versions() {
+        let cases: &[(&str, RoomVersionFormat)] = &[
+            ("1", RoomVersionFormat::Numeric(1)),
+            ("2", RoomVersionFormat::Numeric(2)),
+            ("3", RoomVersionFormat::Numeric(3)),
+            ("4", RoomVersionFormat::Numeric(4)),
+            ("5", RoomVersionFormat::Numeric(5)),
+            ("6", RoomVersionFormat::Numeric(6)),
+            ("7", RoomVersionFormat::Numeric(7)),
+            ("8", RoomVersionFormat::Numeric(8)),
+            ("9", RoomVersionFormat::Numeric(9)),
+            ("10", RoomVersionFormat::Numeric(10)),
+            ("11", RoomVersionFormat::Numeric(11)),
+            ("12", RoomVersionFormat::Numeric(12)),
+            ("12.1", RoomVersionFormat::Numeric(12)),
+            ("org.matrix.msc4242.12", RoomVersionFormat::Msc4242),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                RoomVersionFormat::parse(input),
+                Some(*expected),
+                "parse({input:?}) should be Some({expected:?})"
+            );
+        }
     }
 
     #[test]
@@ -441,10 +444,6 @@ mod canonicalization_error_tests {
             "fractional or exponent-form number in canonical JSON"
         );
         assert_eq!(
-            CanonicalizationError::NegativeZero.to_string(),
-            "negative zero in canonical JSON"
-        );
-        assert_eq!(
             CanonicalizationError::OutOfRangeNumber.to_string(),
             "out-of-range number in canonical JSON"
         );
@@ -493,24 +492,16 @@ pub enum RedactionRule {
 /// Unknown/malformed versions fail closed.
 #[must_use]
 pub fn redaction_preserved_keys(event_type: &str, room_version: &str) -> RedactionRule {
-    // Explicitly recognized room versions only: an unsupported or malformed
-    // version ID must NOT silently fall back to v1 rules. Failing closed
-    // (preserving nothing) is safer than guessing a permissive rule set.
-    let ver_num: u32 = match room_version {
-        "1" => 1,
-        "2" => 2,
-        "3" => 3,
-        "4" => 4,
-        "5" => 5,
-        "6" => 6,
-        "7" => 7,
-        "8" => 8,
-        "9" => 9,
-        "10" => 10,
-        // v12 inherits v11's redaction rules verbatim (v12.txt includes the
-        // v11-redactions spec fragment rather than defining its own).
-        "11" | "12" | "12.1" | "org.matrix.msc4242.12" => 11,
-        _ => return RedactionRule::None,
+    // Delegates to RoomVersionFormat::parse as the single source of truth
+    // for which room versions are supported. Failing closed (preserving
+    // nothing) is safer than guessing a permissive rule set.
+    let Some(format) = RoomVersionFormat::parse(room_version) else {
+        return RedactionRule::None;
+    };
+    let ver_num: u32 = match format {
+        RoomVersionFormat::Numeric(n) => n,
+        // MSC4242 inherits v11's redaction rules verbatim.
+        RoomVersionFormat::Msc4242 => 11,
     };
     match event_type {
         crate::basespec::event_types::M_ROOM_CREATE => {
@@ -923,6 +914,30 @@ pub fn canonical_redacted_json(value: &Value, room_version: &str) -> alloc::stri
     out
 }
 
+/// Fallible version of [`canonical_redacted_json`].
+///
+/// Returns `Err` when `room_version` is unsupported or when strict-number
+/// validation rejects a fractional value in a v6+ room. Prefer this over
+/// [`canonical_redacted_json`] when processing untrusted input.
+///
+/// # Errors
+/// Returns `Err` for unsupported room versions or canonical JSON write
+/// failures (e.g. strict-number validation).
+pub fn try_canonical_redacted_json(
+    value: &Value,
+    room_version: &str,
+) -> Result<alloc::string::String, alloc::string::String> {
+    if RoomVersionFormat::parse(room_version).is_none() {
+        return Err(alloc::format!(
+            "no canonical redacted JSON for unsupported room version {room_version}"
+        ));
+    }
+    let mut out = alloc::string::String::new();
+    write_redacted_canonical(&mut out, value, room_version)
+        .map_err(|e| alloc::format!("failed to write canonical JSON: {e}"))?;
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // Zero-copy canonical JSON writer.
 //
@@ -992,8 +1007,8 @@ fn write_json_string<W: core::fmt::Write>(out: &mut W, s: &str) -> core::fmt::Re
 }
 
 /// Returns `Ok(())` if `n` is a valid Matrix Canonical JSON integer for
-/// room versions v6 and later. Rejects fractional values, negative zero,
-/// exponent notation, and out-of-range (beyond ±(2^53 − 1)) numbers.
+/// room versions v6 and later. Rejects fractional values, exponent notation,
+/// and out-of-range (beyond ±(2^53 − 1)) numbers.
 ///
 /// For legacy room versions (pre-v6) no validation is performed.
 fn validate_canonical_number(n: &serde_json::Number) -> Result<(), CanonicalizationError> {
@@ -1001,10 +1016,6 @@ fn validate_canonical_number(n: &serde_json::Number) -> Result<(), Canonicalizat
     // Fractional or exponent form.
     if s.contains('.') || s.contains('e') || s.contains('E') {
         return Err(CanonicalizationError::FractionalOrExponentNumber);
-    }
-    // Negative zero.
-    if s == "-0" {
-        return Err(CanonicalizationError::NegativeZero);
     }
     // Range check: must fit within ±(2^53 − 1).
     if let Some(v) = n.as_i64() {
@@ -1023,7 +1034,7 @@ fn validate_canonical_number(n: &serde_json::Number) -> Result<(), Canonicalizat
 ///
 /// When `strict_numbers` is `true`, numbers are validated against Matrix
 /// Canonical JSON rules (v6+): only integers within ±(2^53 − 1), no
-/// fractional values, no negative zero, and no exponent notation.
+/// fractional values, and no exponent notation.
 fn write_json_value<W: core::fmt::Write>(
     out: &mut W,
     v: &Value,
@@ -1083,7 +1094,7 @@ fn write_json_value<W: core::fmt::Write>(
 ///
 /// When `strict_numbers` is `true`, numbers are validated against Matrix
 /// Canonical JSON rules (v6+): only integers within ±(2^53 − 1), no
-/// fractional values, no negative zero, and no exponent notation.
+/// fractional values, and no exponent notation.
 fn write_content_hash_canonical<W: core::fmt::Write>(
     out: &mut W,
     value: &Value,
@@ -4026,16 +4037,13 @@ mod canonical_parity_tests {
         );
     }
 
-    /// Negative zero is caught by the canonical number validator (defense-in-depth
-    /// for environments with `arbitrary_precision` enabled). Without that feature,
-    /// `serde_json` normalises -0.0 to "0" so the check is unreachable; verify the
-    /// function itself is correct.
+    /// Negative zero is caught by the fractional-number check (without
+    /// `arbitrary_precision`, `serde_json` normalises -0.0 to "-0.0" which
+    /// contains '.'). Verify the function itself is correct.
     #[test]
     fn validate_canonical_number_rejects_negative_zero_string() {
         use super::validate_canonical_number;
         let neg_zero = serde_json::Number::from_f64(-0.0).expect("from_f64");
-        // from_f64(-0.0) preserves the sign as "-0.0" which contains '.', so
-        // the fractional check catches it even before the explicit "-0" guard.
         assert!(
             neg_zero.to_string().contains('.'),
             "from_f64(-0.0) should produce a string with '.'"
@@ -4100,6 +4108,54 @@ mod canonical_parity_tests {
             compute_content_hash(&event, "").is_err(),
             "empty version must be rejected"
         );
+    }
+
+    /// v5 is pre-v6 and must accept fractional numbers (non-strict).
+    #[test]
+    fn v5_accepts_fractional_in_content_hash() {
+        let fractional = json!({"type": "m.room.message", "content": {"v": 1.5}});
+        assert!(
+            compute_content_hash(&fractional, "5").is_ok(),
+            "v5 must accept fractional numbers"
+        );
+    }
+
+    /// v6 and MSC4242 must reject fractional numbers in `content_hash`.
+    #[test]
+    fn v6_and_msc4242_reject_fractional_in_content_hash() {
+        let fractional = json!({"type": "m.room.message", "content": {"v": 1.5}});
+        assert!(
+            compute_content_hash(&fractional, "6").is_err(),
+            "v6 must reject fractional numbers"
+        );
+        assert!(
+            compute_content_hash(&fractional, "org.matrix.msc4242.12").is_err(),
+            "MSC4242 must reject fractional numbers"
+        );
+    }
+
+    /// `reference_hash` and `compute_content_hash` must reject unknown versions
+    /// consistently.
+    #[test]
+    fn unknown_versions_fail_consistently() {
+        let event = json!({"type": "m.room.message", "content": {"body": "hi"}});
+        assert!(reference_hash(&event, "999").is_err());
+        assert!(compute_content_hash(&event, "999").is_err());
+        assert!(
+            try_canonical_redacted_json(&event, "999").is_err(),
+            "try_canonical_redacted_json must reject unknown versions"
+        );
+    }
+
+    /// `reference_hash` and `compute_content_hash` must reject unsupported room
+    /// versions consistently, and all three public APIs must agree.
+    #[test]
+    fn unsupported_versions_fail_across_all_hash_apis() {
+        let event = json!({"type": "m.room.message", "content": {"body": "hi"}});
+        // All three should fail for empty version.
+        assert!(reference_hash(&event, "").is_err());
+        assert!(compute_content_hash(&event, "").is_err());
+        assert!(try_canonical_redacted_json(&event, "").is_err());
     }
 }
 

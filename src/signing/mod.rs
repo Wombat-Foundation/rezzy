@@ -36,7 +36,9 @@ use alloc::string::String;
 use alloc::string::ToString;
 use serde_json::Value;
 
-use crate::basespec::rezzy_types::{canonical_redacted_json, EventVerifier};
+use crate::basespec::rezzy_types::{
+    canonical_redacted_json, try_canonical_redacted_json, EventVerifier,
+};
 
 #[cfg(any(feature = "signing", feature = "signing-dalek"))]
 mod dalek;
@@ -115,7 +117,9 @@ pub fn verify_event_signatures(
         ));
     }
 
-    let message = canonical_redacted_json(value, room_version).into_bytes();
+    let message = try_canonical_redacted_json(value, room_version)
+        .map_err(|e| alloc::format!("failed to compute canonical redacted JSON: {e}"))?
+        .into_bytes();
     let Some(signatures) = value.get("signatures").and_then(Value::as_object) else {
         return Err(alloc::string::String::from(
             "event has no signatures object",
