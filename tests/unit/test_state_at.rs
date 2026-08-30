@@ -1,6 +1,6 @@
 use crate::utils;
 
-use rezzy::{verify_pagination, LeanEvent, PaginationViolation, StateResVersion};
+use rezzy::{verify_pagination, EventType, LeanEvent, PaginationViolation, StateResVersion};
 use std::collections::HashMap;
 
 /// Negative test: `verify_pagination` must detect duplicate events
@@ -1041,8 +1041,8 @@ fn test_interned_key_matches_string_path() {
     );
 }
 
-/// Verifies that integer-backed interned keys (e.g. `InternId(u32)`) and
-/// borrowed `&'a str` satisfy `StateKey` and execute state resolution correctly.
+/// Verifies that an integer-backed interned key (e.g. `InternId(u32)`)
+/// satisfies `StateKey` and executes state resolution correctly.
 #[test]
 fn test_integer_intern_id_as_state_key() {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
@@ -1100,4 +1100,16 @@ fn test_integer_intern_id_as_state_key() {
         .expect("resolution with InternId state key succeeds");
 
     assert_eq!(state.len(), 3);
+    assert_eq!(
+        state.get(&(EventType::RoomCreate, InternId(0))),
+        Some(&"A".to_string())
+    );
+    assert_eq!(
+        state.get(&(EventType::RoomMember, InternId(1))),
+        Some(&"B".to_string())
+    );
+    assert_eq!(
+        state.get(&(EventType::RoomMember, InternId(2))),
+        Some(&"C".to_string())
+    );
 }
