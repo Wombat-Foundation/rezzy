@@ -179,6 +179,22 @@ fn test_prev_state_events_fanout_limit_only_applies_to_v22() {
     assert!(ev.validate_syntactic("org.matrix.msc4242.12").is_err());
 }
 
+/// MSC4242 removes sender-specified `auth_events`; its state-DAG citations
+/// are carried exclusively by `prev_state_events`.
+#[test]
+fn test_msc4242_rejects_legacy_auth_events_field() {
+    let raw = json!({
+        "type": M_ROOM_MEMBER,
+        "state_key": "@a:example.com",
+        "sender": "@a:example.com",
+        "auth_events": ["$forged"],
+        "prev_state_events": ["$state"],
+        "content": {"membership": "join"}
+    });
+    let err = LeanEvent::from_value(&raw, Some("org.matrix.msc4242.12")).unwrap_err();
+    assert!(err.to_string().contains("auth_events is not permitted"));
+}
+
 #[test]
 fn test_validation_rejects_non_state_event_in_prev_state_events() {
     let mut events = HashMap::new();

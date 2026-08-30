@@ -138,6 +138,9 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
         eprintln!(
             "INFO rezzy: room={room_label} room_version={room_version_label} state_res_version={version:?}"
         );
+        eprintln!(
+            "WARNING rezzy is a diagnostic tool: it does not perform federation-grade PDU validation (signatures, required hashes, or full syntactic checks)."
+        );
     }
 
     if !args.quiet {

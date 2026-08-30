@@ -96,7 +96,7 @@ impl LtHash {
     /// The identity element (empty state).
     pub const ZERO: Self = Self([0u16; 1024]);
 
-    /// Domain separation tag (v1 variant, deviates from MSC4500 standard).
+    /// MSC4500 v1 domain separation tag for the primary state accumulator.
     const DST: &'static [u8] = b"msc4500_lthash16_v1\x00";
 
     /// Compute the 2048-byte SHAKE256 expansion for a single state entry.

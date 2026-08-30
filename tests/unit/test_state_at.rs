@@ -88,6 +88,31 @@ fn test_verify_pagination_detects_ancestor_before_descendant() {
     );
 }
 
+/// Pagination checks must follow `prev_events` transitively. A partial page
+/// sequence can omit B while still returning its ancestor A and descendant C.
+#[test]
+fn test_verify_pagination_detects_transitive_ancestor_across_omitted_event() {
+    let events_map: HashMap<String, LeanEvent> = utils::parse_jsonl_events(r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.message","sender":"@x:x","depth":2,"prev_events":["A"],"auth_events":[]}
+{"event_id":"C","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B"],"auth_events":[]}
+    "#).into_iter().map(|e| (e.event_id.clone(), e)).collect();
+
+    let pages: Vec<Vec<String>> = vec![vec!["A".into()], vec!["C".into()]];
+    let violations = verify_pagination(&events_map, &pages);
+    assert!(violations.iter().any(|violation| {
+        matches!(
+            violation,
+            PaginationViolation::AncestorAfterDescendant {
+                ancestor,
+                descendant,
+                ancestor_page: 0,
+                descendant_page: 1,
+            } if ancestor == "A" && descendant == "C"
+        )
+    }));
+}
+
 // ─── Depth inflation regression tests (continuwuity P0.1) ────────────
 
 /// Shared DAG for depth inflation tests. Branch B has `event.depth = 50`

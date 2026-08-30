@@ -308,6 +308,13 @@ impl RoomVersionFormat {
     const fn uses_v12_create_rules(self) -> bool {
         matches!(self, Self::Numeric(v) if v >= 12) || matches!(self, Self::Msc4242)
     }
+
+    /// Returns `true` when event IDs are reference hashes computed by the
+    /// receiving server rather than an `event_id` field supplied by the PDU.
+    #[must_use]
+    const fn uses_reference_hash_event_ids(self) -> bool {
+        !matches!(self, Self::Numeric(1 | 2))
+    }
 }
 
 /// Error type for canonical JSON number validation failures.
@@ -1273,6 +1280,8 @@ pub fn apply_redaction<Id: Clone + core::fmt::Display + 'static, K: Clone>(
 /// 2. **Parsing** — each PDU is converted to a [`LeanEvent`] with
 ///    [`LeanEvent::from_value`], deriving a missing `event_id` from the room
 ///    version's reference hash.
+///    For room versions v3 and later, a supplied `event_id` is rejected: it is
+///    not part of the federation PDU format and the receiver must derive it.
 ///
 /// This function does **not** apply redactions. Applying a redaction requires
 /// authorization against the room's resolved state (the redact power level and
@@ -1289,7 +1298,18 @@ pub fn ingest_events(
     pdus: &[Value],
     room_version: &str,
 ) -> Result<Vec<LeanEvent<String, Value, String>>, alloc::string::String> {
+    let derives_event_ids = RoomVersionFormat::parse(room_version)
+        .is_some_and(RoomVersionFormat::uses_reference_hash_event_ids);
     for pdu in pdus {
+        if derives_event_ids
+            && pdu
+                .get(crate::basespec::event_types::FIELD_EVENT_ID)
+                .is_some()
+        {
+            return Err(alloc::string::String::from(
+                "event_id must be omitted from federation PDUs in room versions v3 and later",
+            ));
+        }
         if pdu
             .get(crate::basespec::event_types::FIELD_HASHES)
             .is_some()
@@ -3176,9 +3196,17 @@ impl LeanEvent<String, Value, String> {
     ) -> Result<LeanEvent<String, Value, String>, serde_json::Error> {
         use crate::basespec::event_types::{
             FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
-            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_REDACTS, FIELD_REJECTED, FIELD_SENDER,
-            FIELD_SOFT_FAIL, FIELD_STATE_KEY, FIELD_TYPE, M_ROOM_REDACTION,
+            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_PREV_STATE_EVENTS, FIELD_REDACTS,
+            FIELD_REJECTED, FIELD_SENDER, FIELD_SOFT_FAIL, FIELD_STATE_KEY, FIELD_TYPE,
+            M_ROOM_REDACTION,
         };
+
+        let is_msc4242 = room_version.is_some_and(is_msc4242_room_version);
+        if is_msc4242 && value.get(FIELD_AUTH_EVENTS).is_some() {
+            return Err(serde::de::Error::custom(
+                "auth_events is not permitted in MSC4242 events; use prev_state_events",
+            ));
+        }
 
         let event_id = if let Some(id) = value.get(FIELD_EVENT_ID).and_then(|v| v.as_str()) {
             String::from(id)
@@ -3300,17 +3328,11 @@ impl LeanEvent<String, Value, String> {
         };
 
         let prev_events = parse_string_array(FIELD_PREV_EVENTS);
-        let auth_events = value
-            .get(FIELD_AUTH_EVENTS)
-            .map(|_| parse_string_array(FIELD_AUTH_EVENTS))
-            .or_else(|| {
-                room_version
-                    .filter(|version| is_msc4242_room_version(version))
-                    .map(|_| {
-                        parse_string_array(crate::basespec::event_types::FIELD_PREV_STATE_EVENTS)
-                    })
-            })
-            .unwrap_or_default();
+        let auth_events = if is_msc4242 {
+            parse_string_array(FIELD_PREV_STATE_EVENTS)
+        } else {
+            parse_string_array(FIELD_AUTH_EVENTS)
+        };
         let depth = match value.get(FIELD_DEPTH) {
             Some(depth) => depth
                 .as_u64()

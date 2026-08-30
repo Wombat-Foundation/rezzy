@@ -28,7 +28,7 @@
 
 use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
-use crate::{DenseIndex, FastMap, HashMap};
+use crate::{DenseIndex, FastMap, FastSet, HashMap};
 use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::string::String;
@@ -1892,18 +1892,28 @@ where
         }
     }
 
-    // 2. Check topological monotonicity (ancestor must not appear before descendant)
+    // 2. Check topological monotonicity (an ancestor must not appear before a
+    // descendant). Walk transitively: a paginator may omit an intermediate
+    // event while still returning both endpoints of an ancestor relationship.
     // In backward pagination, page 0 has the newest events. If event B is on
     // page 1 and B's ancestor A is on page 0 (earlier), that's wrong — A should
     // be on a later page (higher index).
     for (page_idx, page) in pages.iter().enumerate() {
         for id in page {
-            let Some(ev) = events_map.get(id) else {
-                continue;
-            };
-            // Each prev_event is an ancestor. It must be on a page with
-            // index >= this event's page (or not present at all).
-            for parent_id in &ev.prev_events {
+            let mut ancestors = Vec::new();
+            let mut visited: FastSet<&Id> = FastSet::default();
+            if let Some(event) = events_map.get(id) {
+                ancestors.extend(event.prev_events.iter());
+            }
+
+            let mut ancestor_index = 0;
+            while ancestor_index < ancestors.len() {
+                let parent_id = ancestors[ancestor_index];
+                ancestor_index = ancestor_index.saturating_add(1);
+                if !visited.insert(parent_id) {
+                    continue;
+                }
+
                 if let Some(&parent_page) = seen.get(parent_id) {
                     if parent_page < page_idx {
                         violations.push(PaginationViolation::AncestorAfterDescendant {
@@ -1913,6 +1923,10 @@ where
                             descendant_page: page_idx,
                         });
                     }
+                }
+
+                if let Some(parent) = events_map.get(parent_id) {
+                    ancestors.extend(parent.prev_events.iter());
                 }
             }
         }

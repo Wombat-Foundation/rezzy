@@ -3893,10 +3893,9 @@ fn test_content_hash_verification_on_raw_pdu() {
 
 #[test]
 fn test_ingest_events_verifies_hashes_and_preserves_content() {
-    use rezzy::{compute_content_hash, ingest_events};
+    use rezzy::{compute_content_hash, ingest_events, reference_hash};
 
     let msg = serde_json::json!({
-        "event_id": "$msg:example.com",
         "type": "m.room.message",
         "sender": "@bob:example.com",
         "origin_server_ts": 10,
@@ -3904,7 +3903,6 @@ fn test_ingest_events_verifies_hashes_and_preserves_content() {
         "content": { "body": "spam" }
     });
     let redaction = serde_json::json!({
-        "event_id": "$r:example.com",
         "type": "m.room.redaction",
         "sender": "@alice:example.com",
         "origin_server_ts": 11,
@@ -3916,26 +3914,46 @@ fn test_ingest_events_verifies_hashes_and_preserves_content() {
     // Ingest without hashes dicts -> parses both. The target content is
     // preserved: ingest does not apply redactions (that is an
     // authorization-checked step against the resolved state).
+    let message_id = format!("${}", reference_hash(&msg, "11").unwrap());
     let events = ingest_events(&[msg.clone(), redaction.clone()], "11").unwrap();
-    let target = events
-        .iter()
-        .find(|e| e.event_id == "$msg:example.com")
-        .unwrap();
+    let target = events.iter().find(|e| e.event_id == message_id).unwrap();
     assert_eq!(target.content, serde_json::json!({ "body": "spam" }));
     // The redaction event itself is retained.
-    assert!(events.iter().any(|e| e.event_id == "$r:example.com"));
+    assert_eq!(events.len(), 2);
 
     // A valid content hash on the message -> verification passes at ingest.
     let mut hashed = msg.clone();
     let hash = compute_content_hash(&hashed, "11").unwrap();
     hashed["hashes"] = serde_json::json!({ "sha256": hash });
+    let hashed_message_id = format!("${}", reference_hash(&hashed, "11").unwrap());
     let events = ingest_events(&[hashed.clone(), redaction.clone()], "11").unwrap();
-    assert!(events.iter().any(|e| e.event_id == "$msg:example.com"));
+    assert!(events.iter().any(|e| e.event_id == hashed_message_id));
 
     // A tampered content hash -> ingest rejects the batch.
     let mut tampered = hashed.clone();
     tampered["content"] = serde_json::json!({ "body": "evil" });
     assert!(ingest_events(&[tampered, redaction.clone()], "11").is_err());
+}
+
+/// v3+ federation PDUs omit `event_id`; the recipient derives it from the
+/// reference hash. Supplying an arbitrary legacy-style ID must not affect the
+/// identity admitted to state resolution.
+#[test]
+fn test_ingest_events_rejects_explicit_event_id_in_v3_and_later() {
+    use rezzy::ingest_events;
+
+    let pdu = serde_json::json!({
+        "event_id": "$attacker:example.org",
+        "type": "m.room.message",
+        "sender": "@alice:example.org",
+        "origin_server_ts": 1,
+        "content": {"body": "hello"}
+    });
+    let err = ingest_events(&[pdu], "3").unwrap_err();
+    assert!(
+        err.contains("event_id must be omitted"),
+        "unexpected error: {err}"
+    );
 }
 
 /// Coverage: `ingest_events`'s per-PDU parse-error branch (the `?` on
@@ -3949,7 +3967,6 @@ fn test_coverage_ingest_events_parse_error_aborts_batch() {
     // No "type" field -> `from_value` sees an empty event_type and returns
     // Err, surfacing through ingest_events' `map_err(|e| e.to_string())?`.
     let malformed = serde_json::json!({
-        "event_id": "$bad:example.com",
         "sender": "@bob:example.com",
         "origin_server_ts": 10,
         "depth": 1,
@@ -3969,10 +3986,9 @@ fn test_coverage_ingest_events_parse_error_aborts_batch() {
 /// against the resolved room state.
 #[test]
 fn test_ingest_events_does_not_apply_unauthorized_redaction() {
-    use rezzy::ingest_events;
+    use rezzy::{ingest_events, reference_hash};
 
     let msg = serde_json::json!({
-        "event_id": "$msg:example.com",
         "type": "m.room.message",
         "sender": "@bob:example.com",
         "origin_server_ts": 10,
@@ -3981,7 +3997,6 @@ fn test_ingest_events_does_not_apply_unauthorized_redaction() {
     });
     // Mallory (no power, not the target's sender) attempts to redact Bob's message.
     let redaction = serde_json::json!({
-        "event_id": "$r:example.com",
         "type": "m.room.redaction",
         "sender": "@mallory:example.com",
         "origin_server_ts": 11,
@@ -3990,11 +4005,9 @@ fn test_ingest_events_does_not_apply_unauthorized_redaction() {
         "content": { "redacts": "$msg:example.com" }
     });
 
+    let message_id = format!("${}", reference_hash(&msg, "11").unwrap());
     let events = ingest_events(&[msg, redaction], "11").unwrap();
-    let target = events
-        .iter()
-        .find(|e| e.event_id == "$msg:example.com")
-        .unwrap();
+    let target = events.iter().find(|e| e.event_id == message_id).unwrap();
     assert_eq!(
         target.content,
         serde_json::json!({ "body": "spam" }),
