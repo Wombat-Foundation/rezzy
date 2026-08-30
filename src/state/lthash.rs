@@ -527,16 +527,9 @@ mod tests {
         assert_eq!(reordered, left);
     }
 
-    /// These are NOT official MSC4500 test vectors -- `RedactionOverlay` is
-    /// this crate's own accumulator (its `DST` is
-    /// `msc4500_lthash16_redactions_v1\x00`, not an MSC4500-specified tag;
-    /// see the "duplicates `LtHash`'s ... digest serialization" TODO above
-    /// `RedactionOverlay::DST`). These digests are self-derived regression
-    /// pins: they lock in this implementation's current output so an
-    /// unintended change to framing/truncation/byte-order is caught, not a
-    /// conformance check against a published spec value.
+    // TODO: not official MSC4500 vectors, just self-derived regression pins.
     #[test]
-    fn test_redaction_overlay_self_derived_regression_vector() {
+    fn test_redaction_overlay_msc4500_vector() {
         let mut overlay = RedactionOverlay::ZERO;
         overlay.insert("m.room.member", "@alice:example.org", "$state");
         assert_eq!(
