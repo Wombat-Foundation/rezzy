@@ -906,6 +906,10 @@ pub fn verify_content_hash(value: &Value, room_version: &str) -> Result<(), allo
 /// rooms) or if the canonical JSON cannot be serialized. The latter is
 /// unreachable for a `serde_json::Value` (a safe `Value` cannot hold a
 /// non-finite number); the former is a caller invariant.
+/// Infallible version of [`try_canonical_redacted_json`] for
+/// already-validated input. **Panics** on strict-number validation failure
+/// (fractional numbers in v6+ rooms). Prefer [`try_canonical_redacted_json`]
+/// when processing untrusted events.
 #[must_use]
 pub fn canonical_redacted_json(value: &Value, room_version: &str) -> alloc::string::String {
     let mut out = alloc::string::String::new();
@@ -2773,7 +2777,10 @@ fn room_version_is_v6_or_later(room_version: &str) -> bool {
 }
 
 fn is_msc4242_room_version(room_version: &str) -> bool {
-    room_version == "org.matrix.msc4242.12"
+    matches!(
+        RoomVersionFormat::parse(room_version),
+        Some(RoomVersionFormat::Msc4242)
+    )
 }
 
 /// Returns `true` if the room version uses v12 create-event rules.
@@ -4037,11 +4044,11 @@ mod canonical_parity_tests {
         );
     }
 
-    /// Negative zero is caught by the fractional-number check (without
-    /// `arbitrary_precision`, `serde_json` normalises -0.0 to "-0.0" which
-    /// contains '.'). Verify the function itself is correct.
+    /// Negative zero (-0.0) is caught by the fractional-number check:
+    /// `serde_json` serialises it as "-0.0" which contains '.', so the
+    /// fractional branch rejects it.
     #[test]
-    fn validate_canonical_number_rejects_negative_zero_string() {
+    fn validate_canonical_number_rejects_negative_zero_f64() {
         use super::validate_canonical_number;
         let neg_zero = serde_json::Number::from_f64(-0.0).expect("from_f64");
         assert!(
@@ -4131,6 +4138,45 @@ mod canonical_parity_tests {
         assert!(
             compute_content_hash(&fractional, "org.matrix.msc4242.12").is_err(),
             "MSC4242 must reject fractional numbers"
+        );
+    }
+
+    /// v6 and MSC4242 must reject fractional numbers consistently across all
+    /// three fallible public APIs: `compute_content_hash`, `reference_hash`, and
+    /// `try_canonical_redacted_json`.
+    #[test]
+    fn strict_number_rejection_consistent_across_all_apis() {
+        // Use origin_server_ts (a preserved key) to ensure the fractional
+        // survives redaction and is seen by the canonical writer.
+        let fractional = json!({
+            "type": "m.room.message",
+            "sender": "@a:x",
+            "origin_server_ts": 1.5,
+            "content": {"body": "hi"}
+        });
+        assert!(
+            compute_content_hash(&fractional, "6").is_err(),
+            "compute_content_hash v6"
+        );
+        assert!(
+            reference_hash(&fractional, "6").is_err(),
+            "reference_hash v6"
+        );
+        assert!(
+            try_canonical_redacted_json(&fractional, "6").is_err(),
+            "try_canonical_redacted_json v6"
+        );
+        assert!(
+            compute_content_hash(&fractional, "org.matrix.msc4242.12").is_err(),
+            "compute_content_hash MSC4242"
+        );
+        assert!(
+            reference_hash(&fractional, "org.matrix.msc4242.12").is_err(),
+            "reference_hash MSC4242"
+        );
+        assert!(
+            try_canonical_redacted_json(&fractional, "org.matrix.msc4242.12").is_err(),
+            "try_canonical_redacted_json MSC4242"
         );
     }
 
