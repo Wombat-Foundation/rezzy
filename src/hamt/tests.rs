@@ -897,6 +897,73 @@ fn test_persist_mutations_and_chain_with_key_hash() {
     assert_eq!(batched_root.structural_hash, chained_root.structural_hash);
 }
 
+/// A no-op custom-hash mutation (removing a key that isn't present) must
+/// leave the root's structural hash unchanged and report no newly created
+/// nodes -- `persist_mutation_with_key_hash` clears its scratch `created`
+/// buffer when the new root turns out identical to `prev_root`, rather than
+/// reporting phantom nodes that were built (via `finalize_remove_root`'s
+/// no-op path) but never actually became part of the published tree.
+#[test]
+fn test_persist_mutation_with_key_hash_noop_reports_no_created_nodes() {
+    let key = b"dummy_server_key";
+    let mut resolver =
+        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+
+    let initial: Vec<(u64, u64)> = (0_u64..10).map(|i| (i, i * 10)).collect();
+    let root = crate::hamt::build_hamt_with_key_hash(key, initial, linear_key_hash)
+        .expect("build with custom hash should work");
+
+    let (new_root, displaced, created) = crate::hamt::persist_mutation_with_key_hash(
+        &root,
+        key,
+        9999_u64, // absent key
+        None,
+        linear_key_hash,
+        &mut resolver,
+    )
+    .expect("no-op remove should still succeed");
+
+    assert_eq!(displaced, None);
+    assert_eq!(new_root.structural_hash, root.structural_hash);
+    assert!(
+        created.is_empty(),
+        "a no-op mutation must not report any created nodes"
+    );
+}
+
+/// A batch of custom-hash mutations that nets out to the identity (insert
+/// then remove the same key) must take `persist_mutations_with_key_hash`'s
+/// early-return no-op path: unchanged root, no diff pass, no created nodes.
+#[test]
+fn test_persist_mutations_with_key_hash_noop_batch_short_circuits() {
+    let key = b"dummy_server_key";
+    let mut resolver =
+        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+
+    let initial: Vec<(u64, u64)> = (0_u64..10).map(|i| (i, i * 10)).collect();
+    let root = crate::hamt::build_hamt_with_key_hash(key, initial, linear_key_hash)
+        .expect("build with custom hash should work");
+
+    // Net effect is identity: insert a new key, then remove it again.
+    let batch: Vec<(u64, Option<u64>)> = alloc::vec![(1000, Some(1)), (1000, None)];
+
+    let (final_root, displaced_vec, created) = crate::hamt::persist_mutations_with_key_hash(
+        &root,
+        key,
+        batch,
+        linear_key_hash,
+        &mut resolver,
+    )
+    .expect("net-identity batch should still succeed");
+
+    assert_eq!(displaced_vec, alloc::vec![None, Some(1_u64)]);
+    assert_eq!(final_root.structural_hash, root.structural_hash);
+    assert!(
+        created.is_empty(),
+        "a net-identity batch must not report any created nodes"
+    );
+}
+
 #[test]
 fn test_hamt_search_propagates_resolver_error() {
     let key = b"dummy_server_key";
@@ -5421,5 +5488,92 @@ fn test_descend_level_rejects_corruption() {
         Err(DescendError::CorruptNode(
             "HAMT depth exceeds routing limit"
         ))
+    );
+}
+
+/// `descend_level` requires every entry in a single `nodes_and_keys` call to
+/// share the same `depth` — mixing depths would merge requests from
+/// different levels into one frontier and misroute subsequent lookups.
+#[test]
+fn test_descend_level_rejects_mixed_depth_batch() {
+    let key = b"mixed_depth_key";
+    let root = build_hamt(key, vec![(42_u32, 100_u64)]).expect("build root");
+    let node_bytes = PersistedInternalNode::from(root.as_ref()).encode_v1();
+    let req_hash = crate::hamt::key_path_hash(key, &42_u32);
+
+    let res = descend_level::<u32, u64, _>(
+        key,
+        &[
+            (root.structural_hash, &node_bytes, 0, &[req_hash]),
+            (root.structural_hash, &node_bytes, 1, &[req_hash]),
+        ],
+        |k| crate::hamt::key_path_hash(key, k),
+    );
+    assert_eq!(
+        res,
+        Err(DescendError::CorruptNode(
+            "mixed-depth entries in a single descend_level call"
+        ))
+    );
+}
+
+/// `descend_level` validates that the decoded leaf key at a slot actually
+/// routes to that slot under the caller's `key_hash_fn`. A node tampered so
+/// its leaf key no longer agrees with its own bitmap slot -- while keeping
+/// the structural hash internally consistent with the tampered contents --
+/// must be rejected as corrupt rather than silently returning the wrong
+/// leaf or treating the requested key as absent.
+#[test]
+fn test_descend_level_rejects_leaf_routed_to_wrong_slot() {
+    let key = b"wrong_slot_key";
+    let root = build_hamt(key, vec![(42_u32, 100_u64)]).expect("build root");
+    let original_slot = bucket_index(&crate::hamt::key_path_hash(key, &42_u32), 0);
+
+    // Find a replacement leaf key that hashes to a *different* slot at depth 0.
+    let mut wrong_key = 42_u32;
+    loop {
+        wrong_key += 1;
+        if bucket_index(&crate::hamt::key_path_hash(key, &wrong_key), 0) != original_slot {
+            break;
+        }
+    }
+
+    // Swap the leaf key in place (keeping the same datamap/nodemap bits, so
+    // it's still stored under 42's original slot), then recompute the
+    // structural hash from the tampered contents so the outer hash checks
+    // (which only prove internal self-consistency, not semantic routing
+    // correctness) pass.
+    let mut corrupt_node = PersistedInternalNode::<u32, u64>::from(root.as_ref());
+    corrupt_node.leaves[0].0 = wrong_key;
+    let decoded_children: Vec<NodeRef<u32, u64>> = corrupt_node
+        .child_hashes
+        .iter()
+        .copied()
+        .map(NodeRef::Lazy)
+        .collect();
+    let recomputed_hash = HamtNode::compute_structural_hash(
+        key,
+        corrupt_node.datamap,
+        corrupt_node.nodemap,
+        &corrupt_node.leaves,
+        &decoded_children,
+    );
+    // The embedded `structural_hash` field is checked against both the
+    // caller's requested hash and a fresh recompute from the decoded
+    // contents; it must be updated to match the tampered leaf too, or this
+    // test would just be exercising the "hash mismatch" cases already
+    // covered above instead of the routing check.
+    corrupt_node.structural_hash = recomputed_hash;
+    let corrupt_bytes = corrupt_node.encode_v1();
+
+    let req_hash = crate::hamt::key_path_hash(key, &42_u32);
+    let res = descend_level::<u32, u64, _>(
+        key,
+        &[(recomputed_hash, &corrupt_bytes, 0, &[req_hash])],
+        |k| crate::hamt::key_path_hash(key, k),
+    );
+    assert_eq!(
+        res,
+        Err(DescendError::CorruptNode("leaf routed to wrong slot"))
     );
 }
