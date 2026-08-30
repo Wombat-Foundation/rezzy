@@ -2791,11 +2791,10 @@ impl EventContent for Value {
 /// Malformed/unparseable input is treated as pre-v11 (i.e. not strict) for
 /// this byte-limit decision, but callers may still reject an unsupported
 /// `room_version` before reaching this helper.
-/// Returns `true` if the room version requires v11 redaction rules.
+/// Returns `true` if the room version uses v11 redaction rules.
 ///
-/// Delegates to [`RoomVersionFormat::uses_v11_redaction_rules`] for the
-/// authoritative capability check, falling back to `false` for unparsable
-/// version strings.
+/// This is the parsed/capability-aware form of the major-version check, so it
+/// also covers non-numeric versions that map to the same redaction behavior.
 fn room_version_is_v11_or_later(room_version: &str) -> bool {
     RoomVersionFormat::parse(room_version).is_some_and(RoomVersionFormat::uses_v11_redaction_rules)
 }
@@ -2810,6 +2809,11 @@ fn room_version_is_v6_or_later(room_version: &str) -> bool {
         .is_some_and(RoomVersionFormat::requires_strict_canonical_numbers)
 }
 
+/// Returns `true` when the room version is the MSC4242 State DAG format.
+///
+/// This remains a dedicated helper because several call sites need the exact
+/// wire-level identifier, not just the broader state-resolution capability
+/// bucket.
 fn is_msc4242_room_version(room_version: &str) -> bool {
     matches!(
         RoomVersionFormat::parse(room_version),

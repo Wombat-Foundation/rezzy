@@ -1355,6 +1355,11 @@ where
     )
 }
 
+/// Validates the complete `prev_state_events` closure reachable from `event`.
+///
+/// This checks indirect ancestors too, so a malformed ancestor several hops
+/// away cannot slip through just because the target's immediate parents are
+/// valid.
 fn validate_state_dag_ancestors<Id, C, S, K>(
     event: &LeanEvent<Id, C, K>,
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
@@ -1385,6 +1390,8 @@ where
     Ok(())
 }
 
+/// Finalizes `compute_state_before_from_dag` by gathering the target's parent
+/// states and resolving the fork if necessary.
 #[allow(clippy::too_many_arguments)]
 fn finish_state_after_from_dag<Id, C, S, K>(
     event: &LeanEvent<Id, C, K>,

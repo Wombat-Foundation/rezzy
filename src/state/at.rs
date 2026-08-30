@@ -2247,6 +2247,11 @@ where
     }
 }
 
+/// Optimized state-streaming pipeline for fork-heavy DAGs.
+///
+/// This variant reuses the persistent `mainline_cache` across the whole
+/// traversal and yields `StateUpdate` values for target events, avoiding the
+/// extra cloning performed by the plain streaming path.
 fn run_state_pipeline_streaming_optimized<'a, Id, C, S, F, E, K>(
     index: &DenseIndex<&'a Id, usize>,
     is_target: &[bool],
