@@ -372,6 +372,22 @@ fn test_encode_v1_panics_when_datamap_nodemap_overlap() {
 }
 
 #[test]
+fn test_persisted_node_conversion_rejects_overlapping_datamap_nodemap() {
+    let node = PersistedInternalNode::<i32, i32> {
+        datamap: 0b01,
+        nodemap: 0b01,
+        structural_hash: [0xaa; 16],
+        leaves: vec![(1, 10)],
+        child_hashes: vec![[0x11; 16]],
+    };
+
+    assert!(matches!(
+        crate::hamt::HamtNode::try_from(node),
+        Err("PersistedInternalNode datamap and nodemap overlap")
+    ));
+}
+
+#[test]
 fn test_hamt_codec_numeric_round_trips() {
     use crate::hamt::codec::HamtCodec;
 

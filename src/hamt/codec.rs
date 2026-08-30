@@ -382,6 +382,10 @@ impl<K, V> core::convert::TryFrom<PersistedInternalNode<K, V>> for crate::hamt::
     type Error = &'static str;
 
     fn try_from(persisted: PersistedInternalNode<K, V>) -> Result<Self, Self::Error> {
+        if (persisted.datamap & persisted.nodemap) != 0 {
+            return Err("PersistedInternalNode datamap and nodemap overlap");
+        }
+
         let expected_children = persisted.nodemap.count_ones() as usize;
         if persisted.child_hashes.len() != expected_children {
             return Err("PersistedInternalNode child count does not match nodemap");
