@@ -38,6 +38,7 @@ where
     /// # Panics
     ///
     /// Will panic if any internal graph invariants are violated during topological sorting.
+    /// Will also panic if `sort_context` contains more events than a `u32` index can address.
     #[must_use]
     pub fn build<C: Clone, S: core::hash::BuildHasher>(
         sort_context: &HashMap<Id, LeanEvent<Id, C>, S>,

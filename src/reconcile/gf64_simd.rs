@@ -322,7 +322,11 @@ mod tests {
     use super::*;
     use alloc::{string::String, vec::Vec};
 
-    #[cfg(all(target_arch = "x86_64", not(has_avx512_support)))]
+    #[cfg(all(
+        feature = "std",
+        target_arch = "x86_64",
+        not(has_avx512_support)
+    ))]
     #[test]
     fn select_evaluator_backend_prefers_sse_then_scalar() {
         assert_eq!(select_evaluator_backend(true, true), EvaluatorBackend::Sse);

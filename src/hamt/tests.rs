@@ -895,6 +895,15 @@ fn test_persist_mutations_and_chain_with_key_hash() {
     // Both batch styles must converge to the same final structural hash as
     // each other and as a direct rebuild.
     assert_eq!(batched_root.structural_hash, chained_root.structural_hash);
+
+    let expected_entries: Vec<(u64, u64)> = (0_u64..20)
+        .filter(|&k| k != 5)
+        .map(|k| (k, k * 10))
+        .chain([(100, 1), (101, 2)])
+        .collect();
+    let rebuilt = crate::hamt::build_hamt_with_key_hash(key, expected_entries, linear_key_hash)
+        .expect("rebuild should work");
+    assert_eq!(batched_root.structural_hash, rebuilt.structural_hash);
 }
 
 /// A no-op custom-hash mutation (removing a key that isn't present) must

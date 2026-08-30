@@ -84,19 +84,18 @@ fn test_assert_jsonl_state_eq_detects_mismatch() {
     "#,
     );
 
-    // NOTE: `LeanEvent`'s `PartialEq` compares `event_id` only (see
+    // `LeanEvent`'s own `PartialEq` compares `event_id` only (see
     // `impl PartialEq for LeanEvent` in src/basespec/rezzy_types.rs -- this
     // is deliberate, so `LeanEvent` can be used as a set/map element keyed
-    // by event_id), so `assert_jsonl_state_eq`/`assert_jsonl_events_eq` can
-    // only detect mismatches that change which event_ids are present, not
-    // mismatches confined to other fields (e.g. sender/content) on an event
-    // with a matching event_id. This negative case therefore uses a
-    // different event_id to exercise what the asserter can actually catch.
+    // by event_id). `assert_jsonl_state_eq` goes through `lean_events_fully_eq`
+    // instead (see tests/utils/mod.rs), which is field-by-field, so this
+    // negative case keeps `event_id` identical and changes only `sender` to
+    // specifically exercise that stronger comparison rather than `PartialEq`.
     utils::assert_jsonl_state_eq(
         &state,
         r#"
         {"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@alice:matrix.org"}
-        {"event_id": "$pl_other", "type": "m.room.power_levels", "state_key": "", "sender": "@alice:matrix.org"}
+        {"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@bob:matrix.org"}
     "#,
     );
 }
@@ -111,14 +110,15 @@ fn test_assert_jsonl_events_eq_detects_mismatch() {
     "#,
     );
 
-    // The expected fixture below has a different event_id for the second
-    // event, so this asserter MUST panic. If it doesn't, the asserter is a
-    // no-op and would silently accept any mismatched event list.
+    // Same event_id for the second event, but a different `sender` -- this
+    // specifically exercises `lean_events_fully_eq`'s field-by-field
+    // comparison (see tests/utils/mod.rs), not just `LeanEvent::PartialEq`
+    // (which is event_id-only and would wrongly consider this a match).
     utils::assert_jsonl_events_eq(
         &events,
         r#"
         {"event_id": "$msg1", "type": "m.room.message", "sender": "@alice:matrix.org"}
-        {"event_id": "$msg_other", "type": "m.room.message", "sender": "@bob:matrix.org"}
+        {"event_id": "$msg2", "type": "m.room.message", "sender": "@carol:matrix.org"}
     "#,
     );
 }

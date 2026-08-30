@@ -30,7 +30,7 @@ fix:	##H Clippy auto-fix
 
 .PHONY: lint
 lint: ##H Run all linters
-	$(CARGO) clippy --all-targets $(CARGO_FEATURE_ARGS); \
+	$(CARGO) clippy --all-targets $(CARGO_FEATURE_ARGS)
 
 .PHONY: doc rust/doc
 doc: rust/doc ##H Alias for rust/doc

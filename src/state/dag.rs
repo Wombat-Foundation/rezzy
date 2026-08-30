@@ -1444,14 +1444,25 @@ mod targeted_coverage_tests {
 
     #[test]
     fn ancestor_collection_reports_dense_index_allocation_failure() {
+        // Resets the thread-local force-allocation-failure hook on drop, even
+        // if the assertion below panics -- otherwise a failing assertion
+        // would leave the hook stuck on and spuriously fail every later test
+        // in this thread that touches `DenseIndex`.
+        struct ResetOnDrop;
+        impl Drop for ResetOnDrop {
+            fn drop(&mut self) {
+                crate::dense_index::set_force_allocation_failure(false);
+            }
+        }
+
         let root = event("$root", M_ROOM_CREATE, Some(""));
         let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
         events.insert(root.event_id.clone(), root);
         let target = "$root".to_string();
 
         crate::dense_index::set_force_allocation_failure(true);
+        let _guard = ResetOnDrop;
         let result = collect_state_dag_ancestor_short_ids_batch(&[&target], &events);
-        crate::dense_index::set_force_allocation_failure(false);
 
         assert_eq!(result, Err(AncestorCollectError::IndexOverflow));
     }

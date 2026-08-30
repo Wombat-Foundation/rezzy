@@ -99,7 +99,7 @@ impl IndexedUniverse {
         // `bitmap_node_reachability_audit` converts `universe.len()` to `u32`
         // for roaring bitmap indexing, so cap at `u32::MAX` — one less than
         // the raw `DenseIndex<StructuralHash>` addressable slot count.
-        DenseIndex::try_build_bounded(universe, u32::MAX as usize + 1)
+        DenseIndex::try_build_bounded(universe, (u32::MAX as usize).saturating_add(1))
             .map(Self)
             .map_err(Into::into)
     }

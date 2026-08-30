@@ -222,8 +222,8 @@ where
     /// - Child hashes (`16 * child_count` bytes in nodemap order)
     ///
     /// # Panics
-    /// Panics if the payload lengths disagree with the bitmaps or if the
-    /// payloads would overflow `usize`.
+    /// Panics if the payload lengths disagree with the bitmaps, if `datamap`
+    /// and `nodemap` overlap, or if the payloads would overflow `usize`.
     #[must_use]
     pub fn encode_v1(&self) -> Vec<u8> {
         let leaf_slots = self.datamap.count_ones() as usize;

@@ -33,7 +33,8 @@ perf.data*
 /*.html
 
 # assets and fixtures
-*.png
+assets/**/*.png
+fixtures/**/*.png
 
 # paper
 paper.aux

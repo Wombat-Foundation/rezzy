@@ -49,7 +49,10 @@ fn provision_capacity(delta: u64, headroom: u64) -> Option<u64> {
 }
 
 fn derive_gate_threshold(max_rounds: usize) -> Option<u64> {
-    u64::try_from(max_rounds.saturating_mul(MAX_BUCKETED_SKETCH_CAPACITY)).ok()
+    // Widen to u64 before multiplying: on 32-bit targets, saturating_mul in
+    // usize would silently cap at usize::MAX well below the real threshold
+    // for large max_rounds, weakening the configured reconciliation limit.
+    (max_rounds as u64).checked_mul(MAX_BUCKETED_SKETCH_CAPACITY as u64)
 }
 
 /// Requester policy for one MSC0501 reconciliation exchange.
