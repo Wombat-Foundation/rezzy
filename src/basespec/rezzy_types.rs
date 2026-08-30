@@ -428,6 +428,49 @@ mod room_version_format_tests {
     }
 }
 
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod canonicalization_error_tests {
+    use super::{validate_canonical_number, CanonicalizationError};
+    use alloc::string::ToString;
+
+    #[test]
+    fn display_variants() {
+        assert_eq!(
+            CanonicalizationError::FractionalOrExponentNumber.to_string(),
+            "fractional or exponent-form number in canonical JSON"
+        );
+        assert_eq!(
+            CanonicalizationError::NegativeZero.to_string(),
+            "negative zero in canonical JSON"
+        );
+        assert_eq!(
+            CanonicalizationError::OutOfRangeNumber.to_string(),
+            "out-of-range number in canonical JSON"
+        );
+        assert_eq!(
+            CanonicalizationError::FmtError.to_string(),
+            "canonical JSON write failed"
+        );
+    }
+
+    #[test]
+    fn from_fmt_error() {
+        let e: CanonicalizationError = core::fmt::Error.into();
+        assert_eq!(e, CanonicalizationError::FmtError);
+    }
+
+    #[test]
+    fn validate_rejects_large_u64() {
+        let n = serde_json::Number::from(u64::MAX);
+        assert!(n.as_i64().is_none(), "u64::MAX must not fit in i64");
+        assert_eq!(
+            validate_canonical_number(&n),
+            Err(CanonicalizationError::OutOfRangeNumber)
+        );
+    }
+}
+
 /// The set of `content` keys preserved for an event type upon redaction.
 ///
 /// A flat key list cannot distinguish "preserve everything" from "preserve
