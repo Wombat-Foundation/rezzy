@@ -1,4 +1,81 @@
 ##############################
+08/30/2026
+##############################
+
+
+• No. I would not make this a single “everything happens here” ingestion function.
+
+  The repo already has three distinct layers:
+
+   Layer                          What it owns                                     Current code
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━
+   Raw PDU admission              shape checks, room-version gating, maybe         src/basespec/
+                                  content-hash precheck                            rezzy_types.rs:1
+                                                                                   290
+  ─────────────────────────────  ───────────────────────────────────────────────  ──────────────────
+   Signature/hash verification    canonical redaction, hashes.sha256, ed25519      src/signing/
+                                  signatures, event-id hash                        mod.rs:111, src/
+                                                                                   signing/
+                                                                                   dalek.rs:111
+  ─────────────────────────────  ───────────────────────────────────────────────  ──────────────────
+   Auth / state rules             create rules, restricted joins, 3PI, state-      src/auth/
+                                  derived authorization                            mod.rs:548
+
+  Where the checks are called today:
+
+  - verify_content_hash is called from ingest_events and from the auth verifier hook via
+    NativeVerifier.
+
+  - verify_event_signatures is called from NativeVerifier::verify_signatures.
+  - verify_event_id_hash is only used through the auth verifier hook, not directly by ingest.
+  - verify_third_party_invite and verify_join_authorised_via_users_server are only used inside auth.
+  - verify_sequential_strict is the batch signature path in src/signing/dalek.rs.
+  - reference_hash / compute_content_hash are the shared canonical-hash primitives used by signing,
+    ingest, auth hooks, and tests.
+
+  So the clean refactor scope is:
+
+  1. Keep ingest_events as the raw conversion/precheck layer.
+  2. Add a stricter PDU-admission API if you want one entry point for federation receipt.
+  3. Leave signature and auth verification as separate layers, because auth deliberately reuses
+     those same verification primitives after parsing.
+
+  In other words, the “singular point” should be the strict wire-admission API, not the whole
+  verification stack. The hash/signature methods are already split by responsibility, and collapsing
+  them into one function would blur signing and auth in a way this codebase currently avoids.
+
+  If you want, I can map the exact minimal strict-ingest shape next, including which checks belong
+  in ingest_events versus verify_event_signatures versus auth::check_*.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+─ Conversation recap ───────────────────────────────────────────────────────────────────────────────
+
+  We’re scoping the refactor, not collapsing everything into one ingestion function; the repo
+  appears to have distinct layers, and the open question is where hash/sig checks are actually
+  called across modules. Next step is to enumerate all call sites and define the real boundary.
+
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+• The next pass confirms the two reported issues are isolated to the raw LeanEvent ingestion path:
+
+  - RawEvent/ParsedEvent can represent separate MSC4242 auth_events and prev_state_events; the lossy
+    preference happens only in LeanEvent::from_value.
+
+  - ingest_events is explicitly a partial-PDU helper: it skips absent hashes and never calls
+    validate_syntactic. That is a documented design limitation, so I’m not counting it as a separate
+    defect yet.
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+##############################
 08/29/2026
 ##############################
 
