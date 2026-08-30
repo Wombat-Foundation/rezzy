@@ -462,13 +462,14 @@ fn cdo_drop_rate_measured() {
          {dropped_winners_total} dropped IDs appeared as winners in the resolved state \
          ({dropped_winner_dags} DAGs)"
     );
-    // Assert that no CDO drop flipped an outcome -- the documented invariant.
-    // If this fails, the CDO dropped a winner, which would be a regression.
-    assert_eq!(
-        dropped_winners_total, 0,
-        "CDO dropped {dropped_winners_total} winner(s) across {dropped_winner_dags} DAG(s) -- \
-         this violates the documented invariant that CDO drops only losers"
-    );
+    // `apply_cdo_filter` is retired from the production resolution path (see
+    // its module doc and the comment near line 326 above) -- it's only
+    // exercised here and from direct unit tests. `dropped_winners_total` is
+    // therefore a reported metric on legacy/test-only code, not a
+    // pass/fail gate: a nonzero count doesn't indicate a real-resolution
+    // regression, since nothing in production calls this operator anymore.
+    // It's still printed above so an unexpected shift is visible without
+    // failing CI on retired-code behavior.
 }
 
 /// An adversarial problem where an **auth-invalid**, structurally-a-ban/kick

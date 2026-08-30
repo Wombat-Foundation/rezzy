@@ -72,13 +72,15 @@ test = false
 default = ["std"]
 std = ["alloc", "serde_json/std", "serde/std", "dep:roaring"]
 alloc = []
-# NOTE: `cli` has a higher effective MSRV floor than the crate's declared
-# `rust-version` above -- not an oversight, only the default/library build
-# is held to `rust-version = "1.81"`. `zeroize` is pinned below because
-# 1.9.0 (transitive via ureq/tls -> rustls) declares `rust-version = "1.85"`,
-# above even the 1.82.0 CI job that currently tests this feature; see the
-# comment on the `cli feature` matrix entries in .github/workflows/rust.yml
-# for the full picture and how to re-derive this.
+# NOTE: `cli` is tested at the same 1.81.0 MSRV as the default build (see
+# the `cli feature` matrix entry in .github/workflows/rust.yml for the full
+# picture). `zeroize` is pinned below to 1.8.1 (rust-version = "1.60")
+# because 1.9.0 (transitive via ed25519-consensus, a *dev*-dependency used
+# for differential signing tests, unrelated to `cli`/ureq) declares
+# rust-version = "1.85" and broke even the default-features job once
+# `cargo clippy --all-targets` pulled dev-deps in. With that pin,
+# `cargo metadata --features cli` shows clap (1.74) as the real `cli` MSRV
+# floor -- below the crate's own 1.81, not above it.
 cli = [
     "std",
     "dep:clap",
