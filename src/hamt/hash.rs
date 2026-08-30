@@ -21,34 +21,14 @@ pub const HAMT_CODEC_VERSION_V1: u8 = 1;
 pub const HAMT_ROUTING_VERSION_V1: u8 = 1;
 
 /// A resolved root handle carrying the local structural hash, global state-group identifier,
-/// and explicit codec/routing version metadata for migration safety.
-///
-/// Legacy pre-change handles (missing the version fields) deserialize with
-/// `codec_version`/`routing_version` defaulting to [`HAMT_CODEC_VERSION_V1`]/
-/// [`HAMT_ROUTING_VERSION_V1`] (not a bare zero, which could be mistaken for a
-/// real "version 0" format) -- matching what [`RootHandle::from_lthash`]
-/// would have produced for the same data, so a legacy payload round-trips
-/// through this struct identically to a freshly-built v1 handle.
-/// Bincode payloads shifted by the added fields still require a versioned
-/// migration or explicit data migration for recovery.
+/// and explicit codec/routing version metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RootHandle {
-    #[serde(default = "default_codec_version_v1")]
     pub codec_version: u8,
-    #[serde(default = "default_routing_version_v1")]
     pub routing_version: u8,
-    #[serde(default)]
     pub routing_params: [u8; 4],
     pub structural_hash: StructuralHash,
     pub state_group_id: StateGroupId,
-}
-
-fn default_codec_version_v1() -> u8 {
-    HAMT_CODEC_VERSION_V1
-}
-
-fn default_routing_version_v1() -> u8 {
-    HAMT_ROUTING_VERSION_V1
 }
 
 impl RootHandle {
@@ -138,35 +118,5 @@ mod tests {
         let mut set = HashSet::new();
         set.insert(handle.clone());
         assert!(set.contains(&handle));
-    }
-
-    /// A legacy JSON payload missing `codec_version`/`routing_version`
-    /// entirely (as any `RootHandle` serialized before those fields existed
-    /// would be) must deserialize to the same handle
-    /// `RootHandle::from_lthash` would have produced for the same
-    /// `structural_hash`/`state_group_id` -- i.e. explicit v1, not a bare zero
-    /// that could be confused with a real "version 0" format.
-    #[test]
-    fn test_legacy_payload_defaults_to_explicit_v1_not_zero() {
-        let legacy_json = serde_json::json!({
-            "routing_params": [0, 0, 0, 0],
-            "structural_hash": alloc::vec![1_u8; 16],
-            "state_group_id": alloc::vec![2_u8; 32],
-        });
-        let decoded: RootHandle = serde_json::from_value(legacy_json).expect("legacy decode");
-
-        assert_eq!(decoded.codec_version, HAMT_CODEC_VERSION_V1);
-        assert_eq!(decoded.routing_version, HAMT_ROUTING_VERSION_V1);
-
-        let lattice = crate::state::LtHash::ZERO;
-        let fresh = RootHandle::from_lthash([1; 16], &lattice);
-        assert_eq!(decoded.codec_version, fresh.codec_version);
-        assert_eq!(decoded.routing_version, fresh.routing_version);
-
-        // Round-trips: re-encoding the decoded handle and decoding it again
-        // is a no-op.
-        let reencoded = serde_json::to_value(&decoded).expect("re-encode");
-        let redecoded: RootHandle = serde_json::from_value(reencoded).expect("re-decode");
-        assert_eq!(decoded, redecoded);
     }
 }
