@@ -673,12 +673,41 @@ fn test_v2_1_1_cve_demotion_evasion() {
     let mut auth_context = std::collections::HashMap::new();
     auth_context.insert("$create".to_string(), create_ev);
     auth_context.insert("$pl_promo".to_string(), pl_promo.clone());
-    auth_context.insert("$join_rules".to_string(), join_rules);
+    auth_context.insert("$join_rules".to_string(), join_rules.clone());
     auth_context.insert("$eve_join".to_string(), eve_join.clone());
     auth_context.insert("$pl_demote".to_string(), pl_demote.clone());
 
+    let mut unconflicted = imbl::OrdMap::new();
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "$create".to_string(),
+    );
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+            String::new(),
+        ),
+        "$pl_promo".to_string(),
+    );
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
+            String::new(),
+        ),
+        "$join_rules".to_string(),
+    );
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@eve:evil.com".to_string(),
+        ),
+        "$eve_join".to_string(),
+    );
+
     let mut conflicted_events = std::collections::HashMap::new();
-    conflicted_events.insert("$pl_promo".to_string(), pl_promo.clone());
     conflicted_events.insert("$pl_demote".to_string(), pl_demote);
     conflicted_events.insert("$eve_attack".to_string(), eve_attack.clone());
 
@@ -691,11 +720,9 @@ fn test_v2_1_1_cve_demotion_evasion() {
     // the promo) CAN change the room name. This proves the rejection below is
     // caused by the demotion, not by Eve being an invalid member.
     let mut control_conflicted = std::collections::HashMap::new();
-    control_conflicted.insert("$pl_promo".to_string(), pl_promo);
-    control_conflicted.insert("$eve_join".to_string(), eve_join);
     control_conflicted.insert("$eve_attack".to_string(), eve_attack);
     let resolved_control = rezzy::resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &unconflicted,
         &control_conflicted,
         &auth_context,
         rezzy::StateResVersion::V2_1,
@@ -711,7 +738,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
     // V2.1 resolves PLs first (picking the demotion). When validating Eve's attack,
     // V2.1 overlays the consensus PL (demotion). Eve is PL 0. Name change requires 50. REJECTED.
     let resolved_v21 = rezzy::resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &unconflicted,
         &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1,
@@ -727,7 +754,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
     // V2.1.1 strictly enforces 1-hop security and supplements the demotion.
     // Therefore, Eve is caught and her attack is rightfully rejected!
     let resolved_v211 = rezzy::resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &unconflicted,
         &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
@@ -837,8 +864,38 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
     let mut auth_context = std::collections::HashMap::new();
     auth_context.insert("$create".to_string(), create_ev);
     auth_context.insert("$pl".to_string(), pl_ev);
-    auth_context.insert("$join_rules".to_string(), join_rules);
+    auth_context.insert("$join_rules".to_string(), join_rules.clone());
     auth_context.insert("$bob_join".to_string(), bob_join.clone());
+
+    let mut unconflicted = imbl::OrdMap::new();
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "$create".to_string(),
+    );
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+            String::new(),
+        ),
+        "$pl".to_string(),
+    );
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
+            String::new(),
+        ),
+        "$join_rules".to_string(),
+    );
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@bob:example.com".to_string(),
+        ),
+        "$bob_join".to_string(),
+    );
 
     let mut conflicted_events = std::collections::HashMap::new();
     conflicted_events.insert("$alice_bans_bob".to_string(), alice_bans_bob);
@@ -848,10 +905,9 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
     // the room name. This proves the name rejection below is caused by the
     // concurrent ban, not by Bob being an invalid member.
     let mut control_conflicted = std::collections::HashMap::new();
-    control_conflicted.insert("$bob_join".to_string(), bob_join);
     control_conflicted.insert("$bob_name_change".to_string(), bob_name_change);
     let resolved_control = rezzy::resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &unconflicted,
         &control_conflicted,
         &auth_context,
         rezzy::StateResVersion::V2_1,
@@ -868,7 +924,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
 
     // Run V2.1 Resolution (Stock)
     let resolved_v21 = rezzy::resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &unconflicted,
         &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1,
@@ -897,7 +953,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
 
     // Run V2.1.1 Resolution (The V3 Fix)
     let resolved_v211 = rezzy::resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &unconflicted,
         &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1_1,
@@ -1318,8 +1374,38 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
     let mut auth_context = std::collections::HashMap::new();
     auth_context.insert("$create".to_string(), create_ev);
     auth_context.insert("$pl".to_string(), pl_ev);
-    auth_context.insert("$join_rules".to_string(), join_rules);
+    auth_context.insert("$join_rules".to_string(), join_rules.clone());
     auth_context.insert("$bob_join".to_string(), bob_join.clone());
+
+    let mut unconflicted = imbl::OrdMap::new();
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "$create".to_string(),
+    );
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+            String::new(),
+        ),
+        "$pl".to_string(),
+    );
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
+            String::new(),
+        ),
+        "$join_rules".to_string(),
+    );
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@bob:example.com".to_string(),
+        ),
+        "$bob_join".to_string(),
+    );
 
     let mut conflicted_events = std::collections::HashMap::new();
     conflicted_events.insert("$alice_bans_bob".to_string(), alice_bans_bob);
@@ -1329,10 +1415,9 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
     // the room topic. This proves the topic rejection below is caused by the
     // concurrent ban, not by Bob being an invalid member.
     let mut control_conflicted = std::collections::HashMap::new();
-    control_conflicted.insert("$bob_join".to_string(), bob_join);
     control_conflicted.insert("$bob_topic_change".to_string(), bob_topic_change);
     let resolved_control = rezzy::resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &unconflicted,
         &control_conflicted,
         &auth_context,
         rezzy::StateResVersion::V2_1,
@@ -1349,7 +1434,7 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
 
     // Run V2.1 Resolution (Fixed & Spec-Compliant)
     let resolved_v21 = rezzy::resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&auth_context),
+        &unconflicted,
         &conflicted_events,
         &auth_context,
         rezzy::StateResVersion::V2_1,
@@ -1706,20 +1791,61 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
 
     // Auth context: unconflicted events
     let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
-    auth_context.insert("$create".to_string(), create);
-    auth_context.insert("$admin_join".to_string(), admin_join);
-    auth_context.insert("$pl".to_string(), pl);
-    auth_context.insert("$join_rules".to_string(), join_rules);
-    auth_context.insert("$mallory_join".to_string(), mallory_join);
-    auth_context.insert("$mallory_ban".to_string(), mallory_ban);
+    auth_context.insert("$create".to_string(), create.clone());
+    auth_context.insert("$admin_join".to_string(), admin_join.clone());
+    auth_context.insert("$pl".to_string(), pl.clone());
+    auth_context.insert("$join_rules".to_string(), join_rules.clone());
+    auth_context.insert("$mallory_join".to_string(), mallory_join.clone());
+    auth_context.insert("$mallory_ban".to_string(), mallory_ban.clone());
+
+    let mut unconflicted = imbl::OrdMap::new();
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.create"),
+            String::new(),
+        ),
+        "$create".to_string(),
+    );
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@admin:x".to_string(),
+        ),
+        "$admin_join".to_string(),
+    );
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
+            String::new(),
+        ),
+        "$pl".to_string(),
+    );
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
+            String::new(),
+        ),
+        "$join_rules".to_string(),
+    );
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@mallory:x".to_string(),
+        ),
+        "$mallory_join".to_string(),
+    );
+    unconflicted.insert(
+        (
+            rezzy::basespec::event_types::EventType::from("m.room.member"),
+            "@mallory:x".to_string(),
+        ),
+        "$mallory_ban".to_string(),
+    );
 
     // Conflicted: two competing PL events
     let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
     conflicted.insert("$mallory_pl".to_string(), mallory_pl);
     conflicted.insert("$admin_pl".to_string(), admin_pl);
-
-    // Unconflicted state includes the ban
-    let unconflicted = utils::build_unconflicted_state_test_helper(&auth_context);
 
     let resolved = resolve_iterative_sort(
         &unconflicted,
