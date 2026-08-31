@@ -677,34 +677,9 @@ fn test_v2_1_1_cve_demotion_evasion() {
     auth_context.insert("$eve_join".to_string(), eve_join.clone());
     auth_context.insert("$pl_demote".to_string(), pl_demote.clone());
 
-    let mut unconflicted = imbl::OrdMap::new();
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.create"),
-            String::new(),
-        ),
-        "$create".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
-            String::new(),
-        ),
-        "$pl_promo".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
-            String::new(),
-        ),
-        "$join_rules".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.member"),
-            "@eve:evil.com".to_string(),
-        ),
-        "$eve_join".to_string(),
+    let unconflicted = utils::build_unconflicted_state_from_ids(
+        &auth_context,
+        &["$create", "$pl_promo", "$join_rules", "$eve_join"],
     );
 
     let mut conflicted_events = std::collections::HashMap::new();
@@ -867,34 +842,9 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
     auth_context.insert("$join_rules".to_string(), join_rules.clone());
     auth_context.insert("$bob_join".to_string(), bob_join.clone());
 
-    let mut unconflicted = imbl::OrdMap::new();
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.create"),
-            String::new(),
-        ),
-        "$create".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
-            String::new(),
-        ),
-        "$pl".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
-            String::new(),
-        ),
-        "$join_rules".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.member"),
-            "@bob:example.com".to_string(),
-        ),
-        "$bob_join".to_string(),
+    let unconflicted = utils::build_unconflicted_state_from_ids(
+        &auth_context,
+        &["$create", "$pl", "$join_rules", "$bob_join"],
     );
 
     let mut conflicted_events = std::collections::HashMap::new();
@@ -1377,34 +1327,9 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
     auth_context.insert("$join_rules".to_string(), join_rules.clone());
     auth_context.insert("$bob_join".to_string(), bob_join.clone());
 
-    let mut unconflicted = imbl::OrdMap::new();
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.create"),
-            String::new(),
-        ),
-        "$create".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
-            String::new(),
-        ),
-        "$pl".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
-            String::new(),
-        ),
-        "$join_rules".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.member"),
-            "@bob:example.com".to_string(),
-        ),
-        "$bob_join".to_string(),
+    let unconflicted = utils::build_unconflicted_state_from_ids(
+        &auth_context,
+        &["$create", "$pl", "$join_rules", "$bob_join"],
     );
 
     let mut conflicted_events = std::collections::HashMap::new();
@@ -1798,48 +1723,15 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
     auth_context.insert("$mallory_join".to_string(), mallory_join.clone());
     auth_context.insert("$mallory_ban".to_string(), mallory_ban.clone());
 
-    let mut unconflicted = imbl::OrdMap::new();
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.create"),
-            String::new(),
-        ),
-        "$create".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.member"),
-            "@admin:x".to_string(),
-        ),
-        "$admin_join".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
-            String::new(),
-        ),
-        "$pl".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
-            String::new(),
-        ),
-        "$join_rules".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.member"),
-            "@mallory:x".to_string(),
-        ),
-        "$mallory_join".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.member"),
-            "@mallory:x".to_string(),
-        ),
-        "$mallory_ban".to_string(),
+    let unconflicted = utils::build_unconflicted_state_from_ids(
+        &auth_context,
+        &[
+            "$create",
+            "$admin_join",
+            "$pl",
+            "$join_rules",
+            "$mallory_ban",
+        ],
     );
 
     // Conflicted: two competing PL events

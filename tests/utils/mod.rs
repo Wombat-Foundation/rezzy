@@ -6,7 +6,6 @@ use std::collections::HashMap;
 /// Builds an initial unconflicted state map containing only the `m.room.create` event
 /// extracted from the provided `auth_context`. This avoids needing a massive `auth_context`
 /// fallback in the production state resolution algorithm just for test fixtures.
-#[allow(dead_code)]
 pub fn build_unconflicted_state_test_helper(
     auth_context: &HashMap<String, LeanEvent>,
 ) -> imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String> {
@@ -38,9 +37,41 @@ pub fn build_unconflicted_state_test_helper(
     unconflicted
 }
 
+/// Builds an initial unconflicted state map from the selected event IDs in
+/// `auth_context`.
+///
+/// This is for tests that want the authoritative base state to include more
+/// than just `m.room.create` while still deriving the `(event_type, state_key)`
+/// tuple from the event itself instead of hand-writing the key at each call
+/// site.
+pub fn build_unconflicted_state_from_ids(
+    auth_context: &HashMap<String, LeanEvent>,
+    event_ids: &[&str],
+) -> imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String> {
+    let mut unconflicted = imbl::OrdMap::new();
+
+    for event_id in event_ids {
+        let ev = auth_context
+            .get(*event_id)
+            .unwrap_or_else(|| panic!("fixture auth_context missing event {event_id:?}"));
+        let state_key = ev
+            .state_key
+            .clone()
+            .unwrap_or_else(|| panic!("fixture event {event_id:?} must have state_key"));
+        unconflicted.insert(
+            (
+                rezzy::basespec::event_types::EventType::from(ev.event_type.as_str()),
+                state_key,
+            ),
+            ev.event_id.clone(),
+        );
+    }
+
+    unconflicted
+}
+
 /// Parses a multiline JSONL string into a vector of [`LeanEvent`]s.
 /// Blank lines and lines starting with "//" are ignored.
-#[allow(dead_code)]
 pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
     let mut events = Vec::new();
     for line in input.lines() {
@@ -144,7 +175,6 @@ pub fn load_jsonl_fixture(path: &str) -> HashMap<String, LeanEvent> {
 }
 
 /// Parses a multiline JSONL string directly into a `RoomState`.
-#[allow(dead_code)]
 pub fn parse_jsonl_state(input: &str) -> RoomState {
     let mut state = RoomState::new();
     let events = parse_jsonl_events(input);
@@ -233,7 +263,6 @@ fn lean_events_fully_eq(a: &LeanEvent, b: &LeanEvent) -> bool {
 }
 
 /// Asserts that a given `RoomState` exactly matches the state defined in a JSONL string.
-#[allow(dead_code)]
 pub fn assert_jsonl_state_eq(actual: &RoomState, expected_jsonl: &str) {
     let expected = parse_jsonl_state(expected_jsonl);
 
@@ -260,7 +289,6 @@ pub fn assert_jsonl_state_eq(actual: &RoomState, expected_jsonl: &str) {
 }
 
 /// Asserts that a given slice of [`LeanEvent`]s exactly matches the events defined in a JSONL string.
-#[allow(dead_code)]
 pub fn assert_jsonl_events_eq(actual: &[LeanEvent], expected_jsonl: &str) {
     let expected = parse_jsonl_events(expected_jsonl);
 
@@ -287,7 +315,6 @@ pub fn assert_jsonl_events_eq(actual: &[LeanEvent], expected_jsonl: &str) {
 /// of its `prev_events` otherwise.
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(dead_code)]
 pub fn compute_local_naive_topological_depth(events: &mut [LeanEvent]) {
     fn get_depth(
         event_id: &str,
