@@ -5,8 +5,13 @@ use core::hash::Hasher;
 
 /// A 128-bit structural hash for HAMT nodes.
 ///
-/// This is a local cache key used to skip identical subtrees across HAMT
-/// instances. It is not a wire format.
+/// This is a local storage/cache key used to skip identical subtrees within a
+/// caller-selected structural-key namespace; it is not a wire format. The
+/// structural key is included in both node identity and routing, so callers
+/// using distinct per-room keys intentionally produce disjoint node hashes.
+///
+/// The 128-bit width is a deliberate local-space trade-off: a collision would
+/// alias distinct nodes, so callers must not use it as a cross-server identity.
 pub type StructuralHash = [u8; 16];
 
 /// A 32-byte state-group identifier derived from the full root lattice.

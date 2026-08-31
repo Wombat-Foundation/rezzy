@@ -1,7 +1,7 @@
 //! Dense binary serialization and deserialization for persisted HAMT nodes.
 
 use alloc::{string::String, vec::Vec};
-use core::convert::TryFrom;
+use core::hash::Hash;
 
 use super::hash::StructuralHash;
 
@@ -199,7 +199,6 @@ impl HamtCodec for crate::basespec::event_types::EventType {
 pub struct PersistedInternalNode<K, V> {
     pub datamap: u32,
     pub nodemap: u32,
-    pub structural_hash: StructuralHash,
     pub leaves: Vec<(K, V)>,
     pub child_hashes: Vec<StructuralHash>,
 }
@@ -215,7 +214,6 @@ where
     /// - Version (1 byte): `0x01`
     /// - Datamap (4 bytes, LE)
     /// - Nodemap (4 bytes, LE)
-    /// - Structural hash (16 bytes)
     /// - Leaf count (4 bytes, LE)
     /// - Child count (4 bytes, LE)
     /// - Inline leaves (`K`, `V` pairs in datamap order)
@@ -259,7 +257,6 @@ where
         let capacity = 1_usize
             .checked_add(4)
             .and_then(|value| value.checked_add(4))
-            .and_then(|value| value.checked_add(16))
             .and_then(|value| value.checked_add(4))
             .and_then(|value| value.checked_add(4))
             .and_then(|value| value.checked_add(body.len()))
@@ -269,7 +266,6 @@ where
         buf.push(0x01);
         buf.extend_from_slice(&self.datamap.to_le_bytes());
         buf.extend_from_slice(&self.nodemap.to_le_bytes());
-        buf.extend_from_slice(&self.structural_hash);
         buf.extend_from_slice(&leaf_count.to_le_bytes());
         buf.extend_from_slice(&child_count.to_le_bytes());
         buf.extend_from_slice(&body);
@@ -285,7 +281,7 @@ where
         if buf.is_empty() || buf[0] != 0x01 {
             return Err("Invalid version byte");
         }
-        if buf.len() < 33 {
+        if buf.len() < 17 {
             return Err("Buffer too short for v1 header");
         }
 
@@ -306,17 +302,14 @@ where
             return Err("Datamap and nodemap overlap: node is corrupt");
         }
 
-        let mut structural_hash = [0u8; 16];
-        structural_hash.copy_from_slice(&buf[9..25]);
-
         let leaf_count = u32::from_le_bytes(
-            buf.get(25..29)
+            buf.get(9..13)
                 .ok_or("Buffer too short for leaf count")?
                 .try_into()
                 .map_err(|_| "Buffer too short for leaf count")?,
         ) as usize;
         let child_count = u32::from_le_bytes(
-            buf.get(29..33)
+            buf.get(13..17)
                 .ok_or("Buffer too short for child count")?
                 .try_into()
                 .map_err(|_| "Buffer too short for child count")?,
@@ -331,7 +324,7 @@ where
             return Err("Child count does not match nodemap");
         }
 
-        let mut cursor = 33_usize;
+        let mut cursor = 17_usize;
         let mut leaves = Vec::with_capacity(leaf_count);
         for _ in 0..leaf_count {
             let key = K::decode_hamt(buf, &mut cursor)?;
@@ -371,44 +364,85 @@ where
         Ok(Self {
             datamap,
             nodemap,
-            structural_hash,
             leaves,
             child_hashes,
         })
     }
-}
 
-impl<K, V> core::convert::TryFrom<PersistedInternalNode<K, V>> for crate::hamt::HamtNode<K, V> {
-    type Error = &'static str;
-
-    fn try_from(persisted: PersistedInternalNode<K, V>) -> Result<Self, Self::Error> {
-        if (persisted.datamap & persisted.nodemap) != 0 {
+    /// Validates this decoded node against the storage key that selected it.
+    ///
+    /// Persisted v1 nodes deliberately do not carry a duplicate structural
+    /// hash. Callers must supply the hash used to fetch the bytes; this
+    /// recomputes the node identity under `structural_key` and rejects a
+    /// shape-valid node stored under the wrong key.
+    ///
+    /// # Errors
+    /// Returns an error if the node's contents do not reproduce
+    /// `expected_hash`.
+    pub fn into_hamt_node_verified(
+        self,
+        structural_key: &[u8],
+        expected_hash: StructuralHash,
+    ) -> Result<crate::hamt::HamtNode<K, V>, &'static str>
+    where
+        K: Hash,
+        V: Hash,
+    {
+        if (self.datamap & self.nodemap) != 0 {
             return Err("PersistedInternalNode datamap and nodemap overlap");
         }
-
-        let expected_children = persisted.nodemap.count_ones() as usize;
-        if persisted.child_hashes.len() != expected_children {
+        if self.leaves.len() != self.datamap.count_ones() as usize {
+            return Err("PersistedInternalNode leaf count does not match datamap");
+        }
+        if self.child_hashes.len() != self.nodemap.count_ones() as usize {
             return Err("PersistedInternalNode child count does not match nodemap");
         }
 
-        let expected_leaves = persisted.datamap.count_ones() as usize;
-        if persisted.leaves.len() != expected_leaves {
-            return Err("PersistedInternalNode leaf count does not match datamap");
-        }
-
-        let children = persisted
+        let children: Vec<_> = self
             .child_hashes
             .into_iter()
             .map(crate::hamt::NodeRef::Lazy)
             .collect();
+        let recomputed = crate::hamt::HamtNode::compute_structural_hash(
+            structural_key,
+            self.datamap,
+            self.nodemap,
+            &self.leaves,
+            &children,
+        );
+        if recomputed != expected_hash {
+            return Err("persisted node contents do not match expected structural hash");
+        }
 
         Ok(crate::hamt::HamtNode {
-            datamap: persisted.datamap,
-            nodemap: persisted.nodemap,
-            leaves: persisted.leaves,
+            datamap: self.datamap,
+            nodemap: self.nodemap,
+            leaves: self.leaves,
             children,
-            structural_hash: persisted.structural_hash,
+            structural_hash: expected_hash,
         })
+    }
+
+    /// Decodes a v1 node and verifies it against the storage key that selected
+    /// the bytes.
+    ///
+    /// This is the normal cold-storage load path. [`Self::decode_v1`] is only
+    /// the syntactic decoder for callers that need to inspect persisted data
+    /// before choosing an expected hash.
+    ///
+    /// # Errors
+    /// Returns an error when the bytes are malformed or their recomputed
+    /// structural hash does not match `expected_hash`.
+    pub fn decode_v1_verified(
+        buf: &[u8],
+        structural_key: &[u8],
+        expected_hash: StructuralHash,
+    ) -> Result<crate::hamt::HamtNode<K, V>, &'static str>
+    where
+        K: Hash,
+        V: Hash,
+    {
+        Self::decode_v1(buf)?.into_hamt_node_verified(structural_key, expected_hash)
     }
 }
 
@@ -423,7 +457,6 @@ impl<K: Clone, V: Clone> From<&crate::hamt::HamtNode<K, V>> for PersistedInterna
         Self {
             datamap: node.datamap,
             nodemap: node.nodemap,
-            structural_hash: node.structural_hash,
             leaves: node.leaves.clone(),
             child_hashes,
         }

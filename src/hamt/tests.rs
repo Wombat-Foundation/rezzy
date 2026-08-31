@@ -268,7 +268,6 @@ fn test_persisted_internal_node_round_trip() {
     let node = PersistedInternalNode {
         datamap: 0b011,
         nodemap: 0b100,
-        structural_hash: [0xaa; 16],
         leaves: vec![(1_i32, 10_i32), (2_i32, 20_i32)],
         child_hashes: vec![[0x11; 16]],
     };
@@ -280,11 +279,34 @@ fn test_persisted_internal_node_round_trip() {
 }
 
 #[test]
+fn test_verified_decode_rejects_shape_valid_node_under_wrong_storage_hash() {
+    let structural_key = b"verified_decode_key";
+    let root = build_hamt(structural_key, [(1_u32, 10_u64)]).expect("build root");
+    let expected_hash = root.structural_hash;
+    let mut persisted = PersistedInternalNode::from(root.as_ref());
+
+    // The altered bytes remain syntactically valid. Their recomputed hash is
+    // different, but the storage lookup still requested the original hash.
+    persisted.leaves[0].1 = 11;
+    let bytes = persisted.encode_v1();
+
+    let error = PersistedInternalNode::<u32, u64>::decode_v1_verified(
+        &bytes,
+        structural_key,
+        expected_hash,
+    )
+    .expect_err("tampered node must not verify under the requested storage hash");
+    assert_eq!(
+        error,
+        "persisted node contents do not match expected structural hash"
+    );
+}
+
+#[test]
 fn test_decode_v1_rejects_trailing_bytes() {
     let node = PersistedInternalNode {
         datamap: 0b1,
         nodemap: 0b0,
-        structural_hash: [0xaa; 16],
         leaves: vec![(1_i32, 10_i32)],
         child_hashes: vec![],
     };
@@ -300,7 +322,6 @@ fn test_decode_v1_rejects_shape_mismatches() {
     let node = PersistedInternalNode {
         datamap: 0b01,
         nodemap: 0b10,
-        structural_hash: [0xaa; 16],
         leaves: vec![(1_i32, 10_i32)],
         child_hashes: vec![[0x11; 16]],
     };
@@ -316,14 +337,14 @@ fn test_decode_v1_rejects_shape_mismatches() {
     );
 
     let mut bad_leaf_count = encoded.clone();
-    bad_leaf_count[25..29].copy_from_slice(&0_u32.to_le_bytes());
+    bad_leaf_count[9..13].copy_from_slice(&0_u32.to_le_bytes());
     assert_eq!(
         PersistedInternalNode::<i32, i32>::decode_v1(&bad_leaf_count),
         Err("Leaf count does not match datamap")
     );
 
     let mut bad_child_count = encoded.clone();
-    bad_child_count[29..33].copy_from_slice(&0_u32.to_le_bytes());
+    bad_child_count[13..17].copy_from_slice(&0_u32.to_le_bytes());
     assert_eq!(
         PersistedInternalNode::<i32, i32>::decode_v1(&bad_child_count),
         Err("Child count does not match nodemap")
@@ -342,7 +363,6 @@ fn test_decode_v1_rejects_overlapping_datamap_nodemap() {
     let node = PersistedInternalNode {
         datamap: 0b01,
         nodemap: 0b10,
-        structural_hash: [0xaa; 16],
         leaves: vec![(1_i32, 10_i32)],
         child_hashes: vec![[0x11; 16]],
     };
@@ -364,7 +384,6 @@ fn test_encode_v1_panics_when_datamap_nodemap_overlap() {
     let node = PersistedInternalNode::<i32, i32> {
         datamap: 0b11,
         nodemap: 0b01,
-        structural_hash: [0xaa; 16],
         leaves: vec![(1_i32, 10_i32), (2_i32, 20_i32)],
         child_hashes: vec![[0x11; 16]],
     };
@@ -372,19 +391,18 @@ fn test_encode_v1_panics_when_datamap_nodemap_overlap() {
 }
 
 #[test]
-fn test_persisted_node_conversion_rejects_overlapping_datamap_nodemap() {
+fn test_verified_persisted_node_conversion_rejects_overlapping_maps() {
     let node = PersistedInternalNode::<i32, i32> {
         datamap: 0b01,
         nodemap: 0b01,
-        structural_hash: [0xaa; 16],
         leaves: vec![(1, 10)],
         child_hashes: vec![[0x11; 16]],
     };
 
-    assert!(matches!(
-        crate::hamt::HamtNode::try_from(node),
-        Err("PersistedInternalNode datamap and nodemap overlap")
-    ));
+    let error = node
+        .into_hamt_node_verified(b"conversion_test", [0; 16])
+        .expect_err("overlapping maps must be rejected before hash verification");
+    assert_eq!(error, "PersistedInternalNode datamap and nodemap overlap");
 }
 
 #[test]
@@ -433,7 +451,6 @@ fn test_encode_v1_panics_when_leaf_count_mismatches_datamap() {
     let node = PersistedInternalNode::<i32, i32> {
         datamap: 0b1,
         nodemap: 0,
-        structural_hash: [0xaa; 16],
         leaves: vec![],
         child_hashes: vec![],
     };
@@ -446,7 +463,6 @@ fn test_encode_v1_panics_when_child_count_mismatches_nodemap() {
     let node = PersistedInternalNode::<i32, i32> {
         datamap: 0,
         nodemap: 0b1,
-        structural_hash: [0xaa; 16],
         leaves: vec![],
         child_hashes: vec![],
     };
@@ -3545,7 +3561,6 @@ fn test_diff_nodes_fast_paths() {
 #[test]
 fn test_hamt_node_persisted_round_trip() {
     use crate::hamt::codec::PersistedInternalNode;
-    use core::convert::TryFrom;
 
     let key = b"dummy_server_key";
 
@@ -3578,11 +3593,13 @@ fn test_hamt_node_persisted_round_trip() {
     // 2. Encode to bytes
     let encoded = persisted.encode_v1();
 
-    // 3. Decode from bytes
-    let decoded = PersistedInternalNode::<i32, i32>::decode_v1(&encoded).expect("decode failed");
-
-    // 4. TryFrom back to HamtNode
-    let restored = HamtNode::try_from(decoded).expect("try_from failed");
+    // 3. Decode and verify from the storage bytes and key.
+    let restored = PersistedInternalNode::<i32, i32>::decode_v1_verified(
+        &encoded,
+        key,
+        original.structural_hash,
+    )
+    .expect("verified decode failed");
 
     // Assertions
     assert_eq!(restored.structural_hash, original.structural_hash);
@@ -4996,21 +5013,21 @@ impl FakeNodeStore {
         }
     }
 
-    fn resolver<K, V>(
-        &self,
-    ) -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, &'static str> + '_
+    fn resolver<'a, K, V>(
+        &'a self,
+        structural_key: &'a [u8],
+    ) -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, &'static str> + 'a
     where
-        K: HamtCodec,
-        V: HamtCodec,
+        K: HamtCodec + core::hash::Hash,
+        V: HamtCodec + core::hash::Hash,
     {
         |hash| {
             self.resolutions
                 .set(self.resolutions.get().saturating_add(1));
             let bytes = self.storage.get(hash).ok_or("node missing in fake store")?;
-            let persisted = PersistedInternalNode::<K, V>::decode_v1(bytes)?;
-            HamtNode::try_from(persisted)
+            PersistedInternalNode::<K, V>::decode_v1_verified(bytes, structural_key, *hash)
                 .map(Arc::new)
-                .map_err(|_| "failed to convert persisted node")
+                .map_err(|_| "failed to verify persisted node")
         }
     }
 }
@@ -5094,9 +5111,14 @@ fn test_lazy_resolver_mutation_and_resolution_bounds() {
         .storage
         .get(&resident_root.structural_hash)
         .expect("root in store");
-    let persisted_root =
-        PersistedInternalNode::<u32, u64>::decode_v1(root_bytes).expect("decode root");
-    let lazy_root = Arc::new(HamtNode::try_from(persisted_root).expect("lazy root"));
+    let lazy_root = Arc::new(
+        PersistedInternalNode::<u32, u64>::decode_v1_verified(
+            root_bytes,
+            key,
+            resident_root.structural_hash,
+        )
+        .expect("verified decode root"),
+    );
 
     let mut resident_resolver =
         |_h: &StructuralHash| -> Result<Arc<HamtNode<u32, u64>>, &'static str> {
@@ -5118,7 +5140,7 @@ fn test_lazy_resolver_mutation_and_resolution_bounds() {
         .expect("resident persist_mutation succeeds");
 
         store.resolutions.set(0);
-        let mut lazy_res = store.resolver();
+        let mut lazy_res = store.resolver(key);
         let (lazy_new_root, lazy_disp, lazy_created) =
             persist_mutation(&lazy_root, key, target_key, new_val, &mut lazy_res)
                 .expect("lazy persist_mutation succeeds");
@@ -5186,12 +5208,8 @@ fn test_persist_chain_coverage() {
     let mut cumulative_created = prev_reachable;
     for (i, step) in steps.iter().enumerate() {
         for (hash, bytes) in &step.created {
-            assert_eq!(
-                *hash,
-                PersistedInternalNode::<u32, u64>::decode_v1(bytes)
-                    .expect("valid decode")
-                    .structural_hash
-            );
+            PersistedInternalNode::<u32, u64>::decode_v1_verified(bytes, key, *hash)
+                .expect("created node must verify against its storage key");
             cumulative_created.insert(*hash);
         }
 
@@ -5487,7 +5505,6 @@ fn test_descend_level_rejects_corruption() {
     let mut corrupt_header = vec![0x01]; // v1
     corrupt_header.extend_from_slice(&1_u32.to_le_bytes()); // datamap bit 0
     corrupt_header.extend_from_slice(&1_u32.to_le_bytes()); // nodemap bit 0 (overlap!)
-    corrupt_header.extend_from_slice(&[0u8; 16]); // structural hash
     corrupt_header.extend_from_slice(&1_u32.to_le_bytes()); // leaves count 1
     corrupt_header.extend_from_slice(&1_u32.to_le_bytes()); // child count 1
     corrupt_header.extend_from_slice(&42_u32.to_le_bytes()); // leaf key
@@ -5511,7 +5528,7 @@ fn test_descend_level_rejects_corruption() {
     let corrupt_error = res3.expect_err("wrong node hash must be corruption");
     assert_eq!(
         format!("{corrupt_error}"),
-        "hamt descend corrupt node: decoded structural hash does not match requested node hash"
+        "hamt descend corrupt node: decoded node contents do not match requested node hash"
     );
 
     // 4. The persisted hash matches the requested hash, but the decoded
@@ -5527,7 +5544,7 @@ fn test_descend_level_rejects_corruption() {
     assert_eq!(
         res4,
         Err(DescendError::CorruptNode(
-            "decoded node contents do not match structural hash"
+            "decoded node contents do not match requested node hash"
         ))
     );
 
@@ -5577,11 +5594,10 @@ fn test_descend_level_rejects_mixed_depth_batch() {
 }
 
 /// `descend_level` validates that the decoded leaf key at a slot actually
-/// routes to that slot under the caller's `key_hash_fn`. A node tampered so
-/// its leaf key no longer agrees with its own bitmap slot -- while keeping
-/// the structural hash internally consistent with the tampered contents --
-/// must be rejected as corrupt rather than silently returning the wrong
-/// leaf or treating the requested key as absent.
+/// routes to that slot under the caller's `key_hash_fn`. A node stored under
+/// its own recomputed hash can still be malformed if its leaf key no longer
+/// agrees with its bitmap slot; it must be rejected rather than silently
+/// returning the wrong leaf or treating the requested key as absent.
 #[test]
 fn test_descend_level_rejects_leaf_routed_to_wrong_slot() {
     let key = b"wrong_slot_key";
@@ -5597,11 +5613,10 @@ fn test_descend_level_rejects_leaf_routed_to_wrong_slot() {
         }
     }
 
-    // Swap the leaf key in place (keeping the same datamap/nodemap bits, so
-    // it's still stored under 42's original slot), then recompute the
-    // structural hash from the tampered contents so the outer hash checks
-    // (which only prove internal self-consistency, not semantic routing
-    // correctness) pass.
+    // Swap the leaf key in place while retaining 42's original bitmap slot,
+    // then use the tampered node's own recomputed storage hash. Verification
+    // must pass so this exercises routing validation rather than a hash
+    // mismatch.
     let mut corrupt_node = PersistedInternalNode::<u32, u64>::from(root.as_ref());
     corrupt_node.leaves[0].0 = wrong_key;
     let decoded_children: Vec<NodeRef<u32, u64>> = corrupt_node
@@ -5617,12 +5632,6 @@ fn test_descend_level_rejects_leaf_routed_to_wrong_slot() {
         &corrupt_node.leaves,
         &decoded_children,
     );
-    // The embedded `structural_hash` field is checked against both the
-    // caller's requested hash and a fresh recompute from the decoded
-    // contents; it must be updated to match the tampered leaf too, or this
-    // test would just be exercising the "hash mismatch" cases already
-    // covered above instead of the routing check.
-    corrupt_node.structural_hash = recomputed_hash;
     let corrupt_bytes = corrupt_node.encode_v1();
 
     let req_hash = crate::hamt::key_path_hash(key, &42_u32);

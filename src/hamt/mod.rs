@@ -1940,31 +1940,12 @@ where
         crate::HashMap::default();
 
     for &(expected_hash, node_bytes, depth, target_keys) in nodes_and_keys {
-        let node =
-            PersistedInternalNode::<K, V>::decode_v1(node_bytes).map_err(DescendError::Decode)?;
-        if node.structural_hash != expected_hash {
-            return Err(DescendError::CorruptNode(
-                "decoded structural hash does not match requested node hash",
-            ));
-        }
-        let decoded_children: Vec<NodeRef<K, V>> = node
-            .child_hashes
-            .iter()
-            .copied()
-            .map(NodeRef::Lazy)
-            .collect();
-        let recomputed = HamtNode::compute_structural_hash(
-            structural_key,
-            node.datamap,
-            node.nodemap,
-            &node.leaves,
-            &decoded_children,
-        );
-        if recomputed != expected_hash {
-            return Err(DescendError::CorruptNode(
-                "decoded node contents do not match structural hash",
-            ));
-        }
+        let node = PersistedInternalNode::<K, V>::decode_v1(node_bytes)
+            .map_err(DescendError::Decode)?
+            .into_hamt_node_verified(structural_key, expected_hash)
+            .map_err(|_| {
+                DescendError::CorruptNode("decoded node contents do not match requested node hash")
+            })?;
 
         for &req_hash in target_keys {
             if depth >= HAMT_MAX_DEPTH {
@@ -1999,10 +1980,11 @@ where
                 }
             } else if (node.nodemap & bit) != 0 {
                 let child_idx = map_index(node.nodemap, slot);
-                let &child_hash = node
-                    .child_hashes
+                let child_hash = node
+                    .children
                     .get(child_idx)
-                    .ok_or(DescendError::CorruptNode("child index out of bounds"))?;
+                    .ok_or(DescendError::CorruptNode("child index out of bounds"))?
+                    .structural_hash();
                 pending_map.entry(child_hash).or_default().push(req_hash);
             } else {
                 // Bitmap slot is clear: proven, terminal absence
