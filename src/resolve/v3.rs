@@ -720,6 +720,13 @@ mod tests {
     struct AllowVerifier;
     impl EventVerifier<String> for AllowVerifier {}
 
+    struct RejectVerifier;
+    impl EventVerifier<String> for RejectVerifier {
+        fn verify_event_id_hash(&self, _event_id: &String) -> Result<(), String> {
+            Err(String::from("deliberate test rejection"))
+        }
+    }
+
     struct FixedRank(V3Rank);
     impl V3RankPolicy<String, Value, String> for FixedRank {
         fn rank(
@@ -888,6 +895,60 @@ mod tests {
 
         assert_eq!(certificate.rank().authority, 100);
         assert!(certificate.branch_auth().state().is_empty());
+        assert!(certificate.creator_grant().is_none());
+
+        let normative =
+            certify_tk_nutra_cdo12_admission(&create, &branch_auth, &AllowVerifier).unwrap();
+        assert_eq!(normative.rank().authority, 0);
+        assert_eq!(normative.rank().safety, V3Polarity::Neutral as i8);
+        assert_eq!(
+            normative.rank().specificity,
+            V3Specificity::GenericState as u8
+        );
+
+        assert!(certify_v3_admission(
+            &create,
+            &branch_auth,
+            &FixedRank(V3Rank::default()),
+            &RejectVerifier,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn certification_copies_the_verified_branch_snapshot() {
+        let message: LeanEvent<String, Value, String> = LeanEvent {
+            event_id: "$message".into(),
+            event_type: "m.room.message".into(),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({}),
+            ..Default::default()
+        };
+        let join: LeanEvent<String, Value, String> = LeanEvent {
+            event_id: "$alice_join".into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some("@alice:example.com".into()),
+            sender: "@alice:example.com".into(),
+            content: serde_json::json!({ "membership": MEM_JOIN }),
+            ..Default::default()
+        };
+        let mut branch_auth = crate::auth::RoomState::new();
+        branch_auth.insert((M_ROOM_MEMBER.into(), "@alice:example.com".into()), join);
+
+        let certificate = certify_v3_admission(
+            &message,
+            &branch_auth,
+            &FixedRank(V3Rank::default()),
+            &AllowVerifier,
+        )
+        .unwrap();
+        assert_eq!(
+            certificate.branch_auth().state().get(&(
+                EventType::from(M_ROOM_MEMBER),
+                String::from("@alice:example.com")
+            )),
+            Some(&String::from("$alice_join")),
+        );
     }
 
     #[test]
@@ -933,6 +994,7 @@ mod tests {
         branch_auth.insert((M_ROOM_POWER_LEVELS.into(), String::new()), prior_power);
 
         let certified = certify_creator_grant(&grant, &branch_auth).unwrap();
+        assert_eq!(certified.grant_id(), &String::from("$grant"));
         assert_eq!(certified.target(), &String::from("@b:example.com"));
         assert_eq!(certified.active_member(), &String::from("$b_join"));
         assert_eq!(certified.target_power_level(), 100);
@@ -948,9 +1010,52 @@ mod tests {
                 "users": { "@b:example.com": 100 },
                 "tk.nutra.cdo": { "active_member": "$b_left" },
             }),
-            ..grant
+            ..grant.clone()
         };
         assert!(certify_creator_grant(&stale_witness, &branch_auth).is_none());
+
+        let wrong_sender = LeanEvent {
+            sender: "@not_creator:example.com".into(),
+            ..grant.clone()
+        };
+        assert!(certify_creator_grant(&wrong_sender, &branch_auth).is_none());
+
+        let b_leave = LeanEvent {
+            event_id: "$b_leave".into(),
+            content: serde_json::json!({ "membership": MEM_LEAVE }),
+            ..branch_auth
+                .get_event(M_ROOM_MEMBER, "@b:example.com")
+                .unwrap()
+                .clone()
+        };
+        let mut left_branch = branch_auth.clone();
+        left_branch.insert((M_ROOM_MEMBER.into(), "@b:example.com".into()), b_leave);
+        let leave_witness = LeanEvent {
+            content: serde_json::json!({
+                "users": { "@b:example.com": 100 },
+                "tk.nutra.cdo": { "active_member": "$b_leave" },
+            }),
+            ..grant.clone()
+        };
+        assert!(certify_creator_grant(&leave_witness, &left_branch).is_none());
+
+        let stale_join = LeanEvent {
+            event_id: "$stale_join".into(),
+            ..branch_auth
+                .get_event(M_ROOM_MEMBER, "@b:example.com")
+                .unwrap()
+                .clone()
+        };
+        let mut mismatched_branch = branch_auth.clone();
+        mismatched_branch.insert((M_ROOM_NAME.into(), String::new()), stale_join);
+        let mismatched_witness = LeanEvent {
+            content: serde_json::json!({
+                "users": { "@b:example.com": 100 },
+                "tk.nutra.cdo": { "active_member": "$stale_join" },
+            }),
+            ..grant
+        };
+        assert!(certify_creator_grant(&mismatched_witness, &mismatched_branch).is_none());
     }
 
     #[test]
@@ -979,6 +1084,89 @@ mod tests {
             classify_v3_event(&restrictive),
             (V3Polarity::Revoke, V3Specificity::AccessPolicy),
         );
+
+        let malformed_member =
+            state_event("$malformed_member", M_ROOM_MEMBER, "@target:example.com");
+        let malformed_join_rule = state_event("$malformed_join_rule", M_ROOM_JOIN_RULES, "");
+        let power_levels = state_event("$power_levels", M_ROOM_POWER_LEVELS, "");
+        let custom = state_event("$custom", "com.example.custom", "");
+        assert_eq!(
+            classify_v3_event(&malformed_member),
+            (V3Polarity::Neutral, V3Specificity::Membership),
+        );
+        assert_eq!(
+            classify_v3_event(&malformed_join_rule),
+            (V3Polarity::Neutral, V3Specificity::AccessPolicy),
+        );
+        assert_eq!(
+            classify_v3_event(&power_levels),
+            (V3Polarity::Neutral, V3Specificity::Governance),
+        );
+        assert_eq!(
+            classify_v3_event(&custom),
+            (V3Polarity::Neutral, V3Specificity::GenericState),
+        );
+    }
+
+    #[test]
+    fn non_state_events_are_ignored_without_admission() {
+        let non_state: LeanEvent<String, Value, String> = LeanEvent {
+            event_id: "$message".into(),
+            event_type: "m.room.message".into(),
+            state_key: None,
+            ..Default::default()
+        };
+        let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
+        events.insert(non_state.event_id.clone(), non_state);
+
+        assert_eq!(
+            resolve_v3(&SharedState::new(), &events, &TestAdmission::default()).unwrap(),
+            SharedState::new(),
+        );
+    }
+
+    #[test]
+    fn writer_index_fails_closed_for_a_missing_admitted_event() {
+        let events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
+        assert_eq!(
+            AdmittedWriterIndex::build(&[String::from("$missing")], &events)
+                .map(|_| ())
+                .unwrap_err(),
+            V3ResolveError::IncompleteAuthContext {
+                missing_event_ids: alloc::vec![String::from("$missing")],
+            },
+        );
+    }
+
+    #[test]
+    fn writer_index_ignores_non_state_admitted_events() {
+        let event: LeanEvent<String, Value, String> = LeanEvent {
+            event_id: "$message".into(),
+            event_type: "m.room.message".into(),
+            ..Default::default()
+        };
+        let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
+        events.insert(event.event_id.clone(), event);
+
+        assert!(
+            AdmittedWriterIndex::build(&[String::from("$message")], &events)
+                .unwrap()
+                .writers
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn causal_relation_cache_reuses_a_verified_answer() {
+        let mut admission = TestAdmission::default();
+        admission.causal.insert(("$a".into(), "$b".into()));
+        let mut cache = CausalRelationCache::default();
+        let a = String::from("$a");
+        let b = String::from("$b");
+
+        assert!(cache.precedes(&admission, &a, &b).unwrap());
+        assert!(cache.precedes(&admission, &a, &b).unwrap());
+        assert_eq!(cache.precedes.len(), 1);
     }
 
     #[test]
