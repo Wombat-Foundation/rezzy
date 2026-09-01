@@ -117,6 +117,8 @@ pub enum StateResVersion {
     V2_1_1,
     /// State Resolution V2.2 — reserved for State DAGs ([MSC4242](https://github.com/matrix-org/matrix-spec-proposals/pull/4242)).
     V2_2,
+    /// Rezzy V3 — certified causal governance for `tk.nutra.cdo.12`.
+    V3,
 }
 
 impl StateResVersion {
@@ -136,6 +138,7 @@ impl StateResVersion {
             RoomVersionFormat::Numeric(12) if ver == "12.1" => Self::V2_1_1,
             RoomVersionFormat::Numeric(12) => Self::V2_1,
             RoomVersionFormat::Msc4242 => Self::V2_2,
+            RoomVersionFormat::NutraCdo => Self::V3,
             // Numeric(12) is the only other numeric variant; covered above.
             RoomVersionFormat::Numeric(_) => {
                 unreachable!("RoomVersionFormat::parse returned unexpected variant")
@@ -157,7 +160,7 @@ impl StateResVersion {
     /// former).
     #[must_use]
     pub const fn is_v2_1_plus(&self) -> bool {
-        matches!(self, Self::V2_1 | Self::V2_1_1 | Self::V2_2)
+        matches!(self, Self::V2_1 | Self::V2_1_1 | Self::V2_2 | Self::V3)
     }
 
     /// Returns `true` for V2.1.1 and above.
@@ -177,7 +180,7 @@ impl StateResVersion {
     /// place a test pins it. See `has_ban_evasion_hardening_table` below.
     #[must_use]
     pub const fn has_ban_evasion_hardening(&self) -> bool {
-        matches!(self, Self::V2_1_1 | Self::V2_2)
+        matches!(self, Self::V2_1_1 | Self::V2_2 | Self::V3)
     }
 
     /// Returns `true` for room versions that support the
@@ -220,6 +223,7 @@ mod state_res_version_gate_tests {
             (StateResVersion::V2_1, true, false, true),
             (StateResVersion::V2_1_1, true, true, true),
             (StateResVersion::V2_2, true, true, true),
+            (StateResVersion::V3, true, true, true),
         ];
         for (version, expect_v2_1_plus, expect_ban_evasion, expect_join_authorised) in table {
             assert_eq!(
@@ -257,6 +261,8 @@ enum RoomVersionFormat {
     /// The MSC4242 experimental room version (`"org.matrix.msc4242.12"`),
     /// which uses State DAGs and has its own event format.
     Msc4242,
+    /// Rezzy's experimental certified-causal-governance room version.
+    NutraCdo,
 }
 
 impl RoomVersionFormat {
@@ -280,6 +286,7 @@ impl RoomVersionFormat {
             "11" => Some(Self::Numeric(11)),
             "12" | "12.1" => Some(Self::Numeric(12)),
             "org.matrix.msc4242.12" => Some(Self::Msc4242),
+            "tk.nutra.cdo.12" => Some(Self::NutraCdo),
             _ => None,
         }
     }
@@ -508,7 +515,7 @@ pub fn redaction_preserved_keys(event_type: &str, room_version: &str) -> Redacti
     let ver_num: u32 = match format {
         RoomVersionFormat::Numeric(n) => n,
         // MSC4242 inherits v11's redaction rules verbatim.
-        RoomVersionFormat::Msc4242 => 11,
+        RoomVersionFormat::Msc4242 | RoomVersionFormat::NutraCdo => 11,
     };
     match event_type {
         crate::basespec::event_types::M_ROOM_CREATE => {
@@ -1339,6 +1346,7 @@ impl serde::Serialize for StateResVersion {
             StateResVersion::V2_1 => "V2_1",
             StateResVersion::V2_1_1 => "V2_1_1",
             StateResVersion::V2_2 => "V2_2",
+            StateResVersion::V3 => "V3",
         };
         serializer.serialize_str(s)
     }
@@ -1365,6 +1373,7 @@ impl<'de> serde::Deserialize<'de> for StateResVersion {
                     "V2_1" => Ok(StateResVersion::V2_1),
                     "V2_1_1" => Ok(StateResVersion::V2_1_1),
                     "V2_2" => Ok(StateResVersion::V2_2),
+                    "V3" => Ok(StateResVersion::V3),
                     _ => Err(E::custom(alloc::format!("unknown variant `{value}`"))),
                 }
             }
@@ -3591,7 +3600,8 @@ impl<E: EventLike> Ord for SortPriority<'_, E> {
             StateResVersion::V2
             | StateResVersion::V2_1
             | StateResVersion::V2_1_1
-            | StateResVersion::V2_2 => {
+            | StateResVersion::V2_2
+            | StateResVersion::V3 => {
                 // V2 reverse topological power ordering: worst events pop FIRST.
                 //
                 // Ruma uses Reverse(TieBreaker) on a BinaryHeap where TieBreaker.cmp is:

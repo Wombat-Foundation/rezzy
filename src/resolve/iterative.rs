@@ -30,17 +30,17 @@
 //! [`crate::resolve::lattice::resolve_lattice_fold`].
 
 use crate::basespec::event_types::EventType;
-use crate::basespec::rezzy_types::{DagNode, EventProvider, LeanEvent, StateResVersion};
+use crate::basespec::rezzy_types::{EventProvider, LeanEvent, StateResVersion};
 use crate::{
     resolve::sorting::{build_mainline, build_mainline_with_cache, lean_kahn_sort, mainline_sort},
     state::at::{compute_local_auth, iterative_auth_ok, LocalAuthCache},
     FastMap, HashMap,
 };
-use alloc::vec::Vec;
+use alloc::{string::ToString, vec::Vec};
 
 /// Returns whether `possible_ancestor` is reachable from `child` through the
-/// event DAG.  This deliberately uses graph edges, never timestamps or depth:
-/// those fields cannot establish an authoritative chronology.
+/// event DAG. This deliberately uses graph edges only: timestamps and depth
+/// are author-controlled metadata and cannot establish authoritative chronology.
 fn is_causal_ancestor<Id, C, K>(
     child: &LeanEvent<Id, C, K>,
     possible_ancestor: &Id,
@@ -52,9 +52,6 @@ where
 {
     let mut pending = alloc::vec![child.event_id.clone()];
     let mut visited = alloc::collections::BTreeSet::new();
-    let ancestor_depth = events
-        .get_event(possible_ancestor)
-        .map_or(0, LeanEvent::depth);
     while let Some(id) = pending.pop() {
         if !visited.insert(id.clone()) {
             continue;
@@ -63,9 +60,6 @@ where
             return true;
         }
         if let Some(event) = events.get_event(&id) {
-            if event.depth() <= ancestor_depth {
-                continue;
-            }
             pending.extend(event.prev_events.iter().cloned());
             pending.extend(event.auth_events.iter().cloned());
         }
@@ -73,7 +67,7 @@ where
     false
 }
 
-/// V2.1.1+ typed CDO rule for the duelling-admins case.
+/// V3 typed CDO rule for the duelling-admins case.
 ///
 /// A creator-issued promotion of the kick target wins over a *concurrent*
 /// non-creator kick by an admin no more powerful than the promoted target.
@@ -103,7 +97,7 @@ where
     if kick.event_type != M_ROOM_MEMBER
         || kick.get_membership() != Some(MEM_LEAVE)
         || kick.state_key.as_ref().map(K::as_ref) == Some(kick.sender.as_str())
-        || !version.has_ban_evasion_hardening()
+        || version != StateResVersion::V3
     {
         return None;
     }
@@ -111,7 +105,9 @@ where
     let target_key = kick.state_key.clone()?;
     let creator = create_ev.map(|event| event.sender.as_str())?;
 
-    power_events.values().find_map(|grant| {
+    let mut grants: Vec<_> = power_events.values().collect();
+    grants.sort_unstable_by(|left, right| left.event_id.cmp(&right.event_id));
+    grants.into_iter().find_map(|grant| {
         if grant.event_type != M_ROOM_POWER_LEVELS
             || grant.sender != creator
             || is_causal_ancestor(kick, &grant.event_id, sort_context)
@@ -137,34 +133,35 @@ where
             return None;
         }
 
-        // An active-membership witness makes this a cross-key grant_admin(B),
-        // rather than treating a PL entry as an implicit membership transition.
+        // A V3 grant_admin is explicit: the signed witness names the only
+        // candidate join. Do not search the DAG or choose among profile joins.
+        let active_witness = grant.content.get_cdo_active_member()?;
         let mut pending = alloc::vec![grant.event_id.clone()];
         let mut visited = alloc::collections::BTreeSet::new();
-        let mut active_witness = None;
-        while let Some(id) = pending.pop() {
+        let witness = loop {
+            let id = pending.pop()?;
             if !visited.insert(id.clone()) {
                 continue;
             }
-            if let Some(event) = sort_context.get_event(&id) {
-                if event.event_type == M_ROOM_MEMBER
-                    && event.state_key.as_ref().map(K::as_ref) == Some(target)
-                    && event.get_membership() == Some(MEM_JOIN)
+            let event = sort_context.get_event(&id)?;
+            if event.event_id.to_string() == active_witness {
+                if event.event_type != M_ROOM_MEMBER
+                    || event.state_key.as_ref().map(K::as_ref) != Some(target)
+                    || event.get_membership() != Some(MEM_JOIN)
                 {
-                    active_witness = Some(event.event_id.clone());
-                    break;
+                    return None;
                 }
-                pending.extend(event.prev_events.iter().cloned());
-                pending.extend(event.auth_events.iter().cloned());
+                break event;
             }
-        }
-        let active_witness = active_witness?;
+            pending.extend(event.prev_events.iter().cloned());
+            pending.extend(event.auth_events.iter().cloned());
+        };
 
         let grant_state_key = grant.state_key.clone()?;
         (!grant.rejected).then(|| {
             (
                 target_key.clone(),
-                active_witness,
+                witness.event_id.clone(),
                 grant_state_key,
                 grant.event_id.clone(),
             )
