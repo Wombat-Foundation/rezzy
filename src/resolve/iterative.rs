@@ -909,12 +909,13 @@ where
     let sorted_power_ids =
         lean_kahn_sort(&power_events, &sort_context, create_ev, version, pl_cache);
     for id in &sorted_power_ids {
-        // Same invariant as the non-delta power phase: every power event is
-        // drawn from the conflicted set or the auth context.
-        let event = sort_set
-            .get(id)
-            .or_else(|| auth_context.get(id))
-            .expect("sorted power events are always present in sort_set or auth_context");
+        // Same graceful-skip contract as the non-delta power phase: every
+        // power event is normally drawn from the conflicted set or the auth
+        // context, but malformed input could still produce a sorted id
+        // backed by neither map — skip it rather than panic.
+        let Some(event) = sort_set.get(id).or_else(|| auth_context.get(id)) else {
+            continue;
+        };
         // Power events are usually state events, but malformed or
         // network-originated input may lack a state_key; skip those rather
         // than panic.

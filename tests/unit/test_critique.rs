@@ -268,11 +268,11 @@ fn assert_benign_convergence(jsonl_filename: &str) -> (ResolvedStateMap, EventMa
 /// A's backdated kick while B is still low-power, discarding B's legitimate
 /// competing-branch actions. `tk.nutra.cdo.12` is intentionally tested through
 /// `resolve_v3`, not this V2 iterative entry point.
-#[test_case(StateResVersion::V2, false; "v2")]
-#[test_case(StateResVersion::V2_1, false; "v2_1")]
-#[test_case(StateResVersion::V2_1_1, false; "v2_1_1")]
-#[test_case(StateResVersion::V2_2, false; "v2_2")]
-fn test_dueling_admins_backdated_kick(version: StateResVersion, expect_hardened_result: bool) {
+#[test_case(StateResVersion::V2; "v2")]
+#[test_case(StateResVersion::V2_1; "v2_1")]
+#[test_case(StateResVersion::V2_1_1; "v2_1_1")]
+#[test_case(StateResVersion::V2_2; "v2_2")]
+fn test_dueling_admins_backdated_kick(version: StateResVersion) {
     let events = utils::parse_jsonl_events(
         r#"
         {"event_id":"$create","type":"m.room.create","state_key":"","sender":"@creator:example.com","origin_server_ts":0,"content":{"creator":"@creator:example.com","room_version":"10"}}
@@ -320,39 +320,21 @@ fn test_dueling_admins_backdated_kick(version: StateResVersion, expect_hardened_
     let power_levels = resolved.get(&("m.room.power_levels".into(), String::new()));
     let d_membership = resolved.get(&("m.room.member".into(), "@d:example.com".into()));
 
-    if expect_hardened_result {
-        assert_eq!(
-            b_membership,
-            Some(&"$b_join".into()),
-            "{version:?} must not let the backdated kick remove B"
-        );
-        assert_eq!(
-            power_levels,
-            Some(&"$b_promote_c".into()),
-            "{version:?} must preserve B's valid promotion of C"
-        );
-        assert_eq!(
-            d_membership,
-            Some(&"$b_ban_d".into()),
-            "{version:?} must preserve B's valid ban of D"
-        );
-    } else {
-        assert_eq!(
-            b_membership,
-            Some(&"$backdated_kick_b".into()),
-            "xfail ({version:?}): the backdated kick wins B's membership slot"
-        );
-        assert_ne!(
-            power_levels,
-            Some(&"$b_promote_c".into()),
-            "xfail ({version:?}): B's locally-authorised promotion of C is discarded"
-        );
-        assert_ne!(
-            d_membership,
-            Some(&"$b_ban_d".into()),
-            "xfail ({version:?}): B's locally-authorised ban of D is discarded"
-        );
-    }
+    assert_eq!(
+        b_membership,
+        Some(&"$backdated_kick_b".into()),
+        "xfail ({version:?}): the backdated kick wins B's membership slot"
+    );
+    assert_ne!(
+        power_levels,
+        Some(&"$b_promote_c".into()),
+        "xfail ({version:?}): B's locally-authorised promotion of C is discarded"
+    );
+    assert_ne!(
+        d_membership,
+        Some(&"$b_ban_d".into()),
+        "xfail ({version:?}): B's locally-authorised ban of D is discarded"
+    );
 }
 
 #[test]

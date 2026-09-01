@@ -295,25 +295,29 @@ impl RoomVersionFormat {
     /// JSON number rules: no fractional values, no exponent
     /// notation, and values within ±(2^53 − 1).
     ///
-    /// Strict numbers apply to numeric versions 6+ and to MSC4242.
+    /// Strict numbers apply to numeric versions 6+, MSC4242, and `NutraCdo`
+    /// (a v12-derived format — see `redaction_preserved_keys`).
     #[must_use]
     const fn requires_strict_canonical_numbers(self) -> bool {
-        matches!(self, Self::Numeric(v) if v >= 6) || matches!(self, Self::Msc4242)
+        matches!(self, Self::Numeric(v) if v >= 6) || matches!(self, Self::Msc4242 | Self::NutraCdo)
     }
 
     /// Returns `true` for room versions that use v11 redaction rules (v11+),
-    /// including v12 which inherits them verbatim, and MSC4242.
+    /// including v12 which inherits them verbatim, MSC4242, and `NutraCdo` (a
+    /// v12-derived format — see `redaction_preserved_keys`).
     #[must_use]
     const fn uses_v11_redaction_rules(self) -> bool {
-        matches!(self, Self::Numeric(v) if v >= 11) || matches!(self, Self::Msc4242)
+        matches!(self, Self::Numeric(v) if v >= 11)
+            || matches!(self, Self::Msc4242 | Self::NutraCdo)
     }
 
     /// Returns `true` for room versions that use v12 create-event rules (v12+,
-    /// where `m.room.create` drops `room_id` from the redacted form) and
-    /// MSC4242.
+    /// where `m.room.create` drops `room_id` from the redacted form), MSC4242,
+    /// and `NutraCdo` (a v12-derived format).
     #[must_use]
     const fn uses_v12_create_rules(self) -> bool {
-        matches!(self, Self::Numeric(v) if v >= 12) || matches!(self, Self::Msc4242)
+        matches!(self, Self::Numeric(v) if v >= 12)
+            || matches!(self, Self::Msc4242 | Self::NutraCdo)
     }
 
     /// Returns `true` when event IDs are reference hashes computed by the
@@ -2370,6 +2374,14 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     fn get_room_version(&self) -> Option<&str> {
         None
     }
+    /// Returns `true` when `room_version` is present but not a string (e.g.
+    /// a JSON number), so callers can distinguish "field absent" (legitimate
+    /// v1 fallback) from "field present but malformed" (must be rejected,
+    /// not silently treated as v1). Defaults to `false` for content types
+    /// that never carry a raw, untyped `room_version` field.
+    fn has_malformed_room_version(&self) -> bool {
+        false
+    }
     /// Returns the `m.federate` field from `m.room.create` content, if present.
     fn get_m_federate(&self) -> Option<bool> {
         None
@@ -2616,6 +2628,11 @@ impl EventContent for Value {
     fn get_room_version(&self) -> Option<&str> {
         self.get(crate::basespec::event_types::FIELD_ROOM_VERSION)?
             .as_str()
+    }
+
+    fn has_malformed_room_version(&self) -> bool {
+        self.get(crate::basespec::event_types::FIELD_ROOM_VERSION)
+            .is_some_and(|v| v.as_str().is_none())
     }
 
     fn get_m_federate(&self) -> Option<bool> {

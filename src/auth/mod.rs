@@ -343,10 +343,18 @@ where
     E: EventLike<Id = Id, Content = C> + 's,
     S: StateProvider<Id, C, E>,
 {
-    let Some(version) = state
-        .get_event(M_ROOM_CREATE, "")
-        .and_then(|create| create.content().get_room_version())
-    else {
+    let Some(create) = state.get_event(M_ROOM_CREATE, "") else {
+        return Ok(None);
+    };
+    let Some(version) = create.content().get_room_version() else {
+        // A present-but-non-string `room_version` (e.g. a JSON number) must
+        // not be silently treated as "absent" and fall back to v1 — that
+        // would let a malformed label sneak past this rejection boundary.
+        if create.content().has_malformed_room_version() {
+            return Err(AuthError::InvalidSyntax(
+                "m.room.create content.room_version is not a recognised room version".into(),
+            ));
+        }
         return Ok(None);
     };
     if StateResVersion::from_room_version(version).is_none() {
@@ -876,7 +884,10 @@ pub fn check_auth_with_context<
 
         let is_v12_plus = matches!(
             version,
-            StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
+            StateResVersion::V2_1
+                | StateResVersion::V2_1_1
+                | StateResVersion::V2_2
+                | StateResVersion::V3
         );
 
         // Rules 10.1–10.3 were added in room version 10.
@@ -2869,6 +2880,32 @@ mod tests {
                 M_ROOM_CREATE,
                 "@creator:example.com",
                 json!({ "room_version": "0" }),
+            ),
+        );
+        let event = make_test_event("$event", "m.room.name", "@creator:example.com", json!({}));
+        let (accepted, rejected) = check_auth_chain(&[event], &initial_state, StateResVersion::V1);
+        assert!(accepted.is_empty());
+        assert!(matches!(
+            rejected.as_slice(),
+            [(id, AuthError::InvalidSyntax(message))]
+                if id == "$event" && message.contains("room_version")
+        ));
+    }
+
+    #[test]
+    fn test_auth_chain_rejects_non_string_room_version() {
+        // A `room_version` present but not a string (e.g. a JSON number) must
+        // not be silently treated as "absent" and fall back to v1 — that
+        // would let a malformed label sneak past `validated_room_version_or_v1`
+        // into legacy literal-version rules instead of being rejected.
+        let mut initial_state = RoomState::new();
+        initial_state.insert(
+            (M_ROOM_CREATE.into(), String::new()),
+            make_test_event(
+                "$create",
+                M_ROOM_CREATE,
+                "@creator:example.com",
+                json!({ "room_version": 12 }),
             ),
         );
         let event = make_test_event("$event", "m.room.name", "@creator:example.com", json!({}));
