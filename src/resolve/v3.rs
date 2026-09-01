@@ -382,11 +382,22 @@ where
     if canonical_member.event_id != witness.event_id {
         return None;
     }
-    let target_power_level = grant.get_user_power_level(target.as_ref())?;
+    // A user absent from `content.users` is not "no level": per the Matrix
+    // auth rules they fall back to `users_default` (see the identical
+    // pattern in `auth::user::get_sender_power_level`), defaulting further to
+    // 0 when even that is unset. Treating the grant's omission as an
+    // outright `?` failure would wrongly refuse to certify a grant that
+    // relies on `users_default` instead of an explicit entry.
+    let target_power_level = grant
+        .get_user_power_level(target.as_ref())
+        .unwrap_or_else(|| grant.content.get_users_default().unwrap_or(0));
     let prior_power_level = branch_auth
         .get_event(M_ROOM_POWER_LEVELS, "")
-        .and_then(|event| event.get_user_power_level(target.as_ref()))
-        .unwrap_or(0);
+        .map_or(0, |event| {
+            event
+                .get_user_power_level(target.as_ref())
+                .unwrap_or_else(|| event.content.get_users_default().unwrap_or(0))
+        });
     (target_power_level > prior_power_level).then(|| CertifiedCreatorGrant {
         grant_id: grant.event_id.clone(),
         target,
@@ -678,7 +689,13 @@ where
                     .rank();
                 left_rank.cmp(right_rank).then_with(|| left.cmp(right))
             })
-            .expect("each V3 state-key writer list is non-empty");
+            .ok_or_else(|| V3ResolveError::IncompleteAuthContext {
+                // `writers` is non-empty (it comes from an admitted-writer
+                // index entry), so an empty `maximal` set here means
+                // `causally_precedes` reported a cycle among these
+                // candidates rather than a genuine writer-less key.
+                missing_event_ids: writers.clone(),
+            })?;
         selections.push(RoundSelection {
             key: key.clone(),
             event_id: winner.clone(),
