@@ -3,16 +3,12 @@ name: Rust Docs
 
 on:
   push:
-    branches: ["main", "master"]
+    branches: ["master", "dev"]
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
-# Allow only one concurrent deployment
 concurrency:
   group: pages
   cancel-in-progress: true
@@ -22,34 +18,22 @@ env:
 
 jobs:
   docs:
+    if: github.ref_name == 'master' || github.ref_name == 'dev'
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build rustdoc
+      - name: Build rustdoc for this branch only
         run: make doc
 
-      - name: Delete stale github-pages artifact
-        # `deploy-pages` requires exactly one `github-pages` artifact; a
-        # leftover from a prior run collides with the fresh upload and aborts
-        # with "Multiple artifacts named github-pages". Remove any before
-        # uploading so every run is idempotent.
-        uses: geekyeggo/delete-artifact@v5
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          name: github-pages
-          failOnError: false
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: target/doc
-
-      - name: Deploy to GitHub Pages
-        id: deploy
-        uses: actions/deploy-pages@v4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: target/doc
+          destination_dir: ${{ github.ref_name == 'dev' && 'dev' || '' }}
+          keep_files: true
