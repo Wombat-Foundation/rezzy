@@ -547,6 +547,7 @@ pub fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use rezzy::LeanEvent;

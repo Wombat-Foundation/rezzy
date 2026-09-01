@@ -683,6 +683,7 @@ fn state_for_round<Id: Clone + Ord, K: Clone + Ord>(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::basespec::event_types::{

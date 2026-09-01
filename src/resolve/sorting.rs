@@ -18,8 +18,6 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use crate::basespec::event_types::{MAX_POWER_LEVEL_RUST, M_ROOM_POWER_LEVELS};
-#[cfg(test)]
-use crate::basespec::rezzy_types::LeanEvent;
 use crate::basespec::rezzy_types::{EventLike, KahnSortResult, SortPriority, StateResVersion};
 use crate::{FastMap, HashMap};
 
@@ -455,6 +453,7 @@ pub fn mainline_sort<Id, C, E>(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::basespec::rezzy_types::LeanEvent;
     use alloc::{string::String, vec::Vec};
 
     #[test]

@@ -4268,6 +4268,7 @@ mod canonical_parity_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod canonical_redacted_json_tests {
     use super::{canonical_redacted_json, redactable_content_remainder, split_redaction_content};
     use serde_json::json;
@@ -4309,6 +4310,7 @@ mod canonical_redacted_json_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod cdo_content_tests {
     use super::EventContent;
     use serde_json::json;
