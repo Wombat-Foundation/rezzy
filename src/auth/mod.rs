@@ -281,8 +281,8 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`AuthError::MissingCreate`] when the `m.room.create` event is not
-/// present in the provided state.
+/// Missing create state is treated as room version 1 for partial-state
+/// resolution. A present create event must name a supported room version.
 fn get_room_version_num<Id, C, E, S>(state: &S) -> Result<u32, AuthError<Id>>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -290,10 +290,8 @@ where
     E: EventLike<Id = Id, Content = C>,
     S: StateProvider<Id, C, E>,
 {
-    let Some(create) = state.get_event(M_ROOM_CREATE, "") else {
-        return Err(AuthError::MissingCreate);
-    };
-    if let Some(v) = create.content().get_room_version() {
+    let room_version = validated_room_version_or_v1(state)?;
+    if let Some(v) = room_version {
         if let Ok(num) = v.parse::<u32>() {
             return Ok(num);
         }
@@ -301,15 +299,8 @@ where
             return Ok(12);
         }
     }
-    // V1 rooms didn't have a room_version field, so an absent (or
-    // unparsable, non-v2.1+ label) value is spec-legal -- but it's rare
-    // enough in practice that it's worth flagging loudly rather than
-    // silently defaulting.
-    #[cfg(feature = "std")]
-    std::eprintln!(
-        "REZZY_WARN: get_room_version_num: no usable content.room_version on m.room.create {:?} -- defaulting to 1",
-        create.event_id()
-    );
+    // An absent version is the historical v1 default. `validated_*` has
+    // already rejected a present but unsupported label.
     Ok(1)
 }
 
@@ -328,38 +319,44 @@ where
     Ok(get_room_version_num(state)? >= minimum_version)
 }
 
-/// Reads `content.room_version` off the room's `m.room.create` event, as a
-/// raw string, for the version-string-keyed rules below (Rules 4, 11, 2.2)
-/// that must branch on the literal spec label rather than the collapsed
-/// [`StateResVersion`] enum.
+/// Returns a present, supported create-event room version, or `None` for the
+/// spec-defined v1 default when create state or its version field is absent.
 ///
-/// Defaults to `"1"` when the create event is missing or its
-/// `content.room_version` is absent -- both spec-legal (real v1 rooms never
-/// had the field), but rare enough in live traffic that a silent default is
-/// worth flagging loudly rather than passing through unnoticed. `rule` names
-/// the calling rule for the warning.
-fn room_version_str_or_warn<'s, Id, C, E, S>(state: &'s S, rule: &str) -> &'s str
+/// This is the authorization boundary for a create event already present in
+/// state. Without it, an unsupported label could fall through legacy literal
+/// version checks (notably redaction Rule 11).
+fn validated_room_version_or_v1<'s, Id, C, E, S>(
+    state: &'s S,
+) -> Result<Option<&'s str>, AuthError<Id>>
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + 's,
     E: EventLike<Id = Id, Content = C> + 's,
     S: StateProvider<Id, C, E>,
 {
-    let create = state.get_event(M_ROOM_CREATE, "");
-    if let Some(v) = create.and_then(|create_ev| create_ev.content().get_room_version()) {
-        v
-    } else {
-        #[cfg(feature = "std")]
-        std::eprintln!(
-            "REZZY_WARN: {rule}: {} -- defaulting room_version to \"1\"",
-            if create.is_none() {
-                "no m.room.create in state"
-            } else {
-                "m.room.create has no content.room_version"
-            }
-        );
-        "1"
+    let Some(version) = state
+        .get_event(M_ROOM_CREATE, "")
+        .and_then(|create| create.content().get_room_version())
+    else {
+        return Ok(None);
+    };
+    if StateResVersion::from_room_version(version).is_none() {
+        return Err(AuthError::InvalidSyntax(
+            "m.room.create content.room_version is not a recognised room version".into(),
+        ));
     }
+    Ok(Some(version))
+}
+
+/// Reads the validated version label needed by literal version-keyed rules.
+fn room_version_str_or_v1<'s, Id, C, E, S>(state: &'s S) -> Result<&'s str, AuthError<Id>>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent + 's,
+    E: EventLike<Id = Id, Content = C> + 's,
+    S: StateProvider<Id, C, E>,
+{
+    Ok(validated_room_version_or_v1(state)?.unwrap_or("1"))
 }
 
 fn reject_if_flagged_auth_state<
@@ -586,9 +583,23 @@ pub fn check_auth_with_context<
                 "m.room.create sender must be a valid MXID".into(),
             ));
         }
+        if event
+            .content()
+            .get_room_version()
+            .is_some_and(|room_version| StateResVersion::from_room_version(room_version).is_none())
+        {
+            return Err(AuthError::InvalidSyntax(
+                "m.room.create content.room_version is not a recognised room version".into(),
+            ));
+        }
         // Create events are always authorized if they're first
         return Ok(());
     }
+
+    // Reject a present unsupported room-version label before any
+    // authorization rule interprets it as a legacy version. Missing create
+    // state remains valid for partial-state resolution.
+    validated_room_version_or_v1(state)?;
 
     // Rule 3: m.federate check
     if let Some(create_ev) = state.get_event(M_ROOM_CREATE, "") {
@@ -610,7 +621,7 @@ pub fn check_auth_with_context<
     // gating on `version == StateResVersion::V1` would only ever match real
     // room version "1" and silently skip versions 2-5.
     if event_type == crate::basespec::event_types::M_ROOM_ALIASES {
-        let room_version = room_version_str_or_warn(state, "Rule 4 (m.room.aliases)");
+        let room_version = room_version_str_or_v1(state)?;
         if matches!(room_version, "1" | "2" | "3" | "4" | "5") {
             let Some(state_key) = event.state_key() else {
                 return Err(AuthError::InvalidSyntax(
@@ -633,7 +644,7 @@ pub fn check_auth_with_context<
     // Rule 4 above, from the m.room.create event's content, not the
     // collapsed `StateResVersion` enum.
     if event_type == M_ROOM_REDACTION {
-        let room_version = room_version_str_or_warn(state, "Rule 11 (m.room.redaction)");
+        let room_version = room_version_str_or_v1(state)?;
         if matches!(room_version, "1" | "2") {
             let sender_pl = user::get_sender_power_level(event.sender(), state, version);
             let redact_pl = get_redact_power_level(state);
@@ -744,7 +755,7 @@ pub fn check_auth_with_context<
         // The selection is room-version-aware (the v8+ restricted-join
         // authorising member), so read the actual version from the create
         // event rather than the collapsed `StateResVersion` enum.
-        let room_version = room_version_str_or_warn(state, "Rule 2.2 (auth_events selection)");
+        let room_version = room_version_str_or_v1(state)?;
         for (req_type, req_key) in required_auth_types_for(event, event_type, version, room_version)
         {
             let Some(state_ev) = state.get_event(req_type, req_key) else {
@@ -2779,9 +2790,8 @@ mod tests {
         );
     }
 
-    /// Coverage: `room_version_str_or_warn` — state has no `m.room.create`.
-    /// Exercises the `create.is_none()` branch (line 337) via Rule 4
-    /// (m.room.aliases) which calls `room_version_str_or_warn`.
+    /// Partial-state resolution keeps the historical v1 fallback when no
+    /// `m.room.create` is available.
     #[test]
     fn test_room_version_warn_no_create_in_state() {
         let mut state: RoomState = RoomState::new();
@@ -2806,9 +2816,8 @@ mod tests {
             ),
         );
 
-        // An m.room.aliases event triggers Rule 4, which calls
-        // room_version_str_or_warn. The state has no m.room.create, so
-        // the "no m.room.create in state" branch fires.
+        // An m.room.aliases event triggers Rule 4. With no create state the
+        // room-version helper uses the spec-defined v1 default.
         let aliases_ev = LeanEvent {
             event_id: "$aliases".into(),
             event_type: M_ROOM_ALIASES.into(),
@@ -2818,13 +2827,49 @@ mod tests {
             ..Default::default()
         };
         let result = check_auth_with_context(&aliases_ev, &state, StateResVersion::V1, None, None);
-        // Rule 4 fires for v1-v5; it calls room_version_str_or_warn which
-        // defaults to "1" and passes the aliases domain check. The event
-        // itself is still authorized (the warning path is not an error).
+        // Rule 4 fires for v1-v5 and the default passes the aliases domain
+        // check; missing create state is not itself an authorization error.
         assert!(
             result.is_ok(),
             "aliases event should still auth OK with default room version: {result:?}"
         );
+    }
+
+    #[test]
+    fn test_auth_rejects_unsupported_create_room_version() {
+        let create = make_test_event(
+            "$create",
+            M_ROOM_CREATE,
+            "@creator:example.com",
+            json!({ "room_version": "0" }),
+        );
+        let result = check_auth(&create, &RoomState::new(), StateResVersion::V1, None);
+        assert!(
+            matches!(result, Err(AuthError::InvalidSyntax(ref message)) if message.contains("room_version")),
+            "unsupported create room version must fail auth: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_auth_chain_rejects_state_with_unsupported_room_version() {
+        let mut initial_state = RoomState::new();
+        initial_state.insert(
+            (M_ROOM_CREATE.into(), String::new()),
+            make_test_event(
+                "$create",
+                M_ROOM_CREATE,
+                "@creator:example.com",
+                json!({ "room_version": "0" }),
+            ),
+        );
+        let event = make_test_event("$event", "m.room.name", "@creator:example.com", json!({}));
+        let (accepted, rejected) = check_auth_chain(&[event], &initial_state, StateResVersion::V1);
+        assert!(accepted.is_empty());
+        assert!(matches!(
+            rejected.as_slice(),
+            [(id, AuthError::InvalidSyntax(message))]
+                if id == "$event" && message.contains("room_version")
+        ));
     }
 
     /// Coverage: `apply_authorized_redactions` — self-redaction no-op (line 1279).

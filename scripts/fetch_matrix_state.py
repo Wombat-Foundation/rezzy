@@ -164,20 +164,22 @@ def main():
 
     headers = {"Authorization": f"Bearer {access_token}"}
 
+    succeeded = True
     if room_id:
-        if not fetch_and_save_room(
+        succeeded &= fetch_and_save_room(
             room_id, "res/real_matrix_state.json", homeserver, headers, args.full_pdus
-        ):
-            sys.exit(1)
+        )
     if room_id_v2_1:
-        if not fetch_and_save_room(
+        succeeded &= fetch_and_save_room(
             room_id_v2_1,
             "res/real_matrix_state_v2_1.json",
             homeserver,
             headers,
             args.full_pdus,
-        ):
-            sys.exit(1)
+        )
+
+    if not succeeded:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

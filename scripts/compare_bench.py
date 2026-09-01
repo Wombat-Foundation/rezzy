@@ -35,7 +35,9 @@ import sys
 # Deliberately does NOT match the ratio lines ("=> foo is 1.23x faster than
 # bar") or the parenthesized `label: (setup: ..., algo: ..., ...)` forms,
 # so only the stable per-op/total metrics are tracked.
-METRIC = re.compile(r"^(.+?):\s+([0-9]+(?:\.[0-9]+)?)\s*(ns|ms)(?:/op)?(?:\s*$)")
+METRIC = re.compile(
+    r"^(.+?):\s+([0-9]+(?:\.[0-9]+)?)\s*(ns|ms)(?:/op)?(?:\s*\([^)]*\))?\s*$"
+)
 CHECKPOINT = re.compile(r"^\s*S=(\d+):\s*$")
 BENCHMARK_SECTION = re.compile(r"^\s*\[([^]]+)\]\s+BENCHMARK:\s*(.+?)\s*$")
 
@@ -105,12 +107,24 @@ def main() -> int:
 
     violations: list[str] = []
     new_best = dict(best)
-    for label, cur in sorted(current.items()):
-        # Baselines written before section prefixes were introduced used the
-        # bare label.  Consume that value once rather than silently resetting
-        # the regression gate during the format migration.
+    # Baselines predating section prefixes used bare labels.  A bare label is
+    # safe to migrate only when exactly one current metric has that suffix;
+    # otherwise one old baseline could incorrectly gate several measurements.
+    legacy_counts: dict[str, int] = {}
+    for label in current:
         legacy_label = label.rsplit(": ", 1)[-1]
-        prev = best.get(label, best.get(legacy_label))
+        legacy_counts[legacy_label] = legacy_counts.get(legacy_label, 0) + 1
+
+    def previous_best(label: str) -> float | None:
+        if label in best:
+            return best[label]
+        legacy_label = label.rsplit(": ", 1)[-1]
+        if legacy_counts[legacy_label] == 1:
+            return best.get(legacy_label)
+        return None
+
+    for label, cur in sorted(current.items()):
+        prev = previous_best(label)
         if prev is not None and cur > prev * (1.0 + args.margin):
             violations.append(
                 f"{label}: {cur:.4f}ms regressed >{args.margin * 100:.0f}% vs best {prev:.4f}ms"
@@ -126,7 +140,7 @@ def main() -> int:
         f"parsed {len(current)} metrics, comparing against {len(best)} previous bests"
     )
     for label, val in sorted(current.items()):
-        prev = best.get(label, best.get(label.rsplit(": ", 1)[-1]))
+        prev = previous_best(label)
         suffix = "" if prev is None else f" (best {prev:.4f}ms)"
         print(f"  {label}: {val:.4f}ms{suffix}")
 
