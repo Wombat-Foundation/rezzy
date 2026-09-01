@@ -18,7 +18,6 @@ use crate::HashSet;
 use alloc::{sync::Arc, vec::Vec};
 use core::fmt;
 
-#[cfg(feature = "alloc")]
 use roaring::RoaringBitmap;
 
 use super::{
@@ -144,7 +143,6 @@ impl IndexedUniverse {
 /// operations `RoaringBitmap` is built for and a `HashSet<StructuralHash>`
 /// is not. `universe` is the only place `StructuralHash` identity lives;
 /// `reachable`/`unreachable` are addressed purely through its dense indexes.
-#[cfg(feature = "alloc")]
 #[derive(Debug, Clone, PartialEq)]
 pub struct BitmapNodeReachabilityAudit {
     pub universe: IndexedUniverse,
@@ -154,7 +152,6 @@ pub struct BitmapNodeReachabilityAudit {
 
 /// Errors from [`bitmap_node_reachability_audit`]: either the traversal itself
 /// failed, or `universe` could not be given a dense index.
-#[cfg(feature = "alloc")]
 #[derive(Debug, Clone, PartialEq)]
 pub enum BitmapAuditError<E> {
     /// `universe` had more than `u32::MAX` distinct hashes.
@@ -163,7 +160,6 @@ pub enum BitmapAuditError<E> {
     Traversal(HamtTraversalError<E>),
 }
 
-#[cfg(feature = "alloc")]
 impl<E: fmt::Display> fmt::Display for BitmapAuditError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -173,7 +169,6 @@ impl<E: fmt::Display> fmt::Display for BitmapAuditError<E> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl<E> core::error::Error for BitmapAuditError<E>
 where
     E: core::error::Error + fmt::Debug + 'static,
@@ -186,14 +181,12 @@ where
     }
 }
 
-#[cfg(feature = "alloc")]
 impl<E> From<UniverseTooLarge> for BitmapAuditError<E> {
     fn from(err: UniverseTooLarge) -> Self {
         Self::Universe(err)
     }
 }
 
-#[cfg(feature = "alloc")]
 impl<E> From<HamtTraversalError<E>> for BitmapAuditError<E> {
     fn from(err: HamtTraversalError<E>) -> Self {
         Self::Traversal(err)
@@ -223,7 +216,6 @@ impl<E> From<HamtTraversalError<E>> for BitmapAuditError<E> {
 /// `u32::try_from(universe.len())` fallback below re-derives that length,
 /// which [`IndexedUniverse::try_build`] (called just above it, and
 /// propagated with `?` on failure) already guarantees fits.
-#[cfg(feature = "alloc")]
 pub fn bitmap_node_reachability_audit<K, V, F, E>(
     roots: impl IntoIterator<Item = Arc<HamtNode<K, V>>>,
     universe: impl IntoIterator<Item = StructuralHash>,

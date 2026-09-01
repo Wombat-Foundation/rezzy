@@ -38,7 +38,6 @@ pub mod hash;
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;
 
-#[cfg(feature = "alloc")]
 pub use audit::{bitmap_node_reachability_audit, BitmapAuditError, BitmapNodeReachabilityAudit};
 pub use audit::{
     node_reachability_audit, unreachable_node_hashes, IndexedUniverse, NodeReachabilityAudit,

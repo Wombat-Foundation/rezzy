@@ -70,8 +70,7 @@ test = false
 
 [features]
 default = ["std"]
-std = ["alloc", "serde_json/std", "serde/std"]
-alloc = ["dep:roaring"]
+std = ["serde_json/std", "serde/std"]
 # NOTE: `cli` is tested at the same 1.81.0 MSRV as the default build (see
 # the `cli feature` matrix entry in .github/workflows/rust.yml for the full
 # picture). `zeroize` is pinned below to 1.8.1 (rust-version = "1.60")
@@ -95,7 +94,7 @@ regen = ["std"]
 # Event signature verification uses the RFC-8032 (ed25519-dalek) backend,
 # which shares rezzy's sha2 0.10 (no duplicate production hash crate).
 signing = ["signing-dalek"]
-signing-dalek = ["alloc", "dep:ed25519-dalek"]
+signing-dalek = ["dep:ed25519-dalek"]
 # Fast JSON parsing (simd-json) — opt-in. simd-json only wins on LARGE single
 # JSON documents; at PDU scale serde_json measures ~1.1x faster (small PDUs,
 # per-call mutable-buffer clone), so it is NOT a default dependency. When
@@ -141,7 +140,7 @@ imbl = { version = "3.0", default-features = false, features = ["serde"] }
 insta = { version = "1.47.2", optional = true }
 mimalloc = { version = "0.1.52", optional = true }
 
-roaring = { version = "0.10", optional = true, default-features = false } # compatible with the Rust 1.81 MSRV
+roaring = { version = "0.10", default-features = false } # compatible with the Rust 1.81 MSRV
 ruma-common = { version = "0.19.0", optional = true }
 ruma-events = { version = "0.34.0", optional = true }
 ruma-signatures = { version = "0.21", optional = true }

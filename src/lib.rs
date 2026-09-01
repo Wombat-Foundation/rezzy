@@ -4,14 +4,13 @@
 //!
 //! Spec-compliant implementation of Matrix state resolution versions
 //! **V1**, **V2**, **V2.1** ([MSC4297]), **V2.1.1**, and **V2.2** ([MSC4242]).
-//! Runs in `#![no_std]` environments (with `alloc`).
+//! Runs in `#![no_std]` environments with `alloc`.
 //!
 //! ## Feature Flags
 //!
 //! | Feature     | Default | Description |
 //! |-------------|:-------:|-------------|
 //! | `std`       | ✓       | Enables `std::collections::{HashMap, HashSet}` and thread-parallel lattice resolution. |
-//! | `alloc`     | ✓       | Bare `alloc` support for `no_std` targets (implied by `std`). |
 //! | `cli`       | ✗       | Builds the `rezzy` CLI binary and merge utilities. |
 //! | `mock-ruma` | ✗       | Enables Ruma SDK interop for upstream parity testing. |
 //! | `regen`     | ✗       | Builds the `regen_oracles` snapshot regeneration binary. |

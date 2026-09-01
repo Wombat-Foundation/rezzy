@@ -917,7 +917,6 @@ where
 /// let merge_base = compute_merge_base(&tips, &events);
 /// ```
 #[must_use]
-#[cfg(feature = "alloc")]
 pub fn compute_merge_base<'a, Id, Q, S, Node>(
     extremities: &[&Q],
     events_map: &'a HashMap<Id, Node, S>,
@@ -2505,7 +2504,6 @@ where
 ///
 /// # Panics
 /// Panics if the number of distinct event IDs exceeds `u32::MAX`.
-#[cfg(feature = "alloc")]
 pub fn find_forward_extremities_roaring<Id, I, P>(events: I) -> alloc::vec::Vec<Id>
 where
     Id: core::hash::Hash + Eq + Clone,
