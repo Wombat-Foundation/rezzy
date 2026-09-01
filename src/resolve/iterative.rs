@@ -30,206 +30,24 @@
 //! [`crate::resolve::lattice::resolve_lattice_fold`].
 
 use crate::basespec::event_types::EventType;
-use crate::basespec::rezzy_types::{EventProvider, LeanEvent, StateResVersion};
+use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
 use crate::{
     resolve::sorting::{build_mainline, build_mainline_with_cache, lean_kahn_sort, mainline_sort},
     state::at::{compute_local_auth, iterative_auth_ok, LocalAuthCache},
+    state::delta::{ResolutionDelta, ResolvePhase},
     FastMap, HashMap,
 };
-use alloc::{string::ToString, vec::Vec};
+use alloc::vec::Vec;
 
-/// Returns whether `possible_ancestor` is reachable from `child` through the
-/// event DAG. This deliberately uses graph edges only: timestamps and depth
-/// are author-controlled metadata and cannot establish authoritative chronology.
-fn is_causal_ancestor<Id, C, K>(
-    child: &LeanEvent<Id, C, K>,
-    possible_ancestor: &Id,
-    events: &impl EventProvider<Id, C, LeanEvent<Id, C, K>>,
-) -> bool
-where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: Clone,
-{
-    let mut pending = alloc::vec![child.event_id.clone()];
-    let mut visited = alloc::collections::BTreeSet::new();
-    while let Some(id) = pending.pop() {
-        if !visited.insert(id.clone()) {
-            continue;
-        }
-        if &id == possible_ancestor {
-            return true;
-        }
-        if let Some(event) = events.get_event(&id) {
-            pending.extend(event.prev_events.iter().cloned());
-            pending.extend(event.auth_events.iter().cloned());
-        }
-    }
-    false
-}
-
-/// V3 typed CDO rule for the duelling-admins case.
-///
-/// A creator-issued promotion of the kick target wins over a *concurrent*
-/// non-creator kick by an admin no more powerful than the promoted target.
-/// The promotion must carry an active-membership witness for its target in
-/// its causal past; a PL event alone never manufactures a join.
-///
-/// This is intentionally narrow. It does not infer chronology or trust an
-/// event's cached `power_level`; the normal iterative pass remains the source
-/// of ordinary Matrix authorization.
-#[allow(clippy::too_many_arguments)]
-fn creator_grant_dominates_concurrent_kick<Id, C, S1, K>(
-    kick: &LeanEvent<Id, C, K>,
-    power_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    sort_context: &impl EventProvider<Id, C, LeanEvent<Id, C, K>>,
-    create_ev: Option<&LeanEvent<Id, C, K>>,
-    version: StateResVersion,
-) -> Option<(K, Id, K, Id)>
-where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent + Clone,
-    S1: core::hash::BuildHasher,
-    K: crate::basespec::rezzy_types::StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
-{
-    use crate::basespec::event_types::{MEM_JOIN, MEM_LEAVE, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
-
-    if kick.event_type != M_ROOM_MEMBER
-        || kick.get_membership() != Some(MEM_LEAVE)
-        || kick.state_key.as_ref().map(K::as_ref) == Some(kick.sender.as_str())
-        || version != StateResVersion::V3
-    {
-        return None;
-    }
-    let target = kick.state_key.as_ref().map(K::as_ref)?;
-    let target_key = kick.state_key.clone()?;
-    let creator = create_ev.map(|event| event.sender.as_str())?;
-
-    let mut grants: Vec<_> = power_events.values().collect();
-    grants.sort_unstable_by(|left, right| left.event_id.cmp(&right.event_id));
-    grants.into_iter().find_map(|grant| {
-        if grant.event_type != M_ROOM_POWER_LEVELS
-            || grant.sender != creator
-            || is_causal_ancestor(kick, &grant.event_id, sort_context)
-            || is_causal_ancestor(grant, &kick.event_id, sort_context)
-        {
-            return None;
-        }
-
-        // The grant must raise the target to at least the attacker's authority
-        // in the grant's own stated governance view.
-        let target_pl = grant.get_user_power_level(target)?;
-        let attacker_pl = grant
-            .get_user_power_level(kick.sender.as_str())
-            .unwrap_or(0);
-        let old_target_pl = grant
-            .auth_events
-            .iter()
-            .filter_map(|id| sort_context.get_event(id))
-            .find(|event| event.event_type == M_ROOM_POWER_LEVELS)
-            .and_then(|event| event.get_user_power_level(target))
-            .unwrap_or(0);
-        if target_pl <= old_target_pl || target_pl < attacker_pl {
-            return None;
-        }
-
-        // A V3 grant_admin is explicit: the signed witness names the only
-        // candidate join. Do not search the DAG or choose among profile joins.
-        let active_witness = grant.content.get_cdo_active_member()?;
-        let mut pending = alloc::vec![grant.event_id.clone()];
-        let mut visited = alloc::collections::BTreeSet::new();
-        let witness = loop {
-            let id = pending.pop()?;
-            if !visited.insert(id.clone()) {
-                continue;
-            }
-            let event = sort_context.get_event(&id)?;
-            if event.event_id.to_string() == active_witness {
-                if event.event_type != M_ROOM_MEMBER
-                    || event.state_key.as_ref().map(K::as_ref) != Some(target)
-                    || event.get_membership() != Some(MEM_JOIN)
-                {
-                    return None;
-                }
-                break event;
-            }
-            pending.extend(event.prev_events.iter().cloned());
-            pending.extend(event.auth_events.iter().cloned());
-        };
-
-        let grant_state_key = grant.state_key.clone()?;
-        (!grant.rejected).then(|| {
-            (
-                target_key.clone(),
-                witness.event_id.clone(),
-                grant_state_key,
-                grant.event_id.clone(),
-            )
-        })
-    })
-}
-
-/// Seeds the cross-key result of a creator grant that dominates a concurrent
-/// kick, before synthetic power ordering can evaluate the target as removed.
-fn seed_creator_grant_over_kick<Id, C, S1, K>(
-    resolved: &mut crate::state::at::SharedState<Id, K>,
-    power_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    sort_context: &impl EventProvider<Id, C, LeanEvent<Id, C, K>>,
-    create_ev: Option<&LeanEvent<Id, C, K>>,
-    version: StateResVersion,
-) where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent + Clone,
-    S1: core::hash::BuildHasher,
-    K: crate::basespec::rezzy_types::StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
-{
-    for event in power_events.values() {
-        if let Some((target, witness, pl_key, grant)) = creator_grant_dominates_concurrent_kick(
-            event,
-            power_events,
-            sort_context,
-            create_ev,
-            version,
-        ) {
-            resolved.insert((EventType::from("m.room.member"), target), witness);
-            resolved.insert((EventType::from("m.room.power_levels"), pl_key), grant);
-        }
-    }
-}
-
-/// Causal-isolation half of the rule: actions that explicitly cite both the
-/// creator grant and its active-membership witness remain authorized on the
-/// grantee's branch. A concurrent kick cannot retroactively erase them.
-fn creator_grant_preserves_grantee_action<Id, C, S1, K>(
-    event: &LeanEvent<Id, C, K>,
-    power_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    sort_context: &impl EventProvider<Id, C, LeanEvent<Id, C, K>>,
-    create_ev: Option<&LeanEvent<Id, C, K>>,
-    version: StateResVersion,
-) -> bool
-where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent + Clone,
-    S1: core::hash::BuildHasher,
-    K: crate::basespec::rezzy_types::StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
-{
-    !event.rejected
-        && power_events.values().any(|kick| {
-            creator_grant_dominates_concurrent_kick(
-                kick,
-                power_events,
-                sort_context,
-                create_ev,
-                version,
-            )
-            .is_some_and(|(target, witness, _, grant)| {
-                event.sender == target.as_ref()
-                    && event.auth_events.contains(&witness)
-                    && event.auth_events.contains(&grant)
-            })
-        })
+/// The V2 iterative cascade has no V3 semantics. Keep this guard at every
+/// internal terminal entry point so `tk.nutra.cdo.12` cannot silently resolve
+/// under a legacy room-version algorithm.
+fn require_legacy_iterative_version(version: StateResVersion) {
+    assert_ne!(
+        version,
+        StateResVersion::V3,
+        "tk.nutra.cdo.12 requires resolve_v3 and verified V3 admission"
+    );
 }
 
 /// Collects the initial set of conflicted event IDs.
@@ -440,7 +258,6 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, Spl, K>(
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let sorted_power_ids = lean_kahn_sort(power_events, sort_context, create_ev, version, pl_cache);
-    seed_creator_grant_over_kick(resolved, power_events, sort_context, create_ev, version);
     for id in &sorted_power_ids {
         // Every power event is drawn from the conflicted set or the auth
         // context (route_power_events + expand_v2 + route_msc4297), so a sorted
@@ -450,16 +267,6 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, Spl, K>(
         let Some(event) = conflicted_events.get(id).or_else(|| auth_context.get(id)) else {
             continue;
         };
-        if let Some((target, active_witness, _, _)) = creator_grant_dominates_concurrent_kick(
-            event,
-            power_events,
-            sort_context,
-            create_ev,
-            version,
-        ) {
-            resolved.insert((EventType::from("m.room.member"), target), active_witness);
-            continue;
-        }
         let local_auth = compute_local_auth(
             event,
             auth_context,
@@ -476,12 +283,6 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, Spl, K>(
             create_ev,
             version,
             true,
-        ) || creator_grant_preserves_grantee_action(
-            event,
-            power_events,
-            sort_context,
-            create_ev,
-            version,
         ) {
             // Power events are usually state events, but malformed or
             // network-originated input may lack a state_key; skip those
@@ -853,6 +654,7 @@ where
     Spl: core::hash::BuildHasher,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
+    require_legacy_iterative_version(version);
     let original_conflicted_keys =
         prepare_conflicted_and_keys(conflicted_events, auth_context, version);
 
@@ -985,7 +787,7 @@ where
 }
 
 /// Like [`resolve_iterative_sort`], but also returns per-event
-/// [`ResolutionDelta`](crate::state::delta::ResolutionDelta)s showing what
+/// [`ResolutionDelta`]s showing what
 /// changed (or was rejected) at each step.
 ///
 /// The deltas are ordered: power-phase events first, then non-power events,
@@ -1073,8 +875,7 @@ where
     Spl: core::hash::BuildHasher,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    use crate::state::delta::{ResolutionDelta, ResolvePhase};
-
+    require_legacy_iterative_version(version);
     let conflicted_keys = derive_all_conflicted_keys(&conflicted_events, empty_key);
     let original_conflicted_keys =
         prepare_conflicted_and_keys(&conflicted_events, auth_context, version);
@@ -1107,13 +908,6 @@ where
 
     let sorted_power_ids =
         lean_kahn_sort(&power_events, &sort_context, create_ev, version, pl_cache);
-    seed_creator_grant_over_kick(
-        &mut resolved,
-        &power_events,
-        &sort_context,
-        create_ev,
-        version,
-    );
     for id in &sorted_power_ids {
         // Same invariant as the non-delta power phase: every power event is
         // drawn from the conflicted set or the auth context.
@@ -1128,36 +922,18 @@ where
             continue;
         };
         let key = (EventType::from(event.event_type.as_str()), sk.clone());
-        let accepted = if let Some((target, active_witness, _, _)) =
-            creator_grant_dominates_concurrent_kick(
-                event,
-                &power_events,
-                &sort_context,
-                create_ev,
-                version,
-            ) {
-            resolved.insert((EventType::from("m.room.member"), target), active_witness);
-            false
-        } else {
-            let local_auth =
-                compute_local_auth(event, auth_context, sort_set, local_auth_cache, version);
-            iterative_auth_ok(
-                event,
-                &resolved,
-                auth_context,
-                sort_set,
-                local_auth,
-                create_ev,
-                version,
-                true,
-            ) || creator_grant_preserves_grantee_action(
-                event,
-                &power_events,
-                &sort_context,
-                create_ev,
-                version,
-            )
-        };
+        let local_auth =
+            compute_local_auth(event, auth_context, sort_set, local_auth_cache, version);
+        let accepted = iterative_auth_ok(
+            event,
+            &resolved,
+            auth_context,
+            sort_set,
+            local_auth,
+            create_ev,
+            version,
+            true,
+        );
         let replaced = if accepted && conflicted_keys.contains(&key) {
             let old = resolved.get(&key).cloned();
             resolved.insert(key.clone(), event.event_id.clone());
@@ -1267,6 +1043,12 @@ mod tests {
     use crate::basespec::rezzy_types::LeanEvent;
     use crate::state::at::SharedState;
     use alloc::string::{String, ToString};
+
+    #[test]
+    #[should_panic(expected = "tk.nutra.cdo.12 requires resolve_v3")]
+    fn legacy_iterative_resolver_rejects_v3() {
+        require_legacy_iterative_version(StateResVersion::V3);
+    }
 
     fn member_ev(id: &str, sender: &str, target: &str, membership: &str) -> LeanEvent {
         LeanEvent {

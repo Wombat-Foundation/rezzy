@@ -264,13 +264,14 @@ fn assert_benign_convergence(jsonl_filename: &str) -> (ResolvedStateMap, EventMa
     (resolved_v2_1_1, map)
 }
 
-/// **xfail / ordering hazard:** V2 and V2.1 accept A's backdated kick while B
-/// is still low-power, discarding B's legitimate competing-branch actions.
-/// V2.1.1 and V2.2 are expected to preserve B's promoted branch.
+/// **Ordering hazard:** every legacy Matrix resolution version below accepts
+/// A's backdated kick while B is still low-power, discarding B's legitimate
+/// competing-branch actions. `tk.nutra.cdo.12` is intentionally tested through
+/// `resolve_v3`, not this V2 iterative entry point.
 #[test_case(StateResVersion::V2, false; "v2")]
 #[test_case(StateResVersion::V2_1, false; "v2_1")]
-#[test_case(StateResVersion::V2_1_1, true; "v2_1_1")]
-#[test_case(StateResVersion::V2_2, true; "v2_2")]
+#[test_case(StateResVersion::V2_1_1, false; "v2_1_1")]
+#[test_case(StateResVersion::V2_2, false; "v2_2")]
 fn test_dueling_admins_backdated_kick(version: StateResVersion, expect_hardened_result: bool) {
     let events = utils::parse_jsonl_events(
         r#"
