@@ -2349,6 +2349,14 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     fn get_invite(&self) -> Option<i64>;
     fn get_redact(&self) -> Option<i64>;
     fn get_creator(&self) -> Option<&str>;
+    /// Returns the signed active-membership witness carried by the Rezzy CDO
+    /// extension (`tk.nutra.cdo.active_member`), when present.
+    ///
+    /// The default keeps existing custom content implementations compatible:
+    /// absence means the event is simply ineligible for CDO certification.
+    fn get_cdo_active_member(&self) -> Option<&str> {
+        None
+    }
     /// Returns the `room_version` field from `m.room.create` content.
     fn get_room_version(&self) -> Option<&str> {
         None
@@ -2532,6 +2540,10 @@ impl EventContent for Value {
     fn get_membership(&self) -> Option<&str> {
         self.get(crate::basespec::event_types::FIELD_MEMBERSHIP)?
             .as_str()
+    }
+
+    fn get_cdo_active_member(&self) -> Option<&str> {
+        self.get("tk.nutra.cdo")?.get("active_member")?.as_str()
     }
 
     fn get_join_rule(&self) -> Option<&str> {
@@ -4282,6 +4294,25 @@ mod canonical_redacted_json_tests {
         assert_eq!(
             redactable_content_remainder(&json!({"extra": 1}), &json!(null)),
             json!({"extra": 1})
+        );
+    }
+}
+
+#[cfg(test)]
+mod cdo_content_tests {
+    use super::EventContent;
+    use serde_json::json;
+
+    #[test]
+    fn cdo_active_member_is_optional_and_string_typed() {
+        assert_eq!(
+            json!({"tk.nutra.cdo": {"active_member": "$join"}}).get_cdo_active_member(),
+            Some("$join")
+        );
+        assert_eq!(json!({}).get_cdo_active_member(), None);
+        assert_eq!(
+            json!({"tk.nutra.cdo": {"active_member": ["$join"]}}).get_cdo_active_member(),
+            None
         );
     }
 }
