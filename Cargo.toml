@@ -169,6 +169,7 @@ ureq = { version = "2.9", optional = true, default-features = false, features = 
 zeroize = "=1.8.1"
 [dev-dependencies]
 ed25519-consensus = { version = "2.1", default-features = false, features = ["std"] }
+parameterized = "2.0.0"
 rand_08 = { package = "rand", version = "0.8" }
 similar = "2.7.0"
 

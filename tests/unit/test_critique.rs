@@ -1,4 +1,5 @@
 use crate::utils;
+use parameterized::parameterized;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -267,10 +268,16 @@ fn assert_benign_convergence(jsonl_filename: &str) -> (ResolvedStateMap, EventMa
 /// still low-power. The competing branch promotes B and B legitimately acts,
 /// but those actions are discarded during iterative auth.
 ///
-/// Keep one independently reported test per resolution version. Rust's
-/// built-in test framework has no parameter decorator; this macro is the
-/// dependency-free equivalent of pytest parametrization.
-fn assert_dueling_admins_backdated_kick(version: StateResVersion) {
+#[parameterized(
+    version = {
+        StateResVersion::V2,
+        StateResVersion::V2_1,
+        StateResVersion::V2_1_1,
+        StateResVersion::V2_2
+    },
+    name = { "v2", "v2_1", "v2_1_1", "v2_2" }
+)]
+fn test_dueling_admins_backdated_kick(version: StateResVersion, name: &str) {
     let events = utils::parse_jsonl_events(
         r#"
         {"event_id":"$create","type":"m.room.create","state_key":"","sender":"@a:example.com","origin_server_ts":0,"content":{"creator":"@a:example.com","room_version":"10"}}
@@ -312,42 +319,19 @@ fn assert_dueling_admins_backdated_kick(version: StateResVersion) {
     assert_eq!(
         resolved.get(&("m.room.member".into(), "@b:example.com".into())),
         Some(&"$backdated_kick_b".into()),
-        "xfail ({version:?}): the backdated kick wins B's membership slot"
+        "xfail ({name}, {version:?}): the backdated kick wins B's membership slot"
     );
     assert_ne!(
         resolved.get(&("m.room.power_levels".into(), String::new())),
         Some(&"$b_promote_c".into()),
-        "xfail ({version:?}): B's locally-authorised promotion of C is discarded"
+        "xfail ({name}, {version:?}): B's locally-authorised promotion of C is discarded"
     );
     assert_ne!(
         resolved.get(&("m.room.member".into(), "@d:example.com".into())),
         Some(&"$b_ban_d".into()),
-        "xfail ({version:?}): B's locally-authorised ban of D is discarded"
+        "xfail ({name}, {version:?}): B's locally-authorised ban of D is discarded"
     );
 }
-
-macro_rules! dueling_admins_test {
-    ($name:ident, $version:expr) => {
-        #[test]
-        fn $name() {
-            assert_dueling_admins_backdated_kick($version);
-        }
-    };
-}
-
-dueling_admins_test!(test_dueling_admins_backdated_kick_v2, StateResVersion::V2);
-dueling_admins_test!(
-    test_dueling_admins_backdated_kick_v2_1,
-    StateResVersion::V2_1
-);
-dueling_admins_test!(
-    test_dueling_admins_backdated_kick_v2_1_1,
-    StateResVersion::V2_1_1
-);
-dueling_admins_test!(
-    test_dueling_admins_backdated_kick_v2_2,
-    StateResVersion::V2_2
-);
 
 #[test]
 fn test_anomaly_01_state_reset() {
