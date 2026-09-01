@@ -5,6 +5,48 @@
 //! consumes those certified facts, selects causally-maximal per-key candidates
 //! with a total semantic rank, then runs the MSC00C2 synchronous repair loop.
 //! It never treats `LeanEvent::rejected == false` as signature verification.
+//!
+//! # Formal model
+//!
+//! For verified events <math><mi>E</mi></math>, write
+//! <math><mi>x</mi><mo>≺</mo><mi>y</mi></math> when <math><mi>x</mi></math>
+//! is a causal ancestor of <math><mi>y</mi></math>. The candidate writers for
+//! a state key <math><mi>k</mi></math> are its causal maxima:
+//!
+//! <math display="block"><semantics><mrow><mi>Candidate</mi><mo>(</mo><mi>k</mi><mo>)</mo><mo>=</mo><mo>{</mo><mi>e</mi><mo>∈</mo><msub><mi>A</mi><mrow><mi>G</mi></mrow></msub><mo>∣</mo><mo>¬</mo><mo>∃</mo><mi>f</mi><mo>∈</mo><msub><mi>A</mi><mi>G</mi></msub><mo>:</mo><mi>e</mi><mo>≺</mo><mi>f</mi><mo>}</mo></mrow><annotation encoding="application/x-tex">\operatorname{Cand}(k) = \{e \in A(G)_k \mid \nexists f \in A(G)_k : e \prec f\}</annotation></semantics></math>
+//!
+//! Concurrent candidates are ordered lexicographically by their semantic rank
+//! and, only as irreducible deterministic residue, by canonical event ID:
+//!
+//! <math display="block"><semantics><mrow><mi>r</mi><mo>(</mo><mi>e</mi><mo>)</mo><mo>=</mo><mo>(</mo><msub><mi>authority</mi><mrow><mi>θ</mi><mo>(</mo><mi>e</mi><mo>)</mo></mrow></msub><mo>(</mo><mi>e</mi><mo>)</mo><mo>,</mo><mi>polarity</mi><mo>(</mo><mi>e</mi><mo>)</mo><mo>,</mo><mi>specificity</mi><mo>(</mo><mi>e</mi><mo>)</mo><mo>,</mo><mi>id</mi><mo>(</mo><mi>e</mi><mo>)</mo><mo>)</mo></mrow><annotation encoding="application/x-tex">r(e) = (\operatorname{authority}_{\theta(e)}(e), \operatorname{polarity}(e), \operatorname{specificity}(e), \operatorname{id}(e))</annotation></semantics></math>
+//!
+//! Each repair round selects one maximum-ranked candidate per key against an
+//! immutable <math><msub><mi>σ</mi><mi>i</mi></msub></math>, evaluates all selected events jointly, and removes
+//! all failures simultaneously:
+//!
+//! <math display="block"><semantics><mrow><msub><mi>D</mi><mrow><mi>i</mi><mo>+</mo><mn>1</mn></mrow></msub><mo>=</mo><msub><mi>D</mi><mi>i</mi></msub><mo>∖</mo><msub><mi>F</mi><mi>i</mi></msub><mo>,</mo><mspace width="1em"/><msub><mi>F</mi><mi>i</mi></msub><mo>=</mo><mo>{</mo><mi>e</mi><mo>∈</mo><mi>Sel</mi><mo>(</mo><msub><mi>D</mi><mi>i</mi></msub><mo>)</mo><mo>∣</mo><mo>¬</mo><mi>JointAuth</mi><mo>(</mo><mi>e</mi><mo>,</mo><msub><mi>σ</mi><mi>i</mi></msub><mo>)</mo><mo>}</mo></mrow><annotation encoding="application/x-tex">D_{i+1} = D_i \setminus F_i, \qquad F_i = \{e \in \operatorname{Sel}(D_i) \mid \neg\operatorname{JointAuth}(e, \sigma_i)\}</annotation></semantics></math>
+
+//! ## Notation
+//!
+//! - <math><mi>θ</mi><mo>(</mo><mi>e</mi><mo>)</mo></math>: `e`'s verified, canonical causal-past snapshot.
+//! - `authority`: the sender's power level in <math><mi>θ</mi><mo>(</mo><mi>e</mi><mo>)</mo></math>; `polarity`: grant versus restrictive transition; `specificity`: governance, membership, access-policy, or generic-state class.
+//! - <math><mi>Sel</mi><mo>(</mo><msub><mi>D</mi><mi>i</mi></msub><mo>)</mo></math>: the causal-maximal, highest-ranked writer selected for each state key.
+//! - <math><msub><mi>σ</mi><mi>i</mi></msub></math>: the frozen provisional state made from those selections.
+//! - <math><mi>JointAuth</mi><mo>(</mo><mi>e</mi><mo>,</mo><msub><mi>σ</mi><mi>i</mi></msub><mo>)</mo></math>: whether `e` remains authorized against that whole frozen state, including V3 cross-key policy.
+//! - <math><msub><mi>F</mi><mi>i</mi></msub></math>: selected events that fail `JointAuth`; all are removed together before the next round.
+
+#![allow(clippy::doc_lazy_continuation, clippy::doc_markdown)]
+
+//! # Normative conflict stances
+//!
+//! | Situation | `tk.nutra.cdo.12` stance |
+//! |---|---|
+//! | Kick is causally after B's join or promotion | The kick wins normally. B's earlier valid actions remain valid. |
+//! | Creator-certified `grant_admin(B)` concurrent with a lower-authority kick | The compound creator grant wins B's membership/governance conflict; the kick is rejected for that conflict. |
+//! | Equal admins concurrently kick or ban each other | Neither has strict cross-branch domination. Their unrelated actions survive; the membership slot uses the declared deterministic residue. |
+//! | Ban concurrent with join for the same target | Ban wins: a safety restriction outranks permissive admission at equal authority. |
+//! | Lockdown concurrent with joins | Lockdown controls future admission but does not itself evict an established member. A concurrent join can fail admission without becoming a retroactive kick. |
+//! | Kick or ban versus the target's unrelated concurrent actions | Those actions survive unless the revoker strictly dominates the target in both <math><mi>θ</mi><mo>(</mo><mi>ρ</mi><mo>)</mo></math> and the selected <math><msub><mi>σ</mi><mi>i</mi></msub></math>. |
 
 use crate::auth::StateProvider;
 use crate::basespec::event_types::{
@@ -109,6 +151,10 @@ pub struct V3Admission<Id, K: Ord> {
 ///
 /// Its fields are private: only V3 admission can establish that the witness
 /// was the target's maximal member state in the grant's branch snapshot.
+/// Formally, for creator <math><mi>c</mi></math>, target <math><mi>b</mi></math>,
+/// grant <math><mi>g</mi></math>, and witness <math><mi>w</mi></math>:
+///
+/// <math display="block"><semantics><mtext>GrantAdmin(g,b,w) ⇔ sender(g)=c ∧ member_θ(g)(b)=w=join(b) ∧ PL_g(b)&gt;PL_θ(g)(b)</mtext><annotation encoding="application/x-tex">\operatorname{GrantAdmin}(g,b,w) \iff \operatorname{sender}(g)=c \land \operatorname{member}_{\theta(g)}(b)=w=\operatorname{join}(b) \land \operatorname{PL}_g(b)&gt;\operatorname{PL}_{\theta(g)}(b)</annotation></semantics></math>
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertifiedCreatorGrant<Id, K: Ord> {
     grant_id: Id,
@@ -172,6 +218,9 @@ impl<Id, K: Ord> BranchAuthSnapshot<Id, K> {
 /// A production `tk.nutra.cdo.12` implementation supplies one normative
 /// policy. Keeping it explicit here prevents a caller from passing a raw rank
 /// into certification after inspecting the conflict set.
+///
+/// The policy supplies the first three components of <math><mi>r</mi><mo>(</mo><mi>e</mi><mo>)</mo></math>;
+/// selection appends <math><mi>id</mi><mo>(</mo><mi>e</mi><mo>)</mo></math> only after those semantic components tie.
 pub trait V3RankPolicy<Id, C, K: Ord> {
     /// Derive the event's semantic rank from its already-canonical branch
     /// authorization state.
@@ -187,6 +236,8 @@ pub trait V3RankPolicy<Id, C, K: Ord> {
 /// The semantic tuple is `(authority, polarity, specificity, event_id)`. The
 /// resolver supplies `event_id` only as the final tie-break; this policy reads
 /// neither timestamp, depth, nor arrival order.
+///
+/// <math display="block"><semantics><mtext>r_tk.nutra.cdo.12(e) = (PL_θ(e)(sender(e)), polarity(e), specificity(e), id(e))</mtext><annotation encoding="application/x-tex">r_{\texttt{tk.nutra.cdo.12}}(e) = (\operatorname{PL}_{\theta(e)}(\operatorname{sender}(e)), \operatorname{polarity}(e), \operatorname{specificity}(e), \operatorname{id}(e))</annotation></semantics></math>
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TkNutraCdo12RankPolicy;
 
@@ -362,6 +413,16 @@ pub trait V3AdmissionProvider<Id, C, K: Ord> {
     /// this repair round. The implementation supplies the event's certified
     /// branch-auth snapshot as required by the V3 admission rules.
     ///
+    /// For a revocation <math><mi>ρ</mi></math> targeting user <math><mi>u</mi></math>, a provider that gives the
+    /// revocation cross-branch reach must require strict domination in both
+    /// views; it must not infer wall-clock order:
+    ///
+    /// <math display="block"><semantics><mtext>Reach(ρ,u) ⇔ PL_θ(ρ)(sender(ρ)) &gt; PL_θ(ρ)(u) ∧ PL_σᵢ(sender(ρ)) &gt; PL_σᵢ(u)</mtext><annotation encoding="application/x-tex">\operatorname{Reach}(\rho,u) \iff \operatorname{PL}_{\theta(\rho)}(\operatorname{sender}(\rho)) &gt; \operatorname{PL}_{\theta(\rho)}(u) \land \operatorname{PL}_{\sigma_i}(\operatorname{sender}(\rho)) &gt; \operatorname{PL}_{\sigma_i}(u)</annotation></semantics></math>
+    ///
+    /// This trait is the enforcement boundary for that room-version policy;
+    /// `resolve_v3` itself does not invent an answer when the provider lacks
+    /// the certified facts.
+    ///
     /// # Errors
     ///
     /// Returns [`V3ResolveError::IncompleteAuthContext`] if required
@@ -400,6 +461,8 @@ pub struct RepairRound<Id, K> {
 /// ranked by [`V3Rank`], then by canonical event ID. Each round evaluates all
 /// winners against one immutable snapshot and removes all failures together.
 /// It therefore executes at most one removing round per admitted event.
+/// In particular, no mutation in round <math><mi>i</mi></math> can affect another event's
+/// authorization until construction of <math><msub><mi>σ</mi><mrow><mi>i</mi><mo>+</mo><mn>1</mn></mrow></msub></math>.
 ///
 /// # Errors
 ///
@@ -558,6 +621,9 @@ impl<Id: Clone + Ord> CausalRelationCache<Id> {
     }
 }
 
+/// Select the maximum-ranked causal candidate independently for every state
+/// key <math><mi>k</mi></math> in the current admitted-writer index:
+/// <math display="block"><semantics><mrow><msub><mi>max</mi><mrow><mi>r</mi><mo>(</mo><mi>e</mi><mo>)</mo></mrow></msub><mi>Candidate</mi><mo>(</mo><mi>k</mi><mo>)</mo></mrow><annotation encoding="application/x-tex">\max_{r(e)}\operatorname{Cand}(k)</annotation></semantics></math>
 fn select_round<Id, C, K>(
     index: &AdmittedWriterIndex<Id, K>,
     admission: &impl V3AdmissionProvider<Id, C, K>,
