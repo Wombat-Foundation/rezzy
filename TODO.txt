@@ -1,4 +1,66 @@
 ##############################
+09/01/2026
+##############################
+
+• Rezzy is clean right now. The V3 engine is implemented and fully line-covered, but it is not wired
+  into a live resolver pipeline yet.
+
+   Remaining work                           Current state
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Production V3AdmissionProvider           Missing. Only the in-test TestAdmission implements
+                                            causal reachability and JointAuth.
+  ───────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Exact θ(e) construction                  Missing. A caller must currently supply canonical
+                                            branch-auth snapshots; Rezzy does not derive/fetch/
+                                            verify them from its event store.
+  ───────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Actual cross-branch reach enforcement    Missing in production. The trait documents strict
+                                            domination in both θ(ρ) and selected σᵢ, but the real
+                                            Matrix auth/provider implementation does not exist.
+  ───────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Main resolver dispatch                   Missing by design. V2 iterative resolution explicitly
+                                            panics for tk.nutra.cdo.12; no high-level path
+                                            constructs V3 evidence then calls resolve_v3.
+  ───────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Protocol completion                      MSC00C2 still needs a complete conflict algebra: peer-
+                                            admin arbitration, ban/self-leave/rejoin/invite rules,
+                                            canonical branch-auth closure, and retry behavior for
+                                            missing dependencies.
+  ───────────────────────────────────────  ─────────────────────────────────────────────────────────
+   End-to-end fixtures                      Missing. Current V3 tests exercise the evaluator with
+                                            certified mocks. We need JSON/DAG fixtures that go
+                                            through PDU verification, branch certification, V3
+                                            dispatch, and resolved output.
+  ───────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Persistent/indexed causal facts          Missing. The V3 per-invocation cache is present, but a
+                                            real provider needs verified causal-closure /
+                                            reachability indexes and fail-closed missing-history
+                                            handling.
+  ───────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Quorum finality                          Only drafted in MSC00C3, not implemented in Rezzy. That
+                                            is the separate threshold-certificate path for truly
+                                            final privileged operations.
+
+  What is already solid:
+
+  - V3 is a separate synchronous repair evaluator, not a V2 patch.
+  - It rejects missing admission evidence.
+  - It has creator-grant witness certification scaffolding.
+  - It excludes depth, timestamp, graph height, and arrival order.
+  - It keeps event ID as narrow deterministic residue.
+  - Tests cover causal later kicks, equal-admin residue, ban-vs-join, lockdown, and the synthetic
+    dueling-admin containment case.
+
+  The next actual implementation step is the production V3AdmissionProvider plus high-level V3
+  dispatch. Without that, tk.nutra.cdo.12 is an evaluator API and testbed—not a usable room-
+  resolution path.
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+##############################
 08/30/2026
 ##############################
 
