@@ -64,7 +64,7 @@ impl core::error::Error for UniverseTooLarge {}
 /// hashes were given.
 ///
 /// This is the compaction step a `RoaringBitmap`-backed audit needs:
-/// `StructuralHash` (16 bytes, high-entropy, not locally dense) cannot be
+/// `StructuralHash` (32 bytes, high-entropy, not locally dense) cannot be
 /// used as a roaring index directly, so every hash in `universe` is given a
 /// stable position instead. Identity always resolves back through
 /// [`Self::hash_at`]/`hashes` to the full hash — the dense index is a

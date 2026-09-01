@@ -217,7 +217,7 @@ where
     /// - Leaf count (4 bytes, LE)
     /// - Child count (4 bytes, LE)
     /// - Inline leaves (`K`, `V` pairs in datamap order)
-    /// - Child hashes (`16 * child_count` bytes in nodemap order)
+    /// - Child hashes (`32 * child_count` bytes in nodemap order)
     ///
     /// # Panics
     /// Panics if the payload lengths disagree with the bitmaps, if `datamap`
@@ -333,7 +333,7 @@ where
         }
 
         let child_bytes = child_count
-            .checked_mul(16)
+            .checked_mul(core::mem::size_of::<StructuralHash>())
             .ok_or("Child hash payload size overflows usize")?;
         let total_len = cursor
             .checked_add(child_bytes)
@@ -349,14 +349,14 @@ where
         for i in 0..child_count {
             let start = cursor
                 .checked_add(
-                    i.checked_mul(16)
+                    i.checked_mul(core::mem::size_of::<StructuralHash>())
                         .ok_or("Child hash index overflows usize")?,
                 )
                 .ok_or("Child hash index overflows usize")?;
             let end = start
-                .checked_add(16)
+                .checked_add(core::mem::size_of::<StructuralHash>())
                 .ok_or("Child hash index overflows usize")?;
-            let mut hash = [0u8; 16];
+            let mut hash = [0u8; core::mem::size_of::<StructuralHash>()];
             hash.copy_from_slice(&buf[start..end]);
             child_hashes.push(hash);
         }

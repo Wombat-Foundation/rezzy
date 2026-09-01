@@ -1,18 +1,23 @@
 //! Structural hashing and state-group identity for HAMT nodes.
 
-use blake2::{digest::Digest, Blake2b512};
+use blake2::{
+    digest::{consts::U32, Digest},
+    Blake2b,
+};
 use core::hash::Hasher;
 
-/// A 128-bit structural hash for HAMT nodes.
+/// A 256-bit structural hash for HAMT nodes.
 ///
 /// This is a local storage/cache key used to skip identical subtrees within a
 /// caller-selected structural-key namespace; it is not a wire format. The
 /// structural key is included in both node identity and routing, so callers
 /// using distinct per-room keys intentionally produce disjoint node hashes.
 ///
-/// The 128-bit width is a deliberate local-space trade-off: a collision would
-/// alias distinct nodes, so callers must not use it as a cross-server identity.
-pub type StructuralHash = [u8; 16];
+/// The structural key separates the caller-selected namespaces and is included
+/// in both routing and node identity. Its public nature does not raise the
+/// cost of a collision within a namespace, so a full 256-bit digest is retained
+/// to provide a 128-bit generic collision-security margin.
+pub type StructuralHash = [u8; 32];
 
 /// A 32-byte state-group identifier derived from the full root lattice.
 ///
@@ -69,21 +74,22 @@ impl RootHandle {
     }
 }
 
-pub(crate) struct StructuralHashBuilder(Blake2b512);
+/// The parameterized BLAKE2b-256 variant, rather than a truncated BLAKE2b-512
+/// digest, makes the persisted structural-hash width explicit.
+type Blake2b256 = Blake2b<U32>;
+
+pub(crate) struct StructuralHashBuilder(Blake2b256);
 
 impl StructuralHashBuilder {
     pub(crate) fn new(key: &[u8]) -> Self {
-        let mut hasher = Blake2b512::new();
+        let mut hasher = Blake2b256::new();
         hasher.update((key.len() as u64).to_le_bytes());
         hasher.update(key);
         Self(hasher)
     }
 
     pub(crate) fn finalize(self) -> StructuralHash {
-        let result = self.0.finalize();
-        let mut out = [0_u8; 16];
-        out.copy_from_slice(&result[..16]);
-        out
+        self.0.finalize().into()
     }
 }
 
@@ -117,7 +123,7 @@ mod tests {
             codec_version: HAMT_CODEC_VERSION_V1,
             routing_version: HAMT_ROUTING_VERSION_V1,
             routing_params: [0; 4],
-            structural_hash: [1; 16],
+            structural_hash: [1; 32],
             state_group_id: [2; 32],
         };
         let mut set = HashSet::new();

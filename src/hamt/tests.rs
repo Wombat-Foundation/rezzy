@@ -269,7 +269,7 @@ fn test_persisted_internal_node_round_trip() {
         datamap: 0b011,
         nodemap: 0b100,
         leaves: vec![(1_i32, 10_i32), (2_i32, 20_i32)],
-        child_hashes: vec![[0x11; 16]],
+        child_hashes: vec![[0x11; 32]],
     };
 
     let encoded = node.encode_v1();
@@ -324,7 +324,7 @@ fn test_decode_v1_rejects_shape_mismatches() {
         datamap: 0b01,
         nodemap: 0b10,
         leaves: vec![(1_i32, 10_i32)],
-        child_hashes: vec![[0x11; 16]],
+        child_hashes: vec![[0x11; 32]],
     };
     let encoded = node.encode_v1();
 
@@ -365,7 +365,7 @@ fn test_decode_v1_rejects_overlapping_datamap_nodemap() {
         datamap: 0b01,
         nodemap: 0b10,
         leaves: vec![(1_i32, 10_i32)],
-        child_hashes: vec![[0x11; 16]],
+        child_hashes: vec![[0x11; 32]],
     };
     let mut encoded = node.encode_v1();
 
@@ -386,7 +386,7 @@ fn test_encode_v1_panics_when_datamap_nodemap_overlap() {
         datamap: 0b11,
         nodemap: 0b01,
         leaves: vec![(1_i32, 10_i32), (2_i32, 20_i32)],
-        child_hashes: vec![[0x11; 16]],
+        child_hashes: vec![[0x11; 32]],
     };
     let _ = node.encode_v1();
 }
@@ -397,11 +397,11 @@ fn test_verified_persisted_node_conversion_rejects_overlapping_maps() {
         datamap: 0b01,
         nodemap: 0b01,
         leaves: vec![(1, 10)],
-        child_hashes: vec![[0x11; 16]],
+        child_hashes: vec![[0x11; 32]],
     };
 
     let error = node
-        .into_hamt_node_verified(b"conversion_test", [0; 16])
+        .into_hamt_node_verified(b"conversion_test", [0; 32])
         .expect_err("overlapping maps must be rejected before hash verification");
     assert_eq!(error, "PersistedInternalNode datamap and nodemap overlap");
 }
@@ -474,13 +474,13 @@ fn test_encode_v1_panics_when_child_count_mismatches_nodemap() {
 fn test_structural_hash_accepts_long_key() {
     let key = [0x5au8; 100];
     let hash = HamtNode::<u8, u8>::compute_structural_hash(&key, 0, 0, &[], &[]);
-    assert_eq!(hash.len(), 16);
+    assert_eq!(hash.len(), 32);
 }
 
 #[test]
 fn test_root_handle_uses_distinct_state_group_id() {
     let lattice = LtHash::default();
-    let structural_hash = [0x42; 16];
+    let structural_hash = [0x42; 32];
     let handle = RootHandle::from_lthash(structural_hash, &lattice);
 
     assert_eq!(handle.structural_hash, structural_hash);
@@ -677,7 +677,7 @@ fn test_hamt_search_by_path_hash_rejects_excessive_depth() {
         unreachable!("fully resolved chain, no lazy children")
     };
 
-    let result = root.search_by_path_hash(&0_u64, &[0u8; 16], &mut resolver);
+    let result = root.search_by_path_hash(&0_u64, &[0u8; 32], &mut resolver);
     assert_eq!(
         result,
         Ok(None),
@@ -696,7 +696,7 @@ fn test_hamt_get_by_path_hash_rejects_excessive_depth() {
     let root = build_deep_chain(HAMT_MAX_DEPTH, 0xAA);
 
     assert_eq!(
-        root.get_by_path_hash(&0_u64, &[0u8; 16]),
+        root.get_by_path_hash(&0_u64, &[0u8; 32]),
         None,
         "get must terminate at HAMT_MAX_DEPTH, not recurse further"
     );
@@ -709,7 +709,7 @@ fn test_hamt_lookup_with_custom_key_hash() {
         .find(|candidate| bucket_index(&key_path_hash(key, candidate), 0) != 4)
         .expect("should find a key whose default root slot differs");
     let custom_hash = {
-        let mut hash = [0_u8; 16];
+        let mut hash = [0_u8; 32];
         hash[0] = 4;
         hash
     };
@@ -839,7 +839,7 @@ fn test_hamt_remove_with_custom_key_hash_collapses_to_leaf() {
 /// get wrong if it ignores the custom routing.
 #[allow(clippy::trivially_copy_pass_by_ref)] // must match the `Fn(&K) -> StructuralHash` shape
 fn linear_key_hash(key: &u64) -> StructuralHash {
-    let mut hash = [0_u8; 16];
+    let mut hash = [0_u8; 32];
     hash[..8].copy_from_slice(&key.to_be_bytes());
     hash
 }
@@ -1202,7 +1202,7 @@ fn test_hamt_is_empty() {
         nodemap: 0,
         leaves: vec![],
         children: vec![],
-        structural_hash: [0; 16],
+        structural_hash: [0; 32],
     };
     assert!(empty_node.is_empty());
 
@@ -1211,7 +1211,7 @@ fn test_hamt_is_empty() {
         nodemap: 0,
         leaves: vec![(1, 10)],
         children: vec![],
-        structural_hash: [1; 16],
+        structural_hash: [1; 32],
     };
     assert!(!leaf_node.is_empty());
 }
@@ -1242,7 +1242,7 @@ fn test_hamt_any_entry_short_circuits() {
         nodemap: 1_u32 << 3,
         leaves: vec![(5_u64, 50_u64)],
         children: vec![NodeRef::Lazy(child_hash)],
-        structural_hash: [0; 16],
+        structural_hash: [0; 32],
     };
 
     let resolver_calls = Cell::new(0);
@@ -1304,7 +1304,7 @@ fn test_hamt_find_entry() {
         nodemap: 1_u32 << 5,
         leaves: vec![(7_u64, 70_u64)],
         children: vec![NodeRef::Lazy(child_hash)],
-        structural_hash: [0; 16],
+        structural_hash: [0; 32],
     };
 
     let mut resolver = |hash: &StructuralHash| {
@@ -1676,7 +1676,7 @@ fn test_build_hamt_with_key_hash_reports_max_depth_exhaustion() {
     let result = crate::hamt::build_hamt_with_key_hash(
         key,
         vec![(CollidingKey(1), 10_u64), (CollidingKey(2), 20_u64)],
-        |_| [0u8; 16],
+        |_| [0u8; 32],
     );
 
     assert_eq!(
@@ -1698,7 +1698,7 @@ fn test_build_hamt_adversarial_multi_key_collision() {
         (CollidingKey(4), 40_u64),
         (CollidingKey(5), 50_u64),
     ];
-    let result = crate::hamt::build_hamt_with_key_hash(key, entries, |_| [0u8; 16]);
+    let result = crate::hamt::build_hamt_with_key_hash(key, entries, |_| [0u8; 32]);
 
     assert_eq!(
         result.unwrap_err(),
@@ -1746,7 +1746,7 @@ fn test_insert_node_with_ctx_guards_max_depth_reentry() {
         nodemap: 0,
         leaves: vec![(1_u64, 10_u64)],
         children: vec![],
-        structural_hash: [0; 16],
+        structural_hash: [0; 32],
     });
 
     let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
@@ -1761,7 +1761,7 @@ fn test_insert_node_with_ctx_guards_max_depth_reentry() {
         sink: &mut sink,
     };
 
-    let result = insert_node_with_ctx(&node, 2_u64, 20_u64, [0u8; 16], HAMT_MAX_DEPTH, &mut ctx);
+    let result = insert_node_with_ctx(&node, 2_u64, 20_u64, [0u8; 32], HAMT_MAX_DEPTH, &mut ctx);
 
     assert_eq!(
         result.unwrap_err(),
@@ -1787,7 +1787,7 @@ fn test_remove_node_with_ctx_guards_max_depth_entry() {
         nodemap: 0,
         leaves: vec![(1_u64, 10_u64)],
         children: vec![],
-        structural_hash: [0; 16],
+        structural_hash: [0; 32],
     });
 
     let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
@@ -1801,7 +1801,7 @@ fn test_remove_node_with_ctx_guards_max_depth_entry() {
         sink: &mut sink,
     };
 
-    let result = remove_node_with_ctx(&node, &1_u64, &[0u8; 16], HAMT_MAX_DEPTH, &mut ctx);
+    let result = remove_node_with_ctx(&node, &1_u64, &[0u8; 32], HAMT_MAX_DEPTH, &mut ctx);
     assert_eq!(
         result.unwrap_err(),
         HamtMutateError::MaxDepthExceeded {
@@ -1825,14 +1825,14 @@ fn test_remove_node_with_ctx_guards_max_depth_reentry() {
         nodemap: 0,
         leaves: vec![(2_u64, 20_u64)],
         children: vec![],
-        structural_hash: [0; 16],
+        structural_hash: [0; 32],
     });
     let node = Arc::new(HamtNode::<u64, u64> {
         datamap: 0,
         nodemap: 1,
         leaves: vec![],
         children: vec![NodeRef::Resolved(child)],
-        structural_hash: [0; 16],
+        structural_hash: [0; 32],
     });
 
     let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
@@ -1846,7 +1846,7 @@ fn test_remove_node_with_ctx_guards_max_depth_reentry() {
         resolver: &mut resolver,
         sink: &mut sink,
     };
-    let result = remove_node_with_ctx(&node, &2_u64, &[0u8; 16], depth, &mut ctx);
+    let result = remove_node_with_ctx(&node, &2_u64, &[0u8; 32], depth, &mut ctx);
     assert_eq!(
         result.unwrap_err(),
         HamtMutateError::MaxDepthExceeded {
@@ -1940,7 +1940,7 @@ fn test_persist_mutations_insert_and_remove() {
 
     assert_eq!(displaced, vec![None, None]);
     assert_eq!(new_root.get(structural_key, &1), Some(&10));
-    assert_ne!(created, [] as [([u8; 16], std::vec::Vec<u8>); 0]);
+    assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
 }
 
 #[test]
@@ -1960,7 +1960,7 @@ fn test_persist_mutations_noop_and_remove_existing() {
     .expect("empty mutation batch should succeed");
     assert_eq!(same_root.structural_hash, root.structural_hash);
     assert_eq!(displaced, [] as [core::option::Option<u64>; 0]);
-    assert_eq!(created, [] as [([u8; 16], std::vec::Vec<u8>); 0]);
+    assert_eq!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
 
     let (removed_root, displaced, created) =
         persist_mutations(&root, structural_key, vec![(1_u64, None)], &mut resolver)
@@ -1968,14 +1968,14 @@ fn test_persist_mutations_noop_and_remove_existing() {
     assert_eq!(displaced, vec![Some(10)]);
     assert_eq!(removed_root.get(structural_key, &1), None);
     assert_eq!(removed_root.get(structural_key, &2), Some(&20));
-    assert_ne!(created, [] as [([u8; 16], std::vec::Vec<u8>); 0]);
+    assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
 
     let (single_removed_root, displaced, created) =
         persist_mutation(&root, structural_key, 1_u64, None, &mut resolver)
             .expect("single remove mutation should succeed");
     assert_eq!(displaced, Some(10));
     assert_eq!(single_removed_root.get(structural_key, &2), Some(&20));
-    assert_ne!(created, [] as [([u8; 16], std::vec::Vec<u8>); 0]);
+    assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
 }
 
 #[test]
@@ -2057,9 +2057,9 @@ fn find_different_key_with_slot_at_depth(
 fn test_insert_node_errors_at_max_depth_boundary() {
     let key = b"dummy_server_key";
     let depth = HAMT_MAX_DEPTH - 1;
-    // At depth = HAMT_MAX_DEPTH - 1 (depth 25 for a 128-bit hash with 5-bit levels),
-    // 3 bits remain in the hash, so slot 3 is a valid, reachable slot index (< 8).
-    let slot = 3_usize;
+    // At depth = HAMT_MAX_DEPTH - 1 (depth 51 for a 256-bit hash with 5-bit levels),
+    // one bit remains in the hash, so slot 1 is a valid, reachable slot index (< 2).
+    let slot = 1_usize;
     let existing = find_key_with_slot_at_depth(key, depth, slot);
     let new_key = find_different_key_with_slot_at_depth(key, depth, slot, existing);
 
@@ -2233,7 +2233,7 @@ fn leaf_hash_for_key(key: &[u8], value: u64) -> StructuralHash {
 }
 
 fn custom_routing_hash(key: u64) -> StructuralHash {
-    let mut hash = [0_u8; 16];
+    let mut hash = [0_u8; 32];
     match key {
         1 => hash[0] = 0b0010_0011,
         2 => hash[0] = 0b1010_0011,
@@ -2270,15 +2270,15 @@ fn test_build_hamt_reports_hash_collisions() {
     let key = b"dummy_server_key";
     let result =
         crate::hamt::build_hamt_with_key_hash(key, vec![(1_u8, 10_u8), (2_u8, 20_u8)], |_| {
-            [0u8; 16]
+            [0u8; 32]
         });
 
     assert!(matches!(
         result,
         Err(HamtBuildError::HashCollision {
-            depth: 25,
-            bucket_size: 2
-        })
+            depth,
+            bucket_size,
+        }) if depth == HAMT_MAX_DEPTH - 1 && bucket_size == 2
     ));
 }
 
@@ -2289,12 +2289,12 @@ fn test_build_hamt_uses_final_partial_hash_chunk() {
         crate::hamt::build_hamt_with_key_hash(key, vec![(1_u8, 10_u8), (2_u8, 20_u8)], |entry| {
             match entry {
                 1 => {
-                    let mut hash = [0_u8; 16];
+                    let mut hash = [0_u8; 32];
                     hash[15] = 0b0010_0000;
                     hash
                 }
                 2 => {
-                    let mut hash = [0_u8; 16];
+                    let mut hash = [0_u8; 32];
                     hash[15] = 0b0100_0000;
                     hash
                 }
@@ -2361,8 +2361,8 @@ fn test_diff_node_hashes_root_only_change() {
     // Identical roots: nothing superseded, nothing new.
     let delta_same = crate::hamt::diff_node_hashes(&root_a, &root_a, &mut resolver)
         .expect("diff should succeed");
-    assert_eq!(delta_same.superseded_node_hashes, [] as [[u8; 16]; 0]);
-    assert_eq!(delta_same.new_node_hashes, [] as [[u8; 16]; 0]);
+    assert_eq!(delta_same.superseded_node_hashes, [] as [[u8; 32]; 0]);
+    assert_eq!(delta_same.new_node_hashes, [] as [[u8; 32]; 0]);
 }
 
 #[test]
@@ -2391,8 +2391,8 @@ fn test_diff_node_hashes_tracks_insert_and_remove_spine() {
         .superseded_node_hashes
         .contains(&root_a.structural_hash));
     assert!(delta.new_node_hashes.contains(&root_b.structural_hash));
-    assert_ne!(delta.superseded_node_hashes, [] as [[u8; 16]; 0]);
-    assert_ne!(delta.new_node_hashes, [] as [[u8; 16]; 0]);
+    assert_ne!(delta.superseded_node_hashes, [] as [[u8; 32]; 0]);
+    assert_ne!(delta.new_node_hashes, [] as [[u8; 32]; 0]);
 
     assert_diff_is_gc_safe(
         &root_a,
@@ -2504,8 +2504,8 @@ fn test_diff_node_hashes_structural_hash_fast_path_without_ptr_eq() {
 
     let delta = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
         .expect("diff should succeed");
-    assert_eq!(delta.superseded_node_hashes, [] as [[u8; 16]; 0]);
-    assert_eq!(delta.new_node_hashes, [] as [[u8; 16]; 0]);
+    assert_eq!(delta.superseded_node_hashes, [] as [[u8; 32]; 0]);
+    assert_eq!(delta.new_node_hashes, [] as [[u8; 32]; 0]);
 }
 
 #[test]
@@ -2927,10 +2927,10 @@ fn build_deep_chain(depth: usize, tag: u8) -> Arc<HamtNode<u64, u64>> {
         nodemap: 0,
         leaves: vec![(0_u64, u64::from(tag))],
         children: vec![],
-        structural_hash: [tag; 16],
+        structural_hash: [tag; 32],
     });
     for i in 0..depth {
-        let mut hash = [tag; 16];
+        let mut hash = [tag; 32];
         hash[0..8].copy_from_slice(&(i as u64).to_le_bytes());
         node = Arc::new(HamtNode {
             datamap: 0,
@@ -3061,7 +3061,7 @@ fn test_diff_hamt_nodes_rejects_excessive_depth_via_collect_all_leaves() {
         nodemap: 0,
         leaves: vec![(1_u64, 1_u64)],
         children: vec![],
-        structural_hash: [0xBB; 16],
+        structural_hash: [0xBB; 32],
     });
 
     let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
@@ -3851,7 +3851,7 @@ fn test_reachability_audit_dedups_duplicate_unreachable_hashes() {
             .collect();
 
     // An orphan hash that is NOT reachable from `root_live`.
-    let orphan: StructuralHash = [0xFF; 16];
+    let orphan: StructuralHash = [0xFF; 32];
     assert!(!live_hashes.contains(&orphan));
 
     // Duplicate the orphan (and a live hash too) in `universe`.
@@ -3901,9 +3901,9 @@ fn test_reachability_audit_dedups_duplicate_unreachable_hashes() {
 
 #[test]
 fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates() {
-    let h1: StructuralHash = [1; 16];
-    let h2: StructuralHash = [2; 16];
-    let h3: StructuralHash = [3; 16];
+    let h1: StructuralHash = [1; 32];
+    let h2: StructuralHash = [2; 32];
+    let h3: StructuralHash = [3; 32];
 
     // h1 appears twice; it must collapse onto a single index rather than
     // being assigned two.
@@ -3941,7 +3941,7 @@ fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates()
     assert_eq!(universe.hash_at(idx2), Some(h2));
     assert_eq!(universe.hash_at(idx3), Some(h3));
 
-    let missing: StructuralHash = [9; 16];
+    let missing: StructuralHash = [9; 32];
     assert_eq!(universe.index_of(&missing), None);
     assert_eq!(
         universe.hash_at(u32::try_from(universe.len()).unwrap()),
@@ -3952,17 +3952,17 @@ fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates()
 }
 
 /// `bucket_index`'s `hash.get(next_index)` is `None` exactly when
-/// `byte_index` is the hash's last valid index (15, for the 16-byte
-/// `StructuralHash`) -- i.e. at `depth` 24 and 25 (`HAMT_MAX_DEPTH - 2` and
+/// `byte_index` is the hash's last valid index (31, for the 32-byte
+/// `StructuralHash`) -- i.e. at `depth` 50 and 51 (`HAMT_MAX_DEPTH - 2` and
 /// `HAMT_MAX_DEPTH - 1`), where the 5-bit slot window runs past the hash's
-/// available 128 bits. This is not a missing case to panic or early-return
+/// available 256 bits. This is not a missing case to panic or early-return
 /// on: it's intentional zero-extension -- the high byte simply isn't OR'd
 /// into `word`, so the slot is computed from whatever low bits remain. It's
-/// exactly what lets `HAMT_MAX_DEPTH` (`ceil(128 / 5)`) be reachable at all
-/// without an out-of-bounds read, since 128 isn't a multiple of 5. Ordinary
-/// (non-adversarial) routing hashes essentially never collide 120+ bits deep,
+/// exactly what lets `HAMT_MAX_DEPTH` (`ceil(256 / 5)`) be reachable at all
+/// without an out-of-bounds read, since 256 isn't a multiple of 5. Ordinary
+/// (non-adversarial) routing hashes essentially never collide 250+ bits deep,
 /// so this branch doesn't occur under random test data -- hence why it read
-/// as uncovered. This directly exercises it (and depth 23, the last depth
+/// as uncovered. This directly exercises it (and depth 49, the last depth
 /// where the high byte read still succeeds, as the contrasting case) rather
 /// than changing behavior at the boundary.
 #[test]
@@ -3970,32 +3970,32 @@ fn test_bucket_index_zero_extends_past_the_last_hash_byte() {
     // All-0xFF except the last two bytes, so a wrong zero-extension (e.g. if
     // it accidentally wrapped and read byte 0 as "next") would show up as a
     // nonzero high contribution instead of silently matching by coincidence.
-    let mut hash: StructuralHash = [0xFF_u8; 16];
-    hash[14] = 0b1010_1100; // byte_index for depth 23
-    hash[15] = 0b0110_0101; // byte_index for depth 24 and 25 (last valid index)
+    let mut hash: StructuralHash = [0xFF_u8; 32];
+    hash[30] = 0b1010_1100; // byte_index for depth 49
+    hash[31] = 0b0110_0101; // byte_index for depth 50 and 51 (last valid index)
 
-    // depth 23: bit_offset=115, byte_index=14, bit_shift=3. next_index=15 is
-    // in bounds, so word = hash[14] | (hash[15] << 8), matching the Some arm.
-    let expected_23 = {
-        let word = u16::from(hash[14]) | (u16::from(hash[15]) << 8);
-        usize::from((word >> 3) & HAMT_BRANCH_MASK)
+    // depth 49: bit_offset=245, byte_index=30, bit_shift=5. next_index=31 is
+    // in bounds, so word = hash[30] | (hash[31] << 8), matching the Some arm.
+    let expected_49 = {
+        let word = u16::from(hash[30]) | (u16::from(hash[31]) << 8);
+        usize::from((word >> 5) & HAMT_BRANCH_MASK)
     };
-    assert_eq!(bucket_index(&hash, 23), expected_23);
+    assert_eq!(bucket_index(&hash, 49), expected_49);
 
-    // depth 24: bit_offset=120, byte_index=15, bit_shift=0. next_index=16 is
-    // out of bounds (hash.get(16) is None) -- word is hash[15] alone, no OR.
-    let expected_24 = usize::from(u16::from(hash[15]) & HAMT_BRANCH_MASK);
-    assert_eq!(bucket_index(&hash, 24), expected_24);
+    // depth 50: bit_offset=250, byte_index=31, bit_shift=2. next_index=32 is
+    // out of bounds (hash.get(32) is None) -- word is hash[31] alone, no OR.
+    let expected_50 = usize::from((u16::from(hash[31]) >> 2) & HAMT_BRANCH_MASK);
+    assert_eq!(bucket_index(&hash, 50), expected_50);
 
-    // depth 25 (HAMT_MAX_DEPTH - 1, the deepest depth bucket_index is ever
-    // called at): bit_offset=125, byte_index=15, bit_shift=5. Same None arm,
-    // different shift -- only 3 bits of real hash remain (a StructuralHash
-    // has no byte 16 to supply the rest), the top bits of the slot are 0.
-    let expected_25 = usize::from((u16::from(hash[15]) >> 5) & HAMT_BRANCH_MASK);
-    assert_eq!(bucket_index(&hash, 25), expected_25);
+    // depth 51 (HAMT_MAX_DEPTH - 1, the deepest depth `bucket_index` is ever
+    // called at): bit_offset=255, byte_index=31, bit_shift=7. Same None arm,
+    // different shift -- only one bit of real hash remains (a StructuralHash
+    // has no byte 32 to supply the rest), the top bits of the slot are 0.
+    let expected_51 = usize::from((u16::from(hash[31]) >> 7) & HAMT_BRANCH_MASK);
+    assert_eq!(bucket_index(&hash, 51), expected_51);
     assert_eq!(
         HAMT_MAX_DEPTH - 1,
-        25,
+        51,
         "assumption behind this test's depths"
     );
 }
@@ -4324,7 +4324,7 @@ fn test_unreachable_node_hashes_empty_roots_reports_entire_universe() {
         nodemap: 0,
         leaves: vec![(1, 100)],
         children: vec![],
-        structural_hash: [0xEE; 16],
+        structural_hash: [0xEE; 32],
     });
     let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
         unreachable!("no roots means nothing is ever walked")
@@ -5338,7 +5338,7 @@ fn test_persist_chain_overwrite_then_revert() {
 
     assert_eq!(steps[0].displaced, Some(100_u64));
     assert_ne!(steps[0].root_hash, root_0.structural_hash);
-    assert_ne!(steps[0].created, [] as [([u8; 16], std::vec::Vec<u8>); 0]);
+    assert_ne!(steps[0].created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
 
     assert_eq!(steps[1].displaced, Some(200_u64));
     // Step 2 restored state to exact root_0
@@ -5383,7 +5383,7 @@ fn test_hamt_deep_split_mutation() {
         let (new_root, _, created) =
             persist_mutation(&root, key, i, Some(u64::from(i) * 10), &mut no_resolver)
                 .expect("persist mutation");
-        assert_ne!(created, [] as [([u8; 16], std::vec::Vec<u8>); 0]);
+        assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
         root = new_root;
     }
 
@@ -5494,7 +5494,7 @@ fn test_descend_level_rejects_corruption() {
     // 1. Truncated buffer: returns Decode error
     let truncated_buf = vec![0x01, 0x00];
     let res =
-        descend_level::<u32, u64, _>(key, &[([0; 16], &truncated_buf, 0, &[req_hash])], |k| {
+        descend_level::<u32, u64, _>(key, &[([0; 32], &truncated_buf, 0, &[req_hash])], |k| {
             crate::hamt::key_path_hash(key, k)
         });
     assert!(matches!(res, Err(DescendError::Decode(_))));
@@ -5512,9 +5512,9 @@ fn test_descend_level_rejects_corruption() {
     corrupt_header.extend_from_slice(&1_u32.to_le_bytes()); // child count 1
     corrupt_header.extend_from_slice(&42_u32.to_le_bytes()); // leaf key
     corrupt_header.extend_from_slice(&100_u64.to_le_bytes()); // leaf val
-    corrupt_header.extend_from_slice(&[0u8; 16]); // child hash
+    corrupt_header.extend_from_slice(&[0u8; 32]); // child hash
     let res2 =
-        descend_level::<u32, u64, _>(key, &[([0; 16], &corrupt_header, 0, &[req_hash])], |k| {
+        descend_level::<u32, u64, _>(key, &[([0; 32], &corrupt_header, 0, &[req_hash])], |k| {
             crate::hamt::key_path_hash(key, k)
         });
     assert!(matches!(res2, Err(DescendError::Decode(_))));
@@ -5522,7 +5522,7 @@ fn test_descend_level_rejects_corruption() {
     // 3. A valid node returned for the wrong requested hash is corruption.
     let root = build_hamt(key, vec![(42_u32, 100_u64)]).expect("build root");
     let node_bytes = PersistedInternalNode::from(root.as_ref()).encode_v1();
-    let wrong_hash = [0xff; 16];
+    let wrong_hash = [0xff; 32];
     let res3 =
         descend_level::<u32, u64, _>(key, &[(wrong_hash, &node_bytes, 0, &[req_hash])], |k| {
             crate::hamt::key_path_hash(key, k)

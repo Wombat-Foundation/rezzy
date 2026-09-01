@@ -458,9 +458,11 @@ So: runtime — unchanged in practice. What it buys you is headroom, not speed. 
 
 ❯ would we panic or OOM tho with the new proposed scheme?
 
-Neither, cleanly — you'd hit an OOM in both schemes (today's and the proposed one), and it would happen at  memory, long before the index-width ceiling (u32::MAX today, u64::MAX after) is ever reached.
+Neither, cleanly — both the current and proposed schemes can fail through
+out-of-memory conditions or allocator termination, long before either
+index-width ceiling (u32::MAX today, u64::MAX after) is reached.
 
-Walk the actual memory cost: IndexedUniverse holds a Vec<StructuralHash> (16 bytes/entry) plus a HashMap<StructuralHash, u32-or-u64> (hash + index + hashmap bucket overhead, realistically ~40-50 bytes/entry with load-factor slack). At u32::MAX (~4.3 billion) entries, that's already ~170-220GB — no commodity machine has that. You'd exhaust RAM around a few hundred million entries on a typical box, which is nowhere close to 4.3 billion, let alone u64::MAX.
+Walk the actual memory cost: IndexedUniverse holds a Vec<StructuralHash> (32 bytes/entry) plus a HashMap<StructuralHash, u32-or-u64> (hash + index + hashmap bucket overhead, realistically ~56-66 bytes/entry with load-factor slack). At u32::MAX (~4.3 billion) entries, that's already hundreds of GB — no commodity machine has that. You'd exhaust RAM around a few hundred million entries on a typical box, which is nowhere close to 4.3 billion, let alone u64::MAX.
 
 So a key thing this means for the refactor: the u32::MAX guard in the current code is already effectively dead code on real hardware — you can't practically get anywhere near it without OOMing first from the Vec/HashMap growth alone. Swapping
 to RoaringTreemap/u64 doesn't change that; it just moves a ceiling that was already unreachable to one thats not "we used to panic there, now we OOM" — it's "we always OOM well before either ceiling, and the guardexists for symbolic completeness, not because anyone hits it."

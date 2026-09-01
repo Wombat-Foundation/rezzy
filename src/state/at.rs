@@ -630,10 +630,20 @@ where
         let ev = events_map.get(id_val).unwrap();
 
         let mut prev_states = Vec::with_capacity(ev.prev_events.len());
+        let mut seen_parents = if ev.prev_events.len() > 1 {
+            Some(crate::FastSet::default())
+        } else {
+            None
+        };
         for pe in &ev.prev_events {
             let Some(pe_idx) = index.index_of(&pe) else {
                 continue;
             };
+            if let Some(seen) = &mut seen_parents {
+                if !seen.insert(pe_idx) {
+                    continue;
+                }
+            }
             if out_degree[pe_idx] == 0 {
                 continue;
             }
@@ -3872,14 +3882,9 @@ mod tests {
         assert!(d_has_new_state, "D should have been yielded as New!");
     }
 
-    /// Coverage: `run_state_pipeline_streaming`'s `out_degree[pe_idx] == 0`
-    /// continue, and `topological_sort_short_ids`'s parent-edge dedup
-    /// continue. Both fire for the same scenario: an event that lists the
-    /// same `prev_events` parent twice (a duplicate a byzantine/buggy peer
-    /// could send). `topological_sort_short_ids` dedupes the duplicate when
-    /// computing `out_degree`, so `out_degree[parent]` reflects one distinct
-    /// child — the second occurrence in `D`'s own `prev_events` list then
-    /// finds `out_degree` already driven to zero by the first occurrence.
+    /// A duplicate parent from a byzantine or buggy peer must be ignored in
+    /// both topological ordering and state propagation. Each distinct parent
+    /// contributes one out-degree decrement and one input state at most.
     #[test]
     fn test_compute_state_at_duplicate_prev_events() {
         let a = LeanEvent {

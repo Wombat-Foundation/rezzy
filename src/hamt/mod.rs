@@ -56,7 +56,7 @@ pub use hash::{
     HAMT_ROUTING_VERSION_V1,
 };
 
-/// 128-bit routing path hash for a key in the HAMT.
+/// 256-bit routing path hash for a key in the HAMT.
 pub type KeyPathHash = StructuralHash;
 
 /// The outcome of descending one level of a HAMT with a batch of requested keys.
@@ -632,8 +632,8 @@ fn bucket_index(hash: &StructuralHash, depth: usize) -> usize {
     );
 
     let mut word = u16::from(hash[byte_index]);
-    // No checked_add: byte_index < hash_len (16, asserted above) always, so
-    // byte_index + 1 <= 16 never overflows usize. A checked_add here can
+    // No checked_add: byte_index < hash_len (32, asserted above) always, so
+    // byte_index + 1 <= 32 never overflows usize. A checked_add here can
     // never observe None -- it's not a real safety margin, just an untestable
     // dead branch (a coverage tool will flag its closing brace as unreached,
     // correctly: reaching it would require byte_index near usize::MAX, which
