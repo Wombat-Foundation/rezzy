@@ -29,7 +29,7 @@ use crate::{DenseIndex, FastMap, HashMap};
 use alloc::collections::{BTreeSet, VecDeque};
 use alloc::vec;
 use alloc::vec::Vec;
-#[cfg(feature = "roaring")]
+#[cfg(feature = "alloc")]
 use roaring::RoaringBitmap;
 
 /// Tri-state reachability answer.
@@ -128,7 +128,7 @@ pub trait Reachability {
 /// as a compressed bitmap. This makes repeated "which candidates are
 /// forward-reachable from these seeds?" queries fast: seed closures are `ORed`
 /// once, then candidate membership is a bitmap lookup.
-#[cfg(feature = "roaring")]
+#[cfg(feature = "alloc")]
 #[derive(Debug, Clone)]
 pub struct ForwardReachabilityIndex<Id> {
     index: DenseIndex<Id>,
@@ -136,7 +136,7 @@ pub struct ForwardReachabilityIndex<Id> {
     cyclic_nodes: BTreeSet<u32>,
 }
 
-#[cfg(feature = "roaring")]
+#[cfg(feature = "alloc")]
 impl<Id> ForwardReachabilityIndex<Id>
 where
     Id: crate::basespec::rezzy_types::EventId + Ord,
@@ -1086,7 +1086,7 @@ where
     }
 }
 
-#[cfg(feature = "roaring")]
+#[cfg(feature = "alloc")]
 impl<Id> Reachability for ForwardReachabilityIndex<Id>
 where
     Id: crate::basespec::rezzy_types::EventId + Ord,
