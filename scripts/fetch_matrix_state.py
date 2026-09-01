@@ -47,14 +47,14 @@ def fetch_and_save_room(room_id, output_path, homeserver, headers, full_pdus):
         )
     except requests.RequestException as e:
         print(f"Failed to fetch state for {room_id}: {e}", file=sys.stderr)
-        return
+        return False
 
     if state_res.status_code != 200:
         print(
             f"Failed to fetch state for {room_id}: {state_res.text}",
             file=sys.stderr,
         )
-        return
+        return False
 
     total_size = int(state_res.headers.get("content-length", 0))
     downloaded = 0
@@ -84,7 +84,7 @@ def fetch_and_save_room(room_id, output_path, homeserver, headers, full_pdus):
                     )
     except requests.RequestException as e:
         print(f"Stream interrupted for {room_id}: {e}", file=sys.stderr)
-        return
+        return False
 
     print("\nParsing JSON payload...", file=sys.stderr)
     raw_bytes = b"".join(chunks)
@@ -129,6 +129,7 @@ def fetch_and_save_room(room_id, output_path, homeserver, headers, full_pdus):
         f"\nSuccess! Saved {len(state_events)} events to {output_path}",
         file=sys.stderr,
     )
+    return True
 
 
 def main():
@@ -164,17 +165,19 @@ def main():
     headers = {"Authorization": f"Bearer {access_token}"}
 
     if room_id:
-        fetch_and_save_room(
+        if not fetch_and_save_room(
             room_id, "res/real_matrix_state.json", homeserver, headers, args.full_pdus
-        )
+        ):
+            sys.exit(1)
     if room_id_v2_1:
-        fetch_and_save_room(
+        if not fetch_and_save_room(
             room_id_v2_1,
             "res/real_matrix_state_v2_1.json",
             homeserver,
             headers,
             args.full_pdus,
-        )
+        ):
+            sys.exit(1)
 
 
 if __name__ == "__main__":

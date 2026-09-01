@@ -928,9 +928,9 @@ where
         // no-op: no event is dequeued, looked up, or added to `reachable`.
         if let Some(max) = options.max_steps {
             if steps >= max {
-                if !queue.is_empty() {
-                    truncated = true;
-                }
+                // `current_id` was popped but not processed, so this walk is
+                // incomplete even when it was the final queued event.
+                truncated = true;
                 break;
             }
         }

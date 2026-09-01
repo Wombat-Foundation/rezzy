@@ -111,8 +111,9 @@ def main():
     print("      MATRIX 3-WAY FORK ACCURACY ANALYSIS")
     print("=" * 50)
 
-    # Calculate unified canonical state
-    print("\nMerging all DAGs to find the mathematically canonical state...")
+    # `/state` snapshots omit DAG edges, so this is a useful merged reference,
+    # not a mathematically canonical state.
+    print("\nMerging state snapshots to build a reference set (not a canonical DAG)...")
     unified_map = {}
     for name, path in states.items():
         with open(path, "r", encoding="utf-8") as f:
@@ -124,24 +125,24 @@ def main():
     with open(unified_path, "w", encoding="utf-8") as f:
         json.dump(list(unified_map.values()), f)
 
-    canonical_res = run_ruma_lean(unified_path)
-    if not canonical_res:
+    reference_res = run_ruma_lean(unified_path)
+    if not reference_res:
         return
 
-    canonical_ids = set(canonical_res.get("state_event_ids", []))
-    print(f"Canonical State Size: {len(canonical_ids)}")
+    reference_ids = set(reference_res.get("state_event_ids", []))
+    print(f"Merged Reference State Size: {len(reference_ids)}")
 
     accuracies = {}
     for name, res in results.items():
         server_ids = set(res.get("state_event_ids", []))
-        accuracy = len(server_ids & canonical_ids) / len(canonical_ids) * 100
+        accuracy = len(server_ids & reference_ids) / len(reference_ids) * 100
         accuracies[name] = accuracy
         print(f"{name.capitalize()} State Size: {res.get('resolved_state_size')}")
-        print(f"{name.capitalize()} Accuracy:   {accuracy:.2f}%")
+        print(f"{name.capitalize()} Reference overlap: {accuracy:.2f}%")
 
     print("\n" + "-" * 50)
     winner = max(accuracies, key=accuracies.get)
-    print(f"VERDICT: {winner.capitalize()} is the Global Canonical Leader.")
+    print(f"REFERENCE RESULT: {winner.capitalize()} has the highest overlap.")
     print("-" * 50)
 
     # Check for the specific Forestpunk discrepancy
@@ -169,13 +170,13 @@ def main():
             else:
                 print(f" - {name.capitalize()}: MISSING")
 
-    # Canonical view
+    # Merged reference view (not canonical)
     with open(unified_path, "r", encoding="utf-8") as f:
         all_events = json.load(f)
         canonical_event_id = next(
             (
                 eid
-                for eid in canonical_ids
+                for eid in reference_ids
                 if any(
                     ev["event_id"] == eid
                     and ev.get("type") == "m.room.member"
@@ -190,11 +191,11 @@ def main():
                 ev for ev in all_events if ev["event_id"] == canonical_event_id
             )
             print(
-                f" - CANONICAL: {canon_ev['content'].get('membership')} "
+                f" - MERGED REFERENCE: {canon_ev['content'].get('membership')} "
                 f"(ID: {canon_ev['event_id'][:12]}...)"
             )
         else:
-            print(" - CANONICAL: MISSING")
+            print(" - MERGED REFERENCE: MISSING")
 
 
 if __name__ == "__main__":

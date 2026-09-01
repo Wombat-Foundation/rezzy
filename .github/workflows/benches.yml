@@ -16,8 +16,8 @@ concurrency:
   # branch, so they must share one queue or their pushes race. PRs don't
   # publish, so they stay grouped per-ref to run independently.
   group: >-
-    ${{ github.event_name == 'pull_request' && format('benchmark-publish-{0}', github.ref)
-        || 'benchmark-publish-main' }}
+    ${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        && 'benchmark-publish-main' || format('benchmark-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:

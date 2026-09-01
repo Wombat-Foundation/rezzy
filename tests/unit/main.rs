@@ -22,7 +22,7 @@
 //! `src/bin/<name>/main.rs` uses for binaries with submodules. Cargo's
 //! `tests/*.rs` autodiscovery doesn't reach into `tests/unit/` at all, so
 //! this target needs one explicit `[[test]]` entry in `Cargo.toml` (the
-//! only one of these 16 files that does).
+//! only one of these 19 files that does).
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 // Declared once here rather than separately by each child module below --

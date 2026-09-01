@@ -86,7 +86,6 @@ cli = [
     "dep:anyhow",
     "dep:ureq",
     "dep:idna_adapter",
-    "dep:zeroize",
     "mimalloc",
     "ureq/tls",
 ]
@@ -164,7 +163,10 @@ ureq = { version = "2.9", optional = true, default-features = false, features = 
 ] }
 # Keep the transitive TLS dependency compatible with the CLI's Rust 1.82 CI.
 # The exact requirement prevents `cargo update` from selecting zeroize 1.9+.
-zeroize = { version = "=1.8.1", optional = true }
+# This is intentionally unconditional: dev-dependencies are resolved by the
+# default-features CI job too, so an optional CLI-only pin would not protect
+# the crate's MSRV there.
+zeroize = "=1.8.1"
 [dev-dependencies]
 ed25519-consensus = { version = "2.1", default-features = false, features = ["std"] }
 rand_08 = { package = "rand", version = "0.8" }

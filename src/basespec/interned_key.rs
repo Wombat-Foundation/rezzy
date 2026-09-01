@@ -176,8 +176,10 @@ impl<'a> InternId<'a> {
     /// for it).
     #[must_use]
     pub fn from_index(interner: &'a Interner, idx: u32) -> Self {
+        let index =
+            usize::try_from(idx).expect("InternId::from_index: u32 index does not fit usize");
         assert!(
-            (idx as usize) < interner.len(),
+            index < interner.len(),
             "InternId::from_index: idx {idx} out of bounds for interner of len {}",
             interner.len()
         );

@@ -635,7 +635,7 @@ pub mod causal {
 
     /// Builds [`EmptyTable`] bottom-up: one pass, `CAUSAL_DEPTH` `causal_node`
     /// calls plus one leaf hash.
-    fn empty_table() -> EmptyTable {
+    fn build_empty_table() -> EmptyTable {
         let mut table = [[0_u8; super::HASH_SIZE]; CAUSAL_DEPTH.saturating_add(1)];
         table[CAUSAL_DEPTH] = hash_parts(&[CAUSAL_EMPTY_LEAF_DST]);
         let mut depth = CAUSAL_DEPTH;
@@ -645,6 +645,17 @@ pub mod causal {
             table[depth] = causal_node(depth_u16(depth), child, 0, child, 0);
         }
         table
+    }
+
+    #[cfg(feature = "std")]
+    fn empty_table() -> EmptyTable {
+        static EMPTY_TABLE: std::sync::OnceLock<EmptyTable> = std::sync::OnceLock::new();
+        *EMPTY_TABLE.get_or_init(build_empty_table)
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn empty_table() -> EmptyTable {
+        build_empty_table()
     }
 
     /// The canonical empty causal set root hash (`empty_table()[0]`).
@@ -834,13 +845,9 @@ pub mod causal {
         if terminal_depth > CAUSAL_DEPTH {
             return false;
         }
-        // TODO: Performance issue
-        // `empty_table()` rebuilds all 257 empty-subtree hashes (256 SHA3-256
-        // `causal_node` calls) just to read a single entry, and `root()`/
-        // `inclusion_proof()`/`non_inclusion_proof()` rebuild the same table
-        // on every call. Cache it once (e.g. a `static EMPTY_TABLE: OnceLock<
-        // EmptyTable>` — available in no_std since Rust 1.70) and pass the
-        // reference through so verification and proof generation reuse it.
+        // Under `std`, `empty_table` is built once and reused by root, proof,
+        // and verification operations. The no_std fallback retains allocation-
+        // free portability without requiring a synchronization primitive.
         verify_causal_path(
             empty_table()[terminal_depth],
             0,

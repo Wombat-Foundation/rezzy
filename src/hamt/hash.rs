@@ -30,12 +30,23 @@ pub const HAMT_CODEC_VERSION_V1: u8 = 1;
 /// Default routing version (1 = full keyed structural hash routing).
 pub const HAMT_ROUTING_VERSION_V1: u8 = 1;
 
+fn default_codec_version_v1() -> u8 {
+    HAMT_CODEC_VERSION_V1
+}
+
+fn default_routing_version_v1() -> u8 {
+    HAMT_ROUTING_VERSION_V1
+}
+
 /// A resolved root handle carrying the local structural hash, global state-group identifier,
 /// and explicit codec/routing version metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RootHandle {
+    #[serde(default = "default_codec_version_v1")]
     pub codec_version: u8,
+    #[serde(default = "default_routing_version_v1")]
     pub routing_version: u8,
+    #[serde(default)]
     pub routing_params: [u8; 4],
     pub structural_hash: StructuralHash,
     pub state_group_id: StateGroupId,
@@ -129,5 +140,17 @@ mod tests {
         let mut set = HashSet::new();
         set.insert(handle.clone());
         assert!(set.contains(&handle));
+    }
+
+    #[test]
+    fn legacy_root_handle_metadata_defaults_to_v1() {
+        let legacy = r#"{
+            "structural_hash": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            "state_group_id": [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+        }"#;
+        let decoded: RootHandle = serde_json::from_str(legacy).expect("legacy handle decodes");
+        assert_eq!(decoded.codec_version, HAMT_CODEC_VERSION_V1);
+        assert_eq!(decoded.routing_version, HAMT_ROUTING_VERSION_V1);
+        assert_eq!(decoded.routing_params, [0; 4]);
     }
 }

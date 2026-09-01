@@ -35,7 +35,7 @@ import sys
 # Deliberately does NOT match the ratio lines ("=> foo is 1.23x faster than
 # bar") or the parenthesized `label: (setup: ..., algo: ..., ...)` forms,
 # so only the stable per-op/total metrics are tracked.
-METRIC = re.compile(r"^(.+?):\s+([0-9]+(?:\.[0-9]+)?)\s*(ns|ms)(?:/op)?\b")
+METRIC = re.compile(r"^(.+?):\s+([0-9]+(?:\.[0-9]+)?)\s*(ns|ms)(?:/op)?(?:\s*$)")
 CHECKPOINT = re.compile(r"^\s*S=(\d+):\s*$")
 BENCHMARK_SECTION = re.compile(r"^\s*\[([^]]+)\]\s+BENCHMARK:\s*(.+?)\s*$")
 
@@ -106,7 +106,11 @@ def main() -> int:
     violations: list[str] = []
     new_best = dict(best)
     for label, cur in sorted(current.items()):
-        prev = best.get(label)
+        # Baselines written before section prefixes were introduced used the
+        # bare label.  Consume that value once rather than silently resetting
+        # the regression gate during the format migration.
+        legacy_label = label.rsplit(": ", 1)[-1]
+        prev = best.get(label, best.get(legacy_label))
         if prev is not None and cur > prev * (1.0 + args.margin):
             violations.append(
                 f"{label}: {cur:.4f}ms regressed >{args.margin * 100:.0f}% vs best {prev:.4f}ms"
@@ -122,7 +126,7 @@ def main() -> int:
         f"parsed {len(current)} metrics, comparing against {len(best)} previous bests"
     )
     for label, val in sorted(current.items()):
-        prev = best.get(label)
+        prev = best.get(label, best.get(label.rsplit(": ", 1)[-1]))
         suffix = "" if prev is None else f" (best {prev:.4f}ms)"
         print(f"  {label}: {val:.4f}ms{suffix}")
 
