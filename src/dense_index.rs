@@ -65,10 +65,10 @@ impl DenseIndexWidth for usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IndexTooLarge {
     /// The number of distinct items counted before construction stopped.
-    /// When `allocation_failed` is false, this is the true total (which
-    /// exceeds the bound). When `allocation_failed` is true, this is a
-    /// partial count — the builder stopped before scanning the whole input
-    /// (due to memory allocation failure or index width overflow).
+    /// When `allocation_failed` is false, this is the true total when the
+    /// configured bound was exceeded, or the lower bound at which the index
+    /// width was exhausted. When `allocation_failed` is true, this is a
+    /// partial count because allocation stopped construction early.
     pub distinct_count: usize,
     /// True when construction stopped because memory allocation failed.
     /// In this case, `distinct_count` is a partial count, not the true total.
@@ -215,12 +215,11 @@ impl<T: Eq + Clone + core::hash::Hash, Idx: Copy + TryFrom<usize> + DenseIndexWi
                 });
             }
             let idx = Idx::try_from(items.len()).map_err(|_| IndexTooLarge {
-                // The count is partial: we stopped scanning at the index
-                // overflow, so there may be more distinct items in the
-                // remaining iterator.  allocation_failed=true signals this
-                // even though the cause is index width, not memory.
+                // The index width, rather than allocation, is exhausted.
+                // The remaining iterator is intentionally not consumed, so
+                // this is the first unrepresentable distinct-item count.
                 distinct_count: items.len(),
-                allocation_failed: true,
+                allocation_failed: false,
             })?;
             index_by_item.insert(item.clone(), idx);
             items.push(item);
@@ -371,6 +370,7 @@ mod tests {
         let err = DenseIndex::<u32, u8>::try_build_bounded(0..300u32, 300)
             .expect_err("256 distinct items cannot fit in a u8 index");
         assert_eq!(err.distinct_count, 256);
+        assert!(!err.allocation_failed);
     }
 
     #[test]

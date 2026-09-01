@@ -9,8 +9,8 @@
 //! output. The speedup column is secondary and, for this particular
 //! in-memory `String`-ID fixture, is not where rezzy's performance advantage
 //! lives: rezzy's large speedups are in bitwise auth-difference and Roaring
-//! reachability/transitive-closure, measured by the bitwise-auth-difference micro-benchmark
-//! and `cargo bench --bench rezzy -- resolve`. Both engines here resolve a pre-computed
+//! reachability/transitive-closure, measured by the `cargo bench --bench rezzy -- resolve`
+//! benchmark. Both engines here resolve a pre-computed
 //! in-memory DAG with no database I/O, and rezzy uses its zero-copy borrowed
 //! entry point so the timed loop does not pay a per-iteration `serde_json`
 //! deep clone.

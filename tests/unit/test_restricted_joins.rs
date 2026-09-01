@@ -202,10 +202,13 @@ fn test_restricted_rules_are_rejected_before_v8() {
         json!({"membership": "join", "join_authorised_via_users_server": "@admin:example.com"}),
     );
 
-    assert!(matches!(
+    assert_eq!(
         check_auth(&join_event, &state, StateResVersion::V2, None),
-        Err(AuthError::NotMember { .. })
-    ));
+        Err(AuthError::NotMember {
+            sender: "@bob:example.com".into(),
+            event_id: "$bob_join".into(),
+        })
+    );
 }
 
 #[test]
@@ -220,10 +223,13 @@ fn test_knock_restricted_is_rejected_before_v10() {
         json!({"membership": "knock"}),
     );
 
-    assert!(matches!(
+    assert_eq!(
         check_auth(&knock_event, &state, StateResVersion::V2, None),
-        Err(AuthError::NotMember { .. })
-    ));
+        Err(AuthError::NotMember {
+            sender: "@bob:example.com".into(),
+            event_id: "$bob_knock".into(),
+        })
+    );
 }
 
 #[test]

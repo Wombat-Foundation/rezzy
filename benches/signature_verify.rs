@@ -172,15 +172,17 @@ fn bench_sequential(value: &Value, keys: &DalekVerifier, n: usize, iters: u32) {
     );
     let per_event = time("verify_event_signatures xN (loop)", iters, || {
         for e in &events {
-            let _ = black_box(verify_event_signatures(e, ROOM_VERSION, keys));
+            black_box(verify_event_signatures(e, ROOM_VERSION, keys))
+                .expect("every benchmark event verifies");
         }
     });
     let one_call = time("verify_sequential_strict (1 call)", iters, || {
-        let _ = black_box(rezzy::signing::verify_sequential_strict(
+        black_box(rezzy::signing::verify_sequential_strict(
             &events,
             ROOM_VERSION,
             keys,
-        ));
+        ))
+        .expect("every benchmark event verifies");
     });
     println!(
         "per-event loop / verify_sequential_strict = {:.2}x (call-site overhead only -- \

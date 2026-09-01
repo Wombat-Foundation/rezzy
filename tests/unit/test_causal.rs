@@ -12,10 +12,14 @@ fn key(byte: u8) -> Hash {
 fn empty_causal_set_root_and_count() {
     let empty = CausalSet::empty();
     assert_eq!(empty.count(), 0);
-    // Assert against the canonical empty_root() — not a tautology comparing
-    // two freshly-built empty sets. A regression in empty_table()[0] would
-    // change empty_root() and fail this assertion.
-    assert_eq!(empty.root(), empty_root());
+    // Fixed MSC4511 vector; this must not be derived through the implementation
+    // under test, or an accidental hash/domain change would be tautological.
+    let expected = [
+        41, 54, 137, 237, 168, 24, 19, 59, 65, 134, 194, 17, 172, 211, 80, 233, 171, 236, 1, 26,
+        93, 144, 251, 251, 50, 52, 50, 29, 118, 89, 96, 147,
+    ];
+    assert_eq!(empty_root(), expected);
+    assert_eq!(empty.root(), expected);
 }
 
 #[test]

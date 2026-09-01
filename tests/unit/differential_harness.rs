@@ -326,14 +326,9 @@ fn resolve(p: &Problem, version: StateResVersion) -> SharedState {
 /// resolution path (`apply_cdo_filter` is only called from tests), so the two
 /// must agree on every DAG.
 ///
-/// Scope of this assertion: it fails only if a CDO drop *changes a resolved
-/// winner*. `cdo_drop_rate_measured` reports that the CDO drops 2087 events
-/// over 626/2000 DAGs, but that **none of them are winners** — the generator
-/// never produces a dominated winner, so this test cannot observe a CDO error.
-/// Equality across these DAGs is therefore a real but weak check on the CDO:
-/// it confirms the CDO never flips an outcome it *can* reach. Exercising CDO
-/// correctness against outcomes requires a generator that produces dominated
-/// winners (a known gap, not closed here).
+/// This only checks divergence between the live V2.1 and V2.1.1 resolution
+/// paths. It does not exercise CDO behavior: the retired CDO filter is called
+/// only by its dedicated regression tests.
 ///
 /// Determinism is covered separately by `determinism_same_input_same_output`.
 ///
