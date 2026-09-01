@@ -274,25 +274,30 @@ fn assert_benign_convergence(jsonl_filename: &str) -> (ResolvedStateMap, EventMa
 fn test_dueling_admins_backdated_kick(version: StateResVersion, expect_hardened_result: bool) {
     let events = utils::parse_jsonl_events(
         r#"
-        {"event_id":"$create","type":"m.room.create","state_key":"","sender":"@a:example.com","origin_server_ts":0,"content":{"creator":"@a:example.com","room_version":"10"}}
-        {"event_id":"$a_join","type":"m.room.member","state_key":"@a:example.com","sender":"@a:example.com","origin_server_ts":1,"content":{"membership":"join"},"auth_events":["$create"]}
-        {"event_id":"$b_join","type":"m.room.member","state_key":"@b:example.com","sender":"@b:example.com","origin_server_ts":2,"content":{"membership":"join"},"auth_events":["$create"]}
-        {"event_id":"$c_join","type":"m.room.member","state_key":"@c:example.com","sender":"@c:example.com","origin_server_ts":3,"content":{"membership":"join"},"auth_events":["$create"]}
-        {"event_id":"$d_join","type":"m.room.member","state_key":"@d:example.com","sender":"@d:example.com","origin_server_ts":4,"content":{"membership":"join"},"auth_events":["$create"]}
-        {"event_id":"$pl0","type":"m.room.power_levels","state_key":"","sender":"@a:example.com","origin_server_ts":5,"content":{"users":{"@a:example.com":100,"@b:example.com":0},"state_default":50,"ban":50},"auth_events":["$create","$a_join"]}
-        {"event_id":"$promote_b","type":"m.room.power_levels","state_key":"","sender":"@a:example.com","origin_server_ts":80,"content":{"users":{"@a:example.com":100,"@b:example.com":100,"@c:example.com":0},"state_default":50,"ban":50},"auth_events":["$create","$a_join","$pl0"]}
-        {"event_id":"$b_promote_c","type":"m.room.power_levels","state_key":"","sender":"@b:example.com","origin_server_ts":90,"content":{"users":{"@a:example.com":100,"@b:example.com":100,"@c:example.com":50},"state_default":50,"ban":50},"auth_events":["$create","$a_join","$b_join","$promote_b"]}
-        {"event_id":"$b_ban_d","type":"m.room.member","state_key":"@d:example.com","sender":"@b:example.com","origin_server_ts":100,"content":{"membership":"ban"},"auth_events":["$create","$a_join","$b_join","$d_join","$promote_b"]}
-        {"event_id":"$backdated_kick_b","type":"m.room.member","state_key":"@b:example.com","sender":"@a:example.com","origin_server_ts":70,"content":{"membership":"leave"},"auth_events":["$create","$a_join","$b_join","$pl0"]}
+        {"event_id":"$create","type":"m.room.create","state_key":"","sender":"@creator:example.com","origin_server_ts":0,"content":{"creator":"@creator:example.com","room_version":"10"}}
+        {"event_id":"$creator_join","type":"m.room.member","state_key":"@creator:example.com","sender":"@creator:example.com","origin_server_ts":1,"content":{"membership":"join"},"auth_events":["$create"]}
+        {"event_id":"$a_join","type":"m.room.member","state_key":"@a:example.com","sender":"@a:example.com","origin_server_ts":2,"content":{"membership":"join"},"auth_events":["$create"]}
+        {"event_id":"$b_join","type":"m.room.member","state_key":"@b:example.com","sender":"@b:example.com","origin_server_ts":3,"content":{"membership":"join"},"auth_events":["$create"]}
+        {"event_id":"$c_join","type":"m.room.member","state_key":"@c:example.com","sender":"@c:example.com","origin_server_ts":4,"content":{"membership":"join"},"auth_events":["$create"]}
+        {"event_id":"$d_join","type":"m.room.member","state_key":"@d:example.com","sender":"@d:example.com","origin_server_ts":5,"content":{"membership":"join"},"auth_events":["$create"]}
+        {"event_id":"$pl0","type":"m.room.power_levels","state_key":"","sender":"@creator:example.com","origin_server_ts":6,"content":{"users":{"@creator:example.com":100,"@a:example.com":0,"@b:example.com":0},"state_default":50,"ban":50},"auth_events":["$create","$creator_join"]}
+        {"event_id":"$promote_a","type":"m.room.power_levels","state_key":"","sender":"@creator:example.com","origin_server_ts":7,"content":{"users":{"@creator:example.com":100,"@a:example.com":100,"@b:example.com":0},"state_default":50,"ban":50},"auth_events":["$create","$creator_join","$pl0"]}
+        {"event_id":"$promote_b","type":"m.room.power_levels","state_key":"","sender":"@creator:example.com","origin_server_ts":80,"content":{"users":{"@creator:example.com":100,"@a:example.com":100,"@b:example.com":100,"@c:example.com":0},"state_default":50,"ban":50},"auth_events":["$create","$creator_join","$promote_a"],"prev_events":["$b_join"]}
+        {"event_id":"$b_promote_c","type":"m.room.power_levels","state_key":"","sender":"@b:example.com","origin_server_ts":90,"content":{"users":{"@creator:example.com":100,"@a:example.com":100,"@b:example.com":100,"@c:example.com":50},"state_default":50,"ban":50},"auth_events":["$create","$creator_join","$b_join","$promote_b"]}
+        {"event_id":"$b_ban_d","type":"m.room.member","state_key":"@d:example.com","sender":"@b:example.com","origin_server_ts":100,"content":{"membership":"ban"},"auth_events":["$create","$creator_join","$b_join","$d_join","$promote_b"]}
+        {"event_id":"$backdated_kick_b","type":"m.room.member","state_key":"@b:example.com","sender":"@a:example.com","origin_server_ts":70,"content":{"membership":"leave"},"auth_events":["$create","$creator_join","$a_join","$b_join","$promote_a"]}
         "#,
     );
     let auth_context: EventMap = to_event_map(&events);
-    let unconflicted =
-        utils::build_unconflicted_state_from_ids(&auth_context, &["$create", "$a_join", "$c_join"]);
+    let unconflicted = utils::build_unconflicted_state_from_ids(
+        &auth_context,
+        &["$create", "$creator_join", "$a_join", "$c_join"],
+    );
     let conflicted: EventMap = [
         "$b_join",
         "$d_join",
         "$pl0",
+        "$promote_a",
         "$promote_b",
         "$b_promote_c",
         "$b_ban_d",
