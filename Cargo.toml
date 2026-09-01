@@ -70,8 +70,9 @@ test = false
 
 [features]
 default = ["std"]
-std = ["alloc", "serde_json/std", "serde/std", "dep:roaring"]
+std = ["alloc", "serde_json/std", "serde/std", "roaring"]
 alloc = []
+roaring = ["dep:roaring"]
 # NOTE: `cli` is tested at the same 1.81.0 MSRV as the default build (see
 # the `cli feature` matrix entry in .github/workflows/rust.yml for the full
 # picture). `zeroize` is pinned below to 1.8.1 (rust-version = "1.60")

@@ -17,7 +17,7 @@
 //! Implements iterative auth-checking of events against the room state at
 //! their `prev_events` — never the current time.
 
-#[cfg(feature = "std")]
+#[cfg(feature = "roaring")]
 pub mod roaring;
 pub mod user;
 
