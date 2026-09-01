@@ -4067,10 +4067,11 @@ fn test_pl_v2_scalar_not_integer_allowed() {
     );
 }
 
-/// A missing create event during partial-state resolution conservatively falls
-/// back to pre-v10 rules instead of rejecting an otherwise authorized event.
+/// Rule 2.4 / 10.1: ordinary power-level authorization rejects absent create
+/// state. Partial joins handle their capability fallback in the join/knock
+/// rules without weakening this general auth check.
 #[test]
-fn test_pl_missing_create_event_uses_conservative_fallback() {
+fn test_pl_missing_create_event_returns_error() {
     let state = utils::parse_jsonl_state(
         r#"{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}"#,
     );
@@ -4079,9 +4080,11 @@ fn test_pl_missing_create_event_uses_conservative_fallback() {
     );
     let result = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
     assert!(
-        result.is_ok(),
-        "Missing create should use the conservative pre-v10 fallback, got: {result:?}"
+        matches!(result, Err(self::auth::AuthError::MissingCreate)),
+        "Missing create should return MissingCreate error, got: {result:?}"
     );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(msg.contains("m.room.create"));
 }
 
 #[test]

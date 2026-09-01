@@ -281,10 +281,9 @@ where
 ///
 /// # Errors
 ///
-/// Missing create state defaults to room version 1. This occurs legitimately
-/// while resolving partial state, and conservatively disables features that
-/// require newer room versions.
-fn get_room_version_num<Id, C, E, S>(state: &S) -> u32
+/// Returns [`AuthError::MissingCreate`] when the `m.room.create` event is not
+/// present in the provided state.
+fn get_room_version_num<Id, C, E, S>(state: &S) -> Result<u32, AuthError<Id>>
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
@@ -292,14 +291,14 @@ where
     S: StateProvider<Id, C, E>,
 {
     let Some(create) = state.get_event(M_ROOM_CREATE, "") else {
-        return 1;
+        return Err(AuthError::MissingCreate);
     };
     if let Some(v) = create.content().get_room_version() {
         if let Ok(num) = v.parse::<u32>() {
-            return num;
+            return Ok(num);
         }
         if StateResVersion::from_room_version(v).is_some_and(|r| r.is_v2_1_plus()) {
-            return 12;
+            return Ok(12);
         }
     }
     // V1 rooms didn't have a room_version field, so an absent (or
@@ -311,19 +310,22 @@ where
         "REZZY_WARN: get_room_version_num: no usable content.room_version on m.room.create {:?} -- defaulting to 1",
         create.event_id()
     );
-    1
+    Ok(1)
 }
 
 /// Returns whether the room's explicit version supports a feature introduced
 /// in `minimum_version`.
-fn room_version_at_least<Id, C, E, S>(state: &S, minimum_version: u32) -> bool
+fn room_version_at_least<Id, C, E, S>(
+    state: &S,
+    minimum_version: u32,
+) -> Result<bool, AuthError<Id>>
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent,
     E: EventLike<Id = Id, Content = C>,
     S: StateProvider<Id, C, E>,
 {
-    get_room_version_num(state) >= minimum_version
+    Ok(get_room_version_num(state)? >= minimum_version)
 }
 
 /// Reads `content.room_version` off the room's `m.room.create` event, as a
@@ -858,7 +860,7 @@ pub fn check_auth_with_context<
         );
 
         // Rules 10.1–10.3 were added in room version 10.
-        let is_room_v10_plus = get_room_version_num(state) >= 10;
+        let is_room_v10_plus = get_room_version_num(state)? >= 10;
 
         if is_room_v10_plus {
             // Rule 10.1 (V10+): Scalar PL properties must be integers.
@@ -1849,8 +1851,11 @@ fn check_join_rules<
         .and_then(EventLike::get_join_rule)
         .unwrap_or(RULE_INVITE); // Default to invite
 
-    let supports_restricted = room_version_at_least(state, 8);
-    let supports_knock_restricted = room_version_at_least(state, 10);
+    // A partial state snapshot can legitimately omit create. In that case,
+    // conservatively treat newer join-rule features as unavailable rather
+    // than rejecting an ordinary invite/public join with MissingCreate.
+    let supports_restricted = room_version_at_least(state, 8).unwrap_or(false);
+    let supports_knock_restricted = room_version_at_least(state, 10).unwrap_or(false);
 
     let is_creator = state
         .get_event(M_ROOM_CREATE, "")
@@ -1988,7 +1993,9 @@ fn check_knock_rules<
         .and_then(EventLike::get_join_rule)
         .unwrap_or(RULE_INVITE);
 
-    let supports_knock_restricted = room_version_at_least(state, 10);
+    // See check_join_rules: missing create in partial state means the v10+
+    // capability cannot be established, not that this event is malformed.
+    let supports_knock_restricted = room_version_at_least(state, 10).unwrap_or(false);
     if join_rule != RULE_KNOCK && !(join_rule == RULE_KNOCK_RESTRICTED && supports_knock_restricted)
     {
         return Err(AuthError::NotMember {
