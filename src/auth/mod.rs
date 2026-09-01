@@ -281,8 +281,10 @@ where
 ///
 /// # Errors
 ///
-/// Missing create state is treated as room version 1 for partial-state
-/// resolution. A present create event must name a supported room version.
+/// Returns [`AuthError::MissingCreate`] when the `m.room.create` event is not
+/// present. Join/knock partial-state handling uses the literal-version helper
+/// below, so it can retain its protocol-defined v1 fallback without weakening
+/// power-level authorization.
 fn get_room_version_num<Id, C, E, S>(state: &S) -> Result<u32, AuthError<Id>>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -290,17 +292,24 @@ where
     E: EventLike<Id = Id, Content = C>,
     S: StateProvider<Id, C, E>,
 {
-    let room_version = validated_room_version_or_v1(state)?;
-    if let Some(v) = room_version {
-        if let Ok(num) = v.parse::<u32>() {
-            return Ok(num);
-        }
-        if StateResVersion::from_room_version(v).is_some_and(|r| r.is_v2_1_plus()) {
-            return Ok(12);
-        }
+    let Some(create) = state.get_event(M_ROOM_CREATE, "") else {
+        return Err(AuthError::MissingCreate);
+    };
+    let Some(v) = create.content().get_room_version() else {
+        return Ok(1);
+    };
+    if StateResVersion::from_room_version(v).is_none() {
+        return Err(AuthError::InvalidSyntax(
+            "m.room.create content.room_version is not a recognised room version".into(),
+        ));
     }
-    // An absent version is the historical v1 default. `validated_*` has
-    // already rejected a present but unsupported label.
+    if let Ok(num) = v.parse::<u32>() {
+        return Ok(num);
+    }
+    if StateResVersion::from_room_version(v).is_some_and(|r| r.is_v2_1_plus()) {
+        return Ok(12);
+    }
+    // A create event without `room_version` is the historical v1 default.
     Ok(1)
 }
 

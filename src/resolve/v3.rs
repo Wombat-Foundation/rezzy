@@ -768,12 +768,28 @@ mod tests {
     }
 
     fn membership(event_id: &str, membership: &str) -> LeanEvent<String, Value, String> {
+        membership_for(event_id, "@target:example.com", membership)
+    }
+
+    fn membership_for(
+        event_id: &str,
+        target: &str,
+        membership: &str,
+    ) -> LeanEvent<String, Value, String> {
         LeanEvent {
             event_id: event_id.into(),
             event_type: M_ROOM_MEMBER.into(),
-            state_key: Some("@target:example.com".into()),
+            state_key: Some(target.into()),
             content: serde_json::json!({ "membership": membership }),
             ..Default::default()
+        }
+    }
+
+    const fn rank(authority: i64, polarity: V3Polarity, specificity: V3Specificity) -> V3Rank {
+        V3Rank {
+            authority,
+            safety: polarity as i8,
+            specificity: specificity as u8,
         }
     }
 
@@ -904,6 +920,21 @@ mod tests {
         assert_eq!(certified.target(), &String::from("@b:example.com"));
         assert_eq!(certified.active_member(), &String::from("$b_join"));
         assert_eq!(certified.target_power_level(), 100);
+
+        let missing_witness = LeanEvent {
+            content: serde_json::json!({ "users": { "@b:example.com": 100 } }),
+            ..grant.clone()
+        };
+        assert!(certify_creator_grant(&missing_witness, &branch_auth).is_none());
+
+        let stale_witness = LeanEvent {
+            content: serde_json::json!({
+                "users": { "@b:example.com": 100 },
+                "tk.nutra.cdo": { "active_member": "$b_left" },
+            }),
+            ..grant
+        };
+        assert!(certify_creator_grant(&stale_witness, &branch_auth).is_none());
     }
 
     #[test]
@@ -1009,6 +1040,183 @@ mod tests {
         assert_eq!(
             state.get(&(EventType::from(M_ROOM_NAME), String::new())),
             Some(&String::from("$b_action")),
+        );
+    }
+
+    #[test]
+    fn causally_later_kick_wins_without_revoking_earlier_valid_actions() {
+        let b_join = membership_for("$b_join", "@b:example.com", MEM_JOIN);
+        let later_kick = membership_for("$later_kick", "@b:example.com", MEM_LEAVE);
+        let earlier_action = state_event("$b_sets_name", M_ROOM_NAME, "");
+        let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
+        for event in [b_join, later_kick, earlier_action] {
+            events.insert(event.event_id.clone(), event);
+        }
+
+        let mut admission = TestAdmission::default();
+        admission.admissions.insert(
+            "$b_join".into(),
+            certificate(rank(0, V3Polarity::Grant, V3Specificity::Membership)),
+        );
+        admission.admissions.insert(
+            "$later_kick".into(),
+            certificate(rank(100, V3Polarity::Revoke, V3Specificity::Membership)),
+        );
+        admission.admissions.insert(
+            "$b_sets_name".into(),
+            certificate(rank(100, V3Polarity::Neutral, V3Specificity::GenericState)),
+        );
+        admission
+            .causal
+            .insert(("$b_join".into(), "$later_kick".into()));
+
+        let state = resolve_v3(&SharedState::new(), &events, &admission).unwrap();
+        assert_eq!(
+            state.get(&(EventType::from(M_ROOM_MEMBER), "@b:example.com".into())),
+            Some(&String::from("$later_kick")),
+        );
+        assert_eq!(
+            state.get(&(EventType::from(M_ROOM_NAME), String::new())),
+            Some(&String::from("$b_sets_name")),
+            "a later ordinary kick does not retroactively invalidate B's earlier action",
+        );
+    }
+
+    #[test]
+    fn concurrent_equal_authority_kicks_use_residue_without_erasing_actions() {
+        let kick_by_a = membership_for("$kick_by_a", "@b:example.com", MEM_LEAVE);
+        let kick_by_c = membership_for("$kick_by_c", "@b:example.com", MEM_LEAVE);
+        let b_action = state_event("$b_sets_name", M_ROOM_NAME, "");
+        let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
+        for event in [kick_by_a, kick_by_c, b_action] {
+            events.insert(event.event_id.clone(), event);
+        }
+
+        let mut admission = TestAdmission::default();
+        admission.admissions.insert(
+            "$kick_by_a".into(),
+            certificate(rank(100, V3Polarity::Revoke, V3Specificity::Membership)),
+        );
+        admission.admissions.insert(
+            "$kick_by_c".into(),
+            certificate(rank(100, V3Polarity::Revoke, V3Specificity::Membership)),
+        );
+        admission.admissions.insert(
+            "$b_sets_name".into(),
+            certificate(rank(100, V3Polarity::Neutral, V3Specificity::GenericState)),
+        );
+
+        let state = resolve_v3(&SharedState::new(), &events, &admission).unwrap();
+        assert_eq!(
+            state.get(&(EventType::from(M_ROOM_MEMBER), "@b:example.com".into())),
+            Some(&String::from("$kick_by_c")),
+            "equal semantic ranks use canonical event ID as deterministic residue",
+        );
+        assert_eq!(
+            state.get(&(EventType::from(M_ROOM_NAME), String::new())),
+            Some(&String::from("$b_sets_name")),
+            "an equal-authority membership dispute has no cross-key erasure reach",
+        );
+    }
+
+    #[test]
+    fn concurrent_ban_outranks_join_at_equal_authority() {
+        let join = membership("$join", MEM_JOIN);
+        let ban = membership("$ban", MEM_BAN);
+        let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
+        for event in [join, ban] {
+            events.insert(event.event_id.clone(), event);
+        }
+
+        let mut admission = TestAdmission::default();
+        admission.admissions.insert(
+            "$join".into(),
+            certificate(rank(50, V3Polarity::Grant, V3Specificity::Membership)),
+        );
+        admission.admissions.insert(
+            "$ban".into(),
+            certificate(rank(50, V3Polarity::Ban, V3Specificity::Membership)),
+        );
+
+        let state = resolve_v3(&SharedState::new(), &events, &admission).unwrap();
+        assert_eq!(
+            state.get(&(EventType::from(M_ROOM_MEMBER), "@target:example.com".into())),
+            Some(&String::from("$ban")),
+        );
+    }
+
+    #[test]
+    fn concurrent_lockdown_rejects_new_join_without_evicting_established_member() {
+        let lockdown = LeanEvent {
+            content: serde_json::json!({ "join_rule": "invite" }),
+            ..state_event("$lockdown", M_ROOM_JOIN_RULES, "")
+        };
+        let new_join = membership_for("$new_join", "@new:example.com", MEM_JOIN);
+        let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
+        for event in [lockdown, new_join] {
+            events.insert(event.event_id.clone(), event);
+        }
+        let mut unconflicted = SharedState::new();
+        unconflicted.insert(
+            (EventType::from(M_ROOM_MEMBER), "@old:example.com".into()),
+            "$established_join".into(),
+        );
+
+        let mut admission = TestAdmission::default();
+        admission.admissions.insert(
+            "$lockdown".into(),
+            certificate(rank(50, V3Polarity::Revoke, V3Specificity::AccessPolicy)),
+        );
+        admission.admissions.insert(
+            "$new_join".into(),
+            certificate(rank(50, V3Polarity::Grant, V3Specificity::Membership)),
+        );
+        admission.reject_when_selected = Some((
+            "$new_join".into(),
+            (EventType::from(M_ROOM_JOIN_RULES), String::new()),
+            "$lockdown".into(),
+        ));
+
+        let state = resolve_v3(&unconflicted, &events, &admission).unwrap();
+        assert_eq!(
+            state.get(&(EventType::from(M_ROOM_JOIN_RULES), String::new())),
+            Some(&String::from("$lockdown")),
+        );
+        assert!(
+            !state.contains_key(&(EventType::from(M_ROOM_MEMBER), "@new:example.com".into())),
+            "the concurrent join fails admission under the selected lockdown",
+        );
+        assert_eq!(
+            state.get(&(EventType::from(M_ROOM_MEMBER), "@old:example.com".into())),
+            Some(&String::from("$established_join")),
+            "a lockdown changes future admission; it is not a retroactive eviction",
+        );
+    }
+
+    #[test]
+    fn selection_is_independent_of_conflict_map_insertion_order() {
+        let join = membership("$join", MEM_JOIN);
+        let ban = membership("$ban", MEM_BAN);
+        let mut admission = TestAdmission::default();
+        admission.admissions.insert(
+            "$join".into(),
+            certificate(rank(50, V3Polarity::Grant, V3Specificity::Membership)),
+        );
+        admission.admissions.insert(
+            "$ban".into(),
+            certificate(rank(50, V3Polarity::Ban, V3Specificity::Membership)),
+        );
+
+        let mut first: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
+        first.insert(join.event_id.clone(), join.clone());
+        first.insert(ban.event_id.clone(), ban.clone());
+        let mut second: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
+        second.insert(ban.event_id.clone(), ban);
+        second.insert(join.event_id.clone(), join);
+
+        assert_eq!(
+            resolve_v3(&SharedState::new(), &first, &admission).unwrap(),
+            resolve_v3(&SharedState::new(), &second, &admission).unwrap(),
         );
     }
 }

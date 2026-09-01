@@ -1770,7 +1770,7 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
 fn test_v2_2_event_id_tiebreak() {
     let auth_evs = utils::parse_jsonl_events(
         r#"
-        {"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:x", "origin_server_ts": 100, "content": {"room_version": "13", "creator": "@admin:x"}}
+        {"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:x", "origin_server_ts": 100, "content": {"room_version": "org.matrix.msc4242.12", "creator": "@admin:x"}}
         {"event_id": "$admin_join", "type": "m.room.member",       "state_key": "@admin:x", "sender": "@admin:x", "origin_server_ts": 200, "content": {"membership": "join"}, "auth_events": ["$create"]}
         {"event_id": "$pl",         "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x", "origin_server_ts": 300, "content": {"users": {"@admin:x": 100, "@bob:x": 50}, "state_default": 50}, "auth_events": ["$create", "$admin_join"]}
         {"event_id": "$bob_join",   "type": "m.room.member",       "state_key": "@bob:x", "sender": "@bob:x", "origin_server_ts": 400, "content": {"membership": "join"}, "auth_events": ["$create", "$pl"]}
