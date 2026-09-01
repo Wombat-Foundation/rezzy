@@ -2,6 +2,23 @@
 09/01/2026
 ##############################
 
+Committed as 2cb415a. Where this landed relative to your two asks:
+
+"Generalize to any equal PL — PL 50 mods, PL 30 mods, can't fuck over your equals" — done, as PromotionScope::AnyAuthorizedSender. Any sender whose branch-local PL dominates the level they're granting can now issue a certified grant that survives a concurrent backdated kick, not just the creator. It's opt-in (CreatorOnly stays the default) because it has a real trade-off: a peer can now also shield another peer's target, not just protect their own promotions — that's documented on the enum itself.
+
+"Chain of succession" — I shipped the interface, not a full implementation: V3Rank now has a seniority: i64 field, checked only after authority/polarity/specificity tie, currently always 0 from the normative policy (no behavior change). I did not build a concrete succession-chain certifier, because the obvious implementation — order by causal depth — is explicitly forbidden by this module's own stated invariant (an attacker can pad a withheld branch to fake depth/seniority, same reason event_id is only ever a tie-break residue, never authority evidence). A real one needs to be a signed, witnessed chain, structurally like certify_promotion_grant's active-member witness. That's a separate, non-trivial feature — say the word and I'll build it out as certify_succession_grant the same way.
+
+"No peer kicks unless self-demote" — still just discussed, not built. That's an authorization-rule change (belongs in check_auth's kick/ban threshold, not the rank policy), and it's a bigger behavioral commitment — "no peer can ever remove a rogue admin, only self-demotion or a senior can" — worth confirming you want the strict all-or-nothing version versus a succession-gated one before I touch check_auth.
+
+✻ Crunched for 9m 32s · done 7:01 PM
+
+※ recap: Fixed review findings and generalized V3's dueling-admin protection to any PL tier via a configurable PromotionScope; committed as 2cb415a. Next: confirm whether you want the "no peer kicks unless self-demote" rule built into check_auth.
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
 • Rezzy is clean right now. The V3 engine is implemented and fully line-covered, but it is not wired
   into a live resolver pipeline yet.
 

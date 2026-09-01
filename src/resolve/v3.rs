@@ -29,7 +29,7 @@
 //! Dueling-admin containment, compactly:
 //!
 //! ```text
-//! creator -- grant_admin(B) -- B's independent actions
+//! promoter -- grant_admin(B) -- B's independent actions
 //!     └── A's withheld kick(B)       (concurrent in the declared DAG)
 //!          │
 //!          └─ certified creator grant wins B's cross-key conflict;
@@ -58,8 +58,8 @@
 //! | Situation | `tk.nutra.cdo.12` stance |
 //! |---|---|
 //! | Kick is causally after B's join or promotion | The kick wins normally. B's earlier valid actions remain valid. |
-//! | Creator-certified `grant_admin(B)` concurrent with a lower-authority kick | The compound creator grant wins B's membership/governance conflict; the kick is rejected for that conflict. |
-//! | Equal admins concurrently kick or ban each other | Neither has strict cross-branch domination. Their unrelated actions survive; the membership slot uses the declared deterministic residue. |
+//! | Certified `grant_admin(B)` concurrent with a lower-authority kick | The compound promotion grant wins B's membership/governance conflict; the kick is rejected for that conflict. Under [`PromotionScope::AnyAuthorizedSender`] any sender whose branch-local power level dominates the new value can issue a certified grant, not only the creator — see the caveat on that variant: a peer at the same tier as the kicker can use this to shield the kick's target. |
+//! | Equal admins concurrently kick or ban each other | Neither has strict cross-branch domination. Their unrelated actions survive; the membership slot uses the declared deterministic residue — unless one side is a certified promotion grant (see the row above), which wins outright rather than falling to residue. |
 //! | Ban concurrent with join for the same target | Ban wins: a safety restriction outranks permissive admission at equal authority. |
 //! | Lockdown concurrent with joins | Lockdown controls future admission but does not itself evict an established member. A concurrent join can fail admission without becoming a retroactive kick. |
 //! | Kick or ban versus the target's unrelated concurrent actions | Those actions survive unless the revoker strictly dominates the target in both <math><mi>θ</mi><mo>(</mo><mi>ρ</mi><mo>)</mo></math> and the selected <math><msub><mi>σ</mi><mi>i</mi></msub></math>. |
@@ -87,6 +87,20 @@ pub struct V3Rank {
     pub safety: i8,
     /// Event-class-specific policy precision.
     pub specificity: u8,
+    /// Extension point for a succession/seniority tie-break, checked only
+    /// after `authority`, `safety`, and `specificity` tie (derived `Ord`
+    /// compares fields in declaration order). [`TkNutraCdo12RankPolicy`]
+    /// always leaves this `0` — it carries no succession semantics.
+    ///
+    /// A custom [`V3RankPolicy`] MAY populate this, but only from a
+    /// non-manipulable, **witnessed** source (e.g. a signed chain of
+    /// promotion events verified the same way `certify_promotion_grant`
+    /// verifies its active-member witness). It must never be derived from
+    /// causal depth, graph height, timestamp, or arrival order — a
+    /// concurrent attacker can pad a withheld branch to manufacture any of
+    /// those, exactly as the module doc above warns for `event_id`'s
+    /// deliberate exclusion from authority evidence.
+    pub seniority: i64,
 }
 
 /// The typed safety direction of a state transition.
@@ -159,20 +173,26 @@ pub struct BranchAuthSnapshot<Id, K: Ord> {
 pub struct V3Admission<Id, K: Ord> {
     rank: V3Rank,
     branch_auth: BranchAuthSnapshot<Id, K>,
-    creator_grant: Option<CertifiedCreatorGrant<Id, K>>,
+    promotion_grant: Option<CertifiedPromotionGrant<Id, K>>,
 }
 
-/// A creator promotion paired with the signed, canonical active-member
+/// A power-level promotion paired with the signed, canonical active-member
 /// witness required by `tk.nutra.cdo.12`.
 ///
 /// Its fields are private: only V3 admission can establish that the witness
 /// was the target's maximal member state in the grant's branch snapshot.
-/// Formally, for creator <math><mi>c</mi></math>, target <math><mi>b</mi></math>,
+/// Any sender qualifies, not only the room creator — the same rule 10.10
+/// PL-dominance check `crate::auth::check_auth` already applies to any
+/// `users` map change is re-proven here independently (this function does
+/// not assume its caller ran `check_auth` first). The creator, whose
+/// V3/V12+ implicit power level is `i64::MAX`, simply always satisfies it.
+///
+/// Formally, for promoter <math><mi>p</mi></math>, target <math><mi>b</mi></math>,
 /// grant <math><mi>g</mi></math>, and witness <math><mi>w</mi></math>:
 ///
-/// <math display="block"><semantics><mtext>GrantAdmin(g,b,w) ⇔ sender(g)=c ∧ member_θ(g)(b)=w=join(b) ∧ PL_g(b)&gt;PL_θ(g)(b)</mtext><annotation encoding="application/x-tex">\operatorname{GrantAdmin}(g,b,w) \iff \operatorname{sender}(g)=c \land \operatorname{member}_{\theta(g)}(b)=w=\operatorname{join}(b) \land \operatorname{PL}_g(b)&gt;\operatorname{PL}_{\theta(g)}(b)</annotation></semantics></math>
+/// <math display="block"><semantics><mtext>GrantAdmin(g,b,w) ⇔ PL_θ(g)(sender(g)) ≥ PL_g(b) ∧ member_θ(g)(b)=w=join(b) ∧ PL_g(b)&gt;PL_θ(g)(b)</mtext><annotation encoding="application/x-tex">\operatorname{GrantAdmin}(g,b,w) \iff \operatorname{PL}_{\theta(g)}(\operatorname{sender}(g)) \ge \operatorname{PL}_g(b) \land \operatorname{member}_{\theta(g)}(b)=w=\operatorname{join}(b) \land \operatorname{PL}_g(b)&gt;\operatorname{PL}_{\theta(g)}(b)</annotation></semantics></math>
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CertifiedCreatorGrant<Id, K: Ord> {
+pub struct CertifiedPromotionGrant<Id, K: Ord> {
     grant_id: Id,
     target: K,
     target_power_level: i64,
@@ -192,14 +212,14 @@ impl<Id, K: Ord> V3Admission<Id, K> {
         &self.branch_auth
     }
 
-    /// The certified compound creator grant, when this event is one.
+    /// The certified compound promotion grant, when this event is one.
     #[must_use]
-    pub const fn creator_grant(&self) -> Option<&CertifiedCreatorGrant<Id, K>> {
-        self.creator_grant.as_ref()
+    pub const fn promotion_grant(&self) -> Option<&CertifiedPromotionGrant<Id, K>> {
+        self.promotion_grant.as_ref()
     }
 }
 
-impl<Id, K: Ord> CertifiedCreatorGrant<Id, K> {
+impl<Id, K: Ord> CertifiedPromotionGrant<Id, K> {
     #[must_use]
     pub const fn grant_id(&self) -> &Id {
         &self.grant_id
@@ -278,8 +298,39 @@ where
             ),
             safety: polarity as i8,
             specificity: specificity as u8,
+            seniority: 0,
         }
     }
+}
+
+/// Who may issue a certified promotion grant (see `certify_promotion_grant`).
+///
+/// A certified grant wins a concurrent, backdated kick/ban against its
+/// target — see the "Certified `grant_admin(B)`" row in the module's
+/// conflict-stances table. Widening who can mint one widens who can shield a
+/// target from a peer's moderation action, so this is an explicit, named
+/// choice rather than a silent default.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PromotionScope {
+    /// Only the room creator (or a v12+ additional creator) may issue a
+    /// certified grant — the original, narrower behavior. A single trusted
+    /// principal can shield a target; no other sender can.
+    #[default]
+    CreatorOnly,
+    /// Any sender whose branch-local power level dominates the level they're
+    /// granting (Matrix rule 10.10) may issue a certified grant, at any PL
+    /// tier — not only the creator.
+    ///
+    /// **Trade-off**: this also lets a peer *shield* a target from another
+    /// peer at the same tier. Concretely: admin A (PL 100) kicks B; admin C
+    /// (PL 100, A's peer) concurrently promotes B to PL 100 with a valid
+    /// witness. That grant now certifies and wins the conflict, neutralizing
+    /// A's kick — a property `CreatorOnly` does not have, since only the
+    /// creator could do this before. Choose this only if peer-shielding is
+    /// an acceptable (or desired) consequence of "any authorized sender can
+    /// protect a promotion," not just "peers can't be demoted by a lower
+    /// authority."
+    AnyAuthorizedSender,
 }
 
 /// Certify an event using the normative `tk.nutra.cdo.12` rank policy.
@@ -292,6 +343,7 @@ pub fn certify_tk_nutra_cdo12_admission<Id, C, K>(
     event: &LeanEvent<Id, C, K>,
     branch_auth: &crate::auth::RoomState<Id, C, K>,
     verifier: &dyn EventVerifier<Id>,
+    promotion_scope: PromotionScope,
 ) -> Result<V3Admission<Id, K>, crate::auth::AuthError<Id>>
 where
     Id: EventId,
@@ -299,7 +351,13 @@ where
     K: StateKey,
     for<'a> (alloc::string::String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'a>,
 {
-    certify_v3_admission(event, branch_auth, &TkNutraCdo12RankPolicy, verifier)
+    certify_v3_admission(
+        event,
+        branch_auth,
+        &TkNutraCdo12RankPolicy,
+        verifier,
+        promotion_scope,
+    )
 }
 
 /// Certify an event for V3 selection against its canonical branch-auth state.
@@ -319,6 +377,7 @@ pub fn certify_v3_admission<Id, C, K>(
     branch_auth: &crate::auth::RoomState<Id, C, K>,
     rank_policy: &impl V3RankPolicy<Id, C, K>,
     verifier: &dyn EventVerifier<Id>,
+    promotion_scope: PromotionScope,
 ) -> Result<V3Admission<Id, K>, crate::auth::AuthError<Id>>
 where
     Id: EventId,
@@ -342,21 +401,26 @@ where
     Ok(V3Admission {
         rank: rank_policy.rank(event, branch_auth),
         branch_auth: BranchAuthSnapshot { state },
-        creator_grant: certify_creator_grant(event, branch_auth),
+        promotion_grant: certify_promotion_grant(event, branch_auth, promotion_scope),
     })
 }
 
 /// Validate the signed compound form of `grant_admin(target)`.
 ///
 /// A successful result proves all of the following in the grant's canonical
-/// branch snapshot: the sender is a room creator; the signed witness names a
-/// joined target; that witness is the snapshot's maximal membership writer for
-/// that target; and the power-level event raises the target above the prior
-/// branch value. No DAG walk occurs during selection.
-fn certify_creator_grant<Id, C, K>(
+/// branch snapshot: the sender's branch-local power level dominates the
+/// target's new level (the same rule 10.10 threshold ordinary `check_auth`
+/// enforces for any `users` map change — the room creator always satisfies
+/// it via the V3/V12+ implicit `i64::MAX` level, but is not otherwise
+/// special-cased here); the signed witness names a joined target; that
+/// witness is the snapshot's maximal membership writer for that target; and
+/// the power-level event raises the target above the prior branch value. No
+/// DAG walk occurs during selection.
+fn certify_promotion_grant<Id, C, K>(
     grant: &LeanEvent<Id, C, K>,
     branch_auth: &crate::auth::RoomState<Id, C, K>,
-) -> Option<CertifiedCreatorGrant<Id, K>>
+    promotion_scope: PromotionScope,
+) -> Option<CertifiedPromotionGrant<Id, K>>
 where
     Id: EventId,
     C: crate::basespec::rezzy_types::EventContent,
@@ -366,9 +430,11 @@ where
     if grant.event_type != M_ROOM_POWER_LEVELS {
         return None;
     }
-    let create = branch_auth.get_event(M_ROOM_CREATE, "")?;
-    if create.sender != grant.sender && !create.has_additional_creator(&grant.sender) {
-        return None;
+    if promotion_scope == PromotionScope::CreatorOnly {
+        let create = branch_auth.get_event(M_ROOM_CREATE, "")?;
+        if create.sender != grant.sender && !create.has_additional_creator(&grant.sender) {
+            return None;
+        }
     }
     let signed_witness = grant.content.get_cdo_active_member()?;
     let witness = branch_auth
@@ -398,7 +464,19 @@ where
                 .get_user_power_level(target.as_ref())
                 .unwrap_or_else(|| event.content.get_users_default().unwrap_or(0))
         });
-    (target_power_level > prior_power_level).then(|| CertifiedCreatorGrant {
+    // Rule 10.10, re-proven independently of `check_auth`: the sender's own
+    // branch-local power level must dominate the level they're granting.
+    // Without this, any sender could forge a "certified" promotion for a
+    // target above their own authority.
+    let sender_power_level = crate::auth::user::get_sender_power_level(
+        &grant.sender,
+        branch_auth,
+        crate::StateResVersion::V3,
+    );
+    if sender_power_level < target_power_level {
+        return None;
+    }
+    (target_power_level > prior_power_level).then(|| CertifiedPromotionGrant {
         grant_id: grant.event_id.clone(),
         target,
         target_power_level,
@@ -830,6 +908,7 @@ mod tests {
             authority,
             safety: polarity as i8,
             specificity: specificity as u8,
+            seniority: 0,
         }
     }
 
@@ -839,7 +918,7 @@ mod tests {
             branch_auth: BranchAuthSnapshot {
                 state: SharedState::new(),
             },
-            creator_grant: None,
+            promotion_grant: None,
         }
     }
 
@@ -944,15 +1023,21 @@ mod tests {
                 ..V3Rank::default()
             }),
             &AllowVerifier,
+            PromotionScope::CreatorOnly,
         )
         .unwrap();
 
         assert_eq!(certificate.rank().authority, 100);
         assert!(certificate.branch_auth().state().is_empty());
-        assert!(certificate.creator_grant().is_none());
+        assert!(certificate.promotion_grant().is_none());
 
-        let normative =
-            certify_tk_nutra_cdo12_admission(&create, &branch_auth, &AllowVerifier).unwrap();
+        let normative = certify_tk_nutra_cdo12_admission(
+            &create,
+            &branch_auth,
+            &AllowVerifier,
+            PromotionScope::CreatorOnly,
+        )
+        .unwrap();
         assert_eq!(normative.rank().authority, 0);
         assert_eq!(normative.rank().safety, V3Polarity::Neutral as i8);
         assert_eq!(
@@ -965,6 +1050,7 @@ mod tests {
             &branch_auth,
             &FixedRank(V3Rank::default()),
             &RejectVerifier,
+            PromotionScope::CreatorOnly,
         )
         .is_err());
     }
@@ -994,6 +1080,7 @@ mod tests {
             &branch_auth,
             &FixedRank(V3Rank::default()),
             &AllowVerifier,
+            PromotionScope::CreatorOnly,
         )
         .unwrap();
         assert_eq!(
@@ -1006,6 +1093,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn creator_grant_requires_a_maximal_join_witness_and_a_power_increase() {
         let create: LeanEvent<String, Value, String> = LeanEvent {
             event_id: "$create".into(),
@@ -1028,7 +1116,9 @@ mod tests {
             event_type: M_ROOM_POWER_LEVELS.into(),
             state_key: Some(String::new()),
             sender: "@creator:example.com".into(),
-            content: serde_json::json!({ "users": { "@b:example.com": 0 } }),
+            content: serde_json::json!({
+                "users": { "@b:example.com": 0, "@not_creator:example.com": 100 },
+            }),
             ..Default::default()
         };
         let grant = LeanEvent {
@@ -1047,7 +1137,8 @@ mod tests {
         branch_auth.insert((M_ROOM_MEMBER.into(), "@b:example.com".into()), b_join);
         branch_auth.insert((M_ROOM_POWER_LEVELS.into(), String::new()), prior_power);
 
-        let certified = certify_creator_grant(&grant, &branch_auth).unwrap();
+        let certified =
+            certify_promotion_grant(&grant, &branch_auth, PromotionScope::CreatorOnly).unwrap();
         assert_eq!(certified.grant_id(), &String::from("$grant"));
         assert_eq!(certified.target(), &String::from("@b:example.com"));
         assert_eq!(certified.active_member(), &String::from("$b_join"));
@@ -1057,7 +1148,12 @@ mod tests {
             content: serde_json::json!({ "users": { "@b:example.com": 100 } }),
             ..grant.clone()
         };
-        assert!(certify_creator_grant(&missing_witness, &branch_auth).is_none());
+        assert!(certify_promotion_grant(
+            &missing_witness,
+            &branch_auth,
+            PromotionScope::CreatorOnly
+        )
+        .is_none());
 
         let stale_witness = LeanEvent {
             content: serde_json::json!({
@@ -1066,13 +1162,35 @@ mod tests {
             }),
             ..grant.clone()
         };
-        assert!(certify_creator_grant(&stale_witness, &branch_auth).is_none());
+        assert!(
+            certify_promotion_grant(&stale_witness, &branch_auth, PromotionScope::CreatorOnly)
+                .is_none()
+        );
 
+        // Under CreatorOnly, a non-creator sender is rejected outright, even
+        // one with sufficient PL to pass the rule 10.10 dominance check —
+        // that's the whole point of the narrower scope.
         let wrong_sender = LeanEvent {
             sender: "@not_creator:example.com".into(),
+            content: serde_json::json!({
+                "users": { "@not_creator:example.com": 100, "@b:example.com": 100 },
+                "tk.nutra.cdo": { "active_member": "$b_join" },
+            }),
             ..grant.clone()
         };
-        assert!(certify_creator_grant(&wrong_sender, &branch_auth).is_none());
+        assert!(
+            certify_promotion_grant(&wrong_sender, &branch_auth, PromotionScope::CreatorOnly)
+                .is_none()
+        );
+        // The same event certifies once the scope is widened to any sender
+        // with sufficient authority — demonstrating the two scopes actually
+        // differ on this exact input.
+        assert!(certify_promotion_grant(
+            &wrong_sender,
+            &branch_auth,
+            PromotionScope::AnyAuthorizedSender
+        )
+        .is_some());
 
         let b_leave = LeanEvent {
             event_id: "$b_leave".into(),
@@ -1091,7 +1209,10 @@ mod tests {
             }),
             ..grant.clone()
         };
-        assert!(certify_creator_grant(&leave_witness, &left_branch).is_none());
+        assert!(
+            certify_promotion_grant(&leave_witness, &left_branch, PromotionScope::CreatorOnly)
+                .is_none()
+        );
 
         let stale_join = LeanEvent {
             event_id: "$stale_join".into(),
@@ -1109,7 +1230,12 @@ mod tests {
             }),
             ..grant
         };
-        assert!(certify_creator_grant(&mismatched_witness, &mismatched_branch).is_none());
+        assert!(certify_promotion_grant(
+            &mismatched_witness,
+            &mismatched_branch,
+            PromotionScope::CreatorOnly
+        )
+        .is_none());
     }
 
     #[test]
@@ -1158,7 +1284,8 @@ mod tests {
         branch_auth.insert((M_ROOM_MEMBER.into(), "@b:example.com".into()), b_join);
         branch_auth.insert((M_ROOM_POWER_LEVELS.into(), String::new()), prior_power);
 
-        let certified = certify_creator_grant(&grant, &branch_auth).unwrap();
+        let certified =
+            certify_promotion_grant(&grant, &branch_auth, PromotionScope::CreatorOnly).unwrap();
         assert_eq!(certified.target(), &String::from("@b:example.com"));
         assert_eq!(certified.target_power_level(), 100);
 
@@ -1171,7 +1298,146 @@ mod tests {
             }),
             ..grant
         };
-        assert!(certify_creator_grant(&no_increase, &branch_auth).is_none());
+        assert!(
+            certify_promotion_grant(&no_increase, &branch_auth, PromotionScope::CreatorOnly)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn self_promotion_cannot_bootstrap_authority_via_users_default() {
+        // @a is not listed explicitly in the prior power-levels event —
+        // their level comes entirely from `users_default` (10). @a then
+        // tries to certify their own grant to 100. `sender_power_level`
+        // (the ceiling) and `prior_power_level` (the target's own prior
+        // level, here also @a) are read from the exact same prior PL event
+        // via the identical fallback path, so they must agree: @a's ceiling
+        // is 10, not 100, regardless of what the grant's own content claims.
+        let create: LeanEvent<String, Value, String> = LeanEvent {
+            event_id: "$create".into(),
+            event_type: M_ROOM_CREATE.into(),
+            state_key: Some(String::new()),
+            sender: "@creator:example.com".into(),
+            content: serde_json::json!({ "creator": "@creator:example.com" }),
+            ..Default::default()
+        };
+        let a_join = LeanEvent {
+            event_id: "$a_join".into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some("@a:example.com".into()),
+            sender: "@a:example.com".into(),
+            content: serde_json::json!({ "membership": MEM_JOIN }),
+            ..Default::default()
+        };
+        let prior_power = LeanEvent {
+            event_id: "$prior_power".into(),
+            event_type: M_ROOM_POWER_LEVELS.into(),
+            state_key: Some(String::new()),
+            sender: "@creator:example.com".into(),
+            content: serde_json::json!({ "users_default": 10 }),
+            ..Default::default()
+        };
+        let self_grant = LeanEvent {
+            event_id: "$self_grant".into(),
+            event_type: M_ROOM_POWER_LEVELS.into(),
+            state_key: Some(String::new()),
+            sender: "@a:example.com".into(),
+            content: serde_json::json!({
+                "users": { "@a:example.com": 100 },
+                "tk.nutra.cdo": { "active_member": "$a_join" },
+            }),
+            ..Default::default()
+        };
+        let mut branch_auth = crate::auth::RoomState::new();
+        branch_auth.insert((M_ROOM_CREATE.into(), String::new()), create);
+        branch_auth.insert((M_ROOM_MEMBER.into(), "@a:example.com".into()), a_join);
+        branch_auth.insert((M_ROOM_POWER_LEVELS.into(), String::new()), prior_power);
+
+        assert!(certify_promotion_grant(
+            &self_grant,
+            &branch_auth,
+            PromotionScope::AnyAuthorizedSender
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn non_creator_senior_admin_can_certify_a_peer_promotion() {
+        // A PL-100 admin (not the room creator) promotes @c from 0 to 50.
+        // Generalizing certify_promotion_grant beyond "sender must be
+        // creator" means this now certifies on its own authority, proven by
+        // rule 10.10 (sender's branch-local PL >= the level being granted) —
+        // the same protection creator grants get against a concurrent
+        // backdated kick now extends to any authorized promoter, at any PL
+        // tier.
+        let create: LeanEvent<String, Value, String> = LeanEvent {
+            event_id: "$create".into(),
+            event_type: M_ROOM_CREATE.into(),
+            state_key: Some(String::new()),
+            sender: "@creator:example.com".into(),
+            content: serde_json::json!({ "creator": "@creator:example.com" }),
+            ..Default::default()
+        };
+        let c_join = LeanEvent {
+            event_id: "$c_join".into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some("@c:example.com".into()),
+            sender: "@c:example.com".into(),
+            content: serde_json::json!({ "membership": MEM_JOIN }),
+            ..Default::default()
+        };
+        let prior_power = LeanEvent {
+            event_id: "$prior_power".into(),
+            event_type: M_ROOM_POWER_LEVELS.into(),
+            state_key: Some(String::new()),
+            sender: "@creator:example.com".into(),
+            content: serde_json::json!({
+                "users": { "@senior_admin:example.com": 100, "@c:example.com": 0 },
+            }),
+            ..Default::default()
+        };
+        let grant = LeanEvent {
+            event_id: "$grant".into(),
+            event_type: M_ROOM_POWER_LEVELS.into(),
+            state_key: Some(String::new()),
+            sender: "@senior_admin:example.com".into(),
+            content: serde_json::json!({
+                "users": {
+                    "@senior_admin:example.com": 100,
+                    "@c:example.com": 50,
+                },
+                "tk.nutra.cdo": { "active_member": "$c_join" },
+            }),
+            ..Default::default()
+        };
+        let mut branch_auth = crate::auth::RoomState::new();
+        branch_auth.insert((M_ROOM_CREATE.into(), String::new()), create);
+        branch_auth.insert((M_ROOM_MEMBER.into(), "@c:example.com".into()), c_join);
+        branch_auth.insert((M_ROOM_POWER_LEVELS.into(), String::new()), prior_power);
+
+        let certified =
+            certify_promotion_grant(&grant, &branch_auth, PromotionScope::AnyAuthorizedSender)
+                .unwrap();
+        assert_eq!(certified.target(), &String::from("@c:example.com"));
+        assert_eq!(certified.target_power_level(), 50);
+
+        // The same admin cannot certify a grant above their own PL (101 > 100).
+        let overreach = LeanEvent {
+            content: serde_json::json!({
+                "users": {
+                    "@senior_admin:example.com": 100,
+                    "@c:example.com": 101,
+                },
+                "tk.nutra.cdo": { "active_member": "$c_join" },
+            }),
+            ..grant
+        };
+        assert!(certify_promotion_grant(
+            &overreach,
+            &branch_auth,
+            PromotionScope::AnyAuthorizedSender
+        )
+        .is_none());
     }
 
     #[test]
