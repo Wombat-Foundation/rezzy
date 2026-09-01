@@ -1,8 +1,8 @@
 use crate::utils;
-use parameterized::parameterized;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use test_case::test_case;
 
 type ResolvedStateMap = HashMap<(String, String), String>;
 type EventMap = HashMap<String, LeanEvent>;
@@ -264,20 +264,14 @@ fn assert_benign_convergence(jsonl_filename: &str) -> (ResolvedStateMap, EventMa
     (resolved_v2_1_1, map)
 }
 
-/// **xfail / ordering hazard:** a backdated kick by A is accepted while B is
-/// still low-power. The competing branch promotes B and B legitimately acts,
-/// but those actions are discarded during iterative auth.
-///
-#[parameterized(
-    version = {
-        StateResVersion::V2,
-        StateResVersion::V2_1,
-        StateResVersion::V2_1_1,
-        StateResVersion::V2_2
-    },
-    name = { "v2", "v2_1", "v2_1_1", "v2_2" }
-)]
-fn test_dueling_admins_backdated_kick(version: StateResVersion, name: &str) {
+/// **xfail / ordering hazard:** V2 and V2.1 accept A's backdated kick while B
+/// is still low-power, discarding B's legitimate competing-branch actions.
+/// V2.1.1 and V2.2 are expected to preserve B's promoted branch.
+#[test_case(StateResVersion::V2, false; "v2")]
+#[test_case(StateResVersion::V2_1, false; "v2_1")]
+#[test_case(StateResVersion::V2_1_1, true; "v2_1_1")]
+#[test_case(StateResVersion::V2_2, true; "v2_2")]
+fn test_dueling_admins_backdated_kick(version: StateResVersion, expect_hardened_result: bool) {
     let events = utils::parse_jsonl_events(
         r#"
         {"event_id":"$create","type":"m.room.create","state_key":"","sender":"@a:example.com","origin_server_ts":0,"content":{"creator":"@a:example.com","room_version":"10"}}
@@ -316,21 +310,43 @@ fn test_dueling_admins_backdated_kick(version: StateResVersion, name: &str) {
         &String::new(),
     );
 
-    assert_eq!(
-        resolved.get(&("m.room.member".into(), "@b:example.com".into())),
-        Some(&"$backdated_kick_b".into()),
-        "xfail ({name}, {version:?}): the backdated kick wins B's membership slot"
-    );
-    assert_ne!(
-        resolved.get(&("m.room.power_levels".into(), String::new())),
-        Some(&"$b_promote_c".into()),
-        "xfail ({name}, {version:?}): B's locally-authorised promotion of C is discarded"
-    );
-    assert_ne!(
-        resolved.get(&("m.room.member".into(), "@d:example.com".into())),
-        Some(&"$b_ban_d".into()),
-        "xfail ({name}, {version:?}): B's locally-authorised ban of D is discarded"
-    );
+    let b_membership = resolved.get(&("m.room.member".into(), "@b:example.com".into()));
+    let power_levels = resolved.get(&("m.room.power_levels".into(), String::new()));
+    let d_membership = resolved.get(&("m.room.member".into(), "@d:example.com".into()));
+
+    if expect_hardened_result {
+        assert_eq!(
+            b_membership,
+            Some(&"$b_join".into()),
+            "{version:?} must not let the backdated kick remove B"
+        );
+        assert_eq!(
+            power_levels,
+            Some(&"$b_promote_c".into()),
+            "{version:?} must preserve B's valid promotion of C"
+        );
+        assert_eq!(
+            d_membership,
+            Some(&"$b_ban_d".into()),
+            "{version:?} must preserve B's valid ban of D"
+        );
+    } else {
+        assert_eq!(
+            b_membership,
+            Some(&"$backdated_kick_b".into()),
+            "xfail ({version:?}): the backdated kick wins B's membership slot"
+        );
+        assert_ne!(
+            power_levels,
+            Some(&"$b_promote_c".into()),
+            "xfail ({version:?}): B's locally-authorised promotion of C is discarded"
+        );
+        assert_ne!(
+            d_membership,
+            Some(&"$b_ban_d".into()),
+            "xfail ({version:?}): B's locally-authorised ban of D is discarded"
+        );
+    }
 }
 
 #[test]
