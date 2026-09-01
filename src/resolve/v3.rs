@@ -20,6 +20,22 @@
 //!
 //! <math display="block"><semantics><mrow><mi>r</mi><mo>(</mo><mi>e</mi><mo>)</mo><mo>=</mo><mo>(</mo><msub><mi>authority</mi><mrow><mi>θ</mi><mo>(</mo><mi>e</mi><mo>)</mo></mrow></msub><mo>(</mo><mi>e</mi><mo>)</mo><mo>,</mo><mi>polarity</mi><mo>(</mo><mi>e</mi><mo>)</mo><mo>,</mo><mi>specificity</mi><mo>(</mo><mi>e</mi><mo>)</mo><mo>,</mo><mi>id</mi><mo>(</mo><mi>e</mi><mo>)</mo><mo>)</mo></mrow><annotation encoding="application/x-tex">r(e) = (\operatorname{authority}_{\theta(e)}(e), \operatorname{polarity}(e), \operatorname{specificity}(e), \operatorname{id}(e))</annotation></semantics></math>
 //!
+//! A claimed PDU `depth`, a locally computed graph height, and timestamp are
+//! deliberately absent. A concurrent attacker can pad a withheld branch to
+//! manufacture graph height; neither height nor an event ID proves when the
+//! author learned of the competing event. The ID is therefore only an explicit
+//! equal-policy residue, never authority or temporal evidence.
+//!
+//! Dueling-admin containment, compactly:
+//!
+//! ```text
+//! creator -- grant_admin(B) -- B's independent actions
+//!     └── A's withheld kick(B)       (concurrent in the declared DAG)
+//!          │
+//!          └─ certified creator grant wins B's cross-key conflict;
+//!             kick cannot erase B's concurrent actions.
+//! ```
+//!
 //! Each repair round selects one maximum-ranked candidate per key against an
 //! immutable <math><msub><mi>σ</mi><mi>i</mi></msub></math>, evaluates all selected events jointly, and removes
 //! all failures simultaneously:
