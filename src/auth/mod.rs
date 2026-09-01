@@ -1851,11 +1851,8 @@ fn check_join_rules<
         .and_then(EventLike::get_join_rule)
         .unwrap_or(RULE_INVITE); // Default to invite
 
-    // A partial state snapshot can legitimately omit create. In that case,
-    // conservatively treat newer join-rule features as unavailable rather
-    // than rejecting an ordinary invite/public join with MissingCreate.
-    let supports_restricted = room_version_at_least(state, 8).unwrap_or(false);
-    let supports_knock_restricted = room_version_at_least(state, 10).unwrap_or(false);
+    let supports_restricted = room_version_at_least(state, 8)?;
+    let supports_knock_restricted = room_version_at_least(state, 10)?;
 
     let is_creator = state
         .get_event(M_ROOM_CREATE, "")
@@ -1993,9 +1990,7 @@ fn check_knock_rules<
         .and_then(EventLike::get_join_rule)
         .unwrap_or(RULE_INVITE);
 
-    // See check_join_rules: missing create in partial state means the v10+
-    // capability cannot be established, not that this event is malformed.
-    let supports_knock_restricted = room_version_at_least(state, 10).unwrap_or(false);
+    let supports_knock_restricted = room_version_at_least(state, 10)?;
     if join_rule != RULE_KNOCK && !(join_rule == RULE_KNOCK_RESTRICTED && supports_knock_restricted)
     {
         return Err(AuthError::NotMember {
