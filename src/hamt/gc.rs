@@ -1,14 +1,18 @@
 //! Incremental, refcount-based garbage collection bookkeeping for
 //! content-addressed HAMT storage.
 //!
-//! This is the replacement for a periodic full-universe reachability sweep
-//! (see [`super::audit`]): instead of re-deriving "what's live" from scratch
-//! on every audit, [`RefcountTable`] is fed directly from the
-//! [`NodeHashDelta`](super::delta::NodeHashDelta) each mutation already
-//! produces, and does `O(|delta|)` work per state transition rather than
-//! `O(|universe|)` per sweep.
+//! This is an experimental alternative to a periodic full-universe
+//! reachability sweep (see [`super::audit`]) for integrations that can prove
+//! every retired root has exactly one live successor. It is not sound for
+//! general branching state-group lifetimes; normal callers should use a
+//! reachability sweep or retain nodes until explicit room purge.
 //!
-//! # Why this replaces periodic sweeping, not just supplements it
+//! Under that strict-linear precondition, [`RefcountTable`] is fed directly
+//! from the [`NodeHashDelta`](super::delta::NodeHashDelta) each mutation
+//! already produces, and does `O(|delta|)` work per state transition rather
+//! than `O(|universe|)` per sweep.
+//!
+//! # Why it can avoid periodic sweeping on a linear history
 //!
 //! A batch sweep run on a fixed wall-clock cadence while the universe keeps
 //! growing accumulates *quadratic* total cost over the system's lifetime:

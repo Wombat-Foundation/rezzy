@@ -277,7 +277,7 @@ where
     /// # Errors
     /// Returns an error when the version byte is invalid or the buffer is too
     /// short for the declared payload.
-    pub fn decode_v1(buf: &[u8]) -> Result<Self, &'static str> {
+    pub fn decode_v1_unverified(buf: &[u8]) -> Result<Self, &'static str> {
         if buf.is_empty() || buf[0] != 0x01 {
             return Err("Invalid version byte");
         }
@@ -426,9 +426,10 @@ where
     /// Decodes a v1 node and verifies it against the storage key that selected
     /// the bytes.
     ///
-    /// This is the normal cold-storage load path. [`Self::decode_v1`] is only
-    /// the syntactic decoder for callers that need to inspect persisted data
-    /// before choosing an expected hash.
+    /// This is the normal cold-storage load path.
+    /// [`Self::decode_v1_unverified`] is only the syntactic decoder for
+    /// callers that need to inspect persisted data before choosing an expected
+    /// hash.
     ///
     /// # Errors
     /// Returns an error when the bytes are malformed or their recomputed
@@ -442,7 +443,7 @@ where
         K: Hash,
         V: Hash,
     {
-        Self::decode_v1(buf)?.into_hamt_node_verified(structural_key, expected_hash)
+        Self::decode_v1_unverified(buf)?.into_hamt_node_verified(structural_key, expected_hash)
     }
 }
 

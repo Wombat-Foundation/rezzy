@@ -273,7 +273,8 @@ fn test_persisted_internal_node_round_trip() {
     };
 
     let encoded = node.encode_v1();
-    let decoded = PersistedInternalNode::decode_v1(&encoded).expect("round-trip must decode");
+    let decoded =
+        PersistedInternalNode::decode_v1_unverified(&encoded).expect("round-trip must decode");
 
     assert_eq!(decoded, node);
 }
@@ -314,7 +315,7 @@ fn test_decode_v1_rejects_trailing_bytes() {
     let mut encoded = node.encode_v1();
     encoded.extend_from_slice(&[0xde, 0xad]);
 
-    assert!(PersistedInternalNode::<i32, i32>::decode_v1(&encoded).is_err());
+    assert!(PersistedInternalNode::<i32, i32>::decode_v1_unverified(&encoded).is_err());
 }
 
 #[test]
@@ -328,32 +329,32 @@ fn test_decode_v1_rejects_shape_mismatches() {
     let encoded = node.encode_v1();
 
     assert_eq!(
-        PersistedInternalNode::<i32, i32>::decode_v1(&[]),
+        PersistedInternalNode::<i32, i32>::decode_v1_unverified(&[]),
         Err("Invalid version byte")
     );
     assert_eq!(
-        PersistedInternalNode::<i32, i32>::decode_v1(&encoded[..3]),
+        PersistedInternalNode::<i32, i32>::decode_v1_unverified(&encoded[..3]),
         Err("Buffer too short for v1 header")
     );
 
     let mut bad_leaf_count = encoded.clone();
     bad_leaf_count[9..13].copy_from_slice(&0_u32.to_le_bytes());
     assert_eq!(
-        PersistedInternalNode::<i32, i32>::decode_v1(&bad_leaf_count),
+        PersistedInternalNode::<i32, i32>::decode_v1_unverified(&bad_leaf_count),
         Err("Leaf count does not match datamap")
     );
 
     let mut bad_child_count = encoded.clone();
     bad_child_count[13..17].copy_from_slice(&0_u32.to_le_bytes());
     assert_eq!(
-        PersistedInternalNode::<i32, i32>::decode_v1(&bad_child_count),
+        PersistedInternalNode::<i32, i32>::decode_v1_unverified(&bad_child_count),
         Err("Child count does not match nodemap")
     );
 
     let mut truncated = encoded.clone();
     truncated.pop();
     assert_eq!(
-        PersistedInternalNode::<i32, i32>::decode_v1(&truncated),
+        PersistedInternalNode::<i32, i32>::decode_v1_unverified(&truncated),
         Err("Buffer too short for child hashes")
     );
 }
@@ -373,7 +374,7 @@ fn test_decode_v1_rejects_overlapping_datamap_nodemap() {
     encoded[5] |= 0x02;
 
     assert_eq!(
-        PersistedInternalNode::<i32, i32>::decode_v1(&encoded),
+        PersistedInternalNode::<i32, i32>::decode_v1_unverified(&encoded),
         Err("Datamap and nodemap overlap: node is corrupt")
     );
 }
@@ -5228,6 +5229,8 @@ fn test_persist_chain_coverage() {
 
 #[test]
 fn test_persist_chain_refcount_closure_with_retirement() {
+    use crate::hamt::gc::RefcountTable;
+
     let key = b"prop_refcount_closure_key";
     let prev_root =
         build_hamt(key, (0_u32..10_u32).map(|i| (i, u64::from(i)))).expect("build root");

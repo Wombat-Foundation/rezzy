@@ -4,11 +4,9 @@
 //! - `hash`: keyed structural hashing for subtree identity
 //! - `codec`: dense on-disk encoding for persisted internal nodes
 //! - `delta`: subtree differencing for set isolation
-//! - `audit`: multi-root reachability audit for storage GC (one-time
-//!   bootstrap / verification sweeps -- see `gc` for the incremental path)
-//! - `gc`: incremental refcount-based GC bookkeeping, fed by `delta`'s
-//!   `NodeHashDelta` -- the replacement for periodic `audit` sweeps in the
-//!   common case (see `gc`'s module docs for why)
+//! - `audit`: multi-root reachability audit for storage GC
+//! - `gc`: experimental incremental refcount bookkeeping for integrations
+//!   with a strictly linear root history (behind `unstable-refcount-gc`)
 //! - `tests`: regression coverage for the generic HAMT core
 //!
 //! # Release notes
@@ -32,6 +30,7 @@ use core::{
 pub mod audit;
 pub mod codec;
 pub mod delta;
+#[cfg(any(test, feature = "unstable-refcount-gc"))]
 pub mod gc;
 pub mod hash;
 
@@ -50,6 +49,7 @@ pub use delta::{
     diff_hamt_nodes, diff_node_hashes, isolate_delta, reachable_node_hashes,
     walk_reachable_node_hashes, Delta, DeltaResult, HamtTraversalError, NodeHashDelta,
 };
+#[cfg(feature = "unstable-refcount-gc")]
 pub use gc::{RefcountTable, RefcountUnderflow};
 pub use hash::{
     state_group_id_from_lthash, RootHandle, StateGroupId, StructuralHash, HAMT_CODEC_VERSION_V1,
@@ -168,16 +168,16 @@ impl<K, V> HamtNode<K, V> {
         for (k, v) in leaves {
             let mut leaf_mac = StructuralHashBuilder::new(key);
             k.hash(&mut leaf_mac);
-            mac.write(&leaf_mac.finish());
+            mac.write(&leaf_mac.finalize());
 
             let mut leaf_mac = StructuralHashBuilder::new(key);
             v.hash(&mut leaf_mac);
-            mac.write(&leaf_mac.finish());
+            mac.write(&leaf_mac.finalize());
         }
         for child in children {
             mac.write(&child.structural_hash());
         }
-        mac.finish()
+        mac.finalize()
     }
 
     /// Looks up a key in a fully materialized HAMT.
@@ -570,7 +570,7 @@ impl core::error::Error for HamtBuildError {}
 fn key_path_hash<K: Hash + ?Sized>(structural_key: &[u8], key: &K) -> StructuralHash {
     let mut hasher = StructuralHashBuilder::new(structural_key);
     key.hash(&mut hasher);
-    hasher.finish()
+    hasher.finalize()
 }
 
 fn map_index(bitmap: u32, slot: usize) -> usize {
@@ -1940,7 +1940,7 @@ where
         crate::HashMap::default();
 
     for &(expected_hash, node_bytes, depth, target_keys) in nodes_and_keys {
-        let node = PersistedInternalNode::<K, V>::decode_v1(node_bytes)
+        let node = PersistedInternalNode::<K, V>::decode_v1_unverified(node_bytes)
             .map_err(DescendError::Decode)?
             .into_hamt_node_verified(structural_key, expected_hash)
             .map_err(|_| {

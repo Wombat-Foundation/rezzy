@@ -79,7 +79,7 @@ impl StructuralHashBuilder {
         Self(hasher)
     }
 
-    pub(crate) fn finish(self) -> StructuralHash {
+    pub(crate) fn finalize(self) -> StructuralHash {
         let result = self.0.finalize();
         let mut out = [0_u8; 16];
         out.copy_from_slice(&result[..16]);

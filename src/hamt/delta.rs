@@ -279,7 +279,7 @@ pub struct NodeHashDelta {
 /// Returns the internal-node hash delta for one path-copying mutation.
 /// `new_node_hashes` are incremented when `root_b` is persisted;
 /// `superseded_node_hashes` are decremented only when `root_a` is retired.
-/// See [`RefcountTable`](super::gc::RefcountTable).
+/// See the optional `unstable-refcount-gc` integration.
 ///
 /// Pairwise retirement is safe only for a linear root history. If `root_a`
 /// has multiple live descendants, use [`walk_reachable_node_hashes`] across

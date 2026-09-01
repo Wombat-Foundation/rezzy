@@ -117,6 +117,10 @@ mimalloc = ["dep:mimalloc"]
 # Compatibility alias: the `hashing` feature was removed, but downstream
 # manifests that request `rezzy/hashing` must still resolve.
 hashing = []
+# Experimental incremental GC is only sound for a strict linear root history;
+# normal Matrix state-group lifetimes branch. Opt in only with an integration
+# that enforces that precondition.
+unstable-refcount-gc = []
 
 [dependencies]
 anyhow = { version = "1.0", optional = true }
