@@ -38,11 +38,6 @@ use crate::{
 };
 use alloc::vec::Vec;
 
-/// CDO is an optional precedence overlay, never a reason to make resolution
-/// unbounded. If a relationship cannot be established within this budget, the
-/// normal state-resolution rules decide it.
-const MAX_CDO_CAUSAL_WALK: usize = 4_096;
-
 /// Returns whether `possible_ancestor` is reachable from `child` through the
 /// event DAG.  This deliberately uses graph edges, never timestamps or depth:
 /// those fields cannot establish an authoritative chronology.
@@ -60,12 +55,7 @@ where
     let ancestor_depth = events
         .get_event(possible_ancestor)
         .map_or(0, LeanEvent::depth);
-    let mut examined: usize = 0;
     while let Some(id) = pending.pop() {
-        examined = examined.saturating_add(1);
-        if examined > MAX_CDO_CAUSAL_WALK {
-            return false;
-        }
         if !visited.insert(id.clone()) {
             continue;
         }
@@ -73,7 +63,7 @@ where
             return true;
         }
         if let Some(event) = events.get_event(&id) {
-            if event.depth() < ancestor_depth {
+            if event.depth() <= ancestor_depth {
                 continue;
             }
             pending.extend(event.prev_events.iter().cloned());
@@ -152,12 +142,7 @@ where
         let mut pending = alloc::vec![grant.event_id.clone()];
         let mut visited = alloc::collections::BTreeSet::new();
         let mut active_witness = None;
-        let mut examined: usize = 0;
         while let Some(id) = pending.pop() {
-            examined = examined.saturating_add(1);
-            if examined > MAX_CDO_CAUSAL_WALK {
-                return None;
-            }
             if !visited.insert(id.clone()) {
                 continue;
             }
