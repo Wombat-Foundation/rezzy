@@ -2,6 +2,62 @@
 09/01/2026
 ##############################
 
+• I’ll triage these against current HEAD before treating any reviewer claim as actionable; several
+  conflict with the established V3 routing/panic boundary, so they need code-level verification.
+
+• Ran 3 commands · ctrl + t to view transcript
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• This review mix is better than the earlier one, but it’s not 10 independent bugs.
+
+  Clearly valid/actionable:
+
+  - The delta resolver’s .expect(...) disagrees with its non-delta counterpart’s graceful skip.
+    Small, safe fix.
+
+  - compare_bench.py trusts parsed JSON to be dict[str, finite number]; malformed baselines can
+    raise or make invalid comparisons. Valid hardening.
+
+  - Docs workflow concerns are legitimate operational/security concerns: persist-credentials: false
+    is prudent; shared deployment cancellation and stale files need an intentional publication
+    policy.
+
+  Already addressed / overstated:
+
+  - V3 admission already rejects rejected events through check_auth; soft-failed events
+    intentionally participate in Matrix state resolution, so blanket rejection would be wrong.
+
+  - V3 already flows through is_v2_1_plus() and maps to v12-level checks; the claimed skipped v12
+    rules does not appear valid.
+
+  - NutraCdo is already included in strict-number and v11-redaction handling.
+  - The legacy iterative V3 panic remains a documented routing/precondition guard, not peer-
+    controlled input—consistent with the earlier conclusion.
+
+  Needs a little more design review before changing:
+
+  - Non-string room_version is potentially real, but get_room_version() -> Option<&str>
+    intentionally collapses “missing” and “wrong type”; fixing it needs validation at the JSON/
+    content boundary, not a one-line auth change.
+
+  - Legacy generic sorting accepting V3 is worth tightening, but a public API error-model decision
+    rather than a quick resolver patch.
+
+  - The unconflicted-ban sort_context claim needs a concrete reproducer; its proposed fix changes
+    lifetimes/data ownership across the resolver.
+
+  - The docs Pages-source complaint depends on repository Pages configuration, which workflow code
+    alone cannot establish.
+
+  I’d take the delta lookup and benchmark-baseline validation next, then decide the docs deployment
+  policy separately.
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
 Committed as 2cb415a. Where this landed relative to your two asks:
 
 "Generalize to any equal PL — PL 50 mods, PL 30 mods, can't fuck over your equals" — done, as PromotionScope::AnyAuthorizedSender. Any sender whose branch-local PL dominates the level they're granting can now issue a certified grant that survives a concurrent backdated kick, not just the creator. It's opt-in (CreatorOnly stays the default) because it has a real trade-off: a peer can now also shield another peer's target, not just protect their own promotions — that's documented on the enum itself.
