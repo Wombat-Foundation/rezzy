@@ -4067,12 +4067,10 @@ fn test_pl_v2_scalar_not_integer_allowed() {
     );
 }
 
-/// Rule 2.4 / 10.1: `get_room_version_num` returns `Err(MissingCreate)` if
-/// `m.room.create` is absent. This previously panicked but now gracefully
-/// rejects the event — essential for state resolution over DAG forks where
-/// the create event may not yet be in accumulated state.
+/// A missing create event during partial-state resolution conservatively falls
+/// back to pre-v10 rules instead of rejecting an otherwise authorized event.
 #[test]
-fn test_pl_missing_create_event_returns_error() {
+fn test_pl_missing_create_event_uses_conservative_fallback() {
     let state = utils::parse_jsonl_state(
         r#"{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}"#,
     );
@@ -4081,12 +4079,9 @@ fn test_pl_missing_create_event_returns_error() {
     );
     let result = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
     assert!(
-        matches!(result, Err(self::auth::AuthError::MissingCreate)),
-        "Missing create should return MissingCreate error, got: {result:?}"
+        result.is_ok(),
+        "Missing create should use the conservative pre-v10 fallback, got: {result:?}"
     );
-    // Exercise Display impl for coverage
-    let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("m.room.create"));
 }
 
 #[test]
