@@ -270,7 +270,7 @@ fn assert_benign_convergence(jsonl_filename: &str) -> (ResolvedStateMap, EventMa
 /// Keep one independently reported test per resolution version. Rust's
 /// built-in test framework has no parameter decorator; this macro is the
 /// dependency-free equivalent of pytest parametrization.
-fn assert_dueling_admins_backdated_kick_xfail(version: StateResVersion) {
+fn assert_dueling_admins_backdated_kick(version: StateResVersion) {
     let events = utils::parse_jsonl_events(
         r#"
         {"event_id":"$create","type":"m.room.create","state_key":"","sender":"@a:example.com","origin_server_ts":0,"content":{"creator":"@a:example.com","room_version":"10"}}
@@ -326,29 +326,26 @@ fn assert_dueling_admins_backdated_kick_xfail(version: StateResVersion) {
     );
 }
 
-macro_rules! dueling_admins_xfail_test {
+macro_rules! dueling_admins_test {
     ($name:ident, $version:expr) => {
         #[test]
         fn $name() {
-            assert_dueling_admins_backdated_kick_xfail($version);
+            assert_dueling_admins_backdated_kick($version);
         }
     };
 }
 
-dueling_admins_xfail_test!(
-    test_xfail_dueling_admins_backdated_kick_v2,
-    StateResVersion::V2
-);
-dueling_admins_xfail_test!(
-    test_xfail_dueling_admins_backdated_kick_v2_1,
+dueling_admins_test!(test_dueling_admins_backdated_kick_v2, StateResVersion::V2);
+dueling_admins_test!(
+    test_dueling_admins_backdated_kick_v2_1,
     StateResVersion::V2_1
 );
-dueling_admins_xfail_test!(
-    test_xfail_dueling_admins_backdated_kick_v2_1_1,
+dueling_admins_test!(
+    test_dueling_admins_backdated_kick_v2_1_1,
     StateResVersion::V2_1_1
 );
-dueling_admins_xfail_test!(
-    test_xfail_dueling_admins_backdated_kick_v2_2,
+dueling_admins_test!(
+    test_dueling_admins_backdated_kick_v2_2,
     StateResVersion::V2_2
 );
 
