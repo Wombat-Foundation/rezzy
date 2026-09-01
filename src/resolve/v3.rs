@@ -871,6 +871,43 @@ mod tests {
     }
 
     #[test]
+    fn causal_cycle_fails_closed_instead_of_panicking() {
+        // `$a` and `$b` conflict on the same state key, and each is recorded
+        // as causally preceding the other. No candidate is maximal, so
+        // `select_round` must fail closed via `IncompleteAuthContext` rather
+        // than panicking on an empty `max_by` over `maximal`.
+        let a = topic("$a");
+        let b = topic("$b");
+        let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
+        events.insert(a.event_id.clone(), a);
+        events.insert(b.event_id.clone(), b);
+        let mut admission = TestAdmission::default();
+        admission
+            .admissions
+            .insert("$a".into(), certificate(V3Rank::default()));
+        admission
+            .admissions
+            .insert("$b".into(), certificate(V3Rank::default()));
+        admission.causal.insert(("$a".into(), "$b".into()));
+        admission.causal.insert(("$b".into(), "$a".into()));
+
+        let mut expected = alloc::vec![String::from("$a"), String::from("$b")];
+        expected.sort();
+        let err = resolve_v3(&SharedState::new(), &events, &admission).unwrap_err();
+        match err {
+            V3ResolveError::IncompleteAuthContext {
+                mut missing_event_ids,
+            } => {
+                missing_event_ids.sort();
+                assert_eq!(missing_event_ids, expected);
+            }
+            other @ V3ResolveError::MissingVerifiedAdmission { .. } => {
+                panic!("expected IncompleteAuthContext, got {other:?}");
+            }
+        }
+    }
+
+    #[test]
     fn missing_certificate_fails_closed() {
         let event = topic("$unverified");
         let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
@@ -1073,6 +1110,68 @@ mod tests {
             ..grant
         };
         assert!(certify_creator_grant(&mismatched_witness, &mismatched_branch).is_none());
+    }
+
+    #[test]
+    fn creator_grant_certifies_via_users_default_fallback() {
+        // Neither the prior nor the grant power-levels event lists
+        // `@b:example.com` explicitly in `users`; both must fall back to
+        // `users_default` (10 -> 100), matching the identical fallback in
+        // `auth::user::get_sender_power_level`.
+        let create: LeanEvent<String, Value, String> = LeanEvent {
+            event_id: "$create".into(),
+            event_type: M_ROOM_CREATE.into(),
+            state_key: Some(String::new()),
+            sender: "@creator:example.com".into(),
+            content: serde_json::json!({ "creator": "@creator:example.com" }),
+            ..Default::default()
+        };
+        let b_join = LeanEvent {
+            event_id: "$b_join".into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some("@b:example.com".into()),
+            sender: "@b:example.com".into(),
+            content: serde_json::json!({ "membership": MEM_JOIN }),
+            ..Default::default()
+        };
+        let prior_power = LeanEvent {
+            event_id: "$prior_power".into(),
+            event_type: M_ROOM_POWER_LEVELS.into(),
+            state_key: Some(String::new()),
+            sender: "@creator:example.com".into(),
+            content: serde_json::json!({ "users_default": 10 }),
+            ..Default::default()
+        };
+        let grant = LeanEvent {
+            event_id: "$grant".into(),
+            event_type: M_ROOM_POWER_LEVELS.into(),
+            state_key: Some(String::new()),
+            sender: "@creator:example.com".into(),
+            content: serde_json::json!({
+                "users_default": 100,
+                "tk.nutra.cdo": { "active_member": "$b_join" },
+            }),
+            ..Default::default()
+        };
+        let mut branch_auth = crate::auth::RoomState::new();
+        branch_auth.insert((M_ROOM_CREATE.into(), String::new()), create);
+        branch_auth.insert((M_ROOM_MEMBER.into(), "@b:example.com".into()), b_join);
+        branch_auth.insert((M_ROOM_POWER_LEVELS.into(), String::new()), prior_power);
+
+        let certified = certify_creator_grant(&grant, &branch_auth).unwrap();
+        assert_eq!(certified.target(), &String::from("@b:example.com"));
+        assert_eq!(certified.target_power_level(), 100);
+
+        // A grant that only matches (not exceeds) the users_default-derived
+        // prior level must not certify.
+        let no_increase = LeanEvent {
+            content: serde_json::json!({
+                "users_default": 10,
+                "tk.nutra.cdo": { "active_member": "$b_join" },
+            }),
+            ..grant
+        };
+        assert!(certify_creator_grant(&no_increase, &branch_auth).is_none());
     }
 
     #[test]
