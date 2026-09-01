@@ -7,6 +7,7 @@ pub mod multi;
 pub mod reachability;
 pub mod sorting;
 pub mod subgraph;
+pub mod v3;
 
 // Deliberately not `pub use cdo::*;`: the CDO module is retired/unsound
 // legacy code (see its module docs) kept only for its tests and as a
