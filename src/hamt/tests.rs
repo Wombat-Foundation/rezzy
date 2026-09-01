@@ -3,7 +3,7 @@ use crate::hamt::codec::PersistedInternalNode;
 use crate::hamt::delta::{isolate_delta, HamtTraversalError};
 use crate::hamt::{build_hamt, build_hamt_root_handle, HamtBuildError};
 use crate::state::LtHash;
-use alloc::vec;
+use alloc::{boxed::Box, vec};
 use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 #[cfg(feature = "std")]
@@ -21,6 +21,17 @@ impl Hash for VariableBytes {
     }
 }
 
+impl HamtCodec for VariableBytes {
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        self.0.to_vec().encode_hamt(out);
+    }
+
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        let bytes = Vec::<u8>::decode_hamt(input, cursor)?;
+        Ok(Self(Box::leak(bytes.into_boxed_slice())))
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct NonCloneKey(u64);
 
@@ -33,6 +44,16 @@ impl Hash for NonCloneKey {
 impl Borrow<u64> for NonCloneKey {
     fn borrow(&self) -> &u64 {
         &self.0
+    }
+}
+
+impl HamtCodec for NonCloneKey {
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        self.0.encode_hamt(out);
+    }
+
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        u64::decode_hamt(input, cursor).map(Self)
     }
 }
 
@@ -277,6 +298,32 @@ fn test_persisted_internal_node_round_trip() {
         PersistedInternalNode::decode_v1_unverified(&encoded).expect("round-trip must decode");
 
     assert_eq!(decoded, node);
+}
+
+#[test]
+fn test_structural_hash_commits_to_canonical_persisted_bytes() {
+    let structural_key = b"canonical_persisted_bytes";
+    let child_hash = [0x42; 32];
+    let persisted = PersistedInternalNode {
+        datamap: 0b01,
+        nodemap: 0b10,
+        leaves: vec![(7_u32, 11_u64)],
+        child_hashes: vec![child_hash],
+    };
+    let children = vec![NodeRef::Lazy(child_hash)];
+
+    let actual = HamtNode::compute_structural_hash(
+        structural_key,
+        persisted.datamap,
+        persisted.nodemap,
+        &persisted.leaves,
+        &children,
+    );
+    let mut expected = super::hash::StructuralHashBuilder::new(structural_key);
+    expected.write(STRUCTURAL_HASH_DOMAIN_V1);
+    expected.write(&persisted.encode_v1());
+
+    assert_eq!(actual, expected.finalize());
 }
 
 #[test]
@@ -1638,8 +1685,28 @@ struct InMemoryOnlyKey(u64);
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct InMemoryOnlyValue(u64);
 
+impl HamtCodec for InMemoryOnlyKey {
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        self.0.encode_hamt(out);
+    }
+
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        u64::decode_hamt(input, cursor).map(Self)
+    }
+}
+
+impl HamtCodec for InMemoryOnlyValue {
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        self.0.encode_hamt(out);
+    }
+
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        u64::decode_hamt(input, cursor).map(Self)
+    }
+}
+
 #[test]
-fn test_in_memory_mutation_does_not_require_hamt_codec() {
+fn test_in_memory_mutation_with_hamt_codec() {
     let structural_key = b"in_memory_only_mutation";
     let root = build_hamt(
         structural_key,
@@ -1658,11 +1725,11 @@ fn test_in_memory_mutation_does_not_require_hamt_codec() {
         InMemoryOnlyValue(20),
         &mut no_resolver,
     )
-    .expect("insert without persistence codec");
+    .expect("insert with persistence codec");
     assert_eq!(displaced, None);
 
     let (root, removed) = remove(&root, structural_key, &InMemoryOnlyKey(1), &mut no_resolver)
-        .expect("remove without persistence codec");
+        .expect("remove with persistence codec");
     assert_eq!(removed, Some(InMemoryOnlyValue(10)));
     assert_eq!(
         root.get(structural_key, &InMemoryOnlyKey(2)),

@@ -106,6 +106,8 @@ pub struct ChainStep<K, V> {
 
 use hash::StructuralHashBuilder;
 
+const STRUCTURAL_HASH_DOMAIN_V1: &[u8] = b"rezzy:hamt:structural-hash:v1\0";
+
 const HAMT_BRANCH_BITS: usize = 5;
 const HAMT_BRANCH_FACTOR: usize = 1 << HAMT_BRANCH_BITS;
 const HAMT_BRANCH_MASK: u16 = 0b1_1111;
@@ -158,24 +160,18 @@ impl<K, V> HamtNode<K, V> {
         children: &[NodeRef<K, V>],
     ) -> StructuralHash
     where
-        K: Hash,
-        V: Hash,
+        K: HamtCodec,
+        V: HamtCodec,
     {
+        let child_hashes = children
+            .iter()
+            .map(NodeRef::structural_hash)
+            .collect::<Vec<_>>();
+        let canonical_bytes =
+            PersistedInternalNode::encode_v1_parts(datamap, nodemap, leaves, &child_hashes);
         let mut mac = StructuralHashBuilder::new(key);
-        mac.write(&datamap.to_le_bytes());
-        mac.write(&nodemap.to_le_bytes());
-        for (k, v) in leaves {
-            let mut leaf_mac = StructuralHashBuilder::new(key);
-            k.hash(&mut leaf_mac);
-            mac.write(&leaf_mac.finalize());
-
-            let mut leaf_mac = StructuralHashBuilder::new(key);
-            v.hash(&mut leaf_mac);
-            mac.write(&leaf_mac.finalize());
-        }
-        for child in children {
-            mac.write(&child.structural_hash());
-        }
+        mac.write(STRUCTURAL_HASH_DOMAIN_V1);
+        mac.write(&canonical_bytes);
         mac.finalize()
     }
 
@@ -655,8 +651,8 @@ fn build_node<K, V>(
     depth: usize,
 ) -> Result<Arc<HamtNode<K, V>>, HamtBuildError>
 where
-    K: Hash,
-    V: Hash,
+    K: Hash + HamtCodec,
+    V: HamtCodec,
 {
     if depth >= HAMT_MAX_DEPTH {
         return Err(HamtBuildError::HashCollision {
@@ -731,8 +727,8 @@ pub fn build_hamt<K, V, I>(
     entries: I,
 ) -> Result<Arc<HamtNode<K, V>>, HamtBuildError>
 where
-    K: Hash,
-    V: Hash,
+    K: Hash + HamtCodec,
+    V: HamtCodec,
     I: IntoIterator<Item = (K, V)>,
 {
     build_hamt_with_key_hash(structural_key, entries, |key| {
@@ -769,8 +765,8 @@ pub fn build_hamt_with_key_hash<K, V, I, F>(
     mut key_hash: F,
 ) -> Result<Arc<HamtNode<K, V>>, HamtBuildError>
 where
-    K: Hash,
-    V: Hash,
+    K: Hash + HamtCodec,
+    V: HamtCodec,
     I: IntoIterator<Item = (K, V)>,
     F: FnMut(&K) -> StructuralHash,
 {
@@ -800,8 +796,8 @@ pub fn build_hamt_root_handle<K, V, I>(
     entries: I,
 ) -> Result<(RootHandle, Arc<HamtNode<K, V>>), HamtBuildError>
 where
-    K: Hash,
-    V: Hash,
+    K: Hash + HamtCodec,
+    V: HamtCodec,
     I: IntoIterator<Item = (K, V)>,
 {
     let root = build_hamt(structural_key, entries)?;
@@ -888,8 +884,8 @@ fn rebuild_node<K, V>(
     children: Vec<NodeRef<K, V>>,
 ) -> Arc<HamtNode<K, V>>
 where
-    K: Hash,
-    V: Hash,
+    K: Hash + HamtCodec,
+    V: HamtCodec,
 {
     let structural_hash =
         HamtNode::compute_structural_hash(structural_key, datamap, nodemap, &leaves, &children);
@@ -927,8 +923,8 @@ fn insert_node<K, V, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     let mut key_hash = |k: &K| key_path_hash(structural_key, k);
@@ -966,8 +962,8 @@ fn insert_node_with_ctx<K, V, KeyHash, F, E>(
     ctx: &mut InsertCtx<'_, K, V, KeyHash, F>,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -1036,8 +1032,8 @@ fn insert_into_leaf_slot<K, V, KeyHash, F, E>(
     ctx: &mut InsertCtx<'_, K, V, KeyHash, F>,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -1087,8 +1083,8 @@ fn insert_into_child_slot<K, V, KeyHash, F, E>(
     ctx: &mut InsertCtx<'_, K, V, KeyHash, F>,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -1143,8 +1139,8 @@ pub fn insert<K, V, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     let path_hash = key_path_hash(structural_key, &key);
@@ -1175,8 +1171,8 @@ pub fn insert_with_key_hash<K, V, KeyHash, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -1216,8 +1212,8 @@ fn finalize_after_removal<K, V>(
     children: Vec<NodeRef<K, V>>,
 ) -> RemoveOutcome<K, V>
 where
-    K: Hash,
-    V: Hash,
+    K: Hash + HamtCodec,
+    V: HamtCodec,
 {
     if nodemap == 0 {
         if leaves.is_empty() {
@@ -1270,8 +1266,8 @@ pub fn remove<K, V, Q, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Borrow<Q> + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Borrow<Q> + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     Q: Hash + Eq + ?Sized,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -1302,8 +1298,8 @@ fn remove_node_with_ctx<K, V, Q, F, E>(
     ctx: &mut RemoveCtx<'_, K, V, F>,
 ) -> RemoveStepResult<K, V, E>
 where
-    K: Hash + Eq + Borrow<Q> + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Borrow<Q> + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     Q: Eq + ?Sized,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -1412,8 +1408,8 @@ fn finalize_remove_root<K, V, F>(
     sink: &mut MutationSink<'_, K, V>,
 ) -> Arc<HamtNode<K, V>>
 where
-    K: Hash + Clone,
-    V: Hash + Clone,
+    K: Hash + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     F: FnMut(&K) -> usize,
 {
     match outcome {
@@ -1458,8 +1454,8 @@ pub fn remove_with_key_hash<K, V, KeyHash, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {

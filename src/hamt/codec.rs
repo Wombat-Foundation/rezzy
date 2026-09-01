@@ -1,9 +1,8 @@
 //! Dense binary serialization and deserialization for persisted HAMT nodes.
 
+use super::hash::StructuralHash;
 use alloc::{string::String, vec::Vec};
 use core::hash::Hash;
-
-use super::hash::StructuralHash;
 
 /// Custom binary codec for HAMT leaf payloads.
 ///
@@ -208,6 +207,59 @@ where
     K: HamtCodec,
     V: HamtCodec,
 {
+    /// Encodes the canonical v1 representation shared by persistence and
+    /// structural hashing. Keeping this in one place ensures a node's
+    /// storage key commits to precisely the bytes stored under that key.
+    pub(crate) fn encode_v1_parts(
+        datamap: u32,
+        nodemap: u32,
+        leaves: &[(K, V)],
+        child_hashes: &[StructuralHash],
+    ) -> Vec<u8> {
+        let leaf_slots = datamap.count_ones() as usize;
+        let child_slots = nodemap.count_ones() as usize;
+        assert_eq!(
+            leaves.len(),
+            leaf_slots,
+            "leaf count must match datamap bits"
+        );
+        assert_eq!(
+            child_hashes.len(),
+            child_slots,
+            "child count must match nodemap bits"
+        );
+        assert_eq!(datamap & nodemap, 0, "datamap and nodemap must not overlap");
+
+        let mut body = Vec::new();
+        for (key, value) in leaves {
+            key.encode_hamt(&mut body);
+            value.encode_hamt(&mut body);
+        }
+        for hash in child_hashes {
+            body.extend_from_slice(hash);
+        }
+
+        let leaf_count = u32::try_from(leaves.len()).expect("too many leaves for v1 encoding");
+        let child_count =
+            u32::try_from(child_hashes.len()).expect("too many child hashes for v1 encoding");
+        let capacity = 1_usize
+            .checked_add(4)
+            .and_then(|value| value.checked_add(4))
+            .and_then(|value| value.checked_add(4))
+            .and_then(|value| value.checked_add(4))
+            .and_then(|value| value.checked_add(body.len()))
+            .expect("encoded node size overflows usize");
+
+        let mut buf = Vec::with_capacity(capacity);
+        buf.push(0x01);
+        buf.extend_from_slice(&datamap.to_le_bytes());
+        buf.extend_from_slice(&nodemap.to_le_bytes());
+        buf.extend_from_slice(&leaf_count.to_le_bytes());
+        buf.extend_from_slice(&child_count.to_le_bytes());
+        buf.extend_from_slice(&body);
+        buf
+    }
+
     /// Encodes the node to a dense binary format.
     ///
     /// Layout:
@@ -224,52 +276,7 @@ where
     /// and `nodemap` overlap, or if the payloads would overflow `usize`.
     #[must_use]
     pub fn encode_v1(&self) -> Vec<u8> {
-        let leaf_slots = self.datamap.count_ones() as usize;
-        let child_slots = self.nodemap.count_ones() as usize;
-        assert_eq!(
-            self.leaves.len(),
-            leaf_slots,
-            "leaf count must match datamap bits"
-        );
-        assert_eq!(
-            self.child_hashes.len(),
-            child_slots,
-            "child count must match nodemap bits"
-        );
-        assert_eq!(
-            self.datamap & self.nodemap,
-            0,
-            "datamap and nodemap must not overlap"
-        );
-
-        let mut body = Vec::new();
-        for (key, value) in &self.leaves {
-            key.encode_hamt(&mut body);
-            value.encode_hamt(&mut body);
-        }
-        for hash in &self.child_hashes {
-            body.extend_from_slice(hash);
-        }
-
-        let leaf_count = u32::try_from(self.leaves.len()).expect("too many leaves for v1 encoding");
-        let child_count =
-            u32::try_from(self.child_hashes.len()).expect("too many child hashes for v1 encoding");
-        let capacity = 1_usize
-            .checked_add(4)
-            .and_then(|value| value.checked_add(4))
-            .and_then(|value| value.checked_add(4))
-            .and_then(|value| value.checked_add(4))
-            .and_then(|value| value.checked_add(body.len()))
-            .expect("encoded node size overflows usize");
-
-        let mut buf = Vec::with_capacity(capacity);
-        buf.push(0x01);
-        buf.extend_from_slice(&self.datamap.to_le_bytes());
-        buf.extend_from_slice(&self.nodemap.to_le_bytes());
-        buf.extend_from_slice(&leaf_count.to_le_bytes());
-        buf.extend_from_slice(&child_count.to_le_bytes());
-        buf.extend_from_slice(&body);
-        buf
+        Self::encode_v1_parts(self.datamap, self.nodemap, &self.leaves, &self.child_hashes)
     }
 
     /// Decodes the node from a dense binary format.
