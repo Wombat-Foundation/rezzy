@@ -22,6 +22,7 @@ fn hash_value<T: Hash>(value: &T) -> u64 {
 const CUCKOO_BUCKET: usize = 4;
 const CUCKOO_MAX_KICKS: usize = 500;
 const CUCKOO_STASH: usize = 8;
+const FPR_DENOMINATOR: u64 = 1_000_000;
 
 pub struct CuckooFilter {
     /// Each bucket stores CUCKOO_BUCKET packed u16 fingerprints.
@@ -35,9 +36,16 @@ pub struct CuckooFilter {
 }
 
 impl CuckooFilter {
-    pub fn with_fpr(capacity: usize, target_fpr: f64) -> Self {
-        let fp_bits = fingerprint_bits_for_fpr(target_fpr);
-        let min_buckets = (capacity as f64 / CUCKOO_BUCKET as f64 * 1.05).ceil() as u64;
+    pub fn with_fpr_ppm(capacity: usize, target_fpr_ppm: u32) -> Self {
+        assert!(target_fpr_ppm > 0 && u64::from(target_fpr_ppm) < FPR_DENOMINATOR);
+        let fp_bits = fingerprint_bits_for_fpr_ppm(target_fpr_ppm);
+        let min_buckets = u64::try_from(
+            capacity
+                .div_ceil(CUCKOO_BUCKET)
+                .saturating_mul(21)
+                .div_ceil(20),
+        )
+        .expect("benchmark capacity fits u64");
         let bucket_count = min_buckets.next_power_of_two().max(1);
         let bucket_mask = bucket_count - 1;
         Self {
@@ -134,14 +142,6 @@ impl CuckooFilter {
         self.stash[..self.stash_len].contains(&fp)
     }
 
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-
     /// Wire cost in bytes: packed buckets + stash.
     pub fn byte_len(&self) -> usize {
         let bucket_bytes = self.buckets.len() * CUCKOO_BUCKET * 2; // u16 = 2 bytes
@@ -157,16 +157,21 @@ impl CuckooFilter {
             }
         }
         bytes.extend_from_slice(&(self.stash_len as u16).to_le_bytes());
-        for i in 0..CUCKOO_STASH {
-            bytes.extend_from_slice(&self.stash[i].to_le_bytes());
+        for fingerprint in &self.stash {
+            bytes.extend_from_slice(&fingerprint.to_le_bytes());
         }
         bytes
     }
 }
 
-fn fingerprint_bits_for_fpr(target_fpr: f64) -> u32 {
-    let bits = (4.0_f64 / target_fpr).ln() / std::f64::consts::LN_2;
-    (bits.ceil() as u32).max(8).min(16)
+fn fingerprint_bits_for_fpr_ppm(target_fpr_ppm: u32) -> u32 {
+    for bits in 8..=16 {
+        let fingerprints = 1_u64 << bits;
+        if 4 * FPR_DENOMINATOR <= u64::from(target_fpr_ppm) * fingerprints {
+            return bits;
+        }
+    }
+    16
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +191,7 @@ pub struct CountingQuotientFilter {
 
 impl CountingQuotientFilter {
     pub fn with_remainder_bits(capacity: usize, remainder_bits: u32) -> Self {
-        let slots = ((capacity as f64 * 1.1).ceil() as usize).max(64);
+        let slots = capacity.saturating_mul(11).div_ceil(10).max(64);
         let words = slots.div_ceil(64);
         Self {
             rem: vec![0; slots],
@@ -252,10 +257,6 @@ impl CountingQuotientFilter {
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
     /// Wire cost in bytes: rem (4 bytes each) + occupied (1 bit each, packed).
     pub fn byte_len(&self) -> usize {
         self.rem.len() * 4 + self.occupied.len() * 8
@@ -275,13 +276,15 @@ pub struct BloomFilter {
 }
 
 impl BloomFilter {
-    pub fn with_fpr(capacity: usize, target_fpr: f64) -> Self {
-        let n = capacity as f64;
-        let p = target_fpr;
-        let ln2 = std::f64::consts::LN_2;
-        let m = -(n * p.ln()) / (ln2 * ln2);
-        let num_bits = (m.ceil() as u64).max(64);
-        let k = ((num_bits as f64 / n) * ln2).ceil() as u32;
+    pub fn with_fpr_ppm(capacity: usize, target_fpr_ppm: u32) -> Self {
+        assert!(capacity > 0);
+        assert!(target_fpr_ppm > 0 && u64::from(target_fpr_ppm) < FPR_DENOMINATOR);
+        let bits_per_element = bloom_bits_per_element_ppm(target_fpr_ppm);
+        let num_bits = u64::try_from(capacity)
+            .expect("benchmark capacity fits u64")
+            .saturating_mul(u64::try_from(bits_per_element).expect("bounded bit count"))
+            .max(64);
+        let k = u32::try_from((bits_per_element * 693 + 500) / 1_000).expect("bounded hash count");
         let num_words = num_bits.div_ceil(64);
         Self {
             bits: vec![0; num_words as usize],
@@ -330,17 +333,20 @@ impl BloomFilter {
         true
     }
 
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-
     pub fn byte_len(&self) -> usize {
         self.bits.len() * 8
     }
+}
+
+fn bloom_bits_per_element_ppm(target_fpr_ppm: u32) -> usize {
+    let mut estimated_fpr_ppm = FPR_DENOMINATOR;
+    for bits in 1..=64 {
+        estimated_fpr_ppm = estimated_fpr_ppm.saturating_mul(6_185) / 10_000;
+        if estimated_fpr_ppm <= u64::from(target_fpr_ppm) {
+            return bits;
+        }
+    }
+    64
 }
 
 #[cfg(test)]
@@ -348,7 +354,7 @@ mod tests {
 
     #[test]
     fn cuckoo_insert_and_contains() {
-        let mut f = CuckooFilter::with_fpr(100, 0.001);
+        let mut f = CuckooFilter::with_fpr_ppm(100, 1_000);
         for i in 0..80u64 {
             assert!(f.insert(&(i | 1)));
         }
@@ -370,7 +376,7 @@ mod tests {
 
     #[test]
     fn cuckoo_alt_index_is_involutive() {
-        let f = CuckooFilter::with_fpr(100, 0.001);
+        let f = CuckooFilter::with_fpr_ppm(100, 1_000);
         let fp: u16 = 42;
         for idx in 0..128 {
             let alt = f.alt_bucket(idx, fp);
@@ -381,7 +387,7 @@ mod tests {
 
     #[test]
     fn cuckoo_encode_roundtrips() {
-        let mut f = CuckooFilter::with_fpr(50, 0.01);
+        let mut f = CuckooFilter::with_fpr_ppm(50, 10_000);
         for i in 0..30u64 {
             f.insert(&(i | 1));
         }
@@ -405,7 +411,7 @@ mod tests {
 
     #[test]
     fn bloom_insert_and_contains() {
-        let mut f = BloomFilter::with_fpr(100, 0.001);
+        let mut f = BloomFilter::with_fpr_ppm(100, 1_000);
         for i in 0..80u64 {
             f.insert(&(i | 1));
         }

@@ -98,6 +98,35 @@ struct StrategyResult {
     resolved: bool,
 }
 
+struct FilterRoundContext<'a> {
+    local_h64: &'a [u64],
+    remote_h64: &'a [u64],
+    local_index: &'a H64Index<'a>,
+    remote_index: &'a H64Index<'a>,
+    decode_budget: usize,
+    filter_fpr_ppm: u32,
+}
+
+struct Comparison<'a> {
+    case_name: &'a str,
+    delta: usize,
+    latency_ms: u64,
+    budget: usize,
+    results: [&'a StrategyResult; 5],
+}
+
+type ScenarioGenerator = fn(&[ElementHash], usize) -> (Vec<ElementHash>, Vec<ElementHash>);
+
+fn fingerprint_bits_for_fpr_ppm(filter_fpr_ppm: u32) -> u32 {
+    assert!(filter_fpr_ppm > 0 && filter_fpr_ppm < 1_000_000);
+    for bits in 1..=32 {
+        if 1_000_000 <= u64::from(filter_fpr_ppm) * (1_u64 << bits) {
+            return bits;
+        }
+    }
+    32
+}
+
 // ---------------------------------------------------------------------------
 // Input generation
 // ---------------------------------------------------------------------------
@@ -157,14 +186,10 @@ fn generate_worst_case(base: &[ElementHash], delta: usize) -> (Vec<ElementHash>,
 ///
 /// Returns (decoded_roots, wire_bytes, cpu_time).
 /// Caller is responsible for adding wall time for the 2 RTTs.
+#[allow(clippy::too_many_lines)]
 fn simulate_filter_rounds(
-    local_h64: &[u64],
-    remote_h64: &[u64],
-    local_index: &H64Index<'_>,
-    remote_index: &H64Index<'_>,
+    context: &FilterRoundContext<'_>,
     overflow_requests: &[rezzy::BucketRequest],
-    decode_budget: usize,
-    filter_fpr: f64,
     filter_type: &str,
 ) -> (Vec<BucketDecodeSuccess>, usize, Duration) {
     let mut decoded = Vec::new();
@@ -180,16 +205,18 @@ fn simulate_filter_rounds(
     let mut filter_builds: Vec<(&rezzy::BucketRequest, Vec<u8>)> = Vec::new();
 
     for request in overflow_requests {
-        let remote_slice = match remote_index.bucket_range(request) {
-            Ok(r) => r,
-            Err(_) => continue,
+        let Ok(remote_slice) = context.remote_index.bucket_range(request) else {
+            continue;
         };
 
-        let remote_elements = &remote_h64[remote_slice];
+        let remote_elements = &context.remote_h64[remote_slice];
 
         match filter_type {
             "cuckoo" => {
-                let mut filter = CuckooFilter::with_fpr(remote_elements.len().max(1), filter_fpr);
+                let mut filter = CuckooFilter::with_fpr_ppm(
+                    remote_elements.len().max(1),
+                    context.filter_fpr_ppm,
+                );
                 for &val in remote_elements {
                     filter.insert(&val);
                 }
@@ -197,8 +224,7 @@ fn simulate_filter_rounds(
                 filter_builds.push((request, filter.encode()));
             }
             "cqf" => {
-                let remainder_bits =
-                    ((1.0 / filter_fpr).ln() / std::f64::consts::LN_2).ceil() as u32;
+                let remainder_bits = fingerprint_bits_for_fpr_ppm(context.filter_fpr_ppm);
                 let mut filter = CountingQuotientFilter::with_remainder_bits(
                     remote_elements.len().max(1),
                     remainder_bits,
@@ -210,7 +236,8 @@ fn simulate_filter_rounds(
                 filter_builds.push((request, Vec::new()));
             }
             "bloom" => {
-                let mut filter = BloomFilter::with_fpr(remote_elements.len().max(1), filter_fpr);
+                let mut filter =
+                    BloomFilter::with_fpr_ppm(remote_elements.len().max(1), context.filter_fpr_ppm);
                 for &val in remote_elements {
                     filter.insert(&val);
                 }
@@ -227,17 +254,15 @@ fn simulate_filter_rounds(
     let rtt2_start = Instant::now();
 
     for (request, _filter_bytes) in &filter_builds {
-        let remote_slice = match remote_index.bucket_range(request) {
-            Ok(r) => r,
-            Err(_) => continue,
+        let Ok(remote_slice) = context.remote_index.bucket_range(request) else {
+            continue;
         };
-        let local_slice = match local_index.bucket_range(request) {
-            Ok(r) => r,
-            Err(_) => continue,
+        let Ok(local_slice) = context.local_index.bucket_range(request) else {
+            continue;
         };
 
-        let remote_elements = &remote_h64[remote_slice];
-        let local_elements = &local_h64[local_slice];
+        let remote_elements = &context.remote_h64[remote_slice];
+        let local_elements = &context.local_h64[local_slice];
 
         let mut candidates: Vec<u64> = Vec::new();
         let mut receiver_only: Vec<u64> = Vec::new();
@@ -274,7 +299,7 @@ fn simulate_filter_rounds(
             }
             if let Ok(roots) = sketch.decode_elements_with_budget(
                 symmetric_diff.len().min(MAX_SKETCH_CAPACITY),
-                decode_budget,
+                context.decode_budget,
             ) {
                 decoded.push(BucketDecodeSuccess {
                     depth: request.depth,
@@ -294,13 +319,14 @@ fn simulate_filter_rounds(
 // End-to-end reconciliation simulation (per-strategy)
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_lines)]
 fn simulate_strategy(
     local_hashes: &[ElementHash],
     remote_hashes: &[ElementHash],
     strategy: &str,
     network_latency_ms: u64,
     decode_budget: usize,
-    filter_fpr: f64,
+    filter_fpr_ppm: u32,
 ) -> StrategyResult {
     let mut local = ResidentKernel::new();
     let mut remote = ResidentKernel::new();
@@ -433,16 +459,16 @@ fn simulate_strategy(
                         "bloom" => "bloom",
                         _ => unreachable!(),
                     };
-                    let (filter_decoded, filter_wire, filter_cpu) = simulate_filter_rounds(
-                        &local_h64,
-                        &remote_h64,
-                        &local_index,
-                        &remote_index,
-                        &overflow_requests,
+                    let context = FilterRoundContext {
+                        local_h64: &local_h64,
+                        remote_h64: &remote_h64,
+                        local_index: &local_index,
+                        remote_index: &remote_index,
                         decode_budget,
-                        filter_fpr,
-                        filter_type,
-                    );
+                        filter_fpr_ppm,
+                    };
+                    let (filter_decoded, filter_wire, filter_cpu) =
+                        simulate_filter_rounds(&context, &overflow_requests, filter_type);
                     total_wire += filter_wire;
                     total_cpu += filter_cpu;
                     // 2 RTTs for the filter protocol.
@@ -489,16 +515,16 @@ fn simulate_strategy(
                     .collect();
 
                 if !small_overflows.is_empty() {
-                    let (filter_decoded, filter_wire, filter_cpu) = simulate_filter_rounds(
-                        &local_h64,
-                        &remote_h64,
-                        &local_index,
-                        &remote_index,
-                        &small_overflows,
+                    let context = FilterRoundContext {
+                        local_h64: &local_h64,
+                        remote_h64: &remote_h64,
+                        local_index: &local_index,
+                        remote_index: &remote_index,
                         decode_budget,
-                        filter_fpr,
-                        "cuckoo",
-                    );
+                        filter_fpr_ppm,
+                    };
+                    let (filter_decoded, filter_wire, filter_cpu) =
+                        simulate_filter_rounds(&context, &small_overflows, "cuckoo");
                     total_wire += filter_wire;
                     total_cpu += filter_cpu;
                     total_wall += Duration::from_millis(network_latency_ms * 2);
@@ -555,17 +581,15 @@ fn simulate_strategy(
 // Comparison table printer
 // ---------------------------------------------------------------------------
 
-fn print_comparison(
-    case_name: &str,
-    delta: usize,
-    latency_ms: u64,
-    budget: usize,
-    sketch: &StrategyResult,
-    cuckoo: &StrategyResult,
-    cqf: &StrategyResult,
-    bloom: &StrategyResult,
-    hybrid: &StrategyResult,
-) {
+fn print_comparison(comparison: &Comparison<'_>) {
+    let [sketch, cuckoo, cqf, bloom, hybrid] = comparison.results;
+    let Comparison {
+        case_name,
+        delta,
+        latency_ms,
+        budget,
+        ..
+    } = comparison;
     let winner = if cuckoo.wall_ms < sketch.wall_ms
         && cuckoo.wall_ms < cqf.wall_ms
         && cuckoo.wall_ms < bloom.wall_ms
@@ -632,8 +656,8 @@ fn microbenchmarks() {
     for capacity in [1_000, 10_000, 100_000] {
         // --- Cuckoo ---
         let elapsed = measure(10, || {
-            let mut filter = CuckooFilter::with_fpr(capacity, 0.001);
-            let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
+            let mut filter = CuckooFilter::with_fpr_ppm(capacity, 1_000);
+            let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
             for _ in 0..capacity {
                 filter.insert(&(gen.next() | 1));
             }
@@ -641,8 +665,8 @@ fn microbenchmarks() {
         });
         report(&format!("cuckoo/insert/{capacity}"), 10, elapsed);
 
-        let mut filter = CuckooFilter::with_fpr(capacity, 0.001);
-        let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
+        let mut filter = CuckooFilter::with_fpr_ppm(capacity, 1_000);
+        let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
         let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
         for val in &probe_values {
             filter.insert(val);
@@ -663,7 +687,7 @@ fn microbenchmarks() {
         // --- CQF ---
         let elapsed = measure(10, || {
             let mut filter = CountingQuotientFilter::with_remainder_bits(capacity, 10);
-            let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
+            let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
             for _ in 0..capacity {
                 filter.insert(&(gen.next() | 1));
             }
@@ -672,7 +696,7 @@ fn microbenchmarks() {
         report(&format!("cqf/insert/{capacity}"), 10, elapsed);
 
         let mut filter = CountingQuotientFilter::with_remainder_bits(capacity, 10);
-        let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
+        let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
         let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
         for val in &probe_values {
             filter.insert(val);
@@ -692,8 +716,8 @@ fn microbenchmarks() {
 
         // --- Bloom ---
         let elapsed = measure(10, || {
-            let mut filter = BloomFilter::with_fpr(capacity, 0.001);
-            let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
+            let mut filter = BloomFilter::with_fpr_ppm(capacity, 1_000);
+            let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
             for _ in 0..capacity {
                 filter.insert(&(gen.next() | 1));
             }
@@ -701,8 +725,8 @@ fn microbenchmarks() {
         });
         report(&format!("bloom/insert/{capacity}"), 10, elapsed);
 
-        let mut filter = BloomFilter::with_fpr(capacity, 0.001);
-        let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
+        let mut filter = BloomFilter::with_fpr_ppm(capacity, 1_000);
+        let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
         let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
         for val in &probe_values {
             filter.insert(val);
@@ -754,10 +778,7 @@ fn e2e_simulation() {
             println!("\n--- network={network_latency_ms}ms, budget={decode_budget} ---");
 
             for &delta in &[1_000_usize, 5_000, 10_000, 25_000, 50_000, 100_000] {
-                let generators: &[(
-                    &str,
-                    fn(&[ElementHash], usize) -> (Vec<ElementHash>, Vec<ElementHash>),
-                )] = &[
+                let generators: &[(&str, ScenarioGenerator)] = &[
                     ("best", generate_best_case),
                     ("average", generate_average_case),
                     ("worst", generate_worst_case),
@@ -772,7 +793,7 @@ fn e2e_simulation() {
                         "sketch_split",
                         network_latency_ms,
                         decode_budget,
-                        0.001,
+                        1_000,
                     );
                     let cuckoo = simulate_strategy(
                         &local,
@@ -780,7 +801,7 @@ fn e2e_simulation() {
                         "cuckoo",
                         network_latency_ms,
                         decode_budget,
-                        0.001,
+                        1_000,
                     );
                     let cqf = simulate_strategy(
                         &local,
@@ -788,7 +809,7 @@ fn e2e_simulation() {
                         "cqf",
                         network_latency_ms,
                         decode_budget,
-                        0.001,
+                        1_000,
                     );
                     let bloom = simulate_strategy(
                         &local,
@@ -796,7 +817,7 @@ fn e2e_simulation() {
                         "bloom",
                         network_latency_ms,
                         decode_budget,
-                        0.001,
+                        1_000,
                     );
                     let hybrid = simulate_strategy(
                         &local,
@@ -804,20 +825,16 @@ fn e2e_simulation() {
                         "hybrid",
                         network_latency_ms,
                         decode_budget,
-                        0.001,
+                        1_000,
                     );
 
-                    print_comparison(
+                    print_comparison(&Comparison {
                         case_name,
                         delta,
-                        network_latency_ms,
-                        decode_budget,
-                        &sketch,
-                        &cuckoo,
-                        &cqf,
-                        &bloom,
-                        &hybrid,
-                    );
+                        latency_ms: network_latency_ms,
+                        budget: decode_budget,
+                        results: [&sketch, &cuckoo, &cqf, &bloom, &hybrid],
+                    });
                 }
             }
         }
@@ -855,11 +872,11 @@ fn cross_over_summary() {
             for &delta in &[1_000, 5_000, 10_000, 25_000, 50_000, 100_000] {
                 let (local, remote) = generate_average_case(&base, delta);
                 let sketch =
-                    simulate_strategy(&local, &remote, "sketch_split", latency, budget, 0.001);
-                let cuckoo = simulate_strategy(&local, &remote, "cuckoo", latency, budget, 0.001);
-                let cqf = simulate_strategy(&local, &remote, "cqf", latency, budget, 0.001);
-                let bloom = simulate_strategy(&local, &remote, "bloom", latency, budget, 0.001);
-                let hybrid = simulate_strategy(&local, &remote, "hybrid", latency, budget, 0.001);
+                    simulate_strategy(&local, &remote, "sketch_split", latency, budget, 1_000);
+                let cuckoo = simulate_strategy(&local, &remote, "cuckoo", latency, budget, 1_000);
+                let cqf = simulate_strategy(&local, &remote, "cqf", latency, budget, 1_000);
+                let bloom = simulate_strategy(&local, &remote, "bloom", latency, budget, 1_000);
+                let hybrid = simulate_strategy(&local, &remote, "hybrid", latency, budget, 1_000);
 
                 if cuckoo.wall_ms < sketch.wall_ms && cuckoo_co.is_none() {
                     cuckoo_co = Some(delta);

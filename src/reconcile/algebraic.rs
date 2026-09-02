@@ -335,6 +335,13 @@ impl SyndromeSketch {
         self.validate_decoded_elements(decoded)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AlgebraicError::DecodeFailure`] when the residual exceeds the
+    /// bound, is malformed, or does not factor into distinct field elements.
+    /// Returns [`AlgebraicError::InvalidSketchCapacity`] when `max_elements`
+    /// exceeds the sketch capacity or the local decode policy, and
+    /// [`AlgebraicError::BudgetExhausted`] when root finding reaches its work limit.
     pub fn decode_elements_with_budget(
         &self,
         max_elements: usize,
