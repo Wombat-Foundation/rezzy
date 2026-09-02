@@ -29,6 +29,33 @@ pub struct BucketRequest {
     pub depth: u8,
     pub prefix: u64,
     pub capacity: usize,
+    /// Explicit overflow marker. Must be set to `true` only after the overflow
+    /// request validation path passes. Never infer from `capacity` alone.
+    pub overflow: bool,
+}
+
+impl BucketRequest {
+    /// Standard bucket request (overflow = false).
+    #[must_use]
+    pub fn new(depth: u8, prefix: u64, capacity: usize) -> Self {
+        Self {
+            depth,
+            prefix,
+            capacity,
+            overflow: false,
+        }
+    }
+
+    /// Overflow bucket request (overflow = true).
+    #[must_use]
+    pub fn with_overflow(depth: u8, prefix: u64, capacity: usize) -> Self {
+        Self {
+            depth,
+            prefix,
+            capacity,
+            overflow: true,
+        }
+    }
 }
 
 /// Roots recovered from one independently decoded bucket.
@@ -304,110 +331,55 @@ mod tests {
     #[test]
     fn test_validate_bucket_requests_rejects_overlap() {
         // Correct disjoint requests
-        assert!(validate_bucket_requests(&[BucketRequest {
-            depth: 0,
-            prefix: 0,
-            capacity: 4
-        }])
-        .is_ok());
+        assert!(validate_bucket_requests(&[BucketRequest::new(0, 0, 4)]).is_ok());
 
         // Nested ranges: depth 0 prefix 0 contains depth 1 prefix 0
         assert!(validate_bucket_requests(&[
-            BucketRequest {
-                depth: 0,
-                prefix: 0,
-                capacity: 4
-            },
-            BucketRequest {
-                depth: 1,
-                prefix: 0,
-                capacity: 4
-            }
+            BucketRequest::new(0, 0, 4),
+            BucketRequest::new(1, 0, 4)
         ])
         .is_err());
 
         // Same-depth out-of-order ranges are rejected.
         assert!(validate_bucket_requests(&[
-            BucketRequest {
-                depth: 1,
-                prefix: 1,
-                capacity: 4
-            },
-            BucketRequest {
-                depth: 1,
-                prefix: 0,
-                capacity: 4
-            }
+            BucketRequest::new(1, 1, 4),
+            BucketRequest::new(1, 0, 4)
         ])
         .is_err());
 
         // Same-depth disjoint ranges in canonical order are valid.
         assert!(validate_bucket_requests(&[
-            BucketRequest {
-                depth: 1,
-                prefix: 0,
-                capacity: 4
-            },
-            BucketRequest {
-                depth: 1,
-                prefix: 1,
-                capacity: 4
-            }
+            BucketRequest::new(1, 0, 4),
+            BucketRequest::new(1, 1, 4)
         ])
         .is_ok());
 
         // Nested ranges remain invalid in any order.
         assert!(validate_bucket_requests(&[
-            BucketRequest {
-                depth: 1,
-                prefix: 0,
-                capacity: 4
-            },
-            BucketRequest {
-                depth: 0,
-                prefix: 0,
-                capacity: 4
-            },
+            BucketRequest::new(1, 0, 4),
+            BucketRequest::new(0, 0, 4),
         ])
         .is_err());
     }
 
     #[test]
     fn test_validate_bucket_requests_enforces_depth_31_prefix_bounds() {
-        assert!(validate_bucket_requests(&[BucketRequest {
-            depth: 31,
-            prefix: (1_u64 << 31) - 1,
-            capacity: 4,
-        }])
-        .is_ok());
+        assert!(validate_bucket_requests(&[BucketRequest::new(31, (1_u64 << 31) - 1, 4)]).is_ok());
 
         assert_eq!(
-            validate_bucket_requests(&[BucketRequest {
-                depth: 31,
-                prefix: 1_u64 << 31,
-                capacity: 4,
-            }]),
+            validate_bucket_requests(&[BucketRequest::new(31, 1_u64 << 31, 4)]),
             Err(AlgebraicError::InvalidBucketIndex)
         );
     }
 
     #[test]
     fn test_validate_bucket_requests_accepts_full_h64_depth() {
-        assert!(validate_bucket_requests(&[BucketRequest {
-            depth: MAX_DEPTH,
-            prefix: u64::MAX,
-            capacity: 4,
-        }])
-        .is_ok());
+        assert!(validate_bucket_requests(&[BucketRequest::new(MAX_DEPTH, u64::MAX, 4)]).is_ok());
     }
 
     #[test]
     fn overflow_requests_allow_larger_sketches_but_normal_requests_do_not() {
-        let request = BucketRequest {
-            depth: 1,
-            prefix: 0,
-            capacity: MAX_OVERFLOW_BUCKET_CAPACITY,
-        };
+        let request = BucketRequest::new(1, 0, MAX_OVERFLOW_BUCKET_CAPACITY);
 
         assert_eq!(
             validate_bucket_requests(&[request]),
@@ -419,11 +391,7 @@ mod tests {
     #[test]
     fn overflow_requests_enforce_the_aggregate_capacity_limit() {
         let requests = (0..17)
-            .map(|prefix| BucketRequest {
-                depth: 5,
-                prefix,
-                capacity: MAX_OVERFLOW_BUCKET_CAPACITY,
-            })
+            .map(|prefix| BucketRequest::new(5, prefix, MAX_OVERFLOW_BUCKET_CAPACITY))
             .collect::<Vec<_>>();
 
         assert_eq!(
@@ -548,18 +516,7 @@ mod tests {
 
     #[test]
     fn bucket_decoder_retains_successes_and_isolates_decode_failures() {
-        let requests = [
-            BucketRequest {
-                depth: 8,
-                prefix: 1,
-                capacity: 2,
-            },
-            BucketRequest {
-                depth: 8,
-                prefix: 9,
-                capacity: 2,
-            },
-        ];
+        let requests = [BucketRequest::new(8, 1, 2), BucketRequest::new(8, 9, 2)];
         let mut first = SyndromeSketch::new(2).unwrap();
         first.toggle(7).unwrap();
         let mut encoded = first
@@ -593,59 +550,23 @@ mod tests {
 
     #[test]
     fn bucket_decoder_rejects_length_mismatches_and_nested_overlaps() {
-        let unordered = [
-            BucketRequest {
-                depth: 8,
-                prefix: 2,
-                capacity: 1,
-            },
-            BucketRequest {
-                depth: 8,
-                prefix: 1,
-                capacity: 1,
-            },
-        ];
+        let unordered = [BucketRequest::new(8, 2, 1), BucketRequest::new(8, 1, 1)];
         assert_eq!(
             decode_bucket_sketches(&[0; 16], &unordered),
             Err(AlgebraicError::InvalidBucketIndex)
         );
 
-        let nested = [
-            BucketRequest {
-                depth: 0,
-                prefix: 0,
-                capacity: 1,
-            },
-            BucketRequest {
-                depth: 1,
-                prefix: 0,
-                capacity: 1,
-            },
-        ];
+        let nested = [BucketRequest::new(0, 0, 1), BucketRequest::new(1, 0, 1)];
         assert_eq!(
             decode_bucket_sketches(&[0; 16], &nested),
             Err(AlgebraicError::InvalidBucketIndex)
         );
         assert_eq!(
-            decode_bucket_sketches(
-                &[0; 7],
-                &[BucketRequest {
-                    depth: 8,
-                    prefix: 1,
-                    capacity: 1,
-                }],
-            ),
+            decode_bucket_sketches(&[0; 7], &[BucketRequest::new(8, 1, 1)],),
             Err(AlgebraicError::InvalidSketchLength)
         );
         assert_eq!(
-            decode_bucket_sketches(
-                &[0; 9],
-                &[BucketRequest {
-                    depth: 8,
-                    prefix: 1,
-                    capacity: 1,
-                }],
-            ),
+            decode_bucket_sketches(&[0; 9], &[BucketRequest::new(8, 1, 1)],),
             Err(AlgebraicError::InvalidSketchLength)
         );
     }

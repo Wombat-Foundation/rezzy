@@ -387,10 +387,12 @@ fn benchmark_presplit_antichain_exchange_from_pool(
     let num_buckets: usize = 16;
 
     let mut current_requests: Vec<BucketRequest> = (0..num_buckets)
-        .map(|prefix| BucketRequest {
-            depth: target_depth,
-            prefix: u64::try_from(prefix).expect("benchmark bucket index fits u64"),
-            capacity: 32,
+        .map(|prefix| {
+            BucketRequest::new(
+                target_depth,
+                u64::try_from(prefix).expect("benchmark bucket index fits u64"),
+                32,
+            )
         })
         .collect();
 
@@ -539,11 +541,7 @@ pub fn run() {
         );
     }
 
-    let requests = [BucketRequest {
-        depth: 8,
-        prefix: 0,
-        capacity: 8,
-    }];
+    let requests = [BucketRequest::new(8, 0, 8)];
     let encoded = [0_u8; 64];
     let elapsed = measure(1_000, || {
         let _ = black_box(decode_bucket_sketches(&encoded, &requests));
@@ -558,18 +556,7 @@ pub fn run() {
         }],
         failed_buckets: vec![(8, 1)],
     };
-    let previous = [
-        BucketRequest {
-            depth: 8,
-            prefix: 0,
-            capacity: 8,
-        },
-        BucketRequest {
-            depth: 8,
-            prefix: 1,
-            capacity: 32,
-        },
-    ];
+    let previous = [BucketRequest::new(8, 0, 8), BucketRequest::new(8, 1, 32)];
     let mut batches = vec![batch; 10_000];
     let elapsed = measure(10_000, || {
         let _ = black_box(ReconciliationClient::transition_bucket_batch(
@@ -727,11 +714,7 @@ pub fn run() {
             // One request per bucket, all valid (capacity ≤ 32, aggregate ≤ 4096).
             let requests: Vec<BucketRequest> = prefixes
                 .iter()
-                .map(|&prefix| BucketRequest {
-                    depth: DEPTH,
-                    prefix,
-                    capacity: BUCKET_CAP,
-                })
+                .map(|&prefix| BucketRequest::new(DEPTH, prefix, BUCKET_CAP))
                 .collect();
 
             let iterations: u32 = if n_buckets == 1 { 1000 } else { 100 };
@@ -802,11 +785,7 @@ pub fn run() {
 
             let requests: Vec<BucketRequest> = prefixes
                 .iter()
-                .map(|&prefix| BucketRequest {
-                    depth: DEPTH,
-                    prefix,
-                    capacity: BUCKET_CAP,
-                })
+                .map(|&prefix| BucketRequest::new(DEPTH, prefix, BUCKET_CAP))
                 .collect();
 
             let total_cap: usize = requests.iter().map(|r| r.capacity).sum();

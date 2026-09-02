@@ -268,11 +268,11 @@ fn retry_or_split_bucket(
         let Some(capacity) = capacity else {
             return Err(ClientAction::ExtremityDiff);
         };
-        requests.push_back(BucketRequest {
-            depth: previous.depth,
-            prefix: previous.prefix,
+        requests.push_back(BucketRequest::new(
+            previous.depth,
+            previous.prefix,
             capacity,
-        });
+        ));
         return Ok(requests);
     }
 
@@ -300,16 +300,16 @@ fn retry_or_split_bucket(
         return Err(ClientAction::ExtremityDiff);
     };
 
-    requests.push_back(BucketRequest {
-        depth: next_depth,
-        prefix: previous.prefix << 1,
+    requests.push_back(BucketRequest::new(
+        next_depth,
+        previous.prefix << 1,
         capacity,
-    });
-    requests.push_back(BucketRequest {
-        depth: next_depth,
-        prefix: (previous.prefix << 1) | 1,
+    ));
+    requests.push_back(BucketRequest::new(
+        next_depth,
+        (previous.prefix << 1) | 1,
         capacity,
-    });
+    ));
 
     Ok(requests)
 }
@@ -461,11 +461,7 @@ impl ReconciliationClient {
             return ClientAction::ExtremityDiff;
         };
         for prefix in 0..max_prefix {
-            requests.push(BucketRequest {
-                depth,
-                prefix,
-                capacity: per_bucket,
-            });
+            requests.push(BucketRequest::new(depth, prefix, per_bucket));
         }
 
         ClientAction::BucketSketches {
@@ -656,11 +652,7 @@ mod tests {
                 2,
             ),
             ClientAction::BucketSketches {
-                requests: vec![BucketRequest {
-                    depth: 0,
-                    prefix: 0,
-                    capacity: 12,
-                }],
+                requests: vec![BucketRequest::new(0, 0, 12)],
                 accumulated_roots: vec![],
             }
         );
@@ -677,11 +669,7 @@ mod tests {
         let client = ReconciliationClient::new(16).unwrap();
         let local = accumulator(&[hash(1, 1)]);
         let expected_requests = (0..64)
-            .map(|prefix| BucketRequest {
-                depth: 6,
-                prefix,
-                capacity: 24,
-            })
+            .map(|prefix| BucketRequest::new(6, prefix, 24))
             .collect();
         assert_eq!(
             client.select_action(
@@ -713,11 +701,7 @@ mod tests {
                 0,
             ),
             ClientAction::BucketSketches {
-                requests: vec![BucketRequest {
-                    depth: 0,
-                    prefix: 0,
-                    capacity: 4,
-                }],
+                requests: vec![BucketRequest::new(0, 0, 4)],
                 accumulated_roots: vec![],
             }
         );
@@ -769,11 +753,7 @@ mod tests {
                 0,
             ),
             ClientAction::BucketSketches {
-                requests: vec![BucketRequest {
-                    depth: 0,
-                    prefix: 0,
-                    capacity: 31,
-                }],
+                requests: vec![BucketRequest::new(0, 0, 31)],
                 accumulated_roots: vec![],
             }
         );
@@ -806,11 +786,7 @@ mod tests {
                 0,
             ),
             ClientAction::BucketSketches {
-                requests: vec![BucketRequest {
-                    depth: 0,
-                    prefix: 0,
-                    capacity: 31,
-                }],
+                requests: vec![BucketRequest::new(0, 0, 31)],
                 accumulated_roots: vec![],
             }
         );
@@ -889,19 +865,11 @@ mod tests {
             }],
             failed_buckets: vec![(8, 2)],
         };
-        let previous = [BucketRequest {
-            depth: 8,
-            prefix: 2,
-            capacity: 8,
-        }];
+        let previous = [BucketRequest::new(8, 2, 8)];
         assert_eq!(
             ReconciliationClient::transition_bucket_batch(batch, &previous, vec![99], None, 4096,),
             ClientAction::BucketSketches {
-                requests: vec![BucketRequest {
-                    depth: 8,
-                    prefix: 2,
-                    capacity: 18,
-                }],
+                requests: vec![BucketRequest::new(8, 2, 18)],
                 accumulated_roots: vec![99, 42],
             }
         );
@@ -909,37 +877,19 @@ mod tests {
 
     #[test]
     fn retry_or_split_bucket_retries_small_capacity_buckets() {
-        let next_requests = retry_or_split_bucket(
-            &BucketRequest {
-                depth: 8,
-                prefix: 2,
-                capacity: 8,
-            },
-            10,
-        )
-        .expect("small-capacity buckets should retry");
+        let next_requests = retry_or_split_bucket(&BucketRequest::new(8, 2, 8), 10)
+            .expect("small-capacity buckets should retry");
 
         assert_eq!(
             next_requests.into_iter().collect::<alloc::vec::Vec<_>>(),
-            vec![BucketRequest {
-                depth: 8,
-                prefix: 2,
-                capacity: 19,
-            }]
+            vec![BucketRequest::new(8, 2, 19)]
         );
     }
 
     #[test]
     fn retry_or_split_bucket_falls_back_on_small_capacity_overflow() {
         assert_eq!(
-            retry_or_split_bucket(
-                &BucketRequest {
-                    depth: 8,
-                    prefix: 2,
-                    capacity: 8,
-                },
-                u64::MAX,
-            ),
+            retry_or_split_bucket(&BucketRequest::new(8, 2, 8), u64::MAX,),
             Err(ClientAction::ExtremityDiff)
         );
     }
@@ -953,39 +903,20 @@ mod tests {
         assert_eq!(
             ReconciliationClient::transition_bucket_batch(
                 batch.clone(),
-                &[BucketRequest {
-                    depth: 8,
-                    prefix: 3,
-                    capacity: MAX_BUCKET_SKETCH_CAPACITY,
-                }],
+                &[BucketRequest::new(8, 3, MAX_BUCKET_SKETCH_CAPACITY)],
                 vec![],
                 None,
                 4096,
             ),
             ClientAction::BucketSketches {
-                requests: vec![
-                    BucketRequest {
-                        depth: 9,
-                        prefix: 6,
-                        capacity: 10,
-                    },
-                    BucketRequest {
-                        depth: 9,
-                        prefix: 7,
-                        capacity: 10,
-                    },
-                ],
+                requests: vec![BucketRequest::new(9, 6, 10), BucketRequest::new(9, 7, 10),],
                 accumulated_roots: vec![],
             }
         );
         assert_eq!(
             ReconciliationClient::transition_bucket_batch(
                 batch,
-                &[BucketRequest {
-                    depth: 8,
-                    prefix: 1,
-                    capacity: 8,
-                }],
+                &[BucketRequest::new(8, 1, 8)],
                 vec![],
                 None,
                 4096,
@@ -1000,11 +931,7 @@ mod tests {
         let mut previous_requests = alloc::vec::Vec::with_capacity(65);
         for prefix in 0..65_u64 {
             failed_buckets.push((7, prefix));
-            previous_requests.push(BucketRequest {
-                depth: 7,
-                prefix,
-                capacity: MAX_BUCKET_SKETCH_CAPACITY,
-            });
+            previous_requests.push(BucketRequest::new(7, prefix, MAX_BUCKET_SKETCH_CAPACITY));
         }
 
         let batch = BucketDecodeBatch {
@@ -1038,11 +965,7 @@ mod tests {
         let mut failed_buckets = alloc::vec::Vec::with_capacity(65);
         for prefix in 0..65_u64 {
             failed_buckets.push((7, prefix));
-            previous_requests.push(BucketRequest {
-                depth: 7,
-                prefix,
-                capacity: MAX_BUCKET_SKETCH_CAPACITY,
-            });
+            previous_requests.push(BucketRequest::new(7, prefix, MAX_BUCKET_SKETCH_CAPACITY));
         }
 
         let first = exchange.advance(
@@ -1110,18 +1033,7 @@ mod tests {
         let mut exchange =
             BucketExchange::new(vec![], MAX_RECONCILIATION_ROUNDS, MAX_BUCKETS_PER_ROUND, 25);
 
-        let previous_requests = [
-            BucketRequest {
-                depth: 0,
-                prefix: 0,
-                capacity: 8,
-            },
-            BucketRequest {
-                depth: 0,
-                prefix: 1,
-                capacity: 8,
-            },
-        ];
+        let previous_requests = [BucketRequest::new(0, 0, 8), BucketRequest::new(0, 1, 8)];
 
         let action = exchange.advance(
             BucketDecodeBatch {
@@ -1141,14 +1053,7 @@ mod tests {
         };
 
         assert_eq!(accumulated_roots, [] as [u64; 0]);
-        assert_eq!(
-            requests,
-            vec![BucketRequest {
-                depth: 0,
-                prefix: 0,
-                capacity: 18,
-            }]
-        );
+        assert_eq!(requests, vec![BucketRequest::new(0, 0, 18)]);
         assert_eq!(exchange.pending_len(), 1);
         assert_eq!(exchange.rounds_emitted(), 1);
     }

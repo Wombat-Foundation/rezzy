@@ -237,11 +237,7 @@ fn multi_round_bucket_transition_flow() {
         successful_buckets: vec![],
         failed_buckets: vec![(0, 0)],
     };
-    let r1_previous = vec![BucketRequest {
-        depth: 0,
-        prefix: 0,
-        capacity: MAX_BUCKET_SKETCH_CAPACITY,
-    }];
+    let r1_previous = vec![BucketRequest::new(0, 0, MAX_BUCKET_SKETCH_CAPACITY)];
 
     // Transitioning Round 1 bisects (0,0) into depth 1 prefixes: (1, 0) and (1, 1)
     let action = ReconciliationClient::transition_bucket_batch(

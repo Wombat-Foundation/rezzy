@@ -557,11 +557,7 @@ mod tests {
         let h1 = ElementHash::from_matrix_event_id("$1", EventIdFormat::Legacy).unwrap();
 
         let bucket_idx = h1.h64 >> 56;
-        let requests = [BucketRequest {
-            depth: 8,
-            prefix: bucket_idx,
-            capacity: 4,
-        }];
+        let requests = [BucketRequest::new(8, bucket_idx, 4)];
 
         let sorted_h64 = vec![h1.h64];
         let sketches = build_bucket_sketches(&sorted_h64, &requests).unwrap();
@@ -583,11 +579,7 @@ mod tests {
             0x0000_0003_0000_0001,
         ];
         let index = H64Index::new(&sorted_h64);
-        let request = BucketRequest {
-            depth: 32,
-            prefix: 1,
-            capacity: 4,
-        };
+        let request = BucketRequest::new(32, 1, 4);
 
         let slice = index.bucket_slice(&request).unwrap();
         assert_eq!(slice, &[0x0000_0001_0000_0001, 0x0000_0001_0000_0002]);
@@ -604,11 +596,7 @@ mod tests {
             0x0000_0003_0000_0001,
         ];
         let index = H64Index::new(&sorted_h64);
-        let request = BucketRequest {
-            depth: 32,
-            prefix: 1,
-            capacity: 4,
-        };
+        let request = BucketRequest::new(32, 1, 4);
 
         let range = index.bucket_range(&request).unwrap();
         assert_eq!(range, 0..2);
@@ -638,11 +626,7 @@ mod tests {
         assert_eq!(digest.digest(), expected.digest());
         assert_eq!(digest.known_event_count(), 2);
 
-        let request = BucketRequest {
-            depth: 0,
-            prefix: 0,
-            capacity: 4,
-        };
+        let request = BucketRequest::new(0, 0, 4);
         let range = context.bucket_range(&request).unwrap();
         assert_eq!(range, 0..2);
         let slice = context.bucket_slice(&request).unwrap();
@@ -663,11 +647,7 @@ mod tests {
         let h2 = ElementHash::from_matrix_event_id("$2", EventIdFormat::Legacy).unwrap();
 
         // Depth 0 encompasses everything
-        let requests = [BucketRequest {
-            depth: 0,
-            prefix: 0,
-            capacity: 4,
-        }];
+        let requests = [BucketRequest::new(0, 0, 4)];
 
         let mut sorted_h64 = vec![h1.h64, h2.h64];
         sorted_h64.sort_unstable();
@@ -693,11 +673,7 @@ mod tests {
         let shift = u32::from(H64_TRIE_WIDTH) - u32::from(depth);
         let prefix = h1.h64 >> shift;
 
-        let requests = [BucketRequest {
-            depth,
-            prefix,
-            capacity: 4,
-        }];
+        let requests = [BucketRequest::new(depth, prefix, 4)];
 
         // Deep extraction uses elements_provider
         let mut sorted_h64 = vec![h1.h64, h2.h64];
@@ -714,21 +690,13 @@ mod tests {
     fn test_build_bucket_sketches_invalid_indices() {
         use crate::reconcile::triage::BucketRequest;
         let sorted_h64 = vec![];
-        let requests = [BucketRequest {
-            depth: 8,
-            prefix: 256, // out of bounds for depth 8 (max prefix is 255)
-            capacity: 4,
-        }];
+        let requests = [BucketRequest::new(8, 256, 4)];
         assert_eq!(
             build_bucket_sketches(&sorted_h64, &requests),
             Err(AlgebraicError::InvalidBucketIndex)
         );
 
-        let requests = [BucketRequest {
-            depth: 7,
-            prefix: 256, // out of bounds
-            capacity: 4,
-        }];
+        let requests = [BucketRequest::new(7, 256, 4)];
         assert_eq!(
             build_bucket_sketches(&sorted_h64, &requests),
             Err(AlgebraicError::InvalidBucketIndex)
@@ -740,11 +708,7 @@ mod tests {
         use crate::reconcile::triage::BucketRequest;
         let h1 = ElementHash::from_matrix_event_id("$1", EventIdFormat::Legacy).unwrap();
 
-        let requests = [BucketRequest {
-            depth: 0,
-            prefix: 0,
-            capacity: 10, // > 8 forces the slow path
-        }];
+        let requests = [BucketRequest::new(0, 0, 10)];
 
         let sorted_h64 = vec![h1.h64];
         let sketches = build_bucket_sketches(&sorted_h64, &requests).unwrap();
@@ -767,11 +731,7 @@ mod tests {
         };
 
         let builder = SketchBuilder::new(&index, policy);
-        let requests = [BucketRequest {
-            depth: 0,
-            prefix: 0,
-            capacity: 10,
-        }];
+        let requests = [BucketRequest::new(0, 0, 10)];
 
         let result = builder.build(&requests).unwrap();
         if let SketchResult::Success(sketches) = result {
@@ -794,11 +754,7 @@ mod tests {
         };
 
         let builder = SketchBuilder::new(&index, policy);
-        let requests = [BucketRequest {
-            depth: 0,
-            prefix: 0,
-            capacity: 1, // smaller than slice length (2)
-        }];
+        let requests = [BucketRequest::new(0, 0, 1)];
 
         let result = builder.build(&requests).unwrap();
         assert!(matches!(result, SketchResult::Success(sketches) if sketches.len() == 1));
@@ -816,11 +772,7 @@ mod tests {
         };
 
         let builder = SketchBuilder::new(&index, policy);
-        let requests = [BucketRequest {
-            depth: 0,
-            prefix: 0,
-            capacity: 1,
-        }];
+        let requests = [BucketRequest::new(0, 0, 1)];
 
         let result = builder.build(&requests).unwrap();
         assert!(matches!(result, SketchResult::FallbackToRangeSync));
@@ -841,11 +793,7 @@ mod tests {
         };
 
         let builder = SketchBuilder::new(&index, policy);
-        let requests = [BucketRequest {
-            depth: 0,
-            prefix: 0,
-            capacity: 1,
-        }];
+        let requests = [BucketRequest::new(0, 0, 1)];
 
         let result = builder.build(&requests).unwrap();
         assert!(matches!(result, SketchResult::FallbackToRangeSync));
@@ -864,18 +812,7 @@ mod tests {
         };
 
         let builder = SketchBuilder::new(&index, policy);
-        let requests = [
-            BucketRequest {
-                depth: 1,
-                prefix: 0,
-                capacity: 1,
-            },
-            BucketRequest {
-                depth: 1,
-                prefix: 1,
-                capacity: 1,
-            },
-        ];
+        let requests = [BucketRequest::new(1, 0, 1), BucketRequest::new(1, 1, 1)];
 
         let result = builder.build(&requests).unwrap();
         assert!(matches!(result, SketchResult::FallbackToRangeSync));
@@ -894,11 +831,7 @@ mod tests {
         };
 
         let builder = SketchBuilder::new(&index, policy);
-        let requests = [BucketRequest {
-            depth: 0,
-            prefix: 0,
-            capacity: 2,
-        }];
+        let requests = [BucketRequest::new(0, 0, 2)];
 
         assert!(matches!(
             builder.build(&requests),
@@ -920,11 +853,7 @@ mod tests {
         let builder = SketchBuilder::new(&index, policy);
         // Zero capacity is rejected by `validate_bucket_requests` before any
         // range localization is attempted.
-        let requests = [BucketRequest {
-            depth: 0,
-            prefix: 0,
-            capacity: 0,
-        }];
+        let requests = [BucketRequest::new(0, 0, 0)];
 
         assert!(matches!(
             builder.build(&requests),
@@ -943,11 +872,11 @@ mod tests {
                 hard_fallback_threshold: 1_000,
             },
         );
-        let requests = [BucketRequest {
-            depth: crate::reconcile::MAX_DEPTH.saturating_add(1),
-            prefix: 0,
-            capacity: 1,
-        }];
+        let requests = [BucketRequest::new(
+            crate::reconcile::MAX_DEPTH.saturating_add(1),
+            0,
+            1,
+        )];
 
         assert!(matches!(
             builder.build(&requests),
