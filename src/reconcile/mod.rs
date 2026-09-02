@@ -31,7 +31,8 @@ pub const H64_TRIE_WIDTH: u8 = 64;
 
 pub use algebraic::{
     gf64_mul, verify_residual, AlgebraicError, ElementHash, EventIdFormat, RoomAccumulator,
-    SyndromeSketch, MAX_LOCAL_SKETCH_DECODE_CAPACITY, MAX_SKETCH_CAPACITY,
+    SyndromeSketch, MAX_LOCAL_SKETCH_DECODE_CAPACITY, MAX_OVERFLOW_SKETCH_CAPACITY,
+    MAX_SKETCH_CAPACITY,
 };
 pub use client::{
     BucketExchange, ClientAction, ReconciliationClient, RemoteDigest, MAX_BUCKETS_PER_ROUND,
@@ -42,8 +43,9 @@ pub use server::{
     build_bucket_sketches, compute_frame_digest, ForwardGraph, H64Index, ReconciliationContext,
 };
 pub use triage::{
-    decode_bucket_sketches, estimate_strata, BucketDecodeBatch, BucketDecodeSuccess, BucketRequest,
-    StrataEstimate, MAX_BUCKETED_SKETCH_CAPACITY,
+    decode_bucket_sketches, estimate_strata, validate_overflow_bucket_requests, BucketDecodeBatch,
+    BucketDecodeSuccess, BucketRequest, StrataEstimate, MAX_BUCKETED_SKETCH_CAPACITY,
+    MAX_OVERFLOW_BUCKET_CAPACITY,
 };
 
 // These are cross-module invariant checks, not dead asserts on a literal --
@@ -53,10 +55,14 @@ pub use triage::{
 #[allow(clippy::assertions_on_constants)]
 const _: () = assert!(MAX_SKETCH_CAPACITY == 32);
 #[allow(clippy::assertions_on_constants)]
+const _: () = assert!(MAX_OVERFLOW_SKETCH_CAPACITY == 256);
+#[allow(clippy::assertions_on_constants)]
 const _: () = assert!(resident::STRATA_COUNT == 32);
 #[allow(clippy::assertions_on_constants)]
 const _: () = assert!(resident::STRATUM_CAPACITY == 8);
 #[allow(clippy::assertions_on_constants)]
 const _: () = assert!(triage::MAX_BUCKET_SKETCH_CAPACITY == 32);
+#[allow(clippy::assertions_on_constants)]
+const _: () = assert!(triage::MAX_OVERFLOW_BUCKET_CAPACITY == 256);
 #[allow(clippy::assertions_on_constants)]
 const _: () = assert!(triage::MAX_BUCKETED_SKETCH_CAPACITY == 4_096);

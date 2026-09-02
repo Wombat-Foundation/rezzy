@@ -13,6 +13,11 @@ use super::{pinsketch, AlgebraicError, SyndromeSketch, MAX_DEPTH, STRATA_COUNT, 
 pub const MAX_BUCKETED_SKETCH_CAPACITY: usize = 4_096;
 /// Maximum extraction capacity assigned to one bucket.
 pub const MAX_BUCKET_SKETCH_CAPACITY: usize = 32;
+/// Maximum capacity permitted only through the local overflow request path.
+///
+/// This is not a negotiated protocol capability. Normal bucket requests remain
+/// limited to [`MAX_BUCKET_SKETCH_CAPACITY`].
+pub const MAX_OVERFLOW_BUCKET_CAPACITY: usize = 256;
 /// Client-side sketch-mode cutoff for estimates in the saturated regime.
 pub const SATURATED_DELTA_ESTIMATE: u64 = 8 * (1_u64 << 31);
 /// Minimum cardinality implied by an over-capacity stratum-0 decode failure.
@@ -234,10 +239,29 @@ pub fn decode_bucket_sketches(
 /// Returns an error if any capacity or bound constraint is violated, or if the requests
 /// overlap.
 pub fn validate_bucket_requests(requests: &[BucketRequest]) -> Result<(), AlgebraicError> {
+    validate_bucket_requests_with_limit(requests, MAX_BUCKET_SKETCH_CAPACITY)
+}
+
+/// Validates requests issued through the explicit local overflow path.
+///
+/// Normal request handling must continue to call [`validate_bucket_requests`].
+/// This helper does not negotiate or advertise overflow support to peers.
+///
+/// # Errors
+/// Returns an error when a request exceeds the overflow or aggregate capacity
+/// limit, or when requests are malformed or overlap.
+pub fn validate_overflow_bucket_requests(requests: &[BucketRequest]) -> Result<(), AlgebraicError> {
+    validate_bucket_requests_with_limit(requests, MAX_OVERFLOW_BUCKET_CAPACITY)
+}
+
+fn validate_bucket_requests_with_limit(
+    requests: &[BucketRequest],
+    max_bucket_capacity: usize,
+) -> Result<(), AlgebraicError> {
     let mut total_capacity = 0_usize;
     let mut previous_end = 0_u128;
     for request in requests {
-        if request.capacity == 0 || request.capacity > MAX_BUCKET_SKETCH_CAPACITY {
+        if request.capacity == 0 || request.capacity > max_bucket_capacity {
             return Err(AlgebraicError::InvalidSketchCapacity);
         }
         if request.depth > MAX_DEPTH {
@@ -375,6 +399,37 @@ mod tests {
             capacity: 4,
         }])
         .is_ok());
+    }
+
+    #[test]
+    fn overflow_requests_allow_larger_sketches_but_normal_requests_do_not() {
+        let request = BucketRequest {
+            depth: 1,
+            prefix: 0,
+            capacity: MAX_OVERFLOW_BUCKET_CAPACITY,
+        };
+
+        assert_eq!(
+            validate_bucket_requests(&[request]),
+            Err(AlgebraicError::InvalidSketchCapacity)
+        );
+        assert!(validate_overflow_bucket_requests(&[request]).is_ok());
+    }
+
+    #[test]
+    fn overflow_requests_enforce_the_aggregate_capacity_limit() {
+        let requests = (0..17)
+            .map(|prefix| BucketRequest {
+                depth: 5,
+                prefix,
+                capacity: MAX_OVERFLOW_BUCKET_CAPACITY,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            validate_overflow_bucket_requests(&requests),
+            Err(AlgebraicError::InvalidSketchCapacity)
+        );
     }
 
     fn toggle_stratum(strata: &mut [[u64; STRATUM_CAPACITY]; STRATA_COUNT], value: u64) {

@@ -112,6 +112,12 @@ const BENCHMARKS: &[BenchmarkEntry] = &[
     },
     BenchmarkEntry {
         domain: "math",
+        name: "adaptive_sketch",
+        description: "Adaptive overflow sketches versus splitting and exact transfer",
+        run_fn: math::adaptive_sketch::run,
+    },
+    BenchmarkEntry {
+        domain: "math",
         name: "filter_spillover",
         description:
             "Filter spillover vs sketch splitting for bucket overflow under network latency",

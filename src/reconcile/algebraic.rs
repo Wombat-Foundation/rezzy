@@ -465,17 +465,6 @@ impl SyndromeSketch {
         })
     }
 
-    /// Constructs from externally provided coordinates with overflow validation.
-    ///
-    /// Like [`from_coordinates`](Self::from_coordinates) but validates against
-    /// [`MAX_OVERFLOW_SKETCH_CAPACITY`].
-    pub(crate) fn from_coordinates_overflow(coordinates: Vec<u64>) -> Result<Self, AlgebraicError> {
-        if coordinates.is_empty() || coordinates.len() > MAX_OVERFLOW_SKETCH_CAPACITY {
-            return Err(AlgebraicError::InvalidSketchCapacity);
-        }
-        Ok(Self { coordinates })
-    }
-
     /// Decodes a sketch with overflow capacity from wire encoding.
     ///
     /// Like [`decode`](Self::decode) but validates against
