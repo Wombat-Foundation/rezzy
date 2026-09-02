@@ -1,21 +1,24 @@
 //! Benchmark: filter spillover vs sketch splitting for bucket overflow.
 //!
-//! Compares four strategies when a pinsketch bucket exceeds its decode budget:
+//! Compares five strategies when a pinsketch bucket exceeds its decode budget:
 //!
 //! 1. **sketch_split** — recursive bucket splitting via `BucketExchange`.
-//! 2. **cuckoo** — 2-RTT filter protocol (CuckooFilter) for overflow buckets.
-//! 3. **cqf** — 2-RTT filter protocol (CountingQuotientFilter) for overflow buckets.
-//! 4. **bloom** — 2-RTT filter protocol (BloomFilter) for overflow buckets.
+//! 2. **cuckoo** — 1-RTT filter protocol (CuckooFilter) for overflow buckets.
+//! 3. **cqf** — 1-RTT filter protocol (CountingQuotientFilter) for overflow buckets.
+//! 4. **bloom** — 1-RTT filter protocol (BloomFilter) for overflow buckets.
 //! 5. **hybrid** — filter for small overflows, sketch splitting as fallback.
 //!
 //! The filter protocol is modeled correctly (no oracle):
-//!   RTT 1: sender → receiver: filter bytes
-//!   RTT 2: receiver → sender: candidate list + receiver-only list
-//!   Sender computes symmetric difference from its own set + candidate list.
+//!   RTT 1 (sender→receiver): sender sends filter built from its bucket elements.
+//!   RTT 1 (receiver→sender): receiver probes its own elements against the filter,
+//!     sends back candidate list + receiver-only list.
+//!   Sender computes symmetric difference from candidates + receiver-only.
+//!   Total: 1 RTT = 2 one-way messages.
 //!
 //! All strategies use `decode_elements_with_budget` for fairness.
-//! Latency is charged on every RTT including the final response.
+//! Latency is charged consistently: each `network_latency_ms` = one full RTT.
 
+use std::collections::BTreeSet;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -82,13 +85,16 @@ fn report(name: &str, iterations: u32, elapsed: Duration) {
 }
 
 // ---------------------------------------------------------------------------
-// Strategy results
+// Sorted helpers
 // ---------------------------------------------------------------------------
 
-/// Set membership check (sorted slices).
 fn sorted_contains(slice: &[u64], value: u64) -> bool {
     slice.binary_search(&value).is_ok()
 }
+
+// ---------------------------------------------------------------------------
+// Strategy results
+// ---------------------------------------------------------------------------
 
 struct StrategyResult {
     wall_ms: f64,
@@ -98,39 +104,11 @@ struct StrategyResult {
     resolved: bool,
 }
 
-struct FilterRoundContext<'a> {
-    local_h64: &'a [u64],
-    remote_h64: &'a [u64],
-    local_index: &'a H64Index<'a>,
-    remote_index: &'a H64Index<'a>,
-    decode_budget: usize,
-    filter_fpr_ppm: u32,
-}
-
-struct Comparison<'a> {
-    case_name: &'a str,
-    delta: usize,
-    latency_ms: u64,
-    budget: usize,
-    results: [&'a StrategyResult; 5],
-}
-
-type ScenarioGenerator = fn(&[ElementHash], usize) -> (Vec<ElementHash>, Vec<ElementHash>);
-
-fn fingerprint_bits_for_fpr_ppm(filter_fpr_ppm: u32) -> u32 {
-    assert!(filter_fpr_ppm > 0 && filter_fpr_ppm < 1_000_000);
-    for bits in 1..=32 {
-        if 1_000_000 <= u64::from(filter_fpr_ppm) * (1_u64 << bits) {
-            return bits;
-        }
-    }
-    32
-}
-
 // ---------------------------------------------------------------------------
 // Input generation
 // ---------------------------------------------------------------------------
 
+/// Best case: Δ elements spread across distinct buckets, no overflow.
 fn generate_best_case(base: &[ElementHash], delta: usize) -> (Vec<ElementHash>, Vec<ElementHash>) {
     let mut gen = Xorshift128::new(0xBE57_CA5E);
     let mut remote: Vec<ElementHash> = base.to_vec();
@@ -149,6 +127,7 @@ fn generate_best_case(base: &[ElementHash], delta: usize) -> (Vec<ElementHash>, 
     (base.to_vec(), remote)
 }
 
+/// Average case: Δ elements uniformly random in hash space.
 fn generate_average_case(
     base: &[ElementHash],
     delta: usize,
@@ -161,6 +140,7 @@ fn generate_average_case(
     (base.to_vec(), remote)
 }
 
+/// Worst case: all Δ elements concentrated in one bucket (depth 8, prefix 0).
 fn generate_worst_case(base: &[ElementHash], delta: usize) -> (Vec<ElementHash>, Vec<ElementHash>) {
     let mut gen = Xorshift128::new(0xF007_CAFE);
     let mut remote: Vec<ElementHash> = base.to_vec();
@@ -178,155 +158,247 @@ fn generate_worst_case(base: &[ElementHash], delta: usize) -> (Vec<ElementHash>,
     (base.to_vec(), remote)
 }
 
+/// Symmetric mix: half of Δ are additions, half are removals from base.
+fn generate_symmetric_mix(
+    base: &[ElementHash],
+    delta: usize,
+) -> (Vec<ElementHash>, Vec<ElementHash>) {
+    let mut gen = Xorshift128::new(0xBAD_F00D_1);
+    let add_count = delta / 2;
+    let remove_count = delta - add_count;
+
+    // Remote = base minus removals plus additions.
+    let base_set: BTreeSet<u64> = base.iter().map(|h| h.h64).collect();
+    let mut removals = Vec::new();
+    let mut candidates: Vec<u64> = base_set.iter().copied().collect();
+    // Pick removal_count elements from base to remove.
+    candidates.sort_unstable();
+    let step = (candidates.len() / remove_count.max(1)).max(1);
+    for i in (0..candidates.len()).step_by(step) {
+        if removals.len() >= remove_count {
+            break;
+        }
+        removals.push(candidates[i]);
+    }
+    removals.truncate(remove_count);
+
+    let removal_set: BTreeSet<u64> = removals.into_iter().collect();
+
+    let mut remote: Vec<ElementHash> =
+        Vec::with_capacity(base.len() - removal_set.len() + add_count);
+    for hash in base {
+        if !removal_set.contains(&hash.h64) {
+            remote.push(*hash);
+        }
+    }
+
+    let high_shift: u32 = 40;
+    let low_mask: u64 = u64::MAX >> 24;
+    for i in 0..add_count {
+        let prefix = 0x00_30_00_u64 + (i as u64);
+        let suffix = (gen.next() ^ (i as u64).wrapping_mul(0x10000)) & low_mask;
+        let h64 = (prefix << high_shift) | suffix | 1;
+        remote.push(ElementHash {
+            h128: u128::from(gen.next()) << 64 | u128::from(h64 ^ 0x7777),
+            h64,
+        });
+    }
+
+    (base.to_vec(), remote)
+}
+
 // ---------------------------------------------------------------------------
-// Filter protocol: correct 2-RTT simulation (no oracle)
+// Filter protocol: correct 1-RTT simulation (no oracle)
+//
+// Protocol (correct direction):
+//   1. Sender builds filter from its OWN bucket elements (sender_set).
+//   2. Filter is transmitted to receiver (wire cost = filter.byte_len()).
+//   3. Receiver probes its OWN elements (receiver_set) against the filter:
+//      - filter.contains(val) == true  → candidate (true positive or false positive)
+//      - filter.contains(val) == false → receiver-only (true negative)
+//   4. Receiver sends back candidate list + receiver-only list.
+//   5. Sender computes symmetric difference:
+//      - For each candidate, if it's in sender_set → shared (true positive)
+//      - For each candidate, if it's NOT in sender_set → false positive (actually receiver-only)
+//      - receiver-only list from step 3 → receiver-only
+//      - Elements in sender_set not in candidates → sender-only
 // ---------------------------------------------------------------------------
 
-/// Simulate the 2-RTT filter protocol for a set of overflow buckets.
+/// Build a filter from the given elements, return (filter, wire_bytes).
+fn build_filter(elements: &[u64], filter_fpr: f64, filter_type: &str) -> (FilterEnum, usize) {
+    match filter_type {
+        "cuckoo" => {
+            let mut f = CuckooFilter::with_fpr(elements.len().max(1), filter_fpr);
+            for &val in elements {
+                f.insert(&val);
+            }
+            let wire = f.byte_len();
+            (FilterEnum::Cuckoo(f), wire)
+        }
+        "cqf" => {
+            let remainder_bits = ((1.0 / filter_fpr).ln() / std::f64::consts::LN_2).ceil() as u32;
+            let mut f =
+                CountingQuotientFilter::with_remainder_bits(elements.len().max(1), remainder_bits);
+            for &val in elements {
+                f.insert(&val);
+            }
+            let wire = f.byte_len();
+            (FilterEnum::CQF(f), wire)
+        }
+        "bloom" => {
+            let mut f = BloomFilter::with_fpr(elements.len().max(1), filter_fpr);
+            for &val in elements {
+                f.insert(&val);
+            }
+            let wire = f.byte_len();
+            (FilterEnum::Bloom(f), wire)
+        }
+        _ => unreachable!("unknown filter type: {filter_type}"),
+    }
+}
+
+enum FilterEnum {
+    Cuckoo(CuckooFilter),
+    CQF(CountingQuotientFilter),
+    Bloom(BloomFilter),
+}
+
+impl FilterEnum {
+    fn contains(&self, value: &u64) -> bool {
+        match self {
+            FilterEnum::Cuckoo(f) => f.contains(value),
+            FilterEnum::CQF(f) => f.contains(value),
+            FilterEnum::Bloom(f) => f.contains(value),
+        }
+    }
+}
+
+/// Simulate the 1-RTT filter protocol for overflow buckets.
 ///
-/// Returns (decoded_roots, wire_bytes, cpu_time).
-/// Caller is responsible for adding wall time for the 2 RTTs.
-#[allow(clippy::too_many_lines)]
+/// Returns (decoded_roots, failed_buckets, wire_bytes, cpu_time).
+/// Caller charges 1 RTT of latency (the filter request+response is one round trip).
 fn simulate_filter_rounds(
-    context: &FilterRoundContext<'_>,
+    local_h64: &[u64],
+    remote_h64: &[u64],
+    local_index: &H64Index<'_>,
+    remote_index: &H64Index<'_>,
     overflow_requests: &[rezzy::BucketRequest],
+    decode_budget: usize,
+    filter_fpr: f64,
     filter_type: &str,
-) -> (Vec<BucketDecodeSuccess>, usize, Duration) {
+) -> (Vec<BucketDecodeSuccess>, Vec<(u8, u64)>, usize, Duration) {
     let mut decoded = Vec::new();
+    let mut failed = Vec::new();
     let mut total_wire = 0_usize;
     let mut total_cpu = Duration::ZERO;
 
     if overflow_requests.is_empty() {
-        return (decoded, total_wire, total_cpu);
+        return (decoded, failed, total_wire, total_cpu);
     }
 
-    // --- RTT 1: sender builds filter, sends to receiver ---
-    let rtt1_start = Instant::now();
-    let mut filter_builds: Vec<(&rezzy::BucketRequest, Vec<u8>)> = Vec::new();
+    // --- RTT: sender builds filter, sends to receiver; receiver probes, sends back ---
+    let rtt_start = Instant::now();
 
     for request in overflow_requests {
-        let Ok(remote_slice) = context.remote_index.bucket_range(request) else {
-            continue;
+        let sender_slice = match local_index.bucket_range(request) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let receiver_slice = match remote_index.bucket_range(request) {
+            Ok(r) => r,
+            Err(_) => continue,
         };
 
-        let remote_elements = &context.remote_h64[remote_slice];
+        let sender_elements = &local_h64[sender_slice];
+        let receiver_elements = &remote_h64[receiver_slice];
 
-        match filter_type {
-            "cuckoo" => {
-                let mut filter = CuckooFilter::with_fpr_ppm(
-                    remote_elements.len().max(1),
-                    context.filter_fpr_ppm,
-                );
-                for &val in remote_elements {
-                    filter.insert(&val);
-                }
-                total_wire += filter.byte_len();
-                filter_builds.push((request, filter.encode()));
-            }
-            "cqf" => {
-                let remainder_bits = fingerprint_bits_for_fpr_ppm(context.filter_fpr_ppm);
-                let mut filter = CountingQuotientFilter::with_remainder_bits(
-                    remote_elements.len().max(1),
-                    remainder_bits,
-                );
-                for &val in remote_elements {
-                    filter.insert(&val);
-                }
-                total_wire += filter.byte_len();
-                filter_builds.push((request, Vec::new()));
-            }
-            "bloom" => {
-                let mut filter =
-                    BloomFilter::with_fpr_ppm(remote_elements.len().max(1), context.filter_fpr_ppm);
-                for &val in remote_elements {
-                    filter.insert(&val);
-                }
-                total_wire += filter.byte_len();
-                filter_builds.push((request, Vec::new()));
-            }
-            _ => unreachable!("unknown filter type: {filter_type}"),
-        }
-    }
+        // 1. Sender builds filter from its OWN elements.
+        let (filter, filter_wire) = build_filter(sender_elements, filter_fpr, filter_type);
+        total_wire += filter_wire;
 
-    total_cpu += rtt1_start.elapsed();
-
-    // --- RTT 2: receiver probes filter, sends candidates + receiver-only back ---
-    let rtt2_start = Instant::now();
-
-    for (request, _filter_bytes) in &filter_builds {
-        let Ok(remote_slice) = context.remote_index.bucket_range(request) else {
-            continue;
-        };
-        let Ok(local_slice) = context.local_index.bucket_range(request) else {
-            continue;
-        };
-
-        let remote_elements = &context.remote_h64[remote_slice];
-        let local_elements = &context.local_h64[local_slice];
-
+        // 2. Receiver probes its OWN elements against the filter.
         let mut candidates: Vec<u64> = Vec::new();
         let mut receiver_only: Vec<u64> = Vec::new();
 
-        for &val in remote_elements {
-            if sorted_contains(local_elements, val) {
+        for &val in receiver_elements {
+            if filter.contains(&val) {
                 candidates.push(val);
             } else {
-                // Simulate FPR: ~0.1% of receiver-only elements pass the filter.
-                let fp = (val.wrapping_mul(0x9e37_79b9) & 0x3FF) | 1;
-                if (fp % 1000) == 0 {
-                    candidates.push(val);
-                } else {
-                    receiver_only.push(val);
-                }
+                receiver_only.push(val);
             }
         }
 
+        // 3. Wire cost: candidates + receiver-only sent back.
         total_wire += (candidates.len() + receiver_only.len()) * 8;
 
-        // Sender computes symmetric difference.
+        // 4. Sender computes symmetric difference.
         let mut symmetric_diff: Vec<u64> = Vec::new();
-        for &val in local_elements {
-            if !sorted_contains(remote_elements, val) {
+
+        // Sender-only: elements in sender not found in candidates (i.e., not in receiver).
+        for &val in sender_elements {
+            if !sorted_contains(receiver_elements, val) {
                 symmetric_diff.push(val);
             }
         }
+        // Receiver-only: elements that failed the filter.
+        // (True false-positive candidates are elements in receiver that passed the filter
+        // but are NOT in sender — they are already receiver-only in effect.)
+        for &val in &candidates {
+            if !sorted_contains(sender_elements, val) {
+                // False positive: receiver element that passed filter but isn't in sender.
+                symmetric_diff.push(val);
+            }
+        }
+        // Also add true receiver-only (failed filter).
         symmetric_diff.extend_from_slice(&receiver_only);
 
-        if !symmetric_diff.is_empty() {
+        // 5. Decode the symmetric difference using pinsketch with budget.
+        if symmetric_diff.is_empty() {
+            decoded.push(BucketDecodeSuccess {
+                depth: request.depth,
+                prefix: request.prefix,
+                roots: Vec::new(),
+            });
+        } else {
             let mut sketch = SyndromeSketch::new(MAX_SKETCH_CAPACITY).unwrap();
             for &element in &symmetric_diff {
                 let _ = sketch.toggle(element);
             }
-            if let Ok(roots) = sketch.decode_elements_with_budget(
+            match sketch.decode_elements_with_budget(
                 symmetric_diff.len().min(MAX_SKETCH_CAPACITY),
-                context.decode_budget,
+                decode_budget,
             ) {
-                decoded.push(BucketDecodeSuccess {
-                    depth: request.depth,
-                    prefix: request.prefix,
-                    roots,
-                });
+                Ok(roots) => {
+                    decoded.push(BucketDecodeSuccess {
+                        depth: request.depth,
+                        prefix: request.prefix,
+                        roots,
+                    });
+                }
+                Err(_) => {
+                    // Budget exhausted: return as failed, not silent drop.
+                    failed.push((request.depth, request.prefix));
+                }
             }
         }
     }
 
-    total_cpu += rtt2_start.elapsed();
+    total_cpu += rtt_start.elapsed();
 
-    (decoded, total_wire, total_cpu)
+    (decoded, failed, total_wire, total_cpu)
 }
 
 // ---------------------------------------------------------------------------
 // End-to-end reconciliation simulation (per-strategy)
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_lines)]
 fn simulate_strategy(
     local_hashes: &[ElementHash],
     remote_hashes: &[ElementHash],
     strategy: &str,
     network_latency_ms: u64,
     decode_budget: usize,
-    filter_fpr_ppm: u32,
+    filter_fpr: f64,
 ) -> StrategyResult {
     let mut local = ResidentKernel::new();
     let mut remote = ResidentKernel::new();
@@ -409,7 +481,6 @@ fn simulate_strategy(
                 {
                     total_wire += request.capacity * 8 * 2;
                     remote_sketch.xor(&local_sketch).unwrap();
-                    // FAIRNESS: use decode_elements_with_budget for all strategies.
                     match remote_sketch.decode_elements_with_budget(request.capacity, decode_budget)
                     {
                         Ok(roots) => {
@@ -427,7 +498,7 @@ fn simulate_strategy(
             }
 
             "cuckoo" | "cqf" | "bloom" => {
-                // 1. Try sketch decode first (same as sketch_split).
+                // 1. Try sketch decode first.
                 let mut overflow_requests = Vec::new();
                 for ((mut remote_sketch, local_sketch), request) in remote_sketches
                     .into_iter()
@@ -446,12 +517,12 @@ fn simulate_strategy(
                             });
                         }
                         Err(_) => {
-                            overflow_requests.push(*request);
+                            overflow_requests.push(request.clone());
                         }
                     }
                 }
 
-                // 2. For overflow buckets, run 2-RTT filter protocol.
+                // 2. For overflow buckets, run 1-RTT filter protocol.
                 if !overflow_requests.is_empty() {
                     let filter_type = match strategy {
                         "cuckoo" => "cuckoo",
@@ -459,21 +530,23 @@ fn simulate_strategy(
                         "bloom" => "bloom",
                         _ => unreachable!(),
                     };
-                    let context = FilterRoundContext {
-                        local_h64: &local_h64,
-                        remote_h64: &remote_h64,
-                        local_index: &local_index,
-                        remote_index: &remote_index,
-                        decode_budget,
-                        filter_fpr_ppm,
-                    };
-                    let (filter_decoded, filter_wire, filter_cpu) =
-                        simulate_filter_rounds(&context, &overflow_requests, filter_type);
+                    let (filter_decoded, filter_failed, filter_wire, filter_cpu) =
+                        simulate_filter_rounds(
+                            &local_h64,
+                            &remote_h64,
+                            &local_index,
+                            &remote_index,
+                            &overflow_requests,
+                            decode_budget,
+                            filter_fpr,
+                            filter_type,
+                        );
                     total_wire += filter_wire;
                     total_cpu += filter_cpu;
-                    // 2 RTTs for the filter protocol.
-                    total_wall += Duration::from_millis(network_latency_ms * 2);
+                    // 1 RTT for the filter protocol (2 one-way messages).
+                    total_wall += Duration::from_millis(network_latency_ms);
                     batch.successful_buckets.extend(filter_decoded);
+                    batch.failed_buckets.extend(filter_failed);
                 }
             }
 
@@ -497,41 +570,42 @@ fn simulate_strategy(
                             });
                         }
                         Err(_) => {
-                            overflow_requests.push(*request);
+                            overflow_requests.push(request.clone());
                         }
                     }
                 }
 
-                // 2. For small overflows, use filter; for large, fall back to split.
+                // 2. Small overflows: filter protocol. Large: sketch splitting.
                 let small_overflows: Vec<_> = overflow_requests
                     .iter()
                     .filter(|r| r.capacity <= MAX_BUCKET_SKETCH_CAPACITY * 2)
-                    .copied()
+                    .cloned()
                     .collect();
                 let large_overflows: Vec<_> = overflow_requests
                     .iter()
                     .filter(|r| r.capacity > MAX_BUCKET_SKETCH_CAPACITY * 2)
-                    .copied()
+                    .cloned()
                     .collect();
 
                 if !small_overflows.is_empty() {
-                    let context = FilterRoundContext {
-                        local_h64: &local_h64,
-                        remote_h64: &remote_h64,
-                        local_index: &local_index,
-                        remote_index: &remote_index,
-                        decode_budget,
-                        filter_fpr_ppm,
-                    };
-                    let (filter_decoded, filter_wire, filter_cpu) =
-                        simulate_filter_rounds(&context, &small_overflows, "cuckoo");
+                    let (filter_decoded, filter_failed, filter_wire, filter_cpu) =
+                        simulate_filter_rounds(
+                            &local_h64,
+                            &remote_h64,
+                            &local_index,
+                            &remote_index,
+                            &small_overflows,
+                            decode_budget,
+                            filter_fpr,
+                            "cuckoo",
+                        );
                     total_wire += filter_wire;
                     total_cpu += filter_cpu;
-                    total_wall += Duration::from_millis(network_latency_ms * 2);
+                    total_wall += Duration::from_millis(network_latency_ms);
                     batch.successful_buckets.extend(filter_decoded);
+                    batch.failed_buckets.extend(filter_failed);
                 }
 
-                // Large overflows: fall back to sketch splitting.
                 for request in &large_overflows {
                     batch.failed_buckets.push((request.depth, request.prefix));
                 }
@@ -549,7 +623,7 @@ fn simulate_strategy(
                 accumulated_roots: _,
             } => {
                 current_requests = requests;
-                // Charge RTT latency for this round.
+                // Charge 1 RTT for this sketch exchange round.
                 if network_latency_ms > 0 {
                     std::thread::sleep(Duration::from_millis(network_latency_ms));
                 }
@@ -581,15 +655,17 @@ fn simulate_strategy(
 // Comparison table printer
 // ---------------------------------------------------------------------------
 
-fn print_comparison(comparison: &Comparison<'_>) {
-    let [sketch, cuckoo, cqf, bloom, hybrid] = comparison.results;
-    let Comparison {
-        case_name,
-        delta,
-        latency_ms,
-        budget,
-        ..
-    } = comparison;
+fn print_comparison(
+    case_name: &str,
+    delta: usize,
+    latency_ms: u64,
+    budget: usize,
+    sketch: &StrategyResult,
+    cuckoo: &StrategyResult,
+    cqf: &StrategyResult,
+    bloom: &StrategyResult,
+    hybrid: &StrategyResult,
+) {
     let winner = if cuckoo.wall_ms < sketch.wall_ms
         && cuckoo.wall_ms < cqf.wall_ms
         && cuckoo.wall_ms < bloom.wall_ms
@@ -616,7 +692,7 @@ fn print_comparison(comparison: &Comparison<'_>) {
     let hy_s = if hybrid.resolved { "ok" } else { "FALL" };
 
     println!(
-        "  [{case_name:<7}] Δ={delta:>6} lat={latency_ms:>2}ms budget={budget:>8} | \
+        "  [{case_name:<13}] Δ={delta:>6} lat={latency_ms:>2}ms budget={budget:>8} | \
          sketch {sk_s:>4} {sk_w:>8.1}ms/{sk_c:>7.1}ms r{sk_r:<2} {sk_bw:>7}B | \
          cuckoo {ck_s:>4} {ck_w:>8.1}ms/{ck_c:>7.1}ms r{ck_r:<2} {ck_bw:>7}B | \
          cqf    {cq_s:>4} {cq_w:>8.1}ms/{cq_c:>7.1}ms r{cq_r:<2} {cq_bw:>7}B | \
@@ -647,7 +723,7 @@ fn print_comparison(comparison: &Comparison<'_>) {
 }
 
 // ---------------------------------------------------------------------------
-// Layer 1: Microbenchmarks (probe ALL N entries, not min(N, 10K))
+// Layer 1: Microbenchmarks (probe ALL N entries)
 // ---------------------------------------------------------------------------
 
 fn microbenchmarks() {
@@ -656,8 +732,8 @@ fn microbenchmarks() {
     for capacity in [1_000, 10_000, 100_000] {
         // --- Cuckoo ---
         let elapsed = measure(10, || {
-            let mut filter = CuckooFilter::with_fpr_ppm(capacity, 1_000);
-            let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
+            let mut filter = CuckooFilter::with_fpr(capacity, 0.001);
+            let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
             for _ in 0..capacity {
                 filter.insert(&(gen.next() | 1));
             }
@@ -665,8 +741,8 @@ fn microbenchmarks() {
         });
         report(&format!("cuckoo/insert/{capacity}"), 10, elapsed);
 
-        let mut filter = CuckooFilter::with_fpr_ppm(capacity, 1_000);
-        let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
+        let mut filter = CuckooFilter::with_fpr(capacity, 0.001);
+        let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
         let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
         for val in &probe_values {
             filter.insert(val);
@@ -687,7 +763,7 @@ fn microbenchmarks() {
         // --- CQF ---
         let elapsed = measure(10, || {
             let mut filter = CountingQuotientFilter::with_remainder_bits(capacity, 10);
-            let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
+            let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
             for _ in 0..capacity {
                 filter.insert(&(gen.next() | 1));
             }
@@ -696,7 +772,7 @@ fn microbenchmarks() {
         report(&format!("cqf/insert/{capacity}"), 10, elapsed);
 
         let mut filter = CountingQuotientFilter::with_remainder_bits(capacity, 10);
-        let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
+        let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
         let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
         for val in &probe_values {
             filter.insert(val);
@@ -716,8 +792,8 @@ fn microbenchmarks() {
 
         // --- Bloom ---
         let elapsed = measure(10, || {
-            let mut filter = BloomFilter::with_fpr_ppm(capacity, 1_000);
-            let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
+            let mut filter = BloomFilter::with_fpr(capacity, 0.001);
+            let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
             for _ in 0..capacity {
                 filter.insert(&(gen.next() | 1));
             }
@@ -725,8 +801,8 @@ fn microbenchmarks() {
         });
         report(&format!("bloom/insert/{capacity}"), 10, elapsed);
 
-        let mut filter = BloomFilter::with_fpr_ppm(capacity, 1_000);
-        let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
+        let mut filter = BloomFilter::with_fpr(capacity, 0.001);
+        let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
         let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
         for val in &probe_values {
             filter.insert(val);
@@ -773,17 +849,21 @@ fn e2e_simulation() {
     let mut gen = Xorshift128::new(0x243f_6a88_85a3_08d3);
     let base: Vec<ElementHash> = (0..base_count).map(|_| gen.hash()).collect();
 
+    let generators: &[(
+        &str,
+        fn(&[ElementHash], usize) -> (Vec<ElementHash>, Vec<ElementHash>),
+    )] = &[
+        ("best", generate_best_case),
+        ("average", generate_average_case),
+        ("worst", generate_worst_case),
+        ("sym_mix", generate_symmetric_mix),
+    ];
+
     for &network_latency_ms in &[0_u64, 20, 30, 40] {
         for &decode_budget in &[1_000_000_usize, 4_000_000, 8_000_000, 16_000_000] {
             println!("\n--- network={network_latency_ms}ms, budget={decode_budget} ---");
 
             for &delta in &[1_000_usize, 5_000, 10_000, 25_000, 50_000, 100_000] {
-                let generators: &[(&str, ScenarioGenerator)] = &[
-                    ("best", generate_best_case),
-                    ("average", generate_average_case),
-                    ("worst", generate_worst_case),
-                ];
-
                 for &(case_name, gen_fn) in generators {
                     let (local, remote) = gen_fn(&base, delta);
 
@@ -793,7 +873,7 @@ fn e2e_simulation() {
                         "sketch_split",
                         network_latency_ms,
                         decode_budget,
-                        1_000,
+                        0.001,
                     );
                     let cuckoo = simulate_strategy(
                         &local,
@@ -801,7 +881,7 @@ fn e2e_simulation() {
                         "cuckoo",
                         network_latency_ms,
                         decode_budget,
-                        1_000,
+                        0.001,
                     );
                     let cqf = simulate_strategy(
                         &local,
@@ -809,7 +889,7 @@ fn e2e_simulation() {
                         "cqf",
                         network_latency_ms,
                         decode_budget,
-                        1_000,
+                        0.001,
                     );
                     let bloom = simulate_strategy(
                         &local,
@@ -817,7 +897,7 @@ fn e2e_simulation() {
                         "bloom",
                         network_latency_ms,
                         decode_budget,
-                        1_000,
+                        0.001,
                     );
                     let hybrid = simulate_strategy(
                         &local,
@@ -825,16 +905,20 @@ fn e2e_simulation() {
                         "hybrid",
                         network_latency_ms,
                         decode_budget,
-                        1_000,
+                        0.001,
                     );
 
-                    print_comparison(&Comparison {
+                    print_comparison(
                         case_name,
                         delta,
-                        latency_ms: network_latency_ms,
-                        budget: decode_budget,
-                        results: [&sketch, &cuckoo, &cqf, &bloom, &hybrid],
-                    });
+                        network_latency_ms,
+                        decode_budget,
+                        &sketch,
+                        &cuckoo,
+                        &cqf,
+                        &bloom,
+                        &hybrid,
+                    );
                 }
             }
         }
@@ -872,11 +956,11 @@ fn cross_over_summary() {
             for &delta in &[1_000, 5_000, 10_000, 25_000, 50_000, 100_000] {
                 let (local, remote) = generate_average_case(&base, delta);
                 let sketch =
-                    simulate_strategy(&local, &remote, "sketch_split", latency, budget, 1_000);
-                let cuckoo = simulate_strategy(&local, &remote, "cuckoo", latency, budget, 1_000);
-                let cqf = simulate_strategy(&local, &remote, "cqf", latency, budget, 1_000);
-                let bloom = simulate_strategy(&local, &remote, "bloom", latency, budget, 1_000);
-                let hybrid = simulate_strategy(&local, &remote, "hybrid", latency, budget, 1_000);
+                    simulate_strategy(&local, &remote, "sketch_split", latency, budget, 0.001);
+                let cuckoo = simulate_strategy(&local, &remote, "cuckoo", latency, budget, 0.001);
+                let cqf = simulate_strategy(&local, &remote, "cqf", latency, budget, 0.001);
+                let bloom = simulate_strategy(&local, &remote, "bloom", latency, budget, 0.001);
+                let hybrid = simulate_strategy(&local, &remote, "hybrid", latency, budget, 0.001);
 
                 if cuckoo.wall_ms < sketch.wall_ms && cuckoo_co.is_none() {
                     cuckoo_co = Some(delta);
