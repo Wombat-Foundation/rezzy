@@ -97,7 +97,7 @@ impl LtHash {
     pub const ZERO: Self = Self([0u16; 1024]);
 
     /// MSC4500 v1 domain separation tag for the primary state accumulator.
-    const DST: &'static [u8] = b"msc4500_lthash16_v1\x00";
+    const DST: &'static [u8] = b"msc4500:lthash16:v1";
 
     /// Compute the 2048-byte SHAKE256 expansion for a single state entry.
     ///
@@ -290,7 +290,7 @@ impl RedactionOverlay {
     /// The identity element (no effectively redacted selected events).
     pub const ZERO: Self = Self([0u16; 1024]);
 
-    const DST: &'static [u8] = b"msc4500_lthash16_redactions_v1\x00";
+    const DST: &'static [u8] = b"msc4500:redactions:v1";
 
     // TODO: The overlay duplicates `LtHash`'s tuple encoding, lattice updates,
     // and digest serialization instead of sharing them. Future changes to
@@ -535,8 +535,8 @@ mod tests {
         assert_eq!(
             overlay.digest(),
             [
-                69, 243, 113, 245, 224, 85, 213, 42, 145, 18, 212, 145, 211, 128, 87, 65, 242, 201,
-                250, 196, 142, 78, 66, 51, 101, 158, 98, 105, 6, 218, 254, 190,
+                173, 143, 238, 133, 116, 45, 142, 118, 230, 225, 87, 181, 99, 179, 124, 211, 229,
+                250, 118, 139, 173, 24, 157, 114, 159, 169, 20, 226, 222, 151, 119, 187,
             ]
         );
 
@@ -546,8 +546,8 @@ mod tests {
         assert_eq!(
             two.digest(),
             [
-                54, 140, 209, 168, 4, 44, 140, 28, 220, 20, 48, 207, 210, 180, 227, 77, 28, 8, 19,
-                140, 157, 131, 50, 182, 108, 137, 17, 37, 212, 109, 40, 231,
+                147, 118, 49, 59, 191, 183, 6, 103, 233, 36, 241, 248, 184, 93, 173, 224, 42, 114,
+                189, 236, 2, 122, 198, 19, 125, 159, 242, 122, 65, 4, 145, 97,
             ]
         );
 
@@ -556,8 +556,8 @@ mod tests {
         assert_eq!(
             custom.digest(),
             [
-                170, 247, 17, 119, 141, 227, 146, 115, 229, 232, 55, 1, 194, 64, 252, 131, 61, 17,
-                11, 81, 6, 9, 121, 44, 58, 85, 193, 228, 45, 47, 192, 70,
+                177, 21, 204, 101, 0, 30, 236, 16, 131, 10, 130, 158, 76, 21, 74, 94, 123, 206, 66,
+                97, 110, 243, 218, 53, 119, 208, 66, 214, 19, 58, 156, 66,
             ]
         );
     }
@@ -699,7 +699,7 @@ mod tests {
     /// Validate against the official MSC4500 test vectors.
     ///
     /// These vectors use SHAKE256 expansion (with domain separation tag
-    /// `msc4500_lthash16_v1\x00`) and BLAKE2b-256 collapse.
+    /// `msc4500:lthash16:v1`) and BLAKE2b-256 collapse.
     #[test]
     fn test_msc4500_vectors() {
         fn hex(bytes: &[u8]) -> alloc::string::String {
@@ -730,15 +730,15 @@ mod tests {
         // --- Scenario 1: Add element 1 ---
         let seed1 = LtHash::seed("m.room.member", "@alice:example.com", &"$event_1");
         let exp1_bytes: Vec<u8> = seed1.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&exp1_bytes), "c6a4f2e8f4016c9aaf9c52e67020f221");
+        assert_eq!(hex(&exp1_bytes), "dbcadc58c85d7be0efca00e478a66697");
 
         let mut s1 = s0;
         s1.add_seed(&seed1);
         let s1_bytes: Vec<u8> = s1.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&s1_bytes), "c6a4f2e8f4016c9aaf9c52e67020f221");
+        assert_eq!(hex(&s1_bytes), "dbcadc58c85d7be0efca00e478a66697");
         assert_eq!(
             b64u(&s1.digest()),
-            "0mRyt9cOWBGyKqV14a2omLPIOJFUfX0LkJcqpE20LbI"
+            "bX7ccIPg0lyRZyBYO_UZs5nC4iVitD62L6cJfL2iAiU"
         );
 
         // --- Scenario 2: Remove element 1 ---
@@ -753,30 +753,30 @@ mod tests {
         // --- Scenario 3: Add element 2 ---
         let seed2 = LtHash::seed("m.room.name", "", &"$event_2");
         let exp2_bytes: Vec<u8> = seed2.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&exp2_bytes), "8107236052d1e6d7193cada70d85fa2c");
+        assert_eq!(hex(&exp2_bytes), "118e0b32fac730c01f1351378389793a");
 
         let mut s2 = s1;
         s2.add_seed(&seed2);
         let s2_bytes: Vec<u8> = s2.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&s2_bytes), "47ac154946d35272c8d8ff8d7da5ec4e");
+        assert_eq!(hex(&s2_bytes), "ec58e78ac225aba00ede511bfb2fdfd1");
         assert_eq!(
             b64u(&s2.digest()),
-            "aH8bXDxcQTK2_cA8Bw4BKHsBrsBE6YVgzN_uUBAJzA8"
+            "uPdh4wkYWs0awGqFQmf3ieHSoFoMXFPwZmdqrwSPhkM"
         );
 
         // --- Scenario 4: Replace element 1 with element 3 ---
         let seed3 = LtHash::seed("m.room.member", "@alice:example.com", &"$event_3");
         let exp3_bytes: Vec<u8> = seed3.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&exp3_bytes), "14e9b8900236b9d0d2e07dc6b392fa14");
+        assert_eq!(hex(&exp3_bytes), "4f026432409d32757f83fd088659c6c6");
 
         let mut s3 = s2;
         s3.sub_seed(&seed1);
         s3.add_seed(&seed3);
         let s3_bytes: Vec<u8> = s3.0[..8].iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(hex(&s3_bytes), "95f0dbf054079fa8eb1c2a6ec017f441");
+        assert_eq!(hex(&s3_bytes), "60906f643a6562359e964e4009e33f01");
         assert_eq!(
             b64u(&s3.digest()),
-            "DB65faOdzCq5z6YcTaMp282OIwuJKnBYOFfJNEJJJ6k"
+            "eqev6DfKxlhX6RocDu97tQghpBYRRQ9TfbGXiiQiSZA"
         );
     }
 
