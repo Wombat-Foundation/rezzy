@@ -307,7 +307,7 @@ impl BloomFilter {
         let m = -(n * p.ln()) / (ln2 * ln2);
         let num_bits = (m.ceil() as u64).max(64);
         let k = ((num_bits as f64 / n) * ln2).ceil() as u32;
-        let num_words = (num_bits + 63) / 64;
+        let num_words = num_bits.div_ceil(64);
         Self {
             bits: vec![0; num_words as usize],
             num_bits,
@@ -318,7 +318,7 @@ impl BloomFilter {
     }
 
     fn get_bit(&self, hash: u64, index: u32) -> bool {
-        let bit = (hash.wrapping_add(index as u64 * hash.swap_bytes().rotate_left(13))
+        let bit = (hash.wrapping_add(u64::from(index) * hash.swap_bytes().rotate_left(13))
             % self.num_bits) as usize;
         let word = bit / 64;
         let offset = bit % 64;
@@ -326,7 +326,7 @@ impl BloomFilter {
     }
 
     fn set_bit(&mut self, hash: u64, index: u32) {
-        let bit = (hash.wrapping_add(index as u64 * hash.swap_bytes().rotate_left(13))
+        let bit = (hash.wrapping_add(u64::from(index) * hash.swap_bytes().rotate_left(13))
             % self.num_bits) as usize;
         let word = bit / 64;
         let offset = bit % 64;
@@ -370,7 +370,6 @@ impl BloomFilter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn cuckoo_insert_and_contains() {

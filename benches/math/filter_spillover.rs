@@ -517,7 +517,7 @@ fn simulate_strategy(
                             });
                         }
                         Err(_) => {
-                            overflow_requests.push(request.clone());
+                            overflow_requests.push(*request);
                         }
                     }
                 }
@@ -570,7 +570,7 @@ fn simulate_strategy(
                             });
                         }
                         Err(_) => {
-                            overflow_requests.push(request.clone());
+                            overflow_requests.push(*request);
                         }
                     }
                 }
@@ -579,12 +579,12 @@ fn simulate_strategy(
                 let small_overflows: Vec<_> = overflow_requests
                     .iter()
                     .filter(|r| r.capacity <= MAX_BUCKET_SKETCH_CAPACITY * 2)
-                    .cloned()
+                    .copied()
                     .collect();
                 let large_overflows: Vec<_> = overflow_requests
                     .iter()
                     .filter(|r| r.capacity > MAX_BUCKET_SKETCH_CAPACITY * 2)
-                    .cloned()
+                    .copied()
                     .collect();
 
                 if !small_overflows.is_empty() {
