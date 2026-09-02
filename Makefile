@@ -25,7 +25,7 @@ format: ##H Format codebase (Rust + Lean + scripts)
 
 .PHONY: fix
 fix:	##H Clippy auto-fix
-	$(CARGO) clippy --allow-dirty --fix --all-targets $(CARGO_FEATURE_ARGS)
+	$(CARGO) clippy --allow-dirty --allow-staged --fix --all-targets $(CARGO_FEATURE_ARGS)
 	# $(CARGO) fix --all-targets --allow-dirty
 
 .PHONY: lint

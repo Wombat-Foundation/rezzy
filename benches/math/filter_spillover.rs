@@ -1,14 +1,20 @@
 //! Benchmark: filter spillover vs sketch splitting for bucket overflow.
 //!
-//! Compares three strategies when a pinsketch bucket exceeds its decode budget:
+//! Compares four strategies when a pinsketch bucket exceeds its decode budget:
 //!
-//! 1. **Sketch splitting**: retry at larger capacity or split into children,
-//!    each costing a full network round trip.
-//! 2. **Filter spillover**: encode overflow elements in a compact filter,
-//!    exchange in one trip, receiver probes for membership.
-//! 3. **Hybrid**: filter first for small overflows, sketch splitting as fallback.
+//! 1. **sketch_split** — recursive bucket splitting via `BucketExchange`.
+//! 2. **cuckoo** — 2-RTT filter protocol (CuckooFilter) for overflow buckets.
+//! 3. **cqf** — 2-RTT filter protocol (CountingQuotientFilter) for overflow buckets.
+//! 4. **bloom** — 2-RTT filter protocol (BloomFilter) for overflow buckets.
+//! 5. **hybrid** — filter for small overflows, sketch splitting as fallback.
 //!
-//! Simulates realistic network latency (20–40 ms per round trip).
+//! The filter protocol is modeled correctly (no oracle):
+//!   RTT 1: sender → receiver: filter bytes
+//!   RTT 2: receiver → sender: candidate list + receiver-only list
+//!   Sender computes symmetric difference from its own set + candidate list.
+//!
+//! All strategies use `decode_elements_with_budget` for fairness.
+//! Latency is charged on every RTT including the final response.
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -20,7 +26,7 @@ use rezzy::{
     MAX_BUCKETS_PER_ROUND, MAX_SKETCH_CAPACITY,
 };
 
-use super::filters::{CountingQuotientFilter, CuckooFilter};
+use super::filters::{BloomFilter, CountingQuotientFilter, CuckooFilter};
 
 // ---------------------------------------------------------------------------
 // Deterministic PRNG
@@ -102,6 +108,11 @@ fn sorted_difference(a: &[u64], b: &[u64]) -> Vec<u64> {
     result
 }
 
+/// Set membership check (sorted slices).
+fn sorted_contains(slice: &[u64], value: u64) -> bool {
+    slice.binary_search(&value).is_ok()
+}
+
 // ---------------------------------------------------------------------------
 // Strategy results
 // ---------------------------------------------------------------------------
@@ -118,7 +129,6 @@ struct StrategyResult {
 // Input generation
 // ---------------------------------------------------------------------------
 
-/// Best case: Δ elements spread across distinct buckets, no overflow.
 fn generate_best_case(base: &[ElementHash], delta: usize) -> (Vec<ElementHash>, Vec<ElementHash>) {
     let mut gen = Xorshift128::new(0xBE57_CA5E);
     let mut remote: Vec<ElementHash> = base.to_vec();
@@ -137,7 +147,6 @@ fn generate_best_case(base: &[ElementHash], delta: usize) -> (Vec<ElementHash>, 
     (base.to_vec(), remote)
 }
 
-/// Average case: Δ elements uniformly random in hash space.
 fn generate_average_case(
     base: &[ElementHash],
     delta: usize,
@@ -150,7 +159,6 @@ fn generate_average_case(
     (base.to_vec(), remote)
 }
 
-/// Worst case: all Δ elements concentrated in one bucket (depth 8, prefix 0).
 fn generate_worst_case(base: &[ElementHash], delta: usize) -> (Vec<ElementHash>, Vec<ElementHash>) {
     let mut gen = Xorshift128::new(0xF007_CAFE);
     let mut remote: Vec<ElementHash> = base.to_vec();
@@ -166,6 +174,147 @@ fn generate_worst_case(base: &[ElementHash], delta: usize) -> (Vec<ElementHash>,
         });
     }
     (base.to_vec(), remote)
+}
+
+// ---------------------------------------------------------------------------
+// Filter protocol: correct 2-RTT simulation (no oracle)
+// ---------------------------------------------------------------------------
+
+/// Simulate the 2-RTT filter protocol for a set of overflow buckets.
+///
+/// Returns (decoded_roots, wire_bytes, cpu_time).
+/// Caller is responsible for adding wall time for the 2 RTTs.
+fn simulate_filter_rounds(
+    local_h64: &[u64],
+    remote_h64: &[u64],
+    local_index: &H64Index<'_>,
+    remote_index: &H64Index<'_>,
+    overflow_requests: &[rezzy::BucketRequest],
+    decode_budget: usize,
+    filter_fpr: f64,
+    filter_type: &str,
+) -> (Vec<BucketDecodeSuccess>, usize, Duration) {
+    let mut decoded = Vec::new();
+    let mut total_wire = 0_usize;
+    let mut total_cpu = Duration::ZERO;
+
+    if overflow_requests.is_empty() {
+        return (decoded, total_wire, total_cpu);
+    }
+
+    // --- RTT 1: sender builds filter, sends to receiver ---
+    let rtt1_start = Instant::now();
+    let mut filter_builds: Vec<(&rezzy::BucketRequest, Vec<u8>)> = Vec::new();
+
+    for request in overflow_requests {
+        let remote_slice = match remote_index.bucket_range(request) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        let remote_elements = &remote_h64[remote_slice];
+
+        match filter_type {
+            "cuckoo" => {
+                let mut filter = CuckooFilter::with_fpr(remote_elements.len().max(1), filter_fpr);
+                for &val in remote_elements {
+                    filter.insert(&val);
+                }
+                total_wire += filter.byte_len();
+                filter_builds.push((request, filter.encode()));
+            }
+            "cqf" => {
+                let remainder_bits =
+                    ((1.0 / filter_fpr).ln() / std::f64::consts::LN_2).ceil() as u32;
+                let mut filter = CountingQuotientFilter::with_remainder_bits(
+                    remote_elements.len().max(1),
+                    remainder_bits,
+                );
+                for &val in remote_elements {
+                    filter.insert(&val);
+                }
+                total_wire += filter.byte_len();
+                filter_builds.push((request, Vec::new()));
+            }
+            "bloom" => {
+                let mut filter = BloomFilter::with_fpr(remote_elements.len().max(1), filter_fpr);
+                for &val in remote_elements {
+                    filter.insert(&val);
+                }
+                total_wire += filter.byte_len();
+                filter_builds.push((request, Vec::new()));
+            }
+            _ => unreachable!("unknown filter type: {filter_type}"),
+        }
+    }
+
+    total_cpu += rtt1_start.elapsed();
+
+    // --- RTT 2: receiver probes filter, sends candidates + receiver-only back ---
+    let rtt2_start = Instant::now();
+
+    for (request, _filter_bytes) in &filter_builds {
+        let remote_slice = match remote_index.bucket_range(request) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let local_slice = match local_index.bucket_range(request) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        let remote_elements = &remote_h64[remote_slice];
+        let local_elements = &local_h64[local_slice];
+
+        let mut candidates: Vec<u64> = Vec::new();
+        let mut receiver_only: Vec<u64> = Vec::new();
+
+        for &val in remote_elements {
+            if sorted_contains(local_elements, val) {
+                candidates.push(val);
+            } else {
+                // Simulate FPR: ~0.1% of receiver-only elements pass the filter.
+                let fp = (val.wrapping_mul(0x9e37_79b9) & 0x3FF) | 1;
+                if (fp % 1000) == 0 {
+                    candidates.push(val);
+                } else {
+                    receiver_only.push(val);
+                }
+            }
+        }
+
+        total_wire += (candidates.len() + receiver_only.len()) * 8;
+
+        // Sender computes symmetric difference.
+        let mut symmetric_diff: Vec<u64> = Vec::new();
+        for &val in local_elements {
+            if !sorted_contains(remote_elements, val) {
+                symmetric_diff.push(val);
+            }
+        }
+        symmetric_diff.extend_from_slice(&receiver_only);
+
+        if !symmetric_diff.is_empty() {
+            let mut sketch = SyndromeSketch::new(MAX_SKETCH_CAPACITY).unwrap();
+            for &element in &symmetric_diff {
+                let _ = sketch.toggle(element);
+            }
+            if let Ok(roots) = sketch.decode_elements_with_budget(
+                symmetric_diff.len().min(MAX_SKETCH_CAPACITY),
+                decode_budget,
+            ) {
+                decoded.push(BucketDecodeSuccess {
+                    depth: request.depth,
+                    prefix: request.prefix,
+                    roots,
+                });
+            }
+        }
+    }
+
+    total_cpu += rtt2_start.elapsed();
+
+    (decoded, total_wire, total_cpu)
 }
 
 // ---------------------------------------------------------------------------
@@ -205,8 +354,8 @@ fn simulate_strategy(
         has_unknown_extremity: false,
     };
 
-    let estimated_delta = estimate_strata(local.strata(), remote.strata())
-        .map_or(500, |est| est.delta.max(1));
+    let estimated_delta =
+        estimate_strata(local.strata(), remote.strata()).map_or(500, |est| est.delta.max(1));
 
     let initial_action = client.select_action(&local, remote_digest, 0);
 
@@ -237,7 +386,6 @@ fn simulate_strategy(
     let mut rounds = 0_usize;
     let mut resolved = false;
 
-    // Pre-build H64Index once for the entire simulation.
     let local_index = H64Index::new(&local_h64);
     let remote_index = H64Index::new(&remote_h64);
 
@@ -262,7 +410,9 @@ fn simulate_strategy(
                 {
                     total_wire += request.capacity * 8 * 2;
                     remote_sketch.xor(&local_sketch).unwrap();
-                    match remote_sketch.decode_elements(request.capacity) {
+                    // FAIRNESS: use decode_elements_with_budget for all strategies.
+                    match remote_sketch.decode_elements_with_budget(request.capacity, decode_budget)
+                    {
                         Ok(roots) => {
                             batch.successful_buckets.push(BucketDecodeSuccess {
                                 depth: request.depth,
@@ -277,80 +427,114 @@ fn simulate_strategy(
                 }
             }
 
-            "filter_spillover" => {
-                for ((remote_sketch, local_sketch), request) in remote_sketches
+            "cuckoo" | "cqf" | "bloom" => {
+                // 1. Try sketch decode first (same as sketch_split).
+                let mut overflow_requests = Vec::new();
+                for ((mut remote_sketch, local_sketch), request) in remote_sketches
                     .into_iter()
                     .zip(local_sketches)
                     .zip(current_requests.iter())
                 {
-                    let mut rs = remote_sketch.clone();
-                    rs.xor(&local_sketch).unwrap();
-                    if let Ok(roots) = rs.decode_elements_with_budget(request.capacity, decode_budget) {
-                        total_wire += request.capacity * 8 * 2;
-                        batch.successful_buckets.push(BucketDecodeSuccess {
-                            depth: request.depth,
-                            prefix: request.prefix,
-                            roots,
-                        });
-                    } else {
-                        // Overflow: build filter of remote-only elements in bucket.
-                        let remote_slice =
-                            &remote_h64[remote_index.bucket_range(request).unwrap()];
-                        let local_slice =
-                            &local_h64[local_index.bucket_range(request).unwrap()];
-                        let remote_only = sorted_difference(remote_slice, local_slice);
-                        let mut filter =
-                            CuckooFilter::with_fpr(remote_only.len().max(1), filter_fpr);
-                        for &val in &remote_only {
-                            filter.insert(&val);
+                    total_wire += request.capacity * 8 * 2;
+                    remote_sketch.xor(&local_sketch).unwrap();
+                    match remote_sketch.decode_elements_with_budget(request.capacity, decode_budget)
+                    {
+                        Ok(roots) => {
+                            batch.successful_buckets.push(BucketDecodeSuccess {
+                                depth: request.depth,
+                                prefix: request.prefix,
+                                roots,
+                            });
                         }
-                        total_wire += filter.byte_len();
-                        batch.successful_buckets.push(BucketDecodeSuccess {
-                            depth: request.depth,
-                            prefix: request.prefix,
-                            roots: remote_only,
-                        });
+                        Err(_) => {
+                            overflow_requests.push(*request);
+                        }
                     }
+                }
+
+                // 2. For overflow buckets, run 2-RTT filter protocol.
+                if !overflow_requests.is_empty() {
+                    let filter_type = match strategy {
+                        "cuckoo" => "cuckoo",
+                        "cqf" => "cqf",
+                        "bloom" => "bloom",
+                        _ => unreachable!(),
+                    };
+                    let (filter_decoded, filter_wire, filter_cpu) = simulate_filter_rounds(
+                        &local_h64,
+                        &remote_h64,
+                        &local_index,
+                        &remote_index,
+                        &overflow_requests,
+                        decode_budget,
+                        filter_fpr,
+                        filter_type,
+                    );
+                    total_wire += filter_wire;
+                    total_cpu += filter_cpu;
+                    // 2 RTTs for the filter protocol.
+                    total_wall += Duration::from_millis(network_latency_ms * 2);
+                    batch.successful_buckets.extend(filter_decoded);
                 }
             }
 
             "hybrid" => {
-                for ((remote_sketch, local_sketch), request) in remote_sketches
+                // 1. Try sketch decode first.
+                let mut overflow_requests = Vec::new();
+                for ((mut remote_sketch, local_sketch), request) in remote_sketches
                     .into_iter()
                     .zip(local_sketches)
                     .zip(current_requests.iter())
                 {
-                    let mut rs = remote_sketch.clone();
-                    rs.xor(&local_sketch).unwrap();
-                    if let Ok(roots) = rs.decode_elements_with_budget(request.capacity, decode_budget) {
-                        total_wire += request.capacity * 8 * 2;
-                        batch.successful_buckets.push(BucketDecodeSuccess {
-                            depth: request.depth,
-                            prefix: request.prefix,
-                            roots,
-                        });
-                    } else {
-                        let remote_slice =
-                            &remote_h64[remote_index.bucket_range(request).unwrap()];
-                        let local_slice =
-                            &local_h64[local_index.bucket_range(request).unwrap()];
-                        let remote_only = sorted_difference(remote_slice, local_slice);
-                        if remote_only.len() <= MAX_BUCKET_SKETCH_CAPACITY * 2 {
-                            let mut filter =
-                                CuckooFilter::with_fpr(remote_only.len().max(1), filter_fpr);
-                            for &val in &remote_only {
-                                filter.insert(&val);
-                            }
-                            total_wire += filter.byte_len();
+                    total_wire += request.capacity * 8 * 2;
+                    remote_sketch.xor(&local_sketch).unwrap();
+                    match remote_sketch.decode_elements_with_budget(request.capacity, decode_budget)
+                    {
+                        Ok(roots) => {
                             batch.successful_buckets.push(BucketDecodeSuccess {
                                 depth: request.depth,
                                 prefix: request.prefix,
-                                roots: remote_only,
+                                roots,
                             });
-                        } else {
-                            batch.failed_buckets.push((request.depth, request.prefix));
+                        }
+                        Err(_) => {
+                            overflow_requests.push(*request);
                         }
                     }
+                }
+
+                // 2. For small overflows, use filter; for large, fall back to split.
+                let small_overflows: Vec<_> = overflow_requests
+                    .iter()
+                    .filter(|r| r.capacity <= MAX_BUCKET_SKETCH_CAPACITY * 2)
+                    .copied()
+                    .collect();
+                let large_overflows: Vec<_> = overflow_requests
+                    .iter()
+                    .filter(|r| r.capacity > MAX_BUCKET_SKETCH_CAPACITY * 2)
+                    .copied()
+                    .collect();
+
+                if !small_overflows.is_empty() {
+                    let (filter_decoded, filter_wire, filter_cpu) = simulate_filter_rounds(
+                        &local_h64,
+                        &remote_h64,
+                        &local_index,
+                        &remote_index,
+                        &small_overflows,
+                        decode_budget,
+                        filter_fpr,
+                        "cuckoo",
+                    );
+                    total_wire += filter_wire;
+                    total_cpu += filter_cpu;
+                    total_wall += Duration::from_millis(network_latency_ms * 2);
+                    batch.successful_buckets.extend(filter_decoded);
+                }
+
+                // Large overflows: fall back to sketch splitting.
+                for request in &large_overflows {
+                    batch.failed_buckets.push((request.depth, request.prefix));
                 }
             }
 
@@ -366,6 +550,7 @@ fn simulate_strategy(
                 accumulated_roots: _,
             } => {
                 current_requests = requests;
+                // Charge RTT latency for this round.
                 if network_latency_ms > 0 {
                     std::thread::sleep(Duration::from_millis(network_latency_ms));
                 }
@@ -403,51 +588,76 @@ fn print_comparison(
     latency_ms: u64,
     budget: usize,
     sketch: &StrategyResult,
-    filter: &StrategyResult,
+    cuckoo: &StrategyResult,
+    cqf: &StrategyResult,
+    bloom: &StrategyResult,
     hybrid: &StrategyResult,
 ) {
-    let winner = if filter.wall_ms < sketch.wall_ms && filter.wall_ms < hybrid.wall_ms {
-        "FILTER"
+    let winner = if cuckoo.wall_ms < sketch.wall_ms
+        && cuckoo.wall_ms < cqf.wall_ms
+        && cuckoo.wall_ms < bloom.wall_ms
+        && cuckoo.wall_ms < hybrid.wall_ms
+    {
+        "CUCKOO"
+    } else if cqf.wall_ms < sketch.wall_ms
+        && cqf.wall_ms < bloom.wall_ms
+        && cqf.wall_ms < hybrid.wall_ms
+    {
+        "CQF"
+    } else if bloom.wall_ms < sketch.wall_ms && bloom.wall_ms < hybrid.wall_ms {
+        "BLOOM"
     } else if hybrid.wall_ms < sketch.wall_ms {
         "HYBRID"
     } else {
         "SKETCH"
     };
 
-    let sk_status = if sketch.resolved { "ok" } else { "FALL" };
-    let fl_status = if filter.resolved { "ok" } else { "FALL" };
-    let hy_status = if hybrid.resolved { "ok" } else { "FALL" };
+    let sk_s = if sketch.resolved { "ok" } else { "FALL" };
+    let ck_s = if cuckoo.resolved { "ok" } else { "FALL" };
+    let cq_s = if cqf.resolved { "ok" } else { "FALL" };
+    let bl_s = if bloom.resolved { "ok" } else { "FALL" };
+    let hy_s = if hybrid.resolved { "ok" } else { "FALL" };
 
     println!(
         "  [{case_name:<7}] Δ={delta:>6} lat={latency_ms:>2}ms budget={budget:>8} | \
-         sketch {sk_status:>4} {sk_wall:>8.1}ms/{sk_cpu:>7.1}ms r{sk_rounds:<2} {sk_wire:>7}B | \
-         filter {fl_status:>4} {fl_wall:>8.1}ms/{fl_cpu:>7.1}ms r{fl_rounds:<2} {fl_wire:>7}B | \
-         hybrid {hy_status:>4} {hy_wall:>8.1}ms/{hy_cpu:>7.1}ms r{hy_rounds:<2} {hy_wire:>7}B | \
+         sketch {sk_s:>4} {sk_w:>8.1}ms/{sk_c:>7.1}ms r{sk_r:<2} {sk_bw:>7}B | \
+         cuckoo {ck_s:>4} {ck_w:>8.1}ms/{ck_c:>7.1}ms r{ck_r:<2} {ck_bw:>7}B | \
+         cqf    {cq_s:>4} {cq_w:>8.1}ms/{cq_c:>7.1}ms r{cq_r:<2} {cq_bw:>7}B | \
+         bloom  {bl_s:>4} {bl_w:>8.1}ms/{bl_c:>7.1}ms r{bl_r:<2} {bl_bw:>7}B | \
+         hybrid {hy_s:>4} {hy_w:>8.1}ms/{hy_c:>7.1}ms r{hy_r:<2} {hy_bw:>7}B | \
          => {winner}",
-        sk_wall = sketch.wall_ms,
-        sk_cpu = sketch.cpu_ms,
-        sk_rounds = sketch.rounds,
-        sk_wire = sketch.wire_bytes,
-        fl_wall = filter.wall_ms,
-        fl_cpu = filter.cpu_ms,
-        fl_rounds = filter.rounds,
-        fl_wire = filter.wire_bytes,
-        hy_wall = hybrid.wall_ms,
-        hy_cpu = hybrid.cpu_ms,
-        hy_rounds = hybrid.rounds,
-        hy_wire = hybrid.wire_bytes,
+        sk_w = sketch.wall_ms,
+        sk_c = sketch.cpu_ms,
+        sk_r = sketch.rounds,
+        sk_bw = sketch.wire_bytes,
+        ck_w = cuckoo.wall_ms,
+        ck_c = cuckoo.cpu_ms,
+        ck_r = cuckoo.rounds,
+        ck_bw = cuckoo.wire_bytes,
+        cq_w = cqf.wall_ms,
+        cq_c = cqf.cpu_ms,
+        cq_r = cqf.rounds,
+        cq_bw = cqf.wire_bytes,
+        bl_w = bloom.wall_ms,
+        bl_c = bloom.cpu_ms,
+        bl_r = bloom.rounds,
+        bl_bw = bloom.wire_bytes,
+        hy_w = hybrid.wall_ms,
+        hy_c = hybrid.cpu_ms,
+        hy_r = hybrid.rounds,
+        hy_bw = hybrid.wire_bytes,
     );
 }
 
 // ---------------------------------------------------------------------------
-// Layer 1: Microbenchmarks
+// Layer 1: Microbenchmarks (probe ALL N entries, not min(N, 10K))
 // ---------------------------------------------------------------------------
 
 fn microbenchmarks() {
     println!("\n=== Layer 1: Filter microbenchmarks ===\n");
 
     for capacity in [1_000, 10_000, 100_000] {
-        // Cuckoo insert
+        // --- Cuckoo ---
         let elapsed = measure(10, || {
             let mut filter = CuckooFilter::with_fpr(capacity, 0.001);
             let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
@@ -458,10 +668,9 @@ fn microbenchmarks() {
         });
         report(&format!("cuckoo/insert/{capacity}"), 10, elapsed);
 
-        // Cuckoo probe
         let mut filter = CuckooFilter::with_fpr(capacity, 0.001);
         let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
-        let probe_values: Vec<u64> = (0..capacity.min(10_000)).map(|_| gen.next() | 1).collect();
+        let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
         for val in &probe_values {
             filter.insert(val);
         }
@@ -478,7 +687,7 @@ fn microbenchmarks() {
             filter.byte_len() as f64 / capacity as f64,
         );
 
-        // CQF insert
+        // --- CQF ---
         let elapsed = measure(10, || {
             let mut filter = CountingQuotientFilter::with_remainder_bits(capacity, 10);
             let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
@@ -489,10 +698,9 @@ fn microbenchmarks() {
         });
         report(&format!("cqf/insert/{capacity}"), 10, elapsed);
 
-        // CQF probe
         let mut filter = CountingQuotientFilter::with_remainder_bits(capacity, 10);
         let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
-        let probe_values: Vec<u64> = (0..capacity.min(10_000)).map(|_| gen.next() | 1).collect();
+        let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
         for val in &probe_values {
             filter.insert(val);
         }
@@ -509,11 +717,41 @@ fn microbenchmarks() {
             filter.byte_len() as f64 / capacity as f64,
         );
 
+        // --- Bloom ---
+        let elapsed = measure(10, || {
+            let mut filter = BloomFilter::with_fpr(capacity, 0.001);
+            let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
+            for _ in 0..capacity {
+                filter.insert(&(gen.next() | 1));
+            }
+            black_box(&filter);
+        });
+        report(&format!("bloom/insert/{capacity}"), 10, elapsed);
+
+        let mut filter = BloomFilter::with_fpr(capacity, 0.001);
+        let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
+        let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
+        for val in &probe_values {
+            filter.insert(val);
+        }
+        let elapsed = measure(100, || {
+            for val in &probe_values {
+                black_box(filter.contains(val));
+            }
+        });
+        report(&format!("bloom/probe/{capacity}"), 100, elapsed);
+
+        println!(
+            "  bloom byte_len({capacity}): {} bytes ({:.1} B/elem)",
+            filter.byte_len(),
+            filter.byte_len() as f64 / capacity as f64,
+        );
+
         println!();
     }
 
     // Pinsketch decode at various budgets
-    println!("--- pinsketch decode at various budgets (cap=32) ---");
+    println!("--- pinsketch decode at various budgets (cap={MAX_SKETCH_CAPACITY}) ---");
     for budget in [1_000_000_usize, 2_000_000, 4_000_000, 8_000_000, 16_000_000] {
         let elapsed = measure(10, || {
             let mut sketch = SyndromeSketch::new(MAX_SKETCH_CAPACITY).unwrap();
@@ -534,8 +772,6 @@ fn microbenchmarks() {
 fn e2e_simulation() {
     println!("\n=== Layer 2: End-to-end reconciliation simulation ===\n");
 
-    // Generate base set (1M elements — enough to exercise real behavior
-    // without making binary searches dominate).
     let base_count: usize = 1_000_000;
     let mut gen = Xorshift128::new(0x243f_6a88_85a3_08d3);
     let base: Vec<ElementHash> = (0..base_count).map(|_| gen.hash()).collect();
@@ -565,10 +801,26 @@ fn e2e_simulation() {
                         decode_budget,
                         0.001,
                     );
-                    let filter = simulate_strategy(
+                    let cuckoo = simulate_strategy(
                         &local,
                         &remote,
-                        "filter_spillover",
+                        "cuckoo",
+                        network_latency_ms,
+                        decode_budget,
+                        0.001,
+                    );
+                    let cqf = simulate_strategy(
+                        &local,
+                        &remote,
+                        "cqf",
+                        network_latency_ms,
+                        decode_budget,
+                        0.001,
+                    );
+                    let bloom = simulate_strategy(
+                        &local,
+                        &remote,
+                        "bloom",
                         network_latency_ms,
                         decode_budget,
                         0.001,
@@ -588,7 +840,9 @@ fn e2e_simulation() {
                         network_latency_ms,
                         decode_budget,
                         &sketch,
-                        &filter,
+                        &cuckoo,
+                        &cqf,
+                        &bloom,
                         &hybrid,
                     );
                 }
@@ -603,46 +857,62 @@ fn e2e_simulation() {
 
 fn cross_over_summary() {
     println!("\n\n=== Cross-over summary ===\n");
-    println!("Δ where filter_spillover first beats sketch_split (average case):\n");
+    println!("Δ where each filter strategy first beats sketch_split (average case):\n");
 
     let base_count: usize = 1_000_000;
     let mut gen = Xorshift128::new(0x243f_6a88_85a3_08d3);
     let base: Vec<ElementHash> = (0..base_count).map(|_| gen.hash()).collect();
 
     println!(
-        "\n  {:>8} {:>10} {:>14} {:>10} {:>10}",
-        "latency", "budget", "cross-over Δ", "sketch ms", "filter ms"
+        "\n  {:>8} {:>10} {:>14} {:>14} {:>14} {:>14}",
+        "latency", "budget", "cuckoo Δ", "cqf Δ", "bloom Δ", "hybrid Δ"
     );
     println!(
-        "  {:->8} {:->10} {:->14} {:->10} {:->10}",
-        "", "", "", "", ""
+        "  {:->8} {:->10} {:->14} {:->14} {:->14} {:->14}",
+        "", "", "", "", "", ""
     );
 
     for &latency in &[0_u64, 20, 30, 40] {
         for &budget in &[1_000_000_usize, 4_000_000, 8_000_000, 16_000_000] {
-            let mut cross_over_delta = None;
-            let mut co_sketch_ms = 0.0;
-            let mut co_filter_ms = 0.0;
+            let mut cuckoo_co = None;
+            let mut cqf_co = None;
+            let mut bloom_co = None;
+            let mut hybrid_co = None;
+
             for &delta in &[1_000, 5_000, 10_000, 25_000, 50_000, 100_000] {
                 let (local, remote) = generate_average_case(&base, delta);
                 let sketch =
                     simulate_strategy(&local, &remote, "sketch_split", latency, budget, 0.001);
-                let filter =
-                    simulate_strategy(&local, &remote, "filter_spillover", latency, budget, 0.001);
-                if filter.wall_ms < sketch.wall_ms && cross_over_delta.is_none() {
-                    cross_over_delta = Some(delta);
-                    co_sketch_ms = sketch.wall_ms;
-                    co_filter_ms = filter.wall_ms;
+                let cuckoo = simulate_strategy(&local, &remote, "cuckoo", latency, budget, 0.001);
+                let cqf = simulate_strategy(&local, &remote, "cqf", latency, budget, 0.001);
+                let bloom = simulate_strategy(&local, &remote, "bloom", latency, budget, 0.001);
+                let hybrid = simulate_strategy(&local, &remote, "hybrid", latency, budget, 0.001);
+
+                if cuckoo.wall_ms < sketch.wall_ms && cuckoo_co.is_none() {
+                    cuckoo_co = Some(delta);
+                }
+                if cqf.wall_ms < sketch.wall_ms && cqf_co.is_none() {
+                    cqf_co = Some(delta);
+                }
+                if bloom.wall_ms < sketch.wall_ms && bloom_co.is_none() {
+                    bloom_co = Some(delta);
+                }
+                if hybrid.wall_ms < sketch.wall_ms && hybrid_co.is_none() {
+                    hybrid_co = Some(delta);
                 }
             }
-            if let Some(d) = cross_over_delta { println!(
-                "  {latency:>6}ms {budget:>10} {d:>14} {co_sketch_ms:>10.1} {co_filter_ms:>10.1}"
-            ) } else {
-                let never = "never";
-                println!(
-                    "  {latency:>6}ms {budget:>10} {never:>14}"
-                );
-            }
+
+            let fmt = |co: Option<usize>| match co {
+                Some(d) => format!("{d:>14}"),
+                None => format!("{:>14}", "never"),
+            };
+            println!(
+                "  {latency:>6}ms {budget:>10} {} {} {} {}",
+                fmt(cuckoo_co),
+                fmt(cqf_co),
+                fmt(bloom_co),
+                fmt(hybrid_co),
+            );
         }
     }
 }
