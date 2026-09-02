@@ -27,6 +27,10 @@ pub use super::gf64::mul as gf64_mul;
 pub const MAX_SKETCH_CAPACITY: usize = 32;
 /// Default local extraction limit for CPU-bounded sketch decoding.
 pub const MAX_LOCAL_SKETCH_DECODE_CAPACITY: usize = MAX_SKETCH_CAPACITY;
+/// Hard-capped overflow capacity for adaptive reconciliation.
+/// Separate from `MAX_SKETCH_CAPACITY`; only reachable after overflow request
+/// validation passes.
+pub const MAX_OVERFLOW_SKETCH_CAPACITY: usize = 256;
 const EVENT_HASH_ENCODED_LEN: usize = 43;
 
 /// An invalid event identifier, wire digest, or sketch.
@@ -443,6 +447,104 @@ impl SyndromeSketch {
             .collect();
         Ok(Self { coordinates })
     }
+
+    /// Allocates an empty sketch with overflow extraction capacity.
+    ///
+    /// Overflow sketches are used when a standard 32-element sketch fails to
+    /// decode and a larger sketch is requested under the local overflow policy.
+    /// The capacity is validated against [`MAX_OVERFLOW_SKETCH_CAPACITY`].
+    ///
+    /// # Errors
+    /// Returns an error for zero capacity or capacity above the overflow maximum.
+    pub fn new_overflow(capacity: usize) -> Result<Self, AlgebraicError> {
+        if capacity == 0 || capacity > MAX_OVERFLOW_SKETCH_CAPACITY {
+            return Err(AlgebraicError::InvalidSketchCapacity);
+        }
+        Ok(Self {
+            coordinates: vec![0; capacity],
+        })
+    }
+
+    /// Constructs from externally provided coordinates with overflow validation.
+    ///
+    /// Like [`from_coordinates`](Self::from_coordinates) but validates against
+    /// [`MAX_OVERFLOW_SKETCH_CAPACITY`].
+    pub(crate) fn from_coordinates_overflow(coordinates: Vec<u64>) -> Result<Self, AlgebraicError> {
+        if coordinates.is_empty() || coordinates.len() > MAX_OVERFLOW_SKETCH_CAPACITY {
+            return Err(AlgebraicError::InvalidSketchCapacity);
+        }
+        Ok(Self { coordinates })
+    }
+
+    /// Decodes a sketch with overflow capacity from wire encoding.
+    ///
+    /// Like [`decode`](Self::decode) but validates against
+    /// [`MAX_OVERFLOW_SKETCH_CAPACITY`].
+    ///
+    /// # Errors
+    /// Returns an error for invalid capacity, base64, or encoded byte length.
+    pub fn decode_overflow(capacity: usize, encoded: &str) -> Result<Self, AlgebraicError> {
+        if capacity == 0 || capacity > MAX_OVERFLOW_SKETCH_CAPACITY {
+            return Err(AlgebraicError::InvalidSketchCapacity);
+        }
+        let expected_len = capacity
+            .checked_mul(8)
+            .ok_or(AlgebraicError::InvalidSketchLength)?;
+        let expected_encoded_len =
+            base64::encoded_len(expected_len, false).ok_or(AlgebraicError::InvalidSketchLength)?;
+        if encoded.len() != expected_encoded_len {
+            return Err(AlgebraicError::InvalidSketchLength);
+        }
+        let bytes = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|_| AlgebraicError::InvalidBase64)?;
+        Self::from_encoded_bytes(capacity, &bytes)
+    }
+
+    /// Decodes up to `max_elements` with overflow capacity support.
+    ///
+    /// Like [`decode_elements_with_budget`](Self::decode_elements_with_budget)
+    /// but validates against [`MAX_OVERFLOW_SKETCH_CAPACITY`] instead of
+    /// [`MAX_LOCAL_SKETCH_DECODE_CAPACITY`].
+    ///
+    /// # Errors
+    /// Returns [`AlgebraicError::InvalidSketchCapacity`] when `max_elements`
+    /// exceeds the sketch capacity or the overflow capacity limit, and
+    /// [`AlgebraicError::BudgetExhausted`] when root finding reaches its work
+    /// limit.
+    pub fn decode_elements_overflow_budget(
+        &self,
+        max_elements: usize,
+        budget: usize,
+    ) -> Result<Vec<u64>, AlgebraicError> {
+        if max_elements == 0
+            || max_elements > self.capacity()
+            || max_elements > MAX_OVERFLOW_SKETCH_CAPACITY
+        {
+            return Err(AlgebraicError::InvalidSketchCapacity);
+        }
+        let decoded = super::pinsketch::decode_with_budget(
+            &self.coordinates[..max_elements],
+            max_elements,
+            budget,
+        )?;
+        self.validate_decoded_overflow(decoded)
+    }
+
+    fn validate_decoded_overflow(&self, decoded: Vec<u64>) -> Result<Vec<u64>, AlgebraicError> {
+        if decoded.contains(&0) {
+            return Err(AlgebraicError::DecodeFailure);
+        }
+        let mut check = Self::new_overflow(self.capacity())?;
+        for element in &decoded {
+            check
+                .toggle(*element)
+                .expect("decoded elements are validated to be nonzero");
+        }
+        (check == *self)
+            .then_some(decoded)
+            .ok_or(AlgebraicError::DecodeFailure)
+    }
 }
 
 #[cfg(test)]
@@ -588,5 +690,82 @@ mod tests {
             SyndromeSketch::from_encoded_bytes(1, &bytes),
             Err(AlgebraicError::InvalidSketchLength)
         );
+    }
+
+    #[test]
+    fn overflow_capacity_rejects_above_limit() {
+        assert_eq!(
+            SyndromeSketch::new_overflow(MAX_OVERFLOW_SKETCH_CAPACITY + 1),
+            Err(AlgebraicError::InvalidSketchCapacity)
+        );
+        assert_eq!(
+            SyndromeSketch::new_overflow(0),
+            Err(AlgebraicError::InvalidSketchCapacity)
+        );
+        assert!(SyndromeSketch::new_overflow(MAX_OVERFLOW_SKETCH_CAPACITY).is_ok());
+        assert!(SyndromeSketch::new_overflow(64).is_ok());
+    }
+
+    #[test]
+    fn overflow_decode_rejects_oversized_capacity_before_allocation() {
+        assert_eq!(
+            SyndromeSketch::decode_overflow(300, "AAAAAAAAAAAAAAAA"),
+            Err(AlgebraicError::InvalidSketchCapacity)
+        );
+        assert_eq!(
+            SyndromeSketch::decode_overflow(0, ""),
+            Err(AlgebraicError::InvalidSketchCapacity)
+        );
+    }
+
+    #[test]
+    fn overflow_decode_budget_exhaustion() {
+        let mut sketch = SyndromeSketch::new_overflow(64).unwrap();
+        for i in 1..=64u64 {
+            sketch.toggle(i * 2 + 1).unwrap();
+        }
+        let res = sketch.decode_elements_overflow_budget(64, 100);
+        assert_eq!(res, Err(AlgebraicError::BudgetExhausted));
+    }
+
+    #[test]
+    fn overflow_257_vs_256_capacity() {
+        let mut sketch = SyndromeSketch::new_overflow(256).unwrap();
+        for i in 1..=257u64 {
+            sketch.toggle(i * 2 + 1).unwrap();
+        }
+        let res = sketch.decode_elements_overflow_budget(256, 1_000);
+        assert!(res.is_err(), "257 differences at capacity 256 must fail");
+    }
+
+    #[test]
+    fn overflow_decode_recovers_symmetric_difference() {
+        let mut local = SyndromeSketch::new_overflow(128).unwrap();
+        let mut remote = SyndromeSketch::new_overflow(128).unwrap();
+        for i in 1..=64u64 {
+            local.toggle(i * 2 + 1).unwrap();
+            remote.toggle(i * 2 + 1).unwrap();
+        }
+        for i in 65..=80u64 {
+            remote.toggle(i * 2 + 1).unwrap();
+        }
+        for i in 81..=96u64 {
+            local.toggle(i * 2 + 1).unwrap();
+        }
+        let residual = remote.subtract(&local).unwrap();
+        let mut decoded = residual
+            .decode_elements_overflow_budget(32, 8_000_000)
+            .unwrap();
+        decoded.sort_unstable();
+        let mut expected: Vec<u64> = (65..=96).map(|i| i * 2 + 1).collect();
+        expected.sort_unstable();
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn overflow_decode_rejects_truncated_coordinates() {
+        let sketch = SyndromeSketch::new_overflow(128).unwrap();
+        let result = sketch.decode_elements_overflow_budget(129, 8_000_000);
+        assert_eq!(result, Err(AlgebraicError::InvalidSketchCapacity));
     }
 }
