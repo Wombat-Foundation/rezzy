@@ -50,8 +50,6 @@ fn report(name: &str, iterations: u32, elapsed: Duration) {
 // This is the "invertible filter" baseline for the reconciliation benchmark.
 // ---------------------------------------------------------------------------
 mod gcs {
-    use std::collections::HashSet;
-
     /// A Golomb-coded set that can enumerate all inserted elements.
     ///
     /// Space: ~`P` bits per element for the encoded stream, where `P` is the
@@ -61,16 +59,15 @@ mod gcs {
     pub struct GolombCodedSet {
         /// Golomb parameter (P in BIP 158).
         p: u32,
-        /// Sorted hash values (mod P) stored as Rice-coded bitstream.
-        /// We keep the raw sorted hashes for enumeration; the bitstream
-        /// representation is computed on demand for wire-size measurement.
-        hashes: Vec<u64>,
+        /// Truncated hash values (low 32 bits) for practical Golomb-Rice encoding.
+        /// Full u64 deltas are too large for efficient Rice coding.
+        hashes: Vec<u32>,
     }
 
     impl GolombCodedSet {
-        /// Builds a GCS from a set of u64 values.
+        /// Builds a GCS from a set of u64 values (truncated to u32 for encoding).
         pub fn build(elements: &[u64], p: u32) -> Self {
-            let mut hashes: Vec<u64> = elements.iter().copied().collect();
+            let mut hashes: Vec<u32> = elements.iter().map(|&h| h as u32).collect();
             hashes.sort_unstable();
             hashes.dedup();
             Self { p, hashes }
@@ -78,33 +75,31 @@ mod gcs {
 
         /// Probes membership (false-positive rate ≈ 1/P).
         pub fn contains(&self, value: u64) -> bool {
-            self.hashes.binary_search(&value).is_ok()
+            let truncated = value as u32;
+            self.hashes.binary_search(&truncated).is_ok()
         }
 
-        /// Enumerates all elements — this is what makes it invertible.
-        pub fn enumerate(&self) -> &[u64] {
+        /// Enumerates all truncated elements — this is what makes it invertible.
+        pub fn enumerate(&self) -> &[u32] {
             &self.hashes
         }
 
         /// Wire size in bytes (Golomb-Rice encoded bitstream).
-        ///
-        /// Each hash value h is encoded as: quotient = h / P (unary) +
-        /// remainder = h % P (binary, ceil(log2(P)) bits).
         pub fn wire_bytes(&self) -> usize {
             let mut bits: usize = 0;
-            let rem_bits = (self.p as f64).log2().ceil() as usize;
-            let mut prev: u64 = 0;
+            let rem_bits = f64::from(self.p).log2().ceil() as usize;
+            let mut prev: u32 = 0;
             for &h in &self.hashes {
                 let delta = h.saturating_sub(prev);
-                let q = delta / self.p as u64;
-                let r = delta % self.p as u64;
-                // Unary quotient: q + 1 bits (q zeros followed by a one)
+                let q = delta / self.p;
+                let _r = delta % self.p;
+                // Unary quotient: q + 1 bits
                 bits += q as usize + 1;
                 // Remainder: rem_bits bits
                 bits += rem_bits;
                 prev = h;
             }
-            (bits + 7) / 8
+            bits.div_ceil(8)
         }
 
         /// Number of elements stored.
@@ -114,10 +109,10 @@ mod gcs {
     }
 
     /// Computes the symmetric difference between a GCS and a reference set.
-    /// Returns (in_filter_not_in_ref, in_ref_not_in_filter).
     pub fn symmetric_difference(gcs: &GolombCodedSet, reference: &[u64]) -> (Vec<u64>, Vec<u64>) {
-        let ref_set: HashSet<u64> = reference.iter().copied().collect();
-        let gcs_set: HashSet<u64> = gcs.enumerate().iter().copied().collect();
+        let ref_set: std::collections::HashSet<u64> = reference.iter().copied().collect();
+        let gcs_set: std::collections::HashSet<u64> =
+            gcs.enumerate().iter().map(|&h| u64::from(h)).collect();
 
         let in_gcs_not_ref: Vec<u64> = gcs_set.difference(&ref_set).copied().collect();
         let in_ref_not_gcs: Vec<u64> = ref_set.difference(&gcs_set).copied().collect();
@@ -151,7 +146,7 @@ fn benchmark_pinsketch_reconciliation(set_size: usize, delta: usize) {
     remote_set.sort_unstable();
 
     // PinSketch capacity: must hold the symmetric difference (2 * delta).
-    let capacity = (2 * delta).max(1).min(MAX_SKETCH_CAPACITY);
+    let capacity = (2 * delta).clamp(1, MAX_SKETCH_CAPACITY);
 
     // Build sketches and measure.
     let setup = measure(10, || {
@@ -263,7 +258,7 @@ fn benchmark_space_comparison(set_size: usize) {
         let elements: Vec<u64> = (0..set_size).map(|_| gen.next() | 1).collect();
         let gcs = gcs::GolombCodedSet::build(&elements, p);
         let wire = gcs.wire_bytes();
-        let fpr = 1.0 / p as f64;
+        let fpr = 1.0 / f64::from(p);
         println!(
             "  gcs/P={p}/FPR={fpr:.4}: {wire} bytes ({:.1} B/elem, {:.2} bits/elem)",
             wire as f64 / set_size as f64,
@@ -286,7 +281,10 @@ pub fn run() {
 
     // Reconciliation at various set sizes and delta sizes.
     for set_size in [100, 1_000, 10_000] {
-        for delta in [1, 10, 100, set_size / 4].into_iter().filter(|&d| d <= set_size) {
+        for delta in [1, 10, 100, set_size / 4]
+            .into_iter()
+            .filter(|&d| d <= set_size)
+        {
             benchmark_pinsketch_reconciliation(set_size, delta);
             benchmark_gcs_reconciliation(set_size, delta);
             println!();

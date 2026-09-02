@@ -123,6 +123,12 @@ const BENCHMARKS: &[BenchmarkEntry] = &[
             "Filter spillover vs sketch splitting for bucket overflow under network latency",
         run_fn: math::filter_spillover::run,
     },
+    BenchmarkEntry {
+        domain: "math",
+        name: "invertible_filter",
+        description: "Invertible Golomb-coded set vs PinSketch for set reconciliation",
+        run_fn: math::invertible_filter::run,
+    },
 ];
 
 /// Prints the available benchmarks grouped by domain.
