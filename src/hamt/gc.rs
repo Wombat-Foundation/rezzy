@@ -145,24 +145,15 @@ impl LinearRootChain {
     /// `new_root` is the structural hash of the replacement root; it becomes
     /// the tracked live root after this call.
     ///
-    /// Returns `Ok(())` on success. The previous root's superseded hashes
-    /// are now pending — call [`retire_previous`](Self::retire_previous)
-    /// when the old root is actually retired, or use [`advance`](Self::advance)
-    /// for the common one-step case.
-    ///
-    /// # Errors
-    /// Returns [`RefcountUnderflow`] if `new_node_hashes` contains a hash
-    /// whose count cannot absorb the increment (should not happen for
-    /// well-formed deltas).
+    /// The previous root's superseded hashes are now pending — call
+    /// [`retire_previous`](Self::retire_previous) when the old root is
+    /// actually retired, or use [`advance`](Self::advance) for the common
+    /// one-step case.
     ///
     /// # Panics
     /// Panics if a retirement is already pending from a prior `transition`
     /// (caller must complete it via `retire_previous` first).
-    pub fn transition(
-        &mut self,
-        delta: &super::NodeHashDelta,
-        new_root: StructuralHash,
-    ) -> Result<(), RefcountUnderflow> {
+    pub fn transition(&mut self, delta: &super::NodeHashDelta, new_root: StructuralHash) {
         assert!(
             self.pending_retirement.is_none(),
             "transition called while a retirement is pending; call retire_previous first"
@@ -172,13 +163,15 @@ impl LinearRootChain {
         // Queue old root's superseded hashes for later decrement.
         self.pending_retirement = Some(delta.superseded_node_hashes.clone());
         self.current_root = Some(new_root);
-        Ok(())
     }
 
     /// Retires the previous root: decrements its superseded hashes.
     ///
     /// Must be called after [`transition`](Self::transition) once the old
     /// root is actually retired (not in the same batch as `transition`).
+    ///
+    /// On failure, the pending retirement is preserved so the caller can
+    /// retry after resolving the bookkeeping issue.
     ///
     /// # Errors
     /// Returns [`RefcountUnderflow`] if the decrement would go below zero —
@@ -191,9 +184,13 @@ impl LinearRootChain {
     pub fn retire_previous(&mut self) -> Result<Vec<StructuralHash>, RefcountUnderflow> {
         let pending = self
             .pending_retirement
-            .take()
+            .as_ref()
             .expect("retire_previous called without a pending transition; call transition first");
-        self.table.apply_superseded(&pending)
+        let result = self.table.apply_superseded(pending);
+        if result.is_ok() {
+            self.pending_retirement = None;
+        }
+        result
     }
 
     /// One-step transition: increment new, decrement old, return zeroed hashes.
@@ -201,6 +198,9 @@ impl LinearRootChain {
     /// This is the common case when the old root is retired immediately.
     /// If you need to delay retirement (old root still live), use
     /// [`transition`](Self::transition) + [`retire_previous`](Self::retire_previous).
+    ///
+    /// Applies atomically: if the superseded decrement validation fails,
+    /// no state is mutated.
     ///
     /// # Errors
     /// Returns [`RefcountUnderflow`] on decrement failure.
@@ -217,8 +217,10 @@ impl LinearRootChain {
             self.pending_retirement.is_none(),
             "advance called while a retirement is pending; call retire_previous first"
         );
-        self.table.apply_new(&delta.new_node_hashes);
+        // Validate superseded decrements before any mutation so the operation
+        // is atomic: if validation fails, apply_new has not been called.
         let zeroed = self.table.apply_superseded(&delta.superseded_node_hashes)?;
+        self.table.apply_new(&delta.new_node_hashes);
         self.current_root = Some(new_root);
         Ok(zeroed)
     }
@@ -499,7 +501,7 @@ mod tests {
     fn transition_then_retire_previous() {
         let mut chain = LinearRootChain::bootstrap(vec![h(1)], h(0));
         let d = delta(&[2], &[1]);
-        chain.transition(&d, h(10)).unwrap();
+        chain.transition(&d, h(10));
         assert_eq!(chain.current_root(), Some(h(10)));
         assert!(chain.has_pending_retirement());
 
@@ -515,10 +517,10 @@ mod tests {
     fn second_transition_rejected_while_pending() {
         let mut chain = LinearRootChain::bootstrap(vec![h(1)], h(0));
         let d1 = delta(&[2], &[1]);
-        chain.transition(&d1, h(10)).unwrap();
+        chain.transition(&d1, h(10));
         // Second transition without retiring the first should panic.
         let d2 = delta(&[3], &[2]);
-        chain.transition(&d2, h(20)).unwrap();
+        chain.transition(&d2, h(20));
     }
 
     #[test]
@@ -526,7 +528,7 @@ mod tests {
     fn advance_rejected_while_pending() {
         let mut chain = LinearRootChain::bootstrap(vec![h(1)], h(0));
         let d1 = delta(&[2], &[1]);
-        chain.transition(&d1, h(10)).unwrap();
+        chain.transition(&d1, h(10));
         // advance after transition (without retire_previous) should panic.
         let d2 = delta(&[3], &[2]);
         chain.advance(&d2, h(20)).unwrap();
