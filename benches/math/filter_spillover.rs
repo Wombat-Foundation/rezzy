@@ -26,6 +26,8 @@ use rezzy::{
     MAX_BUCKETS_PER_ROUND, MAX_SKETCH_CAPACITY,
 };
 
+use super::filters::{BloomFilter, CountingQuotientFilter, CuckooFilter};
+
 // ---------------------------------------------------------------------------
 // Deterministic PRNG
 // ---------------------------------------------------------------------------
@@ -80,40 +82,13 @@ fn report(name: &str, iterations: u32, elapsed: Duration) {
 }
 
 // ---------------------------------------------------------------------------
-// Sorted-merge set difference (O(n) instead of O(n²))
+// Strategy results
 // ---------------------------------------------------------------------------
-
-fn sorted_difference(a: &[u64], b: &[u64]) -> Vec<u64> {
-    let mut result = Vec::new();
-    let mut i = 0;
-    let mut j = 0;
-    while i < a.len() && j < b.len() {
-        match a[i].cmp(&b[j]) {
-            std::cmp::Ordering::Less => {
-                result.push(a[i]);
-                i += 1;
-            }
-            std::cmp::Ordering::Greater => {
-                j += 1;
-            }
-            std::cmp::Ordering::Equal => {
-                i += 1;
-                j += 1;
-            }
-        }
-    }
-    result.extend_from_slice(&a[i..]);
-    result
-}
 
 /// Set membership check (sorted slices).
 fn sorted_contains(slice: &[u64], value: u64) -> bool {
     slice.binary_search(&value).is_ok()
 }
-
-// ---------------------------------------------------------------------------
-// Strategy results
-// ---------------------------------------------------------------------------
 
 struct StrategyResult {
     wall_ms: f64,

@@ -345,7 +345,6 @@ impl BloomFilter {
 
 #[cfg(test)]
 mod tests {
-    
 
     #[test]
     fn cuckoo_insert_and_contains() {
