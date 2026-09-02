@@ -206,8 +206,7 @@ fn simulate_strategy(
     };
 
     let estimated_delta = estimate_strata(local.strata(), remote.strata())
-        .map(|est| est.delta.max(1))
-        .unwrap_or(500);
+        .map_or(500, |est| est.delta.max(1));
 
     let initial_action = client.select_action(&local, remote_digest, 0);
 
@@ -286,34 +285,31 @@ fn simulate_strategy(
                 {
                     let mut rs = remote_sketch.clone();
                     rs.xor(&local_sketch).unwrap();
-                    match rs.decode_elements_with_budget(request.capacity, decode_budget) {
-                        Ok(roots) => {
-                            total_wire += request.capacity * 8 * 2;
-                            batch.successful_buckets.push(BucketDecodeSuccess {
-                                depth: request.depth,
-                                prefix: request.prefix,
-                                roots,
-                            });
+                    if let Ok(roots) = rs.decode_elements_with_budget(request.capacity, decode_budget) {
+                        total_wire += request.capacity * 8 * 2;
+                        batch.successful_buckets.push(BucketDecodeSuccess {
+                            depth: request.depth,
+                            prefix: request.prefix,
+                            roots,
+                        });
+                    } else {
+                        // Overflow: build filter of remote-only elements in bucket.
+                        let remote_slice =
+                            &remote_h64[remote_index.bucket_range(request).unwrap()];
+                        let local_slice =
+                            &local_h64[local_index.bucket_range(request).unwrap()];
+                        let remote_only = sorted_difference(remote_slice, local_slice);
+                        let mut filter =
+                            CuckooFilter::with_fpr(remote_only.len().max(1), filter_fpr);
+                        for &val in &remote_only {
+                            filter.insert(&val);
                         }
-                        Err(_) => {
-                            // Overflow: build filter of remote-only elements in bucket.
-                            let remote_slice =
-                                &remote_h64[remote_index.bucket_range(request).unwrap()];
-                            let local_slice =
-                                &local_h64[local_index.bucket_range(request).unwrap()];
-                            let remote_only = sorted_difference(remote_slice, local_slice);
-                            let mut filter =
-                                CuckooFilter::with_fpr(remote_only.len().max(1), filter_fpr);
-                            for &val in &remote_only {
-                                filter.insert(&val);
-                            }
-                            total_wire += filter.byte_len();
-                            batch.successful_buckets.push(BucketDecodeSuccess {
-                                depth: request.depth,
-                                prefix: request.prefix,
-                                roots: remote_only,
-                            });
-                        }
+                        total_wire += filter.byte_len();
+                        batch.successful_buckets.push(BucketDecodeSuccess {
+                            depth: request.depth,
+                            prefix: request.prefix,
+                            roots: remote_only,
+                        });
                     }
                 }
             }
@@ -326,36 +322,33 @@ fn simulate_strategy(
                 {
                     let mut rs = remote_sketch.clone();
                     rs.xor(&local_sketch).unwrap();
-                    match rs.decode_elements_with_budget(request.capacity, decode_budget) {
-                        Ok(roots) => {
-                            total_wire += request.capacity * 8 * 2;
+                    if let Ok(roots) = rs.decode_elements_with_budget(request.capacity, decode_budget) {
+                        total_wire += request.capacity * 8 * 2;
+                        batch.successful_buckets.push(BucketDecodeSuccess {
+                            depth: request.depth,
+                            prefix: request.prefix,
+                            roots,
+                        });
+                    } else {
+                        let remote_slice =
+                            &remote_h64[remote_index.bucket_range(request).unwrap()];
+                        let local_slice =
+                            &local_h64[local_index.bucket_range(request).unwrap()];
+                        let remote_only = sorted_difference(remote_slice, local_slice);
+                        if remote_only.len() <= MAX_BUCKET_SKETCH_CAPACITY * 2 {
+                            let mut filter =
+                                CuckooFilter::with_fpr(remote_only.len().max(1), filter_fpr);
+                            for &val in &remote_only {
+                                filter.insert(&val);
+                            }
+                            total_wire += filter.byte_len();
                             batch.successful_buckets.push(BucketDecodeSuccess {
                                 depth: request.depth,
                                 prefix: request.prefix,
-                                roots,
+                                roots: remote_only,
                             });
-                        }
-                        Err(_) => {
-                            let remote_slice =
-                                &remote_h64[remote_index.bucket_range(request).unwrap()];
-                            let local_slice =
-                                &local_h64[local_index.bucket_range(request).unwrap()];
-                            let remote_only = sorted_difference(remote_slice, local_slice);
-                            if remote_only.len() <= MAX_BUCKET_SKETCH_CAPACITY * 2 {
-                                let mut filter =
-                                    CuckooFilter::with_fpr(remote_only.len().max(1), filter_fpr);
-                                for &val in &remote_only {
-                                    filter.insert(&val);
-                                }
-                                total_wire += filter.byte_len();
-                                batch.successful_buckets.push(BucketDecodeSuccess {
-                                    depth: request.depth,
-                                    prefix: request.prefix,
-                                    roots: remote_only,
-                                });
-                            } else {
-                                batch.failed_buckets.push((request.depth, request.prefix));
-                            }
+                        } else {
+                            batch.failed_buckets.push((request.depth, request.prefix));
                         }
                     }
                 }
@@ -642,16 +635,13 @@ fn cross_over_summary() {
                     co_filter_ms = filter.wall_ms;
                 }
             }
-            match cross_over_delta {
-                Some(d) => println!(
-                    "  {latency:>6}ms {budget:>10} {d:>14} {co_sketch_ms:>10.1} {co_filter_ms:>10.1}"
-                ),
-                None => {
-                    let never = "never";
-                    println!(
-                        "  {latency:>6}ms {budget:>10} {never:>14}"
-                    );
-                }
+            if let Some(d) = cross_over_delta { println!(
+                "  {latency:>6}ms {budget:>10} {d:>14} {co_sketch_ms:>10.1} {co_filter_ms:>10.1}"
+            ) } else {
+                let never = "never";
+                println!(
+                    "  {latency:>6}ms {budget:>10} {never:>14}"
+                );
             }
         }
     }
