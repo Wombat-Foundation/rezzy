@@ -1,22 +1,39 @@
+#![allow(
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::type_complexity,
+    clippy::unusual_byte_groupings,
+    clippy::manual_let_else
+)]
+
 //! Benchmark: filter spillover vs sketch splitting for bucket overflow.
 //!
 //! Compares five strategies when a pinsketch bucket exceeds its decode budget:
 //!
 //! 1. **sketch_split** — recursive bucket splitting via `BucketExchange`.
-//! 2. **cuckoo** — 1-RTT filter protocol (CuckooFilter) for overflow buckets.
-//! 3. **cqf** — 1-RTT filter protocol (CountingQuotientFilter) for overflow buckets.
-//! 4. **bloom** — 1-RTT filter protocol (BloomFilter) for overflow buckets.
+//! 2. **cuckoo** — filter protocol (CuckooFilter) for overflow buckets.
+//! 3. **cqf** — filter protocol (RemainderProbeFilter) for overflow buckets.
+//! 4. **bloom** — filter protocol (BloomFilter) for overflow buckets.
 //! 5. **hybrid** — filter for small overflows, sketch splitting as fallback.
 //!
 //! The filter protocol is modeled correctly (no oracle):
-//!   RTT 1 (sender→receiver): sender sends filter built from its bucket elements.
-//!   RTT 1 (receiver→sender): receiver probes its own elements against the filter,
+//!   RTT 1: sender→receiver: sender sends filter built from its bucket elements.
+//!   RTT 1: receiver→sender: receiver probes its own elements against the filter,
 //!     sends back candidate list + receiver-only list.
 //!   Sender computes symmetric difference from candidates + receiver-only.
-//!   Total: 1 RTT = 2 one-way messages.
+//!   Total: 1 additional RTT per overflow bucket group (beyond the sketch exchange).
+//!
+//! Wire cost note: the filter protocol does NOT reduce response wire cost.
+//! Candidates + receiver_only partition every receiver element, so the full
+//! receiver set is always sent back as u64 values regardless of filter type
+//! or FPR. The filter's benefit is avoiding recursive bucket-splitting rounds,
+//! not reducing per-round wire.
 //!
 //! All strategies use `decode_elements_with_budget` for fairness.
 //! Latency is charged consistently: each `network_latency_ms` = one full RTT.
+//! Overflow buckets cost 2 RTTs total (sketch exchange + filter exchange).
 
 use std::collections::BTreeSet;
 use std::hint::black_box;
@@ -29,7 +46,7 @@ use rezzy::{
     MAX_BUCKETS_PER_ROUND, MAX_SKETCH_CAPACITY,
 };
 
-use super::filters::{BloomFilter, CountingQuotientFilter, CuckooFilter};
+use super::filters::{BloomFilter, CuckooFilter, RemainderProbeFilter};
 
 // ---------------------------------------------------------------------------
 // Deterministic PRNG
@@ -163,7 +180,7 @@ fn generate_symmetric_mix(
     base: &[ElementHash],
     delta: usize,
 ) -> (Vec<ElementHash>, Vec<ElementHash>) {
-    let mut gen = Xorshift128::new(0xBAD_F00D_1);
+    let mut gen = Xorshift128::new(0xBAD_F00D1);
     let add_count = delta / 2;
     let remove_count = delta - add_count;
 
@@ -238,12 +255,12 @@ fn build_filter(elements: &[u64], filter_fpr: f64, filter_type: &str) -> (Filter
         "cqf" => {
             let remainder_bits = ((1.0 / filter_fpr).ln() / std::f64::consts::LN_2).ceil() as u32;
             let mut f =
-                CountingQuotientFilter::with_remainder_bits(elements.len().max(1), remainder_bits);
+                RemainderProbeFilter::with_remainder_bits(elements.len().max(1), remainder_bits);
             for &val in elements {
                 f.insert(&val);
             }
             let wire = f.byte_len();
-            (FilterEnum::CQF(f), wire)
+            (FilterEnum::Cqf(f), wire)
         }
         "bloom" => {
             let mut f = BloomFilter::with_fpr(elements.len().max(1), filter_fpr);
@@ -259,7 +276,7 @@ fn build_filter(elements: &[u64], filter_fpr: f64, filter_type: &str) -> (Filter
 
 enum FilterEnum {
     Cuckoo(CuckooFilter),
-    CQF(CountingQuotientFilter),
+    Cqf(RemainderProbeFilter),
     Bloom(BloomFilter),
 }
 
@@ -267,7 +284,7 @@ impl FilterEnum {
     fn contains(&self, value: &u64) -> bool {
         match self {
             FilterEnum::Cuckoo(f) => f.contains(value),
-            FilterEnum::CQF(f) => f.contains(value),
+            FilterEnum::Cqf(f) => f.contains(value),
             FilterEnum::Bloom(f) => f.contains(value),
         }
     }
@@ -631,7 +648,11 @@ fn simulate_strategy(
             }
             ClientAction::ResolveRoots { roots } => {
                 resolved = true;
-                total_wall += round_cpu;
+                // Charge 1 RTT for the sketch exchange that discovered resolution.
+                if network_latency_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(network_latency_ms));
+                }
+                total_wall += round_cpu + Duration::from_millis(network_latency_ms);
                 black_box(roots);
                 break;
             }
@@ -733,7 +754,7 @@ fn microbenchmarks() {
         // --- Cuckoo ---
         let elapsed = measure(10, || {
             let mut filter = CuckooFilter::with_fpr(capacity, 0.001);
-            let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
+            let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
             for _ in 0..capacity {
                 filter.insert(&(gen.next() | 1));
             }
@@ -742,7 +763,7 @@ fn microbenchmarks() {
         report(&format!("cuckoo/insert/{capacity}"), 10, elapsed);
 
         let mut filter = CuckooFilter::with_fpr(capacity, 0.001);
-        let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
+        let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
         let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
         for val in &probe_values {
             filter.insert(val);
@@ -762,8 +783,8 @@ fn microbenchmarks() {
 
         // --- CQF ---
         let elapsed = measure(10, || {
-            let mut filter = CountingQuotientFilter::with_remainder_bits(capacity, 10);
-            let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
+            let mut filter = RemainderProbeFilter::with_remainder_bits(capacity, 10);
+            let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
             for _ in 0..capacity {
                 filter.insert(&(gen.next() | 1));
             }
@@ -771,8 +792,8 @@ fn microbenchmarks() {
         });
         report(&format!("cqf/insert/{capacity}"), 10, elapsed);
 
-        let mut filter = CountingQuotientFilter::with_remainder_bits(capacity, 10);
-        let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
+        let mut filter = RemainderProbeFilter::with_remainder_bits(capacity, 10);
+        let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
         let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
         for val in &probe_values {
             filter.insert(val);
@@ -793,7 +814,7 @@ fn microbenchmarks() {
         // --- Bloom ---
         let elapsed = measure(10, || {
             let mut filter = BloomFilter::with_fpr(capacity, 0.001);
-            let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
+            let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
             for _ in 0..capacity {
                 filter.insert(&(gen.next() | 1));
             }
@@ -802,7 +823,7 @@ fn microbenchmarks() {
         report(&format!("bloom/insert/{capacity}"), 10, elapsed);
 
         let mut filter = BloomFilter::with_fpr(capacity, 0.001);
-        let mut gen = Xorshift128::new(0xC0FF_EE + capacity as u64);
+        let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
         let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
         for val in &probe_values {
             filter.insert(val);
