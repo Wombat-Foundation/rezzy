@@ -24,7 +24,23 @@ pub(crate) fn decode(
     odd_syndromes: &[u64],
     max_elements: usize,
 ) -> Result<Vec<u64>, AlgebraicError> {
-    decode_with_budget(odd_syndromes, max_elements, MAX_FACTOR_WORK)
+    let all = reconstruct_syndromes(odd_syndromes);
+    let mut locator = berlekamp_massey(&all, max_elements).ok_or(AlgebraicError::DecodeFailure)?;
+    if locator.len() == 1 {
+        return Ok(Vec::new());
+    }
+    locator.reverse();
+    let expected = locator
+        .len()
+        .checked_sub(1)
+        .ok_or(AlgebraicError::DecodeFailure)?;
+    let mut roots = Vec::with_capacity(expected);
+    find_roots(locator, &mut roots)?;
+    if roots.len() != expected || roots.contains(&0) {
+        return Err(AlgebraicError::DecodeFailure);
+    }
+    roots.sort_unstable();
+    Ok(roots)
 }
 
 pub(crate) fn decode_with_budget(
