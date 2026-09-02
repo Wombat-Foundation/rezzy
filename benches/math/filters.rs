@@ -1,10 +1,3 @@
-#![allow(
-    clippy::cast_sign_loss,
-    clippy::manual_clamp,
-    clippy::needless_range_loop,
-    clippy::unusual_byte_groupings
-)]
-
 //! Correct filter implementations for the spillover benchmark.
 //!
 //! - [`CuckooFilter`]: power-of-two bucket count, 13-bit fingerprints for 0.1%
@@ -24,8 +17,7 @@ fn hash_value<T: Hash>(value: &T) -> u64 {
     hasher.finish()
 }
 
-/// Hash a fingerprint to produce a fully independent alternate-bucket offset.
-/// This ensures alt_bucket independence regardless of table size.
+/// Hash a fingerprint to produce a value in [0, table_len).
 fn hash_fingerprint(fp: u16, table_len: u64) -> u64 {
     let mut hasher = DefaultHasher::new();
     fp.hash(&mut hasher);
@@ -63,7 +55,13 @@ impl CuckooFilter {
         } else {
             (1u16 << fp_bits) - 1
         };
-        let min_buckets = (capacity as f64 / CUCKOO_BUCKET as f64 * 1.05).ceil() as u64;
+        let min_buckets = u64::try_from(
+            capacity
+                .div_ceil(CUCKOO_BUCKET)
+                .saturating_mul(21)
+                .div_ceil(20),
+        )
+        .expect("benchmark capacity fits u64");
         let bucket_count = min_buckets.next_power_of_two().max(1);
         let bucket_mask = bucket_count - 1;
         Self {
@@ -87,9 +85,13 @@ impl CuckooFilter {
         (hash & self.bucket_mask) as usize
     }
 
-    /// Alternate bucket via hashed fingerprint — fully independent of primary.
-    fn alt_bucket(&self, _index: usize, fp: u16) -> usize {
-        hash_fingerprint(fp, self.table_len) as usize
+    /// Alternate bucket: hash the fingerprint independently, then XOR with
+    /// the current index. This preserves index-dependency (alt depends on
+    /// which bucket you're in) while ensuring the fingerprint contribution
+    /// is fully independent of the primary bucket's hash bits.
+    fn alt_bucket(&self, index: usize, fp: u16) -> usize {
+        let mixed = hash_fingerprint(fp, self.table_len);
+        (index ^ mixed as usize) & self.bucket_mask as usize
     }
 
     pub fn insert<T: Hash>(&mut self, value: &T) -> bool {
@@ -164,8 +166,9 @@ impl CuckooFilter {
 
     pub fn byte_len(&self) -> usize {
         let bucket_bytes = self.buckets.len() * CUCKOO_BUCKET * 2;
+        let stash_len_bytes = 2;
         let stash_bytes = CUCKOO_STASH * 2;
-        bucket_bytes + stash_bytes
+        bucket_bytes + stash_len_bytes + stash_bytes
     }
 
     #[allow(dead_code)]
@@ -187,8 +190,13 @@ impl CuckooFilter {
 /// Fingerprint bits for Cuckoo: ceil(log2(8 / target_fpr)).
 /// The 8 comes from checking 2 buckets × 4 slots = 8 fingerprints per lookup.
 fn fingerprint_bits_for_fpr(target_fpr: f64) -> u32 {
-    let bits = (8.0_f64 / target_fpr).ln() / std::f64::consts::LN_2;
-    (bits.ceil() as u32).clamp(8, 16)
+    assert!((0.0..1.0).contains(&target_fpr));
+    for bits in 8..=16 {
+        if 8.0 / f64::from(1_u32 << bits) <= target_fpr {
+            return bits;
+        }
+    }
+    16
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +219,7 @@ pub struct RemainderProbeFilter {
 
 impl RemainderProbeFilter {
     pub fn with_remainder_bits(capacity: usize, remainder_bits: u32) -> Self {
+        #[allow(clippy::cast_sign_loss)]
         let slots = ((capacity as f64 * 1.1).ceil() as usize).max(64);
         Self {
             rem: vec![0; slots],
@@ -267,7 +276,6 @@ impl RemainderProbeFilter {
         self.len
     }
 
-    /// Wire cost: rem (4 bytes each) + occupied (1 byte each, unpacked).
     pub fn byte_len(&self) -> usize {
         self.rem.len() * 4 + self.occupied.len()
     }
@@ -291,7 +299,9 @@ impl BloomFilter {
         let p = target_fpr;
         let ln2 = std::f64::consts::LN_2;
         let m = -(n * p.ln()) / (ln2 * ln2);
+        #[allow(clippy::cast_sign_loss)]
         let num_bits = (m.ceil() as u64).max(64);
+        #[allow(clippy::cast_sign_loss)]
         let k = ((num_bits as f64 / n) * ln2).ceil() as u32;
         let num_words = u64::div_ceil(num_bits, 64);
         Self {
@@ -352,22 +362,7 @@ impl BloomFilter {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 mod tests {
-
-    /// Verify measured FPR is within a statistically defensible bound of the
-    /// configured target.  Uses a large negative-query sample and a chi-squared
-    /// style upper bound (target + 5× sqrt(target/n) + 0.5% absolute margin).
-    fn assert_fpr(measured: f64, target: f64, n: u64, label: &str) {
-        let std_err = (target * (1.0 - target) / n as f64).sqrt();
-        let upper = target + 5.0 * std_err + 0.005;
-        assert!(
-            measured < upper,
-            "{label} measured FPR {measured:.6} exceeds statistically defensible upper bound \
-             {upper:.6} (target {target:.6}, n={n}, 5σ={:.6})",
-            5.0 * std_err,
-        );
-    }
 
     #[test]
     fn cuckoo_insert_and_contains() {
@@ -389,25 +384,22 @@ mod tests {
         }
         let queried = n - insert_count as u64;
         let measured = false_positives as f64 / queried as f64;
-        assert_fpr(measured, 0.001, queried, "cuckoo");
+        assert!(
+            measured < 0.005,
+            "cuckoo measured FPR {measured:.6} exceeds 0.5% upper bound (target 0.1%)"
+        );
     }
 
     #[test]
-    fn cuckoo_alt_index_is_independent() {
+    fn cuckoo_alt_index_is_involutive() {
         let f = CuckooFilter::with_fpr(100, 0.001);
         let fp: u16 = 42;
-        let table_len = f.table_len;
-        // Alt bucket is computed via hash, so for different primary indices
-        // the alt buckets should be well-distributed (not collapsing).
-        let mut alt_set = std::collections::BTreeSet::new();
-        for idx in 0..128.min(table_len as usize) {
-            alt_set.insert(f.alt_bucket(idx, fp));
+        // alt_bucket must be involutive: alt(alt(idx, fp), fp) == idx
+        for idx in 0..128.min(f.table_len as usize) {
+            let alt = f.alt_bucket(idx, fp);
+            let back = f.alt_bucket(alt, fp);
+            assert_eq!(idx, back, "alt not involutive at idx={idx}");
         }
-        assert!(
-            alt_set.len() > 16,
-            "alt buckets collapsed: only {} distinct values for fp={fp}",
-            alt_set.len(),
-        );
     }
 
     #[test]
@@ -432,7 +424,6 @@ mod tests {
         for i in 0..insert_count as u64 {
             assert!(f.contains(&(i | 1)));
         }
-        // Remainder-probe filter has zero false positives for distinct elements.
         for i in insert_count as u64..n {
             assert!(!f.contains(&(i | 1)), "rp false positive at {i}");
         }
@@ -458,6 +449,9 @@ mod tests {
         }
         let queried = n - insert_count as u64;
         let measured = false_positives as f64 / queried as f64;
-        assert_fpr(measured, 0.001, queried, "bloom");
+        assert!(
+            measured < 0.005,
+            "bloom measured FPR {measured:.6} exceeds 0.5% upper bound (target 0.1%)"
+        );
     }
 }
