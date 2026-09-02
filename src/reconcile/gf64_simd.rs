@@ -333,7 +333,7 @@ mod tests {
         );
     }
 
-    #[cfg(all(target_arch = "x86_64", has_avx512_support))]
+    #[cfg(all(feature = "std", target_arch = "x86_64", has_avx512_support))]
     #[test]
     fn select_evaluator_backend_prefers_avx512_when_available() {
         assert_eq!(
