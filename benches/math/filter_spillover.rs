@@ -849,7 +849,82 @@ fn print_reconciliation_summary(rows: &[ReconciliationSummaryRow], base_count: u
             winner,
         );
     }
-    println!("  Times are modeled wall time; filter wire costs remain in detailed rows.\n");
+    println!("  Times are modeled wall time; `FALL` is not eligible to win.\n");
+
+    println!("  Cumulative wire bytes (including work before a fallback):");
+    println!(
+        "  {:<9} {:>7} {:>14} {:>14} {:>14} {:>14}",
+        "case", "delta", "sketch split", "cuckoo", "cqf", "bloom"
+    );
+    println!(
+        "  {:->9} {:->7} {:->14} {:->14} {:->14} {:->14}",
+        "", "", "", "", "", ""
+    );
+    for row in rows {
+        let format_wire = |bytes: usize| {
+            if bytes < 1_024 {
+                format!("{bytes} B")
+            } else {
+                format!("{:.1} KiB", bytes as f64 / 1_024.0)
+            }
+        };
+        println!(
+            "  {:<9} {:>7} {:>14} {:>14} {:>14} {:>14}",
+            row.case_name,
+            row.delta,
+            format_wire(row.sketch.wire_bytes),
+            format_wire(row.cuckoo.wire_bytes),
+            format_wire(row.cqf.wire_bytes),
+            format_wire(row.bloom.wire_bytes),
+        );
+    }
+    println!();
+
+    println!("  Crossover against sketch split (average case; tested deltas only):");
+    println!(
+        "  {:<10} {:>26} {:>26}",
+        "strategy", "first faster wall time", "first higher wire"
+    );
+    println!("  {:->10} {:->26} {:->26}", "", "", "");
+    type StrategySelector = for<'a> fn(&'a ReconciliationSummaryRow) -> &'a StrategyResult;
+    let strategies: [(&str, StrategySelector); 3] = [
+        ("cuckoo", |row: &ReconciliationSummaryRow| &row.cuckoo),
+        ("cqf", |row: &ReconciliationSummaryRow| &row.cqf),
+        ("bloom", |row: &ReconciliationSummaryRow| &row.bloom),
+    ];
+    for (name, select) in strategies {
+        let first_faster = rows.iter().find(|row| {
+            row.case_name == "average"
+                && row.sketch.resolved
+                && select(row).resolved
+                && select(row).wall_ms < row.sketch.wall_ms
+        });
+        let first_higher_wire = rows.iter().find(|row| {
+            row.case_name == "average" && select(row).wire_bytes > row.sketch.wire_bytes
+        });
+        let faster = first_faster.map_or_else(
+            || "not observed".to_owned(),
+            |row| {
+                format!(
+                    "Δ={} ({:.2}x)",
+                    row.delta,
+                    row.sketch.wall_ms / select(row).wall_ms
+                )
+            },
+        );
+        let higher_wire = first_higher_wire.map_or_else(
+            || "not observed".to_owned(),
+            |row| {
+                format!(
+                    "Δ={} ({:.1}x)",
+                    row.delta,
+                    select(row).wire_bytes as f64 / row.sketch.wire_bytes as f64
+                )
+            },
+        );
+        println!("  {name:<10} {faster:>26} {higher_wire:>26}");
+    }
+    println!();
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,28 +1153,79 @@ fn microbenchmarks() {
 
     print_microbenchmark_summary(&summary_rows);
 
-    // Pinsketch decode at various budgets
-    let mut decode_rows = Vec::new();
-    for budget in [1_000_000_usize, 2_000_000, 4_000_000, 8_000_000, 16_000_000] {
-        let elapsed = measure(10, || {
-            let mut sketch = SyndromeSketch::new(MAX_SKETCH_CAPACITY).unwrap();
-            let mut gen = Xorshift128::new(0xDEAD_BEEF + budget as u64);
-            for _ in 0..MAX_SKETCH_CAPACITY {
-                sketch.toggle(gen.next() | 1).unwrap();
-            }
-            let _ = black_box(sketch.decode_elements_with_budget(MAX_SKETCH_CAPACITY, budget));
+    print_pinsketch_decode_matrix();
+}
+
+fn pinsketch_decode_case(capacity: usize, elements: usize, budget: usize) -> (f64, bool) {
+    let iterations = if capacity <= 64 { 10 } else { 3 };
+    let mut decoded_ok = false;
+    let elapsed = measure(iterations, || {
+        let mut sketch = if capacity <= MAX_SKETCH_CAPACITY {
+            SyndromeSketch::new(capacity).expect("standard capacity is valid")
+        } else {
+            SyndromeSketch::new_overflow(capacity).expect("overflow capacity is valid")
+        };
+
+        for element in 1..=elements {
+            // Nonzero, distinct u64s: exactly the residual cardinality labelled
+            // by this case, without PRNG collisions changing the result.
+            sketch
+                .toggle((u64::try_from(element).expect("usize fits u64") << 1) | 1)
+                .expect("nonzero element");
+        }
+
+        let result = if capacity <= MAX_SKETCH_CAPACITY {
+            sketch.decode_elements_with_budget(capacity, budget)
+        } else {
+            sketch.decode_elements_overflow_budget(capacity, budget)
+        };
+        decoded_ok = result.is_ok();
+        let _ = black_box(result);
+    });
+    (millis_per_operation(elapsed, iterations), decoded_ok)
+}
+
+fn print_pinsketch_decode_matrix() {
+    const DECODE_BUDGET: usize = 8_000_000;
+    let capacities = [32_usize, 64, 128, 256];
+
+    println!("--- PinSketch decode cost (budget=8M) ---");
+    println!("  Each cell is one complete residual decode: time plus outcome.");
+    println!(
+        "  {:>8} {:>14} {:>14} {:>14} {:>14} {:>14}",
+        "capacity", "Δ=1", "Δ=cap/4", "Δ=cap/2", "Δ=cap", "Δ=cap+1"
+    );
+    println!(
+        "  {:->8} {:->14} {:->14} {:->14} {:->14} {:->14}",
+        "", "", "", "", "", ""
+    );
+
+    for capacity in capacities {
+        let residuals = [1, capacity / 4, capacity / 2, capacity, capacity + 1];
+        let cells = residuals.map(|elements| {
+            let (millis, ok) = pinsketch_decode_case(capacity, elements, DECODE_BUDGET);
+            format!("{millis:.3}ms {}", if ok { "ok" } else { "FAIL" })
         });
-        decode_rows.push((budget, elapsed));
-    }
-    println!("--- PinSketch decode summary (capacity={MAX_SKETCH_CAPACITY}) ---");
-    println!("  {:>12} {:>14}", "work budget", "decode time");
-    println!("  {:->12} {:->14}", "", "");
-    for (budget, elapsed) in decode_rows {
         println!(
-            "  {budget:>12} {:>11.3}ms",
-            millis_per_operation(elapsed, 10)
+            "  {capacity:>8} {:>14} {:>14} {:>14} {:>14} {:>14}",
+            cells[0], cells[1], cells[2], cells[3], cells[4]
         );
     }
+
+    println!("\n  Sketch payload wire cost (request headers excluded):");
+    println!(
+        "  {:>8} {:>14} {:>20}",
+        "capacity", "one sketch", "two-peer exchange"
+    );
+    println!("  {:->8} {:->14} {:->20}", "", "", "");
+    for capacity in capacities {
+        println!(
+            "  {capacity:>8} {:>11} B {:>17} B",
+            capacity * 8,
+            capacity * 8 * 2
+        );
+    }
+    println!();
 }
 
 // ---------------------------------------------------------------------------
