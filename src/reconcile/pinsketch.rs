@@ -24,6 +24,14 @@ pub(crate) fn decode(
     odd_syndromes: &[u64],
     max_elements: usize,
 ) -> Result<Vec<u64>, AlgebraicError> {
+    decode_with_budget(odd_syndromes, max_elements, MAX_FACTOR_WORK)
+}
+
+pub(crate) fn decode_with_budget(
+    odd_syndromes: &[u64],
+    max_elements: usize,
+    mut budget: usize,
+) -> Result<Vec<u64>, AlgebraicError> {
     let all = reconstruct_syndromes(odd_syndromes);
     let mut locator = berlekamp_massey(&all, max_elements).ok_or(AlgebraicError::DecodeFailure)?;
     if locator.len() == 1 {
@@ -35,7 +43,7 @@ pub(crate) fn decode(
         .checked_sub(1)
         .ok_or(AlgebraicError::DecodeFailure)?;
     let mut roots = Vec::with_capacity(expected);
-    find_roots(locator, &mut roots)?;
+    find_roots_with_budget(locator, &mut roots, &mut budget)?;
     if roots.len() != expected || roots.contains(&0) {
         return Err(AlgebraicError::DecodeFailure);
     }

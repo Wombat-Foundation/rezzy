@@ -335,6 +335,25 @@ impl SyndromeSketch {
         self.validate_decoded_elements(decoded)
     }
 
+    pub fn decode_elements_with_budget(
+        &self,
+        max_elements: usize,
+        budget: usize,
+    ) -> Result<Vec<u64>, AlgebraicError> {
+        if max_elements == 0
+            || max_elements > self.capacity()
+            || max_elements > MAX_LOCAL_SKETCH_DECODE_CAPACITY
+        {
+            return Err(AlgebraicError::InvalidSketchCapacity);
+        }
+        let decoded = super::pinsketch::decode_with_budget(
+            &self.coordinates[..max_elements],
+            max_elements,
+            budget,
+        )?;
+        self.validate_decoded_elements(decoded)
+    }
+
     fn validate_decoded_elements(&self, decoded: Vec<u64>) -> Result<Vec<u64>, AlgebraicError> {
         if decoded.contains(&0) {
             return Err(AlgebraicError::DecodeFailure);

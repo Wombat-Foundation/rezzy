@@ -110,6 +110,13 @@ const BENCHMARKS: &[BenchmarkEntry] = &[
         description: "Set reconciliation (PinSketch/Minisketch) encoding & decoding",
         run_fn: math::reconcile::run,
     },
+    BenchmarkEntry {
+        domain: "math",
+        name: "filter_spillover",
+        description:
+            "Filter spillover vs sketch splitting for bucket overflow under network latency",
+        run_fn: math::filter_spillover::run,
+    },
 ];
 
 /// Prints the available benchmarks grouped by domain.
