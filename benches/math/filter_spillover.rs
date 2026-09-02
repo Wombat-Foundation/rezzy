@@ -1389,12 +1389,19 @@ fn cross_over_summary() {
     let base: Vec<ElementHash> = (0..base_count).map(|_| gen.hash()).collect();
 
     println!(
-        "\n  {:>8} {:>10} {:>14} {:>14} {:>14} {:>14} {:>14}",
-        "latency", "budget", "cuckoo Δ", "remainder-probe Δ", "cqf Δ", "bloom Δ", "hybrid Δ"
+        "\n  {:>8} {:>10} {:>14} {:>14} {:>14} {:>14} {:>14} {:>14}",
+        "latency",
+        "budget",
+        "sketch Δ=100K",
+        "cuckoo Δ",
+        "remainder-probe Δ",
+        "cqf Δ",
+        "bloom Δ",
+        "hybrid Δ"
     );
     println!(
-        "  {:->8} {:->10} {:->14} {:->14} {:->14} {:->14} {:->14}",
-        "", "", "", "", "", "", ""
+        "  {:->8} {:->10} {:->14} {:->14} {:->14} {:->14} {:->14} {:->14}",
+        "", "", "", "", "", "", "", ""
     );
 
     for &latency in &[0_u64, 20, 30, 40] {
@@ -1404,6 +1411,7 @@ fn cross_over_summary() {
             let mut cqf_co = None;
             let mut bloom_co = None;
             let mut hybrid_co = None;
+            let mut sketch_ref = None;
 
             for &delta in &[1_000, 5_000, 10_000, 25_000, 50_000, 100_000] {
                 let (local, remote) = generate_average_case(&base, delta);
@@ -1431,14 +1439,21 @@ fn cross_over_summary() {
                 if hybrid.wall_ms < sketch.wall_ms && hybrid_co.is_none() {
                     hybrid_co = Some(delta);
                 }
+                if delta == 100_000 {
+                    sketch_ref = Some(sketch);
+                }
             }
 
             let fmt = |co: Option<usize>| match co {
                 Some(d) => format!("{d:>14}"),
                 None => format!("{:>14}", "never"),
             };
+            let sketch_col = match sketch_ref {
+                Some(s) => format!("{:>8.1}ms r{}", s.wall_ms, s.rounds),
+                None => format!("{:>14}", "n/a"),
+            };
             println!(
-                "  {latency:>6}ms {budget:>10} {} {} {} {} {}",
+                "  {latency:>6}ms {budget:>10} {sketch_col} {} {} {} {} {}",
                 fmt(cuckoo_co),
                 fmt(remainder_probe_co),
                 fmt(cqf_co),
