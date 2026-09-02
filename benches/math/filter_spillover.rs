@@ -102,7 +102,7 @@ fn measure(iterations: u32, mut operation: impl FnMut()) -> Duration {
 }
 
 fn report(name: &str, iterations: u32, elapsed: Duration) {
-    let millis = elapsed.as_secs_f64() * 1e3 / f64::from(iterations);
+    let millis = millis_per_operation(elapsed, iterations);
     println!("{name}: {millis:.6} ms/op ({iterations} iterations)");
 }
 
@@ -118,12 +118,87 @@ fn sorted_contains(slice: &[u64], value: u64) -> bool {
 // Strategy results
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 struct StrategyResult {
     wall_ms: f64,
     cpu_ms: f64,
     rounds: usize,
     wire_bytes: usize,
     resolved: bool,
+}
+
+struct MicrobenchmarkRow {
+    capacity: usize,
+    cuckoo_insert: Duration,
+    cuckoo_probe: Duration,
+    cuckoo_bytes: usize,
+    cqf_insert: Duration,
+    cqf_probe: Duration,
+    cqf_bytes: usize,
+    bloom_insert: Duration,
+    bloom_probe: Duration,
+    bloom_bytes: usize,
+}
+
+struct ReconciliationSummaryRow {
+    case_name: &'static str,
+    delta: usize,
+    sketch: StrategyResult,
+    cuckoo: StrategyResult,
+    cqf: StrategyResult,
+    bloom: StrategyResult,
+}
+
+/// Shared, immutable state for one local/remote population pair.
+///
+/// Preparing this once prevents each strategy from independently rebuilding
+/// the resident kernels and resorting one million short identifiers.
+struct PreparedInput {
+    local: ResidentKernel,
+    local_h64: Vec<u64>,
+    remote_h64: Vec<u64>,
+    remote_digest: RemoteDigest,
+    estimated_delta: u64,
+}
+
+fn prepare_input(local_hashes: &[ElementHash], remote_hashes: &[ElementHash]) -> PreparedInput {
+    let mut local = ResidentKernel::new();
+    let mut remote = ResidentKernel::new();
+    let mut local_h64 = Vec::with_capacity(local_hashes.len());
+    let mut remote_h64 = Vec::with_capacity(remote_hashes.len());
+
+    for hash in local_hashes {
+        local.insert(*hash).expect("valid hash");
+        local_h64.push(hash.h64);
+    }
+    for hash in remote_hashes {
+        remote.insert(*hash).expect("valid hash");
+        remote_h64.push(hash.h64);
+    }
+    local_h64.sort_unstable();
+    remote_h64.sort_unstable();
+
+    let remote_digest = RemoteDigest {
+        digest: remote.accumulator().digest(),
+        known_event_count: remote.accumulator().known_event_count(),
+        strata: *remote.strata(),
+        frame_matches: true,
+        has_unknown_extremity: false,
+    };
+    let estimated_delta = estimate_strata(local.strata(), remote.strata())
+        .map_or(500, |estimate| estimate.delta.max(1));
+
+    PreparedInput {
+        local,
+        local_h64,
+        remote_h64,
+        remote_digest,
+        estimated_delta,
+    }
+}
+
+fn millis_per_operation(elapsed: Duration, iterations: u32) -> f64 {
+    elapsed.as_secs_f64() * 1e3 / f64::from(iterations)
 }
 
 // ---------------------------------------------------------------------------
@@ -427,42 +502,14 @@ fn simulate_filter_rounds(
 // ---------------------------------------------------------------------------
 
 fn simulate_strategy(
-    local_hashes: &[ElementHash],
-    remote_hashes: &[ElementHash],
+    input: &PreparedInput,
     strategy: &str,
     network_latency_ms: u64,
     decode_budget: usize,
     filter_fpr: f64,
 ) -> StrategyResult {
-    let mut local = ResidentKernel::new();
-    let mut remote = ResidentKernel::new();
-    let mut local_h64: Vec<u64> = Vec::with_capacity(local_hashes.len());
-    let mut remote_h64: Vec<u64> = Vec::with_capacity(remote_hashes.len());
-
-    for hash in local_hashes {
-        local.insert(*hash).expect("valid hash");
-        local_h64.push(hash.h64);
-    }
-    for hash in remote_hashes {
-        remote.insert(*hash).expect("valid hash");
-        remote_h64.push(hash.h64);
-    }
-    local_h64.sort_unstable();
-    remote_h64.sort_unstable();
-
     let client = ReconciliationClient::default().allow_unlimited_delta();
-    let remote_digest = RemoteDigest {
-        digest: remote.accumulator().digest(),
-        known_event_count: remote.accumulator().known_event_count(),
-        strata: *remote.strata(),
-        frame_matches: true,
-        has_unknown_extremity: false,
-    };
-
-    let estimated_delta =
-        estimate_strata(local.strata(), remote.strata()).map_or(500, |est| est.delta.max(1));
-
-    let initial_action = client.select_action(&local, remote_digest, 0);
+    let initial_action = client.select_action(&input.local, input.remote_digest, 0);
 
     let ClientAction::BucketSketches {
         requests: mut current_requests,
@@ -491,15 +538,15 @@ fn simulate_strategy(
     let mut rounds = 0_usize;
     let mut resolved = false;
 
-    let local_index = H64Index::new(&local_h64);
-    let remote_index = H64Index::new(&remote_h64);
+    let local_index = H64Index::new(&input.local_h64);
+    let remote_index = H64Index::new(&input.remote_h64);
 
     loop {
         rounds += 1;
         let round_cpu_start = Instant::now();
 
-        let remote_sketches = build_bucket_sketches(&remote_h64, &current_requests).unwrap();
-        let local_sketches = build_bucket_sketches(&local_h64, &current_requests).unwrap();
+        let remote_sketches = build_bucket_sketches(&input.remote_h64, &current_requests).unwrap();
+        let local_sketches = build_bucket_sketches(&input.local_h64, &current_requests).unwrap();
 
         let mut batch = BucketDecodeBatch {
             successful_buckets: Vec::with_capacity(current_requests.len()),
@@ -567,8 +614,8 @@ fn simulate_strategy(
                     };
                     let (filter_decoded, filter_failed, filter_wire, filter_cpu) =
                         simulate_filter_rounds(
-                            &local_h64,
-                            &remote_h64,
+                            &input.local_h64,
+                            &input.remote_h64,
                             &local_index,
                             &remote_index,
                             &overflow_requests,
@@ -625,8 +672,8 @@ fn simulate_strategy(
                 if !small_overflows.is_empty() {
                     let (filter_decoded, filter_failed, filter_wire, filter_cpu) =
                         simulate_filter_rounds(
-                            &local_h64,
-                            &remote_h64,
+                            &input.local_h64,
+                            &input.remote_h64,
                             &local_index,
                             &remote_index,
                             &small_overflows,
@@ -652,7 +699,7 @@ fn simulate_strategy(
         let round_cpu = round_cpu_start.elapsed();
         total_cpu += round_cpu;
 
-        match exchange.advance(batch, &current_requests, Some(estimated_delta)) {
+        match exchange.advance(batch, &current_requests, Some(input.estimated_delta)) {
             ClientAction::BucketSketches {
                 requests,
                 accumulated_roots: _,
@@ -694,6 +741,14 @@ fn simulate_strategy(
 // Comparison table printer
 // ---------------------------------------------------------------------------
 
+fn fastest_resolved<'a>(strategies: &[(&'a str, &'a StrategyResult)]) -> &'a str {
+    strategies
+        .iter()
+        .filter(|(_, result)| result.resolved)
+        .min_by(|(_, left), (_, right)| left.wall_ms.total_cmp(&right.wall_ms))
+        .map_or("none", |(name, _)| name)
+}
+
 fn print_comparison(
     case_name: &str,
     delta: usize,
@@ -706,31 +761,14 @@ fn print_comparison(
     bloom: &StrategyResult,
     hybrid: &StrategyResult,
 ) {
-    let winner = if cuckoo.wall_ms < sketch.wall_ms
-        && cuckoo.wall_ms < remainder_probe.wall_ms
-        && cuckoo.wall_ms < cqf.wall_ms
-        && cuckoo.wall_ms < bloom.wall_ms
-        && cuckoo.wall_ms < hybrid.wall_ms
-    {
-        "CUCKOO"
-    } else if remainder_probe.wall_ms < sketch.wall_ms
-        && remainder_probe.wall_ms < bloom.wall_ms
-        && remainder_probe.wall_ms < cqf.wall_ms
-        && remainder_probe.wall_ms < hybrid.wall_ms
-    {
-        "remainder-probe"
-    } else if cqf.wall_ms < sketch.wall_ms
-        && cqf.wall_ms < bloom.wall_ms
-        && cqf.wall_ms < hybrid.wall_ms
-    {
-        "CQF"
-    } else if bloom.wall_ms < sketch.wall_ms && bloom.wall_ms < hybrid.wall_ms {
-        "BLOOM"
-    } else if hybrid.wall_ms < sketch.wall_ms {
-        "HYBRID"
-    } else {
-        "SKETCH"
-    };
+    let winner = fastest_resolved(&[
+        ("SKETCH", sketch),
+        ("CUCKOO", cuckoo),
+        ("REMAINDER", remainder_probe),
+        ("CQF", cqf),
+        ("BLOOM", bloom),
+        ("HYBRID", hybrid),
+    ]);
 
     let sk_s = if sketch.resolved { "ok" } else { "FALL" };
     let ck_s = if cuckoo.resolved { "ok" } else { "FALL" };
@@ -779,6 +817,41 @@ fn print_comparison(
     );
 }
 
+fn print_reconciliation_summary(rows: &[ReconciliationSummaryRow], base_count: usize) {
+    println!("\n=== Reconciliation summary ({base_count} elements, 0ms, budget=8M) ===\n");
+    println!(
+        "  {:<9} {:>7} {:>19} {:>19} {:>19} {:>19} {:>9}",
+        "case", "delta", "sketch split", "cuckoo", "cqf", "bloom", "winner"
+    );
+    println!(
+        "  {:->9} {:->7} {:->19} {:->19} {:->19} {:->19} {:->9}",
+        "", "", "", "", "", "", ""
+    );
+    for row in rows {
+        let format_result = |result: &StrategyResult| {
+            let status = if result.resolved { "ok" } else { "FALL" };
+            format!("{:.1}ms r{} {status}", result.wall_ms, result.rounds)
+        };
+        let winner = fastest_resolved(&[
+            ("sketch", &row.sketch),
+            ("cuckoo", &row.cuckoo),
+            ("cqf", &row.cqf),
+            ("bloom", &row.bloom),
+        ]);
+        println!(
+            "  {:<9} {:>7} {:>19} {:>19} {:>19} {:>19} {:>9}",
+            row.case_name,
+            row.delta,
+            format_result(&row.sketch),
+            format_result(&row.cuckoo),
+            format_result(&row.cqf),
+            format_result(&row.bloom),
+            winner,
+        );
+    }
+    println!("  Times are modeled wall time; filter wire costs remain in detailed rows.\n");
+}
+
 // ---------------------------------------------------------------------------
 // Layer 1: Microbenchmarks (probe ALL N entries)
 // ---------------------------------------------------------------------------
@@ -818,13 +891,49 @@ fn assert_cqf_integrity() {
     );
 }
 
+fn print_microbenchmark_summary(rows: &[MicrobenchmarkRow]) {
+    println!("\n=== Microbenchmark summary (0.1% target FPR) ===\n");
+    println!(
+        "  {:<16} {:>12} {:>12} {:>12}",
+        "operation", "cuckoo", "cqf", "bloom"
+    );
+    println!("  {:->16} {:->12} {:->12} {:->12}", "", "", "", "");
+    for row in rows {
+        let size = format!("{}K", row.capacity / 1_000);
+        println!(
+            "  {:<16} {:>9.3}ms {:>9.3}ms {:>9.3}ms",
+            format!("insert {size}"),
+            millis_per_operation(row.cuckoo_insert, 10),
+            millis_per_operation(row.cqf_insert, 10),
+            millis_per_operation(row.bloom_insert, 10),
+        );
+        println!(
+            "  {:<16} {:>9.3}ms {:>9.3}ms {:>9.3}ms",
+            format!("probe {size}"),
+            millis_per_operation(row.cuckoo_probe, 100),
+            millis_per_operation(row.cqf_probe, 100),
+            millis_per_operation(row.bloom_probe, 100),
+        );
+    }
+    let last = rows.last().expect("microbenchmark table has rows");
+    println!(
+        "  {:<16} {:>9.1} B {:>9.1} B {:>9.1} B",
+        "wire @ 100K",
+        last.cuckoo_bytes as f64 / last.capacity as f64,
+        last.cqf_bytes as f64 / last.capacity as f64,
+        last.bloom_bytes as f64 / last.capacity as f64,
+    );
+    println!("  Note: remainder_probe is intentionally omitted; it is not a CQF.\n");
+}
+
 fn microbenchmarks() {
     println!("\n=== Layer 1: Filter microbenchmarks ===\n");
     assert_cqf_integrity();
+    let mut summary_rows = Vec::new();
 
     for capacity in [1_000, 10_000, 100_000] {
         // --- Cuckoo ---
-        let elapsed = measure(10, || {
+        let cuckoo_insert = measure(10, || {
             let mut filter = CuckooFilter::with_fpr(capacity, 0.001);
             let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
             for _ in 0..capacity {
@@ -832,7 +941,7 @@ fn microbenchmarks() {
             }
             black_box(&filter);
         });
-        report(&format!("cuckoo/insert/{capacity}"), 10, elapsed);
+        report(&format!("cuckoo/insert/{capacity}"), 10, cuckoo_insert);
 
         let mut filter = CuckooFilter::with_fpr(capacity, 0.001);
         let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
@@ -840,17 +949,19 @@ fn microbenchmarks() {
         for val in &probe_values {
             filter.insert(val);
         }
-        let elapsed = measure(100, || {
+        let cuckoo_probe = measure(100, || {
             for val in &probe_values {
                 black_box(filter.contains(val));
             }
         });
-        report(&format!("cuckoo/probe/{capacity}"), 100, elapsed);
+        report(&format!("cuckoo/probe/{capacity}"), 100, cuckoo_probe);
+
+        let cuckoo_bytes = filter.byte_len();
 
         println!(
             "  cuckoo byte_len({capacity}): {} bytes ({:.1} B/elem)",
-            filter.byte_len(),
-            filter.byte_len() as f64 / capacity as f64,
+            cuckoo_bytes,
+            cuckoo_bytes as f64 / capacity as f64,
         );
 
         // --- Naive linear-probe remainder table (not a quotient filter) ---
@@ -884,7 +995,7 @@ fn microbenchmarks() {
         );
 
         // --- Counting quotient filter ---
-        let elapsed = measure(10, || {
+        let cqf_insert = measure(10, || {
             let mut filter = CountingQuotientFilter::with_remainder_bits(capacity, 10);
             let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
             for _ in 0..capacity {
@@ -892,7 +1003,7 @@ fn microbenchmarks() {
             }
             black_box(&filter);
         });
-        report(&format!("cqf/insert/{capacity}"), 10, elapsed);
+        report(&format!("cqf/insert/{capacity}"), 10, cqf_insert);
 
         let mut filter = CountingQuotientFilter::with_remainder_bits(capacity, 10);
         let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
@@ -905,20 +1016,21 @@ fn microbenchmarks() {
         for value in &probe_values {
             assert!(filter.contains(value), "CQF missing inserted probe value");
         }
-        let elapsed = measure(100, || {
+        let cqf_probe = measure(100, || {
             for value in &probe_values {
                 black_box(filter.contains(value));
             }
         });
-        report(&format!("cqf/probe/{capacity}"), 100, elapsed);
+        report(&format!("cqf/probe/{capacity}"), 100, cqf_probe);
+        let cqf_bytes = filter.byte_len();
         println!(
             "  cqf byte_len({capacity}): {} bytes ({:.1} B/elem)",
-            filter.byte_len(),
-            filter.byte_len() as f64 / capacity as f64,
+            cqf_bytes,
+            cqf_bytes as f64 / capacity as f64,
         );
 
         // --- Bloom ---
-        let elapsed = measure(10, || {
+        let bloom_insert = measure(10, || {
             let mut filter = BloomFilter::with_fpr(capacity, 0.001);
             let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
             for _ in 0..capacity {
@@ -926,7 +1038,7 @@ fn microbenchmarks() {
             }
             black_box(&filter);
         });
-        report(&format!("bloom/insert/{capacity}"), 10, elapsed);
+        report(&format!("bloom/insert/{capacity}"), 10, bloom_insert);
 
         let mut filter = BloomFilter::with_fpr(capacity, 0.001);
         let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
@@ -934,24 +1046,40 @@ fn microbenchmarks() {
         for val in &probe_values {
             filter.insert(val);
         }
-        let elapsed = measure(100, || {
+        let bloom_probe = measure(100, || {
             for val in &probe_values {
                 black_box(filter.contains(val));
             }
         });
-        report(&format!("bloom/probe/{capacity}"), 100, elapsed);
+        report(&format!("bloom/probe/{capacity}"), 100, bloom_probe);
+        let bloom_bytes = filter.byte_len();
 
         println!(
             "  bloom byte_len({capacity}): {} bytes ({:.1} B/elem)",
-            filter.byte_len(),
-            filter.byte_len() as f64 / capacity as f64,
+            bloom_bytes,
+            bloom_bytes as f64 / capacity as f64,
         );
+
+        summary_rows.push(MicrobenchmarkRow {
+            capacity,
+            cuckoo_insert,
+            cuckoo_probe,
+            cuckoo_bytes,
+            cqf_insert,
+            cqf_probe,
+            cqf_bytes,
+            bloom_insert,
+            bloom_probe,
+            bloom_bytes,
+        });
 
         println!();
     }
 
+    print_microbenchmark_summary(&summary_rows);
+
     // Pinsketch decode at various budgets
-    println!("--- pinsketch decode at various budgets (cap={MAX_SKETCH_CAPACITY}) ---");
+    let mut decode_rows = Vec::new();
     for budget in [1_000_000_usize, 2_000_000, 4_000_000, 8_000_000, 16_000_000] {
         let elapsed = measure(10, || {
             let mut sketch = SyndromeSketch::new(MAX_SKETCH_CAPACITY).unwrap();
@@ -961,7 +1089,16 @@ fn microbenchmarks() {
             }
             let _ = black_box(sketch.decode_elements_with_budget(MAX_SKETCH_CAPACITY, budget));
         });
-        report(&format!("pinsketch/decode/budget={budget}"), 10, elapsed);
+        decode_rows.push((budget, elapsed));
+    }
+    println!("--- PinSketch decode summary (capacity={MAX_SKETCH_CAPACITY}) ---");
+    println!("  {:>12} {:>14}", "work budget", "decode time");
+    println!("  {:->12} {:->14}", "", "");
+    for (budget, elapsed) in decode_rows {
+        println!(
+            "  {budget:>12} {:>11.3}ms",
+            millis_per_operation(elapsed, 10)
+        );
     }
 }
 
@@ -971,12 +1108,27 @@ fn microbenchmarks() {
 
 fn e2e_simulation() {
     println!("\n=== Layer 2: End-to-end reconciliation simulation ===\n");
+    let full_sweep = std::env::var_os("REZZY_FILTER_FULL_SWEEP").is_some();
+    let base_count = std::env::var("REZZY_FILTER_ELEMENTS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(if full_sweep { 1_000_000 } else { 10_000 });
+    if full_sweep {
+        println!("Full sweep enabled by REZZY_FILTER_FULL_SWEEP.\n");
+    } else {
+        println!(
+            "Quick baseline: {base_count} elements, 0ms / 8M, average + worst. \
+             Set REZZY_FILTER_ELEMENTS=1000000 for the 1M baseline or \
+             REZZY_FILTER_FULL_SWEEP=1 for the exhaustive matrix.\n"
+        );
+    }
 
-    let base_count: usize = 1_000_000;
     let mut gen = Xorshift128::new(0x243f_6a88_85a3_08d3);
     let base: Vec<ElementHash> = (0..base_count).map(|_| gen.hash()).collect();
+    let mut summary_rows = Vec::new();
 
-    let generators: &[(
+    let full_generators: &[(
         &str,
         fn(&[ElementHash], usize) -> (Vec<ElementHash>, Vec<ElementHash>),
     )] = &[
@@ -985,80 +1137,117 @@ fn e2e_simulation() {
         ("worst", generate_worst_case),
         ("sym_mix", generate_symmetric_mix),
     ];
+    let baseline_generators: &[(
+        &str,
+        fn(&[ElementHash], usize) -> (Vec<ElementHash>, Vec<ElementHash>),
+    )] = &[
+        ("average", generate_average_case),
+        ("worst", generate_worst_case),
+    ];
+    let generators = if full_sweep {
+        full_generators
+    } else {
+        baseline_generators
+    };
+    let latencies: &[u64] = if full_sweep { &[0, 20, 30, 40] } else { &[0] };
+    let budgets: &[usize] = if full_sweep {
+        &[1_000_000, 4_000_000, 8_000_000, 16_000_000]
+    } else {
+        &[8_000_000]
+    };
+    let deltas: &[usize] = if full_sweep {
+        &[1_000, 5_000, 10_000, 25_000, 50_000, 100_000]
+    } else if base_count <= 10_000 {
+        &[100, 1_000]
+    } else {
+        &[1_000, 5_000, 10_000]
+    };
 
-    for &network_latency_ms in &[0_u64, 20, 30, 40] {
-        for &decode_budget in &[1_000_000_usize, 4_000_000, 8_000_000, 16_000_000] {
-            println!("\n--- network={network_latency_ms}ms, budget={decode_budget} ---");
+    for &network_latency_ms in latencies {
+        for &decode_budget in budgets {
+            if full_sweep {
+                println!("\n--- network={network_latency_ms}ms, budget={decode_budget} ---");
+            }
 
-            for &delta in &[1_000_usize, 5_000, 10_000, 25_000, 50_000, 100_000] {
+            for &delta in deltas {
                 for &(case_name, gen_fn) in generators {
+                    if !full_sweep {
+                        println!("  running {case_name:<7} Δ={delta:>6} ...");
+                    }
                     let (local, remote) = gen_fn(&base, delta);
+                    let input = prepare_input(&local, &remote);
 
                     let sketch = simulate_strategy(
-                        &local,
-                        &remote,
+                        &input,
                         "sketch_split",
                         network_latency_ms,
                         decode_budget,
                         0.001,
                     );
                     let cuckoo = simulate_strategy(
-                        &local,
-                        &remote,
+                        &input,
                         "cuckoo",
                         network_latency_ms,
                         decode_budget,
                         0.001,
                     );
-                    let remainder_probe = simulate_strategy(
-                        &local,
-                        &remote,
-                        "remainder_probe",
-                        network_latency_ms,
-                        decode_budget,
-                        0.001,
-                    );
-                    let cqf = simulate_strategy(
-                        &local,
-                        &remote,
-                        "cqf",
-                        network_latency_ms,
-                        decode_budget,
-                        0.001,
-                    );
+                    let cqf =
+                        simulate_strategy(&input, "cqf", network_latency_ms, decode_budget, 0.001);
                     let bloom = simulate_strategy(
-                        &local,
-                        &remote,
+                        &input,
                         "bloom",
                         network_latency_ms,
                         decode_budget,
                         0.001,
                     );
-                    let hybrid = simulate_strategy(
-                        &local,
-                        &remote,
-                        "hybrid",
-                        network_latency_ms,
-                        decode_budget,
-                        0.001,
-                    );
+                    if full_sweep {
+                        let remainder_probe = simulate_strategy(
+                            &input,
+                            "remainder_probe",
+                            network_latency_ms,
+                            decode_budget,
+                            0.001,
+                        );
+                        let hybrid = simulate_strategy(
+                            &input,
+                            "hybrid",
+                            network_latency_ms,
+                            decode_budget,
+                            0.001,
+                        );
+                        print_comparison(
+                            case_name,
+                            delta,
+                            network_latency_ms,
+                            decode_budget,
+                            &sketch,
+                            &cuckoo,
+                            &remainder_probe,
+                            &cqf,
+                            &bloom,
+                            &hybrid,
+                        );
+                    }
 
-                    print_comparison(
-                        case_name,
-                        delta,
-                        network_latency_ms,
-                        decode_budget,
-                        &sketch,
-                        &cuckoo,
-                        &remainder_probe,
-                        &cqf,
-                        &bloom,
-                        &hybrid,
-                    );
+                    if network_latency_ms == 0
+                        && decode_budget == 8_000_000
+                        && matches!(case_name, "average" | "worst")
+                    {
+                        summary_rows.push(ReconciliationSummaryRow {
+                            case_name,
+                            delta,
+                            sketch,
+                            cuckoo,
+                            cqf,
+                            bloom,
+                        });
+                    }
                 }
             }
         }
     }
+
+    print_reconciliation_summary(&summary_rows, base_count);
 }
 
 // ---------------------------------------------------------------------------
@@ -1092,14 +1281,14 @@ fn cross_over_summary() {
 
             for &delta in &[1_000, 5_000, 10_000, 25_000, 50_000, 100_000] {
                 let (local, remote) = generate_average_case(&base, delta);
-                let sketch =
-                    simulate_strategy(&local, &remote, "sketch_split", latency, budget, 0.001);
-                let cuckoo = simulate_strategy(&local, &remote, "cuckoo", latency, budget, 0.001);
+                let input = prepare_input(&local, &remote);
+                let sketch = simulate_strategy(&input, "sketch_split", latency, budget, 0.001);
+                let cuckoo = simulate_strategy(&input, "cuckoo", latency, budget, 0.001);
                 let remainder_probe =
-                    simulate_strategy(&local, &remote, "remainder_probe", latency, budget, 0.001);
-                let cqf = simulate_strategy(&local, &remote, "cqf", latency, budget, 0.001);
-                let bloom = simulate_strategy(&local, &remote, "bloom", latency, budget, 0.001);
-                let hybrid = simulate_strategy(&local, &remote, "hybrid", latency, budget, 0.001);
+                    simulate_strategy(&input, "remainder_probe", latency, budget, 0.001);
+                let cqf = simulate_strategy(&input, "cqf", latency, budget, 0.001);
+                let bloom = simulate_strategy(&input, "bloom", latency, budget, 0.001);
+                let hybrid = simulate_strategy(&input, "hybrid", latency, budget, 0.001);
 
                 if cuckoo.wall_ms < sketch.wall_ms && cuckoo_co.is_none() {
                     cuckoo_co = Some(delta);
@@ -1141,5 +1330,7 @@ fn cross_over_summary() {
 pub fn run() {
     microbenchmarks();
     e2e_simulation();
-    cross_over_summary();
+    if std::env::var_os("REZZY_FILTER_FULL_SWEEP").is_some() {
+        cross_over_summary();
+    }
 }
