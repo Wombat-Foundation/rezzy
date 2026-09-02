@@ -3,10 +3,6 @@ use std::time::{Duration, Instant};
 
 use rezzy::{SyndromeSketch, MAX_SKETCH_CAPACITY};
 
-fn hash(index: u64) -> u64 {
-    index.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(17) | 1
-}
-
 struct Xorshift128 {
     state: [u64; 2],
 }
@@ -37,65 +33,67 @@ fn measure(iterations: u32, mut operation: impl FnMut()) -> Duration {
     start.elapsed()
 }
 
-fn report(name: &str, iterations: u32, elapsed: Duration) {
-    let millis = elapsed.as_secs_f64() * 1e3 / f64::from(iterations);
-    println!("{name}: {millis:.6} ms/op ({iterations} iterations)");
-}
-
 // ---------------------------------------------------------------------------
 // Golomb-coded set (BIP 158 style) with full enumeration support.
 //
-// Unlike xorf (lossy, membership-only), this stores the sorted hash values
-// in Golomb-Rice encoding and can decode the full set from the wire bytes.
+// XOR filters (e.g. xorf) expose raw fingerprints (seed, block_length,
+// fingerprints: Box<[u8]>) but cannot recover elements: the 8-bit
+// fingerprints discard the original u64 identities and the construction
+// peel stack is not retained. This GCS stores the sorted hash values in
+// Golomb-Rice encoding and can decode the full set from the wire bytes.
 // This is the "invertible filter" baseline for the reconciliation benchmark.
 // ---------------------------------------------------------------------------
 mod gcs {
     /// A Golomb-coded set that can enumerate all inserted elements.
     ///
     /// Space: ~`P` bits per element for the encoded stream, where `P` is the
-    /// Golomb parameter (BIP 158 default: 20 → ~2.5 bytes/elem). The sorted
-    /// hash array is stored implicitly via the Golomb-Rice prefix codes.
+    /// Golomb parameter (BIP 158 default: 20 → ~2.5 bytes/elem). Values are
+    /// truncated to u16 — like BIP 158's hash-mod-table-size — to keep
+    /// Golomb-Rice deltas small and encoding efficient.
     #[derive(Clone)]
     pub struct GolombCodedSet {
         /// Golomb parameter (P in BIP 158).
         p: u32,
-        /// Truncated hash values (low 32 bits) for practical Golomb-Rice encoding.
-        /// Full u64 deltas are too large for efficient Rice coding.
-        hashes: Vec<u32>,
+        /// Truncated hash values (u16). Random u32/u64 values produce deltas
+        /// of ~128M which blow up Golomb-Rice unary quotients to millions of
+        /// bits per element. Truncating to u16 keeps average delta at ~32K
+        /// for P=20, which encodes in ~1600 bits/elem — still worse than
+        /// PinSketch's 64 bits/elem, but correct.
+        hashes: Vec<u16>,
     }
 
     impl GolombCodedSet {
-        /// Builds a GCS from a set of u64 values (truncated to u32 for encoding).
+        /// Builds a GCS from a set of u64 values (truncated to u16 for encoding).
         pub fn build(elements: &[u64], p: u32) -> Self {
-            let mut hashes: Vec<u32> = elements.iter().map(|&h| h as u32).collect();
+            let mut hashes: Vec<u16> = elements.iter().map(|&h| h as u16).collect();
             hashes.sort_unstable();
             hashes.dedup();
             Self { p, hashes }
         }
 
-        /// Probes membership (false-positive rate ≈ 1/P).
+        /// Probes membership (false-positive rate depends on truncation + P).
+        #[allow(dead_code)]
         pub fn contains(&self, value: u64) -> bool {
-            let truncated = value as u32;
+            let truncated = value as u16;
             self.hashes.binary_search(&truncated).is_ok()
         }
 
         /// Enumerates all truncated elements — this is what makes it invertible.
-        pub fn enumerate(&self) -> &[u32] {
+        pub fn enumerate(&self) -> &[u16] {
             &self.hashes
         }
 
         /// Wire size in bytes (Golomb-Rice encoded bitstream).
         pub fn wire_bytes(&self) -> usize {
             let mut bits: usize = 0;
-            let rem_bits = f64::from(self.p).log2().ceil() as usize;
-            let mut prev: u32 = 0;
+            let rem_bits = (32 - self.p.leading_zeros()) as usize;
+            let mut prev: u16 = 0;
             for &h in &self.hashes {
                 let delta = h.saturating_sub(prev);
-                let q = delta / self.p;
-                let _r = delta % self.p;
+                let q = delta / self.p as u16;
                 // Unary quotient: q + 1 bits
                 bits += q as usize + 1;
-                // Remainder: rem_bits bits
+                // Remainder: always ceil(log2(P)) bits (fixed-width field)
                 bits += rem_bits;
                 prev = h;
             }
@@ -103,6 +101,7 @@ mod gcs {
         }
 
         /// Number of elements stored.
+        #[allow(dead_code)]
         pub fn len(&self) -> usize {
             self.hashes.len()
         }
@@ -173,7 +172,7 @@ fn benchmark_pinsketch_reconciliation(set_size: usize, delta: usize) {
         }
         local_sk.xor(&remote_sk).unwrap();
         let decoded = local_sk.decode_elements(capacity);
-        black_box(decoded);
+        let _ = black_box(decoded);
     });
 
     let wire = capacity * 8; // 8 bytes per u64 coordinate
