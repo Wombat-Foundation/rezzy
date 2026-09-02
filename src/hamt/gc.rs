@@ -12,6 +12,10 @@
 //! already produces, and does `O(|delta|)` work per state transition rather
 //! than `O(|universe|)` per sweep.
 //!
+//! Prefer [`LinearRootChain`] over raw `RefcountTable` — it enforces the
+//! linear-root lifecycle at the API level and catches ordering mistakes
+//! (wrong call order, missing decrement, double decrement) at runtime.
+//!
 //! # Why it can avoid periodic sweeping on a linear history
 //!
 //! A batch sweep run on a fixed wall-clock cadence while the universe keeps
@@ -81,6 +85,189 @@ use core::fmt;
 use crate::{HashMap, HashSet};
 
 use super::StructuralHash;
+
+/// A wrapper around [`RefcountTable`] that enforces the linear-root lifecycle
+/// at the API level.
+///
+/// This prevents the most common misuse patterns:
+/// - Calling `apply_new` and `apply_superseded` in the wrong order
+/// - Forgetting to decrement the old root
+/// - Double-decrementing the same transition
+///
+/// The caller still holds the invariant that no branching occurs (multiple
+/// live roots), but the wrapper makes the *protocol* explicit and catches
+/// ordering mistakes at runtime.
+///
+/// # Example
+/// ```ignore
+/// let mut chain = LinearRootChain::bootstrap(
+///     reachable_hashes,
+///     root_a_hash,
+/// );
+/// // When root_b supersedes root_a:
+/// let zeroed = chain.advance(&delta_b, root_b_hash)?;
+/// // `zeroed` contains hashes safe to delete (subject to branching check).
+/// ```
+#[derive(Debug, Clone)]
+pub struct LinearRootChain {
+    table: RefcountTable,
+    /// The currently live root's hash. `None` before bootstrap.
+    current_root: Option<StructuralHash>,
+    /// Hashes from the previous root that need decrementing.
+    /// `Some(vec![])` means "previous root existed but had no superseded hashes."
+    /// `None` means "no pending retirement."
+    pending_retirement: Option<Vec<StructuralHash>>,
+}
+
+impl LinearRootChain {
+    /// Seeds from a full reachability walk and sets the initial live root.
+    ///
+    /// `hashes` should be the raw output of `reachable_node_hashes` or
+    /// `walk_reachable_node_hashes` over the current live root — **not**
+    /// deduplicated, so shared subtrees are counted once per root.
+    #[must_use]
+    pub fn bootstrap(
+        hashes: impl IntoIterator<Item = StructuralHash>,
+        current_root: StructuralHash,
+    ) -> Self {
+        let mut table = RefcountTable::new();
+        table.bootstrap(hashes);
+        Self {
+            table,
+            current_root: Some(current_root),
+            pending_retirement: None,
+        }
+    }
+
+    /// Transitions to a new root: increments for `delta.new_node_hashes`
+    /// and queues the old root's superseded hashes for retirement.
+    ///
+    /// `new_root` is the structural hash of the replacement root; it becomes
+    /// the tracked live root after this call.
+    ///
+    /// Returns `Ok(())` on success. The previous root's superseded hashes
+    /// are now pending — call [`retire_previous`](Self::retire_previous)
+    /// when the old root is actually retired, or use [`advance`](Self::advance)
+    /// for the common one-step case.
+    ///
+    /// # Errors
+    /// Returns [`RefcountUnderflow`] if `new_node_hashes` contains a hash
+    /// whose count cannot absorb the increment (should not happen for
+    /// well-formed deltas).
+    ///
+    /// # Panics
+    /// Panics if a retirement is already pending from a prior `transition`
+    /// (caller must complete it via `retire_previous` first).
+    pub fn transition(
+        &mut self,
+        delta: &super::NodeHashDelta,
+        new_root: StructuralHash,
+    ) -> Result<(), RefcountUnderflow> {
+        assert!(
+            self.pending_retirement.is_none(),
+            "transition called while a retirement is pending; call retire_previous first"
+        );
+        // Increment new hashes immediately.
+        self.table.apply_new(&delta.new_node_hashes);
+        // Queue old root's superseded hashes for later decrement.
+        self.pending_retirement = Some(delta.superseded_node_hashes.clone());
+        self.current_root = Some(new_root);
+        Ok(())
+    }
+
+    /// Retires the previous root: decrements its superseded hashes.
+    ///
+    /// Must be called after [`transition`](Self::transition) once the old
+    /// root is actually retired (not in the same batch as `transition`).
+    ///
+    /// # Errors
+    /// Returns [`RefcountUnderflow`] if the decrement would go below zero —
+    /// a caller bookkeeping bug (missing prior increment, double decrement,
+    /// or wrong call order).
+    ///
+    /// # Panics
+    /// Panics if no retirement is pending (i.e. `transition` was not called,
+    /// or `retire_previous` was already called for this transition).
+    pub fn retire_previous(&mut self) -> Result<Vec<StructuralHash>, RefcountUnderflow> {
+        let pending = self
+            .pending_retirement
+            .take()
+            .expect("retire_previous called without a pending transition; call transition first");
+        self.table.apply_superseded(&pending)
+    }
+
+    /// One-step transition: increment new, decrement old, return zeroed hashes.
+    ///
+    /// This is the common case when the old root is retired immediately.
+    /// If you need to delay retirement (old root still live), use
+    /// [`transition`](Self::transition) + [`retire_previous`](Self::retire_previous).
+    ///
+    /// # Errors
+    /// Returns [`RefcountUnderflow`] on decrement failure.
+    ///
+    /// # Panics
+    /// Panics if a retirement is already pending from a prior `transition`
+    /// (caller must complete it via `retire_previous` first).
+    pub fn advance(
+        &mut self,
+        delta: &super::NodeHashDelta,
+        new_root: StructuralHash,
+    ) -> Result<Vec<StructuralHash>, RefcountUnderflow> {
+        assert!(
+            self.pending_retirement.is_none(),
+            "advance called while a retirement is pending; call retire_previous first"
+        );
+        self.table.apply_new(&delta.new_node_hashes);
+        let zeroed = self.table.apply_superseded(&delta.superseded_node_hashes)?;
+        self.current_root = Some(new_root);
+        Ok(zeroed)
+    }
+
+    /// Returns the current live root hash, if bootstrapped.
+    #[must_use]
+    pub fn current_root(&self) -> Option<StructuralHash> {
+        self.current_root
+    }
+
+    /// Returns true if a retirement is pending (between `transition` and
+    /// `retire_previous`).
+    #[must_use]
+    pub fn has_pending_retirement(&self) -> bool {
+        self.pending_retirement.is_some()
+    }
+
+    /// Debug-only branching check. Same semantics as
+    /// [`RefcountTable::debug_assert_zeroed_not_reachable_elsewhere`]
+    /// but uses the tracked `current_root` for context.
+    pub fn debug_assert_no_branching(
+        &self,
+        zeroed: &[StructuralHash],
+        other_live_roots_reachable: &HashSet<StructuralHash>,
+    ) {
+        RefcountTable::debug_assert_zeroed_not_reachable_elsewhere(
+            zeroed,
+            other_live_roots_reachable,
+        );
+    }
+
+    /// Delegates to the underlying table's count.
+    #[must_use]
+    pub fn count(&self, hash: &StructuralHash) -> u64 {
+        self.table.count(hash)
+    }
+
+    /// The number of distinct hashes with a nonzero tracked count.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.table.len()
+    }
+
+    /// True if no hash has a nonzero tracked count.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.table.is_empty()
+    }
+}
 
 /// Tracks a live reference count per HAMT node hash, incrementally.
 ///
@@ -265,5 +452,123 @@ impl RefcountTable {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.counts.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate alloc;
+    use super::super::delta::NodeHashDelta;
+    use super::*;
+    use alloc::vec;
+
+    fn h(byte: u8) -> StructuralHash {
+        [byte; 32]
+    }
+
+    fn delta(new: &[u8], superseded: &[u8]) -> NodeHashDelta {
+        NodeHashDelta {
+            new_node_hashes: new.iter().map(|&b| h(b)).collect(),
+            superseded_node_hashes: superseded.iter().map(|&b| h(b)).collect(),
+        }
+    }
+
+    #[test]
+    fn bootstrap_sets_current_root() {
+        let chain = LinearRootChain::bootstrap(vec![h(1), h(2)], h(0));
+        assert_eq!(chain.current_root(), Some(h(0)));
+        assert!(!chain.has_pending_retirement());
+        assert_eq!(chain.count(&h(1)), 1);
+        assert_eq!(chain.count(&h(2)), 1);
+    }
+
+    #[test]
+    fn advance_one_step() {
+        let mut chain = LinearRootChain::bootstrap(vec![h(1)], h(0));
+        // Root A has hash 1. Transition to root B: new=2, superseded=1.
+        let d = delta(&[2], &[1]);
+        let zeroed = chain.advance(&d, h(10)).unwrap();
+        assert_eq!(chain.current_root(), Some(h(10)));
+        assert!(!chain.has_pending_retirement());
+        assert_eq!(chain.count(&h(1)), 0);
+        assert_eq!(chain.count(&h(2)), 1);
+        assert!(zeroed.contains(&h(1)));
+    }
+
+    #[test]
+    fn transition_then_retire_previous() {
+        let mut chain = LinearRootChain::bootstrap(vec![h(1)], h(0));
+        let d = delta(&[2], &[1]);
+        chain.transition(&d, h(10)).unwrap();
+        assert_eq!(chain.current_root(), Some(h(10)));
+        assert!(chain.has_pending_retirement());
+
+        let zeroed = chain.retire_previous().unwrap();
+        assert!(!chain.has_pending_retirement());
+        assert_eq!(chain.count(&h(1)), 0);
+        assert_eq!(chain.count(&h(2)), 1);
+        assert!(zeroed.contains(&h(1)));
+    }
+
+    #[test]
+    #[should_panic(expected = "retirement is pending")]
+    fn second_transition_rejected_while_pending() {
+        let mut chain = LinearRootChain::bootstrap(vec![h(1)], h(0));
+        let d1 = delta(&[2], &[1]);
+        chain.transition(&d1, h(10)).unwrap();
+        // Second transition without retiring the first should panic.
+        let d2 = delta(&[3], &[2]);
+        chain.transition(&d2, h(20)).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "retirement is pending")]
+    fn advance_rejected_while_pending() {
+        let mut chain = LinearRootChain::bootstrap(vec![h(1)], h(0));
+        let d1 = delta(&[2], &[1]);
+        chain.transition(&d1, h(10)).unwrap();
+        // advance after transition (without retire_previous) should panic.
+        let d2 = delta(&[3], &[2]);
+        chain.advance(&d2, h(20)).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "retire_previous called without a pending transition")]
+    fn retire_previous_without_transition_panics() {
+        let mut chain = LinearRootChain::bootstrap(vec![h(1)], h(0));
+        let _ = chain.retire_previous();
+    }
+
+    #[test]
+    fn chain_of_advances() {
+        let mut chain = LinearRootChain::bootstrap(vec![h(1)], h(0));
+        // A -> B
+        let zeroed = chain.advance(&delta(&[2], &[1]), h(10)).unwrap();
+        assert!(zeroed.contains(&h(1)));
+        // B -> C
+        let zeroed = chain.advance(&delta(&[3], &[2]), h(20)).unwrap();
+        assert!(zeroed.contains(&h(2)));
+        // C -> D
+        let zeroed = chain.advance(&delta(&[4], &[3]), h(30)).unwrap();
+        assert!(zeroed.contains(&h(3)));
+        assert_eq!(chain.current_root(), Some(h(30)));
+        assert_eq!(chain.count(&h(4)), 1);
+    }
+
+    #[test]
+    fn shared_hashes_across_steps() {
+        let mut chain = LinearRootChain::bootstrap(vec![h(1), h(5)], h(0));
+        // A -> B: new={2,5}, superseded={1}
+        let zeroed = chain.advance(&delta(&[2, 5], &[1]), h(10)).unwrap();
+        assert!(zeroed.contains(&h(1)));
+        // Hash 5 was in A (count=1) and incremented by A->B delta (count=2).
+        // Only h(1) was superseded; h(5) was not, so its count stays at 2.
+        assert_eq!(chain.count(&h(5)), 2);
+        // B -> C: new={3}, superseded={2,5}
+        // h(5) goes 2->1, not zeroed; h(2) goes 1->0, zeroed.
+        let zeroed = chain.advance(&delta(&[3], &[2, 5]), h(20)).unwrap();
+        assert!(zeroed.contains(&h(2)));
+        assert!(!zeroed.contains(&h(5)));
+        assert_eq!(chain.count(&h(5)), 1);
     }
 }

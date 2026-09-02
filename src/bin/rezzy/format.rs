@@ -487,6 +487,12 @@ fn render_timeline(ctx: &FormattingContext) -> String {
 
     // Resolved room state (event type + state_key -> event), used to check the
     // `redact` power level and each redaction sender's own power level.
+    // NOTE: This uses final resolved state, not per-redaction event-time state.
+    // The spec requires per-redaction state, but reconstructing it requires
+    // proper topological state resolution at each redaction's prev_events —
+    // depth-based ordering is insufficient because depth is untrusted and does
+    // not guarantee parent-before-child processing. A future fix should use
+    // apply_authorized_redactions_with_state_at with proper state resolution.
     let mut room_state: RoomState<String, serde_json::Value, String> = RoomState::new();
     for ((typ, sk), eid) in ctx.final_state_map {
         if let Some(ev) = ctx.events_map.get(eid) {

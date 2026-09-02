@@ -49,7 +49,7 @@ pub use delta::{
     walk_reachable_node_hashes, Delta, DeltaResult, HamtTraversalError, NodeHashDelta,
 };
 #[cfg(feature = "unstable-refcount-gc")]
-pub use gc::{RefcountTable, RefcountUnderflow};
+pub use gc::{LinearRootChain, RefcountTable, RefcountUnderflow};
 pub use hash::{
     state_group_id_from_lthash, RootHandle, StateGroupId, StructuralHash, HAMT_CODEC_VERSION_V1,
     HAMT_ROUTING_VERSION_V1,

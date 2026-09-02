@@ -40,6 +40,19 @@ fn default_routing_version_v1() -> u8 {
 
 /// A resolved root handle carrying the local structural hash, global state-group identifier,
 /// and explicit codec/routing version metadata.
+///
+/// # Persistence contract
+///
+/// `RootHandle` is designed for **JSON persistence only**. Its `[u8; 32]` fields
+/// serialize as JSON number arrays, and the `#[serde(default)]` attributes on the
+/// version fields ensure backward compatibility with legacy JSON documents that
+/// predate `codec_version` / `routing_version` / `routing_params`.
+///
+/// **Do not use bincode or other positional binary formats** with this struct.
+/// The field layout has changed since initial design (`StructuralHash` widened from
+/// `[u8; 16]` to `[u8; 32]`, version fields were prepended), and bincode's
+/// position-dependent decoding would silently misparse legacy payloads. If binary
+/// persistence is needed, use a versioned envelope with an explicit format tag.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RootHandle {
     #[serde(default = "default_codec_version_v1")]
