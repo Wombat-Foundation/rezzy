@@ -3,6 +3,10 @@ use std::time::{Duration, Instant};
 
 use rezzy::{SyndromeSketch, MAX_SKETCH_CAPACITY};
 
+use super::filters::{
+    BloomFilter, CountingQuotientFilter, CuckooFilter, RemainderProbeFilter,
+};
+
 struct Xorshift128 {
     state: [u64; 2],
 }
@@ -240,6 +244,158 @@ fn benchmark_gcs_reconciliation(set_size: usize, delta: usize) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Benchmark: Membership-only filters (Bloom, Cuckoo, CQF, remainder-probe)
+// for set reconciliation (Protocol A).
+//
+// Protocol: sender builds filter from its elements, sends to receiver.
+// Receiver probes its elements, sends back candidates + receiver-only.
+// Sender computes symmetric difference.
+// ---------------------------------------------------------------------------
+
+fn benchmark_filter_reconciliation(set_size: usize, delta: usize, fpr: f64) {
+    let mut gen = Xorshift128::new(0x7f4a_7c15_9e37_79b9);
+
+    let base: Vec<u64> = (0..set_size).map(|_| gen.next() | 1).collect();
+    let local_only: Vec<u64> = (0..delta).map(|_| gen.next() | 1).collect();
+    let remote_only: Vec<u64> = (0..delta).map(|_| gen.next() | 1).collect();
+
+    let mut local_set: Vec<u64> = base.iter().chain(local_only.iter()).copied().collect();
+    let mut remote_set: Vec<u64> = base.iter().chain(remote_only.iter()).copied().collect();
+    local_set.sort_unstable();
+    remote_set.sort_unstable();
+
+    let filter_types = ["bloom", "cuckoo", "cqf", "remainder_probe"];
+
+    for &filter_type in &filter_types {
+        // 1. Sender builds filter.
+        let build = measure(10, || {
+            let f = build_filter_bench(&local_set, fpr, filter_type);
+            black_box(&f);
+        });
+
+        // 2. Full protocol: build + probe + response.
+        let algo = measure(10, || {
+            let filter = build_filter_bench(&local_set, fpr, filter_type);
+
+            // Receiver probes its elements.
+            let mut candidates: Vec<u64> = Vec::new();
+            let mut receiver_only: Vec<u64> = Vec::new();
+            for &val in &remote_set {
+                if filter_contains_bench(&filter, &val) {
+                    candidates.push(val);
+                } else {
+                    receiver_only.push(val);
+                }
+            }
+
+            // Wire: filter bytes + response (candidates + receiver-only).
+            let filter_wire = filter_byte_len_bench(&filter);
+            let response_wire = (candidates.len() + receiver_only.len()) * 8;
+
+            // Sender computes symmetric difference.
+            let mut symmetric_diff: Vec<u64> = Vec::new();
+            for &val in &local_set {
+                if !remote_set.binary_search(&val).is_ok() {
+                    symmetric_diff.push(val);
+                }
+            }
+            for &val in &candidates {
+                if !local_set.binary_search(&val).is_ok() {
+                    symmetric_diff.push(val);
+                }
+            }
+            symmetric_diff.extend_from_slice(&receiver_only);
+
+            black_box((filter_wire, response_wire, symmetric_diff));
+        });
+
+        let filter_wire = filter_byte_len_bench(&build_filter_bench(&local_set, fpr, filter_type));
+        let response_wire = {
+            let filter = build_filter_bench(&local_set, fpr, filter_type);
+            let mut candidates = 0usize;
+            let mut receiver_only = 0usize;
+            for &val in &remote_set {
+                if filter_contains_bench(&filter, &val) {
+                    candidates += 1;
+                } else {
+                    receiver_only += 1;
+                }
+            }
+            (candidates + receiver_only) * 8
+        };
+        let total_wire = filter_wire + response_wire;
+
+        println!(
+            "  {filter_type}/N={set_size} Δ={delta} FPR={fpr:.4}: build={:.3} ms, algo={:.3} ms, wire={total_wire} bytes ({:.1} B/elem), filter={filter_wire} bytes, response={response_wire} bytes",
+            build.as_secs_f64() * 1e3,
+            algo.as_secs_f64() * 1e3,
+            total_wire as f64 / (set_size + delta) as f64,
+        );
+    }
+}
+
+enum FilterBench {
+    Bloom(BloomFilter),
+    Cuckoo(CuckooFilter),
+    Cqf(CountingQuotientFilter),
+    Rp(RemainderProbeFilter),
+}
+
+fn build_filter_bench(elements: &[u64], fpr: f64, filter_type: &str) -> FilterBench {
+    match filter_type {
+        "bloom" => {
+            let mut f = BloomFilter::with_fpr(elements.len().max(1), fpr);
+            for &val in elements {
+                f.insert(&val);
+            }
+            FilterBench::Bloom(f)
+        }
+        "cuckoo" => {
+            let mut f = CuckooFilter::with_fpr(elements.len().max(1), fpr);
+            for &val in elements {
+                f.insert(&val);
+            }
+            FilterBench::Cuckoo(f)
+        }
+        "cqf" => {
+            let rem_bits = ((1.0 / fpr).ln() / std::f64::consts::LN_2).ceil() as u32;
+            let mut f = CountingQuotientFilter::with_remainder_bits(elements.len().max(1), rem_bits);
+            for &val in elements {
+                let _ = f.insert(&val);
+            }
+            FilterBench::Cqf(f)
+        }
+        "remainder_probe" => {
+            let rem_bits = ((1.0 / fpr).ln() / std::f64::consts::LN_2).ceil() as u32;
+            let mut f = RemainderProbeFilter::with_remainder_bits(elements.len().max(1), rem_bits);
+            for &val in elements {
+                f.insert(&val);
+            }
+            FilterBench::Rp(f)
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn filter_contains_bench(filter: &FilterBench, value: &u64) -> bool {
+    match filter {
+        FilterBench::Bloom(f) => f.contains(value),
+        FilterBench::Cuckoo(f) => f.contains(value),
+        FilterBench::Cqf(f) => f.contains(value),
+        FilterBench::Rp(f) => f.contains(value),
+    }
+}
+
+fn filter_byte_len_bench(filter: &FilterBench) -> usize {
+    match filter {
+        FilterBench::Bloom(f) => f.byte_len(),
+        FilterBench::Cuckoo(f) => f.byte_len(),
+        FilterBench::Cqf(f) => f.byte_len(),
+        FilterBench::Rp(f) => f.byte_len(),
+    }
+}
+
 fn benchmark_space_comparison(set_size: usize) {
     println!("\n--- Space comparison for N={set_size} ---");
 
@@ -267,16 +423,17 @@ fn benchmark_space_comparison(set_size: usize) {
 }
 
 pub fn run() {
-    println!("=== Invertible Filter vs Sketch Reconciliation Benchmark ===\n");
-    println!("Comparing PinSketch (algebraic, 8 B/elem) against");
-    println!("Golomb-coded set (invertible filter, ~P bits/elem).\n");
+    println!("=== Reconciliation Benchmark: All Strategies ===\n");
+    println!("Comparing PinSketch, GCS, Bloom, Cuckoo, CQF, remainder-probe.\n");
 
     // Space comparison at various set sizes.
     for n in [32, 128, 1_000, 10_000] {
         benchmark_space_comparison(n);
     }
 
-    println!("\n--- Reconciliation benchmark ---\n");
+    println!("\n--- Reconciliation benchmark (FPR=0.1%) ---\n");
+
+    let fpr = 0.001;
 
     // Reconciliation at various set sizes and delta sizes.
     for set_size in [100, 1_000, 10_000] {
@@ -286,6 +443,7 @@ pub fn run() {
         {
             benchmark_pinsketch_reconciliation(set_size, delta);
             benchmark_gcs_reconciliation(set_size, delta);
+            benchmark_filter_reconciliation(set_size, delta, fpr);
             println!();
         }
     }
