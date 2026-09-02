@@ -333,7 +333,7 @@ fn build_filter(elements: &[u64], filter_fpr: f64, filter_type: &str) -> (Filter
             (FilterEnum::Cuckoo(f), wire)
         }
         "remainder_probe" => {
-            let remainder_bits = ((1.0 / filter_fpr).ln() / std::f64::consts::LN_2).ceil() as u32;
+            let remainder_bits = quotient_remainder_bits_for_fpr(filter_fpr);
             let mut f =
                 RemainderProbeFilter::with_remainder_bits(elements.len().max(1), remainder_bits);
             for &val in elements {

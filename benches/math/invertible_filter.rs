@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 use rezzy::{SyndromeSketch, MAX_SKETCH_CAPACITY};
 
 use super::filters::{
-    BloomFilter, CountingQuotientFilter, CuckooFilter, RemainderProbeFilter,
+    quotient_remainder_bits_for_fpr, BloomFilter, CountingQuotientFilter, CuckooFilter,
+    RemainderProbeFilter,
 };
 
 struct Xorshift128 {
@@ -282,7 +283,7 @@ fn benchmark_filter_reconciliation(set_size: usize, delta: usize, fpr: f64) {
             let mut candidates: Vec<u64> = Vec::new();
             let mut receiver_only: Vec<u64> = Vec::new();
             for &val in &remote_set {
-                if filter_contains_bench(&filter, &val) {
+                if filter_contains_bench(&filter, val) {
                     candidates.push(val);
                 } else {
                     receiver_only.push(val);
@@ -296,12 +297,12 @@ fn benchmark_filter_reconciliation(set_size: usize, delta: usize, fpr: f64) {
             // Sender computes symmetric difference.
             let mut symmetric_diff: Vec<u64> = Vec::new();
             for &val in &local_set {
-                if !remote_set.binary_search(&val).is_ok() {
+                if remote_set.binary_search(&val).is_err() {
                     symmetric_diff.push(val);
                 }
             }
             for &val in &candidates {
-                if !local_set.binary_search(&val).is_ok() {
+                if local_set.binary_search(&val).is_err() {
                     symmetric_diff.push(val);
                 }
             }
@@ -316,7 +317,7 @@ fn benchmark_filter_reconciliation(set_size: usize, delta: usize, fpr: f64) {
             let mut candidates = 0usize;
             let mut receiver_only = 0usize;
             for &val in &remote_set {
-                if filter_contains_bench(&filter, &val) {
+                if filter_contains_bench(&filter, val) {
                     candidates += 1;
                 } else {
                     receiver_only += 1;
@@ -359,15 +360,16 @@ fn build_filter_bench(elements: &[u64], fpr: f64, filter_type: &str) -> FilterBe
             FilterBench::Cuckoo(f)
         }
         "cqf" => {
-            let rem_bits = ((1.0 / fpr).ln() / std::f64::consts::LN_2).ceil() as u32;
-            let mut f = CountingQuotientFilter::with_remainder_bits(elements.len().max(1), rem_bits);
+            let rem_bits = quotient_remainder_bits_for_fpr(fpr);
+            let mut f =
+                CountingQuotientFilter::with_remainder_bits(elements.len().max(1), rem_bits);
             for &val in elements {
                 let _ = f.insert(&val);
             }
             FilterBench::Cqf(f)
         }
         "remainder_probe" => {
-            let rem_bits = ((1.0 / fpr).ln() / std::f64::consts::LN_2).ceil() as u32;
+            let rem_bits = quotient_remainder_bits_for_fpr(fpr);
             let mut f = RemainderProbeFilter::with_remainder_bits(elements.len().max(1), rem_bits);
             for &val in elements {
                 f.insert(&val);
@@ -378,12 +380,12 @@ fn build_filter_bench(elements: &[u64], fpr: f64, filter_type: &str) -> FilterBe
     }
 }
 
-fn filter_contains_bench(filter: &FilterBench, value: &u64) -> bool {
+fn filter_contains_bench(filter: &FilterBench, value: u64) -> bool {
     match filter {
-        FilterBench::Bloom(f) => f.contains(value),
-        FilterBench::Cuckoo(f) => f.contains(value),
-        FilterBench::Cqf(f) => f.contains(value),
-        FilterBench::Rp(f) => f.contains(value),
+        FilterBench::Bloom(f) => f.contains(&value),
+        FilterBench::Cuckoo(f) => f.contains(&value),
+        FilterBench::Cqf(f) => f.contains(&value),
+        FilterBench::Rp(f) => f.contains(&value),
     }
 }
 
