@@ -250,10 +250,8 @@ fn simulate_strategy(
                         exact_roots(local_slice, remote_slice)
                     }
                     Strategy::Adaptive(capacity) => {
-                        let overflow_request = BucketRequest {
-                            capacity,
-                            ..request
-                        };
+                        let overflow_request =
+                            BucketRequest::with_overflow(request.depth, request.prefix, capacity);
                         validate_overflow_bucket_requests(&[overflow_request])
                             .expect("benchmark overflow request is within local policy");
                         let sketch_wire = capacity * 8;

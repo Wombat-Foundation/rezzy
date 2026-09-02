@@ -266,6 +266,11 @@ pub fn decode_bucket_sketches(
 /// Returns an error if any capacity or bound constraint is violated, or if the requests
 /// overlap.
 pub fn validate_bucket_requests(requests: &[BucketRequest]) -> Result<(), AlgebraicError> {
+    for request in requests {
+        if request.overflow {
+            return Err(AlgebraicError::InvalidSketchCapacity);
+        }
+    }
     validate_bucket_requests_with_limit(requests, MAX_BUCKET_SKETCH_CAPACITY)
 }
 
@@ -278,6 +283,11 @@ pub fn validate_bucket_requests(requests: &[BucketRequest]) -> Result<(), Algebr
 /// Returns an error when a request exceeds the overflow or aggregate capacity
 /// limit, or when requests are malformed or overlap.
 pub fn validate_overflow_bucket_requests(requests: &[BucketRequest]) -> Result<(), AlgebraicError> {
+    for request in requests {
+        if !request.overflow {
+            return Err(AlgebraicError::InvalidSketchCapacity);
+        }
+    }
     validate_bucket_requests_with_limit(requests, MAX_OVERFLOW_BUCKET_CAPACITY)
 }
 
@@ -379,7 +389,7 @@ mod tests {
 
     #[test]
     fn overflow_requests_allow_larger_sketches_but_normal_requests_do_not() {
-        let request = BucketRequest::new(1, 0, MAX_OVERFLOW_BUCKET_CAPACITY);
+        let request = BucketRequest::with_overflow(1, 0, MAX_OVERFLOW_BUCKET_CAPACITY);
 
         assert_eq!(
             validate_bucket_requests(&[request]),
@@ -391,7 +401,7 @@ mod tests {
     #[test]
     fn overflow_requests_enforce_the_aggregate_capacity_limit() {
         let requests = (0..17)
-            .map(|prefix| BucketRequest::new(5, prefix, MAX_OVERFLOW_BUCKET_CAPACITY))
+            .map(|prefix| BucketRequest::with_overflow(5, prefix, MAX_OVERFLOW_BUCKET_CAPACITY))
             .collect::<Vec<_>>();
 
         assert_eq!(

@@ -600,10 +600,13 @@ pub fn check_auth_with_context<
                 "m.room.create sender must be a valid MXID".into(),
             ));
         }
-        if event
-            .content()
-            .get_room_version()
-            .is_some_and(|room_version| StateResVersion::from_room_version(room_version).is_none())
+        if event.content().has_malformed_room_version()
+            || event
+                .content()
+                .get_room_version()
+                .is_some_and(|room_version| {
+                    StateResVersion::from_room_version(room_version).is_none()
+                })
         {
             return Err(AuthError::InvalidSyntax(
                 "m.room.create content.room_version is not a recognised room version".into(),
