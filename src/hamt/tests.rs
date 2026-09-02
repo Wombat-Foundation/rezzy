@@ -987,7 +987,7 @@ fn test_persist_mutations_and_chain_with_key_hash() {
     )
     .expect("persist_mutations_with_key_hash should work");
     assert_eq!(displaced_vec, alloc::vec![None, Some(50_u64), None]);
-    assert!(!created.is_empty());
+    assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
     assert_eq!(
         batched_root.get_with_key_hash(&100_u64, linear_key_hash),
         Some(&1_u64)
@@ -5039,7 +5039,7 @@ fn test_refcount_debug_guard_catches_branching_hazard() {
     let root = build_hamt(key, entries).expect("build root");
     let hashes: Vec<StructuralHash> =
         crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
-    assert!(!hashes.is_empty());
+    assert_ne!(hashes, [] as [[u8; 32]; 0]);
 
     // Simulate: `apply_superseded` reported `hashes[0]` as zeroed, but it is
     // in fact still reachable from a different, still-live root (the

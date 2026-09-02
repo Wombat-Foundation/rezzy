@@ -26,8 +26,6 @@ use rezzy::{
     MAX_BUCKETS_PER_ROUND, MAX_SKETCH_CAPACITY,
 };
 
-use super::filters::{BloomFilter, CountingQuotientFilter, CuckooFilter};
-
 // ---------------------------------------------------------------------------
 // Deterministic PRNG
 // ---------------------------------------------------------------------------

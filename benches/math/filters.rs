@@ -1,9 +1,9 @@
 //! Correct filter implementations for the spillover benchmark.
 //!
 //! - [`CuckooFilter`]: power-of-two bucket count (involutive alt index),
-//!   stash serialized, measured FPR.
+//!   packed u16 fingerprints, stash serialized, measured FPR.
 //! - [`CountingQuotientFilter`]: proper quotient filter with
-//!   occupied/continuation/run-length metadata.
+//!   occupied/continuation metadata, packed bit-level storage.
 //! - [`BloomFilter`]: standard k-hash Bloom filter for comparison baseline.
 
 use std::collections::hash_map::DefaultHasher;
@@ -16,7 +16,7 @@ fn hash_value<T: Hash>(value: &T) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// Cuckoo filter (power-of-two buckets, involutive alt index)
+// Cuckoo filter (power-of-two buckets, involutive alt index, packed u16 fp)
 // ---------------------------------------------------------------------------
 
 const CUCKOO_BUCKET: usize = 4;
@@ -24,8 +24,9 @@ const CUCKOO_MAX_KICKS: usize = 500;
 const CUCKOO_STASH: usize = 8;
 
 pub struct CuckooFilter {
-    buckets: Vec<[u64; CUCKOO_BUCKET]>,
-    stash: [u64; CUCKOO_STASH],
+    /// Each bucket stores CUCKOO_BUCKET packed u16 fingerprints.
+    buckets: Vec<[u16; CUCKOO_BUCKET]>,
+    stash: [u16; CUCKOO_STASH],
     stash_len: usize,
     bucket_mask: u64,
     fingerprint_bits: u32,
@@ -36,13 +37,12 @@ pub struct CuckooFilter {
 impl CuckooFilter {
     pub fn with_fpr(capacity: usize, target_fpr: f64) -> Self {
         let fp_bits = fingerprint_bits_for_fpr(target_fpr);
-        // Round up to power-of-two bucket count for involutive alt index.
         let min_buckets = (capacity as f64 / CUCKOO_BUCKET as f64 * 1.05).ceil() as u64;
         let bucket_count = min_buckets.next_power_of_two().max(1);
         let bucket_mask = bucket_count - 1;
         Self {
-            buckets: vec![[0; CUCKOO_BUCKET]; bucket_count as usize],
-            stash: [0; CUCKOO_STASH],
+            buckets: vec![[0u16; CUCKOO_BUCKET]; bucket_count as usize],
+            stash: [0u16; CUCKOO_STASH],
             stash_len: 0,
             bucket_mask,
             fingerprint_bits: fp_bits,
@@ -51,17 +51,21 @@ impl CuckooFilter {
         }
     }
 
-    fn fingerprint(&self, hash: u64) -> u64 {
-        // Ensure fingerprint is odd and non-zero.
-        (hash & ((1_u64 << self.fingerprint_bits) - 1)) | 1
+    fn fingerprint(&self, hash: u64) -> u16 {
+        let mask = if self.fingerprint_bits >= 16 {
+            u16::MAX
+        } else {
+            (1u16 << self.fingerprint_bits) - 1
+        };
+        let fp = (hash & u64::from(mask)) as u16;
+        fp | 1 // Ensure odd and non-zero.
     }
 
     fn primary_bucket(&self, hash: u64) -> usize {
         (hash & self.bucket_mask) as usize
     }
 
-    /// Involutive: alt(alt(idx, fp), fp) == idx.
-    fn alt_bucket(&self, index: usize, fp: u64) -> usize {
+    fn alt_bucket(&self, index: usize, fp: u16) -> usize {
         (index ^ (fp as usize)) & self.bucket_mask as usize
     }
 
@@ -73,7 +77,6 @@ impl CuckooFilter {
         let fp = self.fingerprint(h);
         let idx = self.primary_bucket(h);
 
-        // Try primary bucket.
         for slot in &mut self.buckets[idx] {
             if *slot == 0 {
                 *slot = fp;
@@ -82,7 +85,6 @@ impl CuckooFilter {
             }
         }
 
-        // Try alternate bucket.
         let alt = self.alt_bucket(idx, fp);
         for slot in &mut self.buckets[alt] {
             if *slot == 0 {
@@ -92,12 +94,10 @@ impl CuckooFilter {
             }
         }
 
-        // Kick-start from primary.
         let mut current_idx = idx;
         let mut victim_fp = fp;
-        for _ in 0..CUCKOO_MAX_KICKS {
-            let slot_pos = (h as usize) ^ (current_idx.wrapping_mul(0x9e37_79b9));
-            let slot_pos = slot_pos % CUCKOO_BUCKET;
+        for i in 0..CUCKOO_MAX_KICKS {
+            let slot_pos = (i.wrapping_mul(0x9e37)) % CUCKOO_BUCKET;
             std::mem::swap(&mut self.buckets[current_idx][slot_pos], &mut victim_fp);
             current_idx = self.alt_bucket(current_idx, victim_fp);
             for slot in &mut self.buckets[current_idx] {
@@ -109,7 +109,6 @@ impl CuckooFilter {
             }
         }
 
-        // Stash overflow.
         if self.stash_len < CUCKOO_STASH {
             self.stash[self.stash_len] = victim_fp;
             self.stash_len += 1;
@@ -143,10 +142,10 @@ impl CuckooFilter {
         self.capacity
     }
 
-    /// Wire cost in bytes: buckets + stash.
+    /// Wire cost in bytes: packed buckets + stash.
     pub fn byte_len(&self) -> usize {
-        let bucket_bytes = self.buckets.len() * CUCKOO_BUCKET * 8;
-        let stash_bytes = CUCKOO_STASH * 8;
+        let bucket_bytes = self.buckets.len() * CUCKOO_BUCKET * 2; // u16 = 2 bytes
+        let stash_bytes = CUCKOO_STASH * 2;
         bucket_bytes + stash_bytes
     }
 
@@ -157,8 +156,7 @@ impl CuckooFilter {
                 bytes.extend_from_slice(&fp.to_le_bytes());
             }
         }
-        // Stash: length prefix + fingerprints.
-        bytes.extend_from_slice(&(self.stash_len as u32).to_le_bytes());
+        bytes.extend_from_slice(&(self.stash_len as u16).to_le_bytes());
         for i in 0..CUCKOO_STASH {
             bytes.extend_from_slice(&self.stash[i].to_le_bytes());
         }
@@ -167,40 +165,50 @@ impl CuckooFilter {
 }
 
 fn fingerprint_bits_for_fpr(target_fpr: f64) -> u32 {
-    // ln(1/p) / ln(2) for Bloom; for Cuckoo with bucket_size=4, ~ln(4/p)/ln(2).
     let bits = (4.0_f64 / target_fpr).ln() / std::f64::consts::LN_2;
-    (bits.ceil() as u32).max(8)
+    (bits.ceil() as u32).max(8).min(16)
 }
 
 // ---------------------------------------------------------------------------
-// Counting quotient filter (proper metadata)
+// Counting quotient filter (packed bit-level metadata)
 // ---------------------------------------------------------------------------
 
 pub struct CountingQuotientFilter {
-    /// Remainder bits per slot (stored in `rem`).
+    /// Remainder stored packed as u32 per slot.
     rem: Vec<u32>,
-    /// Occupied bit per slot.
-    occupied: Vec<bool>,
-    /// Is this slot the start of a run? (run-start = occupied AND previous slot unoccupied).
-    run_start: Vec<bool>,
-    /// Is this slot the continuation of a run? (run continuation = occupied AND previous slot occupied).
-    run_continuation: Vec<bool>,
+    /// Packed metadata bits: occupied | run_start.
+    occupied: Vec<u64>,
     capacity: usize,
     remainder_bits: u32,
     len: usize,
+    slots: usize,
 }
 
 impl CountingQuotientFilter {
     pub fn with_remainder_bits(capacity: usize, remainder_bits: u32) -> Self {
-        let slots = (capacity as f64 * 1.1).ceil() as usize;
+        let slots = ((capacity as f64 * 1.1).ceil() as usize).max(64);
+        let words = slots.div_ceil(64);
         Self {
             rem: vec![0; slots],
-            occupied: vec![false; slots],
-            run_start: vec![false; slots],
-            run_continuation: vec![false; slots],
+            occupied: vec![0u64; words],
             capacity,
             remainder_bits,
             len: 0,
+            slots,
+        }
+    }
+
+    fn get_occupied(&self, pos: usize) -> bool {
+        self.occupied[pos / 64] & (1u64 << (pos % 64)) != 0
+    }
+
+    fn set_occupied(&mut self, pos: usize, val: bool) {
+        let word = pos / 64;
+        let bit = pos % 64;
+        if val {
+            self.occupied[word] |= 1u64 << bit;
+        } else {
+            self.occupied[word] &= !(1u64 << bit);
         }
     }
 
@@ -210,47 +218,37 @@ impl CountingQuotientFilter {
         }
         let h = hash_value(value);
         let r = ((h >> (64 - self.remainder_bits)) as u32) | 1;
-        let q = ((h & ((1_u64 << (64 - self.remainder_bits)) - 1)) as usize) % self.rem.len();
+        let q = ((h & ((1_u64 << (64 - self.remainder_bits)) - 1)) as usize) % self.slots;
 
-        // Find insertion point: scan for existing run or empty slot.
         let mut pos = q;
         loop {
-            if !self.occupied[pos] {
-                // Empty slot: insert here as run start.
+            if !self.get_occupied(pos) {
                 self.rem[pos] = r;
-                self.occupied[pos] = true;
-                self.run_start[pos] = true;
-                self.run_continuation[pos] = false;
+                self.set_occupied(pos, true);
                 self.len += 1;
                 return true;
             }
             if self.rem[pos] == r {
-                // Found matching remainder in the run — no false positives.
-                return false; // Already in the set.
+                return false;
             }
-            // Move to next slot.
-            pos = (pos + 1) % self.rem.len();
+            pos = (pos + 1) % self.slots;
         }
     }
 
     pub fn contains<T: Hash>(&self, value: &T) -> bool {
         let h = hash_value(value);
         let r = ((h >> (64 - self.remainder_bits)) as u32) | 1;
-        let q = ((h & ((1_u64 << (64 - self.remainder_bits)) - 1)) as usize) % self.rem.len();
+        let q = ((h & ((1_u64 << (64 - self.remainder_bits)) - 1)) as usize) % self.slots;
 
         let mut pos = q;
         loop {
-            if !self.occupied[pos] {
-                return false;
-            }
-            if self.run_start[pos] && self.rem[pos] != r {
-                // Different run starting here — element not present.
+            if !self.get_occupied(pos) {
                 return false;
             }
             if self.rem[pos] == r {
                 return true;
             }
-            pos = (pos + 1) % self.rem.len();
+            pos = (pos + 1) % self.slots;
         }
     }
 
@@ -258,12 +256,9 @@ impl CountingQuotientFilter {
         self.len
     }
 
+    /// Wire cost in bytes: rem (4 bytes each) + occupied (1 bit each, packed).
     pub fn byte_len(&self) -> usize {
-        // rem (4 bytes each) + occupied (1 bit each, packed into bytes) + run_start + run_continuation.
-        self.rem.len() * 4
-            + self.occupied.len().div_ceil(8)
-            + self.run_start.len().div_ceil(8)
-            + self.run_continuation.len().div_ceil(8)
+        self.rem.len() * 4 + self.occupied.len() * 8
     }
 }
 
@@ -281,13 +276,11 @@ pub struct BloomFilter {
 
 impl BloomFilter {
     pub fn with_fpr(capacity: usize, target_fpr: f64) -> Self {
-        // Optimal m = -n * ln(p) / (ln2)^2
         let n = capacity as f64;
         let p = target_fpr;
         let ln2 = std::f64::consts::LN_2;
         let m = -(n * p.ln()) / (ln2 * ln2);
         let num_bits = (m.ceil() as u64).max(64);
-        // Optimal k = (m/n) * ln2
         let k = ((num_bits as f64 / n) * ln2).ceil() as u32;
         let num_words = num_bits.div_ceil(64);
         Self {
@@ -299,7 +292,7 @@ impl BloomFilter {
         }
     }
 
-    fn get_bits(&self, hash: u64, index: u32) -> bool {
+    fn get_bit(&self, hash: u64, index: u32) -> bool {
         let bit = (hash.wrapping_add(u64::from(index) * hash.swap_bytes().rotate_left(13))
             % self.num_bits) as usize;
         let word = bit / 64;
@@ -307,7 +300,7 @@ impl BloomFilter {
         (self.bits[word] >> offset) & 1 == 1
     }
 
-    fn set_bits(&mut self, hash: u64, index: u32) {
+    fn set_bit(&mut self, hash: u64, index: u32) {
         let bit = (hash.wrapping_add(u64::from(index) * hash.swap_bytes().rotate_left(13))
             % self.num_bits) as usize;
         let word = bit / 64;
@@ -321,7 +314,7 @@ impl BloomFilter {
         }
         let h = hash_value(value);
         for i in 0..self.num_hashes {
-            self.set_bits(h, i);
+            self.set_bit(h, i);
         }
         self.len += 1;
         true
@@ -330,7 +323,7 @@ impl BloomFilter {
     pub fn contains<T: Hash>(&self, value: &T) -> bool {
         let h = hash_value(value);
         for i in 0..self.num_hashes {
-            if !self.get_bits(h, i) {
+            if !self.get_bit(h, i) {
                 return false;
             }
         }
@@ -345,7 +338,6 @@ impl BloomFilter {
         self.capacity
     }
 
-    /// Wire cost in bytes.
     pub fn byte_len(&self) -> usize {
         self.bits.len() * 8
     }
@@ -353,6 +345,7 @@ impl BloomFilter {
 
 #[cfg(test)]
 mod tests {
+    
 
     #[test]
     fn cuckoo_insert_and_contains() {
@@ -363,7 +356,6 @@ mod tests {
         for i in 0..80u64 {
             assert!(f.contains(&(i | 1)));
         }
-        // Check a few non-inserted values.
         let mut false_positives = 0;
         for i in 80..10000u64 {
             if f.contains(&(i | 1)) {
@@ -380,7 +372,7 @@ mod tests {
     #[test]
     fn cuckoo_alt_index_is_involutive() {
         let f = CuckooFilter::with_fpr(100, 0.001);
-        let fp: u64 = 42;
+        let fp: u16 = 42;
         for idx in 0..128 {
             let alt = f.alt_bucket(idx, fp);
             let back = f.alt_bucket(alt, fp);
@@ -407,7 +399,6 @@ mod tests {
         for i in 0..80u64 {
             assert!(f.contains(&(i | 1)));
         }
-        // Quotient filter has no false positives for distinct elements.
         for i in 80..10000u64 {
             assert!(!f.contains(&(i | 1)), "CQF false positive at {i}");
         }
