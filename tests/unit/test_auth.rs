@@ -4642,6 +4642,23 @@ fn test_rule_1_2_create_invalid_sender_mxid() {
 }
 
 #[test]
+fn test_rule_1_3_create_numeric_room_version_rejected() {
+    let state = RoomState::new();
+    let create_ev = make_event(
+        "$c",
+        M_ROOM_CREATE,
+        Some(""),
+        "@alice:example.com",
+        json!({"room_version": 12}),
+    );
+    let res = check_auth(&create_ev, &state, StateResVersion::V2_1, None);
+    assert!(
+        matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("room_version")),
+        "Numeric room_version must be rejected, got {res:?}"
+    );
+}
+
+#[test]
 fn test_rule_3_m_federate_false_cross_domain_rejected() {
     use rezzy::basespec::event_types::M_ROOM_MEMBER;
     let mut state = RoomState::new();
