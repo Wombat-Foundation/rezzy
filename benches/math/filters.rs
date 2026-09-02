@@ -6,6 +6,8 @@
 //! - [`RemainderProbeFilter`]: linear-probed remainder array (NOT a true quotient
 //!   filter — lacks run-length/continuation metadata). Labeled honestly for
 //!   benchmark comparison.
+//! - [`CountingQuotientFilter`]: a counting quotient filter with quotient runs
+//!   and occupied/continuation/shifted metadata.
 //! - [`BloomFilter`]: standard k-hash Bloom filter for comparison baseline.
 
 use std::collections::hash_map::DefaultHasher;
@@ -199,6 +201,20 @@ fn fingerprint_bits_for_fpr(target_fpr: f64) -> u32 {
     16
 }
 
+/// Remainder width for a quotient filter at the requested false-positive rate.
+pub(crate) fn quotient_remainder_bits_for_fpr(target_fpr: f64) -> u32 {
+    assert!((0.0..1.0).contains(&target_fpr));
+    for bits in 8..=16 {
+        // A query can compare every remainder in its quotient run. At the
+        // 75%-load policy, budget four candidate remainders per lookup rather
+        // than treating the remainder as a single-fingerprint comparison.
+        if 4.0 / f64::from(1_u32 << bits) <= target_fpr {
+            return bits;
+        }
+    }
+    16
+}
+
 // ---------------------------------------------------------------------------
 // Remainder-probe filter (linear-probed remainder array, NOT a quotient filter)
 //
@@ -278,6 +294,219 @@ impl RemainderProbeFilter {
 
     pub fn byte_len(&self) -> usize {
         self.rem.len() * 4 + self.occupied.len()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Counting quotient filter
+// ---------------------------------------------------------------------------
+
+/// A packed bitmap used for quotient-filter metadata.
+struct BitSet {
+    words: Vec<u64>,
+}
+
+impl BitSet {
+    fn new(bits: usize) -> Self {
+        Self {
+            words: vec![0; bits.div_ceil(64)],
+        }
+    }
+
+    fn get(&self, index: usize) -> bool {
+        (self.words[index / 64] >> (index % 64)) & 1 != 0
+    }
+
+    fn set(&mut self, index: usize, value: bool) {
+        let word = &mut self.words[index / 64];
+        let mask = 1_u64 << (index % 64);
+        if value {
+            *word |= mask;
+        } else {
+            *word &= !mask;
+        }
+    }
+
+    fn byte_len(&self) -> usize {
+        self.words.len() * std::mem::size_of::<u64>()
+    }
+}
+
+/// Counting quotient filter with explicit quotient-run metadata.
+///
+/// Each slot holds a remainder and count. The three packed metadata bitmaps
+/// are the standard quotient-filter `occupied`, `continuation`, and `shifted`
+/// flags. This benchmark implementation supports insertion and membership
+/// queries; deletion is intentionally out of scope.
+pub struct CountingQuotientFilter {
+    remainders: Vec<u16>,
+    counts: Vec<u16>,
+    occupied: BitSet,
+    continuation: BitSet,
+    shifted: BitSet,
+    remainder_bits: u32,
+    slot_mask: usize,
+    capacity: usize,
+    len: usize,
+}
+
+impl CountingQuotientFilter {
+    /// Creates a filter with a maximum load factor below 75%.
+    pub fn with_remainder_bits(capacity: usize, remainder_bits: u32) -> Self {
+        assert!((1..=16).contains(&remainder_bits));
+        let min_slots = capacity.saturating_mul(4).div_ceil(3).max(2);
+        let slots = min_slots.next_power_of_two();
+        Self {
+            remainders: vec![0; slots],
+            counts: vec![0; slots],
+            occupied: BitSet::new(slots),
+            continuation: BitSet::new(slots),
+            shifted: BitSet::new(slots),
+            remainder_bits,
+            slot_mask: slots - 1,
+            capacity,
+            len: 0,
+        }
+    }
+
+    fn next(&self, index: usize) -> usize {
+        (index + 1) & self.slot_mask
+    }
+
+    fn previous(&self, index: usize) -> usize {
+        index.wrapping_sub(1) & self.slot_mask
+    }
+
+    fn is_empty(&self, index: usize) -> bool {
+        !self.occupied.get(index) && !self.continuation.get(index) && !self.shifted.get(index)
+    }
+
+    fn split_hash(&self, hash: u64) -> (usize, u16) {
+        let quotient = (hash as usize) & self.slot_mask;
+        let mask = (1_u64 << self.remainder_bits) - 1;
+        let quotient_bits = (self.slot_mask + 1).ilog2();
+        let remainder = ((hash >> quotient_bits) & mask) as u16;
+        (quotient, remainder)
+    }
+
+    fn cluster_start(&self, mut quotient: usize) -> usize {
+        while self.shifted.get(quotient) {
+            quotient = self.previous(quotient);
+        }
+        quotient
+    }
+
+    /// Finds the first slot in `quotient`'s run. `quotient` must be occupied.
+    fn run_start(&self, quotient: usize) -> usize {
+        let mut bucket = self.cluster_start(quotient);
+        let mut run = bucket;
+        while bucket != quotient {
+            bucket = self.next(bucket);
+            if self.occupied.get(bucket) {
+                run = self.next(run);
+                while self.continuation.get(run) {
+                    run = self.next(run);
+                }
+            }
+        }
+        run
+    }
+
+    fn find_remainder(&self, quotient: usize, remainder: u16) -> Option<usize> {
+        if !self.occupied.get(quotient) {
+            return None;
+        }
+
+        let mut slot = self.run_start(quotient);
+        loop {
+            if self.remainders[slot] == remainder {
+                return Some(slot);
+            }
+            let next = self.next(slot);
+            if !self.continuation.get(next) {
+                return None;
+            }
+            slot = next;
+        }
+    }
+
+    fn shift_right_from(&mut self, insertion: usize) {
+        let mut empty = insertion;
+        while !self.is_empty(empty) {
+            empty = self.next(empty);
+        }
+
+        while empty != insertion {
+            let source = self.previous(empty);
+            self.remainders[empty] = self.remainders[source];
+            self.counts[empty] = self.counts[source];
+            self.continuation.set(empty, self.continuation.get(source));
+            self.shifted.set(empty, true);
+            empty = source;
+        }
+    }
+
+    /// Inserts `value`; repeated inserts increment the entry's saturated count.
+    pub fn insert<T: Hash>(&mut self, value: &T) -> bool {
+        let (quotient, remainder) = self.split_hash(hash_value(value));
+        if let Some(slot) = self.find_remainder(quotient, remainder) {
+            self.counts[slot] = self.counts[slot].saturating_add(1);
+            return true;
+        }
+        if self.len >= self.capacity {
+            return false;
+        }
+
+        let had_run = self.occupied.get(quotient);
+        if self.is_empty(quotient) {
+            self.occupied.set(quotient, true);
+            self.remainders[quotient] = remainder;
+            self.counts[quotient] = 1;
+            self.len += 1;
+            return true;
+        }
+
+        self.occupied.set(quotient, true);
+        let mut insertion = self.run_start(quotient);
+        if had_run {
+            while self.continuation.get(self.next(insertion)) {
+                insertion = self.next(insertion);
+            }
+            insertion = self.next(insertion);
+        }
+
+        self.shift_right_from(insertion);
+        self.remainders[insertion] = remainder;
+        self.counts[insertion] = 1;
+        self.continuation.set(insertion, had_run);
+        self.shifted.set(insertion, insertion != quotient);
+        self.len += 1;
+        true
+    }
+
+    pub fn contains<T: Hash>(&self, value: &T) -> bool {
+        let (quotient, remainder) = self.split_hash(hash_value(value));
+        self.find_remainder(quotient, remainder).is_some()
+    }
+
+    /// Returns the saturated count associated with `value`'s fingerprint.
+    pub fn count<T: Hash>(&self, value: &T) -> u16 {
+        let (quotient, remainder) = self.split_hash(hash_value(value));
+        self.find_remainder(quotient, remainder)
+            .map_or(0, |slot| self.counts[slot])
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Serialized storage excluding protocol framing.
+    pub fn byte_len(&self) -> usize {
+        self.remainders.len() * std::mem::size_of::<u16>()
+            + self.counts.len() * std::mem::size_of::<u16>()
+            + self.occupied.byte_len()
+            + self.continuation.byte_len()
+            + self.shifted.byte_len()
     }
 }
 
@@ -427,6 +656,23 @@ mod tests {
         for i in insert_count as u64..n {
             assert!(!f.contains(&(i | 1)), "rp false positive at {i}");
         }
+    }
+
+    #[test]
+    fn counting_quotient_insert_contains_and_counts() {
+        let mut filter = CountingQuotientFilter::with_remainder_bits(5_000, 12);
+        for value in 0..5_000_u64 {
+            assert!(filter.insert(&value), "CQF insert failed at {value}");
+        }
+        assert_eq!(filter.len(), 5_000);
+        for value in 0..5_000_u64 {
+            assert!(filter.contains(&value), "CQF missing {value}");
+        }
+
+        assert!(filter.insert(&123_u64));
+        assert!(filter.insert(&123_u64));
+        assert_eq!(filter.len(), 5_000, "duplicates must not allocate slots");
+        assert_eq!(filter.count(&123_u64), 3);
     }
 
     #[test]

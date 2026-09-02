@@ -14,9 +14,11 @@
 //!
 //! 1. **sketch_split** — recursive bucket splitting via `BucketExchange`.
 //! 2. **cuckoo** — filter protocol (CuckooFilter) for overflow buckets.
-//! 3. **cqf** — filter protocol (RemainderProbeFilter) for overflow buckets.
-//! 4. **bloom** — filter protocol (BloomFilter) for overflow buckets.
-//! 5. **hybrid** — filter for small overflows, sketch splitting as fallback.
+//! 3. **remainder_probe** — naive linear-probe remainder table for overflow
+//!    buckets. This is explicitly not a quotient filter.
+//! 4. **cqf** — counting quotient filter for overflow buckets.
+//! 5. **bloom** — filter protocol (BloomFilter) for overflow buckets.
+//! 6. **hybrid** — filter for small overflows, sketch splitting as fallback.
 //!
 //! The filter protocol is modeled correctly (no oracle):
 //!   RTT 1: sender→receiver: sender sends filter built from its bucket elements.
@@ -46,7 +48,10 @@ use rezzy::{
     MAX_BUCKETS_PER_ROUND, MAX_SKETCH_CAPACITY,
 };
 
-use super::filters::{BloomFilter, CuckooFilter, RemainderProbeFilter};
+use super::filters::{
+    quotient_remainder_bits_for_fpr, BloomFilter, CountingQuotientFilter, CuckooFilter,
+    RemainderProbeFilter,
+};
 
 // ---------------------------------------------------------------------------
 // Deterministic PRNG
@@ -252,12 +257,22 @@ fn build_filter(elements: &[u64], filter_fpr: f64, filter_type: &str) -> (Filter
             let wire = f.byte_len();
             (FilterEnum::Cuckoo(f), wire)
         }
-        "cqf" => {
+        "remainder_probe" => {
             let remainder_bits = ((1.0 / filter_fpr).ln() / std::f64::consts::LN_2).ceil() as u32;
             let mut f =
                 RemainderProbeFilter::with_remainder_bits(elements.len().max(1), remainder_bits);
             for &val in elements {
                 f.insert(&val);
+            }
+            let wire = f.byte_len();
+            (FilterEnum::RemainderProbe(f), wire)
+        }
+        "cqf" => {
+            let remainder_bits = quotient_remainder_bits_for_fpr(filter_fpr);
+            let mut f =
+                CountingQuotientFilter::with_remainder_bits(elements.len().max(1), remainder_bits);
+            for &value in elements {
+                assert!(f.insert(&value), "CQF insertion failed");
             }
             let wire = f.byte_len();
             (FilterEnum::Cqf(f), wire)
@@ -276,7 +291,8 @@ fn build_filter(elements: &[u64], filter_fpr: f64, filter_type: &str) -> (Filter
 
 enum FilterEnum {
     Cuckoo(CuckooFilter),
-    Cqf(RemainderProbeFilter),
+    RemainderProbe(RemainderProbeFilter),
+    Cqf(CountingQuotientFilter),
     Bloom(BloomFilter),
 }
 
@@ -284,6 +300,7 @@ impl FilterEnum {
     fn contains(&self, value: &u64) -> bool {
         match self {
             FilterEnum::Cuckoo(f) => f.contains(value),
+            FilterEnum::RemainderProbe(f) => f.contains(value),
             FilterEnum::Cqf(f) => f.contains(value),
             FilterEnum::Bloom(f) => f.contains(value),
         }
@@ -514,7 +531,7 @@ fn simulate_strategy(
                 }
             }
 
-            "cuckoo" | "cqf" | "bloom" => {
+            "cuckoo" | "remainder_probe" | "cqf" | "bloom" => {
                 // 1. Try sketch decode first.
                 let mut overflow_requests = Vec::new();
                 for ((mut remote_sketch, local_sketch), request) in remote_sketches
@@ -543,6 +560,7 @@ fn simulate_strategy(
                 if !overflow_requests.is_empty() {
                     let filter_type = match strategy {
                         "cuckoo" => "cuckoo",
+                        "remainder_probe" => "remainder_probe",
                         "cqf" => "cqf",
                         "bloom" => "bloom",
                         _ => unreachable!(),
@@ -683,16 +701,24 @@ fn print_comparison(
     budget: usize,
     sketch: &StrategyResult,
     cuckoo: &StrategyResult,
+    remainder_probe: &StrategyResult,
     cqf: &StrategyResult,
     bloom: &StrategyResult,
     hybrid: &StrategyResult,
 ) {
     let winner = if cuckoo.wall_ms < sketch.wall_ms
+        && cuckoo.wall_ms < remainder_probe.wall_ms
         && cuckoo.wall_ms < cqf.wall_ms
         && cuckoo.wall_ms < bloom.wall_ms
         && cuckoo.wall_ms < hybrid.wall_ms
     {
         "CUCKOO"
+    } else if remainder_probe.wall_ms < sketch.wall_ms
+        && remainder_probe.wall_ms < bloom.wall_ms
+        && remainder_probe.wall_ms < cqf.wall_ms
+        && remainder_probe.wall_ms < hybrid.wall_ms
+    {
+        "remainder-probe"
     } else if cqf.wall_ms < sketch.wall_ms
         && cqf.wall_ms < bloom.wall_ms
         && cqf.wall_ms < hybrid.wall_ms
@@ -708,6 +734,11 @@ fn print_comparison(
 
     let sk_s = if sketch.resolved { "ok" } else { "FALL" };
     let ck_s = if cuckoo.resolved { "ok" } else { "FALL" };
+    let rp_s = if remainder_probe.resolved {
+        "ok"
+    } else {
+        "FALL"
+    };
     let cq_s = if cqf.resolved { "ok" } else { "FALL" };
     let bl_s = if bloom.resolved { "ok" } else { "FALL" };
     let hy_s = if hybrid.resolved { "ok" } else { "FALL" };
@@ -716,6 +747,7 @@ fn print_comparison(
         "  [{case_name:<13}] Δ={delta:>6} lat={latency_ms:>2}ms budget={budget:>8} | \
          sketch {sk_s:>4} {sk_w:>8.1}ms/{sk_c:>7.1}ms r{sk_r:<2} {sk_bw:>7}B | \
          cuckoo {ck_s:>4} {ck_w:>8.1}ms/{ck_c:>7.1}ms r{ck_r:<2} {ck_bw:>7}B | \
+         rem-pr {rp_s:>4} {rp_w:>8.1}ms/{rp_c:>7.1}ms r{rp_r:<2} {rp_bw:>7}B | \
          cqf    {cq_s:>4} {cq_w:>8.1}ms/{cq_c:>7.1}ms r{cq_r:<2} {cq_bw:>7}B | \
          bloom  {bl_s:>4} {bl_w:>8.1}ms/{bl_c:>7.1}ms r{bl_r:<2} {bl_bw:>7}B | \
          hybrid {hy_s:>4} {hy_w:>8.1}ms/{hy_c:>7.1}ms r{hy_r:<2} {hy_bw:>7}B | \
@@ -728,6 +760,10 @@ fn print_comparison(
         ck_c = cuckoo.cpu_ms,
         ck_r = cuckoo.rounds,
         ck_bw = cuckoo.wire_bytes,
+        rp_w = remainder_probe.wall_ms,
+        rp_c = remainder_probe.cpu_ms,
+        rp_r = remainder_probe.rounds,
+        rp_bw = remainder_probe.wire_bytes,
         cq_w = cqf.wall_ms,
         cq_c = cqf.cpu_ms,
         cq_r = cqf.rounds,
@@ -747,8 +783,44 @@ fn print_comparison(
 // Layer 1: Microbenchmarks (probe ALL N entries)
 // ---------------------------------------------------------------------------
 
+/// Bench binaries use a custom `harness = false`, so ordinary `#[test]` items
+/// in this tree do not run here. Keep a small deterministic CQF integrity
+/// check outside the timed measurements.
+fn assert_cqf_integrity() {
+    let mut filter = CountingQuotientFilter::with_remainder_bits(10_000, 12);
+    let inserted: Vec<u64> = (0..10_000_u64)
+        .map(|value| value.wrapping_mul(0x9e37_79b9_7f4a_7c15))
+        .collect();
+    for &value in &inserted {
+        assert!(filter.insert(&value), "CQF insert failed for {value}");
+        assert!(filter.contains(&value), "CQF lost {value} immediately");
+    }
+    for &value in &inserted {
+        assert!(
+            filter.contains(&value),
+            "CQF missing inserted value {value}"
+        );
+    }
+
+    let entries_before_duplicate = filter.len();
+    assert!(entries_before_duplicate <= inserted.len());
+    assert!(filter.insert(&inserted[123]));
+    assert!(filter.insert(&inserted[123]));
+    assert_eq!(filter.len(), entries_before_duplicate);
+    assert!(filter.count(&inserted[123]) >= 3);
+
+    let false_positives = (10_000_u64..110_000)
+        .filter(|value| filter.contains(&value.wrapping_mul(0xd6e8_feb8_6659_fd93)))
+        .count();
+    assert!(
+        false_positives <= 100,
+        "CQF FPR too high: {false_positives}/100000"
+    );
+}
+
 fn microbenchmarks() {
     println!("\n=== Layer 1: Filter microbenchmarks ===\n");
+    assert_cqf_integrity();
 
     for capacity in [1_000, 10_000, 100_000] {
         // --- Cuckoo ---
@@ -781,7 +853,7 @@ fn microbenchmarks() {
             filter.byte_len() as f64 / capacity as f64,
         );
 
-        // --- CQF ---
+        // --- Naive linear-probe remainder table (not a quotient filter) ---
         let elapsed = measure(10, || {
             let mut filter = RemainderProbeFilter::with_remainder_bits(capacity, 10);
             let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
@@ -790,7 +862,7 @@ fn microbenchmarks() {
             }
             black_box(&filter);
         });
-        report(&format!("cqf/insert/{capacity}"), 10, elapsed);
+        report(&format!("remainder_probe/insert/{capacity}"), 10, elapsed);
 
         let mut filter = RemainderProbeFilter::with_remainder_bits(capacity, 10);
         let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
@@ -803,8 +875,42 @@ fn microbenchmarks() {
                 black_box(filter.contains(val));
             }
         });
-        report(&format!("cqf/probe/{capacity}"), 100, elapsed);
+        report(&format!("remainder_probe/probe/{capacity}"), 100, elapsed);
 
+        println!(
+            "  remainder-probe byte_len({capacity}): {} bytes ({:.1} B/elem)",
+            filter.byte_len(),
+            filter.byte_len() as f64 / capacity as f64,
+        );
+
+        // --- Counting quotient filter ---
+        let elapsed = measure(10, || {
+            let mut filter = CountingQuotientFilter::with_remainder_bits(capacity, 10);
+            let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
+            for _ in 0..capacity {
+                assert!(filter.insert(&(gen.next() | 1)));
+            }
+            black_box(&filter);
+        });
+        report(&format!("cqf/insert/{capacity}"), 10, elapsed);
+
+        let mut filter = CountingQuotientFilter::with_remainder_bits(capacity, 10);
+        let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
+        let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
+        for value in &probe_values {
+            assert!(filter.insert(value));
+        }
+        black_box(filter.len());
+        black_box(filter.count(&probe_values[0]));
+        for value in &probe_values {
+            assert!(filter.contains(value), "CQF missing inserted probe value");
+        }
+        let elapsed = measure(100, || {
+            for value in &probe_values {
+                black_box(filter.contains(value));
+            }
+        });
+        report(&format!("cqf/probe/{capacity}"), 100, elapsed);
         println!(
             "  cqf byte_len({capacity}): {} bytes ({:.1} B/elem)",
             filter.byte_len(),
@@ -904,6 +1010,14 @@ fn e2e_simulation() {
                         decode_budget,
                         0.001,
                     );
+                    let remainder_probe = simulate_strategy(
+                        &local,
+                        &remote,
+                        "remainder_probe",
+                        network_latency_ms,
+                        decode_budget,
+                        0.001,
+                    );
                     let cqf = simulate_strategy(
                         &local,
                         &remote,
@@ -936,6 +1050,7 @@ fn e2e_simulation() {
                         decode_budget,
                         &sketch,
                         &cuckoo,
+                        &remainder_probe,
                         &cqf,
                         &bloom,
                         &hybrid,
@@ -959,17 +1074,18 @@ fn cross_over_summary() {
     let base: Vec<ElementHash> = (0..base_count).map(|_| gen.hash()).collect();
 
     println!(
-        "\n  {:>8} {:>10} {:>14} {:>14} {:>14} {:>14}",
-        "latency", "budget", "cuckoo Δ", "cqf Δ", "bloom Δ", "hybrid Δ"
+        "\n  {:>8} {:>10} {:>14} {:>14} {:>14} {:>14} {:>14}",
+        "latency", "budget", "cuckoo Δ", "remainder-probe Δ", "cqf Δ", "bloom Δ", "hybrid Δ"
     );
     println!(
-        "  {:->8} {:->10} {:->14} {:->14} {:->14} {:->14}",
-        "", "", "", "", "", ""
+        "  {:->8} {:->10} {:->14} {:->14} {:->14} {:->14} {:->14}",
+        "", "", "", "", "", "", ""
     );
 
     for &latency in &[0_u64, 20, 30, 40] {
         for &budget in &[1_000_000_usize, 4_000_000, 8_000_000, 16_000_000] {
             let mut cuckoo_co = None;
+            let mut remainder_probe_co = None;
             let mut cqf_co = None;
             let mut bloom_co = None;
             let mut hybrid_co = None;
@@ -979,12 +1095,17 @@ fn cross_over_summary() {
                 let sketch =
                     simulate_strategy(&local, &remote, "sketch_split", latency, budget, 0.001);
                 let cuckoo = simulate_strategy(&local, &remote, "cuckoo", latency, budget, 0.001);
+                let remainder_probe =
+                    simulate_strategy(&local, &remote, "remainder_probe", latency, budget, 0.001);
                 let cqf = simulate_strategy(&local, &remote, "cqf", latency, budget, 0.001);
                 let bloom = simulate_strategy(&local, &remote, "bloom", latency, budget, 0.001);
                 let hybrid = simulate_strategy(&local, &remote, "hybrid", latency, budget, 0.001);
 
                 if cuckoo.wall_ms < sketch.wall_ms && cuckoo_co.is_none() {
                     cuckoo_co = Some(delta);
+                }
+                if remainder_probe.wall_ms < sketch.wall_ms && remainder_probe_co.is_none() {
+                    remainder_probe_co = Some(delta);
                 }
                 if cqf.wall_ms < sketch.wall_ms && cqf_co.is_none() {
                     cqf_co = Some(delta);
@@ -1002,8 +1123,9 @@ fn cross_over_summary() {
                 None => format!("{:>14}", "never"),
             };
             println!(
-                "  {latency:>6}ms {budget:>10} {} {} {} {}",
+                "  {latency:>6}ms {budget:>10} {} {} {} {} {}",
                 fmt(cuckoo_co),
+                fmt(remainder_probe_co),
                 fmt(cqf_co),
                 fmt(bloom_co),
                 fmt(hybrid_co),
