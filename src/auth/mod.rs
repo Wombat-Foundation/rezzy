@@ -778,19 +778,21 @@ pub fn check_auth_with_context<
         let room_version = room_version_str_or_v1(state)?;
         for (req_type, req_key) in required_auth_types_for(event, event_type, version, room_version)
         {
-            let Some(_state_ev) = state.get_event(req_type, req_key) else {
+            let Some(state_ev) = state.get_event(req_type, req_key) else {
                 continue;
             };
-            // Rule 2.2/2.3: `auth_events` must cite the right
-            // `(type, state_key)` tuple. A concurrent event may cite the
-            // correct auth event from its own prior state after a sibling
-            // replaces that tuple, so we only verify tuple presence here —
-            // not that the cited ID matches the current state entry.
-            if !seen_tuples.contains_key(&(req_type.to_string(), req_key.to_string())) {
-                return Err(AuthError::IncompleteAuthEvents {
-                    event_type: req_type.to_string(),
-                    state_key: req_key.to_string(),
-                });
+            // Rule 2.2/2.3: a citation must name the exact event selected
+            // from this event's auth context, not merely its state tuple.
+            // A stale/superseded event ID is equivalent to an omitted
+            // required auth event.
+            match seen_tuples.get(&(req_type.to_string(), req_key.to_string())) {
+                Some(cited_id) if cited_id == state_ev.event_id() => {}
+                _ => {
+                    return Err(AuthError::IncompleteAuthEvents {
+                        event_type: req_type.to_string(),
+                        state_key: req_key.to_string(),
+                    });
+                }
             }
         }
     }
