@@ -412,10 +412,14 @@ fn find_roots(poly: Polynomial, roots: &mut Vec<u64>) -> Result<(), AlgebraicErr
 /// polynomial: `FIELD_BITS - 1` squaring+reduce rounds, each `O(degree^2)`
 /// -- the same per-round cost the naive `trace_mod` paid per trial, now
 /// paid once per recursion node instead.
-fn frobenius_basis_cost(degree: usize) -> Option<usize> {
-    degree
-        .checked_mul(degree)?
-        .checked_mul(FIELD_BITS.checked_sub(1)?)
+const fn frobenius_basis_cost(degree: usize) -> Option<usize> {
+    let Some(squared) = degree.checked_mul(degree) else {
+        return None;
+    };
+    let Some(rounds) = FIELD_BITS.checked_sub(1) else {
+        return None;
+    };
+    squared.checked_mul(rounds)
 }
 
 /// Per-trial cost once the node's Frobenius basis is already built:
@@ -424,11 +428,20 @@ fn frobenius_basis_cost(degree: usize) -> Option<usize> {
 /// and `O(degree^2)` for `poly_div` on a successful split. The GCD and
 /// division terms are both charged unconditionally, even on trials that
 /// don't split, to keep this a safe upper bound rather than an average.
-fn factor_trial_cost_with_basis(degree: usize) -> Option<usize> {
-    let trace_cost = FIELD_BITS.checked_mul(degree)?;
-    let gcd_cost = degree.checked_mul(degree)?;
-    let div_cost = degree.checked_mul(degree)?;
-    trace_cost.checked_add(gcd_cost)?.checked_add(div_cost)
+const fn factor_trial_cost_with_basis(degree: usize) -> Option<usize> {
+    let Some(trace_cost) = FIELD_BITS.checked_mul(degree) else {
+        return None;
+    };
+    let Some(gcd_cost) = degree.checked_mul(degree) else {
+        return None;
+    };
+    let Some(div_cost) = degree.checked_mul(degree) else {
+        return None;
+    };
+    let Some(subtotal) = trace_cost.checked_add(gcd_cost) else {
+        return None;
+    };
+    subtotal.checked_add(div_cost)
 }
 
 /// Upper bound on the work one `find_roots_with_budget` call can need for a
@@ -445,9 +458,16 @@ fn factor_trial_cost_with_basis(degree: usize) -> Option<usize> {
 /// even attempted. A sketch whose own recursion exceeds this ceiling will
 /// simply hit `BudgetExhausted` for its own allotment -- which is the
 /// intended outcome here, not a bug in this bound.
-pub(crate) fn single_call_work_ceiling(degree: usize) -> Option<usize> {
-    let basis = frobenius_basis_cost(degree)?;
-    let ladder = factor_trial_cost_with_basis(degree)?.checked_mul(FACTOR_TRIALS)?;
+pub(crate) const fn single_call_work_ceiling(degree: usize) -> Option<usize> {
+    let Some(basis) = frobenius_basis_cost(degree) else {
+        return None;
+    };
+    let Some(per_trial) = factor_trial_cost_with_basis(degree) else {
+        return None;
+    };
+    let Some(ladder) = per_trial.checked_mul(FACTOR_TRIALS) else {
+        return None;
+    };
     basis.checked_add(ladder)
 }
 

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use rezzy::{
     build_bucket_sketches, decode_bucket_sketches, estimate_strata, gf64_mul, BucketDecodeBatch,
     BucketDecodeSuccess, BucketExchange, BucketRequest, ClientAction, ElementHash,
-    ReconciliationClient, RemoteDigest, ResidentKernel, SyndromeSketch,
+    ReconciliationClient, RemoteDigest, ResidentKernel, SyndromeSketch, MAX_BATCH_FACTOR_WORK,
     MAX_BUCKETED_SKETCH_CAPACITY, MAX_BUCKETS_PER_ROUND, MAX_SKETCH_CAPACITY,
 };
 
@@ -544,7 +544,11 @@ pub fn run() {
     let requests = [BucketRequest::new(8, 0, 8)];
     let encoded = [0_u8; 64];
     let elapsed = measure(1_000, || {
-        let _ = black_box(decode_bucket_sketches(&encoded, &requests, 8_000_000));
+        let _ = black_box(decode_bucket_sketches(
+            &encoded,
+            &requests,
+            MAX_BATCH_FACTOR_WORK,
+        ));
     });
     report("triage/parse bucket sketch", 1_000, elapsed);
 

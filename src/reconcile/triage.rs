@@ -7,12 +7,25 @@
 
 use alloc::vec::Vec;
 
+use super::client::MAX_BUCKETS_PER_ROUND;
 use super::{pinsketch, AlgebraicError, SyndromeSketch, MAX_DEPTH, STRATA_COUNT, STRATUM_CAPACITY};
 
 /// Maximum sum of capacities in one bucketed sketch request.
 pub const MAX_BUCKETED_SKETCH_CAPACITY: usize = 4_096;
 /// Maximum extraction capacity assigned to one bucket.
 pub const MAX_BUCKET_SKETCH_CAPACITY: usize = 32;
+/// Recommended default work budget for [`decode_bucket_sketches`], sized to
+/// cover a full normal-path batch: [`MAX_BUCKETS_PER_ROUND`] buckets each at
+/// the worst-case per-bucket work ceiling for [`MAX_BUCKET_SKETCH_CAPACITY`].
+/// A caller passing less than this to `decode_bucket_sketches` risks a
+/// bucket near the end of a full-size batch reporting `BudgetExhausted` for
+/// no reason but this constant not being wired through -- see that
+/// function's doc comment.
+pub const MAX_BATCH_FACTOR_WORK: usize = MAX_BUCKETS_PER_ROUND
+    * match pinsketch::single_call_work_ceiling(MAX_BUCKET_SKETCH_CAPACITY) {
+        Some(ceiling) => ceiling,
+        None => panic!("single_call_work_ceiling overflowed for MAX_BUCKET_SKETCH_CAPACITY"),
+    };
 /// Maximum capacity permitted only through the local overflow request path.
 ///
 /// This is not a negotiated protocol capability. Normal bucket requests remain
@@ -200,18 +213,21 @@ fn estimate_delta_internal(
 /// aggregate capacity) could cost the caller an unbounded multiple of a
 /// single bucket's work -- the batch size itself was not a cost input.
 ///
-/// Each bucket's draw against `budget` is further clamped to
-/// [`pinsketch::single_call_work_ceiling`] for that bucket's declared
-/// capacity, so one pathological sketch (corrupt, over capacity, or
-/// deliberately ground to resist factoring) cannot exhaust the shared pool
-/// before later, cheaper buckets in `requests` are even attempted --
-/// otherwise batch outcomes would depend on request order, since a
-/// successful decode and a proven-undecodable one differ in cost by roughly
-/// two orders of magnitude (see `MAX_FACTOR_WORK`'s comment). Callers
-/// sizing `budget` should account for this clamp: budgeting less than
-/// `single_call_work_ceiling(request.capacity)` for even one request in the
-/// batch means that request may report `BudgetExhausted` for reasons
-/// unrelated to how much of `budget` the rest of the batch has used.
+/// Each bucket's draw against `budget` is further clamped to a per-bucket
+/// work ceiling for that bucket's declared capacity (an internal
+/// `pinsketch` cost-model helper, not part of this crate's public API), so
+/// one pathological sketch (corrupt, over capacity, or deliberately ground
+/// to resist factoring) cannot exhaust the shared pool before later,
+/// cheaper buckets in `requests` are even attempted -- otherwise batch
+/// outcomes would depend on request order, since a successful decode and a
+/// proven-undecodable one differ in cost by roughly two orders of
+/// magnitude (see `MAX_FACTOR_WORK`'s comment). Callers sizing `budget`
+/// should account for this clamp: budgeting less than that per-bucket
+/// ceiling for even one request in the batch means that request may report
+/// `BudgetExhausted` for reasons unrelated to how much of `budget` the
+/// rest of the batch has used. [`MAX_BATCH_FACTOR_WORK`] is sized to cover
+/// a full normal-path batch and is the right default absent a
+/// caller-specific budget.
 ///
 /// # Errors
 ///
@@ -588,7 +604,7 @@ mod tests {
         );
 
         assert_eq!(
-            decode_bucket_sketches(&encoded, &requests, 8_000_000),
+            decode_bucket_sketches(&encoded, &requests, MAX_BATCH_FACTOR_WORK),
             Ok(BucketDecodeBatch {
                 successful_buckets: vec![BucketDecodeSuccess {
                     depth: 8,
@@ -656,21 +672,29 @@ mod tests {
     fn bucket_decoder_rejects_length_mismatches_and_nested_overlaps() {
         let unordered = [BucketRequest::new(8, 2, 1), BucketRequest::new(8, 1, 1)];
         assert_eq!(
-            decode_bucket_sketches(&[0; 16], &unordered, 8_000_000),
+            decode_bucket_sketches(&[0; 16], &unordered, MAX_BATCH_FACTOR_WORK),
             Err(AlgebraicError::InvalidBucketIndex)
         );
 
         let nested = [BucketRequest::new(0, 0, 1), BucketRequest::new(1, 0, 1)];
         assert_eq!(
-            decode_bucket_sketches(&[0; 16], &nested, 8_000_000),
+            decode_bucket_sketches(&[0; 16], &nested, MAX_BATCH_FACTOR_WORK),
             Err(AlgebraicError::InvalidBucketIndex)
         );
         assert_eq!(
-            decode_bucket_sketches(&[0; 7], &[BucketRequest::new(8, 1, 1)], 8_000_000),
+            decode_bucket_sketches(
+                &[0; 7],
+                &[BucketRequest::new(8, 1, 1)],
+                MAX_BATCH_FACTOR_WORK
+            ),
             Err(AlgebraicError::InvalidSketchLength)
         );
         assert_eq!(
-            decode_bucket_sketches(&[0; 9], &[BucketRequest::new(8, 1, 1)], 8_000_000),
+            decode_bucket_sketches(
+                &[0; 9],
+                &[BucketRequest::new(8, 1, 1)],
+                MAX_BATCH_FACTOR_WORK
+            ),
             Err(AlgebraicError::InvalidSketchLength)
         );
     }
