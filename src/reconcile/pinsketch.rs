@@ -186,30 +186,56 @@ fn poly_mod(modulus: &[u64], value: &mut Polynomial) -> Option<()> {
     if modulus.last() != Some(&1) {
         return None;
     }
-    let evaluator = crate::reconcile::gf64_simd::get_evaluator();
+    // Dispatch on the evaluator backend once, outside the reduction loop,
+    // and let each arm monomorphize its own copy of the loop via the
+    // generic `poly_mod_reduce`, instead of matching on the backend once
+    // per row inside a single shared loop. The match cost was already
+    // trivial (branch-predicted, hoisted out of the loop in the prior
+    // pass), but this removes it from the loop body entirely so the
+    // compiler can optimize each backend's reduction independently.
+    match crate::reconcile::gf64_simd::get_evaluator() {
+        #[cfg(all(target_arch = "x86_64", has_avx512_support))]
+        crate::reconcile::gf64_simd::EvaluatorBackend::Avx512 => {
+            poly_mod_reduce::<crate::reconcile::gf64_simd::Avx512Evaluator>(
+                modulus_degree,
+                modulus,
+                value,
+            )?;
+        }
+        #[cfg(target_arch = "x86_64")]
+        crate::reconcile::gf64_simd::EvaluatorBackend::Sse => {
+            poly_mod_reduce::<crate::reconcile::gf64_simd::SseEvaluator>(
+                modulus_degree,
+                modulus,
+                value,
+            )?;
+        }
+        crate::reconcile::gf64_simd::EvaluatorBackend::Scalar => {
+            poly_mod_reduce::<crate::reconcile::gf64_simd::ScalarEvaluator>(
+                modulus_degree,
+                modulus,
+                value,
+            )?;
+        }
+    }
+    trim(value);
+    Some(())
+}
+
+fn poly_mod_reduce<E: Gf64Evaluator>(
+    modulus_degree: usize,
+    modulus: &[u64],
+    value: &mut Polynomial,
+) -> Option<()> {
     while value.len() >= modulus.len() {
         let term = value.pop()?;
         if term != 0 {
             let offset = value.len().checked_sub(modulus_degree)?;
             let target = &mut value[offset..offset.checked_add(modulus_degree)?];
             let source = &modulus[..modulus_degree];
-
-            match evaluator {
-                #[cfg(all(target_arch = "x86_64", has_avx512_support))]
-                crate::reconcile::gf64_simd::EvaluatorBackend::Avx512 => {
-                    crate::reconcile::gf64_simd::Avx512Evaluator::poly_mac(term, source, target);
-                }
-                #[cfg(target_arch = "x86_64")]
-                crate::reconcile::gf64_simd::EvaluatorBackend::Sse => {
-                    crate::reconcile::gf64_simd::SseEvaluator::poly_mac(term, source, target);
-                }
-                crate::reconcile::gf64_simd::EvaluatorBackend::Scalar => {
-                    crate::reconcile::gf64_simd::ScalarEvaluator::poly_mac(term, source, target);
-                }
-            }
+            E::poly_mac(term, source, target);
         }
     }
-    trim(value);
     Some(())
 }
 
@@ -219,7 +245,46 @@ fn poly_div(mut dividend: Polynomial, divisor: &[u64]) -> Option<Polynomial> {
     }
     let mut quotient = vec![0; dividend.len().checked_sub(divisor.len())?.checked_add(1)?];
     let divisor_degree = divisor.len().checked_sub(1)?;
-    let evaluator = crate::reconcile::gf64_simd::get_evaluator();
+    // See `poly_mod` for why the backend dispatch happens once here rather
+    // than once per reduction row inside a shared loop.
+    match crate::reconcile::gf64_simd::get_evaluator() {
+        #[cfg(all(target_arch = "x86_64", has_avx512_support))]
+        crate::reconcile::gf64_simd::EvaluatorBackend::Avx512 => {
+            poly_div_reduce::<crate::reconcile::gf64_simd::Avx512Evaluator>(
+                divisor_degree,
+                divisor,
+                &mut dividend,
+                &mut quotient,
+            )?;
+        }
+        #[cfg(target_arch = "x86_64")]
+        crate::reconcile::gf64_simd::EvaluatorBackend::Sse => {
+            poly_div_reduce::<crate::reconcile::gf64_simd::SseEvaluator>(
+                divisor_degree,
+                divisor,
+                &mut dividend,
+                &mut quotient,
+            )?;
+        }
+        crate::reconcile::gf64_simd::EvaluatorBackend::Scalar => {
+            poly_div_reduce::<crate::reconcile::gf64_simd::ScalarEvaluator>(
+                divisor_degree,
+                divisor,
+                &mut dividend,
+                &mut quotient,
+            )?;
+        }
+    }
+    trim(&mut quotient);
+    Some(quotient)
+}
+
+fn poly_div_reduce<E: Gf64Evaluator>(
+    divisor_degree: usize,
+    divisor: &[u64],
+    dividend: &mut Polynomial,
+    quotient: &mut Polynomial,
+) -> Option<()> {
     while dividend.len() >= divisor.len() {
         let term = dividend.pop()?;
         let position = dividend.len().checked_sub(divisor_degree)?;
@@ -227,24 +292,10 @@ fn poly_div(mut dividend: Polynomial, divisor: &[u64]) -> Option<Polynomial> {
         if term != 0 {
             let target = &mut dividend[position..position.checked_add(divisor_degree)?];
             let source = &divisor[..divisor_degree];
-
-            match evaluator {
-                #[cfg(all(target_arch = "x86_64", has_avx512_support))]
-                crate::reconcile::gf64_simd::EvaluatorBackend::Avx512 => {
-                    crate::reconcile::gf64_simd::Avx512Evaluator::poly_mac(term, source, target);
-                }
-                #[cfg(target_arch = "x86_64")]
-                crate::reconcile::gf64_simd::EvaluatorBackend::Sse => {
-                    crate::reconcile::gf64_simd::SseEvaluator::poly_mac(term, source, target);
-                }
-                crate::reconcile::gf64_simd::EvaluatorBackend::Scalar => {
-                    crate::reconcile::gf64_simd::ScalarEvaluator::poly_mac(term, source, target);
-                }
-            }
+            E::poly_mac(term, source, target);
         }
     }
-    trim(&mut quotient);
-    Some(quotient)
+    Some(())
 }
 
 fn poly_gcd(mut left: Polynomial, mut right: Polynomial) -> Option<Polynomial> {
