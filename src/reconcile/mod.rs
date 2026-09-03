@@ -66,12 +66,12 @@ const _: () = assert!(triage::MAX_BUCKET_SKETCH_CAPACITY == 32);
 const _: () = assert!(triage::MAX_OVERFLOW_BUCKET_CAPACITY == 256);
 #[allow(clippy::assertions_on_constants)]
 const _: () = assert!(triage::MAX_BUCKETED_SKETCH_CAPACITY == 4_096);
-// MAX_BATCH_FACTOR_WORK is already *derived* (in triage.rs) from
-// MAX_BUCKETS_PER_ROUND, MAX_BUCKET_SKETCH_CAPACITY, and the pinsketch cost
-// model, so it automatically tracks changes to any of them -- a formula
-// restated here would just be a tautology. Pinning the concrete number
-// instead means a change to any of those three inputs shows up as a visible
-// diff to this assert, rather than silently moving the batch-decode default
-// (currently ~46M) without anyone noticing.
+// This pins the concrete VALUE, not the formula: MAX_BATCH_FACTOR_WORK is
+// already *derived* (in triage.rs) from MAX_BUCKETS_PER_ROUND,
+// MAX_BUCKET_SKETCH_CAPACITY, and the pinsketch cost model, so restating
+// that same formula here would be a tautology that could never fail.
+// Asserting the literal instead means a change to any of those three
+// inputs shows up as a failing build here -- a visible diff to review --
+// rather than silently moving the batch-decode default.
 #[allow(clippy::assertions_on_constants)]
 const _: () = assert!(triage::MAX_BATCH_FACTOR_WORK == 46_006_272);
