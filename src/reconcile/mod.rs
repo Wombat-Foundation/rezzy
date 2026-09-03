@@ -74,4 +74,4 @@ const _: () = assert!(triage::MAX_BUCKETED_SKETCH_CAPACITY == 4_096);
 // inputs shows up as a failing build here -- a visible diff to review --
 // rather than silently moving the batch-decode default.
 #[allow(clippy::assertions_on_constants)]
-const _: () = assert!(triage::MAX_BATCH_FACTOR_WORK == 46_006_272);
+const _: () = assert!(triage::MAX_BATCH_FACTOR_WORK == 36_700_160);

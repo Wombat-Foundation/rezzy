@@ -23,22 +23,29 @@ const FACTOR_PARAMETER_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
 #[cfg(test)]
 const TRACE_SQUARES: usize = 63;
 // KNOWN GAP, still open: this covers observed *balanced* recursive
-// splitting, not a proven worst case. Per node, cost is roughly
-// `frobenius_basis_cost + factor_trial_cost_with_basis` for the first
-// (successful) trial, i.e. ~65*d^2. Summed over a balanced split tree
-// that's ~130*d^2, which at d=256 is ~8.5M -- matching the measured
-// 9.2-9.4M (across both adversarial-consecutive-value and random input
-// shapes) that this constant leaves ~1.7x headroom over. But equal-degree
-// splitting does not guarantee a balanced tree: a degenerate chain of
-// (1, d-1) splits sums to `65 * sum_{k=2}^{d} k^2`, which at d=256 is
-// ~363M, roughly 40x this budget. Random locators split near-binomially
-// in practice, so this is not something a benchmark will surface, and it
-// fails safe into `BudgetExhausted` (routing to the same fallback ladder
-// callers already handle) rather than corrupting anything -- but "degree
-// 256 is decodable within MAX_FACTOR_WORK" is a statement about typical
-// inputs, not a bound. A real worst-case bound on the recursion, or a
-// balance guarantee on the splitting itself, would be needed to close
-// this properly.
+// splitting, not a proven worst case.
+//
+// Measured directly (`find_roots_with_budget`'s own consumption, not a
+// hand derivation) against both random and adversarial-consecutive-value
+// degree-256 inputs: a full successful decode costs ~9.0-9.3M, and a
+// single node's full non-splitting 72-trial ladder (the shape a genuinely
+// undecodable degree-256 sketch produces) costs ~10.0M -- both comfortably
+// inside this budget with real, if modest, headroom.
+//
+// What's still unbounded is a *chain* of nodes each needing a full
+// non-splitting ladder before finally splitting -- e.g. a degenerate
+// sequence of (1, d-1) splits. Computed from this file's own cost
+// functions (`frobenius_basis_cost` + `FACTOR_TRIALS` *
+// `factor_trial_cost_with_basis` + `split_cost`, summed over degrees
+// d, d-1, ..., 2), that chain totals ~917M at d=256 -- ~57x this budget.
+// Random locators split near-binomially in practice (matching the
+// measurements above), so this degenerate shape is not something a
+// benchmark surfaces, and it fails safe into `BudgetExhausted` (routing
+// to the same fallback ladder callers already handle) rather than
+// corrupting anything -- but "degree 256 is decodable within
+// MAX_FACTOR_WORK" remains a statement about typical inputs, not a proven
+// bound. A real worst-case bound on the recursion, or a balance guarantee
+// on the splitting itself, would be needed to close this properly.
 const MAX_FACTOR_WORK: usize = 16_000_000;
 
 pub(crate) fn decode(
@@ -475,10 +482,15 @@ const fn frobenius_basis_cost(degree: usize) -> Option<usize> {
 
 /// Per-trial cost once the node's Frobenius basis is already built:
 /// `O(FIELD_BITS * degree)` for `trace_from_basis`'s linear combination,
-/// plus `O(degree^2)` for `poly_gcd` (which runs a `poly_mod` internally)
-/// and `O(degree^2)` for `poly_div` on a successful split. The GCD and
-/// division terms are both charged unconditionally, even on trials that
-/// don't split, to keep this a safe upper bound rather than an average.
+/// plus `O(degree^2)` for `poly_gcd` (which runs a `poly_mod` internally).
+/// This is charged on every trial, whether or not it finds a split --
+/// `poly_div` is charged separately, only on the trial that actually
+/// splits, via `split_cost`. (An earlier version folded `poly_div`'s cost
+/// in here unconditionally on the theory that it kept this a safe upper
+/// bound; it didn't just pad the bound, it overcharged every non-splitting
+/// trial for work that never happened -- an average split takes ~3.7
+/// trials, so that wasted roughly 2.7x this term's cost of budget per
+/// node.)
 const fn factor_trial_cost_with_basis(degree: usize) -> Option<usize> {
     let Some(trace_cost) = FIELD_BITS.checked_mul(degree) else {
         return None;
@@ -486,13 +498,13 @@ const fn factor_trial_cost_with_basis(degree: usize) -> Option<usize> {
     let Some(gcd_cost) = degree.checked_mul(degree) else {
         return None;
     };
-    let Some(div_cost) = degree.checked_mul(degree) else {
-        return None;
-    };
-    let Some(subtotal) = trace_cost.checked_add(gcd_cost) else {
-        return None;
-    };
-    subtotal.checked_add(div_cost)
+    trace_cost.checked_add(gcd_cost)
+}
+
+/// Cost of `poly_div` on a successful split: `O(degree^2)`. Charged once,
+/// only on the trial that actually splits -- see `factor_trial_cost_with_basis`.
+const fn split_cost(degree: usize) -> Option<usize> {
+    degree.checked_mul(degree)
 }
 
 /// Upper bound on the work one `find_roots_with_budget` call can need for a
@@ -519,7 +531,15 @@ pub(crate) const fn single_call_work_ceiling(degree: usize) -> Option<usize> {
     let Some(ladder) = per_trial.checked_mul(FACTOR_TRIALS) else {
         return None;
     };
-    basis.checked_add(ladder)
+    // `split_cost` is charged at most once per node -- on the one trial
+    // (if any) that actually splits -- not per trial in the ladder.
+    let Some(split) = split_cost(degree) else {
+        return None;
+    };
+    let Some(subtotal) = basis.checked_add(ladder) else {
+        return None;
+    };
+    subtotal.checked_add(split)
 }
 
 fn find_roots_with_budget(
@@ -582,6 +602,14 @@ fn find_roots_with_budget(
             let trace = trace_from_basis(&basis, parameter);
             let factor = poly_gcd(poly.clone(), trace).ok_or(AlgebraicError::DecodeFailure)?;
             if factor.len() > 1 && factor.len() < poly.len() {
+                // poly_div only runs on this, the one trial that actually
+                // splits -- charged separately from the per-trial cost
+                // above so trials that don't split aren't overcharged for
+                // division work they never performed.
+                let div_cost = split_cost(degree).ok_or(AlgebraicError::DecodeFailure)?;
+                *work = work
+                    .checked_sub(div_cost)
+                    .ok_or(AlgebraicError::BudgetExhausted)?;
                 let quotient = poly_div(poly, &factor).ok_or(AlgebraicError::DecodeFailure)?;
                 split = Some((factor, quotient));
                 break;
@@ -778,3 +806,5 @@ mod tests {
         assert_eq!(solve_quadratic_form(target), None);
     }
 }
+
+
