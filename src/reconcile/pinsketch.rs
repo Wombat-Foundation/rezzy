@@ -161,13 +161,13 @@ fn poly_mod(modulus: &[u64], value: &mut Polynomial) -> Option<()> {
     if modulus.last() != Some(&1) {
         return None;
     }
+    let evaluator = crate::reconcile::gf64_simd::get_evaluator();
     while value.len() >= modulus.len() {
         let term = value.pop()?;
         if term != 0 {
             let offset = value.len().checked_sub(modulus_degree)?;
             let target = &mut value[offset..offset.checked_add(modulus_degree)?];
             let source = &modulus[..modulus_degree];
-            let evaluator = crate::reconcile::gf64_simd::get_evaluator();
 
             match evaluator {
                 #[cfg(all(target_arch = "x86_64", has_avx512_support))]
@@ -194,6 +194,7 @@ fn poly_div(mut dividend: Polynomial, divisor: &[u64]) -> Option<Polynomial> {
     }
     let mut quotient = vec![0; dividend.len().checked_sub(divisor.len())?.checked_add(1)?];
     let divisor_degree = divisor.len().checked_sub(1)?;
+    let evaluator = crate::reconcile::gf64_simd::get_evaluator();
     while dividend.len() >= divisor.len() {
         let term = dividend.pop()?;
         let position = dividend.len().checked_sub(divisor_degree)?;
@@ -201,7 +202,6 @@ fn poly_div(mut dividend: Polynomial, divisor: &[u64]) -> Option<Polynomial> {
         if term != 0 {
             let target = &mut dividend[position..position.checked_add(divisor_degree)?];
             let source = &divisor[..divisor_degree];
-            let evaluator = crate::reconcile::gf64_simd::get_evaluator();
 
             match evaluator {
                 #[cfg(all(target_arch = "x86_64", has_avx512_support))]
