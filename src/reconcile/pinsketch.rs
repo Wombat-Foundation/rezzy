@@ -17,6 +17,10 @@ const FIELD_BITS: usize = 64;
 const MIXED_FACTOR_TRIALS: usize = 8;
 const FACTOR_TRIALS: usize = MIXED_FACTOR_TRIALS + FIELD_BITS;
 const FACTOR_PARAMETER_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
+// Only the test-only reference `trace_mod` still uses this directly; the
+// production path (`build_frobenius_basis`) derives the same round count
+// from `FIELD_BITS - 1`.
+#[cfg(test)]
 const TRACE_SQUARES: usize = 63;
 const MAX_FACTOR_WORK: usize = 8_000_000;
 
@@ -248,6 +252,15 @@ fn poly_square(poly: &mut Polynomial) -> Option<()> {
     Some(())
 }
 
+/// Naive reference implementation of `Tr(parameter * X) mod modulus`,
+/// re-deriving the full squaring recurrence from scratch for every
+/// `parameter`. Cost is `O(TRACE_SQUARES * degree^2)` *per call*. Superseded
+/// in the production path by `build_frobenius_basis` +
+/// `trace_from_basis`, which amortize the squaring recurrence across every
+/// trial for a given `modulus` instead of repeating it per trial (see that
+/// pair's doc comments). Kept as a test-only cross-check that the
+/// precomputed path computes the same trace.
+#[cfg(test)]
 fn trace_mod(modulus: &[u64], parameter: u64) -> Option<Polynomial> {
     let mut trace = vec![0, parameter];
     for _ in 0..TRACE_SQUARES {
@@ -259,6 +272,51 @@ fn trace_mod(modulus: &[u64], parameter: u64) -> Option<Polynomial> {
         poly_mod(modulus, &mut trace)?;
     }
     Some(trace)
+}
+
+/// One-time-per-polynomial precomputation consumed by `trace_from_basis`:
+/// the images `X^(2^0), X^(2^1), ..., X^(2^63) mod modulus`.
+///
+/// Squaring is GF(2)-linear in characteristic 2 (`(a+b)^2 = a^2+b^2`), so
+/// `(parameter*X)^(2^i) = parameter^(2^i) * X^(2^i)` -- the trace
+/// `sum_i (parameter*X)^(2^i) mod modulus` decomposes into
+/// `sum_i parameter^(2^i) * B_i`, where `B_i = X^(2^i) mod modulus` does not
+/// depend on `parameter` at all. Building this basis once per polynomial and
+/// reusing it across every trial in `find_roots_with_budget`'s ladder turns
+/// each trial's dominant cost from `O(TRACE_SQUARES * degree^2)` (the naive
+/// `trace_mod`, repeating the squaring-and-reduce recurrence per trial) into
+/// `O(FIELD_BITS * degree)` for the linear combination, leaving only the
+/// unavoidable `O(degree^2)` GCD/division per trial. See
+/// `frobenius_basis_cost` and `factor_trial_cost_with_basis`.
+fn build_frobenius_basis(modulus: &[u64]) -> Option<Vec<Polynomial>> {
+    let mut basis = Vec::with_capacity(FIELD_BITS);
+    let mut current = vec![0, 1]; // X
+    poly_mod(modulus, &mut current)?;
+    basis.push(current.clone());
+    for _ in 1..FIELD_BITS {
+        poly_square(&mut current)?;
+        poly_mod(modulus, &mut current)?;
+        basis.push(current.clone());
+    }
+    Some(basis)
+}
+
+/// Computes `Tr(parameter * X) mod modulus` from a basis built by
+/// `build_frobenius_basis` for the same `modulus`.
+fn trace_from_basis(basis: &[Polynomial], parameter: u64) -> Polynomial {
+    let width = basis.iter().map(Vec::len).max().unwrap_or(0);
+    let mut trace = vec![0_u64; width];
+    let mut power = parameter;
+    for basis_term in basis {
+        if power != 0 {
+            for (coefficient, term) in trace.iter_mut().zip(basis_term.iter()) {
+                *coefficient ^= gf64_mul(power, *term);
+            }
+        }
+        power = gf64_mul(power, power);
+    }
+    trim(&mut trace);
+    trace
 }
 
 const fn next_factor_parameter(mut state: u64) -> u64 {
@@ -329,8 +387,27 @@ fn find_roots(poly: Polynomial, roots: &mut Vec<u64>) -> Result<(), AlgebraicErr
     find_roots_with_budget(poly, roots, &mut work)
 }
 
-fn factor_trial_cost(degree: usize) -> Option<usize> {
-    degree.checked_mul(degree)?.checked_mul(TRACE_SQUARES)
+/// One-time cost of `build_frobenius_basis` for a degree-`degree`
+/// polynomial: `FIELD_BITS - 1` squaring+reduce rounds, each `O(degree^2)`
+/// -- the same per-round cost the naive `trace_mod` paid per trial, now
+/// paid once per recursion node instead.
+fn frobenius_basis_cost(degree: usize) -> Option<usize> {
+    degree
+        .checked_mul(degree)?
+        .checked_mul(FIELD_BITS.checked_sub(1)?)
+}
+
+/// Per-trial cost once the node's Frobenius basis is already built:
+/// `O(FIELD_BITS * degree)` for `trace_from_basis`'s linear combination,
+/// plus `O(degree^2)` for `poly_gcd` (which runs a `poly_mod` internally)
+/// and `O(degree^2)` for `poly_div` on a successful split. The GCD and
+/// division terms are both charged unconditionally, even on trials that
+/// don't split, to keep this a safe upper bound rather than an average.
+fn factor_trial_cost_with_basis(degree: usize) -> Option<usize> {
+    let trace_cost = FIELD_BITS.checked_mul(degree)?;
+    let gcd_cost = degree.checked_mul(degree)?;
+    let div_cost = degree.checked_mul(degree)?;
+    trace_cost.checked_add(gcd_cost)?.checked_add(div_cost)
 }
 
 fn find_roots_with_budget(
@@ -367,6 +444,12 @@ fn find_roots_with_budget(
             continue;
         }
 
+        let basis_cost = frobenius_basis_cost(degree).ok_or(AlgebraicError::DecodeFailure)?;
+        *work = work
+            .checked_sub(basis_cost)
+            .ok_or(AlgebraicError::BudgetExhausted)?;
+        let basis = build_frobenius_basis(&poly).ok_or(AlgebraicError::DecodeFailure)?;
+
         let mut split = None;
         let mut parameter = FACTOR_PARAMETER_SEED;
         for trial in 0..FACTOR_TRIALS {
@@ -380,11 +463,11 @@ fn find_roots_with_budget(
                     .checked_shl(basis_bit)
                     .ok_or(AlgebraicError::DecodeFailure)?;
             }
-            let cost = factor_trial_cost(degree).ok_or(AlgebraicError::DecodeFailure)?;
+            let cost = factor_trial_cost_with_basis(degree).ok_or(AlgebraicError::DecodeFailure)?;
             *work = work
                 .checked_sub(cost)
                 .ok_or(AlgebraicError::BudgetExhausted)?;
-            let trace = trace_mod(&poly, parameter).ok_or(AlgebraicError::DecodeFailure)?;
+            let trace = trace_from_basis(&basis, parameter);
             let factor = poly_gcd(poly.clone(), trace).ok_or(AlgebraicError::DecodeFailure)?;
             if factor.len() > 1 && factor.len() < poly.len() {
                 let quotient = poly_div(poly, &factor).ok_or(AlgebraicError::DecodeFailure)?;
@@ -540,7 +623,24 @@ mod tests {
 
     #[test]
     fn maximum_degree_trace_exceeds_the_absolute_work_budget() {
-        assert!(factor_trial_cost(1_000).unwrap() > MAX_FACTOR_WORK);
+        assert!(frobenius_basis_cost(1_000).unwrap() > MAX_FACTOR_WORK);
+    }
+
+    #[test]
+    fn frobenius_basis_matches_naive_trace_for_every_parameter() {
+        // A degree-4 modulus (x^4 + x + 1, i.e. coefficients low-to-high
+        // [1, 1, 0, 0, 1]) is enough to exercise every basis position for a
+        // handful of parameters, checked against the O(d^2)-per-call
+        // reference implementation.
+        let modulus = vec![1, 1, 0, 0, 1];
+        let basis = build_frobenius_basis(&modulus).unwrap();
+        for parameter in [0, 1, 2, 3, 0xdead_beef, u64::MAX] {
+            assert_eq!(
+                trace_from_basis(&basis, parameter),
+                trace_mod(&modulus, parameter).unwrap(),
+                "mismatch at parameter={parameter}"
+            );
+        }
     }
 
     #[test]
