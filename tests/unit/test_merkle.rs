@@ -424,3 +424,58 @@ fn leaf_path_single_field_and_empty() {
         MerkleError::FieldNotFound("type".into())
     );
 }
+
+#[test]
+fn compressed_causal_proofs_round_trip() {
+    use merkle::causal::{
+        compress_causal_path, decompress_causal_path, verify_causal_inclusion_compressed,
+        verify_causal_non_inclusion_compressed, CausalSet,
+    };
+
+    let mut set = CausalSet::default();
+    let keys: Vec<merkle::Hash> = (0_u8..5)
+        .map(|i| {
+            let mut k = [0_u8; 32];
+            k[0] = i;
+            k[31] = i.wrapping_mul(17).wrapping_add(3);
+            k
+        })
+        .collect();
+    set.extend(keys.iter().copied());
+    let root = set.root();
+    let count = set.count();
+
+    // Inclusion: every member's proof survives compress -> decompress ->
+    // verify, and decompression alone reproduces the original path exactly.
+    for k in &keys {
+        let (path, proved_root, proved_count) = set.inclusion_proof(k).unwrap();
+        assert_eq!(proved_root, root);
+        assert_eq!(proved_count, count);
+        assert!(merkle::causal::verify_causal_inclusion(
+            k, &path, root, count
+        ));
+
+        let compressed = compress_causal_path(merkle::causal::CAUSAL_DEPTH, &path);
+        let decompressed =
+            decompress_causal_path(k, merkle::causal::CAUSAL_DEPTH, &compressed).unwrap();
+        assert_eq!(decompressed, path);
+        assert!(verify_causal_inclusion_compressed(k, &compressed, root, count).unwrap());
+    }
+
+    // Non-inclusion: a key never inserted.
+    let mut absent = [0xFF_u8; 32];
+    absent[0] = 0xAA;
+    let (path, depth, proved_root, proved_count) = set.non_inclusion_proof(&absent).unwrap();
+    assert_eq!(proved_root, root);
+    assert_eq!(proved_count, count);
+    assert!(merkle::causal::verify_causal_non_inclusion(
+        &absent, depth, &path, root, count
+    ));
+
+    let compressed = compress_causal_path(depth, &path);
+    let decompressed = decompress_causal_path(&absent, depth, &compressed).unwrap();
+    assert_eq!(decompressed, path);
+    assert!(
+        verify_causal_non_inclusion_compressed(&absent, depth, &compressed, root, count).unwrap()
+    );
+}

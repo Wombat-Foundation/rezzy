@@ -691,7 +691,7 @@ pub mod causal {
     /// leaf-to-root: applying each step in order (combining the running
     /// hash/count with `hash`/`count` on the named `side`, via
     /// `causal_node`) reconstructs the trie root and count.
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct CausalProofStep {
         pub side: CausalSide,
         pub hash: Hash,
@@ -768,7 +768,293 @@ pub mod causal {
             let keys: Vec<Hash> = self.keys.iter().copied().collect();
             subtree_root(&keys, 0, &empty).0
         }
+    }
 
+    /// A single step in a compressed causal-trie proof path.
+    ///
+    /// Runs of consecutive canonical-empty siblings are collapsed into a
+    /// single `EmptyRun` entry; non-empty steps are emitted individually
+    /// as `Step`.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum CompressedCausalStep {
+        /// A non-empty sibling step (hash and count are explicit).
+        Step(CausalProofStep),
+        /// A run of `length` consecutive canonical-empty siblings.
+        /// `start_depth` is the sibling depth of the first empty step
+        /// in the run (the step at path position 0 has sibling depth `T`
+        /// where `T = terminal_depth`).  Expansion proceeds in proof
+        /// order: `empty[start_depth]`, `empty[start_depth - 1]`, …,
+        /// `empty[start_depth - length + 1]`, each with count 0 and side
+        /// derived from `causal_bit(key, sibling_depth - 1)`.
+        EmptyRun { start_depth: u16, length: u16 },
+    }
+
+    /// Error type for compressed causal-trie proof operations.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum CausalProofError {
+        /// A compressed step references a sibling depth outside
+        /// `1..=CAUSAL_DEPTH`, or `terminal_depth` itself exceeds
+        /// `CAUSAL_DEPTH`.
+        ///
+        /// `EmptyRun` carries no hash or count of its own — it is expanded
+        /// directly from `empty_table()` with count 0 — so there is no
+        /// attacker-supplied empty-step value to validate; this variant is
+        /// the only depth-shaped rejection the format has.
+        InvalidDepth(u16),
+        /// The decompressed path length does not match `terminal_depth`.
+        PathLengthMismatch {
+            decompressed: usize,
+            expected: usize,
+        },
+        /// The compressed encoding is truncated (fewer steps than
+        /// `terminal_depth`).
+        Truncated,
+        /// The compressed encoding has data after the complete path.
+        ExcessData,
+        /// An empty run would extend below sibling depth 1.
+        RunBelowRoot,
+        /// An empty run's start depth does not match the expected sibling
+        /// depth for the current path position (non-contiguous).
+        NonContiguousRun {
+            expected_sibling_depth: usize,
+            actual_start: usize,
+        },
+    }
+
+    impl core::fmt::Display for CausalProofError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            match self {
+                Self::InvalidDepth(d) => write!(f, "causal proof: invalid depth {d}"),
+                Self::PathLengthMismatch {
+                    decompressed,
+                    expected,
+                } => write!(
+                    f,
+                    "causal proof: decompressed path length {decompressed} \
+                     does not match terminal depth {expected}"
+                ),
+                Self::Truncated => f.write_str("causal proof: truncated compressed encoding"),
+                Self::ExcessData => f.write_str("causal proof: excess data after path"),
+                Self::RunBelowRoot => {
+                    f.write_str("causal proof: empty run extends below sibling depth 1")
+                }
+                Self::NonContiguousRun {
+                    expected_sibling_depth,
+                    actual_start,
+                } => write!(
+                    f,
+                    "causal proof: empty run starts at sibling depth {actual_start}, \
+                     expected {expected_sibling_depth}"
+                ),
+            }
+        }
+    }
+
+    impl core::error::Error for CausalProofError {}
+
+    /// Compresses a causal-trie proof path by collapsing runs of
+    /// consecutive canonical-empty siblings into `EmptyRun` entries.
+    ///
+    /// Each step at position `i` in `path` is combined at parent depth
+    /// `T - 1 - i` (where `T = terminal_depth`); the sibling subtree it
+    /// carries is therefore rooted at depth `T - i`, and its canonical-empty
+    /// value is `empty_table()[T - i]`. A step is canonical-empty when its
+    /// hash equals that value and its count is 0. Consecutive canonical-empty
+    /// steps are merged into a single `EmptyRun { start_depth, length }`,
+    /// where `start_depth` is the *sibling* depth (`T - i`) of the first
+    /// empty step in the run.
+    #[must_use]
+    pub fn compress_causal_path(
+        terminal_depth: usize,
+        path: &[CausalProofStep],
+    ) -> Vec<CompressedCausalStep> {
+        let empty = empty_table();
+        let mut out: Vec<CompressedCausalStep> = Vec::new();
+        let mut run_start: Option<usize> = None;
+        let mut run_len: u16 = 0;
+
+        for (i, step) in path.iter().enumerate() {
+            // Sibling depth: one above the parent depth `T - 1 - i`.
+            let sibling_depth = terminal_depth.saturating_sub(i);
+            let is_empty =
+                step.count == 0 && sibling_depth < empty.len() && step.hash == empty[sibling_depth];
+
+            if is_empty {
+                if run_start.is_none() {
+                    run_start = Some(sibling_depth);
+                    run_len = 1;
+                } else {
+                    run_len = run_len.saturating_add(1);
+                }
+            } else {
+                // Flush any active run (sibling depths decrease as `i`
+                // increases, so `start_depth` is the deepest/first point
+                // of the run and the run expands toward the root).
+                if let Some(start) = run_start.take() {
+                    out.push(CompressedCausalStep::EmptyRun {
+                        start_depth: depth_u16(start),
+                        length: run_len,
+                    });
+                    run_len = 0;
+                }
+                out.push(CompressedCausalStep::Step(*step));
+            }
+        }
+
+        // Flush trailing run.
+        if let Some(start) = run_start.take() {
+            out.push(CompressedCausalStep::EmptyRun {
+                start_depth: depth_u16(start),
+                length: run_len,
+            });
+        }
+
+        out
+    }
+
+    /// Decompresses a compressed causal-trie proof path, validating that
+    /// every `EmptyRun` expands to the correct canonical empty hashes with
+    /// count 0.
+    ///
+    /// Returns the expanded `Vec<CausalProofStep>` on success, or a
+    /// [`CausalProofError`] if the compressed encoding is malformed,
+    /// non-canonical, or has the wrong total length.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CausalProofError`] on any validation failure.
+    pub fn decompress_causal_path(
+        key: &Hash,
+        terminal_depth: usize,
+        compressed: &[CompressedCausalStep],
+    ) -> Result<Vec<CausalProofStep>, CausalProofError> {
+        if terminal_depth > CAUSAL_DEPTH {
+            return Err(CausalProofError::InvalidDepth(depth_u16(terminal_depth)));
+        }
+        let empty = empty_table();
+        let mut out: Vec<CausalProofStep> = Vec::new();
+
+        for step in compressed {
+            match step {
+                CompressedCausalStep::Step(s) => {
+                    if out.len() >= terminal_depth {
+                        return Err(CausalProofError::ExcessData);
+                    }
+                    out.push(*s);
+                }
+                CompressedCausalStep::EmptyRun {
+                    start_depth,
+                    length,
+                } => {
+                    let start = *start_depth as usize;
+                    let len = *length as usize;
+
+                    if len == 0 {
+                        return Err(CausalProofError::Truncated);
+                    }
+                    // Sibling depths only exist in `1..=CAUSAL_DEPTH` (depth
+                    // 0 is the root, which has no parent to be a sibling
+                    // of), so `start` outside that range is structurally
+                    // invalid regardless of where it sits in the path.
+                    if start == 0 || start > CAUSAL_DEPTH {
+                        return Err(CausalProofError::InvalidDepth(*start_depth));
+                    }
+                    // The run expands toward the root: sibling depths
+                    // `start, start - 1, ..., start - len + 1`, which must
+                    // not go below depth 1. Checked before contiguity so a
+                    // self-evidently out-of-bounds run is reported as such
+                    // even when it's also misaligned with the current
+                    // position.
+                    if len > start {
+                        return Err(CausalProofError::RunBelowRoot);
+                    }
+                    // `start` is the sibling depth of the first expanded
+                    // step, i.e. `terminal_depth - out.len()`. A mismatch
+                    // means the encoding's run boundaries don't line up
+                    // with its actual position in the path.
+                    let expected_start = terminal_depth.saturating_sub(out.len());
+                    if start != expected_start {
+                        return Err(CausalProofError::NonContiguousRun {
+                            expected_sibling_depth: expected_start,
+                            actual_start: start,
+                        });
+                    }
+                    for j in 0..len {
+                        // `j < len <= start` (checked above) and
+                        // `sibling_depth >= 1` (since `len <= start`
+                        // guarantees `start - len + 1 >= 1`), so both
+                        // subtractions stay in range; `saturating_sub`
+                        // avoids the raw `-` clippy flags regardless.
+                        let sibling_depth = start.saturating_sub(j);
+                        let parent_depth = sibling_depth.saturating_sub(1);
+                        let side = if causal_bit(key, parent_depth) == 0 {
+                            CausalSide::Right
+                        } else {
+                            CausalSide::Left
+                        };
+                        out.push(CausalProofStep {
+                            side,
+                            hash: empty[sibling_depth],
+                            count: 0,
+                        });
+                    }
+                }
+            }
+        }
+
+        if out.len() != terminal_depth {
+            return Err(CausalProofError::PathLengthMismatch {
+                decompressed: out.len(),
+                expected: terminal_depth,
+            });
+        }
+
+        Ok(out)
+    }
+
+    /// Verifies an inclusion proof encoded with empty-run compression.
+    ///
+    /// Decompresses `compressed` and delegates to [`verify_causal_inclusion`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CausalProofError`] if decompression or validation fails.
+    pub fn verify_causal_inclusion_compressed(
+        key: &Hash,
+        compressed: &[CompressedCausalStep],
+        root: Hash,
+        count: u64,
+    ) -> Result<bool, CausalProofError> {
+        let path = decompress_causal_path(key, CAUSAL_DEPTH, compressed)?;
+        Ok(verify_causal_inclusion(key, &path, root, count))
+    }
+
+    /// Verifies a non-inclusion proof encoded with empty-run compression.
+    ///
+    /// Decompresses `compressed` and delegates to
+    /// [`verify_causal_non_inclusion`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CausalProofError`] if decompression or validation fails.
+    pub fn verify_causal_non_inclusion_compressed(
+        key: &Hash,
+        terminal_depth: usize,
+        compressed: &[CompressedCausalStep],
+        root: Hash,
+        count: u64,
+    ) -> Result<bool, CausalProofError> {
+        let path = decompress_causal_path(key, terminal_depth, compressed)?;
+        Ok(verify_causal_non_inclusion(
+            key,
+            terminal_depth,
+            &path,
+            root,
+            count,
+        ))
+    }
+
+    impl CausalSet {
         /// Returns the ordered (leaf-to-root) sibling path proving `key` is a
         /// member of `self`, along with `self`'s root and count. Returns
         /// [`None`] if `key` is not a member; there is no inclusion proof for
