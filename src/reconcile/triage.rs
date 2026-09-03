@@ -279,10 +279,19 @@ pub fn decode_bucket_sketches(
         // `remaining` only ever decreases from `allowance` (budgeted
         // decoders only subtract) and `allowance <= budget` by
         // construction above, so both `checked_sub`s below are provably
-        // non-underflowing -- not merely saturating-safe. Propagating
-        // `BudgetExhausted` rather than `.expect`-panicking on a should-
-        // never-happen violation matches this function's existing
-        // checked-arithmetic style.
+        // non-underflowing. `debug_assert!` turns a violation of that
+        // invariant into a loud dev-time failure instead of a silent
+        // `BudgetExhausted` that would read as a routine protocol
+        // fallback -- but the production path still degrades to an
+        // error rather than panicking: this function processes
+        // untrusted wire input, and a release-mode `assert!` reachable
+        // from that input would trade a decode-accounting bug for a
+        // remotely triggerable crash loop, which is a worse failure
+        // mode than the one it replaces.
+        debug_assert!(
+            remaining <= allowance,
+            "decoder violated budget bounds: remaining={remaining} > allowance={allowance}"
+        );
         let spent = allowance
             .checked_sub(remaining)
             .ok_or(AlgebraicError::BudgetExhausted)?;

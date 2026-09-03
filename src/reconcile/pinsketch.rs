@@ -767,9 +767,25 @@ mod tests {
         // this degree (per-trial cost is deliberately small -- that's the
         // whole point of the precompute -- so it wouldn't on its own).
         assert!(frobenius_basis_cost(1_000).unwrap() > MAX_FACTOR_WORK);
-        // The combined single-call ceiling (basis + full trial ladder)
-        // pins both halves of the cost model together.
+        // The combined single-call ceiling (basis + full trial ladder +
+        // one split) pins both halves of the cost model together.
         assert!(single_call_work_ceiling(1_000).unwrap() > MAX_FACTOR_WORK);
+    }
+
+    #[test]
+    fn factor_trial_and_split_costs_are_pinned_independently() {
+        // The combined ceiling above can pass even if one of its two
+        // components silently drifts, as long as the other compensates.
+        // Pin each component's exact value at a fixed degree so a
+        // regression in either (e.g. factor_trial_cost_with_basis
+        // accidentally including a term it shouldn't, or split_cost
+        // losing one) shows up here even if single_call_work_ceiling's
+        // sum still happens to clear MAX_FACTOR_WORK. Values are well
+        // under MAX_FACTOR_WORK individually and are not meant to be --
+        // see the doc comment on factor_trial_cost_with_basis for why
+        // the per-trial cost is deliberately small.
+        assert_eq!(factor_trial_cost_with_basis(1_000), Some(1_064_000));
+        assert_eq!(split_cost(1_000), Some(1_000_000));
     }
 
     #[test]
@@ -806,5 +822,3 @@ mod tests {
         assert_eq!(solve_quadratic_form(target), None);
     }
 }
-
-
