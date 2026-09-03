@@ -30,6 +30,12 @@ pub const MAX_LOCAL_SKETCH_DECODE_CAPACITY: usize = MAX_SKETCH_CAPACITY;
 /// Hard-capped overflow capacity for adaptive reconciliation.
 /// Separate from `MAX_SKETCH_CAPACITY`; only reachable after overflow request
 /// validation passes.
+// A full degree-256 decode is only affordable within `MAX_FACTOR_WORK`
+// because `pinsketch::build_frobenius_basis` amortizes the root-finding
+// ladder's dominant cost across all trials for a node instead of repeating
+// it per trial -- see `MAX_FACTOR_WORK`'s comment for the measurement this
+// capacity relies on, including the caveat that it covers observed
+// balanced-split behavior, not a proven worst case.
 pub const MAX_OVERFLOW_SKETCH_CAPACITY: usize = 256;
 const EVENT_HASH_ENCODED_LEN: usize = 43;
 
@@ -719,12 +725,23 @@ mod tests {
 
     #[test]
     fn overflow_257_vs_256_capacity() {
+        // Budget must be large enough to reach the actual capacity-mismatch
+        // detection, not just exhaust on the factoring ladder -- otherwise
+        // this test can pass vacuously on `BudgetExhausted` without ever
+        // exercising the over-capacity check it claims to test. Measured
+        // cost of a full degree-256 decode is ~9.2-9.4M (see
+        // `MAX_FACTOR_WORK`'s comment); `MAX_FACTOR_WORK` itself is now
+        // comfortably above that, so it doubles as this test's budget.
         let mut sketch = SyndromeSketch::new_overflow(256).unwrap();
         for i in 1..=257u64 {
             sketch.toggle(i * 2 + 1).unwrap();
         }
-        let res = sketch.decode_elements_overflow_budget(256, 1_000);
-        assert!(res.is_err(), "257 differences at capacity 256 must fail");
+        let res = sketch.decode_elements_overflow_budget(256, 16_000_000);
+        assert_eq!(
+            res,
+            Err(AlgebraicError::DecodeFailure),
+            "257 differences at capacity 256 must fail with DecodeFailure, not budget exhaustion"
+        );
     }
 
     #[test]

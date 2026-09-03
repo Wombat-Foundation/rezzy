@@ -22,7 +22,24 @@ const FACTOR_PARAMETER_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
 // from `FIELD_BITS - 1`.
 #[cfg(test)]
 const TRACE_SQUARES: usize = 63;
-const MAX_FACTOR_WORK: usize = 8_000_000;
+// KNOWN GAP, still open: this covers observed *balanced* recursive
+// splitting, not a proven worst case. Per node, cost is roughly
+// `frobenius_basis_cost + factor_trial_cost_with_basis` for the first
+// (successful) trial, i.e. ~65*d^2. Summed over a balanced split tree
+// that's ~130*d^2, which at d=256 is ~8.5M -- matching the measured
+// 9.2-9.4M (across both adversarial-consecutive-value and random input
+// shapes) that this constant leaves ~1.7x headroom over. But equal-degree
+// splitting does not guarantee a balanced tree: a degenerate chain of
+// (1, d-1) splits sums to `65 * sum_{k=2}^{d} k^2`, which at d=256 is
+// ~363M, roughly 40x this budget. Random locators split near-binomially
+// in practice, so this is not something a benchmark will surface, and it
+// fails safe into `BudgetExhausted` (routing to the same fallback ladder
+// callers already handle) rather than corrupting anything -- but "degree
+// 256 is decodable within MAX_FACTOR_WORK" is a statement about typical
+// inputs, not a bound. A real worst-case bound on the recursion, or a
+// balance guarantee on the splitting itself, would be needed to close
+// this properly.
+const MAX_FACTOR_WORK: usize = 16_000_000;
 
 pub(crate) fn decode(
     odd_syndromes: &[u64],
