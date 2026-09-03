@@ -49,8 +49,8 @@ use rezzy::{
 };
 
 use super::filters::{
-    quotient_remainder_bits_for_fpr, BloomFilter, CountingQuotientFilter, CuckooFilter,
-    RemainderProbeFilter,
+    quotient_remainder_bits_for_fpr, remainder_probe_bits_for_fpr, BloomFilter,
+    CountingQuotientFilter, CuckooFilter, RemainderProbeFilter,
 };
 
 // ---------------------------------------------------------------------------
@@ -333,7 +333,7 @@ fn build_filter(elements: &[u64], filter_fpr: f64, filter_type: &str) -> (Filter
             (FilterEnum::Cuckoo(f), wire)
         }
         "remainder_probe" => {
-            let remainder_bits = quotient_remainder_bits_for_fpr(filter_fpr);
+            let remainder_bits = remainder_probe_bits_for_fpr(filter_fpr);
             let mut f =
                 RemainderProbeFilter::with_remainder_bits(elements.len().max(1), remainder_bits);
             for &val in elements {

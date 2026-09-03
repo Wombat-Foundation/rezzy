@@ -215,6 +215,23 @@ pub(crate) fn quotient_remainder_bits_for_fpr(target_fpr: f64) -> u32 {
     16
 }
 
+/// Remainder width for a linear-probed remainder table at the requested
+/// false-positive rate.  Unlike the quotient-filter helper above, this
+/// accounts for the ~91% load factor (10% extra slots) and the expected
+/// probe length on a miss: probes ≈ 1/(1−α) ≈ 11 at α ≈ 0.91.
+pub(crate) fn remainder_probe_bits_for_fpr(target_fpr: f64) -> u32 {
+    assert!((0.0..1.0).contains(&target_fpr));
+    // At load factor ≈ 0.91 the expected probes for a miss ≈ 11.
+    // FPR ≈ probes / 2^(bits-1) because remainder values are always odd.
+    let probes = 11.0;
+    for bits in 8..=16 {
+        if probes / f64::from(1_u32 << (bits - 1)) <= target_fpr {
+            return bits;
+        }
+    }
+    16
+}
+
 // ---------------------------------------------------------------------------
 // Remainder-probe filter (linear-probed remainder array, NOT a quotient filter)
 //

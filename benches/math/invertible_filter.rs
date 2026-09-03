@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use rezzy::{SyndromeSketch, MAX_SKETCH_CAPACITY};
 
 use super::filters::{
-    quotient_remainder_bits_for_fpr, BloomFilter, CountingQuotientFilter, CuckooFilter,
-    RemainderProbeFilter,
+    quotient_remainder_bits_for_fpr, remainder_probe_bits_for_fpr, BloomFilter,
+    CountingQuotientFilter, CuckooFilter, RemainderProbeFilter,
 };
 
 struct Xorshift128 {
@@ -295,9 +295,11 @@ fn benchmark_filter_reconciliation(set_size: usize, delta: usize, fpr: f64) {
             let response_wire = (candidates.len() + receiver_only.len()) * 8;
 
             // Sender computes symmetric difference.
+            // The sender only knows local_set and the candidates response,
+            // not remote_set.
             let mut symmetric_diff: Vec<u64> = Vec::new();
             for &val in &local_set {
-                if remote_set.binary_search(&val).is_err() {
+                if candidates.binary_search(&val).is_err() {
                     symmetric_diff.push(val);
                 }
             }
@@ -348,14 +350,14 @@ fn build_filter_bench(elements: &[u64], fpr: f64, filter_type: &str) -> FilterBe
         "bloom" => {
             let mut f = BloomFilter::with_fpr(elements.len().max(1), fpr);
             for &val in elements {
-                f.insert(&val);
+                assert!(f.insert(&val), "bloom insertion failed");
             }
             FilterBench::Bloom(f)
         }
         "cuckoo" => {
             let mut f = CuckooFilter::with_fpr(elements.len().max(1), fpr);
             for &val in elements {
-                f.insert(&val);
+                assert!(f.insert(&val), "cuckoo insertion failed");
             }
             FilterBench::Cuckoo(f)
         }
@@ -364,15 +366,15 @@ fn build_filter_bench(elements: &[u64], fpr: f64, filter_type: &str) -> FilterBe
             let mut f =
                 CountingQuotientFilter::with_remainder_bits(elements.len().max(1), rem_bits);
             for &val in elements {
-                let _ = f.insert(&val);
+                assert!(f.insert(&val), "cqf insertion failed");
             }
             FilterBench::Cqf(f)
         }
         "remainder_probe" => {
-            let rem_bits = quotient_remainder_bits_for_fpr(fpr);
+            let rem_bits = remainder_probe_bits_for_fpr(fpr);
             let mut f = RemainderProbeFilter::with_remainder_bits(elements.len().max(1), rem_bits);
             for &val in elements {
-                f.insert(&val);
+                assert!(f.insert(&val), "remainder_probe insertion failed");
             }
             FilterBench::Rp(f)
         }
