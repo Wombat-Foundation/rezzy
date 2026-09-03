@@ -544,7 +544,7 @@ pub fn run() {
     let requests = [BucketRequest::new(8, 0, 8)];
     let encoded = [0_u8; 64];
     let elapsed = measure(1_000, || {
-        let _ = black_box(decode_bucket_sketches(&encoded, &requests));
+        let _ = black_box(decode_bucket_sketches(&encoded, &requests, 8_000_000));
     });
     report("triage/parse bucket sketch", 1_000, elapsed);
 

@@ -17,6 +17,7 @@ pub const MAX_BUCKET_SKETCH_CAPACITY: usize = 32;
 ///
 /// This is not a negotiated protocol capability. Normal bucket requests remain
 /// limited to [`MAX_BUCKET_SKETCH_CAPACITY`].
+// Kept equal to `algebraic::MAX_OVERFLOW_SKETCH_CAPACITY` — see its comment.
 pub const MAX_OVERFLOW_BUCKET_CAPACITY: usize = 256;
 /// Client-side sketch-mode cutoff for estimates in the saturated regime.
 pub const SATURATED_DELTA_ESTIMATE: u64 = 8 * (1_u64 << 31);
@@ -190,12 +191,38 @@ fn estimate_delta_internal(
 /// Structural and budget errors abort the batch. A normal decode failure is
 /// isolated to its bucket so successfully decoded roots can be retained.
 ///
+/// Decodes a batch of bucket sketches under a single, shared work budget.
+///
+/// `budget` bounds the *total* factoring work across every bucket in the
+/// batch, not just each bucket individually. Without this, each bucket gets
+/// its own implicit `MAX_FACTOR_WORK` from the unbudgeted decode path, so a
+/// batch of many buckets (up to `MAX_BUCKETED_SKETCH_CAPACITY` worth of
+/// aggregate capacity) could cost the caller an unbounded multiple of a
+/// single bucket's work -- the batch size itself was not a cost input.
+///
+/// Each bucket's draw against `budget` is further clamped to
+/// [`pinsketch::single_call_work_ceiling`] for that bucket's declared
+/// capacity, so one pathological sketch (corrupt, over capacity, or
+/// deliberately ground to resist factoring) cannot exhaust the shared pool
+/// before later, cheaper buckets in `requests` are even attempted --
+/// otherwise batch outcomes would depend on request order, since a
+/// successful decode and a proven-undecodable one differ in cost by roughly
+/// two orders of magnitude (see `MAX_FACTOR_WORK`'s comment). Callers
+/// sizing `budget` should account for this clamp: budgeting less than
+/// `single_call_work_ceiling(request.capacity)` for even one request in the
+/// batch means that request may report `BudgetExhausted` for reasons
+/// unrelated to how much of `budget` the rest of the batch has used.
+///
 /// # Errors
-/// Returns an error for invalid ordering, capacity, aggregate or byte length,
-/// or when a decoder exceeds its work budget.
+///
+/// Returns an error for invalid ordering, capacity, aggregate or byte
+/// length, or [`AlgebraicError::BudgetExhausted`] once the shared budget
+/// runs out, even if some buckets in the batch would otherwise have
+/// decoded.
 pub fn decode_bucket_sketches(
     encoded: &[u8],
     requests: &[BucketRequest],
+    mut budget: usize,
 ) -> Result<BucketDecodeBatch, AlgebraicError> {
     validate_bucket_requests(requests)?;
 
@@ -225,7 +252,18 @@ pub fn decode_bucket_sketches(
             .collect();
 
         let sketch = SyndromeSketch::from_coordinates(coordinates)?;
-        match sketch.decode_elements(request.capacity) {
+        // Clamp this bucket's draw so it can't outspend its own fair
+        // ceiling and starve buckets later in `requests` of the shared
+        // pool -- see this function's doc comment.
+        let ceiling = pinsketch::single_call_work_ceiling(request.capacity)
+            .ok_or(AlgebraicError::InvalidSketchCapacity)?;
+        let allowance = budget.min(ceiling);
+        let mut remaining = allowance;
+        let result = sketch.decode_elements_with_shared_budget(request.capacity, &mut remaining);
+        // `remaining <= allowance` always; the subtraction is the portion
+        // of the allowance this bucket actually spent.
+        budget = budget.saturating_sub(allowance.saturating_sub(remaining));
+        match result {
             Ok(roots) => successful_buckets.push(BucketDecodeSuccess {
                 depth: request.depth,
                 prefix: request.prefix,
@@ -400,8 +438,12 @@ mod tests {
 
     #[test]
     fn overflow_requests_enforce_the_aggregate_capacity_limit() {
-        let requests = (0..17)
-            .map(|prefix| BucketRequest::with_overflow(5, prefix, MAX_OVERFLOW_BUCKET_CAPACITY))
+        // depth 6 gives 64 distinct, non-overlapping prefixes -- enough
+        // headroom to push the aggregate (43 * MAX_OVERFLOW_BUCKET_CAPACITY)
+        // past MAX_BUCKETED_SKETCH_CAPACITY without any single request
+        // exceeding the per-request cap.
+        let requests = (0..43)
+            .map(|prefix| BucketRequest::with_overflow(6, prefix, MAX_OVERFLOW_BUCKET_CAPACITY))
             .collect::<Vec<_>>();
 
         assert_eq!(
@@ -546,7 +588,7 @@ mod tests {
         );
 
         assert_eq!(
-            decode_bucket_sketches(&encoded, &requests),
+            decode_bucket_sketches(&encoded, &requests, 8_000_000),
             Ok(BucketDecodeBatch {
                 successful_buckets: vec![BucketDecodeSuccess {
                     depth: 8,
@@ -559,24 +601,76 @@ mod tests {
     }
 
     #[test]
+    fn one_undecodable_bucket_does_not_starve_a_later_decodable_bucket() {
+        // Bucket at prefix 1 is over capacity and forces the full
+        // factoring ladder to run and fail. Bucket at prefix 9 is
+        // trivially decodable. The shared budget is exactly one
+        // capacity-2 ceiling plus a small margin.
+        //
+        // For an unclamped root-only failure (no further splitting -- the
+        // only case a small deterministic test can construct without
+        // engineering a specific locator factorization by hand) the spend
+        // is bounded by `single_call_work_ceiling` regardless of whether
+        // this clamp exists, so this test cannot by itself distinguish
+        // clamped from unclamped code; it pins the intended budget-sharing
+        // behavior (the easy bucket must not starve) as a regression guard
+        // going forward. The clamp's real justification is a bucket whose
+        // recursion visits several nodes before failing, where the total
+        // cost can exceed one node's ceiling -- see `MAX_FACTOR_WORK`'s
+        // comment on unbalanced split trees; that scenario needs a
+        // deliberately engineered locator to reproduce deterministically
+        // and isn't covered by this test.
+        let requests = [BucketRequest::new(8, 1, 2), BucketRequest::new(8, 9, 2)];
+        let mut over_capacity = SyndromeSketch::new(2).unwrap();
+        for value in [1, 2, 3] {
+            over_capacity.toggle(value).unwrap();
+        }
+        let mut encoded = over_capacity
+            .coordinates()
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let mut easy = SyndromeSketch::new(2).unwrap();
+        easy.toggle(7).unwrap();
+        encoded.extend(
+            easy.coordinates()
+                .iter()
+                .flat_map(|value| value.to_le_bytes()),
+        );
+
+        let ceiling = pinsketch::single_call_work_ceiling(2).unwrap();
+        let budget = ceiling.saturating_add(1_000);
+
+        let batch = decode_bucket_sketches(&encoded, &requests, budget).unwrap();
+        assert!(
+            batch
+                .successful_buckets
+                .iter()
+                .any(|success| success.prefix == 9 && success.roots == vec![7]),
+            "the decodable bucket at prefix 9 must not be starved by the \
+             undecodable bucket at prefix 1 running first: {batch:?}"
+        );
+    }
+
+    #[test]
     fn bucket_decoder_rejects_length_mismatches_and_nested_overlaps() {
         let unordered = [BucketRequest::new(8, 2, 1), BucketRequest::new(8, 1, 1)];
         assert_eq!(
-            decode_bucket_sketches(&[0; 16], &unordered),
+            decode_bucket_sketches(&[0; 16], &unordered, 8_000_000),
             Err(AlgebraicError::InvalidBucketIndex)
         );
 
         let nested = [BucketRequest::new(0, 0, 1), BucketRequest::new(1, 0, 1)];
         assert_eq!(
-            decode_bucket_sketches(&[0; 16], &nested),
+            decode_bucket_sketches(&[0; 16], &nested, 8_000_000),
             Err(AlgebraicError::InvalidBucketIndex)
         );
         assert_eq!(
-            decode_bucket_sketches(&[0; 7], &[BucketRequest::new(8, 1, 1)],),
+            decode_bucket_sketches(&[0; 7], &[BucketRequest::new(8, 1, 1)], 8_000_000),
             Err(AlgebraicError::InvalidSketchLength)
         );
         assert_eq!(
-            decode_bucket_sketches(&[0; 9], &[BucketRequest::new(8, 1, 1)],),
+            decode_bucket_sketches(&[0; 9], &[BucketRequest::new(8, 1, 1)], 8_000_000),
             Err(AlgebraicError::InvalidSketchLength)
         );
     }

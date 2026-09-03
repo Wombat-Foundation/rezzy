@@ -357,6 +357,25 @@ impl SyndromeSketch {
         max_elements: usize,
         budget: usize,
     ) -> Result<Vec<u64>, AlgebraicError> {
+        let mut remaining = budget;
+        self.decode_elements_with_shared_budget(max_elements, &mut remaining)
+    }
+
+    /// Like [`decode_elements_with_budget`](Self::decode_elements_with_budget),
+    /// but draws from and updates a caller-owned `budget` in place, so a
+    /// caller decoding many sketches in a batch (e.g.
+    /// [`super::triage::decode_bucket_sketches`]) can enforce one shared
+    /// work ceiling across the whole batch instead of each sketch getting
+    /// its own independent allowance.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`decode_elements_with_budget`](Self::decode_elements_with_budget).
+    pub(crate) fn decode_elements_with_shared_budget(
+        &self,
+        max_elements: usize,
+        budget: &mut usize,
+    ) -> Result<Vec<u64>, AlgebraicError> {
         if max_elements == 0
             || max_elements > self.capacity()
             || max_elements > MAX_LOCAL_SKETCH_DECODE_CAPACITY
@@ -518,10 +537,11 @@ impl SyndromeSketch {
         {
             return Err(AlgebraicError::InvalidSketchCapacity);
         }
+        let mut remaining = budget;
         let decoded = super::pinsketch::decode_with_budget(
             &self.coordinates[..max_elements],
             max_elements,
-            budget,
+            &mut remaining,
         )?;
         self.validate_decoded_overflow(decoded)
     }

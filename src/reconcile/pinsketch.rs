@@ -64,10 +64,14 @@ pub(crate) fn decode(
     Ok(roots)
 }
 
+/// Like [`decode`], but draws factoring work from `budget` and leaves the
+/// unspent remainder in it, so a caller decoding multiple sketches can share
+/// one budget across all of them instead of each call getting its own
+/// implicit ceiling.
 pub(crate) fn decode_with_budget(
     odd_syndromes: &[u64],
     max_elements: usize,
-    mut budget: usize,
+    budget: &mut usize,
 ) -> Result<Vec<u64>, AlgebraicError> {
     let all = reconstruct_syndromes(odd_syndromes);
     let mut locator = berlekamp_massey(&all, max_elements).ok_or(AlgebraicError::DecodeFailure)?;
@@ -80,7 +84,7 @@ pub(crate) fn decode_with_budget(
         .checked_sub(1)
         .ok_or(AlgebraicError::DecodeFailure)?;
     let mut roots = Vec::with_capacity(expected);
-    find_roots_with_budget(locator, &mut roots, &mut budget)?;
+    find_roots_with_budget(locator, &mut roots, budget)?;
     if roots.len() != expected || roots.contains(&0) {
         return Err(AlgebraicError::DecodeFailure);
     }
@@ -427,6 +431,26 @@ fn factor_trial_cost_with_basis(degree: usize) -> Option<usize> {
     trace_cost.checked_add(gcd_cost)?.checked_add(div_cost)
 }
 
+/// Upper bound on the work one `find_roots_with_budget` call can need for a
+/// locator of degree `degree`, covering the basis build plus a full
+/// `FACTOR_TRIALS`-trial ladder at that degree alone.
+///
+/// This deliberately does **not** try to bound the cost of the recursive
+/// splits below the root -- that recursion has no proven worst-case bound
+/// (see `MAX_FACTOR_WORK`'s comment). It exists so a caller decoding many
+/// sketches under one shared budget (`triage::decode_bucket_sketches`) can
+/// clamp how much of that shared budget any single sketch's decode is
+/// allowed to draw, so one pathological sketch can't starve the rest of a
+/// batch by exhausting the shared pool before later, cheaper sketches are
+/// even attempted. A sketch whose own recursion exceeds this ceiling will
+/// simply hit `BudgetExhausted` for its own allotment -- which is the
+/// intended outcome here, not a bug in this bound.
+pub(crate) fn single_call_work_ceiling(degree: usize) -> Option<usize> {
+    let basis = frobenius_basis_cost(degree)?;
+    let ladder = factor_trial_cost_with_basis(degree)?.checked_mul(FACTOR_TRIALS)?;
+    basis.checked_add(ladder)
+}
+
 fn find_roots_with_budget(
     poly: Polynomial,
     roots: &mut Vec<u64>,
@@ -640,7 +664,13 @@ mod tests {
 
     #[test]
     fn maximum_degree_trace_exceeds_the_absolute_work_budget() {
+        // The one-time basis build alone already exceeds the budget at
+        // this degree (per-trial cost is deliberately small -- that's the
+        // whole point of the precompute -- so it wouldn't on its own).
         assert!(frobenius_basis_cost(1_000).unwrap() > MAX_FACTOR_WORK);
+        // The combined single-call ceiling (basis + full trial ladder)
+        // pins both halves of the cost model together.
+        assert!(single_call_work_ceiling(1_000).unwrap() > MAX_FACTOR_WORK);
     }
 
     #[test]
