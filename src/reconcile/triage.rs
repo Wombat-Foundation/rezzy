@@ -276,9 +276,19 @@ pub fn decode_bucket_sketches(
         let allowance = budget.min(ceiling);
         let mut remaining = allowance;
         let result = sketch.decode_elements_with_shared_budget(request.capacity, &mut remaining);
-        // `remaining <= allowance` always; the subtraction is the portion
-        // of the allowance this bucket actually spent.
-        budget = budget.saturating_sub(allowance.saturating_sub(remaining));
+        // `remaining` only ever decreases from `allowance` (budgeted
+        // decoders only subtract) and `allowance <= budget` by
+        // construction above, so both `checked_sub`s below are provably
+        // non-underflowing -- not merely saturating-safe. Propagating
+        // `BudgetExhausted` rather than `.expect`-panicking on a should-
+        // never-happen violation matches this function's existing
+        // checked-arithmetic style.
+        let spent = allowance
+            .checked_sub(remaining)
+            .ok_or(AlgebraicError::BudgetExhausted)?;
+        budget = budget
+            .checked_sub(spent)
+            .ok_or(AlgebraicError::BudgetExhausted)?;
         match result {
             Ok(roots) => successful_buckets.push(BucketDecodeSuccess {
                 depth: request.depth,
