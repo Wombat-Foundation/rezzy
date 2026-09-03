@@ -18,6 +18,26 @@ use alloc::collections::VecDeque;
 /// Paired with [`MAX_BUCKETED_SKETCH_CAPACITY`], the default 20-round limit yields a
 /// default operating point of ~82,000 differing elements before falling back to
 /// extremity-based frame diffing under default client policy.
+// TODO(prefix-grinding): this round budget is also the thing an attacker
+// who can get ground events into the symmetric difference (see
+// `ElementHash::from_digest32`'s doc comment in algebraic.rs for the
+// precondition and the placement-key fix under consideration for
+// 4511-C) reliably exhausts on a crafted bucket, forcing
+// `ClientAction::ExtremityDiff` for that region every time two servers
+// reconcile it. Bounded (falls back rather than hanging), but not free,
+// and the cost recurs across sessions, not just the one under attack.
+//
+// A cheap client-side mitigation needs no placement fix at all: detect
+// no-progress rather than counting rounds blindly. If a bucket fails and
+// splitting it produces a child that still contains the *entire* failing
+// population (no sibling bucket yielded any roots), splitting further
+// won't help -- bail to `ExtremityDiff` after 2-3 such rounds instead of
+// riding out all 20. Purely local, no wire change, no MSC. It caps the
+// damage from 20 wasted rounds per reconciliation down to ~2-3 while the
+// placement-key question above gets designed properly; it doesn't fix
+// the exposure, since the underlying bucket can still be found and
+// re-targeted, just makes exploiting it cheaper to detect and cheaper to
+// give up on.
 pub const MAX_RECONCILIATION_ROUNDS: usize = 20;
 /// Maximum number of bucket requests emitted in one reconciliation round.
 pub const MAX_BUCKETS_PER_ROUND: usize = 128;

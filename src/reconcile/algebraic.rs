@@ -77,6 +77,66 @@ pub struct ElementHash {
 }
 
 impl ElementHash {
+    // TODO(prefix-grinding): `h64` is derived unkeyed from the element
+    // digest below. For V3/V4+ Matrix event IDs the digest *is* a content
+    // hash the event's author controls (message body, custom content keys,
+    // timestamp within clock-skew tolerance all give grinding room), so an
+    // attacker with grinding room can search offline for events whose h64
+    // shares a long common prefix -- roughly 2^k SHA-256/BLAKE-family
+    // hashes for k bits, i.e. seconds of commodity CPU for k in the
+    // mid-20s. Note this needs more than "can post events": an event that
+    // replicated normally is present in both sides' sets and cancels out
+    // of the symmetric difference, so it never reaches the bucket splitter
+    // at all. The attacker needs the ground events to actually be *in* the
+    // difference at reconciliation time -- e.g. selective federation, or
+    // an attacker-operated homeserver that delivers them to some peers and
+    // withholds them from others. A materially lower bar than compromising
+    // a server, but a different (and narrower) threat model than "any room
+    // member," and worth stating precisely before this goes into 4511-C.
+    //
+    // Given that precondition, `client.rs`'s bucket splitter descends one
+    // h64 bit per round (`bucket_range_start`/the depth-increment in
+    // `select_action`) over `MAX_RECONCILIATION_ROUNDS` (20) rounds before
+    // giving up to `ClientAction::ExtremityDiff`, so a ~20+ bit shared
+    // prefix reliably exhausts every round on that bucket before any real
+    // split happens. This isn't a one-off cost either: h64 is fixed
+    // forever once an event exists, so a single grinding pass taxes
+    // *every future* pairwise reconciliation of the room that touches
+    // those events (subject to the withholding precondition above), on
+    // any pair of servers, indefinitely -- not just the session the
+    // attacker ran it against.
+    //
+    // The fix from the literature (Yang et al., "Practical Rateless Set
+    // Reconciliation" §4.3) is a keyed hash (e.g. SipHash) negotiated
+    // per-session so placement isn't predictable offline. That is NOT a
+    // drop-in here: `ResidentKernel` (resident.rs) is deliberately a
+    // server-local structure built once and incrementally maintained
+    // across the room's lifetime, then reused to serve *any* peer that
+    // reconciles against it -- the whole point is amortizing the
+    // build cost across many peers/sessions rather than rebuilding
+    // per-session. Keying `h64` per-session breaks that: the bucket
+    // geometry (and therefore the resident trie's shape) would become
+    // session-specific, so the server would need either a separate
+    // resident structure per active peer (defeats the amortization this
+    // module exists for) or a coarser shared secret.
+    //
+    // A *static* room-scoped key doesn't solve it: the realistic
+    // adversary is a room member grinding their own event content, and a
+    // static room-scoped key is known to every room member by
+    // construction. But what defeats grinding isn't secrecy of the key --
+    // it's unpredictability at authoring time. Event IDs (and therefore
+    // h64) are fixed when the event is created; if the placement key
+    // didn't exist yet, no amount of offline grinding could have targeted
+    // it. A room-scoped key that *rotates on an epoch* is still public to
+    // every member and still defeats precomputation, because a
+    // pre-ground event lands in an unpredictable bucket after the next
+    // rotation. That preserves `ResidentKernel`'s amortization within an
+    // epoch (one rebuild per rotation, not per session) -- a materially
+    // different, more promising tradeoff than per-session keying. Needs
+    // an MSC-level design decision (epoch-rotated placement key vs.
+    // accepting the bounded liveness cost and documenting it, informed by
+    // the client-side mitigation noted on `MAX_RECONCILIATION_ROUNDS` in
+    // client.rs), not a code-level patch -- see 4511-C.
     /// Derives the MSC4521 profile truncations from a canonical 32-byte element digest.
     #[must_use]
     pub fn from_digest32(digest: [u8; 32]) -> Self {
