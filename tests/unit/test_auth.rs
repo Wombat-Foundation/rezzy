@@ -780,11 +780,22 @@ fn test_iterative_auth_chain() {
 /// caller's own ingest-time filtering already did.
 #[test]
 fn test_iterative_auth_chain_rejects_foreign_room_auth_event() {
-    let room_a = rezzy::RoomId::new("!room_a:example.com");
-    let room_b = rezzy::RoomId::new("!room_b:example.com");
+    // Rule 1.2 (V12+): a create event's declared room_id, if present, must
+    // decode (URL-safe base64, 32 bytes) to the same hash as its own event
+    // ID -- not an arbitrary domain-based string. These are real (if
+    // arbitrarily chosen) SHA-256("create")/SHA-256("foreign_create")
+    // encodings, each event ID paired with its own hash as room_id, so this
+    // test isolates what it actually exercises (Rule 2.5's foreign-room
+    // citation check) rather than incidentally tripping Rule 1.2 too.
+    const CREATE_HASH: &str = "-ohHsMMxgyc_WUVQizHDIIqeTs5YykcjOgVijY26N5k";
+    const FOREIGN_CREATE_HASH: &str = "ju2Ka1qTT_eyg0rrinA-KIQTAOpYEUnJFIcQ4jk1zqc";
+    let create_id = format!("${CREATE_HASH}");
+    let foreign_create_id = format!("${FOREIGN_CREATE_HASH}");
+    let room_a = rezzy::RoomId::new(format!("!{CREATE_HASH}"));
+    let room_b = rezzy::RoomId::new(format!("!{FOREIGN_CREATE_HASH}"));
 
     let mut create = make_event(
-        "$create",
+        &create_id,
         "m.room.create",
         Some(""),
         "@alice:example.com",
@@ -799,7 +810,7 @@ fn test_iterative_auth_chain_rejects_foreign_room_auth_event() {
     // exactly one thing: does citing it from a different-room event trip
     // rule 2.5.
     let mut foreign_create = make_event(
-        "$foreign_create",
+        &foreign_create_id,
         "m.room.create",
         Some(""),
         "@mallory:example.com",
@@ -815,7 +826,7 @@ fn test_iterative_auth_chain_rejects_foreign_room_auth_event() {
         json!({"body": "hello"}),
     );
     msg.room_id = Some(room_a);
-    msg.auth_events = vec!["$create".into(), "$foreign_create".into()];
+    msg.auth_events = vec![create_id.clone(), foreign_create_id.clone()];
 
     let (accepted, rejected) = check_auth_chain(
         &[create, foreign_create, msg],
@@ -825,7 +836,7 @@ fn test_iterative_auth_chain_rejects_foreign_room_auth_event() {
 
     assert_eq!(
         accepted,
-        vec!["$create", "$foreign_create"],
+        vec![create_id.clone(), foreign_create_id.clone()],
         "both independent create events pass their own auth check"
     );
     assert_eq!(rejected.len(), 1);
@@ -834,9 +845,9 @@ fn test_iterative_auth_chain_rejects_foreign_room_auth_event() {
         matches!(
             &rejected[0].1,
             rezzy::auth::AuthError::ForeignRoomEvent { event_id, auth_event_id, .. }
-                if event_id == "$msg" && auth_event_id == "$foreign_create"
+                if event_id == "$msg" && *auth_event_id == foreign_create_id
         ),
-        "expected ForeignRoomEvent citing $foreign_create, got {:?}",
+        "expected ForeignRoomEvent citing {foreign_create_id}, got {:?}",
         rejected[0].1
     );
 }
