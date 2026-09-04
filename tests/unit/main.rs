@@ -1,12 +1,12 @@
 //! Merged entry point for the ungated integration test files.
 //!
-//! These 19 files (18 test files + the `differential_harness` module) used to
+//! These 20 files (19 test files + the `differential_harness` module) used to
 //! each be their own `[[test]]` target (each a separately-compiled-and-linked
 //! binary). None of them need distinct `required-features`, so there's no
 //! reason for them to pay a separate link cost each: folding them into
 //! submodules of one binary cuts the number of link steps
 //! `cargo test`/`cargo build --tests` does for the default feature set from
-//! 19 down to 1.
+//! 20 down to 1.
 //!
 //! Files that still have their own `required-features` (`test_snapshots`,
 //! `stress_large_rooms`, `stress_unredacted_lounge`, `test_main`,
@@ -22,7 +22,7 @@
 //! `src/bin/<name>/main.rs` uses for binaries with submodules. Cargo's
 //! `tests/*.rs` autodiscovery doesn't reach into `tests/unit/` at all, so
 //! this target needs one explicit `[[test]]` entry in `Cargo.toml` (the
-//! only one of these 19 files that does).
+//! only one of these 20 files that does).
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 // Declared once here rather than separately by each child module below --

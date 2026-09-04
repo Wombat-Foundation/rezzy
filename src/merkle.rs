@@ -273,11 +273,17 @@ pub fn root(fields: &[Field]) -> Result<Hash, MerkleError> {
 /// `sender_domain`, `type`, `state_key`, `redacts`, `depth`, and
 /// `origin_server_ts`. Missing optional fields are encoded as `null`.
 ///
+/// Returns the typed [`EventHeaderRoot`] rather than a bare [`tyalias@Hash`] --
+/// this root's only legitimate use is as an [`event_root`] component, so
+/// requiring the wrapper at the source keeps a caller from being able to
+/// treat it as a proof of anything before it is actually folded into a
+/// signed event.
+///
 /// # Errors
 ///
 /// Returns a [`MerkleError`] if one of the header fields cannot be canonically
 /// encoded.
-pub fn header_root(header: &Header) -> Result<Hash, MerkleError> {
+pub fn header_root(header: &Header) -> Result<EventHeaderRoot, MerkleError> {
     root(&[
         Field::new("depth", Value::from(header.depth)),
         Field::new("origin_server_ts", Value::from(header.origin_server_ts)),
@@ -297,6 +303,7 @@ pub fn header_root(header: &Header) -> Result<Hash, MerkleError> {
         ),
         Field::new("type", Value::from(header.event_type.clone())),
     ])
+    .map(EventHeaderRoot)
 }
 
 /// Computes SHA3-256("msc4511:root:v1" || `prev_events_hash` ||

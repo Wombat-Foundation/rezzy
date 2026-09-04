@@ -49,7 +49,12 @@ pub struct SignedAttestation {
     pub signature: [u8; 64],
 }
 
-fn envelope_bytes(root: UnsignedRoot, algorithm: &str, count: u64, signer: &str) -> Vec<u8> {
+fn envelope_bytes(
+    root: UnsignedRoot,
+    algorithm: &str,
+    count: u64,
+    signer: &str,
+) -> Result<Vec<u8>, crate::merkle::MerkleError> {
     let value = json!({
         "algorithm": algorithm,
         "count": count,
@@ -58,18 +63,14 @@ fn envelope_bytes(root: UnsignedRoot, algorithm: &str, count: u64, signer: &str)
     });
     // `algorithm`/`root`/`signer` are always strings, and `count` fits
     // Matrix's canonical-integer range for any trie/state-map size that will
-    // ever exist in practice (2^53-1 leaves). If this ever *does* fail
-    // (e.g. a caller passes a `count` from a corrupted/adversarial upstream
-    // computation rather than an actual trie size), falling back to `b""`
-    // would be a real cryptographic hazard, not a graceful degradation:
-    // Ed25519 is deterministic, so both `sign_attestation` and
-    // `verify_attestation` would silently operate over the same empty
-    // message regardless of the real root/count/algorithm/signer, making
-    // any two such attestations from the same key interchangeable. Fail
-    // loudly instead.
-    crate::merkle::canonical_json(&value).expect(
-        "attestation envelope is fixed-shape String/u64/base64 fields, always canonicalizable",
-    )
+    // ever exist in practice (2^53-1 leaves). A `count` outside that range
+    // can only arrive via `verify_attestation`, where it is attacker-
+    // controlled (deserialized from a `SignedAttestation` presented by
+    // whoever we're verifying against) -- so this returns `Err` rather than
+    // panicking, and callers that know their `count` is locally trusted
+    // (`sign_attestation`) are the ones that turn it into a fail-loud
+    // `expect`.
+    crate::merkle::canonical_json(&value)
 }
 
 /// Signs `root` with `key`, producing a [`SignedAttestation`] a holder of
@@ -78,6 +79,14 @@ fn envelope_bytes(root: UnsignedRoot, algorithm: &str, count: u64, signer: &str)
 /// This is the tool (or whichever process holds `key`) vouching for `root`
 /// as a responder -- see the module docs for what that guarantees and, more
 /// importantly, what it does not.
+///
+/// # Panics
+///
+/// Panics if `count` falls outside Matrix's canonical-integer range
+/// (`2^53-1`). `count` is expected to be a locally-computed trie/state-map
+/// size, never attacker-controlled input -- see [`verify_attestation`],
+/// which faces the same encoding step with adversarial input and returns
+/// `Err` instead.
 #[must_use]
 pub fn sign_attestation(
     root: UnsignedRoot,
@@ -86,7 +95,9 @@ pub fn sign_attestation(
     signer: &str,
     key: &SigningKey,
 ) -> SignedAttestation {
-    let message = envelope_bytes(root, algorithm, count, signer);
+    let message = envelope_bytes(root, algorithm, count, signer).expect(
+        "attestation envelope is fixed-shape String/u64/base64 fields, always canonicalizable for a trusted, locally-computed count",
+    );
     let signature = key.sign(&message).to_bytes();
     SignedAttestation {
         root,
@@ -119,7 +130,8 @@ pub fn verify_attestation(
         &attestation.algorithm,
         attestation.count,
         &attestation.signer,
-    );
+    )
+    .map_err(|e| alloc::format!("attestation envelope cannot be canonicalized: {e}"))?;
     let signature = Signature::from_bytes(&attestation.signature);
     key.verify_strict(&message, &signature)
         .map_err(|e| alloc::format!("attestation signature verification failed: {e}"))

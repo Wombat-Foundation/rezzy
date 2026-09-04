@@ -1,6 +1,6 @@
 use rezzy::merkle::{
-    self, AuthEventsHash, ContentHash, EventHeaderRoot, Field, Header, MerkleError,
-    OtherSignedFieldsHash, PrevEventsHash, Side,
+    self, AuthEventsHash, ContentHash, Field, Header, MerkleError, OtherSignedFieldsHash,
+    PrevEventsHash, Side,
 };
 use serde_json::{json, Value};
 use std::fmt::Write;
@@ -161,7 +161,7 @@ fn header_root_uses_null_for_missing_optional_fields() {
     .unwrap();
 
     assert_eq!(
-        hex(root),
+        hex(root.0),
         "db91cc8e8d3eb0d13885c32f28dbd4215a111081383e25263749c65d9bf8bc37"
     );
 }
@@ -189,7 +189,7 @@ fn event_root_and_id_stable_vector() {
     let root = merkle::event_root(
         PrevEventsHash(prev),
         AuthEventsHash(auth),
-        EventHeaderRoot(header),
+        header,
         ContentHash(content),
         OtherSignedFieldsHash(other),
     );

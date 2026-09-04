@@ -179,11 +179,12 @@ authorization rules. Three distinct rule sets exist:
   check (see row 2.5 above) and the V12 row-2 check
   (`check_room_id_matches_accepted_create`) are therefore both opt-in — they
   only fire when the citing/checked event's own `room_id` is `Some`, and never
-  fire for `None`. Both checks are implemented (rows 1.2, 2, and 2.5 above are
-  all `[x]`); the gap is that a caller has to actually pass `room_id` for the
-  check to fire at all. Separately, even with tagging, checking a _cited auth
-  event's_ `room_id` (not the citing event's own) requires that auth event to
-  already be fetched, parsed, and trusted — reading its `room_id` off an
+  fire for `None`. Both checks are implemented (rows 1.2 and 2 above are `[x]`;
+  row 2.5 is `[~]` for the reason given in its own row -- the opt-in gap
+  described here); the gap is that a caller has to actually pass `room_id` for
+  the check to fire at all. Separately, even with tagging, checking a _cited
+  auth event's_ `room_id` (not the citing event's own) requires that auth event
+  to already be fetched, parsed, and trusted — reading its `room_id` off an
   unverified PDU wouldn't be meaningfully stronger than not checking at all,
   since nothing makes that field authoritative on its own. Closing that side
   cryptographically would need MSC4511C Part C's compact per-field proof (a
