@@ -82,16 +82,20 @@ jobs:
             git push
           fi
 
-      # Requires the repo's Pages source (Settings → Pages) to deploy from the
-      # `gh-pages` branch, not "GitHub Actions" — this commits to that branch
-      # rather than calling actions/deploy-pages. The `gh-pages` branch
-      # already exists with published docs, so this is confirmed as the
-      # active configuration, not a pending change.
+      - name: Prepare flat deploy directory
+        run: |
+          cp -a target/doc _site
+          cp -a _site/rezzy/. _site/
+          rm -rf _site/rezzy
+          find _site \( -name '*.html' -o -name '*.js' \) -print0 | xargs -0 perl -pi -e \
+            's{(href|src|content|data-[a-z-]+)="((?:\.\./)+)}{ my $n = length($2)/3; my $p = $n > 1 ? "../" x ($n-1) : "./"; $1 . "=\"" . $p }ge'
+          find _site \( -name '*.html' -o -name '*.js' \) -print0 | xargs -0 sed -i 's|rezzy/index\.html|index.html|g'
+
       - name: Publish to gh-pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
-          publish_dir: target/doc
+          publish_dir: _site
           destination_dir: ${{ steps.dest.outputs.dir == 'dev' && 'dev' || '' }}
           keep_files: true

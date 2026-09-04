@@ -18,10 +18,10 @@ format: ##H Format codebase (Rust + Lean + scripts)
 	-prettier -w $$(git ls-files '.*md' '*.y*ml' '.*json' .prettierrc)
 	-markdownlint $$(git ls-files '*.md')
 	-pre-commit run --all-files
+	$(CARGO) sort --workspace --grouped
 	-black $(LINT_LOCS_PY)
 	-isort $(LINT_LOCS_PY)
 	-shfmt -w $(LINT_LOCS_SH)
-	$(CARGO) sort --workspace --grouped
 
 .PHONY: fix
 fix:	##H Clippy auto-fix
@@ -30,6 +30,7 @@ fix:	##H Clippy auto-fix
 
 .PHONY: lint
 lint: ##H Run all linters
+	-shellcheck $(LINT_LOCS_SH)
 	$(CARGO) clippy --all-targets $(CARGO_FEATURE_ARGS)
 
 .PHONY: doc rust/doc
