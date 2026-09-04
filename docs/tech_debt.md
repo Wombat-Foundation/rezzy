@@ -193,8 +193,8 @@ a dependency, before attempting this.
 `EventType::from(ev.event_type.as_str())` once to build the gate set, then again
 later when actually inserting into `resolved`. Cheap for well-known types, a
 duplicate `Arc<str>` heap allocation per conflicted event for
-`EventType::Custom` (each call independently allocates its own `Arc<str>`
-rather than sharing one). Fix means threading the already-interned `EventType`
+`EventType::Custom` (each call independently allocates its own `Arc<str>` rather
+than sharing one). Fix means threading the already-interned `EventType`
 alongside each event through `route_power_events`/`power_events`/
 `non_power_events` (currently keyed by `Id` only) instead of re-deriving it.
 

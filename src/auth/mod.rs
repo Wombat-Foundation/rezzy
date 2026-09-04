@@ -3127,13 +3127,13 @@ mod tests {
         create.room_id = Some("!wrongvalue".into());
 
         let sorted_events = vec![create];
-        let (accepted, rejected) = check_auth_chain(
-            &sorted_events,
-            &RoomState::new(),
-            StateResVersion::V2_1,
-        );
+        let (accepted, rejected) =
+            check_auth_chain(&sorted_events, &RoomState::new(), StateResVersion::V2_1);
 
-        assert!(accepted.is_empty(), "mismatched room_id must not be accepted: {accepted:?}");
+        assert!(
+            accepted.is_empty(),
+            "mismatched room_id must not be accepted: {accepted:?}"
+        );
         assert!(
             rejected
                 .iter()
@@ -3156,11 +3156,8 @@ mod tests {
         create.room_id = Some("!abcHASHpart".into());
 
         let sorted_events = vec![create];
-        let (accepted, rejected) = check_auth_chain(
-            &sorted_events,
-            &RoomState::new(),
-            StateResVersion::V2_1,
-        );
+        let (accepted, rejected) =
+            check_auth_chain(&sorted_events, &RoomState::new(), StateResVersion::V2_1);
 
         assert!(
             rejected.is_empty(),

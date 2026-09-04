@@ -22,22 +22,19 @@ use alloc::collections::VecDeque;
 // who can get ground events into the symmetric difference (see
 // `ElementHash::from_digest32`'s doc comment in algebraic.rs for the
 // precondition and the placement-key fix under consideration for
-// 4511-C) reliably exhausts on a crafted bucket, forcing
+// 4511-C) could otherwise exhaust on a crafted bucket, forcing
 // `ClientAction::ExtremityDiff` for that region every time two servers
-// reconcile it. Bounded (falls back rather than hanging), but not free,
+// reconcile it -- bounded (falls back rather than hanging), but not free,
 // and the cost recurs across sessions, not just the one under attack.
 //
-// A cheap client-side mitigation needs no placement fix at all: detect
-// no-progress rather than counting rounds blindly. If a bucket fails and
-// splitting it produces a child that still contains the *entire* failing
-// population (no sibling bucket yielded any roots), splitting further
-// won't help -- bail to `ExtremityDiff` after 2-3 such rounds instead of
-// riding out all 20. Purely local, no wire change, no MSC. It caps the
-// damage from 20 wasted rounds per reconciliation down to ~2-3 while the
-// placement-key question above gets designed properly; it doesn't fix
-// the exposure, since the underlying bucket can still be found and
-// re-targeted, just makes exploiting it cheaper to detect and cheaper to
-// give up on.
+// `BucketExchange::advance`'s no-progress detection (see its doc comment,
+// `MAX_NO_PROGRESS_ROUNDS`) now closes the round-budget half of this: it
+// caps the damage from riding out all 20 rounds down to ~3, purely
+// client-side, no wire change, no MSC. It does not fix the exposure
+// itself -- the underlying bucket can still be found and re-targeted on
+// the next reconciliation, since placement is still predictable -- only
+// the placement-key redesign above (still open, tracked against 4511-C)
+// closes that.
 pub const MAX_RECONCILIATION_ROUNDS: usize = 20;
 /// Maximum number of bucket requests emitted in one reconciliation round.
 pub const MAX_BUCKETS_PER_ROUND: usize = 128;
@@ -112,6 +109,14 @@ pub enum ClientAction {
     ResolveRoots { roots: alloc::vec::Vec<u64> },
 }
 
+/// Consecutive no-progress rounds (see `BucketExchange::advance`'s doc
+/// comment) tolerated before bailing to `ClientAction::ExtremityDiff`
+/// early, instead of riding out the full `max_rounds` budget. Small and
+/// fixed rather than configurable: this is a cheap circuit breaker, not a
+/// policy knob, and a caller that wants a different threshold can still
+/// reach it via `max_rounds` itself.
+const MAX_NO_PROGRESS_ROUNDS: usize = 3;
+
 /// Stateful bucket exchange planner that carries deferred frontier nodes across rounds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BucketExchange {
@@ -122,6 +127,11 @@ pub struct BucketExchange {
     max_buckets_per_round: usize,
     max_aggregate_capacity: usize,
     max_pending_requests: usize,
+    /// Consecutive rounds in which every split-child failure came back
+    /// with its sibling either also failing or resolving zero roots --
+    /// i.e. splitting moved nothing. Reset to 0 whenever any bucket
+    /// resolves a nonzero root. See `advance`'s doc comment.
+    no_progress_rounds: usize,
 }
 
 impl BucketExchange {
@@ -141,6 +151,7 @@ impl BucketExchange {
             max_buckets_per_round,
             max_aggregate_capacity: max_aggregate_capacity.min(MAX_BUCKETED_SKETCH_CAPACITY),
             max_pending_requests: max_rounds.saturating_mul(max_buckets_per_round),
+            no_progress_rounds: 0,
         }
     }
 
@@ -196,6 +207,23 @@ impl BucketExchange {
     ///
     /// The planner keeps deferred children in a pending frontier rather than aborting when a
     /// single round hits the per-round bucket cap.
+    ///
+    /// Detects lack of progress and bails to [`ClientAction::ExtremityDiff`]
+    /// after a few consecutive rounds of it (an internal, unexported
+    /// constant), rather than
+    /// always riding out the full `max_rounds` budget. `retry_or_split_bucket`
+    /// always emits a failed bucket's two split children together (same
+    /// depth, prefixes `p<<1` and `(p<<1)|1`), so a failed bucket whose
+    /// sibling (found via `previous_requests`, this round's submission) also
+    /// failed or resolved zero roots means the split moved nothing -- the
+    /// whole difference is still on one side, and further splits are very
+    /// unlikely to help either. This is a global signal, not per split-chain:
+    /// coarser than tracking each lineage individually, but enough to cap the
+    /// cost of an adversary who can keep a crafted difference on one side of
+    /// every split (see `ElementHash::from_digest32`'s doc comment in
+    /// algebraic.rs, and the TODO on `MAX_RECONCILIATION_ROUNDS` above, for
+    /// that scenario). Any bucket resolving a nonzero root resets the
+    /// counter.
     #[must_use]
     pub fn advance(
         &mut self,
@@ -209,6 +237,35 @@ impl BucketExchange {
         } = batch;
 
         let had_failures = !failed_buckets.is_empty();
+
+        let any_nonempty_success = successful_buckets.iter().any(|s| !s.roots.is_empty());
+        let is_split_sibling_of = |depth: u8, prefix: u64| {
+            previous_requests
+                .iter()
+                .any(|r| r.depth == depth && r.prefix == (prefix ^ 1))
+        };
+        let mut saw_split_failure = false;
+        let all_split_failures_stalled = failed_buckets.iter().all(|&(depth, prefix)| {
+            if !is_split_sibling_of(depth, prefix) {
+                // Not a split child this round (a solo capacity retry, or a
+                // first-round request) -- has no sibling to compare against,
+                // so it neither confirms nor denies stall.
+                return true;
+            }
+            saw_split_failure = true;
+            let sibling_prefix = prefix ^ 1;
+            !successful_buckets
+                .iter()
+                .any(|s| s.depth == depth && s.prefix == sibling_prefix && !s.roots.is_empty())
+        });
+        if saw_split_failure && all_split_failures_stalled && !any_nonempty_success {
+            self.no_progress_rounds = self.no_progress_rounds.saturating_add(1);
+        } else {
+            self.no_progress_rounds = 0;
+        }
+        if self.no_progress_rounds >= MAX_NO_PROGRESS_ROUNDS {
+            return ClientAction::ExtremityDiff;
+        }
 
         for success in successful_buckets {
             self.accumulated_roots.extend(success.roots);
@@ -1045,6 +1102,80 @@ mod tests {
             ClientAction::ResolveRoots {
                 roots: vec![99, 42]
             }
+        );
+    }
+
+    /// Coverage: `BucketExchange::advance`'s no-progress detection. A
+    /// bucket that keeps splitting with the entire failing population
+    /// staying on one side (the sibling always resolves zero roots) must
+    /// bail to `ExtremityDiff` after `MAX_NO_PROGRESS_ROUNDS`, well before
+    /// `max_rounds` -- the scenario an attacker who can predict h64
+    /// placement (see `ElementHash::from_digest32`'s doc comment in
+    /// algebraic.rs) can otherwise force.
+    #[test]
+    fn bucket_exchange_bails_after_consecutive_no_progress_splits() {
+        let mut exchange = BucketExchange::new(
+            vec![],
+            MAX_RECONCILIATION_ROUNDS,
+            MAX_BUCKETS_PER_ROUND,
+            MAX_BUCKETED_SKETCH_CAPACITY,
+        );
+
+        // Round 1: a single bucket at max capacity fails outright, forcing
+        // an immediate depth split (no sibling exists yet this round).
+        let mut previous_requests = vec![BucketRequest::new(7, 0, MAX_BUCKET_SKETCH_CAPACITY)];
+        let mut action = exchange.advance(
+            BucketDecodeBatch {
+                successful_buckets: vec![],
+                failed_buckets: vec![(7, 0)],
+            },
+            &previous_requests,
+            Some(u64::MAX / 2),
+        );
+
+        // Rounds 2..: every split's "left" child keeps failing, and its
+        // sibling "right" child keeps succeeding with zero roots -- the
+        // whole population stays put, nothing separates out.
+        let mut rounds = 1;
+        while let ClientAction::BucketSketches { requests, .. } = &action {
+            assert_eq!(
+                requests.len(),
+                2,
+                "each stalled split should re-emit exactly two children"
+            );
+            let left = requests[0];
+            let right = requests[1];
+            previous_requests = requests.clone();
+            action = exchange.advance(
+                BucketDecodeBatch {
+                    successful_buckets: vec![super::super::triage::BucketDecodeSuccess {
+                        depth: right.depth,
+                        prefix: right.prefix,
+                        roots: vec![],
+                    }],
+                    failed_buckets: vec![(left.depth, left.prefix)],
+                },
+                &previous_requests,
+                Some(u64::MAX / 2),
+            );
+            rounds += 1;
+            assert!(
+                rounds < MAX_RECONCILIATION_ROUNDS,
+                "no-progress detection should bail well before max_rounds \
+                 ({MAX_RECONCILIATION_ROUNDS}); still going at round {rounds}: {action:?}"
+            );
+        }
+
+        assert_eq!(
+            action,
+            ClientAction::ExtremityDiff,
+            "a persistently stalled split must bail to ExtremityDiff, not keep splitting: \
+             stopped after {rounds} rounds"
+        );
+        assert!(
+            rounds <= MAX_NO_PROGRESS_ROUNDS.saturating_add(2),
+            "should bail within a couple rounds of the {MAX_NO_PROGRESS_ROUNDS}-round \
+             threshold, not ride out most of max_rounds; took {rounds} rounds"
         );
     }
 
