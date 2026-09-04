@@ -384,7 +384,12 @@ fn test_walk_state_dag_complete_linear_path() {
     events.insert("$join".to_string(), join);
 
     let target_id = "$join".to_string();
-    let result = walk_state_dag(&[&target_id], &events, StateDagWalkOptions::default());
+    let result = walk_state_dag(
+        &[&target_id],
+        &events,
+        StateDagWalkOptions::default(),
+        StateResVersion::V2_2,
+    );
 
     match result {
         StateDagCompleteness::Complete {
@@ -424,7 +429,12 @@ fn test_walk_state_dag_incomplete_missing_gap() {
     events.insert("$join".to_string(), join);
 
     let target_id = "$join".to_string();
-    let result = walk_state_dag(&[&target_id], &events, StateDagWalkOptions::default());
+    let result = walk_state_dag(
+        &[&target_id],
+        &events,
+        StateDagWalkOptions::default(),
+        StateResVersion::V2_2,
+    );
 
     match result {
         StateDagCompleteness::Incomplete {
@@ -467,7 +477,12 @@ fn test_walk_state_dag_incomplete_disconnected_leaf() {
     events.insert("$join".to_string(), join);
 
     let target_id = "$join".to_string();
-    let result = walk_state_dag(&[&target_id], &events, StateDagWalkOptions::default());
+    let result = walk_state_dag(
+        &[&target_id],
+        &events,
+        StateDagWalkOptions::default(),
+        StateResVersion::V2_2,
+    );
 
     match result {
         StateDagCompleteness::Incomplete {

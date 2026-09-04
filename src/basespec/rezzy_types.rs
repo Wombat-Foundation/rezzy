@@ -1446,6 +1446,20 @@ pub trait DagNode {
         &[]
     }
 
+    /// State-predecessor edges at the given room version.
+    ///
+    /// For V2.2 (MSC4242): identical to `prev_state_events()`.
+    /// For V1–V2.1.1: falls back to `prev_events()`, matching the
+    /// MSC4500 `state_predecessors` definition where the general DAG
+    /// predecessor edges double as the state-predecessor relation.
+    fn state_predecessors(&self, version: StateResVersion) -> &[Self::Id] {
+        if version == StateResVersion::V2_2 {
+            self.prev_state_events()
+        } else {
+            self.prev_events()
+        }
+    }
+
     /// `auth_events()`, but empty under [`StateResVersion::V2_2`] (MSC4242).
     ///
     /// Implementations that share one field between `auth_events()` and

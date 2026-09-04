@@ -443,6 +443,7 @@ mod state_dag_branch_coverage_tests {
                 max_steps: None,
                 stop_on_first_missing: true,
             },
+            StateResVersion::V2_2,
         );
         assert!(matches!(
             result,
@@ -467,6 +468,7 @@ mod state_dag_branch_coverage_tests {
                 max_steps: Some(1),
                 stop_on_first_missing: false,
             },
+            StateResVersion::V2_2,
         );
         assert!(matches!(truncated, StateDagCompleteness::Incomplete { .. }));
 
@@ -485,7 +487,8 @@ mod state_dag_branch_coverage_tests {
                 StateDagWalkOptions {
                     max_steps: None,
                     stop_on_first_missing: false,
-                }
+                },
+                StateResVersion::V2_2,
             ),
             StateDagCompleteness::Incomplete { .. }
         ));
@@ -500,7 +503,8 @@ mod state_dag_branch_coverage_tests {
                 StateDagWalkOptions {
                     max_steps: None,
                     stop_on_first_missing: true,
-                }
+                },
+                StateResVersion::V2_2,
             ),
             StateDagCompleteness::Incomplete { .. }
         ));
@@ -519,7 +523,12 @@ mod state_dag_branch_coverage_tests {
             shared.insert(value.event_id.clone(), value);
         }
         assert!(matches!(
-            walk_state_dag(&[&tip.event_id], &shared, StateDagWalkOptions::default()),
+            walk_state_dag(
+                &[&tip.event_id],
+                &shared,
+                StateDagWalkOptions::default(),
+                StateResVersion::V2_2
+            ),
             StateDagCompleteness::Complete {
                 state_event_count: 4,
                 ..
@@ -890,7 +899,11 @@ where
     Ok(())
 }
 
-/// Walks the State DAG backwards via `prev_state_events` starting from `start_events`.
+/// Walks the state-predecessor DAG backwards starting from `start_events`.
+///
+/// For MSC4242 (V2.2) rooms, this follows `prev_state_events` edges. For
+/// earlier room versions, it follows `prev_events` edges as a fallback,
+/// matching the MSC4500 `state_predecessors` definition.
 ///
 /// Verifies that all paths terminate at `m.room.create`. If any path hits an unknown
 /// event ID or non-create leaf, reports the missing events so the host homeserver
@@ -901,6 +914,7 @@ pub fn walk_state_dag<Id, C, S, K>(
     start_events: &[&Id],
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     options: StateDagWalkOptions,
+    version: StateResVersion,
 ) -> StateDagCompleteness<Id>
 where
     Id: EventId,
@@ -960,15 +974,15 @@ where
             continue;
         }
 
-        if ev.prev_state_events().is_empty() {
-            // Non-create event with no prev_state_events is disconnected from create.
+        if ev.state_predecessors(version).is_empty() {
+            // Non-create event with no state predecessors is disconnected from create.
             if disconnected_set.insert(ev.event_id.clone()) {
                 disconnected.push(ev.event_id.clone());
             }
             continue;
         }
 
-        for pe in ev.prev_state_events() {
+        for pe in ev.state_predecessors(version) {
             if !visited.contains(pe) {
                 queue.push_back(pe.clone());
             }
