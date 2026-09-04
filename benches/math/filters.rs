@@ -268,7 +268,7 @@ pub struct RemainderProbeFilter {
 impl RemainderProbeFilter {
     pub fn with_remainder_bits(capacity: usize, remainder_bits: u32) -> Self {
         #[allow(clippy::cast_sign_loss)]
-        let slots = ((capacity as f64 * 1.1).ceil() as usize).max(64);
+        let slots = ((capacity as f64 * 1.5).ceil() as usize).max(64);
         Self {
             rem: vec![0; slots],
             occupied: vec![false; slots],
@@ -288,7 +288,7 @@ impl RemainderProbeFilter {
         let q = ((h & ((1_u64 << (64 - self.remainder_bits)) - 1)) as usize) % self.slots;
 
         let mut pos = q;
-        loop {
+        for _ in 0..self.slots {
             if !self.occupied[pos] {
                 self.rem[pos] = r;
                 self.occupied[pos] = true;
@@ -300,6 +300,7 @@ impl RemainderProbeFilter {
             }
             pos = (pos + 1) % self.slots;
         }
+        false
     }
 
     pub fn contains<T: Hash>(&self, value: &T) -> bool {
@@ -308,7 +309,7 @@ impl RemainderProbeFilter {
         let q = ((h & ((1_u64 << (64 - self.remainder_bits)) - 1)) as usize) % self.slots;
 
         let mut pos = q;
-        loop {
+        for _ in 0..self.slots {
             if !self.occupied[pos] {
                 return false;
             }
@@ -317,6 +318,7 @@ impl RemainderProbeFilter {
             }
             pos = (pos + 1) % self.slots;
         }
+        false
     }
 
     #[allow(dead_code)]
