@@ -25,6 +25,46 @@ const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 /// A SHA3-256 digest.
 pub type Hash = [u8; HASH_SIZE];
 
+/// A Merkle root that nobody has signed.
+///
+/// Every `root()`-shaped function in this module and [`crate::state::merkle`]
+/// (the header tree, the causal sparse Merkle sum trie, the resolved-state
+/// trie) computes a value of this type, not a bare [`tyalias@Hash`]. That is
+/// deliberate, not decorative: per MSC4511C ("Relationship to other
+/// proposals"), a root is only a *proof* of anything -- "this key is/isn't a
+/// member" -- when it is either (a) folded into an `event_root` an event's
+/// sender actually signed (a true MSC4511C Part C proof), or (b) signed
+/// after the fact by whoever computed it, standing behind it as a responder
+/// (a Part B attestation -- see `crate::signing::attest` when the
+/// `signing-dalek` feature is enabled). Neither case is automatic: this type
+/// exists so a caller cannot accidentally hand a bare computed root to code
+/// that presents it as authoritative without having gone through one of
+/// those two steps.
+///
+/// A root computed over event IDs from a room that never adopted MSC4511C
+/// (any room in existence today) can *never* reach case (a) -- nothing signs
+/// a `causal_set`/`state_root` field on those events. It can still reach
+/// case (b): sign this value yourself via `crate::signing::attest::sign_attestation`
+/// and the result is a real, checkable claim -- just a Part B one, only as
+/// trustworthy as that one signer, not a room-participant-committed
+/// guarantee.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UnsignedRoot(pub Hash);
+
+impl UnsignedRoot {
+    /// Unwraps the raw digest.
+    #[must_use]
+    pub const fn into_inner(self) -> Hash {
+        self.0
+    }
+}
+
+impl From<Hash> for UnsignedRoot {
+    fn from(hash: Hash) -> Self {
+        Self(hash)
+    }
+}
+
 /// Errors returned by MSC4511 Merkle and canonical JSON operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MerkleError {
@@ -767,6 +807,16 @@ pub mod causal {
             }
             let keys: Vec<Hash> = self.keys.iter().copied().collect();
             subtree_root(&keys, 0, &empty).0
+        }
+
+        /// Like [`Self::root`], wrapped as an [`super::UnsignedRoot`] -- see
+        /// that type's docs for what a caller needs to do before presenting
+        /// this value as a proof of anything to someone else. Prefer this
+        /// over `root()` at any call site that hands the root outside the
+        /// local process.
+        #[must_use]
+        pub fn unsigned_root(&self) -> super::UnsignedRoot {
+            super::UnsignedRoot(self.root())
         }
     }
 

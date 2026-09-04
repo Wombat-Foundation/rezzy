@@ -128,6 +128,18 @@ impl StateMap {
         subtree(&entries, 0, &empty)
     }
 
+    /// Like [`Self::root`], wrapped as an [`crate::merkle::UnsignedRoot`] --
+    /// see that type's docs for what a caller needs to do before presenting
+    /// this value as a proof of anything to someone else (this crate's own
+    /// "State DAG interaction" text already treats a resolved-state root as
+    /// local/unauthoritative for the identical reason: nothing signs
+    /// `state_root` on any event today). Prefer this over `root()` at any
+    /// call site that hands the root outside the local process.
+    #[must_use]
+    pub fn unsigned_root(&self) -> crate::merkle::UnsignedRoot {
+        crate::merkle::UnsignedRoot(self.root())
+    }
+
     /// Returns an inclusion proof for a resolved-state binding.
     #[must_use]
     pub fn inclusion_proof(

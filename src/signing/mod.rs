@@ -46,6 +46,9 @@ mod dalek;
 #[cfg(any(feature = "signing", feature = "signing-dalek"))]
 pub use dalek::{verify_sequential_strict, DalekVerifier};
 
+#[cfg(any(feature = "signing", feature = "signing-dalek"))]
+pub mod attest;
+
 /// A backend able to verify one Ed25519 signature over a message.
 ///
 /// Implementations hold a set of `(server_name, key_id)` → public key and
