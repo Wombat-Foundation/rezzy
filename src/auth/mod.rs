@@ -2251,7 +2251,10 @@ pub fn check_auth_chain<
     // check below.
     let is_v12_plus = matches!(
         version,
-        StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
+        StateResVersion::V2_1
+            | StateResVersion::V2_1_1
+            | StateResVersion::V2_2
+            | StateResVersion::V3
     );
 
     for event in sorted_events {

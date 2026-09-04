@@ -54,9 +54,14 @@ pub enum StateDagCompleteness<Id> {
     },
     /// The state DAG has missing events or disconnected roots preventing a complete path to `m.room.create`.
     Incomplete {
-        /// Event IDs that are referenced in `prev_state_events` but missing from the local store/map.
+        /// Event IDs that are referenced in the selected state-predecessor
+        /// relation (`prev_state_events` for MSC4242 rooms, `prev_events`
+        /// as a fallback for earlier room versions -- see
+        /// [`state_predecessors`](crate::basespec::rezzy_types::LeanEvent::state_predecessors))
+        /// but missing from the local store/map.
         missing_event_ids: Vec<Id>,
-        /// Non-create event IDs present in the store that have empty `prev_state_events` (disconnected root).
+        /// Non-create event IDs present in the store that have an empty
+        /// state-predecessor set under the selected relation (disconnected root).
         disconnected_event_ids: Vec<Id>,
         /// Discovered reachable event IDs before hitting gaps.
         reachable_event_ids: Vec<Id>,
@@ -1019,7 +1024,7 @@ where
             active.insert(id.clone());
             stack.push((id.clone(), true));
             if let Some(ev) = events_map.get(&id) {
-                for parent in ev.prev_state_events().iter().rev() {
+                for parent in ev.state_predecessors(version).iter().rev() {
                     if reachable_set.contains(parent) {
                         stack.push((parent.clone(), false));
                     }

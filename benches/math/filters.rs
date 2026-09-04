@@ -575,7 +575,8 @@ impl BloomFilter {
     }
 
     fn get_bit(&self, hash: u64, index: u32) -> bool {
-        let bit = (hash.wrapping_add(u64::from(index) * hash.swap_bytes().rotate_left(13))
+        let bit = (hash
+            .wrapping_add(u64::from(index).wrapping_mul(hash.swap_bytes().rotate_left(13)))
             % self.num_bits) as usize;
         let word = bit / 64;
         let offset = bit % 64;
@@ -583,7 +584,8 @@ impl BloomFilter {
     }
 
     fn set_bit(&mut self, hash: u64, index: u32) {
-        let bit = (hash.wrapping_add(u64::from(index) * hash.swap_bytes().rotate_left(13))
+        let bit = (hash
+            .wrapping_add(u64::from(index).wrapping_mul(hash.swap_bytes().rotate_left(13)))
             % self.num_bits) as usize;
         let word = bit / 64;
         let offset = bit % 64;
@@ -624,6 +626,8 @@ impl BloomFilter {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
+    use super::*;
 
     #[test]
     fn cuckoo_insert_and_contains() {
@@ -631,15 +635,15 @@ mod tests {
         let insert_count = 5_000usize;
         let mut f = CuckooFilter::with_fpr(insert_count, 0.001);
         for i in 0..insert_count as u64 {
-            assert!(f.insert(&(i | 1)), "cuckoo insert failed at {i}");
+            assert!(f.insert(&((i << 1) | 1)), "cuckoo insert failed at {i}");
         }
         assert_eq!(f.len(), insert_count, "cuckoo len mismatch");
         for i in 0..insert_count as u64 {
-            assert!(f.contains(&(i | 1)), "cuckoo missing element {i}");
+            assert!(f.contains(&((i << 1) | 1)), "cuckoo missing element {i}");
         }
         let mut false_positives = 0u64;
         for i in insert_count as u64..n {
-            if f.contains(&(i | 1)) {
+            if f.contains(&((i << 1) | 1)) {
                 false_positives += 1;
             }
         }
@@ -664,16 +668,31 @@ mod tests {
         let insert_count = 5_000usize;
         let target_fpr = 0.001;
         let bits = remainder_probe_bits_for_fpr(target_fpr);
+        // The corrected (unsuccessful-search) probe-cost model needs 17 bits
+        // to hit target_fpr=0.001 at this load factor; the buggy
+        // successful-search approximation this regresses against would have
+        // returned 16, which the FPR-ratio assertion below is too loose to
+        // reliably distinguish on its own.
+        assert_eq!(
+            bits, 17,
+            "remainder_probe_bits_for_fpr regressed to the under-provisioned bit count"
+        );
         let mut f = RemainderProbeFilter::with_remainder_bits(insert_count, bits);
         for i in 0..insert_count as u64 {
-            assert!(f.insert(&(i | 1)), "remainder_probe insert failed at {i}");
+            assert!(
+                f.insert(&((i << 1) | 1)),
+                "remainder_probe insert failed at {i}"
+            );
         }
         for i in 0..insert_count as u64 {
-            assert!(f.contains(&(i | 1)), "remainder_probe missing element {i}");
+            assert!(
+                f.contains(&((i << 1) | 1)),
+                "remainder_probe missing element {i}"
+            );
         }
         let mut false_positives = 0u64;
         for i in insert_count as u64..n {
-            if f.contains(&(i | 1)) {
+            if f.contains(&((i << 1) | 1)) {
                 false_positives += 1;
             }
         }
@@ -702,7 +721,7 @@ mod tests {
     fn cuckoo_encode_roundtrips() {
         let mut f = CuckooFilter::with_fpr(50, 0.01);
         for i in 0..30u64 {
-            f.insert(&(i | 1));
+            f.insert(&((i << 1) | 1));
         }
         let bytes = f.encode();
         assert_eq!(bytes.len(), f.byte_len());
@@ -712,22 +731,52 @@ mod tests {
     fn remainder_probe_insert_and_contains() {
         let n: u64 = 10_000;
         let insert_count = 5_000usize;
-        let mut f = RemainderProbeFilter::with_remainder_bits(insert_count, 10);
+        // 10 remainder bits (1024 codomain, ~512 usable odd values) is far too
+        // small for 5,000 distinct inserts: the linear-probe design treats any
+        // remainder match at the probe position as the same element already
+        // present (see `insert`'s `self.rem[pos] == r` check), so with a
+        // codomain this much smaller than insert_count, two distinct elements
+        // landing on the same (quotient, remainder) pair get rejected as a
+        // false duplicate. 17 bits (matching the FPR-target sizing used
+        // elsewhere in this file) keeps collisions negligible at this count.
+        let mut f = RemainderProbeFilter::with_remainder_bits(insert_count, 17);
         for i in 0..insert_count as u64 {
-            assert!(f.insert(&(i | 1)), "rp insert failed at {i}");
+            assert!(f.insert(&((i << 1) | 1)), "rp insert failed at {i}");
         }
         assert_eq!(f.len(), insert_count);
         for i in 0..insert_count as u64 {
-            assert!(f.contains(&(i | 1)));
+            assert!(f.contains(&((i << 1) | 1)));
         }
+        // This is a probabilistic filter: some false positives on
+        // never-inserted values are expected, not a bug, so assert a bound
+        // rather than requiring zero (17 bits targets ~0.1% FPR).
+        let mut false_positives = 0u64;
         for i in insert_count as u64..n {
-            assert!(!f.contains(&(i | 1)), "rp false positive at {i}");
+            if f.contains(&((i << 1) | 1)) {
+                false_positives += 1;
+            }
         }
+        let queried = n - insert_count as u64;
+        let measured = false_positives as f64 / queried as f64;
+        assert!(
+            measured < 0.01,
+            "remainder_probe measured FPR {measured:.6} exceeds 1% upper bound (target 0.1%)"
+        );
     }
 
     #[test]
     fn counting_quotient_insert_contains_and_counts() {
-        let mut filter = CountingQuotientFilter::with_remainder_bits(5_000, 12);
+        // 12 remainder bits combines with this capacity's 13-bit quotient
+        // space (next_power_of_two(5_000*4/3) = 8192 slots) for a ~25-bit
+        // (quotient, remainder) fingerprint space -- small enough that two
+        // of the 5,000 distinct values collide under `DefaultHasher`'s fixed
+        // seed (value 2272 does, deterministically), and the filter cannot
+        // tell a fingerprint collision from a real duplicate (that's the
+        // approximate-filter tradeoff, not a bug): `insert` bumps the
+        // existing slot's count instead of allocating a new one, so `len`
+        // undercounts. 16 bits (the max `with_remainder_bits` allows) widens
+        // the space enough that no collision occurs among these values.
+        let mut filter = CountingQuotientFilter::with_remainder_bits(5_000, 16);
         for value in 0..5_000_u64 {
             assert!(filter.insert(&value), "CQF insert failed at {value}");
         }
@@ -748,15 +797,15 @@ mod tests {
         let insert_count = 5_000usize;
         let mut f = BloomFilter::with_fpr(insert_count, 0.001);
         for i in 0..insert_count as u64 {
-            f.insert(&(i | 1));
+            f.insert(&((i << 1) | 1));
         }
         assert_eq!(f.len(), insert_count);
         for i in 0..insert_count as u64 {
-            assert!(f.contains(&(i | 1)));
+            assert!(f.contains(&((i << 1) | 1)));
         }
         let mut false_positives = 0u64;
         for i in insert_count as u64..n {
-            if f.contains(&(i | 1)) {
+            if f.contains(&((i << 1) | 1)) {
                 false_positives += 1;
             }
         }
