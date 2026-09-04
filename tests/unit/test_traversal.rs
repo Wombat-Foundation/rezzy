@@ -1541,6 +1541,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         None,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        None,
         &String::new(),
     );
 
@@ -1559,6 +1560,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         None,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
+        None,
         &String::new(),
     );
 

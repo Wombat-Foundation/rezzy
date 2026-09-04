@@ -7448,6 +7448,7 @@ fn test_local_auth_cache_version_invalidation() {
         Some(&mut cache),
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        None,
         &String::new(),
     );
     assert_eq!(cache.version, StateResVersion::V2_1);
@@ -7467,6 +7468,7 @@ fn test_local_auth_cache_version_invalidation() {
         Some(&mut cache2),
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        None,
         &String::new(),
     );
     assert_eq!(cache2.version, StateResVersion::V2_1);

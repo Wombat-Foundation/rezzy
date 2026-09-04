@@ -62,6 +62,7 @@ fn test_pathology_duplicate_auth_poisoning() {
         Some(&mut cache_v21),
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
+        None,
         &String::new(),
     );
 
@@ -73,6 +74,7 @@ fn test_pathology_duplicate_auth_poisoning() {
         Some(&mut cache_v211),
         StateResVersion::V2_1_1,
         &mut std::collections::HashMap::new(),
+        None,
         &String::new(),
     );
 

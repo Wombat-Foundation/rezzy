@@ -581,12 +581,19 @@ where
         None,
         version,
         pl_cache,
+        None,
         empty_key,
     )
 }
 
 /// Like [`resolve_iterative_sort`], but allows passing an external local auth cache to amortize
 /// allocation costs across multiple invocations.
+///
+/// When `conflicted_keys_override` is `Some`, the caller-supplied set is used
+/// instead of deriving `conflicted_keys` from `conflicted_events`.  This lets
+/// a pipeline that has already computed a *narrow* (pre-widening) key set make
+/// the `debug_assert` in [`fold_lattice_chunk`] load-bearing against the
+/// widened set, rather than trivially true.
 #[must_use]
 #[allow(clippy::implicit_hasher)]
 pub fn resolve_iterative_sort_with_cache<
@@ -603,6 +610,7 @@ pub fn resolve_iterative_sort_with_cache<
     external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64, Spl>,
+    conflicted_keys_override: Option<&crate::FastSet<(EventType, K)>>,
     empty_key: &K,
 ) -> crate::state::at::SharedState<Id, K>
 where
@@ -610,7 +618,14 @@ where
     Spl: core::hash::BuildHasher,
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    let conflicted_keys = derive_all_conflicted_keys(conflicted_events, empty_key);
+    let derived_conflicted_keys;
+    let conflicted_keys = match conflicted_keys_override {
+        Some(ck) => ck,
+        None => {
+            derived_conflicted_keys = derive_all_conflicted_keys(conflicted_events, empty_key);
+            &derived_conflicted_keys
+        }
+    };
     resolve_iterative_sort_with_all_caches::<Id, C, S1, S2, Spl, K>(
         unconflicted_state,
         conflicted_events,
@@ -619,7 +634,7 @@ where
         version,
         pl_cache,
         &mut FastMap::default(),
-        &conflicted_keys,
+        conflicted_keys,
         empty_key,
     )
 }
@@ -834,12 +849,17 @@ where
         None,
         version,
         pl_cache,
+        None,
         empty_key,
     )
 }
 
 /// Internal helper combining the functionality of [`resolve_iterative_sort_with_deltas`] and
 /// [`resolve_iterative_sort_with_cache`].
+///
+/// When `conflicted_keys_override` is `Some`, the caller-supplied set is used
+/// instead of deriving `conflicted_keys` from `conflicted_events` (see
+/// [`resolve_iterative_sort_with_cache`] for motivation).
 ///
 /// # Panics
 /// Panics (with a descriptive message) if an invariant of the power phase is
@@ -865,6 +885,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
     external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64, Spl>,
+    conflicted_keys_override: Option<&crate::FastSet<(EventType, K)>>,
     empty_key: &K,
 ) -> (
     crate::state::at::SharedState<Id, K>,
@@ -876,7 +897,14 @@ where
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     require_legacy_iterative_version(version);
-    let conflicted_keys = derive_all_conflicted_keys(&conflicted_events, empty_key);
+    let derived_conflicted_keys;
+    let conflicted_keys = match conflicted_keys_override {
+        Some(ck) => ck,
+        None => {
+            derived_conflicted_keys = derive_all_conflicted_keys(&conflicted_events, empty_key);
+            &derived_conflicted_keys
+        }
+    };
     let original_conflicted_keys =
         prepare_conflicted_and_keys(&conflicted_events, auth_context, version);
 
@@ -1279,6 +1307,7 @@ mod tests {
             None,
             StateResVersion::V2_1_1,
             &mut HashMap::new(),
+            None,
             &String::new(),
         );
         let bob_delta = deltas
@@ -1302,6 +1331,7 @@ mod tests {
             None,
             StateResVersion::V2_1,
             &mut HashMap::new(),
+            None,
             &String::new(),
         );
         assert!(
@@ -1351,6 +1381,7 @@ mod tests {
             None,
             StateResVersion::V2_1,
             &mut HashMap::new(),
+            None,
             &String::new(),
         );
         assert!(
