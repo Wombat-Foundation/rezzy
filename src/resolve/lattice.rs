@@ -142,6 +142,21 @@ where
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + Clone,
 {
+    // Unlike the power phase (`run_power_phase_iterative_checks`), this fold
+    // has no `conflicted_keys` guard on the winning insert below. That's
+    // safe today only because `chunk` is drawn from `non_power_events`,
+    // which `route_power_events` builds by *partitioning* `conflicted_events`
+    // (never adding to it) -- see the comment at this function's only call
+    // site in `resolve_lattice_fold`. So every key here is, by construction,
+    // already a key of some event in `conflicted_events`. If a future caller
+    // ever feeds this an auth-diff-expanded event set (the way `expand_v2`
+    // expands `power_events`), that invariant breaks silently and a
+    // context-only event could overwrite a never-conflicted key. The assert
+    // below exists to catch that regression rather than to fix a live bug.
+    #[cfg(debug_assertions)]
+    let conflicted_keys: crate::FastSet<(EventType, String)> =
+        crate::resolve::iterative::derive_all_conflicted_keys(sort_set, &String::new());
+
     let mut thread_res: HashMap<(EventType, String), &'a LeanEvent<Id, C>> = HashMap::new();
     let mut local_auth_cache = crate::state::at::LocalAuthCache::<Id, C>::new(version);
 
@@ -172,6 +187,15 @@ where
         let key = (
             EventType::from(ev.event_type.as_str()),
             ev.state_key.clone().unwrap(),
+        );
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            conflicted_keys.contains(&key),
+            "fold_lattice_chunk competed on a key ({:?}, {:?}) absent from \
+             conflicted_events -- the no-guard invariant documented above \
+             this function has been broken by a caller change",
+            key.0,
+            key.1,
         );
         update_winner_if_better(&mut thread_res, key, ev, mainline_distances, mainline_len);
     }
