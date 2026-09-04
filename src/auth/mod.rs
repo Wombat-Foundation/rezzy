@@ -23,7 +23,6 @@ pub mod user;
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use base64::Engine as _;
 use core::fmt;
 
 use crate::basespec::event_types::{
@@ -2126,45 +2125,23 @@ pub fn check_auth_chain<
         // `LeanEvent` (see its doc comment), and a caller that never
         // populates it must see identical behavior to before this check
         // existed.
-        if is_v12_plus && event.event_type == "m.room.create" {
-            if let Some(declared) = &event.room_id {
-                let event_id_str = event.event_id.to_string();
-                // Both sides must be genuine URL-safe (V4+/V12) hash
-                // encodings, not merely equal strings: decode each and
-                // compare bytes, so a malformed room_id (wrong alphabet,
-                // padding, or length) is rejected even if it happens to
-                // string-match a malformed event_id, and a well-formed but
-                // differently-encoded match can't slip through.
-                //
-                // Decodes into a stack buffer (`decode_slice`, not
-                // `decode`) -- this runs on every m.room.create seen by
-                // `check_auth_chain`, and while that's once per room rather
-                // than once per PDU, there's no reason to pay for two heap
-                // allocations here when a `[u8; 32]` does the job.
-                let decode = |sigil: char, s: &str| -> Option<[u8; 32]> {
-                    let hash_part = s.strip_prefix(sigil)?;
-                    let mut buf = [0_u8; 32];
-                    let written = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                        .decode_slice(hash_part, &mut buf)
-                        .ok()?;
-                    // SHA-256 digest length -- same length `matrix_event_digest32`
-                    // requires for the V4Plus event-ID hash this room_id must match.
-                    // `decode_slice` only errors if `buf` is too small, so a
-                    // too-short/malformed input must be caught explicitly here.
-                    (written == 32).then_some(buf)
-                };
-                let expected_hash = decode('$', &event_id_str);
-                let declared_hash = decode('!', declared);
-                if expected_hash.is_none() || declared_hash != expected_hash {
-                    let err = AuthError::InvalidSyntax(alloc::format!(
-                        "m.room.create room_id {declared} is not the URL-safe-base64 SHA-256 \
-                         hash derived from event ID {event_id_str}"
-                    ));
-                    rejected.push((event.event_id.clone(), err));
-                    rejected_ids.insert(event.event_id.clone());
-                    continue;
-                }
-            }
+        // Rule 1.2 (V12+): room_id is on the wire for ordinary events (it's
+        // "!" + the create event's own hash-derived event ID, checked
+        // against cited auth events by Rule 2.5 below), but *not* for the
+        // create event itself: the room doesn't exist, and room_id isn't
+        // knowable, until this event's own ID has been computed -- a create
+        // event cannot self-referentially declare it. Any declared room_id
+        // on a create event is invalid regardless of its value; this is not
+        // a hash-match check.
+        if is_v12_plus && event.event_type == "m.room.create" && event.room_id.is_some() {
+            let err = AuthError::InvalidSyntax(
+                "m.room.create must not declare room_id -- the room's ID is derived from this \
+                 event's own hash and isn't knowable until this event exists"
+                    .into(),
+            );
+            rejected.push((event.event_id.clone(), err));
+            rejected_ids.insert(event.event_id.clone());
+            continue;
         }
 
         // Rule 2.3 / MSC4242 Rule 4.3: an event citing an auth event that
@@ -3139,51 +3116,21 @@ mod tests {
     }
 
     /// Coverage: `check_auth_chain` Rule 1.2 (V12+) -- an `m.room.create`
-    /// event's declared `room_id`, if present, must be the hash-derived
-    /// value anchored to the event's own event ID ("!" + the event ID's
-    /// hash portion), not an arbitrary or server-assigned string.
+    /// event must not declare a `room_id` at all. This is not a hash-match
+    /// check: the room doesn't exist, and its ID isn't knowable, until the
+    /// create event's own hash has been computed, so a create event can
+    /// never legitimately declare *any* `room_id`, correct-looking or not.
     #[test]
-    fn test_check_auth_chain_rejects_mismatched_v12_create_room_id() {
-        // A well-formed URL-safe-base64 32-byte hash (not just a string
-        // that fails to decode at all) mismatched against a *different*
-        // well-formed 32-byte hash -- exercises the byte-comparison
-        // rejection path, not just the decode-failure path.
+    fn test_check_auth_chain_rejects_any_v12_create_room_id() {
         let mut create = make_test_event(
             "$QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE",
             M_ROOM_CREATE,
             "@alice:example.com",
             json!({ "room_version": "12", "creator": "@alice:example.com" }),
         );
-        create.room_id = Some("!QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI".into());
-
-        let sorted_events = vec![create];
-        let (accepted, rejected) =
-            check_auth_chain(&sorted_events, &RoomState::new(), StateResVersion::V2_1);
-
-        assert!(
-            accepted.is_empty(),
-            "mismatched room_id must not be accepted: {accepted:?}"
-        );
-        assert!(
-            rejected
-                .iter()
-                .any(|(_, err)| matches!(err, AuthError::InvalidSyntax(_))),
-            "mismatched V12 create room_id must be rejected: {rejected:?}"
-        );
-    }
-
-    /// Coverage: the same rule's accept path -- a correctly hash-derived
-    /// `room_id` (or none at all, since the field is opt-in) does not
-    /// trigger Rule 1.2.
-    #[test]
-    fn test_check_auth_chain_accepts_correct_v12_create_room_id() {
-        let event_id = "$QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE";
-        let mut create = make_test_event(
-            event_id,
-            M_ROOM_CREATE,
-            "@alice:example.com",
-            json!({ "room_version": "12", "creator": "@alice:example.com" }),
-        );
+        // Even a room_id that happens to equal this event's own
+        // hash-derived form is still rejected -- Rule 1.2 has no "correct
+        // value" exception, unlike Rule 2.5's hash-match style check.
         create.room_id = Some("!QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE".into());
 
         let sorted_events = vec![create];
@@ -3191,18 +3138,23 @@ mod tests {
             check_auth_chain(&sorted_events, &RoomState::new(), StateResVersion::V2_1);
 
         assert!(
-            rejected.is_empty(),
-            "correctly hash-derived room_id must not be rejected: {rejected:?}"
+            accepted.is_empty(),
+            "a create event declaring any room_id must not be accepted: {accepted:?}"
         );
-        assert_eq!(accepted, vec![event_id.to_string()]);
+        assert!(
+            rejected
+                .iter()
+                .any(|(_, err)| matches!(err, AuthError::InvalidSyntax(_))),
+            "V12+ create event with a declared room_id must be rejected: {rejected:?}"
+        );
     }
 
     /// Coverage: `check_auth_chain` Rule 1.2 -- a `None` `room_id` (the
-    /// field is opt-in on `LeanEvent`) must never trigger this rule,
-    /// regardless of what the event ID looks like.
+    /// field is opt-in on `LeanEvent`, and a create event legitimately
+    /// never has one under V12+) does not trigger this rule.
     #[test]
-    fn test_check_auth_chain_v12_create_without_room_id_is_unaffected() {
-        let event_id = "$not-a-valid-base64-hash-at-all";
+    fn test_check_auth_chain_v12_create_without_room_id_is_accepted() {
+        let event_id = "$abcHASHpart";
         let create = make_test_event(
             event_id,
             M_ROOM_CREATE,
@@ -3218,6 +3170,32 @@ mod tests {
         assert!(
             rejected.is_empty(),
             "a create event with no room_id at all must not be affected by Rule 1.2: {rejected:?}"
+        );
+        assert_eq!(accepted, vec![event_id.to_string()]);
+    }
+
+    /// Coverage: `check_auth_chain` Rule 1.2 is gated to V12+ -- a
+    /// pre-V12 room version's create event may declare a `room_id` (the
+    /// legacy, server-assigned/domain-based form) without being affected
+    /// by a rule that only exists for the hash-derived room-ID scheme.
+    #[test]
+    fn test_check_auth_chain_pre_v12_create_room_id_is_unaffected_by_rule_1_2() {
+        let event_id = "$create:example.com";
+        let mut create = make_test_event(
+            event_id,
+            M_ROOM_CREATE,
+            "@alice:example.com",
+            json!({ "room_version": "9", "creator": "@alice:example.com" }),
+        );
+        create.room_id = Some("!legacy:example.com".into());
+
+        let sorted_events = vec![create];
+        let (accepted, rejected) =
+            check_auth_chain(&sorted_events, &RoomState::new(), StateResVersion::V2);
+
+        assert!(
+            rejected.is_empty(),
+            "pre-V12 create room_id must not trigger the V12+-only Rule 1.2: {rejected:?}"
         );
         assert_eq!(accepted, vec![event_id.to_string()]);
     }
