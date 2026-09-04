@@ -29,7 +29,7 @@ pub type Hash = [u8; HASH_SIZE];
 ///
 /// Every `root()`-shaped function in this module and [`crate::state::merkle`]
 /// (the header tree, the causal sparse Merkle sum trie, the resolved-state
-/// trie) computes a value of this type, not a bare [`tyalias@Hash`]. That is
+/// trie) computes a value of this type, not a bare [`type@Hash`]. That is
 /// deliberate, not decorative: per MSC4511C ("Relationship to other
 /// proposals"), a root is only a *proof* of anything -- "this key is/isn't a
 /// member" -- when it is either (a) folded into an `event_root` an event's
@@ -273,7 +273,7 @@ pub fn root(fields: &[Field]) -> Result<Hash, MerkleError> {
 /// `sender_domain`, `type`, `state_key`, `redacts`, `depth`, and
 /// `origin_server_ts`. Missing optional fields are encoded as `null`.
 ///
-/// Returns the typed [`EventHeaderRoot`] rather than a bare [`tyalias@Hash`] --
+/// Returns the typed [`EventHeaderRoot`] rather than a bare [`type@Hash`] --
 /// this root's only legitimate use is as an [`event_root`] component, so
 /// requiring the wrapper at the source keeps a caller from being able to
 /// treat it as a proof of anything before it is actually folded into a
