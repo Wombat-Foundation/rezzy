@@ -375,7 +375,7 @@ where
 ///
 /// This allows callers who compute `conflicted_keys` from a *narrow*,
 /// pre-widening event set (e.g. before MSC4297's conflicted subgraph supplement)
-/// to make the `debug_assert` in [`fold_lattice_chunk`] load-bearing against
+/// to make the `debug_assert` in `fold_lattice_chunk` load-bearing against
 /// the widened set, rather than trivially true.
 ///
 /// When in doubt, use [`resolve_semilattice_fold`] which derives `conflicted_keys`

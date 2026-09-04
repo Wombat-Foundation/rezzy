@@ -592,10 +592,10 @@ where
 /// When `conflicted_keys_override` is `Some`, the caller-supplied set is used
 /// instead of deriving `conflicted_keys` from `conflicted_events`.  This lets
 /// a pipeline that has already computed a *narrow* (pre-widening) key set make
-/// the `debug_assert` in [`fold_lattice_chunk`] load-bearing against the
+/// the `debug_assert` in `fold_lattice_chunk` load-bearing against the
 /// widened set, rather than trivially true.
 #[must_use]
-#[allow(clippy::implicit_hasher)]
+#[allow(clippy::implicit_hasher, clippy::too_many_arguments)]
 pub fn resolve_iterative_sort_with_cache<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + Clone,
@@ -619,12 +619,11 @@ where
     for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let derived_conflicted_keys;
-    let conflicted_keys = match conflicted_keys_override {
-        Some(ck) => ck,
-        None => {
-            derived_conflicted_keys = derive_all_conflicted_keys(conflicted_events, empty_key);
-            &derived_conflicted_keys
-        }
+    let conflicted_keys = if let Some(ck) = conflicted_keys_override {
+        ck
+    } else {
+        derived_conflicted_keys = derive_all_conflicted_keys(conflicted_events, empty_key);
+        &derived_conflicted_keys
     };
     resolve_iterative_sort_with_all_caches::<Id, C, S1, S2, Spl, K>(
         unconflicted_state,
@@ -859,7 +858,7 @@ where
 ///
 /// When `conflicted_keys_override` is `Some`, the caller-supplied set is used
 /// instead of deriving `conflicted_keys` from `conflicted_events` (see
-/// [`resolve_iterative_sort_with_cache`] for motivation).
+/// `resolve_iterative_sort_with_cache` for motivation).
 ///
 /// # Panics
 /// Panics (with a descriptive message) if an invariant of the power phase is
@@ -869,8 +868,12 @@ where
 /// drawn from those two maps and are always state events — so these panics
 /// indicate a routing bug rather than a caller-input condition.
 #[must_use]
-#[allow(clippy::type_complexity, clippy::too_many_lines)]
-#[allow(clippy::implicit_hasher)]
+#[allow(
+    clippy::type_complexity,
+    clippy::too_many_lines,
+    clippy::implicit_hasher,
+    clippy::too_many_arguments
+)]
 pub fn resolve_iterative_sort_with_cache_and_deltas<
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + Clone,
@@ -898,12 +901,11 @@ where
 {
     require_legacy_iterative_version(version);
     let derived_conflicted_keys;
-    let conflicted_keys = match conflicted_keys_override {
-        Some(ck) => ck,
-        None => {
-            derived_conflicted_keys = derive_all_conflicted_keys(&conflicted_events, empty_key);
-            &derived_conflicted_keys
-        }
+    let conflicted_keys = if let Some(ck) = conflicted_keys_override {
+        ck
+    } else {
+        derived_conflicted_keys = derive_all_conflicted_keys(&conflicted_events, empty_key);
+        &derived_conflicted_keys
     };
     let original_conflicted_keys =
         prepare_conflicted_and_keys(&conflicted_events, auth_context, version);
