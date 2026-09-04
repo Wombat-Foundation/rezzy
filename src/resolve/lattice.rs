@@ -137,26 +137,25 @@ fn fold_lattice_chunk<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash::Bu
     version: StateResVersion,
     create_ev: Option<&LeanEvent<Id, C>>,
     // jscpd:ignore-end
+    // Unlike the power phase (`run_power_phase_iterative_checks`), this fold
+    // has no `conflicted_keys` guard on the winning insert below. That's
+    // safe only for as long as `chunk` is drawn from a `non_power_events`
+    // built by *partitioning* the same event set `conflicted_keys` was
+    // derived from -- never a set widened afterward (e.g. by an
+    // MSC4297-style subgraph supplement the way `multi.rs` widens
+    // `conflicted_events` before deriving its own `conflicted_keys`, or the
+    // way `expand_v2` grows `power_events`). `conflicted_keys` is threaded
+    // in from the caller rather than recomputed here from `sort_set` so
+    // that a caller who computed it from the *narrow*, pre-widening set (as
+    // `resolve_lattice_fold`'s own caller must, if it ever wires this into
+    // a widened path) makes the debug_assert below actually load-bearing
+    // instead of trivially true against the widened set.
+    conflicted_keys: &crate::FastSet<(EventType, String)>,
 ) -> HashMap<(EventType, String), &'a LeanEvent<Id, C>>
 where
     Id: crate::basespec::rezzy_types::EventId,
     C: crate::basespec::rezzy_types::EventContent + Clone,
 {
-    // Unlike the power phase (`run_power_phase_iterative_checks`), this fold
-    // has no `conflicted_keys` guard on the winning insert below. That's
-    // safe today only because `chunk` is drawn from `non_power_events`,
-    // which `route_power_events` builds by *partitioning* `conflicted_events`
-    // (never adding to it) -- see the comment at this function's only call
-    // site in `resolve_lattice_fold`. So every key here is, by construction,
-    // already a key of some event in `conflicted_events`. If a future caller
-    // ever feeds this an auth-diff-expanded event set (the way `expand_v2`
-    // expands `power_events`), that invariant breaks silently and a
-    // context-only event could overwrite a never-conflicted key. The assert
-    // below exists to catch that regression rather than to fix a live bug.
-    #[cfg(debug_assertions)]
-    let conflicted_keys: crate::FastSet<(EventType, String)> =
-        crate::resolve::iterative::derive_all_conflicted_keys(sort_set, &String::new());
-
     let mut thread_res: HashMap<(EventType, String), &'a LeanEvent<Id, C>> = HashMap::new();
     let mut local_auth_cache = crate::state::at::LocalAuthCache::<Id, C>::new(version);
 
@@ -221,6 +220,7 @@ fn compute_lattice_coordinatized_winners<
     version: StateResVersion,
     create_ev: Option<&LeanEvent<Id, C>>,
     // jscpd:ignore-end
+    conflicted_keys: &crate::FastSet<(EventType, String)>,
     key_winners: &mut HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
 ) where
     Id: crate::basespec::rezzy_types::EventId + Sync + Send,
@@ -255,6 +255,7 @@ fn compute_lattice_coordinatized_winners<
                         sort_set,
                         version,
                         create_ev,
+                        conflicted_keys,
                     )
                 });
                 handles.push(handle);
@@ -280,6 +281,7 @@ fn compute_lattice_coordinatized_winners<
             sort_set,
             version,
             create_ev,
+            conflicted_keys,
         );
     }
 }
@@ -436,6 +438,7 @@ where
         sort_set,
         version,
         create_ev,
+        &conflicted_keys,
         &mut key_winners,
     );
 
