@@ -2,6 +2,22 @@
 09/04/2026
 ##############################
 
+• MAX_FACTOR_WORK is an open design gap in the reconcile module (pinsketch.rs:49). The 16M work
+  budget for GF(2^64) polynomial factoring is a heuristic for typical inputs, not a proven
+  worst-case bound. Degenerate (1, d-1) split chains at degree 256 cost ~917M (~57x budget).
+  Budget fails safe into BudgetExhausted (fallback ladder), so not a correctness issue, but
+  the bound is not load-bearing against adversarial inputs. Unlike bloom/IBLT (O(1) per item,
+  no hash grinding), PinSketch's algebraic reconstruction is the price paid for log(n)
+  communication complexity. Closing this requires either a proven worst-case recursion bound
+  or a balance guarantee on the splitting itself.
+
+• Semilattice fold parallel scheduling: Brent's theorem speedup is unreliable for unbalanced
+  inputs. Current chunking divides events into equal-sized slices by count, but per-event
+  work varies enormously (auth-chain depth, number of auth events to check). A chunk with
+  deep auth chains takes much longer than one with shallow chains, so wall-clock time is
+  determined by the slowest thread. Fix: switch to work-stealing or dynamic scheduling
+  (e.g. process events from a shared queue rather than pre-partitioned chunks).
+
 • Session continuation analysis: Lean formalization gap assessment (from previous session).
 
   The previous session identified several gaps between the Lean formalization (in the private

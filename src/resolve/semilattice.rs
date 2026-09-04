@@ -126,6 +126,7 @@ fn update_winner_if_better<'a, Id, C>(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(feature = "std", allow(dead_code))]
 fn fold_lattice_chunk<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash::BuildHasher>(
     // jscpd:ignore-start
     chunk: &[&'a LeanEvent<Id, C>],
@@ -232,31 +233,70 @@ fn compute_lattice_coordinatized_winners<
     {
         let num_threads =
             std::thread::available_parallelism().map_or(4, core::num::NonZeroUsize::get);
-        let chunk_size = (non_power_events
-            .len()
-            .saturating_add(num_threads)
-            .saturating_sub(1))
-        .checked_div(num_threads)
-        .unwrap_or(1)
-        .max(1);
-        let chunks: Vec<&[&'a LeanEvent<Id, C>]> = v.chunks(chunk_size).collect();
+
+        // Dynamic scheduling via shared atomic cursor: faster threads pull more
+        // work, so wall-clock time tracks the total work divided by total
+        // threads rather than the slowest pre-partitioned chunk.
+        let cursor = std::sync::atomic::AtomicUsize::new(0);
+        let len = v.len();
 
         let winners = std::sync::Mutex::new(HashMap::new());
         std::thread::scope(|s| {
-            let mut handles = Vec::with_capacity(chunks.len());
-            for chunk in chunks {
+            let mut handles = Vec::with_capacity(num_threads);
+            for _ in 0..num_threads {
                 let handle = s.spawn(|| {
-                    fold_lattice_chunk(
-                        chunk,
-                        mainline_distances,
-                        mainline_len,
-                        terminal_power_state,
-                        auth_context,
-                        sort_set,
-                        version,
-                        create_ev,
-                        conflicted_keys,
-                    )
+                    let mut local = HashMap::new();
+                    loop {
+                        let idx = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if idx >= len {
+                            break;
+                        }
+                        let ev = v[idx];
+                        // Auth-check + LUB fold for this single event.
+                        let local_auth = compute_local_auth(
+                            ev,
+                            auth_context,
+                            sort_set,
+                            &mut crate::state::at::LocalAuthCache::<Id, C>::new(version),
+                            version,
+                        );
+                        if !iterative_auth_ok(
+                            ev,
+                            terminal_power_state,
+                            auth_context,
+                            sort_set,
+                            local_auth,
+                            create_ev,
+                            version,
+                            false,
+                        ) {
+                            continue;
+                        }
+                        if ev.state_key.is_none() {
+                            continue;
+                        }
+                        let key = (
+                            EventType::from(ev.event_type.as_str()),
+                            ev.state_key.clone().unwrap(),
+                        );
+                        #[cfg(debug_assertions)]
+                        debug_assert!(
+                            conflicted_keys.contains(&key),
+                            "fold_lattice_chunk competed on a key ({:?}, {:?}) absent from \
+                             conflicted_events -- the no-guard invariant documented in \
+                             fold_lattice_chunk has been broken by a caller change",
+                            key.0,
+                            key.1,
+                        );
+                        update_winner_if_better(
+                            &mut local,
+                            key,
+                            ev,
+                            mainline_distances,
+                            mainline_len,
+                        );
+                    }
+                    local
                 });
                 handles.push(handle);
             }
