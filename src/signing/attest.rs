@@ -56,11 +56,20 @@ fn envelope_bytes(root: UnsignedRoot, algorithm: &str, count: u64, signer: &str)
         "root": URL_SAFE_NO_PAD.encode(root.into_inner()),
         "signer": signer,
     });
-    // Every field above is a plain string or a non-negative integer well
-    // inside Matrix's canonical-integer range, so this cannot fail; a
-    // panicking unwrap here would only ever fire on a logic error in this
-    // function itself, not on caller input.
-    crate::merkle::canonical_json(&value).unwrap_or_default()
+    // `algorithm`/`root`/`signer` are always strings, and `count` fits
+    // Matrix's canonical-integer range for any trie/state-map size that will
+    // ever exist in practice (2^53-1 leaves). If this ever *does* fail
+    // (e.g. a caller passes a `count` from a corrupted/adversarial upstream
+    // computation rather than an actual trie size), falling back to `b""`
+    // would be a real cryptographic hazard, not a graceful degradation:
+    // Ed25519 is deterministic, so both `sign_attestation` and
+    // `verify_attestation` would silently operate over the same empty
+    // message regardless of the real root/count/algorithm/signer, making
+    // any two such attestations from the same key interchangeable. Fail
+    // loudly instead.
+    crate::merkle::canonical_json(&value).expect(
+        "attestation envelope is fixed-shape String/u64/base64 fields, always canonicalizable",
+    )
 }
 
 /// Signs `root` with `key`, producing a [`SignedAttestation`] a holder of
@@ -139,6 +148,86 @@ mod tests {
         let mut att = sign_attestation(root, "msc4511c-causal-trie", 100, "rezzy-cli", &sk);
         att.root = UnsignedRoot([8_u8; 32]);
         verify_attestation(&att, &vk).expect_err("tampered root must not verify");
+    }
+
+    #[test]
+    fn rejects_tampered_count() {
+        let sk = SigningKey::from_bytes(&[42_u8; 32]);
+        let vk = sk.verifying_key();
+        let root = UnsignedRoot([7_u8; 32]);
+        let mut att = sign_attestation(root, "msc4511c-causal-trie", 100, "rezzy-cli", &sk);
+        att.count = 101;
+        verify_attestation(&att, &vk).expect_err("tampered count must not verify");
+    }
+
+    #[test]
+    fn rejects_tampered_algorithm() {
+        let sk = SigningKey::from_bytes(&[42_u8; 32]);
+        let vk = sk.verifying_key();
+        let root = UnsignedRoot([7_u8; 32]);
+        let mut att = sign_attestation(root, "msc4511c-causal-trie", 100, "rezzy-cli", &sk);
+        att.algorithm = "msc4511c-state-root".to_string();
+        verify_attestation(&att, &vk).expect_err("tampered algorithm must not verify");
+    }
+
+    #[test]
+    fn rejects_tampered_signer() {
+        let sk = SigningKey::from_bytes(&[42_u8; 32]);
+        let vk = sk.verifying_key();
+        let root = UnsignedRoot([7_u8; 32]);
+        let mut att = sign_attestation(root, "msc4511c-causal-trie", 100, "rezzy-cli", &sk);
+        att.signer = "someone-else".to_string();
+        verify_attestation(&att, &vk).expect_err("tampered signer must not verify");
+    }
+
+    /// Regression test for the `unwrap_or_default()` bug this replaced:
+    /// signing over a large-but-in-range `count` must still bind that count
+    /// into the signature (not silently collapse to an empty/fixed message
+    /// that any other broken attestation from the same key would also
+    /// satisfy).
+    #[test]
+    fn large_count_still_produces_a_root_specific_signature() {
+        // Matrix's canonical-integer bound (2^53 - 1) -- the largest count
+        // envelope_bytes can actually canonicalize.
+        let max_canonical: u64 = (1_u64 << 53) - 1;
+        let sk = SigningKey::from_bytes(&[42_u8; 32]);
+        let vk = sk.verifying_key();
+        let root = UnsignedRoot([7_u8; 32]);
+        let att = sign_attestation(
+            root,
+            "msc4511c-causal-trie",
+            max_canonical,
+            "rezzy-cli",
+            &sk,
+        );
+        verify_attestation(&att, &vk).expect("max-canonical count must still verify");
+
+        let other_root = UnsignedRoot([9_u8; 32]);
+        let other_att = sign_attestation(
+            other_root,
+            "msc4511c-causal-trie",
+            max_canonical,
+            "rezzy-cli",
+            &sk,
+        );
+        assert_ne!(
+            att.signature, other_att.signature,
+            "two distinct roots must not produce the same signature"
+        );
+    }
+
+    /// A `count` outside Matrix's canonical-integer range must fail loudly
+    /// (panic), not silently sign/verify over an empty envelope -- the
+    /// exact hazard `unwrap_or_default()` created (see the module's
+    /// `envelope_bytes` doc comment). Ed25519 being deterministic means a
+    /// silent empty-message fallback would make every such broken
+    /// attestation from one key interchangeable with every other.
+    #[test]
+    #[should_panic(expected = "attestation envelope is fixed-shape")]
+    fn out_of_range_count_panics_instead_of_forging() {
+        let sk = SigningKey::from_bytes(&[42_u8; 32]);
+        let root = UnsignedRoot([7_u8; 32]);
+        let _ = sign_attestation(root, "msc4511c-causal-trie", u64::MAX, "rezzy-cli", &sk);
     }
 
     #[test]
