@@ -167,7 +167,19 @@ authorization rules. Three distinct rule sets exist:
   concern. Correctly excluded.
 - **room_id checks**: `LeanEvent.room_id` is `Option<RoomId>` populated only by
   trusted ingest-time tagging, not omitted by design. Rule 2.5's check (see row
-  2.5 above) is therefore opt-in — it only fires when the citing event's own
-  `room_id` is `Some`, and never fires for `None`. The V12 room_id checks (rows
-  1.2 and 2) are not implemented at all: nothing enforces the V12 requirement
-  that `room_id` be an accepted `m.room.create` event ID.
+  2.5 above) and the V12 row-2 check (`check_room_id_matches_accepted_create`)
+  are therefore both opt-in — they only fire when the citing/checked event's
+  own `room_id` is `Some`, and never fire for `None`. This is a legacy-data
+  limitation, not a missing-implementation one: both checks are implemented
+  (rows 1.2, 2, and 2.5 above are all `[x]`), and there is no cryptographic
+  proof mechanism that would let this go from opt-in to unconditional without
+  fetching the full auth event — MSC4511C Part C's compact per-field proof
+  (a handful of sibling hashes checked against a signed `event_root`) only
+  exists for events whose room adopted that room version; a legacy event has
+  no `event_root` to prove a leaf against. Part A's own metadata query
+  endpoint is explicitly hint-only for exactly this reason ("metadata
+  returned over federation remains a hint that must be verified by fetching
+  full events" — not a fallback, the intended model), so it does not close
+  this gap either. Upgrading this from opt-in to unconditional per MSC4307
+  requires either populating `room_id` unconditionally at ingest, or the room
+  actually running an MSC4511C-adopting version.
