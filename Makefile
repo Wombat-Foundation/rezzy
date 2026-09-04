@@ -103,10 +103,10 @@ rust/coverage: ##H Run code coverage and generate HTML report
 	# Run coverage
 	$(CARGO) llvm-cov --lib --tests \
 		--html --output-dir .coverage \
-		--ignore-filename-regex 'src/bin/.*|scripts/.*'
+		--ignore-filename-regex 'src/bin/.*|scripts/.*|build\.rs$$'
 	# Process report to codecov-compatible JSON
 	$(CARGO) llvm-cov report \
-		--ignore-filename-regex 'src/bin/.*|scripts/.*' \
+		--ignore-filename-regex 'src/bin/.*|scripts/.*|build\.rs$$' \
 		--codecov --output-path .coverage/codecov.json
 	@echo DONE. You may open it with:
 	@echo firefox .coverage/html/index.html
