@@ -1301,6 +1301,18 @@ pub fn apply_redaction<Id: Clone + core::fmt::Display + 'static, K: Clone>(
 /// [`crate::auth::apply_authorized_redactions`] once they hold the resolved
 /// state.
 ///
+/// `room_id`, if given, is stamped onto every produced event's
+/// [`LeanEvent::room_id`] (one [`RoomId`] allocation, `Arc::clone`d across the
+/// batch -- see that field's doc comment). This is **not** read from each
+/// PDU's own `room_id` field: `room_id` has been a top-level wire field on
+/// every room version, pre-V12 included, but trusting a PDU's self-reported
+/// `room_id` to establish which room it belongs to would be circular (a
+/// crafted PDU can claim any room). `room_id` here is caller-supplied trusted
+/// context, the same trust boundary `room_version` above already is -- e.g.
+/// "the room this batch was received under," not anything derived from the
+/// PDUs themselves. `None` skips this and matches this function's prior
+/// behavior (every produced event carries `room_id: None`).
+///
 /// # Errors
 /// Returns `Err` if a PDU fails content-hash verification, or cannot be parsed
 /// to a `LeanEvent` (including a missing `event_id` for a room version with no
@@ -1308,6 +1320,7 @@ pub fn apply_redaction<Id: Clone + core::fmt::Display + 'static, K: Clone>(
 pub fn ingest_events(
     pdus: &[Value],
     room_version: &str,
+    room_id: Option<&str>,
 ) -> Result<Vec<LeanEvent<String, Value, String>>, alloc::string::String> {
     let derives_event_ids = RoomVersionFormat::parse(room_version)
         .is_some_and(RoomVersionFormat::uses_reference_hash_event_ids);
@@ -1329,11 +1342,15 @@ pub fn ingest_events(
         }
     }
 
+    let shared_room_id = room_id.map(RoomId::new);
     let mut events: Vec<LeanEvent<String, Value, String>> = Vec::with_capacity(pdus.len());
     for pdu in pdus {
         // TODO: `?` here is reachable (malformed PDU) — candidate to soften
         // into a `Warning` + skip rather than abort the whole batch.
-        events.push(LeanEvent::from_value(pdu, Some(room_version)).map_err(|e| e.to_string())?);
+        let mut event =
+            LeanEvent::from_value(pdu, Some(room_version)).map_err(|e| e.to_string())?;
+        event.room_id.clone_from(&shared_room_id);
+        events.push(event);
     }
 
     Ok(events)
@@ -2029,12 +2046,17 @@ pub struct LeanEvent<Id = String, C = Value, K = String> {
     /// "untagged" leak rule 2.5 exists to catch. So the field is opt-in on the
     /// citing side, but it is not additive to the cited side.
     ///
-    /// Note that [`ingest_events`] does **not** populate this field -- it has
-    /// no room ID parameter, so events it returns always carry `None`. A
-    /// caller that wants the foreign-room check in
-    /// [`check_auth_chain`](crate::auth::check_auth_chain) to fire must set
-    /// `room_id` on the citing event itself after ingest, and must populate it
-    /// on every cited auth event too (or those citations are rejected).
+    /// [`ingest_events`] populates this field when called with a `room_id`
+    /// argument, stamping the same value onto every event in the batch --
+    /// but not by reading each PDU's own `room_id` field (see that
+    /// function's doc comment for why: a self-reported `room_id` on the
+    /// very PDU being checked would be circular). A caller that wants the
+    /// foreign-room check in
+    /// [`check_auth_chain`](crate::auth::check_auth_chain) to fire for a
+    /// *cited* auth event pulled in from elsewhere (not part of the
+    /// original ingest batch) must set `room_id` on that event explicitly
+    /// too, from context it separately trusts (or those citations are
+    /// rejected).
     pub room_id: Option<RoomId>,
 }
 

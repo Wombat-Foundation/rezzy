@@ -3915,7 +3915,7 @@ fn test_ingest_events_verifies_hashes_and_preserves_content() {
     // preserved: ingest does not apply redactions (that is an
     // authorization-checked step against the resolved state).
     let message_id = format!("${}", reference_hash(&msg, "11").unwrap());
-    let events = ingest_events(&[msg.clone(), redaction.clone()], "11").unwrap();
+    let events = ingest_events(&[msg.clone(), redaction.clone()], "11", None).unwrap();
     let target = events.iter().find(|e| e.event_id == message_id).unwrap();
     assert_eq!(target.content, serde_json::json!({ "body": "spam" }));
     // The redaction event itself is retained.
@@ -3926,13 +3926,13 @@ fn test_ingest_events_verifies_hashes_and_preserves_content() {
     let hash = compute_content_hash(&hashed, "11").unwrap();
     hashed["hashes"] = serde_json::json!({ "sha256": hash });
     let hashed_message_id = format!("${}", reference_hash(&hashed, "11").unwrap());
-    let events = ingest_events(&[hashed.clone(), redaction.clone()], "11").unwrap();
+    let events = ingest_events(&[hashed.clone(), redaction.clone()], "11", None).unwrap();
     assert!(events.iter().any(|e| e.event_id == hashed_message_id));
 
     // A tampered content hash -> ingest rejects the batch.
     let mut tampered = hashed.clone();
     tampered["content"] = serde_json::json!({ "body": "evil" });
-    assert!(ingest_events(&[tampered, redaction.clone()], "11").is_err());
+    assert!(ingest_events(&[tampered, redaction.clone()], "11", None).is_err());
 }
 
 /// v3+ federation PDUs omit `event_id`; the recipient derives it from the
@@ -3949,7 +3949,7 @@ fn test_ingest_events_rejects_explicit_event_id_in_v3_and_later() {
         "origin_server_ts": 1,
         "content": {"body": "hello"}
     });
-    let err = ingest_events(&[pdu], "3").unwrap_err();
+    let err = ingest_events(&[pdu], "3", None).unwrap_err();
     assert!(
         err.contains("event_id must be omitted"),
         "unexpected error: {err}"
@@ -3972,11 +3972,60 @@ fn test_coverage_ingest_events_parse_error_aborts_batch() {
         "depth": 1,
         "content": {}
     });
-    let err = ingest_events(&[malformed], "11").unwrap_err();
+    let err = ingest_events(&[malformed], "11", None).unwrap_err();
     assert!(
         err.contains("event_type"),
         "unexpected ingest parse error: {err}"
     );
+}
+
+/// `ingest_events`'s `room_id` parameter stamps a caller-trusted `RoomId`
+/// onto every event in the batch -- and, critically, does NOT read it from
+/// each PDU's own `room_id` field. A PDU claiming a different `room_id` than
+/// the one the caller passed in must still get the caller's value, not the
+/// PDU's self-reported one: trusting the latter would let a crafted PDU
+/// assert its way into (or out of) Rule 2.5's foreign-room check.
+#[test]
+fn test_ingest_events_stamps_caller_supplied_room_id_not_the_pdus_own() {
+    use rezzy::ingest_events;
+
+    let msg = serde_json::json!({
+        "type": "m.room.message",
+        "sender": "@alice:example.com",
+        "origin_server_ts": 10,
+        "depth": 1,
+        "room_id": "!attacker-claimed:example.com",
+        "content": { "body": "hi" }
+    });
+    let other = serde_json::json!({
+        "type": "m.room.message",
+        "sender": "@bob:example.com",
+        "origin_server_ts": 11,
+        "depth": 1,
+        "content": { "body": "there" }
+    });
+
+    let events = ingest_events(&[msg, other], "11", Some("!trusted:example.com")).unwrap();
+    assert_eq!(events.len(), 2);
+    for event in &events {
+        assert_eq!(
+            event.room_id.as_ref().map(rezzy::RoomId::as_ref),
+            Some("!trusted:example.com"),
+            "every event in the batch must carry the caller-supplied room_id, \
+             regardless of any room_id present on the raw PDU"
+        );
+    }
+
+    // `None` matches the pre-existing behavior: no event carries a room_id.
+    let msg2 = serde_json::json!({
+        "type": "m.room.message",
+        "sender": "@alice:example.com",
+        "origin_server_ts": 10,
+        "depth": 1,
+        "content": { "body": "hi" }
+    });
+    let events = ingest_events(&[msg2], "11", None).unwrap();
+    assert_eq!(events[0].room_id, None);
 }
 
 /// Regression: `ingest_events` must NOT apply redactions. It runs pre-state-
@@ -4006,7 +4055,7 @@ fn test_ingest_events_does_not_apply_unauthorized_redaction() {
     });
 
     let message_id = format!("${}", reference_hash(&msg, "11").unwrap());
-    let events = ingest_events(&[msg, redaction], "11").unwrap();
+    let events = ingest_events(&[msg, redaction], "11", None).unwrap();
     let target = events.iter().find(|e| e.event_id == message_id).unwrap();
     assert_eq!(
         target.content,

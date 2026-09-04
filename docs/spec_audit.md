@@ -172,15 +172,18 @@ authorization rules. Three distinct rule sets exist:
   own self-reported `room_id` to check that same event would be circular — an
   attacker-controlled payload could claim any room. The field exists so a caller
   can attach a `room_id` it trusts from context _outside_ the PDU (which room
-  this event was received/stored under), which `ingest_events` itself does not
-  do (no room-ID parameter). Rule 2.5's check (see row 2.5 above) and the V12
-  row-2 check (`check_room_id_matches_accepted_create`) are therefore both
-  opt-in — they only fire when the citing/checked event's own `room_id` is
-  `Some`, and never fire for `None`. Both checks are implemented (rows 1.2, 2,
-  and 2.5 above are all `[x]`); the gap is that nothing in rezzy's own pipeline
-  currently does the tagging. Separately, even with tagging, checking a _cited
-  auth event's_ `room_id` (not the citing event's own) requires that auth event
-  to already be fetched, parsed, and trusted — reading its `room_id` off an
+  this event was received/stored under). `ingest_events` takes an optional
+  `room_id` parameter for exactly this — a caller-supplied, trusted value (the
+  same trust boundary its `room_version` parameter already is), stamped onto
+  every event in the batch, never read from the PDUs' own fields. Rule 2.5's
+  check (see row 2.5 above) and the V12 row-2 check
+  (`check_room_id_matches_accepted_create`) are therefore both opt-in — they
+  only fire when the citing/checked event's own `room_id` is `Some`, and never
+  fire for `None`. Both checks are implemented (rows 1.2, 2, and 2.5 above are
+  all `[x]`); the gap is that a caller has to actually pass `room_id` for the
+  check to fire at all. Separately, even with tagging, checking a _cited auth
+  event's_ `room_id` (not the citing event's own) requires that auth event to
+  already be fetched, parsed, and trusted — reading its `room_id` off an
   unverified PDU wouldn't be meaningfully stronger than not checking at all,
   since nothing makes that field authoritative on its own. Closing that side
   cryptographically would need MSC4511C Part C's compact per-field proof (a
@@ -191,6 +194,8 @@ authorization rules. Three distinct rule sets exist:
   federation remains a hint that must be verified by fetching full events" — not
   a fallback, the intended model), so it doesn't provide a trusted shortcut
   either. Upgrading this from opt-in to unconditional per MSC4307 requires
-  either populating `room_id` unconditionally at ingest (for the citing side)
-  plus fetching-and-verifying cited auth events (for the cited side), or the
-  room actually running an MSC4511C-adopting version.
+  either always stamping `room_id` at ingest from the trusted room context each
+  batch is actually received/stored under — not from any event's own field, for
+  the circularity reason above (for the citing side) — plus
+  fetching-and-verifying cited auth events (for the cited side), or the room
+  actually running an MSC4511C-adopting version.
