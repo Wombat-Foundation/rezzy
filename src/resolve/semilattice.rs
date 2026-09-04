@@ -149,7 +149,7 @@ fn fold_lattice_chunk<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash::Bu
     // in from the caller rather than recomputed here from `sort_set` so
     // that a caller who computed it from the *narrow*, pre-widening set (as
     // `resolve_semilattice_fold`'s own caller must, if it ever wires this into
-    // a widened path) makes the debug_assert below actually load-bearing
+    // a widened path) makes the assert below actually load-bearing
     // instead of trivially true against the widened set.
     conflicted_keys: &crate::FastSet<(EventType, String)>,
 ) -> HashMap<(EventType, String), &'a LeanEvent<Id, C>>
@@ -159,10 +159,6 @@ where
 {
     let mut thread_res: HashMap<(EventType, String), &'a LeanEvent<Id, C>> = HashMap::new();
     let mut local_auth_cache = crate::state::at::LocalAuthCache::<Id, C>::new(version);
-
-    // Unconditional reference: `debug_assert!` is stripped in release profile,
-    // but `conflicted_keys` must remain load-bearing for the invariant.
-    let _ = &conflicted_keys;
 
     for &ev in chunk {
         // VALIDATE FIRST (filters out Byzantine garbage/supremum deletion attacks)
@@ -192,8 +188,7 @@ where
             EventType::from(ev.event_type.as_str()),
             ev.state_key.clone().unwrap(),
         );
-        #[cfg(debug_assertions)]
-        debug_assert!(
+        assert!(
             conflicted_keys.contains(&key),
             "fold_lattice_chunk competed on a key ({:?}, {:?}) absent from \
              conflicted_events -- the no-guard invariant documented above \
@@ -244,10 +239,6 @@ fn compute_lattice_coordinatized_winners<
         let cursor = std::sync::atomic::AtomicUsize::new(0);
         let len = v.len();
 
-        // Unconditional reference: `debug_assert!` is stripped in release profile,
-        // but `conflicted_keys` must remain load-bearing for the invariant.
-        let _ = &conflicted_keys;
-
         let winners = std::sync::Mutex::new(HashMap::new());
         std::thread::scope(|s| {
             let mut handles = Vec::with_capacity(num_threads);
@@ -287,8 +278,7 @@ fn compute_lattice_coordinatized_winners<
                             EventType::from(ev.event_type.as_str()),
                             ev.state_key.clone().unwrap(),
                         );
-                        #[cfg(debug_assertions)]
-                        debug_assert!(
+                        assert!(
                             conflicted_keys.contains(&key),
                             "fold_lattice_chunk competed on a key ({:?}, {:?}) absent from \
                              conflicted_events -- the no-guard invariant documented in \
