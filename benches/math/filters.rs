@@ -216,20 +216,35 @@ pub(crate) fn quotient_remainder_bits_for_fpr(target_fpr: f64) -> u32 {
 }
 
 /// Remainder width for a linear-probed remainder table at the requested
-/// false-positive rate.  Unlike the quotient-filter helper above, this
+/// false-positive rate. Unlike the quotient-filter helper above, this
 /// accounts for the ~91% load factor (10% extra slots) and the expected
-/// probe length on a miss: probes ≈ 1/(1−α) ≈ 11 at α ≈ 0.91.
+/// probe length on a *miss* -- which is the cost every negative lookup
+/// actually pays, not the successful-search cost.
+///
+/// The expected number of probes for an unsuccessful search under linear
+/// probing at load factor `alpha` (Knuth, TAOCP Vol. 3, 6.4, eq. 6):
+/// `probes ≈ (1/2)(1 + 1/(1-alpha)^2)`. At `alpha ≈ 0.909` (~91% load) that's
+/// `≈ 62`, not the `1/(1-alpha) ≈ 11` this previously used -- that simpler
+/// form is the expected *successful*-search probe count, roughly 5.6x
+/// smaller, and understated this table's real false-positive rate by the
+/// same factor for every caller (`benches/math/filter_spillover.rs`,
+/// `benches/math/invertible_filter.rs`) whenever they compared this
+/// strategy's FPR against cuckoo/CQF/bloom at a nominally equal target.
 pub(crate) fn remainder_probe_bits_for_fpr(target_fpr: f64) -> u32 {
     assert!((0.0..1.0).contains(&target_fpr));
-    // At load factor ≈ 0.91 the expected probes for a miss ≈ 11.
+    let alpha: f64 = 10.0 / 11.0;
+    let probes = 0.5 * (1.0 + 1.0 / (1.0 - alpha).powi(2));
     // FPR ≈ probes / 2^(bits-1) because remainder values are always odd.
-    let probes = 11.0;
-    for bits in 8..=16 {
+    // The higher (correct) probe count needs one more bit than before to
+    // reach a target_fpr of 0.001 (as used by both callers above): 17 bits
+    // gives ≈62/2^16 ≈ 9.5e-4; the old 16-bit cap would silently return a
+    // too-small width (≈62/2^15 ≈ 1.9e-3, over target) for that case.
+    for bits in 8..=17 {
         if probes / f64::from(1_u32 << (bits - 1)) <= target_fpr {
             return bits;
         }
     }
-    16
+    17
 }
 
 // ---------------------------------------------------------------------------
@@ -633,6 +648,41 @@ mod tests {
         assert!(
             measured < 0.005,
             "cuckoo measured FPR {measured:.6} exceeds 0.5% upper bound (target 0.1%)"
+        );
+    }
+
+    #[test]
+    fn remainder_probe_measured_fpr_meets_target() {
+        // Regression test for the miss-probe-count formula in
+        // remainder_probe_bits_for_fpr: an earlier version used the
+        // successful-search approximation (1/(1-alpha) ~= 11 probes) where
+        // the unsuccessful-search count (~62 probes at this load factor)
+        // is what a negative lookup -- what `contains` measures below --
+        // actually pays, understating the true FPR by ~5.6x and silently
+        // returning too few remainder bits for the target.
+        let n: u64 = 20_000;
+        let insert_count = 5_000usize;
+        let target_fpr = 0.001;
+        let bits = remainder_probe_bits_for_fpr(target_fpr);
+        let mut f = RemainderProbeFilter::with_remainder_bits(insert_count, bits);
+        for i in 0..insert_count as u64 {
+            assert!(f.insert(&(i | 1)), "remainder_probe insert failed at {i}");
+        }
+        for i in 0..insert_count as u64 {
+            assert!(f.contains(&(i | 1)), "remainder_probe missing element {i}");
+        }
+        let mut false_positives = 0u64;
+        for i in insert_count as u64..n {
+            if f.contains(&(i | 1)) {
+                false_positives += 1;
+            }
+        }
+        let queried = n - insert_count as u64;
+        let measured = false_positives as f64 / queried as f64;
+        assert!(
+            measured < target_fpr * 2.0,
+            "remainder_probe measured FPR {measured:.6} exceeds 2x the {target_fpr} target \
+             (bits={bits}) -- the miss-probe cost model has regressed"
         );
     }
 
