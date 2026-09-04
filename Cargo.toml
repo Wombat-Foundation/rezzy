@@ -48,6 +48,12 @@ ignored = [
     # Direct optional anchors for transitive CLI dependency versions that still
     # parse and build on the Rust 1.81 MSRV.
     "idna_adapter",
+    # Never used directly -- an exact-version pin on a transitive dependency
+    # (via ed25519-consensus, a dev-dependency) to stop `cargo update` from
+    # selecting zeroize 1.9+, which raises its own rust-version to 1.85 and
+    # breaks this crate's 1.81 MSRV even on the default-features build. See
+    # the comment beside the pin itself.
+    "zeroize",
 ]
 
 [[bin]]
