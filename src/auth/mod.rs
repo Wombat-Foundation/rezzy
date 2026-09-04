@@ -2106,7 +2106,41 @@ pub fn check_auth_chain<
 
     let mut rejected_ids = crate::HashSet::new();
 
+    // V12+: room_id is no longer server-assigned/domain-based -- it's
+    // derived from the create event, "!" followed by the same content hash
+    // used for that event's own "$"-prefixed event ID (version_props.rs's
+    // "Room ID format" note). Computed once; used only by the create-event
+    // check below.
+    let is_v12_plus = matches!(
+        version,
+        StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
+    );
+
     for event in sorted_events {
+        // Rule 1.2 (V12+): if an m.room.create event declares a room_id, it
+        // must be the hash-derived value anchored to this event's own event
+        // ID, not merely internally consistent across the auth chain (that
+        // weaker check is Rule 2.5, below, and applies to every event type).
+        // A `None` here is not rejected -- `room_id` is opt-in on this crate's
+        // `LeanEvent` (see its doc comment), and a caller that never
+        // populates it must see identical behavior to before this check
+        // existed.
+        if is_v12_plus && event.event_type == "m.room.create" {
+            if let Some(declared) = &event.room_id {
+                let event_id_str = event.event_id.to_string();
+                let hash_part = event_id_str.strip_prefix('$').unwrap_or(&event_id_str);
+                let expected = alloc::format!("!{hash_part}");
+                if declared.as_ref() != expected {
+                    let err = AuthError::InvalidSyntax(alloc::format!(
+                        "m.room.create room_id {declared} does not match the derived room ID {expected}"
+                    ));
+                    rejected.push((event.event_id.clone(), err));
+                    rejected_ids.insert(event.event_id.clone());
+                    continue;
+                }
+            }
+        }
+
         // Rule 2.3 / MSC4242 Rule 4.3: an event citing an auth event that
         // was itself rejected during PDU receipt is rejected in turn (see
         // `AuthError::RejectedAuthEvent`'s docs).
@@ -3076,5 +3110,62 @@ mod tests {
             )),
             "event citing a foreign-room auth event from initial_state must be rejected: {rejected:?}"
         );
+    }
+
+    /// Coverage: `check_auth_chain` Rule 1.2 (V12+) -- an `m.room.create`
+    /// event's declared `room_id`, if present, must be the hash-derived
+    /// value anchored to the event's own event ID ("!" + the event ID's
+    /// hash portion), not an arbitrary or server-assigned string.
+    #[test]
+    fn test_check_auth_chain_rejects_mismatched_v12_create_room_id() {
+        let mut create = make_test_event(
+            "$abcHASHpart",
+            M_ROOM_CREATE,
+            "@alice:example.com",
+            json!({ "room_version": "12", "creator": "@alice:example.com" }),
+        );
+        create.room_id = Some("!wrongvalue".into());
+
+        let sorted_events = vec![create];
+        let (accepted, rejected) = check_auth_chain(
+            &sorted_events,
+            &RoomState::new(),
+            StateResVersion::V2_1,
+        );
+
+        assert!(accepted.is_empty(), "mismatched room_id must not be accepted: {accepted:?}");
+        assert!(
+            rejected
+                .iter()
+                .any(|(_, err)| matches!(err, AuthError::InvalidSyntax(_))),
+            "mismatched V12 create room_id must be rejected: {rejected:?}"
+        );
+    }
+
+    /// Coverage: the same rule's accept path -- a correctly hash-derived
+    /// `room_id` (or none at all, since the field is opt-in) does not
+    /// trigger Rule 1.2.
+    #[test]
+    fn test_check_auth_chain_accepts_correct_v12_create_room_id() {
+        let mut create = make_test_event(
+            "$abcHASHpart",
+            M_ROOM_CREATE,
+            "@alice:example.com",
+            json!({ "room_version": "12", "creator": "@alice:example.com" }),
+        );
+        create.room_id = Some("!abcHASHpart".into());
+
+        let sorted_events = vec![create];
+        let (accepted, rejected) = check_auth_chain(
+            &sorted_events,
+            &RoomState::new(),
+            StateResVersion::V2_1,
+        );
+
+        assert!(
+            rejected.is_empty(),
+            "correctly hash-derived room_id must not be rejected: {rejected:?}"
+        );
+        assert_eq!(accepted, vec!["$abcHASHpart".to_string()]);
     }
 }
