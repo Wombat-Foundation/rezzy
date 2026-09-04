@@ -899,11 +899,12 @@ where
     Ok(())
 }
 
-/// Walks the state-predecessor DAG backwards starting from `start_events`.
+/// Walks the `prev_state_events` graph backwards starting from `start_events`.
 ///
-/// For MSC4242 (V2.2) rooms, this follows `prev_state_events` edges. For
-/// earlier room versions, it follows `prev_events` edges as a fallback,
-/// matching the MSC4500 `state_predecessors` definition.
+/// For MSC4242 (V2.2) rooms, this follows explicit `prev_state_events` edges.
+/// For earlier room versions, it follows `prev_events` edges as a fallback,
+/// matching the MSC4500 `state_predecessors` definition where the general
+/// DAG predecessor edges double as the state-predecessor relation.
 ///
 /// Verifies that all paths terminate at `m.room.create`. If any path hits an unknown
 /// event ID or non-create leaf, reports the missing events so the host homeserver
