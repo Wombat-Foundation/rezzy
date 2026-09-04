@@ -160,6 +160,10 @@ where
     let mut thread_res: HashMap<(EventType, String), &'a LeanEvent<Id, C>> = HashMap::new();
     let mut local_auth_cache = crate::state::at::LocalAuthCache::<Id, C>::new(version);
 
+    // Unconditional reference: `debug_assert!` is stripped in release profile,
+    // but `conflicted_keys` must remain load-bearing for the invariant.
+    let _ = &conflicted_keys;
+
     for &ev in chunk {
         // VALIDATE FIRST (filters out Byzantine garbage/supremum deletion attacks)
         let local_auth =
@@ -239,6 +243,10 @@ fn compute_lattice_coordinatized_winners<
         // threads rather than the slowest pre-partitioned chunk.
         let cursor = std::sync::atomic::AtomicUsize::new(0);
         let len = v.len();
+
+        // Unconditional reference: `debug_assert!` is stripped in release profile,
+        // but `conflicted_keys` must remain load-bearing for the invariant.
+        let _ = &conflicted_keys;
 
         let winners = std::sync::Mutex::new(HashMap::new());
         std::thread::scope(|s| {
