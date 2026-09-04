@@ -688,6 +688,56 @@ mod tests {
         }
     }
 
+    /// `MAX_FACTOR_WORK`'s own comment documents an unproven gap: no proof
+    /// bounds the recursive-splitting cost, only measurements against
+    /// random and adversarial-consecutive-value degree-256 inputs, plus a
+    /// from-first-principles computation of one specific pathological shape
+    /// (a chain of (1, d-1) splits) that would exceed the budget ~57x over
+    /// if it occurred. This test does not close that gap -- constructing an
+    /// input that actually forces that exact recursive shape is a separate,
+    /// nontrivial exercise in choosing a locator polynomial with a
+    /// specific factorization structure over GF(2^64), not attempted here.
+    ///
+    /// What this *does* verify, on a real degree-256 decode: the
+    /// documented "fails safe" claim. `decode_with_budget` with a budget
+    /// far too small to complete any real decode must return
+    /// `BudgetExhausted` cleanly -- not panic, not loop unboundedly, not
+    /// return a wrong/partial root set -- for a large, real (not
+    /// specially-crafted) input, not just the small inputs the other tests
+    /// in this module use.
+    #[test]
+    fn budget_exhaustion_on_a_large_decode_fails_safe() {
+        let mut state = 0x243f_6a88_85a3_08d3_u64;
+        let size = 256;
+        let mut expected = Vec::new();
+        while expected.len() < size {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            if state != 0 && !expected.contains(&state) {
+                expected.push(state);
+            }
+        }
+        let mut odd = vec![0; size];
+        for value in &expected {
+            let squared = gf64_mul(*value, *value);
+            let mut power = *value;
+            for syndrome in &mut odd {
+                *syndrome ^= power;
+                power = gf64_mul(power, squared);
+            }
+        }
+
+        // Nowhere near enough to complete a degree-256 decode (measured at
+        // ~9-10M for a full decode/non-splitting ladder per this file's own
+        // comment) -- budget exhaustion must trigger, and trigger cleanly.
+        let mut budget = 1_000;
+        assert_eq!(
+            decode_with_budget(&odd, size, &mut budget),
+            Err(AlgebraicError::BudgetExhausted)
+        );
+    }
+
     #[test]
     fn decodes_a_triple_unsplit_by_the_mixed_parameter_prefix() {
         let expected = vec![1, 0xcd2, 0x1_d71a];
