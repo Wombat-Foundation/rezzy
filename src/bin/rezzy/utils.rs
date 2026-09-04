@@ -60,6 +60,28 @@ pub fn detect_version(
     )
 }
 
+/// Detect the literal `content.room_version` string from `m.room.create`.
+///
+/// Distinct from [`detect_version`]: that returns the coarser
+/// [`StateResVersion`] (which state-resolution algorithm to run), while
+/// [`LeanEvent::validate_syntactic`](rezzy::LeanEvent::validate_syntactic)
+/// needs the exact version string for its version-string-sensitive checks
+/// (e.g. the pre-v11 255-byte field limit). Returns `None` if no
+/// `m.room.create` event is present or its `content.room_version` is absent
+/// -- callers should apply the spec's "missing `room_version` defaults to 1"
+/// rule themselves.
+pub fn detect_room_version_string(events: &[serde_json::Value]) -> Option<String> {
+    events.iter().find_map(|ev| {
+        if ev.get(FIELD_TYPE).and_then(|t| t.as_str()) != Some(M_ROOM_CREATE) {
+            return None;
+        }
+        ev.get(FIELD_CONTENT)
+            .and_then(|c| c.get(FIELD_ROOM_VERSION))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    })
+}
+
 /// Detect `prev_events` and `auth_events` references that point to events
 /// absent from `events_map` and not known to the `exists` oracle.
 ///

@@ -81,15 +81,49 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
         Some(v) => v,
         None => detect_version(&raw_events, args.debug)?,
     };
+    // Needed up front (not discovered mid-loop below, since `raw_events`
+    // isn't guaranteed to have `m.room.create` first) for
+    // `validate_syntactic`'s version-string-sensitive checks. Absent
+    // room_version defaults to "1" per spec.
+    let syntactic_room_version =
+        utils::detect_room_version_string(&raw_events).unwrap_or_else(|| "1".to_string());
 
     let mut raw_map = HashMap::with_capacity(event_count);
     let mut events_map = HashMap::with_capacity(event_count);
     let mut creator_user_id = String::new();
+    let mut syntactically_rejected: usize = 0;
 
     for val in raw_events {
         match serde_json::from_value::<LeanEvent>(val.clone()) {
             Ok(ev) => {
-                // TODO: Invoke ev.validate_syntactic() during CLI ingestion once a robust error recovery / fallback strategy is defined for malformed inputs.
+                // A syntactically-invalid-but-parseable event (e.g. a
+                // malformed sender MXID a lenient origin server already
+                // accepted into a real room's history) is treated as
+                // rejected -- like an auth failure -- not a fatal CLI error:
+                // real DAGs pulled from the wild contain events no current
+                // homeserver would author but that already exist, and this
+                // is a diagnostic tool for exactly that data, not a strict
+                // federation-grade validator (see the startup WARNING).
+                // Excluding it here (never inserted into raw_map/events_map)
+                // keeps it out of state resolution the same way an
+                // AuthError-rejected event would be.
+                match ev.validate_syntactic(&syntactic_room_version) {
+                    Ok(outcome) => {
+                        if !args.quiet {
+                            for warning in outcome.warnings {
+                                eprintln!("[WARN] {warning}");
+                            }
+                        }
+                    }
+                    Err(reason) => {
+                        syntactically_rejected = syntactically_rejected.saturating_add(1);
+                        eprintln!(
+                            "[REJECTED] event {} failed syntactic validation, excluded from resolution: {reason}",
+                            ev.event_id
+                        );
+                        continue;
+                    }
+                }
                 if ev.event_type == "m.room.create" {
                     creator_user_id.clone_from(&ev.sender);
                     room_version = ev
@@ -139,8 +173,13 @@ fn run_cli(args: &Args) -> anyhow::Result<serde_json::Value> {
             "INFO rezzy: room={room_label} room_version={room_version_label} state_res_version={version:?}"
         );
         eprintln!(
-            "WARNING rezzy is a diagnostic tool: it does not perform federation-grade PDU validation (signatures, required hashes, or full syntactic checks)."
+            "WARNING rezzy is a diagnostic tool: it does not perform federation-grade PDU validation (signatures, required hashes). Structural/syntactic invariants (validate_syntactic) are enforced during ingestion."
         );
+        if syntactically_rejected > 0 {
+            eprintln!(
+                "[WARN] {syntactically_rejected} event(s) excluded from resolution for failing syntactic validation (see [REJECTED] lines above)"
+            );
+        }
     }
 
     if !args.quiet {
