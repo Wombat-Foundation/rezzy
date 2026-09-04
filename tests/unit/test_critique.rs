@@ -697,3 +697,126 @@ fn test_anomaly_21_concurrent_kick_still_holds() {
          so his kick of Dave must not take effect -- V2.1/V2.1.1 full resolution agrees"
     );
 }
+
+/// Measure |I(P)| / |C(P)| for sample points in real DAG fixtures.
+///
+/// C(P) = transitive `prev_events` closure (the causal past under `prev_events` only).
+/// I(P) = MSC4500 resolution-input closure in the fallback case:
+///   seed = union of state-map members at each of P's `prev_events`,
+///   closed transitively over `auth_events` ∪ `prev_events` until fixpoint.
+///
+/// In the fallback case (no State DAGs), `state_predecessors` = `prev_events`,
+/// so the closure follows both edge types recursively. The ratio is
+/// mathematically ≤ 1 (seed is inside C(P), closure under `prev_events` can't
+/// escape a prev_events-closed set), so the real question is absolute size:
+/// how large is I(P) for late events in a real room?
+#[test]
+#[ignore = "manual analysis tool: prints closure-ratio stats for large fixtures, some of which live outside the repo (/tmp/opencode/res_tmp) and aren't available in CI"]
+fn test_ip_closure_ratio() {
+    let fixtures = [
+        "01_state_reset.jsonl",
+        "06c_zombie_invite_reset.jsonl",
+        "13_large_cascading_lockout.jsonl",
+        "pathology_06-fruitless-search-small.jsonl",
+        "real_dag_52k_room.json",
+        "realistic_large_room.json",
+    ];
+
+    let search_dirs = [
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/critique_data"),
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pathology_data"),
+        std::path::PathBuf::from("/tmp/opencode/res_tmp"),
+    ];
+
+    for fixture in fixtures {
+        let actual_path = search_dirs
+            .iter()
+            .map(|d| d.join(fixture))
+            .find(|p| p.exists());
+        let Some(actual_path) = actual_path else {
+            eprintln!("Skipping {fixture}: not found");
+            continue;
+        };
+
+        let events = load_fixture(&actual_path);
+        let events_map = to_event_map(&events);
+        let heads = get_heads(&events);
+        let total = events.len();
+
+        eprintln!(
+            "\n=== {fixture} === ({total} events, {} heads)",
+            heads.len()
+        );
+
+        // Also sample a "late" event — the one with highest depth — to measure
+        // absolute closure size for an event deep in the room history.
+        let mut late_event: Option<String> = None;
+        let mut max_depth = 0u64;
+        for ev in &events {
+            if ev.depth > max_depth {
+                max_depth = ev.depth;
+                late_event = Some(ev.event_id.clone());
+            }
+        }
+        // Collect all sample points: heads + the late event (deduplicated)
+        let mut sample_heads: Vec<String> = heads.clone();
+        if let Some(ref late) = late_event {
+            if !sample_heads.contains(late) {
+                sample_heads.push(late.clone());
+            }
+        }
+
+        for head_id in &sample_heads {
+            let is_late = late_event.as_deref() == Some(head_id.as_str());
+            // C(P): transitive prev_events closure of head
+            let mut c_set = HashSet::new();
+            let mut stack = vec![head_id.clone()];
+            while let Some(id) = stack.pop() {
+                if c_set.insert(id.clone()) {
+                    if let Some(ev) = events_map.get(&id) {
+                        for p in &ev.prev_events {
+                            stack.push(p.clone());
+                        }
+                    }
+                }
+            }
+
+            // Seed: state-map members at each of head's prev_events.
+            // get_state_map_for_head walks prev_events and takes latest state per key.
+            let Some(head_ev) = events_map.get(head_id) else {
+                eprintln!("  head {head_id}: skipping (not in events_map)");
+                continue;
+            };
+            let mut seed: HashSet<String> = HashSet::new();
+            for prev_id in &head_ev.prev_events {
+                let state_map = get_state_map_for_head(prev_id, &events_map);
+                for event_id in state_map.values() {
+                    seed.insert(event_id.clone());
+                }
+            }
+
+            // I(P): close seed transitively over auth_events ∪ prev_events
+            let mut i_set = seed.clone();
+            let mut stack: Vec<String> = seed.iter().cloned().collect();
+            while let Some(id) = stack.pop() {
+                if let Some(ev) = events_map.get(&id) {
+                    for parent in ev.prev_events.iter().chain(ev.auth_events.iter()) {
+                        if i_set.insert(parent.clone()) {
+                            stack.push(parent.clone());
+                        }
+                    }
+                }
+            }
+
+            let c_size = c_set.len();
+            let i_size = i_set.len();
+            let ratio_pct = i_size.checked_mul(100).map_or(0, |v| v / c_size);
+
+            let tag = if is_late { " [late]" } else { "" };
+            eprintln!(
+                "  head{tag} {head_id}: |C(P)|={c_size} ({}/{total}), seed={}, |I(P)|={i_size} ({}/{total}), ratio={ratio_pct}%",
+                c_size, seed.len(), i_size,
+            );
+        }
+    }
+}
