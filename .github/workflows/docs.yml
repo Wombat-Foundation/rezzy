@@ -3,84 +3,30 @@ name: Rust Docs
 
 on:
   push:
-    branches: ["master", "dev"]
+    branches: ["dev"]
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# `master` and `dev` both write to the single shared `gh-pages` branch (to
-# different destination_dirs), so their deployments must be serialized, not
-# run concurrently — a per-branch group would let two runs race `git push`
-# against the same branch. Queue instead of cancelling: a queued run must
-# not be dropped just because the other branch pushed first.
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   docs:
-    if: github.ref_name == 'master' || github.ref_name == 'dev'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build rustdoc for this branch only
+      - name: Build rustdoc
         run: make doc
-
-      - name: Determine this branch's docs destination
-        id: dest
-        run: |
-          if [ "${{ github.ref_name }}" = "dev" ]; then
-            echo "dir=dev" >> "$GITHUB_OUTPUT"
-          else
-            echo "dir=." >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Remove this branch's stale docs from gh-pages
-        # `keep_files: true` below preserves the *other* branch's directory,
-        # but it also means files removed from this branch's own docs (e.g.
-        # a deleted crate or module) would otherwise linger forever. Clear
-        # only this branch's destination before publishing the fresh build.
-        uses: actions/checkout@v4
-        continue-on-error: true
-        with:
-          ref: gh-pages
-          path: gh-pages-clean
-
-      - name: Prune stale destination contents
-        continue-on-error: true
-        run: |
-          set -e
-          if [ ! -d gh-pages-clean ]; then
-            echo "gh-pages branch not checked out (first run?) — nothing to prune"
-            exit 0
-          fi
-          cd gh-pages-clean
-          dest="${{ steps.dest.outputs.dir }}"
-          if [ "$dest" = "dev" ]; then
-            # dev's docs live entirely under dev/ — safe to remove wholesale.
-            pathspec="dev"
-          else
-            # master's docs live at the root, alongside (not inside) dev/ —
-            # remove everything except that other branch's directory.
-            pathspec=". ':!:dev'"
-          fi
-          if [ -n "$(eval "git ls-files -- $pathspec")" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            eval "git ls-files -z -- $pathspec" | xargs -0 -r git rm -rq --
-            git commit -m "chore: prune stale docs for ${{ github.ref_name }}"
-            git push
-          fi
 
       - name: Prepare flat deploy directory
         run: |
@@ -97,5 +43,4 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
           publish_dir: _site
-          destination_dir: ${{ steps.dest.outputs.dir == 'dev' && 'dev' || '' }}
-          keep_files: true
+          destination_dir: .
