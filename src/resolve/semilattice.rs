@@ -358,6 +358,46 @@ where
     C: crate::basespec::rezzy_types::EventContent + Sync + Send + Clone,
 {
     // jscpd:ignore-end
+    let empty_key = alloc::string::String::new();
+    let conflicted_keys =
+        crate::resolve::iterative::derive_all_conflicted_keys(&conflicted_events, &empty_key);
+    resolve_semilattice_fold_with_conflicted_keys(
+        unconflicted_state,
+        conflicted_events,
+        auth_context,
+        version,
+        &conflicted_keys,
+    )
+}
+
+/// Like [`resolve_semilattice_fold`], but accepts a pre-derived `conflicted_keys`
+/// set from the caller.
+///
+/// This allows callers who compute `conflicted_keys` from a *narrow*,
+/// pre-widening event set (e.g. before MSC4297's conflicted subgraph supplement)
+/// to make the `debug_assert` in [`fold_lattice_chunk`] load-bearing against
+/// the widened set, rather than trivially true.
+///
+/// When in doubt, use [`resolve_semilattice_fold`] which derives `conflicted_keys`
+/// internally.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_semilattice_fold_with_conflicted_keys<
+    Id,
+    C,
+    S1: core::hash::BuildHasher + Sync + Send,
+    S2: core::hash::BuildHasher + Sync + Send,
+>(
+    unconflicted_state: crate::state::at::SharedState<Id>,
+    conflicted_events: HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    version: StateResVersion,
+    conflicted_keys: &crate::FastSet<(EventType, String)>,
+) -> crate::state::at::SharedState<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId + Sync + Send,
+    C: crate::basespec::rezzy_types::EventContent + Sync + Send + Clone,
+{
     let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
 
     // Empty-key sentinel for the `(EventType, K)` lookups below (the
@@ -375,13 +415,6 @@ where
             &empty_key,
         );
     }
-
-    // This exploratory path doesn't add auth-diff/subgraph-context events to
-    // `conflicted_events` beyond what its own caller supplied, so every
-    // entry is treated as genuinely conflicted (matching the pre-existing
-    // behavior of this experimental resolver).
-    let conflicted_keys =
-        crate::resolve::iterative::derive_all_conflicted_keys(&conflicted_events, &empty_key);
 
     let original_conflicted_keys = crate::resolve::iterative::prepare_conflicted_and_keys(
         &conflicted_events,
@@ -415,7 +448,7 @@ where
         &mut local_auth_cache,
         create_ev,
         &mut pl_cache,
-        &conflicted_keys,
+        conflicted_keys,
     );
 
     let sort_set = &conflicted_events;
@@ -438,7 +471,7 @@ where
         sort_set,
         version,
         create_ev,
-        &conflicted_keys,
+        conflicted_keys,
         &mut key_winners,
     );
 
