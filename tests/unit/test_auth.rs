@@ -855,7 +855,13 @@ fn test_iterative_auth_chain_rejects_foreign_room_auth_event() {
 /// silently, since the check only compared populated pairs.)
 #[test]
 fn test_iterative_auth_chain_rejects_untagged_auth_event_once_citing_side_populated() {
-    let room_a = rezzy::RoomId::new("!room_a:example.com");
+    // Under V2.1+ a non-create event's room_id is checked against the
+    // *real* accepted create event (Rule 2, spec/rooms/v12.txt:98), not an
+    // arbitrary tag -- so msg's room_id must be "$create" stripped of its
+    // sigil, "!create", to reach the Rule 2.5 behavior this test actually
+    // isolates (a `None` on the *cited* side is not a free pass) rather
+    // than being rejected earlier by Rule 2 for an unrelated reason.
+    let room_a = rezzy::RoomId::new("!create");
 
     let create = make_event(
         "$create",
@@ -916,8 +922,6 @@ fn test_iterative_auth_chain_rejects_untagged_auth_event_once_citing_side_popula
 /// requirement on every event that never populates `room_id` at all.
 #[test]
 fn test_iterative_auth_chain_room_id_none_on_citing_side_is_never_checked() {
-    let room_b = rezzy::RoomId::new("!room_b:example.com");
-
     let create = make_event(
         "$create",
         "m.room.create",
@@ -927,22 +931,27 @@ fn test_iterative_auth_chain_room_id_none_on_citing_side_is_never_checked() {
     );
     // create.room_id stays None -- caller never populated it for this event.
 
-    // A foreign-room power_levels event, not a create -- citing *any*
-    // m.room.create in auth_events is independently forbidden under V2.1+
-    // (v12+ drops create from auth_events entirely), which would trip that
-    // unrelated rule first and defeat this test's isolation. Sender is
-    // alice (not a fresh mallory) so the implicit-creator-is-joined rule
-    // (matched against the *local* $create's sender) lets it pass its own
-    // auth check without needing a separate join event -- only `room_id`
-    // needs to be foreign for this test.
-    let mut foreign_pl = make_event(
+    // Not a create event -- citing *any* m.room.create in auth_events is
+    // independently forbidden under V2.1+ (v12+ drops create from
+    // auth_events entirely), which would trip that unrelated rule first and
+    // defeat this test's isolation. Sender is alice (not a fresh mallory) so
+    // the implicit-creator-is-joined rule (matched against the *local*
+    // $create's sender) lets it pass its own auth check without needing a
+    // separate join event. room_id stays None: whether this event's own
+    // room tag would agree with anything is irrelevant to what this test
+    // isolates -- msg (below) never even looks at it, since msg's own
+    // room_id is None and Rule 2.5 is opt-in on the *citing* side. (Giving
+    // it a populated, foreign-looking tag would instead now trip Rule 2,
+    // spec/rooms/v12.txt:98, which checks every non-create V2.1+ event's
+    // room_id against the real accepted create -- an unrelated rejection
+    // this test isn't about.)
+    let foreign_pl = make_event(
         "$foreign_pl",
         "m.room.power_levels",
         Some(""),
         "@alice:example.com",
         json!({}),
     );
-    foreign_pl.room_id = Some(room_b);
 
     let mut msg = make_event(
         "$msg",
