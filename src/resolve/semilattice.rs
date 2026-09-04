@@ -14,7 +14,7 @@
 
 //! Lattice-coordinatized state resolution.
 //!
-//! This module provides [`resolve_lattice_fold`], an alternative to
+//! This module provides [`resolve_semilattice_fold`], an alternative to
 //! [`crate::resolve::iterative::resolve_iterative_sort`] that replaces the sequential mainline sort
 //! with a parallel causal coordinatization projection and commutative
 //! join-semilattice fold. Note that this is currently an exploratory hypothesis
@@ -70,7 +70,7 @@ use alloc::{string::String, vec::Vec};
 /// This operator is **commutative** and **associative**, which is what allows
 /// the fold to be parallelized without affecting the result.
 #[must_use]
-pub fn is_lattice_winner_better<Id, C, S: core::hash::BuildHasher>(
+pub fn is_semilattice_winner_better<Id, C, S: core::hash::BuildHasher>(
     ev: &LeanEvent<Id, C>,
     current_winner: &LeanEvent<Id, C>,
     mainline_distances: &HashMap<Id, usize, S>,
@@ -115,7 +115,7 @@ fn update_winner_if_better<'a, Id, C>(
     C: crate::basespec::rezzy_types::EventContent,
 {
     let is_better = if let Some(current_winner) = winners.get(&key) {
-        is_lattice_winner_better(ev, current_winner, mainline_distances, mainline_len)
+        is_semilattice_winner_better(ev, current_winner, mainline_distances, mainline_len)
     } else {
         true // First event for this state key inherently wins
     };
@@ -147,7 +147,7 @@ fn fold_lattice_chunk<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash::Bu
     // way `expand_v2` grows `power_events`). `conflicted_keys` is threaded
     // in from the caller rather than recomputed here from `sort_set` so
     // that a caller who computed it from the *narrow*, pre-widening set (as
-    // `resolve_lattice_fold`'s own caller must, if it ever wires this into
+    // `resolve_semilattice_fold`'s own caller must, if it ever wires this into
     // a widened path) makes the debug_assert below actually load-bearing
     // instead of trivially true against the widened set.
     conflicted_keys: &crate::FastSet<(EventType, String)>,
@@ -324,7 +324,7 @@ pub fn route_power_events<
 /// This is an exploratory hypothesis that approximates [`crate::resolve::iterative::resolve_iterative_sort`] but
 /// replaces the sequential mainline sort + iterative auth-check loop with a
 /// parallel per-key fold. Each non-power event competes for its `(type, state_key)`
-/// slot via the [`is_lattice_winner_better`] LUB operator.
+/// slot via the [`is_semilattice_winner_better`] LUB operator.
 ///
 /// Use this variant when:
 /// - The conflicted set is large (thousands of events).
@@ -342,7 +342,7 @@ pub fn route_power_events<
 /// `m.room.power_levels` event.
 // jscpd:ignore-start
 #[must_use]
-pub fn resolve_lattice_fold<
+pub fn resolve_semilattice_fold<
     Id,
     C,
     S1: core::hash::BuildHasher + Sync + Send,

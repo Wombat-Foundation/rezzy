@@ -2,9 +2,9 @@
 
 pub mod cdo;
 pub mod iterative;
-pub mod lattice;
 pub mod multi;
 pub mod reachability;
+pub mod semilattice;
 pub mod sorting;
 pub mod subgraph;
 pub mod v3;
@@ -17,9 +17,9 @@ pub mod v3;
 // still exercise them, but they are not re-exported into the flat public
 // API via crate root globs.
 pub use iterative::*;
-pub use lattice::*;
 pub use multi::*;
 pub use reachability::*;
+pub use semilattice::*;
 pub use sorting::*;
 pub use subgraph::*;
 pub use v3::*;

@@ -245,7 +245,7 @@ where
 {
     // The hot path (compute_state_at's fork-merge loop) now threads a persistent
     // cache through `resolve_iterative_sort_with_all_caches`, so this fresh-cache
-    // fallback only matters for one-shot callers (e.g. resolve_lattice_fold's V2
+    // fallback only matters for one-shot callers (e.g. resolve_semilattice_fold's V2
     // path, which calls build_mainline exactly once per resolution).
     build_mainline_with_cache(
         resolved,

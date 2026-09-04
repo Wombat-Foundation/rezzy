@@ -6043,7 +6043,7 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
     // Test V2 (Rooms 2-11)
     let mut set1_v2_power = HashMap::new();
     let mut set1_v2_non_power = HashMap::new();
-    rezzy::resolve::lattice::route_power_events(
+    rezzy::resolve::semilattice::route_power_events(
         &sort_set,
         &mut set1_v2_power,
         &mut set1_v2_non_power,
@@ -6076,7 +6076,7 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
     // Test V2.1 (Room 12+)
     let mut set2_v21_power = HashMap::new();
     let mut set2_v21_non_power = HashMap::new();
-    rezzy::resolve::lattice::route_power_events(
+    rezzy::resolve::semilattice::route_power_events(
         &sort_set,
         &mut set2_v21_power,
         &mut set2_v21_non_power,
@@ -6626,7 +6626,7 @@ fn test_msc4289_lean_event_get_redact_and_creator() {
 fn test_coverage_sweeper_for_unreachable_edges() {
     use rezzy::basespec::rezzy_types::{EventProvider, SortPriority};
     use rezzy::resolve::cdo::is_ancestor;
-    use rezzy::resolve::lattice::resolve_lattice_fold;
+    use rezzy::resolve::semilattice::resolve_semilattice_fold;
     use rezzy::state::at::StateComputationError;
     use rezzy::state::delta::{reconstruct_state_batch, CompactedCheckpoint};
     use rezzy::{resolve_iterative_sort_with_deltas, LeanEvent, StateResVersion};
@@ -6654,8 +6654,8 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     assert!(is_ancestor(&"B".to_string(), &"A".to_string(), &context));
     assert!(!is_ancestor(&"A".to_string(), &"B".to_string(), &context));
 
-    // Cover resolve_lattice_fold
-    let lattice_res = resolve_lattice_fold(
+    // Cover resolve_semilattice_fold
+    let lattice_res = resolve_semilattice_fold(
         imbl::OrdMap::new(),
         context.clone(),
         &HashMap::new(),

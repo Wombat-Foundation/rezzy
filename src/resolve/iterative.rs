@@ -27,7 +27,7 @@
 //!    against the progressively-built resolved state.
 //!
 //! For the lattice-coordinatized variant (parallel, `O(1)` projection), see
-//! [`crate::resolve::lattice::resolve_lattice_fold`].
+//! [`crate::resolve::semilattice::resolve_semilattice_fold`].
 
 use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
@@ -382,7 +382,7 @@ where
 
     let mut power_events = HashMap::new();
     let mut non_power_events = HashMap::new();
-    crate::resolve::lattice::route_power_events(
+    crate::resolve::semilattice::route_power_events(
         conflicted_events,
         &mut power_events,
         &mut non_power_events,

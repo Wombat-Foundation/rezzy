@@ -1,10 +1,12 @@
 //! Lattice-coordinatized state resolution tests.
 //!
-//! Tests the LUB comparator, `route_power_events`, and `resolve_lattice_fold`.
+//! Tests the LUB comparator, `route_power_events`, and `resolve_semilattice_fold`.
 
 use crate::utils;
 
-use rezzy::resolve::lattice::{is_lattice_winner_better, resolve_lattice_fold, route_power_events};
+use rezzy::resolve::semilattice::{
+    is_semilattice_winner_better, resolve_semilattice_fold, route_power_events,
+};
 use rezzy::{LeanEvent, StateResVersion};
 use std::collections::HashMap;
 
@@ -47,8 +49,8 @@ fn test_lub_mainline_closer_wins() {
     let mut dists = HashMap::new();
     dists.insert("$a".to_string(), 1usize);
     dists.insert("$b".to_string(), 5usize);
-    assert!(is_lattice_winner_better(&a, &b, &dists, 10));
-    assert!(!is_lattice_winner_better(&b, &a, &dists, 10));
+    assert!(is_semilattice_winner_better(&a, &b, &dists, 10));
+    assert!(!is_semilattice_winner_better(&b, &a, &dists, 10));
 }
 
 #[test]
@@ -58,8 +60,8 @@ fn test_lub_mainline_tie_ts_wins() {
     let mut dists = HashMap::new();
     dists.insert("$a".to_string(), 3usize);
     dists.insert("$b".to_string(), 3usize);
-    assert!(is_lattice_winner_better(&a, &b, &dists, 10));
-    assert!(!is_lattice_winner_better(&b, &a, &dists, 10));
+    assert!(is_semilattice_winner_better(&a, &b, &dists, 10));
+    assert!(!is_semilattice_winner_better(&b, &a, &dists, 10));
 }
 
 #[test]
@@ -67,8 +69,8 @@ fn test_lub_full_tie_event_id_tiebreak() {
     let a = ev("$z_big", 100);
     let b = ev("$a_small", 100);
     let dists: HashMap<String, usize> = HashMap::new();
-    assert!(is_lattice_winner_better(&a, &b, &dists, 10));
-    assert!(!is_lattice_winner_better(&b, &a, &dists, 10));
+    assert!(is_semilattice_winner_better(&a, &b, &dists, 10));
+    assert!(!is_semilattice_winner_better(&b, &a, &dists, 10));
 }
 
 #[test]
@@ -78,7 +80,7 @@ fn test_lub_missing_mainline_defaults_to_len() {
     let mut dists = HashMap::new();
     dists.insert("$a".to_string(), 2usize);
     // $b missing → defaults to mainline_len (10)
-    assert!(is_lattice_winner_better(&a, &b, &dists, 10));
+    assert!(is_semilattice_winner_better(&a, &b, &dists, 10));
 }
 
 // ============================================================================
@@ -105,7 +107,7 @@ fn test_route_power_events_classification() {
 }
 
 // ============================================================================
-// resolve_lattice_fold (end-to-end)
+// resolve_semilattice_fold (end-to-end)
 // ============================================================================
 
 #[test]
@@ -121,7 +123,7 @@ fn test_lattice_fold_resolves_conflicting_topics() {
     conflicted.insert("$topic_a".to_string(), map["$topic_a"].clone());
     conflicted.insert("$topic_b".to_string(), map["$topic_b"].clone());
 
-    let resolved = resolve_lattice_fold(unconflicted, conflicted, &map, StateResVersion::V2);
+    let resolved = resolve_semilattice_fold(unconflicted, conflicted, &map, StateResVersion::V2);
 
     // The topic with later timestamp ($topic_b, ts=3000) should win
     let topic_key = (
@@ -146,7 +148,7 @@ fn test_lattice_fold_parity_with_iterative() {
     conflicted.insert("$topic_a".to_string(), map["$topic_a"].clone());
     conflicted.insert("$topic_b".to_string(), map["$topic_b"].clone());
 
-    let lattice = resolve_lattice_fold(
+    let lattice = resolve_semilattice_fold(
         unconflicted.clone(),
         conflicted.clone(),
         &map,
@@ -183,13 +185,13 @@ fn test_lattice_fold_deterministic() {
     conflicted.insert("$topic_a".to_string(), map["$topic_a"].clone());
     conflicted.insert("$topic_b".to_string(), map["$topic_b"].clone());
 
-    let r1 = resolve_lattice_fold(
+    let r1 = resolve_semilattice_fold(
         unconflicted.clone(),
         conflicted.clone(),
         &map,
         StateResVersion::V2,
     );
-    let r2 = resolve_lattice_fold(unconflicted, conflicted, &map, StateResVersion::V2);
+    let r2 = resolve_semilattice_fold(unconflicted, conflicted, &map, StateResVersion::V2);
     assert_eq!(r1, r2, "Lattice fold must be deterministic");
 }
 
@@ -219,7 +221,7 @@ fn test_lattice_fold_skips_non_state_events() {
     conflicted.insert("$topic_b".to_string(), map["$topic_b"].clone());
     conflicted.insert("$msg".to_string(), map["$msg"].clone());
 
-    let resolved = resolve_lattice_fold(unconflicted, conflicted, &map, StateResVersion::V2);
+    let resolved = resolve_semilattice_fold(unconflicted, conflicted, &map, StateResVersion::V2);
 
     // topic_b wins (later ts), message is silently skipped
     let topic_key = (
@@ -268,9 +270,9 @@ fn test_lattice_fold_unconflicted_power_bootstrap_v2_1() {
     conflicted.insert("$topic_a".to_string(), map["$topic_a"].clone());
     conflicted.insert("$topic_b".to_string(), map["$topic_b"].clone());
 
-    // Resolve with V2_1: resolve_lattice_fold delegates to resolve_iterative_sort for V2.1+.
+    // Resolve with V2_1: resolve_semilattice_fold delegates to resolve_iterative_sort for V2.1+.
     // This exercises the iterative fallback path, not the lattice fold's merge logic.
-    let resolved = resolve_lattice_fold(unconflicted, conflicted, &map, StateResVersion::V2_1);
+    let resolved = resolve_semilattice_fold(unconflicted, conflicted, &map, StateResVersion::V2_1);
 
     let topic_key = (
         rezzy::basespec::event_types::EventType::from("m.room.topic"),
@@ -344,7 +346,7 @@ fn test_msc4297_lattice_fold_dependency_v2_1_fallback() {
 
     // Resolve under V2.1. The fallback automatically redirects to resolve_iterative_sort,
     // which correctly respects the topological non-power dependency!
-    let resolved = resolve_lattice_fold(unconflicted, conflicted, &map, StateResVersion::V2_1);
+    let resolved = resolve_semilattice_fold(unconflicted, conflicted, &map, StateResVersion::V2_1);
 
     // Verify that the topic is successfully authorized and present!
     let topic_key = (
