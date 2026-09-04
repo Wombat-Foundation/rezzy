@@ -1,4 +1,43 @@
 ##############################
+09/04/2026
+##############################
+
+• Session continuation analysis: Lean formalization gap assessment (from previous session).
+
+  The previous session identified several gaps between the Lean formalization (in the private
+  `res/` submodule, inaccessible) and the Rust implementation. Key findings after grounding
+  against the actual spec:
+
+  1. Auth-chain distance in sorting: NOT a gap. The v12 spec (state res v2.1) sorting algorithm
+     is identical to v2 — power level → origin_server_ts → event_id for power events; mainline
+     position → origin_server_ts → event_id for non-power events. The test comment at
+     test_traversal.rs:1765 confirms auth_chain_distance was considered and removed as redundant.
+
+  2. The Lean formalization's candidateKey (mainlineDistance, origin_server_ts, eventId) already
+     matches the spec for non-power events. No auth-chain distance extension is needed.
+
+  3. The real gap is behavioral, not structural: no theorem proving the single-pass progressiveFold
+     terminates correctly for mutual demotion under v2.1.1's empty-start-state semantics. The
+     formalization has:
+     - FinalPassFixedPoint.lean: one-pass filter is idempotent under static AuthContext
+     - ProgressiveAuth.lean: progressive auth is order-dependent when PreservesAuth fails
+     - RevalidationOscillation.lean: fixed-point recomputation oscillates
+     But missing: connection between (1) and (2) — the single-pass progressive fold terminates
+     (it's just a foldl processing exactly n events) and produces the right answer for mutual
+     demotion.
+
+  4. No concrete fixture for backdated kick vs demotion with auth-chain distance ordering —
+     but since auth-chain distance isn't in the sort key, this is just a normal concurrent
+     admin action scenario covered by existing anomaly tests.
+
+  Status: The Rust implementation's SortPriority already matches the v12 spec. The Lean
+  formalization (when accessible) needs the behavioral theorem, not a structural extension.
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+##############################
 09/02/2026
 ##############################
 
