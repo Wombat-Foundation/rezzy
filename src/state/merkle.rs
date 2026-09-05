@@ -261,6 +261,19 @@ pub fn verify_non_inclusion(
     if terminal_depth > STATE_DEPTH {
         return false;
     }
+    if path.len() != terminal_depth {
+        return false;
+    }
+    // Minimality: if the sibling at the terminal depth were also
+    // canonical-empty, the parent at terminal_depth - 1 would have two
+    // empty children and so be canonical-empty itself — the descent
+    // would have stopped a level higher. Biconditional, so this is
+    // exact, not a heuristic.
+    if let Some(s0) = path.first() {
+        if s0.hash == empty_table()[terminal_depth] {
+            return false;
+        }
+    }
     verify(
         state_key_hash(event_type, state_key),
         empty_table()[terminal_depth],
@@ -351,6 +364,28 @@ mod tests {
             terminal_depth,
             &path,
             root,
+        ));
+    }
+
+    /// Regression test for non-minimality attack on state-trie
+    /// non-inclusion proofs. Prepend an empty-table step and bump
+    /// `terminal_depth` by 1. Must fail before the minimality fix.
+    #[test]
+    fn non_minimal_terminal_depth_is_rejected() {
+        let map = StateMap::from_state(&state());
+        let (path, t, root) = map.non_inclusion_proof("m.room.topic", "").unwrap();
+        assert!(verify_non_inclusion("m.room.topic", "", t, &path, root));
+
+        let mut extended = alloc::vec![StateProofStep {
+            hash: empty_table()[t + 1],
+        }];
+        extended.extend_from_slice(&path);
+        assert!(!verify_non_inclusion(
+            "m.room.topic",
+            "",
+            t + 1,
+            &extended,
+            root
         ));
     }
 

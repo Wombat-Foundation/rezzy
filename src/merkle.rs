@@ -1827,6 +1827,85 @@ pub mod causal {
             child.join().unwrap();
         }
 
+        /// Differential test for `CausalSet::union`: split a dense key set
+        /// into halves, build each half with `insert_mut`, then merge with
+        /// `union` and verify the result matches the oracle for the full set.
+        #[test]
+        fn differential_union_matches_oracle() {
+            let child = std::thread::Builder::new()
+                .stack_size(16 * 1024 * 1024)
+                .spawn(move || {
+                    let keys = dense_keys(0xFACE_4321_BEEF_0000, 48);
+                    let (left, right) = keys.split_at(24);
+
+                    let mut a = CausalSet::empty();
+                    for &k in left {
+                        a.insert_mut(k);
+                    }
+                    let mut b = CausalSet::empty();
+                    for &k in right {
+                        b.insert_mut(k);
+                    }
+
+                    let merged = a.union(&b);
+                    let (ref_root, ref_count) = subtree_root_or_empty(&keys, 0);
+                    assert_eq!(merged.root(), ref_root, "union root diverges");
+                    assert_eq!(merged.count(), ref_count, "union count diverges");
+
+                    for &k in &keys {
+                        let (path, root, count) =
+                            merged.inclusion_proof(&k).expect("key is a member");
+                        assert!(verify_causal_inclusion(&k, &path, root, count));
+                    }
+
+                    let absent = dense_keys(0x0000_BEEF_4321_FACE, 1)[0];
+                    let (path, depth, root, count) =
+                        merged.non_inclusion_proof(&absent).expect("key absent");
+                    assert!(verify_causal_non_inclusion(
+                        &absent, depth, &path, root, count
+                    ));
+                })
+                .unwrap();
+            child.join().unwrap();
+        }
+
+        /// Differential test for `CausalSet::extend`: build a set from one
+        /// half, extend with the other, and verify root/count/proofs against
+        /// the oracle for the full key set.
+        #[test]
+        fn differential_extend_matches_oracle() {
+            let child = std::thread::Builder::new()
+                .stack_size(16 * 1024 * 1024)
+                .spawn(move || {
+                    let keys = dense_keys(0x1234_5678_9ABC_DEF0, 48);
+                    let (left, right) = keys.split_at(24);
+
+                    let mut set = CausalSet::empty();
+                    for &k in left {
+                        set.insert_mut(k);
+                    }
+                    set.extend(right.iter().copied());
+
+                    let (ref_root, ref_count) = subtree_root_or_empty(&keys, 0);
+                    assert_eq!(set.root(), ref_root, "extend root diverges");
+                    assert_eq!(set.count(), ref_count, "extend count diverges");
+
+                    for &k in &keys {
+                        let (path, root, count) = set.inclusion_proof(&k).expect("key is a member");
+                        assert!(verify_causal_inclusion(&k, &path, root, count));
+                    }
+
+                    let absent = dense_keys(0xFEDC_BA98_7654_3210, 1)[0];
+                    let (path, depth, root, count) =
+                        set.non_inclusion_proof(&absent).expect("key absent");
+                    assert!(verify_causal_non_inclusion(
+                        &absent, depth, &path, root, count
+                    ));
+                })
+                .unwrap();
+            child.join().unwrap();
+        }
+
         /// Regression test for a non-minimality attack on non-inclusion
         /// proofs: prepend an empty-table step and bump `terminal_depth` by 1.
         /// The prepended fold produces empty[terminal_depth-1] by
