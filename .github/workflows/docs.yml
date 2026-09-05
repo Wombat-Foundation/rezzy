@@ -11,32 +11,46 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   docs:
-    if: github.ref_name == 'master' || github.ref_name == 'dev'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: dev
+
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          path: master
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build rustdoc
-        run: make rust/doc
+      - name: Build rustdoc for master
+        run: make -C master rust/doc
+
+      - name: Build rustdoc for dev
+        run: make -C dev rust/doc
 
       - name: Prepare flat deploy directory
         run: |
-          cp -a target/doc _site
-          cp -a _site/rezzy/. _site/
-          rm -rf _site/rezzy
-          find _site \( -name '*.html' -o -name '*.js' \) -print0 | xargs -0 perl -pi -e \
-            's{(href|src|content|data-[a-z-]+)="((?:\.\./)+)}{ my $n = length($2)/3; my $p = $n > 1 ? "../" x ($n-1) : "./"; $1 . "=\"" . $p }ge'
-          find _site \( -name '*.html' -o -name '*.js' \) -print0 | xargs -0 sed -i 's|rezzy/index\.html|index.html|g'
+          prepare() {
+            local src="$1" dst="$2"
+            cp -a "$src" "$dst"
+            cp -a "$dst"/rezzy/. "$dst"/
+            rm -rf "$dst"/rezzy
+            find "$dst" \( -name '*.html' -o -name '*.js' \) -print0 | xargs -0 perl -pi -e \
+              's{(href|src|content|data-[a-z-]+)="((?:\.\./)+)}{ my $n = length($2)/3; my $p = $n > 1 ? "../" x ($n-1) : "./"; $1 . "=\"" . $p }ge'
+            find "$dst" \( -name '*.html' -o -name '*.js' \) -print0 | xargs -0 sed -i 's|rezzy/index\.html|index.html|g'
+          }
+          prepare master/target/doc _site
+          prepare dev/target/doc _site/dev
 
       - name: Publish to gh-pages
         uses: peaceiris/actions-gh-pages@v4
@@ -44,5 +58,4 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
           publish_dir: _site
-          destination_dir: ${{ github.ref_name == 'dev' && 'dev' || '' }}
-          keep_files: true
+          destination_dir: .
