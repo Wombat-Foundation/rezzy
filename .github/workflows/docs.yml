@@ -27,7 +27,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build rustdoc
-        run: make doc
+        run: make rust/doc
 
       - name: Prepare flat deploy directory
         run: |

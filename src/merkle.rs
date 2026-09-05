@@ -1457,7 +1457,7 @@ pub mod causal {
         cur_hash == root && cur_count == count
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "std"))]
     mod test_oracle {
         use super::*;
 

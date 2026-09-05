@@ -261,19 +261,6 @@ pub fn verify_non_inclusion(
     if terminal_depth > STATE_DEPTH {
         return false;
     }
-    if path.len() != terminal_depth {
-        return false;
-    }
-    // Minimality: if the sibling at the terminal depth were also
-    // canonical-empty, the parent at terminal_depth - 1 would have two
-    // empty children and so be canonical-empty itself — the descent
-    // would have stopped a level higher. Biconditional, so this is
-    // exact, not a heuristic.
-    if let Some(s0) = path.first() {
-        if s0.hash == empty_table()[terminal_depth] {
-            return false;
-        }
-    }
     verify(
         state_key_hash(event_type, state_key),
         empty_table()[terminal_depth],
