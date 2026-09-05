@@ -2,7 +2,7 @@ use rezzy::merkle::causal::{
     compress_causal_path, decompress_causal_path, empty_root, verify_causal_inclusion,
     verify_causal_inclusion_compressed, verify_causal_non_inclusion,
     verify_causal_non_inclusion_compressed, CausalProofError, CausalProofStep, CausalSet,
-    CausalSide, CompressedCausalStep, CAUSAL_DEPTH,
+    CompressedCausalStep, CAUSAL_DEPTH,
 };
 use rezzy::merkle::Hash;
 
@@ -174,21 +174,6 @@ fn verify_causal_inclusion_rejects_count_forgery() {
         assert!(!verify_causal_inclusion(&a, &overflow_path, root, count));
 
         path[0].count = path[0].count.saturating_add(10);
-        assert!(!verify_causal_inclusion(&a, &path, root, count));
-    }
-}
-
-#[test]
-fn verify_causal_inclusion_rejects_side_forgery() {
-    let (a, b) = (key(0xa1), key(0xb2));
-    let s = CausalSet::empty().insert(a).insert(b);
-
-    let (mut path, root, count) = s.inclusion_proof(&a).unwrap();
-    if !path.is_empty() {
-        path[0].side = match path[0].side {
-            CausalSide::Left => CausalSide::Right,
-            CausalSide::Right => CausalSide::Left,
-        };
         assert!(!verify_causal_inclusion(&a, &path, root, count));
     }
 }
@@ -375,21 +360,24 @@ fn compress_verify_compressed_non_inclusion_api() {
 }
 
 #[test]
-fn decompress_rejects_wrong_key() {
+fn decompress_path_independent_of_key() {
     let (a, b) = (key(0xa1), key(0xb2));
     let s = CausalSet::empty().insert(a).insert(b);
     let (path, root, count) = s.inclusion_proof(&a).unwrap();
     let compressed = compress_causal_path(CAUSAL_DEPTH, &path);
 
-    // Decompressing with the wrong key derives wrong sides.
-    let result = decompress_causal_path(&b, CAUSAL_DEPTH, &compressed);
-    // The decompression itself succeeds (sides are set, not validated
-    // against key here), but verification against the correct root will
-    // fail because the sides are wrong for key `b`.
-    let decompressed = result.unwrap();
-    assert!(!verify_causal_inclusion(&a, &decompressed, root, count));
-    // Conversely, verifying with key `b` also fails (not a member).
-    assert!(!verify_causal_inclusion(&b, &decompressed, root, count));
+    // Decompressing with a different key produces the same { hash, count }
+    // pairs because side is no longer stored — it is derived from the key
+    // at verification time.
+    let decompressed_b = decompress_causal_path(&b, CAUSAL_DEPTH, &compressed).unwrap();
+    let decompressed_a = decompress_causal_path(&a, CAUSAL_DEPTH, &compressed).unwrap();
+    assert_eq!(decompressed_b, decompressed_a);
+
+    // Both verify correctly with the right key.
+    assert!(verify_causal_inclusion(&a, &decompressed_a, root, count));
+    assert!(verify_causal_inclusion(&a, &decompressed_b, root, count));
+    // Verifying with the wrong key (b) fails — not a member.
+    assert!(!verify_causal_inclusion(&b, &decompressed_a, root, count));
 }
 
 #[test]
@@ -568,13 +556,8 @@ fn decompress_rejects_non_canonical_step_with_empty_value() {
     // decompressor expands EmptyRuns to steps with hash == empty[d] and
     // count == 0, which is fine. But if we craft a Step with those
     // same values directly, it should be rejected as non-canonical.
-    let empty = rezzy::merkle::causal::empty_root();
-    // Build a fake Step at sibling depth CAUSAL_DEPTH (the deepest level).
-    // We need the actual empty hash at depth CAUSAL_DEPTH, not empty_root()
-    // (which is depth 0). Use decompressed[0]'s hash which IS the empty
-    // hash at that depth.
+    // Use decompressed[0]'s hash which IS the empty hash at that depth.
     let fake_step = CompressedCausalStep::Step(CausalProofStep {
-        side: decompressed[0].side,
         hash: decompressed[0].hash,
         count: 0,
     });
@@ -589,35 +572,21 @@ fn decompress_rejects_non_canonical_step_interleaved_with_run() {
     // An EmptyRun followed by a Step with a canonical-empty value at the
     // next expected depth. The Step should be rejected even though the
     // EmptyRun is valid on its own.
-    let empty = rezzy::merkle::causal::empty_root();
-    // We need the empty hash at the correct sibling depth for the Step.
-    // After an EmptyRun of length 200 starting at 256, the next expected
-    // sibling depth is 56. We'll use a real empty-table value by
-    // decompressing a valid path and extracting the hash.
     let s = CausalSet::empty().insert(k);
     let (path, _, _) = s.inclusion_proof(&k).unwrap();
-    let decompressed = decompress_causal_path(
-        &k,
-        CAUSAL_DEPTH,
-        &compress_causal_path(CAUSAL_DEPTH, &path),
-    )
-    .unwrap();
+    let decompressed =
+        decompress_causal_path(&k, CAUSAL_DEPTH, &compress_causal_path(CAUSAL_DEPTH, &path))
+            .unwrap();
     // The first decompressed step is at sibling depth CAUSAL_DEPTH.
     let first_hash = decompressed[0].hash;
-    let first_side = decompressed[0].side;
 
-    // Now try: EmptyRun for 200 levels, then a Step with hash == empty[56]
-    // (which we don't have directly, but we know the Step is non-canonical
-    // if its hash matches what the empty table would produce). We can't
-    // easily get empty[56] without the table, so test with a different
-    // approach: use a single Step with the first step's values (which
-    // IS at a canonical-empty position).
+    // Use a single Step with the first step's values (which IS at a
+    // canonical-empty position), followed by an EmptyRun for the rest.
     let result = decompress_causal_path(
         &k,
         CAUSAL_DEPTH,
         &[
             CompressedCausalStep::Step(CausalProofStep {
-                side: first_side,
                 hash: first_hash,
                 count: 0,
             }),
@@ -635,12 +604,9 @@ fn decompress_accepts_step_with_nonzero_count_at_empty_position() {
     let k = key(0xa1);
     let s = CausalSet::empty().insert(k);
     let (path, _, _) = s.inclusion_proof(&k).unwrap();
-    let decompressed = decompress_causal_path(
-        &k,
-        CAUSAL_DEPTH,
-        &compress_causal_path(CAUSAL_DEPTH, &path),
-    )
-    .unwrap();
+    let decompressed =
+        decompress_causal_path(&k, CAUSAL_DEPTH, &compress_causal_path(CAUSAL_DEPTH, &path))
+            .unwrap();
     // Same hash as the first empty sibling, but with count=1. This is
     // non-empty (count != 0) so it should be accepted — it's a lie about
     // the count, but that's caught by verify, not decompress.
@@ -649,7 +615,6 @@ fn decompress_accepts_step_with_nonzero_count_at_empty_position() {
         CAUSAL_DEPTH,
         &[
             CompressedCausalStep::Step(CausalProofStep {
-                side: decompressed[0].side,
                 hash: decompressed[0].hash,
                 count: 1,
             }),
