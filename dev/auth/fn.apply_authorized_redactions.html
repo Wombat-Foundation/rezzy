@@ -1,0 +1,45 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Apply each `m.room.redaction` event to its in-set target, but only when the redaction is authorized against the provided room state."><title>apply_authorized_redactions in rezzy::auth - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="rezzy" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.1 (48a229cea 2026-09-01)" data-channel="1.98.1" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">apply_authorized_redactions</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../index.html">rezzy</a><span class="version">0.6.0-rc.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">apply_<wbr>authorized_<wbr>redactions</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#memory-contract" title="Memory contract">Memory contract</a></li><li><a href="#event-time-state-single-state-caveat" title="Event-time state (single-state caveat)">Event-time state (single-state caveat)</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="index.html">In rezzy::<wbr>auth</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="./index.html">rezzy</a>::<wbr><a href="index.html">auth</a></div><h1>Function <span class="fn">apply_<wbr>authorized_<wbr>redactions</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/rezzy/auth/mod.rs.html#1306-1323">Source</a> </span></div><pre class="rust item-decl"><code>pub fn apply_authorized_redactions&lt;Id, E, K&gt;(
+    events: &amp;mut [<a class="struct" href="./basespec/rezzy_types/struct.LeanEvent.html" title="struct rezzy::basespec::rezzy_types::LeanEvent">LeanEvent</a>&lt;Id, <a class="enum" href="https://docs.rs/serde_json/1.0.151/serde_json/value/enum.Value.html" title="enum serde_json::value::Value">Value</a>, K&gt;],
+    state: &amp;impl <a class="trait" href="trait.StateProvider.html" title="trait rezzy::auth::StateProvider">StateProvider</a>&lt;Id, <a class="enum" href="https://docs.rs/serde_json/1.0.151/serde_json/value/enum.Value.html" title="enum serde_json::value::Value">Value</a>, E&gt;,
+    version: <a class="enum" href="./basespec/rezzy_types/enum.StateResVersion.html" title="enum rezzy::basespec::rezzy_types::StateResVersion">StateResVersion</a>,
+    room_version: &amp;<a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.str.html">str</a>,
+) -&gt; <a class="struct" href="struct.RedactionReport.html" title="struct rezzy::auth::RedactionReport">RedactionReport</a>&lt;Id&gt;<div class="where">where
+    Id: <a class="trait" href="./basespec/rezzy_types/trait.EventId.html" title="trait rezzy::basespec::rezzy_types::EventId">EventId</a> + <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/clone/trait.Clone.html" title="trait core::clone::Clone">Clone</a> + 'static,
+    E: <a class="trait" href="./basespec/rezzy_types/trait.EventLike.html" title="trait rezzy::basespec::rezzy_types::EventLike">EventLike</a>&lt;Id = Id, Content = <a class="enum" href="https://docs.rs/serde_json/1.0.151/serde_json/value/enum.Value.html" title="enum serde_json::value::Value">Value</a>&gt;,
+    K: <a class="trait" href="./basespec/rezzy_types/trait.StateKey.html" title="trait rezzy::basespec::rezzy_types::StateKey">StateKey</a> + <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/clone/trait.Clone.html" title="trait core::clone::Clone">Clone</a>,</div></code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Apply each <code>m.room.redaction</code> event to its in-set target, but only when the
+redaction is <strong>authorized</strong> against the provided room state.</p>
+<p>This is the authorization-checked redaction step that belongs <em>after</em> state
+resolution: unlike <a href="./basespec/rezzy_types/fn.ingest_events.html" title="fn rezzy::basespec::rezzy_types::ingest_events"><code>crate::basespec::rezzy_types::ingest_events</code></a> (which
+parses and verifies content hashes only and must not strip content), this
+function has the resolved state needed to check the redact power level and
+the target’s sender. Unauthorized redactions leave the target untouched.</p>
+<h2 id="memory-contract"><a class="doc-anchor" href="#memory-contract">§</a>Memory contract</h2>
+<p>This is a pure, in-memory transform — it performs no I/O and owns no state.
+The caller must already hold, in memory:</p>
+<ul>
+<li><code>events</code>: the slice of events to redact, including both the redaction
+events and their targets. Targets outside <code>events</code> are left for a later
+pass (a redaction and its target may arrive in different batches).</li>
+<li><code>state</code>: the room state used to authorize <em>every</em> redaction in the
+batch, against the <em>same</em> snapshot.</li>
+</ul>
+<h2 id="event-time-state-single-state-caveat"><a class="doc-anchor" href="#event-time-state-single-state-caveat">§</a>Event-time state (single-state caveat)</h2>
+<p>This entry point authorizes every redaction against the one <code>state</code>
+snapshot passed in, which is correct <strong>only</strong> when that snapshot equals
+the state at each redaction’s own <code>prev_events</code> for every redaction in
+the batch (e.g. a batch of redactions with no intervening power-level or
+membership changes at the time each was sent). If a sender’s power level
+changed between sending a redaction and the snapshot <code>state</code> represents,
+this can incorrectly accept or reject that redaction — the Matrix spec
+requires redaction authorization to use the state as of each redaction’s
+own <code>prev_events</code>, not a single shared snapshot. When callers can
+reconstruct a per-redaction snapshot (e.g. by replaying <code>sorted_events</code>
+forward the way <a href="fn.check_auth_chain.html" title="fn rezzy::auth::check_auth_chain"><code>check_auth_chain</code></a> does), use
+<a href="fn.apply_authorized_redactions_with_state_at.html" title="fn rezzy::auth::apply_authorized_redactions_with_state_at"><code>apply_authorized_redactions_with_state_at</code></a> instead.</p>
+<p>The function mutates <code>events</code> in place, replacing each authorized target
+with its redacted form. Callers can use
+<a href="./basespec/rezzy_types/struct.LeanEvent.html#method.is_redaction" title="method rezzy::basespec::rezzy_types::LeanEvent::is_redaction"><code>LeanEvent::is_redaction</code></a>
+to cheaply detect whether a batch contains any redaction work before
+calling this.</p>
+<p>Rejected or soft-failed redaction events are never applied.</p>
+</div></details></section></div></main></body></html>

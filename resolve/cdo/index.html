@@ -1,0 +1,35 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Causal Domination Operator (CDO) — vectorized pre-filter for conflicted events."><title>rezzy::resolve::cdo - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="rezzy" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.1 (48a229cea 2026-09-01)" data-channel="1.98.1" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="./sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module cdo</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../index.html">rezzy</a><span class="version">0.6.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module cdo</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#implementation" title="Implementation">Implementation</a></li><li><a href="#soundness-domination-must-never-diverge-from-full-resolution" title="Soundness: domination must never diverge from full resolution">Soundness: domination must never diverge from full resolution</a></li></ul><h3><a href="#functions">Module Items</a></h3><ul class="block"><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="./index.html">In rezzy::<wbr>resolve</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">rezzy</a>::<wbr><a href="./index.html">resolve</a></div><h1>Module <span>cdo</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/rezzy/resolve/cdo.rs.html#15-811">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Causal Domination Operator (CDO) — vectorized pre-filter for conflicted events.</p>
+<p>The CDO is a V2.1.1 optimization that runs <em>before</em> the main resolution
+algorithm. It identifies conflicted events that are <strong>causally dominated</strong>
+by a higher-priority administrative action (ban, kick, PL demotion, or
+join-rules lockdown) and removes them from the conflicted set entirely.</p>
+<p>An event is “causally dominated” if:</p>
+<ol>
+<li>A higher-priority admin action <em>restricts</em> it (see <a href="../basespec/rezzy_types/struct.LeanEvent.html#method.restricts_event" title="method rezzy::basespec::rezzy_types::LeanEvent::restricts_event"><code>LeanEvent::restricts_event</code></a>).</li>
+<li>The admin action is <strong>not</strong> an ancestor or descendant of the event
+(i.e. they are on independent causal branches).</li>
+</ol>
+<h3 id="implementation"><a class="doc-anchor" href="#implementation">§</a>Implementation</h3>
+<p>Ancestor/descendant relationships are computed via SWAR (SIMD-within-a-register)
+bitmask sweeps over a topologically-sorted event array. The chunk size is
+auto-selected at compile time: 512 bits on AVX-512, 256 bits otherwise.</p>
+<h3 id="soundness-domination-must-never-diverge-from-full-resolution"><a class="doc-anchor" href="#soundness-domination-must-never-diverge-from-full-resolution">§</a>Soundness: domination must never diverge from full resolution</h3>
+<p>An independent-branch admin action must never dominate a target event
+that already carries its own, separate authorization for the state the
+admin action would otherwise contest. The join-authorization fix and the
+sender power-level fix both cover cases where the
+<code>restricts_event</code>/<code>restricts_sender</code> structural check fired without
+verifying the target was actually unauthorized. Two related classes of
+this were audited and found <em>not</em> to need a fix:</p>
+<ul>
+<li><strong><code>is_ban_or_kick()</code> domination</strong>: unlike <code>is_lockdown()</code>/<code>is_demotion()</code>,
+its structural check (<code>state_key == sender</code>) is already exact, not a
+coarse over-approximation, so it did not reproduce a divergence from
+full V2.1 resolution in the topology tested (see
+<code>test_cdo_ban_domination_benign_convergence</code> in <code>tests/test_critique.rs</code>).</li>
+<li><strong>Restricted/knock-restricted <code>join_rules</code></strong>: <code>is_lockdown()</code> only fires
+for <code>join_rule == "invite"</code>, so those never enter <code>admin_actions</code> at
+all and always fall through to full resolution, which already models
+<code>join_authorised_via_users_server</code> correctly.</li>
+</ul>
+</div></details><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.apply_cdo_filter.html" title="fn rezzy::resolve::cdo::apply_cdo_filter">apply_<wbr>cdo_<wbr>filter</a></dt><dd>Cycle-0 Topological Filter: Vectorized Causal Domination Operator (CDO).</dd><dt><a class="fn" href="fn.is_ancestor.html" title="fn rezzy::resolve::cdo::is_ancestor">is_<wbr>ancestor</a></dt><dd>Returns <code>true</code> if <code>possible_ancestor_id</code> is an ancestor of <code>child_id</code>.</dd></dl></section></div></main></body></html>

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["HamtBuildError","HamtMutateError","NodeRef"],"fn":["build_hamt","build_hamt_root_handle","build_hamt_with_key_hash","insert","insert_with_key_hash","remove","remove_with_key_hash"],"mod":["audit","codec","delta","hash"],"struct":["HamtNode"]};

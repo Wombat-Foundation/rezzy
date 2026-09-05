@@ -1,0 +1,67 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Resolves conflicted Matrix room state using the specified algorithm version."><title>resolve_iterative_sort in rezzy::resolve::iterative - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="rezzy" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.1 (48a229cea 2026-09-01)" data-channel="1.98.1" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">resolve_iterative_sort</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../index.html">rezzy</a><span class="version">0.6.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">resolve_<wbr>iterative_<wbr>sort</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#parameters" title="Parameters">Parameters</a></li><li><a href="#returns" title="Returns">Returns</a></li><li><a href="#checkpoint--partial-join" title="Checkpoint / Partial-Join">Checkpoint / Partial-Join</a></li><li><a href="#auth-chain-safety" title="Auth Chain Safety">Auth Chain Safety</a></li><li><a href="#panics" title="Panics">Panics</a></li><li><a href="#algorithm-overview" title="Algorithm overview">Algorithm overview</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="index.html">In rezzy::<wbr>resolve::<wbr>iterative</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">rezzy</a>::<wbr><a href="./index.html">resolve</a>::<wbr><a href="index.html">iterative</a></div><h1>Function <span class="fn">resolve_<wbr>iterative_<wbr>sort</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/rezzy/resolve/iterative.rs.html#461-486">Source</a> </span></div><pre class="rust item-decl"><code>pub fn resolve_iterative_sort&lt;Id: <a class="trait" href="../basespec/rezzy_types/trait.EventId.html" title="trait rezzy::basespec::rezzy_types::EventId">EventId</a>, C: <a class="trait" href="../basespec/rezzy_types/trait.EventContent.html" title="trait rezzy::basespec::rezzy_types::EventContent">EventContent</a> + <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/clone/trait.Clone.html" title="trait core::clone::Clone">Clone</a>, S1: <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/hash/trait.BuildHasher.html" title="trait core::hash::BuildHasher">BuildHasher</a>, S2: <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/hash/trait.BuildHasher.html" title="trait core::hash::BuildHasher">BuildHasher</a>, K&gt;(
+    unconflicted_state: <a class="type" href="../state/at/type.SharedState.html" title="type rezzy::state::at::SharedState">SharedState</a>&lt;Id, K&gt;,
+    conflicted_events: <a class="struct" href="../struct.HashMap.html" title="struct rezzy::HashMap">HashMap</a>&lt;Id, <a class="struct" href="../basespec/rezzy_types/struct.LeanEvent.html" title="struct rezzy::basespec::rezzy_types::LeanEvent">LeanEvent</a>&lt;Id, C, K&gt;, S1&gt;,
+    auth_context: &amp;<a class="struct" href="../struct.HashMap.html" title="struct rezzy::HashMap">HashMap</a>&lt;Id, <a class="struct" href="../basespec/rezzy_types/struct.LeanEvent.html" title="struct rezzy::basespec::rezzy_types::LeanEvent">LeanEvent</a>&lt;Id, C, K&gt;, S2&gt;,
+    version: <a class="enum" href="../basespec/rezzy_types/enum.StateResVersion.html" title="enum rezzy::basespec::rezzy_types::StateResVersion">StateResVersion</a>,
+    pl_cache: &amp;mut <a class="struct" href="../struct.HashMap.html" title="struct rezzy::HashMap">HashMap</a>&lt;Id, <a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.i64.html">i64</a>&gt;,
+) -&gt; <a class="type" href="../state/at/type.SharedState.html" title="type rezzy::state::at::SharedState">SharedState</a>&lt;Id, K&gt;<div class="where">where
+    K: <a class="trait" href="../basespec/rezzy_types/trait.StateKey.html" title="trait rezzy::basespec::rezzy_types::StateKey">StateKey</a>,
+    for&lt;'q&gt; (<a class="enum" href="../basespec/event_types/enum.EventType.html" title="enum rezzy::basespec::event_types::EventType">EventType</a>, K): <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/borrow/trait.Borrow.html" title="trait core::borrow::Borrow">Borrow</a>&lt;dyn <a class="trait" href="../auth/trait.StateKeyDyn.html" title="trait rezzy::auth::StateKeyDyn">StateKeyDyn</a> + 'q&gt;,</div></code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Resolves conflicted Matrix room state using the specified algorithm version.</p>
+<p>This is the primary entry point for state resolution. Given the set of
+unconflicted state (agreed upon by all forks), the conflicted events
+(present in some forks but not others), and the full auth context,
+it produces the single deterministic resolved state map.</p>
+<h2 id="parameters"><a class="doc-anchor" href="#parameters">§</a>Parameters</h2>
+<ul>
+<li><code>unconflicted_state</code>: State entries that all forks agree on, keyed by
+<code>(event_type, state_key) -&gt; event_id</code>. For <strong>partial joins</strong>, pass the
+trusted state snapshot from the join response — this serves as the
+checkpoint base. See <em>Checkpoint / Partial-Join</em> below.</li>
+<li><code>conflicted_events</code>: Events that differ across forks. These will be
+sorted, auth-checked, and selectively applied.</li>
+<li><code>auth_context</code>: The full set of events reachable via <code>auth_events</code>
+from the conflicted set. Must include all power-level, membership,
+and join-rules events needed for authorization.</li>
+<li><code>version</code>: Which resolution algorithm to use (see <a href="../basespec/rezzy_types/enum.StateResVersion.html" title="enum rezzy::basespec::rezzy_types::StateResVersion"><code>StateResVersion</code></a>).</li>
+</ul>
+<h2 id="returns"><a class="doc-anchor" href="#returns">§</a>Returns</h2>
+<p>A <code>imbl::OrdMap&lt;(event_type, state_key), event_id&gt;</code> representing the resolved
+room state — the union of unconflicted state and the winners from the
+conflicted set.</p>
+<h2 id="checkpoint--partial-join"><a class="doc-anchor" href="#checkpoint--partial-join">§</a>Checkpoint / Partial-Join</h2>
+<p>For partial joins (federated rooms where a server doesn’t have full
+history), pass the trusted state snapshot as <code>unconflicted_state</code>:</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="comment">// State snapshot from /send_join response
+</span><span class="kw">let </span>checkpoint: imbl::OrdMap&lt;(EventType, String), String&gt; = <span class="comment">/* ... */
+</span><span class="kw">let </span>new_events: HashMap&lt;String, LeanEvent&gt; = <span class="comment">/* events since join */
+</span><span class="kw">let </span>auth_ctx: HashMap&lt;String, LeanEvent&gt; = <span class="comment">/* auth chain for new_events */
+
+</span><span class="kw">let </span>resolved = resolve_iterative_sort(checkpoint, new_events, <span class="kw-2">&amp;</span>auth_ctx, StateResVersion::V2, <span class="kw-2">&amp;mut </span>std::collections::HashMap::new());</code></pre></div><h2 id="auth-chain-safety"><a class="doc-anchor" href="#auth-chain-safety">§</a>Auth Chain Safety</h2>
+<p><strong>The auth chain for conflicted events must be complete.</strong> You can trust a
+snapshot for the unconflicted base, but truncating the auth chain for
+conflicted events causes:</p>
+<ul>
+<li><strong>Sorting failures</strong>: cannot establish mainline order without the full
+power-level chain.</li>
+<li><strong>Auth check failures</strong>: missing historical power levels or membership
+events cause events to be incorrectly rejected.</li>
+<li><strong>State reset attacks</strong>: an adversary can craft events whose truncated
+auth chain makes an illegitimate power grab appear valid
+(ref: CVE-2025-49090).</li>
+</ul>
+<h2 id="panics"><a class="doc-anchor" href="#panics">§</a>Panics</h2>
+<p>Will panic if an event referenced in <code>auth_events</code> or <code>prev_events</code> by
+a conflicted event is missing from both <code>conflicted_events</code> and
+<code>auth_context</code>.</p>
+<h2 id="algorithm-overview"><a class="doc-anchor" href="#algorithm-overview">§</a>Algorithm overview</h2>
+<ol>
+<li>Classify conflicted events into <strong>power events</strong> (create, PL, join rules,
+bans/kicks) and <strong>non-power events</strong>.</li>
+<li>Sort power events via <a href="./sorting/fn.lean_kahn_sort.html" title="fn rezzy::resolve::sorting::lean_kahn_sort"><code>lean_kahn_sort</code></a> and iteratively auth-check them
+to build the authoritative administrative state.</li>
+<li>Sort non-power events via <a href="./sorting/fn.mainline_sort.html" title="fn rezzy::resolve::sorting::mainline_sort"><code>mainline_sort</code></a> (by proximity to the resolved
+power-levels chain) and iteratively auth-check them.</li>
+<li>Merge winners into the unconflicted base.</li>
+</ol>
+</div></details></section></div></main></body></html>

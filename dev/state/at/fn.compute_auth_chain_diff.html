@@ -1,0 +1,41 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Computes the auth chain difference: `auth(C) \ auth(U)`."><title>compute_auth_chain_diff in rezzy::state::at - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="rezzy" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.1 (48a229cea 2026-09-01)" data-channel="1.98.1" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">compute_auth_chain_diff</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../index.html">rezzy</a><span class="version">0.6.0-rc.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">compute_<wbr>auth_<wbr>chain_<wbr>diff</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#parameters" title="Parameters">Parameters</a></li><li><a href="#returns" title="Returns">Returns</a></li><li><a href="#complexity" title="Complexity">Complexity</a></li><li><a href="#panics" title="Panics">Panics</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="index.html">In rezzy::<wbr>state::<wbr>at</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">rezzy</a>::<wbr><a href="./index.html">state</a>::<wbr><a href="index.html">at</a></div><h1>Function <span class="fn">compute_<wbr>auth_<wbr>chain_<wbr>diff</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/rezzy/state/at.rs.html#1246-1327">Source</a> </span></div><pre class="rust item-decl"><code>pub fn compute_auth_chain_diff&lt;Id, C, S1, S2, K&gt;(
+    unconflicted_state: &amp;<a class="type" href="type.SharedState.html" title="type rezzy::state::at::SharedState">SharedState</a>&lt;Id, K&gt;,
+    conflicted_state_set: &amp;<a class="struct" href="../struct.HashSet.html" title="struct rezzy::HashSet">HashSet</a>&lt;Id, S2&gt;,
+    events_map: &amp;<a class="struct" href="../struct.HashMap.html" title="struct rezzy::HashMap">HashMap</a>&lt;Id, <a class="struct" href="../basespec/rezzy_types/struct.LeanEvent.html" title="struct rezzy::basespec::rezzy_types::LeanEvent">LeanEvent</a>&lt;Id, C, K&gt;, S1&gt;,
+) -&gt; <a class="struct" href="../struct.HashSet.html" title="struct rezzy::HashSet">HashSet</a>&lt;Id&gt;<div class="where">where
+    Id: <a class="trait" href="../basespec/rezzy_types/trait.EventId.html" title="trait rezzy::basespec::rezzy_types::EventId">EventId</a>,
+    S1: <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/hash/trait.BuildHasher.html" title="trait core::hash::BuildHasher">BuildHasher</a>,
+    S2: <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/hash/trait.BuildHasher.html" title="trait core::hash::BuildHasher">BuildHasher</a>,
+    C: <a class="trait" href="../basespec/rezzy_types/trait.EventContent.html" title="trait rezzy::basespec::rezzy_types::EventContent">EventContent</a>,
+    K: <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/cmp/trait.Ord.html" title="trait core::cmp::Ord">Ord</a> + <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/clone/trait.Clone.html" title="trait core::clone::Clone">Clone</a>,</div></code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Computes the <strong>auth chain difference</strong>: <code>auth(C) \ auth(U)</code>.</p>
+<p>Walks the unconflicted (U) and conflicted (C) auth chains in
+parallel by depth, pruning C-side events already reachable
+from U. Returns the set of event IDs in the conflicted auth
+chains that are NOT reachable from unconflicted state.</p>
+<p>This is the core input to state resolution — the set of
+events that must be considered during iterative auth. By
+exposing this as a public API, homeservers can compute the
+auth difference without reimplementing the bounded dual-heap
+traversal.</p>
+<h2 id="parameters"><a class="doc-anchor" href="#parameters">§</a>Parameters</h2>
+<ul>
+<li><code>unconflicted_state</code>: The agreed-upon state (values are
+event IDs whose auth chains define the “known” baseline).</li>
+<li><code>conflicted_state_set</code>: Event IDs that differ across forks.</li>
+<li><code>events_map</code>: Full event context containing all referenced
+events and their auth chains.</li>
+</ul>
+<h2 id="returns"><a class="doc-anchor" href="#returns">§</a>Returns</h2>
+<p>The set of event IDs reachable from <code>conflicted_state_set</code>’s
+auth chains but NOT reachable from <code>unconflicted_state</code>’s
+auth chains.</p>
+<h2 id="complexity"><a class="doc-anchor" href="#complexity">§</a>Complexity</h2>
+<ul>
+<li><strong>Time</strong>: <code>O((|U| + |C|) · log(|U| + |C|))</code> — bounded by
+the total auth chain size, with early pruning.</li>
+<li><strong>Space</strong>: <code>O(|U| + |C|)</code> for visited sets.</li>
+</ul>
+<h2 id="panics"><a class="doc-anchor" href="#panics">§</a>Panics</h2>
+<p>Internal <code>unwrap()</code> calls are guarded by <code>peek()</code>
+checks and cannot panic under normal operation.</p>
+</div></details></section></div></main></body></html>

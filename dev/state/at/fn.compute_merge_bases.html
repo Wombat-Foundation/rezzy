@@ -1,0 +1,44 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Finds all primitive merge bases for up to 8 forward extremities in a single backward pass."><title>compute_merge_bases in rezzy::state::at - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="rezzy" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.1 (48a229cea 2026-09-01)" data-channel="1.98.1" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">compute_merge_bases</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../index.html">rezzy</a><span class="version">0.6.0-rc.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">compute_<wbr>merge_<wbr>bases</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#algorithm-bitmask-propagating-backward-walk" title="Algorithm (bitmask-propagating backward walk)">Algorithm (bitmask-propagating backward walk)</a></li><li><a href="#complexity" title="Complexity">Complexity</a></li><li><a href="#panics" title="Panics">Panics</a></li><li><a href="#example" title="Example">Example</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="index.html">In rezzy::<wbr>state::<wbr>at</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">rezzy</a>::<wbr><a href="./index.html">state</a>::<wbr><a href="index.html">at</a></div><h1>Function <span class="fn">compute_<wbr>merge_<wbr>bases</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/rezzy/state/at.rs.html#756-879">Source</a> </span></div><pre class="rust item-decl"><code>pub fn compute_merge_bases&lt;'a, Id, Q, S, Node&gt;(
+    extremities: &amp;[<a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.reference.html">&amp;Q</a>],
+    events_map: &amp;'a <a class="struct" href="../struct.HashMap.html" title="struct rezzy::HashMap">HashMap</a>&lt;Id, Node, S&gt;,
+    max_steps: <a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.usize.html">usize</a>,
+) -&gt; <a class="struct" href="https://doc.rust-lang.org/1.98.1/alloc/vec/struct.Vec.html" title="struct alloc::vec::Vec">Vec</a>&lt;<a class="struct" href="struct.MergeBase.html" title="struct rezzy::state::at::MergeBase">MergeBase</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.reference.html">&amp;'a Id</a>&gt;&gt;<div class="where">where
+    Id: <a class="trait" href="../basespec/rezzy_types/trait.EventId.html" title="trait rezzy::basespec::rezzy_types::EventId">EventId</a> + <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/borrow/trait.Borrow.html" title="trait core::borrow::Borrow">Borrow</a>&lt;Q&gt;,
+    Q: ?<a class="trait" href="https://doc.rust-lang.org/1.98.1/core/marker/trait.Sized.html" title="trait core::marker::Sized">Sized</a> + <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/cmp/trait.Eq.html" title="trait core::cmp::Eq">Eq</a> + <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/hash/trait.Hash.html" title="trait core::hash::Hash">Hash</a> + <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/cmp/trait.Ord.html" title="trait core::cmp::Ord">Ord</a>,
+    S: <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/hash/trait.BuildHasher.html" title="trait core::hash::BuildHasher">BuildHasher</a>,
+    Node: <a class="trait" href="../basespec/rezzy_types/trait.DagNode.html" title="trait rezzy::basespec::rezzy_types::DagNode">DagNode</a>&lt;Id = Id&gt;,</div></code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Finds <strong>all</strong> primitive merge bases for up to 8 forward extremities in a
+single backward pass.</p>
+<p>Unlike <a href="fn.compute_merge_base.html" title="fn rezzy::state::at::compute_merge_base"><code>compute_merge_base</code></a> (which returns only the global common
+ancestor), this function discovers every subset junction — the points where
+different subsets of extremities first converge. The result is a minimal set
+of <a href="struct.MergeBase.html" title="struct rezzy::state::at::MergeBase"><code>MergeBase</code></a> entries after superseding pruning.</p>
+<h2 id="algorithm-bitmask-propagating-backward-walk"><a class="doc-anchor" href="#algorithm-bitmask-propagating-backward-walk">§</a>Algorithm (bitmask-propagating backward walk)</h2>
+<ol>
+<li>Each extremity gets a unique bit in a <code>u8</code> mask.</li>
+<li>A max-heap ordered by depth walks backward through <code>prev_events</code>,
+propagating masks via bitwise OR.</li>
+<li>When a node’s mask gains <code>popcount ≥ 2</code>, it is recorded as a candidate
+junction for that mask value.</li>
+<li>Walk terminates when the global merge base is found (all bits set) and
+no unexplored paths remain, or when <code>max_steps</code> is exceeded.</li>
+<li>Superseded junctions are pruned: if mask M₂ ⊃ M₁ and J₂.depth ≥ J₁.depth,
+then J₁ is redundant.</li>
+</ol>
+<h2 id="complexity"><a class="doc-anchor" href="#complexity">§</a>Complexity</h2>
+<ul>
+<li><strong>Time</strong>: <code>O((V + E) · k)</code> where V/E are visited nodes/edges, k ≤ 8.
+Bitmask ops are single CPU instructions.</li>
+<li><strong>Space</strong>: <code>O(V)</code> for the mask map (one <code>u8</code> per visited event).</li>
+</ul>
+<h2 id="panics"><a class="doc-anchor" href="#panics">§</a>Panics</h2>
+<p>Panics if <code>extremities.len() &gt; 8</code> (bitmask overflow).</p>
+<h2 id="example"><a class="doc-anchor" href="#example">§</a>Example</h2>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>rezzy::{compute_merge_bases, MERGE_BASE_MAX_STEPS, DagNode};
+<span class="kw">use </span>rezzy::{LeanEvent, HashMap};
+
+<span class="kw">let </span>events: HashMap&lt;String, LeanEvent&lt;String&gt;&gt; = HashMap::new();
+<span class="kw">let </span>tips = <span class="macro">vec!</span>[<span class="string">"$tip_a"</span>, <span class="string">"$tip_b"</span>, <span class="string">"$tip_c"</span>];
+<span class="kw">let </span>junctions = compute_merge_bases(<span class="kw-2">&amp;</span>tips, <span class="kw-2">&amp;</span>events, MERGE_BASE_MAX_STEPS);
+<span class="kw">for </span>j <span class="kw">in </span><span class="kw-2">&amp;</span>junctions {
+    <span class="macro">println!</span>(<span class="string">"junction {:?} mask={:08b} depth={}"</span>, j.event_id, j.mask, j.depth);
+}</code></pre></div></div></details></section></div></main></body></html>

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["AuthError","ForwardExtremityResult"],"fn":["auth_types_for_event","check_auth","check_auth_chain","check_auth_with_context","validate_forward_extremity","warn_unexpected_auth_events"],"mod":["roaring","user"],"trait":["StateKeyDyn","StateProvider"],"type":["RoomState"]};

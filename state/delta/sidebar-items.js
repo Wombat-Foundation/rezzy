@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_DELTA_CHAIN_HOPS"],"enum":["ResolvePhase"],"fn":["apply_state_delta","compute_compacted_delta_chain_from_resolved","compute_state_delta","reconstruct_state_at","reconstruct_state_at_by_event_id","reconstruct_state_batch"],"mod":["hex_serde","hex_serde_opt"],"struct":["CompactedCheckpoint","ResolutionDelta","StateDelta"]};

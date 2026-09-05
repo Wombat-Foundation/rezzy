@@ -1,0 +1,40 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Scans a set of DAG events and identifies backward extremities — events whose `prev_events` reference parent IDs that are missing from both the provided `events` map and the caller’s `exists` oracle."><title>find_backward_extremities in rezzy::state::at - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="rezzy" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.1 (48a229cea 2026-09-01)" data-channel="1.98.1" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">find_backward_extremities</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../index.html">rezzy</a><span class="version">0.6.0-rc.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">find_<wbr>backward_<wbr>extremities</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#arguments" title="Arguments">Arguments</a></li><li><a href="#returns" title="Returns">Returns</a></li><li><a href="#example" title="Example">Example</a></li><li><a href="#complexity" title="Complexity">Complexity</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="index.html">In rezzy::<wbr>state::<wbr>at</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">rezzy</a>::<wbr><a href="./index.html">state</a>::<wbr><a href="index.html">at</a></div><h1>Function <span class="fn">find_<wbr>backward_<wbr>extremities</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/rezzy/state/at.rs.html#1390-1418">Source</a> </span></div><pre class="rust item-decl"><code>pub fn find_backward_extremities&lt;Id, Node, S, F&gt;(
+    events: &amp;<a class="struct" href="../struct.HashMap.html" title="struct rezzy::HashMap">HashMap</a>&lt;Id, Node, S&gt;,
+    exists: F,
+) -&gt; <a class="struct" href="https://doc.rust-lang.org/1.98.1/alloc/vec/struct.Vec.html" title="struct alloc::vec::Vec">Vec</a>&lt;<a class="struct" href="struct.BackwardExtremity.html" title="struct rezzy::state::at::BackwardExtremity">BackwardExtremity</a>&lt;Id&gt;&gt;<div class="where">where
+    Id: <a class="trait" href="../basespec/rezzy_types/trait.EventId.html" title="trait rezzy::basespec::rezzy_types::EventId">EventId</a>,
+    Node: <a class="trait" href="../basespec/rezzy_types/trait.DagNode.html" title="trait rezzy::basespec::rezzy_types::DagNode">DagNode</a>&lt;Id = Id&gt;,
+    S: <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/hash/trait.BuildHasher.html" title="trait core::hash::BuildHasher">BuildHasher</a>,
+    F: <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/ops/function/trait.Fn.html" title="trait core::ops::function::Fn">Fn</a>(<a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.reference.html">&amp;Id</a>) -&gt; <a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.bool.html">bool</a>,</div></code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Scans a set of DAG events and identifies <strong>backward extremities</strong> —
+events whose <code>prev_events</code> reference parent IDs that are missing from
+both the provided <code>events</code> map and the caller’s <code>exists</code> oracle.</p>
+<p>This is the pure graph-analysis core of a homeserver’s backfill loop.
+By extracting it into rezzy, it becomes testable and reusable without
+async database I/O or federation networking.</p>
+<h2 id="arguments"><a class="doc-anchor" href="#arguments">§</a>Arguments</h2>
+<ul>
+<li><code>events</code>: The local event map to scan.</li>
+<li><code>exists</code>: A predicate that returns <code>true</code> if an event ID is known to
+exist outside <code>events</code> (e.g. in a database). This prevents reporting
+false gaps for events that are stored but not loaded into memory.</li>
+</ul>
+<h2 id="returns"><a class="doc-anchor" href="#returns">§</a>Returns</h2>
+<p>A <code>Vec&lt;BackwardExtremity&lt;Id&gt;&gt;</code> for every event that has at least one
+missing parent. Events whose parents are all accounted for (either in
+<code>events</code> or via <code>exists</code>) are not included.</p>
+<h2 id="example"><a class="doc-anchor" href="#example">§</a>Example</h2>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>rezzy::{find_backward_extremities, LeanEvent, HashMap};
+
+<span class="kw">let </span><span class="kw-2">mut </span>events: HashMap&lt;String, LeanEvent&gt; = HashMap::new();
+<span class="comment">// ... populate events ...
+</span><span class="kw">let </span>gaps = find_backward_extremities(<span class="kw-2">&amp;</span>events, |_id| <span class="bool-val">false</span>);
+<span class="kw">for </span>gap <span class="kw">in </span><span class="kw-2">&amp;</span>gaps {
+    <span class="macro">println!</span>(<span class="string">"Event {} missing parents: {:?}"</span>, gap.event_id, gap.missing_prev_events);
+}</code></pre></div><h2 id="complexity"><a class="doc-anchor" href="#complexity">§</a>Complexity</h2>
+<ul>
+<li><strong>Time</strong>: <code>O(Σ |prev_events|)</code> — linear in the total number of parent
+references across all events.</li>
+<li><strong>Space</strong>: <code>O(G)</code> where <code>G</code> is the total number of missing parent IDs
+across all backward extremities.</li>
+</ul>
+</div></details></section></div></main></body></html>

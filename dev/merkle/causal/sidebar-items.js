@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CAUSAL_DEPTH"],"enum":["CausalProofError","CompressedCausalStep"],"fn":["compress_causal_path","decompress_causal_path","empty_root","verify_causal_inclusion","verify_causal_inclusion_compressed","verify_causal_non_inclusion","verify_causal_non_inclusion_compressed"],"struct":["CausalProofStep","CausalSet"]};

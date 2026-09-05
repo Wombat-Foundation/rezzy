@@ -1,0 +1,66 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Diffs the internal node hashes between two HAMT roots produced by a single path-copying mutation (e.g. before/after an `insert` or `remove` call), identifying which persisted nodes the mutation superseded and which it newly created."><title>diff_node_hashes in rezzy::hamt::delta - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="rezzy" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.1 (48a229cea 2026-09-01)" data-channel="1.98.1" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">diff_node_hashes</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../index.html">rezzy</a><span class="version">0.6.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">diff_<wbr>node_<wbr>hashes</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#branching-hazard--read-before-wiring-this-into-retirement" title="Branching hazard — read before wiring this into retirement">Branching hazard — read before wiring this into retirement</a></li><li><a href="#errors" title="Errors">Errors</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="index.html">In rezzy::<wbr>hamt::<wbr>delta</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">rezzy</a>::<wbr><a href="./index.html">hamt</a>::<wbr><a href="index.html">delta</a></div><h1>Function <span class="fn">diff_<wbr>node_<wbr>hashes</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/rezzy/hamt/delta.rs.html#334-356">Source</a> </span></div><pre class="rust item-decl"><code>pub fn diff_node_hashes&lt;K, V, F, E&gt;(
+    root_a: &amp;<a class="struct" href="https://doc.rust-lang.org/1.98.1/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;<a class="struct" href="./struct.HamtNode.html" title="struct rezzy::hamt::HamtNode">HamtNode</a>&lt;K, V&gt;&gt;,
+    root_b: &amp;<a class="struct" href="https://doc.rust-lang.org/1.98.1/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;<a class="struct" href="./struct.HamtNode.html" title="struct rezzy::hamt::HamtNode">HamtNode</a>&lt;K, V&gt;&gt;,
+    resolver: <a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.reference.html">&amp;mut F</a>,
+) -&gt; <a class="enum" href="https://doc.rust-lang.org/1.98.1/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="struct" href="struct.NodeHashDelta.html" title="struct rezzy::hamt::delta::NodeHashDelta">NodeHashDelta</a>, <a class="enum" href="enum.HamtTraversalError.html" title="enum rezzy::hamt::delta::HamtTraversalError">HamtTraversalError</a>&lt;E&gt;&gt;<div class="where">where
+    F: <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/ops/function/trait.FnMut.html" title="trait core::ops::function::FnMut">FnMut</a>(&amp;<a class="type" href="./hash/type.StructuralHash.html" title="type rezzy::hamt::hash::StructuralHash">StructuralHash</a>) -&gt; <a class="enum" href="https://doc.rust-lang.org/1.98.1/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="struct" href="https://doc.rust-lang.org/1.98.1/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;<a class="struct" href="./struct.HamtNode.html" title="struct rezzy::hamt::HamtNode">HamtNode</a>&lt;K, V&gt;&gt;, E&gt;,</div></code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Diffs the internal node hashes between two HAMT roots produced by a
+<em>single</em> path-copying mutation (e.g. before/after an
+<a href="./fn.insert.html" title="fn rezzy::hamt::insert"><code>insert</code></a> or <a href="./fn.remove.html" title="fn rezzy::hamt::remove"><code>remove</code></a> call), identifying
+which persisted nodes the mutation superseded and which it newly created.</p>
+<p>Because HAMT nodes are content-addressed by <a href="./hash/type.StructuralHash.html" title="type rezzy::hamt::hash::StructuralHash"><code>StructuralHash</code></a>, the two
+lists are exactly what a storage backend needs to maintain per-hash
+refcounts for garbage collection — but the two halves fire at <em>different
+times</em>, not in the same transaction as the mutation:</p>
+<ul>
+<li>Increment every hash in <code>new_node_hashes</code> when the new root is
+persisted. This is always safe to do immediately, since <code>root_a</code>’s
+nodes are already counted from when <em>it</em> was persisted.</li>
+<li>Decrement every hash in <code>superseded_node_hashes</code> only when <code>root_a</code>
+itself is retired (e.g. an old state generation aging out of history),
+<strong>not</strong> when <code>root_b</code> is written — <code>root_a</code> is typically still a live,
+independently-referenced root at that point (that’s the entire reason
+path copying returns a new root instead of mutating in place), and
+decrementing its spine early will drive still-referenced nodes to a
+refcount of zero while other roots still point at them.</li>
+</ul>
+<p>A hash reaching a refcount of zero has no live root referencing it and is
+safe to delete. If increments and decrements for the same transition
+ever do land in one batch, apply the increments first, so a hash that
+appears in both lists can’t transiently hit zero.</p>
+<p>Bootstrapping refcounts for nodes that already exist in a store (or
+verifying they haven’t drifted) needs a separate, one-time reachability
+walk over every currently-live root — see
+<a href="fn.reachable_node_hashes.html" title="fn rezzy::hamt::delta::reachable_node_hashes"><code>reachable_node_hashes</code></a> — since this
+function only reports the delta between two adjacent roots, not absolute
+counts.</p>
+<p>A <code>superseded</code> hash is only a GC <em>candidate</em> even after its root is
+retired, not certain garbage — structural sharing means the same subtree
+can still be reachable from another live root (a different room’s
+snapshot, a sibling branch, …), which is exactly what the refcount is
+for.</p>
+<h2 id="branching-hazard--read-before-wiring-this-into-retirement"><a class="doc-anchor" href="#branching-hazard--read-before-wiring-this-into-retirement">§</a>Branching hazard — read before wiring this into retirement</h2>
+<p>This function is only safe as the <em>sole</em> source of what to decrement
+when <code>root_a</code> is retired if <code>root_b</code> is <code>root_a</code>’s <strong>one and only</strong> live
+successor. If <code>root_a</code> has more than one live descendant at retirement
+time — a forked resolution branch, a forward-extremity that hasn’t
+converged yet, anything where two different roots both path-copied out
+of <code>root_a</code> — diffing against just one of them will report a subtree as
+<code>superseded</code> even though a <em>different</em> still-live descendant still needs
+it, and decrementing on that basis can zero out and delete live data.
+This isn’t a bug fixable in this function: a two-root diff structurally
+cannot see a third root. When retirement can’t be modeled as a strict
+linear chain, use <a href="fn.walk_reachable_node_hashes.html" title="fn rezzy::hamt::delta::walk_reachable_node_hashes"><code>walk_reachable_node_hashes</code></a> to mark-sweep across
+<em>every</em> currently-live root instead of decrementing from a pairwise
+diff — it’s the only way to know a hash is truly unreachable from
+anywhere live.</p>
+<p>Runs in <code>O(|spine|)</code> when <code>root_a</code> and <code>root_b</code> are adjacent (one
+mutation apart), the same <code>O(log32 N)</code> path the mutation itself touched,
+since unrelated subtrees short-circuit on the first matching
+<code>structural_hash</code>. For roots that are unrelated or many mutations apart,
+this degrades to <code>O(N)</code> and may resolve every lazy node in the entire
+divergent region — it is not a general-purpose tree diff.</p>
+<h2 id="errors"><a class="doc-anchor" href="#errors">§</a>Errors</h2>
+<p>Returns <a href="enum.HamtTraversalError.html#variant.Resolve" title="variant rezzy::hamt::delta::HamtTraversalError::Resolve"><code>HamtTraversalError::Resolve</code></a> if <code>resolver</code> fails, or
+<a href="enum.HamtTraversalError.html#variant.MaxDepthExceeded" title="variant rezzy::hamt::delta::HamtTraversalError::MaxDepthExceeded"><code>HamtTraversalError::MaxDepthExceeded</code></a> if the walk recurses past the
+deepest depth a legitimately-built HAMT can have.</p>
+</div></details></section></div></main></body></html>

@@ -1,0 +1,51 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Causal Domination Operator (CDO) — vectorized conflicted-event filter. Retired from the live path and retained as design history."><title>rezzy::resolve::cdo - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="rezzy" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.1 (48a229cea 2026-09-01)" data-channel="1.98.1" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="./sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module cdo</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../index.html">rezzy</a><span class="version">0.6.0-rc.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module cdo</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#what-the-cdo-was" title="What the CDO was">What the CDO was</a></li><li><a href="#why-it-is-unsound" title="Why it is unsound">Why it is unsound</a></li><li><a href="#what-the-replacement-must-be" title="What the replacement must be">What the replacement must be</a></li></ul><h3><a href="#functions">Module Items</a></h3><ul class="block"><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="./index.html">In rezzy::<wbr>resolve</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">rezzy</a>::<wbr><a href="./index.html">resolve</a></div><h1>Module <span>cdo</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/rezzy/resolve/cdo.rs.html#15-664">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Causal Domination Operator (CDO) — vectorized conflicted-event filter.
+<strong>Retired from the live path and retained as design history.</strong></p>
+<p>This module is no longer called by resolution: the V2.1.1 pre-filter was
+removed from <code>prepare_conflicted_and_keys</code> (see the soundness note there)
+because it was unsound. It is kept here, with its tests, as the record of
+what was tried and why it failed, and as a reference for the replacement
+(a resolved-state screening pass that <em>applies</em> auth predicates instead of
+approximating domination).</p>
+<h3 id="what-the-cdo-was"><a class="doc-anchor" href="#what-the-cdo-was">§</a>What the CDO was</h3>
+<p>A V2.1.1 optimization that ran <em>before</em> the main resolution algorithm. It
+identified conflicted events <strong>causally dominated</strong> by a higher-priority
+administrative action (ban, kick, PL demotion, or join-rules lockdown) and
+removed them from the conflicted set. An event was “causally dominated” if
+a higher-priority admin action <em>restricted</em> it (see
+<a href="../basespec/rezzy_types/struct.LeanEvent.html#method.restricts_event" title="method rezzy::basespec::rezzy_types::LeanEvent::restricts_event"><code>LeanEvent::restricts_event</code></a>) and was <strong>not</strong> an ancestor or descendant
+of it (independent causal branches). Ancestor/descendant relationships were
+computed via SWAR bitmask sweeps over a topologically-sorted event array.</p>
+<h3 id="why-it-is-unsound"><a class="doc-anchor" href="#why-it-is-unsound">§</a>Why it is unsound</h3>
+<p><strong>A drop is sound iff <code>IterativeAuthChecks</code> would have rejected the event.</strong>
+The CDO ran pre-auth, before <code>resolved</code> held the authoritative power state,
+so it could never establish that. Three independent violations were found,
+each by an adversarial fixture rather than by reasoning:</p>
+<ul>
+<li><strong>Dominator-validity (the decisive one):</strong> the CDO trusted a dominator’s
+<em>structural</em> shape (ban/kick/lockdown/demotion) without verifying the
+dominator itself passes auth. An auth-invalid, low-power user’s forged
+ban erases a legitimate membership on CDO-running servers while non-CDO
+(Synapse) servers keep it — a permanent federation fork. This falsifies
+the earlier claim (below) that <code>is_ban_or_kick</code> domination “did not
+reproduce a divergence.” Reachable across all three admin classes; see
+<code>cdo_dominator_validity_gap_scope_inverted</code> in the differential harness.</li>
+<li><strong>Join-rules lockdown:</strong> <code>is_lockdown()</code> fired on independent branches
+without checking the target was actually unauthorized (mitigated for a
+target that cites prior authorization, but bypassable).</li>
+<li><strong>Transitive propagation:</strong> an event dropped via a dropped dominator
+cascaded drops transitively (fixed, then the whole filter retired).</li>
+<li><strong>Forgeable priority:</strong> <code>sort_cdo_events</code> ordered dominators by the
+author-supplied <code>event.power_level</code> (see the note on that function),
+never validated against auth — a second, independent trust-of-input hole,
+the same class the resolver refuses to tolerate for <code>depth</code>.</li>
+</ul>
+<h3 id="what-the-replacement-must-be"><a class="doc-anchor" href="#what-the-replacement-must-be">§</a>What the replacement must be</h3>
+<p>Not “the CDO moved later.” Once <code>resolved</code> holds authoritative
+<code>power_levels</code>/<code>join_rules</code>/<code>bans</code>, the sound predicate is the auth rule itself
+(“is this sender banned / under-powered in <code>resolved</code>?”), applied directly
+as an O(N) screening pass over remaining candidates — not a domination test.
+Concurrency-implies-domination was the unsound core; it does not come back
+post-power-phase, it stops being needed. The replacement must also check
+what phase-2 (non-power) acceptance can still mutate that another event’s
+auth reads, and must not change mainline ordering of the surviving set.</p>
+</div></details><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.apply_cdo_filter.html" title="fn rezzy::resolve::cdo::apply_cdo_filter">apply_<wbr>cdo_<wbr>filter</a></dt><dd>Cycle-0 Topological Filter: Vectorized Causal Domination Operator (CDO).</dd><dt><a class="fn" href="fn.is_ancestor.html" title="fn rezzy::resolve::cdo::is_ancestor">is_<wbr>ancestor</a></dt><dd>Returns <code>true</code> if <code>possible_ancestor_id</code> is an ancestor of <code>child_id</code>.</dd></dl></section></div></main></body></html>

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["StateDagCompleteness","StateDagError","StateDagValidationError"],"fn":["compute_state_after_from_dag","compute_state_before_from_dag","derive_auth_events_from_state_dag","order_missing_state_events_deterministic","validate_msc4242_prev_state_events","walk_state_dag"],"struct":["StateDagWalkOptions"]};

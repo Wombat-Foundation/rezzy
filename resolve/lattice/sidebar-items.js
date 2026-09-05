@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["is_lattice_winner_better","resolve_lattice_fold","route_power_events"]};

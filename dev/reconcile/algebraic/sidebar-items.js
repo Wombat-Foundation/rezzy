@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_LOCAL_SKETCH_DECODE_CAPACITY","MAX_OVERFLOW_SKETCH_CAPACITY","MAX_SKETCH_CAPACITY"],"enum":["AlgebraicError","EventIdFormat"],"fn":["verify_residual"],"struct":["ElementHash","RoomAccumulator","SyndromeSketch"]};

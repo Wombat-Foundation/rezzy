@@ -1,0 +1,39 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Computes the V2.1+ conflicted subgraph with an optional depth bound."><title>compute_v2_1_conflicted_subgraph_bounded in rezzy::resolve::subgraph - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="rezzy" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.1 (48a229cea 2026-09-01)" data-channel="1.98.1" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">compute_v2_1_conflicted_subgraph_bounded</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../index.html">rezzy</a><span class="version">0.6.0-rc.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">compute_<wbr>v2_<wbr>1_<wbr>conflicted_<wbr>subgraph_<wbr>bounded</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#-federating-servers-must-agree-on-the-same-bound" title="⚠️ Federating servers MUST agree on the same bound">⚠️ Federating servers MUST agree on the same bound</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="index.html">In rezzy::<wbr>resolve::<wbr>subgraph</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">rezzy</a>::<wbr><a href="./index.html">resolve</a>::<wbr><a href="index.html">subgraph</a></div><h1>Function <span class="fn">compute_<wbr>v2_<wbr>1_<wbr>conflicted_<wbr>subgraph_<wbr>bounded</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/rezzy/resolve/subgraph.rs.html#83-153">Source</a> </span></div><pre class="rust item-decl"><code>pub fn compute_v2_1_conflicted_subgraph_bounded&lt;Id, S&gt;(
+    auth_graph: &amp;<a class="struct" href="../struct.HashMap.html" title="struct rezzy::HashMap">HashMap</a>&lt;Id, <a class="struct" href="../basespec/rezzy_types/struct.LeanEvent.html" title="struct rezzy::basespec::rezzy_types::LeanEvent">LeanEvent</a>&lt;Id&gt;, S&gt;,
+    conflicted_set: &amp;<a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.slice.html">[Id]</a>,
+    max_auth_depth: <a class="enum" href="https://doc.rust-lang.org/1.98.1/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.usize.html">usize</a>&gt;,
+) -&gt; <a class="struct" href="struct.SubgraphResult.html" title="struct rezzy::resolve::subgraph::SubgraphResult">SubgraphResult</a>&lt;Id&gt;<div class="where">where
+    Id: <a class="trait" href="../basespec/rezzy_types/trait.EventId.html" title="trait rezzy::basespec::rezzy_types::EventId">EventId</a>,
+    S: <a class="trait" href="https://doc.rust-lang.org/1.98.1/core/hash/trait.BuildHasher.html" title="trait core::hash::BuildHasher">BuildHasher</a>,</div></code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Computes the V2.1+ conflicted subgraph with an optional depth bound.</p>
+<p>The algorithm:</p>
+<ol>
+<li><strong>Backwards pass</strong>: BFS up the <code>auth_events</code> from the conflicted set,
+collecting all ancestor event IDs.</li>
+<li><strong>Forwards pass</strong>: BFS down through reverse auth edges from the
+conflicted set, collecting all descendant event IDs.</li>
+<li><strong>Intersect</strong>: the subgraph is the set of events in <em>both</em> the
+backwards-reachable and forwards-reachable sets.</li>
+</ol>
+<p><code>max_auth_depth</code>: If <code>Some(n)</code>, limits the backwards traversal to <code>n</code> hops.
+This prevents history-flooding <code>DoS</code> attacks where a rogue admin generates
+millions of spoofed events on a dead-end fork.</p>
+<h2 id="-federating-servers-must-agree-on-the-same-bound"><a class="doc-anchor" href="#-federating-servers-must-agree-on-the-same-bound">§</a>⚠️ Federating servers MUST agree on the same bound</h2>
+<p>A non-<code>None</code> bound truncates the backwards pass: ancestors more than <code>n</code>
+hops from the conflicted set are silently excluded from
+<a href="struct.SubgraphResult.html#structfield.subgraph" title="field rezzy::resolve::subgraph::SubgraphResult::subgraph"><code>SubgraphResult::subgraph</code></a>. If two homeservers federating the same room
+resolve with <em>different</em> bounds, a truncated ancestor that would have
+decided a conflict on one server is absent on the other, so the two can
+compute <strong>divergent resolved state and silently partition the room</strong> —
+the depth-exceeded truncation is not guaranteed to terminate identically
+for every participant.</p>
+<p>Because of this, any <code>Some(n)</code> must be a <strong>federation-agreed protocol
+constant</strong>, not a per-deployment tuning knob: every server in the room
+must use the identical value, and it must be set so generously that it can
+never truncate a legitimate (non-adversarial) room history. Contrast this
+with <code>HAMT_MAX_DEPTH</code> elsewhere in the crate, which is a fixed crate
+constant every build shares automatically.</p>
+<p>In practice, no caller inside this crate passes a real bound: both
+production entry points go through <a href="fn.compute_v2_1_conflicted_subgraph.html" title="fn rezzy::resolve::subgraph::compute_v2_1_conflicted_subgraph"><code>compute_v2_1_conflicted_subgraph</code></a>
+(always <code>None</code>). Prefer that unless you have specifically audited the
+cross-server agreement requirement above.</p>
+</div></details></section></div></main></body></html>

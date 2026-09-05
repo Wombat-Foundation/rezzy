@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["PromotionScope","V3Polarity","V3ResolveError","V3Specificity"],"fn":["certify_tk_nutra_cdo12_admission","certify_v3_admission","classify_v3_event","resolve_v3"],"struct":["BranchAuthSnapshot","CertifiedPromotionGrant","RepairRound","RoundSelection","TkNutraCdo12RankPolicy","V3Admission","V3Rank"],"trait":["V3AdmissionProvider","V3RankPolicy"]};

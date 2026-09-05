@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_BATCH_FACTOR_WORK","MAX_BUCKETED_SKETCH_CAPACITY","MAX_BUCKET_SKETCH_CAPACITY","MAX_OVERFLOW_BUCKET_CAPACITY","SATURATED_DELTA_ESTIMATE"],"fn":["decode_bucket_sketches","estimate_strata","validate_bucket_requests","validate_overflow_bucket_requests"],"struct":["BucketDecodeBatch","BucketDecodeSuccess","BucketRequest","StrataEstimate"]};

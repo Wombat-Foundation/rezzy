@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["STRATA_COUNT","STRATUM_CAPACITY"],"struct":["ResidentKernel"]};

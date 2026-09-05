@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["get_sender_power_level","user_can_ban","user_can_invite","user_can_kick","user_can_redact"]};

@@ -1,0 +1,9 @@
+(function() {
+    const implementors = Object.fromEntries([["rezzy",[["impl&lt;'a, K: <a class=\"trait\" href=\"https://doc.rust-lang.org/1.98.1/core/convert/trait.AsRef.html\" title=\"trait core::convert::AsRef\">AsRef</a>&lt;<a class=\"primitive\" href=\"https://doc.rust-lang.org/1.98.1/std/primitive.str.html\">str</a>&gt; + 'a&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/1.98.1/core/borrow/trait.Borrow.html\" title=\"trait core::borrow::Borrow\">Borrow</a>&lt;dyn <a class=\"trait\" href=\"rezzy/auth/trait.StateKeyDyn.html\" title=\"trait rezzy::auth::StateKeyDyn\">StateKeyDyn</a> + 'a&gt; for (<a class=\"enum\" href=\"rezzy/basespec/event_types/enum.EventType.html\" title=\"enum rezzy::basespec::event_types::EventType\">EventType</a>, K)",0],["impl&lt;'a, K: <a class=\"trait\" href=\"https://doc.rust-lang.org/1.98.1/core/convert/trait.AsRef.html\" title=\"trait core::convert::AsRef\">AsRef</a>&lt;<a class=\"primitive\" href=\"https://doc.rust-lang.org/1.98.1/std/primitive.str.html\">str</a>&gt; + 'a&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/1.98.1/core/borrow/trait.Borrow.html\" title=\"trait core::borrow::Borrow\">Borrow</a>&lt;dyn <a class=\"trait\" href=\"rezzy/auth/trait.StateKeyDyn.html\" title=\"trait rezzy::auth::StateKeyDyn\">StateKeyDyn</a> + 'a&gt; for (<a class=\"struct\" href=\"https://doc.rust-lang.org/1.98.1/alloc/string/struct.String.html\" title=\"struct alloc::string::String\">String</a>, K)",0]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":59,"fragment_lengths":[1406]}

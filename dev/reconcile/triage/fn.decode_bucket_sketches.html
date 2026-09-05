@@ -1,0 +1,38 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Parses and independently decodes concatenated residual bucket sketches."><title>decode_bucket_sketches in rezzy::reconcile::triage - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="rezzy" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.1 (48a229cea 2026-09-01)" data-channel="1.98.1" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">decode_bucket_sketches</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../index.html">rezzy</a><span class="version">0.6.0-rc.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">decode_<wbr>bucket_<wbr>sketches</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#errors" title="Errors">Errors</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="index.html">In rezzy::<wbr>reconcile::<wbr>triage</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">rezzy</a>::<wbr><a href="./index.html">reconcile</a>::<wbr><a href="index.html">triage</a></div><h1>Function <span class="fn">decode_<wbr>bucket_<wbr>sketches</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/rezzy/reconcile/triage.rs.html#238-320">Source</a> </span></div><pre class="rust item-decl"><code>pub fn decode_bucket_sketches(
+    encoded: &amp;[<a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.u8.html">u8</a>],
+    requests: &amp;[<a class="struct" href="struct.BucketRequest.html" title="struct rezzy::reconcile::triage::BucketRequest">BucketRequest</a>],
+    budget: <a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.usize.html">usize</a>,
+) -&gt; <a class="enum" href="https://doc.rust-lang.org/1.98.1/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="struct" href="struct.BucketDecodeBatch.html" title="struct rezzy::reconcile::triage::BucketDecodeBatch">BucketDecodeBatch</a>, <a class="enum" href="./algebraic/enum.AlgebraicError.html" title="enum rezzy::reconcile::algebraic::AlgebraicError">AlgebraicError</a>&gt;</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Parses and independently decodes concatenated residual bucket sketches.</p>
+<p>Requests are validated in canonical key-space range order. Each requested
+sketch is serialized as little-endian syndrome coordinates with no length
+prefix; the request capacities define the boundaries.</p>
+<p>Structural and budget errors abort the batch. A normal decode failure is
+isolated to its bucket so successfully decoded roots can be retained.</p>
+<p>Decodes a batch of bucket sketches under a single, shared work budget.</p>
+<p><code>budget</code> bounds the <em>total</em> factoring work across every bucket in the
+batch, not just each bucket individually. Without this, each bucket gets
+its own implicit <code>MAX_FACTOR_WORK</code> from the unbudgeted decode path, so a
+batch of many buckets (up to <code>MAX_BUCKETED_SKETCH_CAPACITY</code> worth of
+aggregate capacity) could cost the caller an unbounded multiple of a
+single bucket’s work – the batch size itself was not a cost input.</p>
+<p>Each bucket’s draw against <code>budget</code> is further clamped to a per-bucket
+work ceiling for that bucket’s declared capacity (an internal
+<code>pinsketch</code> cost-model helper, not part of this crate’s public API), so
+one pathological sketch (corrupt, over capacity, or deliberately ground
+to resist factoring) cannot exhaust the shared pool before later,
+cheaper buckets in <code>requests</code> are even attempted – otherwise batch
+outcomes would depend on request order, since a successful decode and a
+proven-undecodable one differ in cost by roughly two orders of
+magnitude (see <code>MAX_FACTOR_WORK</code>’s comment). Callers sizing <code>budget</code>
+should account for this clamp: budgeting less than that per-bucket
+ceiling for even one request in the batch means that request may report
+<code>BudgetExhausted</code> for reasons unrelated to how much of <code>budget</code> the
+rest of the batch has used. <a href="constant.MAX_BATCH_FACTOR_WORK.html" title="constant rezzy::reconcile::triage::MAX_BATCH_FACTOR_WORK"><code>MAX_BATCH_FACTOR_WORK</code></a> is sized to cover
+a full normal-path batch and is the right default absent a
+caller-specific budget.</p>
+<h2 id="errors"><a class="doc-anchor" href="#errors">§</a>Errors</h2>
+<p>Returns an error for invalid ordering, capacity, aggregate or byte
+length, or <a href="./algebraic/enum.AlgebraicError.html#variant.BudgetExhausted" title="variant rezzy::reconcile::algebraic::AlgebraicError::BudgetExhausted"><code>AlgebraicError::BudgetExhausted</code></a> once the shared budget
+runs out, even if some buckets in the batch would otherwise have
+decoded.</p>
+</div></details></section></div></main></body></html>

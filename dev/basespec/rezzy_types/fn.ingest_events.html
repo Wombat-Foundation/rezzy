@@ -1,0 +1,40 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Ingest path: turns a batch of raw PDUs into lean events ready for state resolution, wiring the PDU-boundary checks a homeserver performs on receipt."><title>ingest_events in rezzy::basespec::rezzy_types - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="rezzy" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.1 (48a229cea 2026-09-01)" data-channel="1.98.1" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">ingest_events</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../index.html">rezzy</a><span class="version">0.6.0-rc.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">ingest_<wbr>events</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#errors" title="Errors">Errors</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="index.html">In rezzy::<wbr>basespec::<wbr>rezzy_<wbr>types</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">rezzy</a>::<wbr><a href="./index.html">basespec</a>::<wbr><a href="index.html">rezzy_types</a></div><h1>Function <span class="fn">ingest_<wbr>events</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/rezzy/basespec/rezzy_types.rs.html#1320-1357">Source</a> </span></div><pre class="rust item-decl"><code>pub fn ingest_events(
+    pdus: &amp;[<a class="enum" href="https://docs.rs/serde_json/1.0.151/serde_json/value/enum.Value.html" title="enum serde_json::value::Value">Value</a>],
+    room_version: &amp;<a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.str.html">str</a>,
+    room_id: <a class="enum" href="https://doc.rust-lang.org/1.98.1/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;&amp;<a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.str.html">str</a>&gt;,
+) -&gt; <a class="enum" href="https://doc.rust-lang.org/1.98.1/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="struct" href="https://doc.rust-lang.org/1.98.1/alloc/vec/struct.Vec.html" title="struct alloc::vec::Vec">Vec</a>&lt;<a class="struct" href="struct.LeanEvent.html" title="struct rezzy::basespec::rezzy_types::LeanEvent">LeanEvent</a>&lt;<a class="struct" href="https://doc.rust-lang.org/1.98.1/alloc/string/struct.String.html" title="struct alloc::string::String">String</a>, <a class="enum" href="https://docs.rs/serde_json/1.0.151/serde_json/value/enum.Value.html" title="enum serde_json::value::Value">Value</a>, <a class="struct" href="https://doc.rust-lang.org/1.98.1/alloc/string/struct.String.html" title="struct alloc::string::String">String</a>&gt;&gt;, <a class="struct" href="https://doc.rust-lang.org/1.98.1/alloc/string/struct.String.html" title="struct alloc::string::String">String</a>&gt;</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Ingest path: turns a batch of raw PDUs into lean events ready for state
+resolution, wiring the PDU-boundary checks a homeserver performs on receipt.</p>
+<p>For each PDU, in order:</p>
+<ol>
+<li><strong>Content-hash verification</strong> — if the PDU carries a <code>hashes</code> dict,
+<a href="fn.verify_content_hash.html" title="fn rezzy::basespec::rezzy_types::verify_content_hash"><code>verify_content_hash</code></a> is run against it (the unredacted content hash,
+<code>hashes.sha256</code>). Events without a <code>hashes</code> dict are skipped (not every
+caller feeds full signed PDUs).</li>
+<li><strong>Parsing</strong> — each PDU is converted to a <a href="struct.LeanEvent.html" title="struct rezzy::basespec::rezzy_types::LeanEvent"><code>LeanEvent</code></a> with
+<a href="struct.LeanEvent.html#method.from_value" title="associated function rezzy::basespec::rezzy_types::LeanEvent::from_value"><code>LeanEvent::from_value</code></a>, deriving a missing <code>event_id</code> from the room
+version’s reference hash.
+For room versions v3 and later, a supplied <code>event_id</code> is rejected: it is
+not part of the federation PDU format and the receiver must derive it.</li>
+</ol>
+<p>This function does <strong>not</strong> apply redactions. Applying a redaction requires
+authorization against the room’s resolved state (the redact power level and
+the target’s sender), which does not exist at ingest time. Callers that want
+in-batch redaction applied must run
+<a href="../auth/fn.apply_authorized_redactions.html" title="fn rezzy::auth::apply_authorized_redactions"><code>crate::auth::apply_authorized_redactions</code></a> once they hold the resolved
+state.</p>
+<p><code>room_id</code>, if given, is stamped onto every produced event’s
+<a href="struct.LeanEvent.html#structfield.room_id" title="field rezzy::basespec::rezzy_types::LeanEvent::room_id"><code>LeanEvent::room_id</code></a> (one <a href="struct.RoomId.html" title="struct rezzy::basespec::rezzy_types::RoomId"><code>RoomId</code></a> allocation, <code>Arc::clone</code>d across the
+batch – see that field’s doc comment). This is <strong>not</strong> read from each
+PDU’s own <code>room_id</code> field: <code>room_id</code> has been a top-level wire field on
+every room version, pre-V12 included, but trusting a PDU’s self-reported
+<code>room_id</code> to establish which room it belongs to would be circular (a
+crafted PDU can claim any room). <code>room_id</code> here is caller-supplied trusted
+context, the same trust boundary <code>room_version</code> above already is – e.g.
+“the room this batch was received under,” not anything derived from the
+PDUs themselves. <code>None</code> skips this and matches this function’s prior
+behavior (every produced event carries <code>room_id: None</code>).</p>
+<h2 id="errors"><a class="doc-anchor" href="#errors">§</a>Errors</h2>
+<p>Returns <code>Err</code> if a PDU fails content-hash verification, or cannot be parsed
+to a <code>LeanEvent</code> (including a missing <code>event_id</code> for a room version with no
+reference hash, i.e. v1/v2).</p>
+</div></details></section></div></main></body></html>
