@@ -27,12 +27,12 @@ pub type Hash = [u8; HASH_SIZE];
 
 /// A Merkle root that nobody has signed.
 ///
-/// Every `root()`-shaped function in this module and [`crate::state::merkle`]
-/// (the header tree, the causal sparse Merkle sum trie, the resolved-state
-/// trie) computes a value of this type, not a bare [`type@Hash`]. That is
-/// deliberate, not decorative: per MSC4511C ("Relationship to other
-/// proposals"), a root is only a *proof* of anything -- "this key is/isn't a
-/// member" -- when it is either (a) folded into an `event_root` an event's
+/// Some root-computing functions in this crate return this wrapper
+/// ([`header_root`], [`CausalSet::unsigned_root`], [`StateMap::unsigned_root`]);
+/// others return a bare [`type@Hash`] ([`root`], [`CausalSet::root`],
+/// [`StateMap::root`]). The wrapper exists so a caller at a return site that
+/// produces `UnsignedRoot` is reminded that the value is only a *proof* of
+/// anything when it is either (a) folded into an `event_root` an event's
 /// sender actually signed (a true MSC4511C Part C proof), or (b) signed
 /// after the fact by whoever computed it, standing behind it as a responder
 /// (a Part B attestation -- see `crate::signing::attest` when the
@@ -48,6 +48,12 @@ pub type Hash = [u8; HASH_SIZE];
 /// and the result is a real, checkable claim -- just a Part B one, only as
 /// trustworthy as that one signer, not a room-participant-committed
 /// guarantee.
+///
+/// Callers who receive a root over federation should prefer
+/// [`verify_causal_inclusion`] / [`verify_inclusion`] only after confirming
+/// the root's provenance (e.g. extracted from a signature-checked event).
+/// A bare `Hash` passed to a verifier proves nothing about who stands
+/// behind it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UnsignedRoot(pub Hash);
 
@@ -723,24 +729,26 @@ pub mod causal {
     /// Which side a sibling subtree sits on relative to the running node in
     /// a [`CausalProofStep`].
     ///
-    /// Renamed from `Side` to `CausalSide` to avoid a naming clash with
-    /// [`crate::merkle::Side`] (the top-level, unrelated `Side` enum used by
-    /// the non-causal Merkle sum trie). Scoped to `merkle::causal` and not
-    /// re-exported at the crate root, so this is a breaking change only for
-    /// callers referencing `rezzy::merkle::causal::Side` directly.
+    /// This is derived from the key during verification — it is not part of
+    /// the wire format. The type exists only for internal use in
+    /// [`verify_causal_path`] and [`descend`].
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum CausalSide {
+    enum CausalSide {
         Left,
         Right,
     }
 
     /// One sibling in a causal sparse Merkle sum trie path, ordered
     /// leaf-to-root: applying each step in order (combining the running
-    /// hash/count with `hash`/`count` on the named `side`, via
+    /// hash/count with `hash`/`count` on the named side, via
     /// `causal_node`) reconstructs the trie root and count.
+    ///
+    /// The side (left/right) is not stored here — it is deterministically
+    /// derived from the key bit at each depth during verification
+    /// ([`verify_causal_path`]). This removes a redundant field from the
+    /// wire format and eliminates an entire class of forgery.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct CausalProofStep {
-        pub side: CausalSide,
         pub hash: Hash,
         pub count: u64,
     }
@@ -876,6 +884,18 @@ pub mod causal {
             expected_sibling_depth: usize,
             actual_start: usize,
         },
+        /// Two consecutive `EmptyRun` entries: the second is redundant
+        /// because the first could have been extended to cover the same
+        /// range. This is a canonicity violation — `compress_causal_path`
+        /// never emits adjacent runs.
+        NonMaximalRun,
+        /// A `Step` entry whose `count == 0` and `hash` equals the
+        /// canonical empty subtree at the expected sibling depth. This
+        /// should have been collapsed into an `EmptyRun` by the
+        /// compressor. Rejecting it enforces the same canonicity rule
+        /// that adjacent `EmptyRun` rejection does: every step in a
+        /// compressed path is either non-empty or part of a maximal run.
+        NonCanonicalStep,
     }
 
     impl core::fmt::Display for CausalProofError {
@@ -903,6 +923,13 @@ pub mod causal {
                     "causal proof: empty run starts at sibling depth {actual_start}, \
                      expected {expected_sibling_depth}"
                 ),
+                Self::NonMaximalRun => {
+                    f.write_str("causal proof: consecutive empty runs must be merged")
+                }
+                Self::NonCanonicalStep => {
+                    f.write_str("causal proof: step carries canonical-empty value; \
+                                 use EmptyRun instead")
+                }
             }
         }
     }
@@ -990,6 +1017,7 @@ pub mod causal {
         }
         let empty = empty_table();
         let mut out: Vec<CausalProofStep> = Vec::new();
+        let mut prev_was_empty_run = false;
 
         for step in compressed {
             match step {
@@ -997,12 +1025,29 @@ pub mod causal {
                     if out.len() >= terminal_depth {
                         return Err(CausalProofError::ExcessData);
                     }
+                    // Reject a Step that carries a canonical-empty value:
+                    // the compressor would have collapsed this into an
+                    // EmptyRun, so emitting it as a Step is non-canonical.
+                    let sibling_depth = terminal_depth.saturating_sub(out.len());
+                    if s.count == 0
+                        && sibling_depth < empty.len()
+                        && s.hash == empty[sibling_depth]
+                    {
+                        return Err(CausalProofError::NonCanonicalStep);
+                    }
+                    prev_was_empty_run = false;
                     out.push(*s);
                 }
                 CompressedCausalStep::EmptyRun {
                     start_depth,
                     length,
                 } => {
+                    // Reject consecutive EmptyRuns: the second should
+                    // have been merged into the first by the compressor.
+                    if prev_was_empty_run {
+                        return Err(CausalProofError::NonMaximalRun);
+                    }
+                    prev_was_empty_run = true;
                     let start = *start_depth as usize;
                     let len = *length as usize;
 
@@ -1043,14 +1088,7 @@ pub mod causal {
                         // subtractions stay in range; `saturating_sub`
                         // avoids the raw `-` clippy flags regardless.
                         let sibling_depth = start.saturating_sub(j);
-                        let parent_depth = sibling_depth.saturating_sub(1);
-                        let side = if causal_bit(key, parent_depth) == 0 {
-                            CausalSide::Right
-                        } else {
-                            CausalSide::Left
-                        };
                         out.push(CausalProofStep {
-                            side,
                             hash: empty[sibling_depth],
                             count: 0,
                         });
@@ -1167,7 +1205,7 @@ pub mod causal {
             causal_leaf(*key),
             1,
             CAUSAL_DEPTH,
-            Some(key),
+            key,
             path,
             root,
             count,
@@ -1195,7 +1233,7 @@ pub mod causal {
             empty_table()[terminal_depth],
             0,
             terminal_depth,
-            Some(key),
+            key,
             path,
             root,
             count,
@@ -1219,11 +1257,15 @@ pub mod causal {
     /// first), so `depth` walks downward from `terminal_depth - 1` to 0;
     /// `path.len() == terminal_depth` is checked first, so the decrement
     /// below never underflows past 0.
+    ///
+    /// The side (left/right) at each level is derived from `causal_bit(key,
+    /// depth)`, not stored in the path — this removes a redundant wire field
+    /// and eliminates an entire class of forgery.
     fn verify_causal_path(
         terminal_hash: Hash,
         terminal_count: u64,
         terminal_depth: usize,
-        key: Option<&Hash>,
+        key: &Hash,
         path: &[CausalProofStep],
         root: Hash,
         count: u64,
@@ -1236,17 +1278,12 @@ pub mod causal {
         let mut depth = terminal_depth;
         for step in path {
             depth = depth.saturating_sub(1);
-            if let Some(key) = key {
-                let expected_side = if causal_bit(key, depth) == 0 {
-                    CausalSide::Right
-                } else {
-                    CausalSide::Left
-                };
-                if step.side != expected_side {
-                    return false;
-                }
-            }
-            cur_hash = match step.side {
+            let side = if causal_bit(key, depth) == 0 {
+                CausalSide::Right
+            } else {
+                CausalSide::Left
+            };
+            cur_hash = match side {
                 CausalSide::Left => {
                     causal_node(depth_u16(depth), step.hash, step.count, cur_hash, cur_count)
                 }
@@ -1352,7 +1389,6 @@ pub mod causal {
                 right_count,
             );
             path.push(CausalProofStep {
-                side: CausalSide::Right,
                 hash: right_hash,
                 count: right_count,
             });
@@ -1375,7 +1411,6 @@ pub mod causal {
                 right_count,
             );
             path.push(CausalProofStep {
-                side: CausalSide::Left,
                 hash: left_hash,
                 count: left_count,
             });
