@@ -3,29 +3,23 @@ name: Rust Docs
 
 on:
   push:
-    branches: ["main", "master"]
+    branches: ["master", "dev"]
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
-# Allow only one concurrent deployment
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   docs:
+    if: github.ref_name == 'master' || github.ref_name == 'dev'
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -33,23 +27,22 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build rustdoc
-        run: make rust/doc
+        run: make doc
 
-      - name: Delete stale github-pages artifact
-        # `deploy-pages` requires exactly one `github-pages` artifact; a
-        # leftover from a prior run collides with the fresh upload and aborts
-        # with "Multiple artifacts named github-pages". Remove any before
-        # uploading so every run is idempotent.
-        uses: geekyeggo/delete-artifact@v5
+      - name: Prepare flat deploy directory
+        run: |
+          cp -a target/doc _site
+          cp -a _site/rezzy/. _site/
+          rm -rf _site/rezzy
+          find _site \( -name '*.html' -o -name '*.js' \) -print0 | xargs -0 perl -pi -e \
+            's{(href|src|content|data-[a-z-]+)="((?:\.\./)+)}{ my $n = length($2)/3; my $p = $n > 1 ? "../" x ($n-1) : "./"; $1 . "=\"" . $p }ge'
+          find _site \( -name '*.html' -o -name '*.js' \) -print0 | xargs -0 sed -i 's|rezzy/index\.html|index.html|g'
+
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          name: github-pages
-          failOnError: false
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: target/doc
-
-      - name: Deploy to GitHub Pages
-        id: deploy
-        uses: actions/deploy-pages@v4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: _site
+          destination_dir: ${{ github.ref_name == 'dev' && 'dev' || '' }}
+          keep_files: true
