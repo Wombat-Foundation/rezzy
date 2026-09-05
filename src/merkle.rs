@@ -1371,6 +1371,19 @@ pub mod causal {
         if terminal_depth > CAUSAL_DEPTH {
             return false;
         }
+        if path.len() != terminal_depth {
+            return false;
+        }
+        // Minimality: if the sibling at the terminal depth were also
+        // canonical-empty, the parent at terminal_depth - 1 would have two
+        // empty children and so be canonical-empty itself — the descent
+        // would have stopped a level higher. Biconditional, so this is
+        // exact, not a heuristic.
+        if let Some(s0) = path.first() {
+            if s0.count == 0 && s0.hash == empty_table()[terminal_depth] {
+                return false;
+            }
+        }
         // Under `std`, `empty_table` is built once and reused by root, proof,
         // and verification operations. The no_std fallback retains allocation-
         // free portability without requiring a synchronization primitive.
@@ -1455,10 +1468,7 @@ pub mod causal {
         }
 
         /// `subtree_root`, generalized to accept an empty key set.
-        pub(crate) fn subtree_root_or_empty(
-            keys: &[Hash],
-            depth: usize,
-        ) -> (Hash, u64) {
+        pub(crate) fn subtree_root_or_empty(keys: &[Hash], depth: usize) -> (Hash, u64) {
             if keys.is_empty() {
                 (empty_table()[depth], 0)
             } else {
@@ -1469,10 +1479,7 @@ pub mod causal {
         /// Independent recursive computation of the causal trie root for a
         /// given key set. Used as a differential oracle against the
         /// incremental node-cache implementation.
-        pub(crate) fn subtree_root(
-            keys: &[Hash],
-            depth: usize,
-        ) -> (Hash, u64) {
+        pub(crate) fn subtree_root(keys: &[Hash], depth: usize) -> (Hash, u64) {
             if depth == CAUSAL_DEPTH {
                 return (causal_leaf(keys[0]), 1);
             }
@@ -1510,7 +1517,13 @@ pub mod causal {
             target: &Hash,
         ) -> (Hash, u64, Vec<CausalProofStep>, TerminalKind, usize) {
             if keys.is_empty() {
-                return (empty_table()[depth], 0, Vec::new(), TerminalKind::Empty, depth);
+                return (
+                    empty_table()[depth],
+                    0,
+                    Vec::new(),
+                    TerminalKind::Empty,
+                    depth,
+                );
             }
             if depth == CAUSAL_DEPTH {
                 return (
@@ -1534,8 +1547,7 @@ pub mod causal {
             if causal_bit(target, depth) == 0 {
                 let (left_hash, left_count, mut path, kind, term_depth) =
                     descend(&left, next_depth, target);
-                let (right_hash, right_count) =
-                    subtree_root_or_empty(&right, next_depth);
+                let (right_hash, right_count) = subtree_root_or_empty(&right, next_depth);
                 let node = causal_node(
                     depth_u16(depth),
                     left_hash,
@@ -1557,8 +1569,7 @@ pub mod causal {
             } else {
                 let (right_hash, right_count, mut path, kind, term_depth) =
                     descend(&right, next_depth, target);
-                let (left_hash, left_count) =
-                    subtree_root_or_empty(&left, next_depth);
+                let (left_hash, left_count) = subtree_root_or_empty(&left, next_depth);
                 let node = causal_node(
                     depth_u16(depth),
                     left_hash,
@@ -1591,7 +1602,7 @@ pub mod causal {
     /// --lib`), not when an external integration-test binary links this
     /// crate as an ordinary dependency. Only a same-crate `#[cfg(test)]`
     /// module can see it.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "std"))]
     mod tests {
         use super::test_oracle::{descend, subtree_root_or_empty, TerminalKind};
         use super::*;
@@ -1608,6 +1619,25 @@ pub mod causal {
             let mut k = [0u8; 32];
             k[bit / 8] |= 1 << (7 - bit % 8);
             k
+        }
+
+        /// Deterministic xorshift64 → 256-bit keys. Every byte of each key
+        /// is populated, exercising Phase 2's tail-zeroing loop and
+        /// intra-byte mask across all 32 bytes.
+        fn dense_keys(seed: u64, count: usize) -> Vec<Hash> {
+            let mut state = seed;
+            let mut keys = Vec::with_capacity(count);
+            for _ in 0..count {
+                let mut k = [0u8; 32];
+                for chunk in k.chunks_mut(8) {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    chunk.copy_from_slice(&state.to_le_bytes());
+                }
+                keys.push(k);
+            }
+            keys
         }
 
         /// Cross-checks `CausalSet`'s incremental root/proofs against the
@@ -1633,12 +1663,15 @@ pub mod causal {
                     }
 
                     let (ref_root, ref_count) = subtree_root_or_empty(&keys, 0);
-                    assert_eq!(set.root(), ref_root, "incremental root diverges from oracle");
+                    assert_eq!(
+                        set.root(),
+                        ref_root,
+                        "incremental root diverges from oracle"
+                    );
                     assert_eq!(set.count(), ref_count);
 
                     for &k in &keys {
-                        let (path, root, count) =
-                            set.inclusion_proof(&k).expect("key is a member");
+                        let (path, root, count) = set.inclusion_proof(&k).expect("key is a member");
                         let (oracle_hash, oracle_count, oracle_path, kind, term_depth) =
                             descend(&keys, 0, &k);
                         assert!(matches!(kind, TerminalKind::Leaf));
@@ -1660,8 +1693,9 @@ pub mod causal {
                     let (oracle_hash, oracle_count, oracle_path, kind, term_depth) =
                         descend(&keys, 0, &absent);
                     assert!(matches!(kind, TerminalKind::Empty));
-                    let (path, depth, root, count) =
-                        set.non_inclusion_proof(&absent).expect("key is not a member");
+                    let (path, depth, root, count) = set
+                        .non_inclusion_proof(&absent)
+                        .expect("key is not a member");
                     assert_eq!(depth, term_depth);
                     // The terminal hash is the hash of the subtree containing
                     // all 5 keys at the terminal depth (the non-empty sibling),
@@ -1677,34 +1711,153 @@ pub mod causal {
             child.join().unwrap();
         }
 
+        /// Dense pseudorandom keys: exercises the intra-byte mask
+        /// (`child_prefix[byte_idx] &= 0xFF << (7 - bit_idx)`) and
+        /// tail-zeroing loop (`child_prefix[(byte_idx + 1)..32] = 0`) on
+        /// keys where those bytes are non-trivial — the exact gap left by
+        /// single-bit keys. Tests n=1, n=2 (trivial degeneracies), and
+        /// n=32, n=64 (dense enough that Phase 2 recurses through many
+        /// non-trivial prefixes).
+        #[test]
+        fn differential_root_and_proofs_dense_random() {
+            let child = std::thread::Builder::new()
+                .stack_size(16 * 1024 * 1024)
+                .spawn(move || {
+                    for &n in &[1, 2, 32, 64] {
+                        let keys = dense_keys(0xDEAD_BEEF_CAFE_1234, n);
+
+                        let mut set = CausalSet::empty();
+                        for &k in &keys {
+                            set.insert_mut(k);
+                        }
+
+                        let (ref_root, ref_count) = subtree_root_or_empty(&keys, 0);
+                        assert_eq!(set.root(), ref_root, "root diverges at n={n}");
+                        assert_eq!(set.count(), ref_count, "count diverges at n={n}");
+
+                        for &k in &keys {
+                            let (path, root, count) =
+                                set.inclusion_proof(&k).expect("key is a member");
+                            let (oracle_hash, oracle_count, oracle_path, kind, term_depth) =
+                                descend(&keys, 0, &k);
+                            assert!(matches!(kind, TerminalKind::Leaf));
+                            assert_eq!(term_depth, CAUSAL_DEPTH);
+                            assert_eq!(oracle_hash, root, "inclusion hash diverges at n={n}");
+                            assert_eq!(oracle_count, count, "inclusion count diverges at n={n}");
+                            assert_eq!(oracle_path, path, "inclusion path diverges at n={n}");
+                            assert!(verify_causal_inclusion(&k, &path, root, count));
+                        }
+
+                        // Non-inclusion: pick a key not in the set.
+                        let absent = dense_keys(0xBEEF_CAFE_1234_DEAD, 1)[0];
+                        let (oracle_hash, oracle_count, oracle_path, kind, term_depth) =
+                            descend(&keys, 0, &absent);
+                        assert!(matches!(kind, TerminalKind::Empty));
+                        let (path, depth, root, count) = set
+                            .non_inclusion_proof(&absent)
+                            .expect("key is not a member");
+                        assert_eq!(depth, term_depth);
+                        assert_eq!(oracle_hash, root);
+                        assert_eq!(oracle_count, count);
+                        assert_eq!(oracle_path, path, "non-inclusion path diverges at n={n}");
+                        assert!(verify_causal_non_inclusion(
+                            &absent, depth, &path, root, count
+                        ));
+                    }
+                })
+                .unwrap();
+            child.join().unwrap();
+        }
+
         /// Same cross-check, insertion-order independence: the oracle takes
         /// a flat key slice, so this also confirms the incremental cache
-        /// doesn't depend on the order keys were inserted in.
+        /// doesn't depend on the order keys were inserted in. Compares both
+        /// roots AND inclusion/non-inclusion proofs — an ordering bug that
+        /// produced a correct root with a stale sibling would slip through
+        /// root-only comparison.
         #[test]
         fn differential_root_is_order_independent() {
             let bits = [7_usize, 8, 15, 16, 255];
-            let keys: Vec<Hash> = bits.iter().copied().map(bit_key).collect();
+            let bit_keys: Vec<Hash> = bits.iter().copied().map(bit_key).collect();
+            let dense = dense_keys(0xCAFE_1234_DEAD_BEEF, 48);
 
             let child = std::thread::Builder::new()
                 .stack_size(16 * 1024 * 1024)
                 .spawn(move || {
-                    let mut forward = CausalSet::empty();
-                    for &k in &keys {
-                        forward.insert_mut(k);
-                    }
-                    let mut reverse = CausalSet::empty();
-                    for &k in keys.iter().rev() {
-                        reverse.insert_mut(k);
-                    }
+                    for (label, keys) in
+                        [("bit", &bit_keys as &[Hash]), ("dense", &dense as &[Hash])]
+                    {
+                        let mut forward = CausalSet::empty();
+                        for &k in keys {
+                            forward.insert_mut(k);
+                        }
+                        let mut reverse = CausalSet::empty();
+                        for &k in keys.iter().rev() {
+                            reverse.insert_mut(k);
+                        }
 
-                    let (ref_root, ref_count) = subtree_root_or_empty(&keys, 0);
-                    assert_eq!(forward.root(), ref_root);
-                    assert_eq!(reverse.root(), ref_root);
-                    assert_eq!(forward.count(), ref_count);
-                    assert_eq!(reverse.count(), ref_count);
+                        let (ref_root, ref_count) = subtree_root_or_empty(keys, 0);
+                        assert_eq!(forward.root(), ref_root);
+                        assert_eq!(reverse.root(), ref_root);
+                        assert_eq!(forward.count(), ref_count);
+                        assert_eq!(reverse.count(), ref_count);
+
+                        // Compare inclusion proofs under both orderings.
+                        for &k in keys {
+                            let (f_path, f_root, f_count) = forward.inclusion_proof(&k).unwrap();
+                            let (r_path, r_root, r_count) = reverse.inclusion_proof(&k).unwrap();
+                            assert_eq!(f_root, r_root, "{label}: inclusion root diverges");
+                            assert_eq!(f_count, r_count, "{label}: inclusion count diverges");
+                            assert_eq!(f_path, r_path, "{label}: inclusion path diverges");
+                        }
+
+                        // Compare non-inclusion proofs.
+                        let absent = dense_keys(0xBEEF_CAFE_1234_DEAD, 1)[0];
+                        let (f_path, f_depth, f_root, f_count) =
+                            forward.non_inclusion_proof(&absent).unwrap();
+                        let (r_path, r_depth, r_root, r_count) =
+                            reverse.non_inclusion_proof(&absent).unwrap();
+                        assert_eq!(f_root, r_root, "{label}: non-inclusion root diverges");
+                        assert_eq!(f_count, r_count, "{label}: non-inclusion count diverges");
+                        assert_eq!(f_depth, r_depth, "{label}: non-inclusion depth diverges");
+                        assert_eq!(f_path, r_path, "{label}: non-inclusion path diverges");
+                    }
                 })
                 .unwrap();
             child.join().unwrap();
+        }
+
+        /// Regression test for a non-minimality attack on non-inclusion
+        /// proofs: prepend an empty-table step and bump `terminal_depth` by 1.
+        /// The prepended fold produces empty[terminal_depth-1] by
+        /// construction, so the proof is length-consistent and verifies
+        /// against the original root. Run BEFORE applying the minimality
+        /// fix to confirm the bug exists.
+        #[test]
+        fn non_minimal_terminal_depth_is_rejected() {
+            let (a, b) = (bit_key(7), bit_key(8));
+            let absent = bit_key(47);
+            let mut set = CausalSet::empty();
+            set.insert_mut(a);
+            set.insert_mut(b);
+
+            let (path, t, root, count) = set.non_inclusion_proof(&absent).unwrap();
+            assert!(verify_causal_non_inclusion(&absent, t, &path, root, count));
+
+            let mut extended = alloc::vec![CausalProofStep {
+                hash: empty_table()[t + 1],
+                count: 0,
+            }];
+            extended.extend_from_slice(&path);
+            // Pre-fix: this assertion FAILS — the non-minimal proof
+            // passes verification. Post-fix: it must pass (reject).
+            assert!(!verify_causal_non_inclusion(
+                &absent,
+                t + 1,
+                &extended,
+                root,
+                count
+            ));
         }
     }
 }

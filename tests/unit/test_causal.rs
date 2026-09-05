@@ -590,8 +590,7 @@ fn decompress_rejects_non_canonical_step_interleaved_with_run() {
     let s = CausalSet::empty().insert(k);
     let (path, _, _) = s.inclusion_proof(&k).unwrap();
     let decompressed =
-        decompress_causal_path(CAUSAL_DEPTH, &compress_causal_path(CAUSAL_DEPTH, &path))
-            .unwrap();
+        decompress_causal_path(CAUSAL_DEPTH, &compress_causal_path(CAUSAL_DEPTH, &path)).unwrap();
     // The first decompressed step is at sibling depth CAUSAL_DEPTH.
     let first_hash = decompressed[0].hash;
 
@@ -619,8 +618,7 @@ fn decompress_accepts_step_with_nonzero_count_at_empty_position() {
     let s = CausalSet::empty().insert(k);
     let (path, _, _) = s.inclusion_proof(&k).unwrap();
     let decompressed =
-        decompress_causal_path(CAUSAL_DEPTH, &compress_causal_path(CAUSAL_DEPTH, &path))
-            .unwrap();
+        decompress_causal_path(CAUSAL_DEPTH, &compress_causal_path(CAUSAL_DEPTH, &path)).unwrap();
     // Same hash as the first empty sibling, but with count=1. This is
     // non-empty (count != 0) so it should be accepted — it's a lie about
     // the count, but that's caught by verify, not decompress.
