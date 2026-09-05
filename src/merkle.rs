@@ -788,7 +788,7 @@ pub mod causal {
             // Phase 1: walk down, creating all nodes along the path.
             let mut prefix = [0u8; 32];
             for d in 0..CAUSAL_DEPTH {
-                let depth = d as u16;
+                let depth = depth_u16(d);
                 self.nodes.entry((depth, prefix)).or_insert((empty[d], 0));
                 if causal_bit(&key, d) == 0 {
                     // go left: clear bit d in prefix
@@ -799,7 +799,7 @@ pub mod causal {
                 }
             }
             // Leaf at depth 256
-            let leaf_depth = CAUSAL_DEPTH as u16;
+            let leaf_depth = depth_u16(CAUSAL_DEPTH);
             self.nodes
                 .insert((leaf_depth, prefix), (causal_leaf(key), 1));
 
@@ -809,8 +809,8 @@ pub mod causal {
             // how Phase 1 stored child nodes at depth d+1.
             let mut child_prefix = prefix;
             for d in (0..CAUSAL_DEPTH).rev() {
-                let depth = d as u16;
-                let child_depth = (d + 1) as u16;
+                let depth = depth_u16(d);
+                let child_depth = depth_u16(d + 1);
 
                 // Strip child_prefix to only have bits 0..d set.
                 let byte_idx = d / 8;
@@ -1089,7 +1089,6 @@ pub mod causal {
     ///
     /// Returns [`CausalProofError`] on any validation failure.
     pub fn decompress_causal_path(
-        _key: &Hash,
         terminal_depth: usize,
         compressed: &[CompressedCausalStep],
     ) -> Result<Vec<CausalProofStep>, CausalProofError> {
@@ -1199,7 +1198,7 @@ pub mod causal {
         root: Hash,
         count: u64,
     ) -> Result<bool, CausalProofError> {
-        let path = decompress_causal_path(key, CAUSAL_DEPTH, compressed)?;
+        let path = decompress_causal_path(CAUSAL_DEPTH, compressed)?;
         Ok(verify_causal_inclusion(key, &path, root, count))
     }
 
@@ -1218,7 +1217,7 @@ pub mod causal {
         root: Hash,
         count: u64,
     ) -> Result<bool, CausalProofError> {
-        let path = decompress_causal_path(key, terminal_depth, compressed)?;
+        let path = decompress_causal_path(terminal_depth, compressed)?;
         Ok(verify_causal_non_inclusion(
             key,
             terminal_depth,
@@ -1242,7 +1241,7 @@ pub mod causal {
             let mut path = Vec::with_capacity(CAUSAL_DEPTH);
             let mut prefix = [0u8; 32];
             for d in 0..CAUSAL_DEPTH {
-                let child_depth = (d + 1) as u16;
+                let child_depth = depth_u16(d + 1);
                 // The sibling is the other child at this depth.
                 let (sib_hash, sib_count) = if causal_bit(key, d) == 0 {
                     // key goes left; sibling is right
@@ -1297,7 +1296,7 @@ pub mod causal {
             let mut path = Vec::new();
             let mut prefix = [0u8; 32];
             for d in 0..CAUSAL_DEPTH {
-                let child_depth = (d + 1) as u16;
+                let child_depth = depth_u16(d + 1);
                 // Collect the sibling at this depth (the other child of
                 // the node at depth d).
                 let (sib_hash, sib_count) = if causal_bit(key, d) == 0 {
@@ -1443,5 +1442,269 @@ pub mod causal {
             };
         }
         cur_hash == root && cur_count == count
+    }
+
+    #[cfg(test)]
+    mod test_oracle {
+        use super::*;
+
+        #[derive(PartialEq, Eq)]
+        pub(crate) enum TerminalKind {
+            Leaf,
+            Empty,
+        }
+
+        /// `subtree_root`, generalized to accept an empty key set.
+        pub(crate) fn subtree_root_or_empty(
+            keys: &[Hash],
+            depth: usize,
+        ) -> (Hash, u64) {
+            if keys.is_empty() {
+                (empty_table()[depth], 0)
+            } else {
+                subtree_root(keys, depth)
+            }
+        }
+
+        /// Independent recursive computation of the causal trie root for a
+        /// given key set. Used as a differential oracle against the
+        /// incremental node-cache implementation.
+        pub(crate) fn subtree_root(
+            keys: &[Hash],
+            depth: usize,
+        ) -> (Hash, u64) {
+            if depth == CAUSAL_DEPTH {
+                return (causal_leaf(keys[0]), 1);
+            }
+            let mut left = Vec::new();
+            let mut right = Vec::new();
+            for k in keys {
+                if causal_bit(k, depth) == 0 {
+                    left.push(*k);
+                } else {
+                    right.push(*k);
+                }
+            }
+            let next_depth = depth.saturating_add(1);
+            let (left_hash, left_count) = subtree_root_or_empty(&left, next_depth);
+            let (right_hash, right_count) = subtree_root_or_empty(&right, next_depth);
+            (
+                causal_node(
+                    depth_u16(depth),
+                    left_hash,
+                    left_count,
+                    right_hash,
+                    right_count,
+                ),
+                count_sum(left_count, right_count),
+            )
+        }
+
+        /// Recursively computes the (hash, count) of the subtree over `keys`
+        /// at `depth`, plus the ordered leaf-to-root sibling path along
+        /// `target`'s bit-directed descent. Returns the terminal node's kind
+        /// and depth.
+        pub(crate) fn descend(
+            keys: &[Hash],
+            depth: usize,
+            target: &Hash,
+        ) -> (Hash, u64, Vec<CausalProofStep>, TerminalKind, usize) {
+            if keys.is_empty() {
+                return (empty_table()[depth], 0, Vec::new(), TerminalKind::Empty, depth);
+            }
+            if depth == CAUSAL_DEPTH {
+                return (
+                    causal_leaf(keys[0]),
+                    1,
+                    Vec::new(),
+                    TerminalKind::Leaf,
+                    depth,
+                );
+            }
+            let mut left = Vec::new();
+            let mut right = Vec::new();
+            for k in keys {
+                if causal_bit(k, depth) == 0 {
+                    left.push(*k);
+                } else {
+                    right.push(*k);
+                }
+            }
+            let next_depth = depth.saturating_add(1);
+            if causal_bit(target, depth) == 0 {
+                let (left_hash, left_count, mut path, kind, term_depth) =
+                    descend(&left, next_depth, target);
+                let (right_hash, right_count) =
+                    subtree_root_or_empty(&right, next_depth);
+                let node = causal_node(
+                    depth_u16(depth),
+                    left_hash,
+                    left_count,
+                    right_hash,
+                    right_count,
+                );
+                path.push(CausalProofStep {
+                    hash: right_hash,
+                    count: right_count,
+                });
+                (
+                    node,
+                    count_sum(left_count, right_count),
+                    path,
+                    kind,
+                    term_depth,
+                )
+            } else {
+                let (right_hash, right_count, mut path, kind, term_depth) =
+                    descend(&right, next_depth, target);
+                let (left_hash, left_count) =
+                    subtree_root_or_empty(&left, next_depth);
+                let node = causal_node(
+                    depth_u16(depth),
+                    left_hash,
+                    left_count,
+                    right_hash,
+                    right_count,
+                );
+                path.push(CausalProofStep {
+                    hash: left_hash,
+                    count: left_count,
+                });
+                (
+                    node,
+                    count_sum(left_count, right_count),
+                    path,
+                    kind,
+                    term_depth,
+                )
+            }
+        }
+    }
+
+    /// Differential coverage comparing the incremental node-cache
+    /// implementation against [`test_oracle`]'s independent recursive
+    /// computation.
+    ///
+    /// This lives here (rather than in `tests/unit/test_causal.rs`) because
+    /// `test_oracle` is `pub(crate)` and gated on `#[cfg(test)]`: it is only
+    /// compiled in when this crate builds *itself* under test (`cargo test
+    /// --lib`), not when an external integration-test binary links this
+    /// crate as an ordinary dependency. Only a same-crate `#[cfg(test)]`
+    /// module can see it.
+    #[cfg(test)]
+    mod tests {
+        use super::test_oracle::{descend, subtree_root_or_empty, TerminalKind};
+        use super::*;
+
+        /// A key with exactly one bit set, at bit index `bit` (MSB-first,
+        /// matching [`causal_bit`]).
+        ///
+        /// Deliberately not `HASH_SIZE`-uniform: a same-byte key such as
+        /// `[0xAA; 32]` can't distinguish a correct `byte_idx`/`bit_idx`
+        /// split from an off-by-one at a byte boundary, because every bit in
+        /// the key is identical either side of the boundary. A single-bit
+        /// key makes the boundary observable.
+        fn bit_key(bit: usize) -> Hash {
+            let mut k = [0u8; 32];
+            k[bit / 8] |= 1 << (7 - bit % 8);
+            k
+        }
+
+        /// Cross-checks `CausalSet`'s incremental root/proofs against the
+        /// recursive oracle for keys that differ only at the byte-boundary
+        /// bits (7/8, 15/16) and the final bit (255) — exactly where a strip
+        /// or shift bug in `insert_mut`'s bit arithmetic would show up, and
+        /// exactly what an all-identical-byte test key (like `key()` in
+        /// `tests/unit/test_causal.rs`) cannot exercise.
+        #[test]
+        fn differential_root_and_proofs_at_boundary_bits() {
+            let bits = [7_usize, 8, 15, 16, 255];
+            let keys: Vec<Hash> = bits.iter().copied().map(bit_key).collect();
+
+            // descend recurses 256 levels; subtree_root recurses 256 levels
+            // for each non-target subtree. Use a larger stack to avoid
+            // overflow in the oracle.
+            let child = std::thread::Builder::new()
+                .stack_size(16 * 1024 * 1024)
+                .spawn(move || {
+                    let mut set = CausalSet::empty();
+                    for &k in &keys {
+                        set.insert_mut(k);
+                    }
+
+                    let (ref_root, ref_count) = subtree_root_or_empty(&keys, 0);
+                    assert_eq!(set.root(), ref_root, "incremental root diverges from oracle");
+                    assert_eq!(set.count(), ref_count);
+
+                    for &k in &keys {
+                        let (path, root, count) =
+                            set.inclusion_proof(&k).expect("key is a member");
+                        let (oracle_hash, oracle_count, oracle_path, kind, term_depth) =
+                            descend(&keys, 0, &k);
+                        assert!(matches!(kind, TerminalKind::Leaf));
+                        assert_eq!(term_depth, CAUSAL_DEPTH);
+                        assert_eq!(oracle_hash, root);
+                        assert_eq!(oracle_count, count);
+                        assert_eq!(
+                            oracle_path, path,
+                            "inclusion path diverges from oracle for bit key"
+                        );
+                        assert!(verify_causal_inclusion(&k, &path, root, count));
+                    }
+
+                    // Bit 47 is the reviewer-flagged boundary this test exists
+                    // to cover: absent from the member set, it must terminate
+                    // in an empty subtree whose depth and path match the
+                    // oracle exactly.
+                    let absent = bit_key(47);
+                    let (oracle_hash, oracle_count, oracle_path, kind, term_depth) =
+                        descend(&keys, 0, &absent);
+                    assert!(matches!(kind, TerminalKind::Empty));
+                    let (path, depth, root, count) =
+                        set.non_inclusion_proof(&absent).expect("key is not a member");
+                    assert_eq!(depth, term_depth);
+                    // The terminal hash is the hash of the subtree containing
+                    // all 5 keys at the terminal depth (the non-empty sibling),
+                    // NOT empty[term_depth].
+                    assert_eq!(oracle_hash, root);
+                    assert_eq!(oracle_count, count);
+                    assert_eq!(oracle_path, path, "non-inclusion path diverges from oracle");
+                    assert!(verify_causal_non_inclusion(
+                        &absent, depth, &path, root, count
+                    ));
+                })
+                .unwrap();
+            child.join().unwrap();
+        }
+
+        /// Same cross-check, insertion-order independence: the oracle takes
+        /// a flat key slice, so this also confirms the incremental cache
+        /// doesn't depend on the order keys were inserted in.
+        #[test]
+        fn differential_root_is_order_independent() {
+            let bits = [7_usize, 8, 15, 16, 255];
+            let keys: Vec<Hash> = bits.iter().copied().map(bit_key).collect();
+
+            let child = std::thread::Builder::new()
+                .stack_size(16 * 1024 * 1024)
+                .spawn(move || {
+                    let mut forward = CausalSet::empty();
+                    for &k in &keys {
+                        forward.insert_mut(k);
+                    }
+                    let mut reverse = CausalSet::empty();
+                    for &k in keys.iter().rev() {
+                        reverse.insert_mut(k);
+                    }
+
+                    let (ref_root, ref_count) = subtree_root_or_empty(&keys, 0);
+                    assert_eq!(forward.root(), ref_root);
+                    assert_eq!(reverse.root(), ref_root);
+                    assert_eq!(forward.count(), ref_count);
+                    assert_eq!(reverse.count(), ref_count);
+                })
+                .unwrap();
+            child.join().unwrap();
+        }
     }
 }
