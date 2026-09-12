@@ -3388,13 +3388,15 @@ fn test_types_validate_syntactic() {
 
     // Test sender localpart charset (a-z, 0-9, '.', '_', '=', '-', '/', '+') — lowercase only per Matrix spec
     ev.sender = "@Alice:example.com".to_string();
-    assert_eq!(
-        ev.validate_syntactic("11"),
-        Err(
-            "sender must be a valid MXID: '@' prefix, ':' separator, non-empty domain, and a localpart of only a-z, 0-9, '.', '_', '=', '-', '/', '+'"
-        ),
-        "uppercase is invalid per Matrix spec (lowercase only)"
-    );
+    for room_version in ["11", "12", "12.1"] {
+        assert_eq!(
+            ev.validate_syntactic(room_version),
+            Err(
+                "sender must be a valid MXID: '@' prefix, ':' separator, non-empty domain, and a localpart of only a-z, 0-9, '.', '_', '=', '-', '/', '+'"
+            ),
+            "uppercase is invalid for room version {room_version}"
+        );
+    }
     ev.sender = "@:example.com".to_string();
     assert!(
         ev.validate_syntactic("11").is_err(),
