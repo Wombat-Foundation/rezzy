@@ -35,7 +35,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build rustdoc for master
-        run: make -C master doc
+        run: make -C master rust/doc
 
       - name: Build rustdoc for dev
         run: make -C dev doc
