@@ -3044,7 +3044,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         }
         if !is_valid_mxid(&self.sender) {
             return Err(
-                "sender must be a valid MXID: '@' prefix, ':' separator, non-empty domain, and a localpart of only a-z, A-Z, 0-9, '.', '_', '=', '-', '/', '+'",
+                "sender must be a valid MXID: '@' prefix, ':' separator, non-empty domain, and a localpart of only a-z, 0-9, '.', '_', '=', '-', '/', '+'",
             );
         }
         // Rule 1.4: pre-v12 m.room.create must declare a `creator`; v12+
