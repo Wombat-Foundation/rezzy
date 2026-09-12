@@ -757,8 +757,9 @@ pub mod causal {
     ///
     /// The side (left/right) is not stored here — it is deterministically
     /// derived from the key bit at each depth during verification
-    /// (`verify_causal_path`). This removes a redundant field from the
-    /// wire format and eliminates an entire class of forgery.
+    /// (`verify_causal_path`). Keeping orientation out of untrusted proof
+    /// input makes the key the verifier's single source of truth and rules
+    /// out contradictory side metadata.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct CausalProofStep {
         pub hash: Hash,
