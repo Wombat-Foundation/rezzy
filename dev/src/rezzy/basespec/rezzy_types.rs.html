@@ -2918,9 +2918,9 @@
 <a href=#2918 id=2918 data-nosnippet>2918</a>    };
 <a href=#2919 id=2919 data-nosnippet>2919</a>    !localpart.is_empty()
 <a href=#2920 id=2920 data-nosnippet>2920</a>        &amp;&amp; !domain.is_empty()
-<a href=#2921 id=2921 data-nosnippet>2921</a>        &amp;&amp; localpart.bytes().all(|b| {
-<a href=#2922 id=2922 data-nosnippet>2922</a>            b.is_ascii_alphanumeric() || <span class="macro">matches!</span>(b, <span class="string">b'.' </span>| <span class="string">b'_' </span>| <span class="string">b'=' </span>| <span class="string">b'-' </span>| <span class="string">b'/' </span>| <span class="string">b'+'</span>)
-<a href=#2923 id=2923 data-nosnippet>2923</a>        })
+<a href=#2921 id=2921 data-nosnippet>2921</a>        &amp;&amp; localpart.bytes().all(
+<a href=#2922 id=2922 data-nosnippet>2922</a>            |b| <span class="macro">matches!</span>(b, <span class="string">b'a'</span>..=<span class="string">b'z' </span>| <span class="string">b'0'</span>..=<span class="string">b'9' </span>| <span class="string">b'.' </span>| <span class="string">b'_' </span>| <span class="string">b'=' </span>| <span class="string">b'-' </span>| <span class="string">b'/' </span>| <span class="string">b'+'</span>),
+<a href=#2923 id=2923 data-nosnippet>2923</a>        )
 <a href=#2924 id=2924 data-nosnippet>2924</a>}
 <a href=#2925 id=2925 data-nosnippet>2925</a>
 <a href=#2926 id=2926 data-nosnippet>2926</a><span class="doccomment">/// Extracts the domain (server name) portion of a Matrix identifier (e.g. `@user:example.com` -&gt; `example.com`,
@@ -3044,7 +3044,7 @@
 <a href=#3044 id=3044 data-nosnippet>3044</a>        }
 <a href=#3045 id=3045 data-nosnippet>3045</a>        <span class="kw">if </span>!is_valid_mxid(<span class="kw-2">&amp;</span><span class="self">self</span>.sender) {
 <a href=#3046 id=3046 data-nosnippet>3046</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(
-<a href=#3047 id=3047 data-nosnippet>3047</a>                <span class="string">"sender must be a valid MXID: '@' prefix, ':' separator, non-empty domain, and a localpart of only a-z, A-Z, 0-9, '.', '_', '=', '-', '/', '+'"</span>,
+<a href=#3047 id=3047 data-nosnippet>3047</a>                <span class="string">"sender must be a valid MXID: '@' prefix, ':' separator, non-empty domain, and a localpart of only a-z, 0-9, '.', '_', '=', '-', '/', '+'"</span>,
 <a href=#3048 id=3048 data-nosnippet>3048</a>            );
 <a href=#3049 id=3049 data-nosnippet>3049</a>        }
 <a href=#3050 id=3050 data-nosnippet>3050</a>        <span class="comment">// Rule 1.4: pre-v12 m.room.create must declare a `creator`; v12+
