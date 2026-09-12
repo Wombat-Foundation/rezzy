@@ -349,7 +349,15 @@ mod tests {
 
     #[test]
     fn test_evaluators_match_scalar() {
-        let _ = get_evaluator();
+        let backend = get_evaluator();
+        #[cfg(all(feature = "std", target_arch = "x86_64"))]
+        if std::is_x86_feature_detected!("pclmulqdq") {
+            assert_ne!(
+                backend,
+                EvaluatorBackend::Scalar,
+                "PCLMULQDQ-capable CPUs must select an accelerated backend"
+            );
+        }
         let term = 0x8000_0000_0000_0000;
         let source: Vec<u64> = (0..20_u64).map(|i| i * 0x0123_4567_89ab_cdef).collect();
         let mut expected = alloc::vec![0u64; 20];
@@ -417,12 +425,6 @@ mod tests {
         warning.clear();
         warn_if_scalar_to(EvaluatorBackend::Sse, &mut warning);
         assert_eq!(warning, "");
-    }
-
-    #[cfg(all(feature = "std", target_arch = "x86_64"))]
-    #[test]
-    fn warning_writer_matches_the_real_scalar_warning() {
-        warn_scalar_evaluator();
     }
 
     #[cfg(all(feature = "std", target_arch = "x86_64"))]
