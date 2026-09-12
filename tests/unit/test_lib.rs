@@ -3386,17 +3386,6 @@ fn test_types_validate_syntactic() {
     ev.sender = "@alice:example.com".to_string();
     assert!(ev.validate_syntactic("11").is_ok());
 
-    // Test sender localpart charset (a-z, 0-9, '.', '_', '=', '-', '/', '+') — lowercase only per Matrix spec
-    ev.sender = "@Alice:example.com".to_string();
-    for room_version in ["11", "12", "12.1"] {
-        assert_eq!(
-            ev.validate_syntactic(room_version),
-            Err(
-                "sender must be a valid MXID: '@' prefix, ':' separator, non-empty domain, and a localpart of only a-z, 0-9, '.', '_', '=', '-', '/', '+'"
-            ),
-            "uppercase is invalid for room version {room_version}"
-        );
-    }
     ev.sender = "@:example.com".to_string();
     assert!(
         ev.validate_syntactic("11").is_err(),
@@ -3471,6 +3460,25 @@ fn test_types_validate_syntactic() {
     );
     ev.state_key = Some("@alice:example.com".to_string());
     assert!(ev.validate_syntactic("11").is_ok());
+}
+
+#[test_case::test_case("11"; "v11")]
+#[test_case::test_case("12"; "v12")]
+#[test_case::test_case("12.1"; "v12_1")]
+fn test_types_validate_syntactic_rejects_uppercase_sender(room_version: &str) {
+    let ev: LeanEvent = LeanEvent {
+        event_id: "$valid_event_id:example.com".to_string(),
+        event_type: "m.room.message".to_string(),
+        sender: "@Alice:example.com".to_string(),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        ev.validate_syntactic(room_version),
+        Err(
+            "sender must be a valid MXID: '@' prefix, ':' separator, non-empty domain, and a localpart of only a-z, 0-9, '.', '_', '=', '-', '/', '+'"
+        )
+    );
 }
 
 #[test]
