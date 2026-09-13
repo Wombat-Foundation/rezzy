@@ -53,10 +53,14 @@ fn perform_connectivity_check(per_file_refs: &[FileRefs]) -> Result<(), AppError
         return Ok(());
     }
 
-    // Treat files as nodes in a graph. An edge exists if they share at least
-    // one event id through any reference type (owned, auth, prev, relates_to,
-    // redacts). We check if the entire graph is connected starting from node 0.
-    let all_sets: Vec<HashSet<&String>> = per_file_refs.iter().map(|r| r.all_ids()).collect();
+    // Treat files as nodes in a graph. An edge exists if an OWNED event ID
+    // from one file appears in the OTHER file's owned OR referenced IDs.
+    // This prevents shared absent references from establishing connectivity.
+    let all_ids_sets: Vec<HashSet<&String>> = per_file_refs.iter().map(|r| r.all_ids()).collect();
+    let owned_ids_sets: Vec<HashSet<&String>> = per_file_refs
+        .iter()
+        .map(|r| r.event_ids.iter().collect())
+        .collect();
 
     let mut visited = vec![false; num_files];
     let mut queue = Vec::new();
@@ -66,11 +70,18 @@ fn perform_connectivity_check(per_file_refs: &[FileRefs]) -> Result<(), AppError
     while let Some(current) = queue.pop() {
         for next in 0..num_files {
             if !visited[next] {
-                let shared = all_sets[current]
-                    .intersection(&all_sets[next])
+                // Edge from current -> next: current's owned IDs in next's all IDs
+                let current_owns_next_refs = owned_ids_sets[current]
+                    .intersection(&all_ids_sets[next])
                     .next()
                     .is_some();
-                if shared {
+                // Edge from next -> current: next's owned IDs in current's all IDs
+                let next_owns_current_refs = owned_ids_sets[next]
+                    .intersection(&all_ids_sets[current])
+                    .next()
+                    .is_some();
+
+                if current_owns_next_refs || next_owns_current_refs {
                     visited[next] = true;
                     queue.push(next);
                 }

@@ -82,6 +82,11 @@ fn run_cli(args: &Args) -> Result<serde_json::Value, error::AppError> {
     let input_val = load_or_fetch_input_value(args)?;
     let (raw_events, heads) = parse_and_extract_heads(&input_val, args.debug)?;
 
+    // --check mode: validate input only, suppress state output
+    if args.check {
+        return Ok(serde_json::json!({ "status": "ok" }));
+    }
+
     let event_count = raw_events.len();
     let mut room_version: Option<String> = None;
     let version = match args.state_res {
@@ -326,9 +331,6 @@ fn main() {
     let args = Args::parse();
     match run_cli(&args) {
         Ok(output) => {
-            if args.check {
-                return;
-            }
             let output_writer: Box<dyn Write> = match args.output {
                 Some(path) => Box::new(BufWriter::new(
                     File::create(path).expect("Failed to create output file"),

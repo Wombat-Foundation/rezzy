@@ -38,6 +38,8 @@ pub enum ErrorCode {
     MalformedJson,
     /// Input files describe disjoint DAGs with no shared history.
     DisjointDags,
+    /// I/O error reading input file(s).
+    IoError,
     /// Unsupported or unrecognised room version string.
     UnsupportedVersion,
     /// Top-level JSON object has an unrecognised structure.
@@ -65,12 +67,13 @@ impl ErrorCode {
             Self::MissingHomeserver => "E005_MISSING_HOMESERVER",
             Self::MalformedJson => "E006_MALFORMED_JSON",
             Self::DisjointDags => "E007_DISJOINT_DAGS",
-            Self::UnsupportedVersion => "E008_UNSUPPORTED_VERSION",
-            Self::UnrecognisedStructure => "E009_UNRECOGNISED_STRUCTURE",
-            Self::UnexpectedFormat => "E010_UNEXPECTED_FORMAT",
-            Self::EventsNotArray => "E011_EVENTS_NOT_ARRAY",
-            Self::InvalidHeadType => "E012_INVALID_HEAD_TYPE",
-            Self::NetworkError => "E013_NETWORK_ERROR",
+            Self::IoError => "E008_IO_ERROR",
+            Self::UnsupportedVersion => "E009_UNSUPPORTED_VERSION",
+            Self::UnrecognisedStructure => "E010_UNRECOGNISED_STRUCTURE",
+            Self::UnexpectedFormat => "E011_UNEXPECTED_FORMAT",
+            Self::EventsNotArray => "E012_EVENTS_NOT_ARRAY",
+            Self::InvalidHeadType => "E013_INVALID_HEAD_TYPE",
+            Self::NetworkError => "E014_NETWORK_ERROR",
         }
     }
 }
@@ -116,7 +119,7 @@ impl std::error::Error for AppError {}
 
 impl From<std::io::Error> for AppError {
     fn from(e: std::io::Error) -> Self {
-        Self::new(ErrorCode::MalformedJson, e.to_string())
+        Self::new(ErrorCode::IoError, e.to_string())
     }
 }
 
@@ -166,18 +169,19 @@ mod tests {
         );
         assert_eq!(ErrorCode::MalformedJson.code(), "E006_MALFORMED_JSON");
         assert_eq!(ErrorCode::DisjointDags.code(), "E007_DISJOINT_DAGS");
+        assert_eq!(ErrorCode::IoError.code(), "E008_IO_ERROR");
         assert_eq!(
             ErrorCode::UnsupportedVersion.code(),
-            "E008_UNSUPPORTED_VERSION"
+            "E009_UNSUPPORTED_VERSION"
         );
         assert_eq!(
             ErrorCode::UnrecognisedStructure.code(),
-            "E009_UNRECOGNISED_STRUCTURE"
+            "E010_UNRECOGNISED_STRUCTURE"
         );
-        assert_eq!(ErrorCode::UnexpectedFormat.code(), "E010_UNEXPECTED_FORMAT");
-        assert_eq!(ErrorCode::EventsNotArray.code(), "E011_EVENTS_NOT_ARRAY");
-        assert_eq!(ErrorCode::InvalidHeadType.code(), "E012_INVALID_HEAD_TYPE");
-        assert_eq!(ErrorCode::NetworkError.code(), "E013_NETWORK_ERROR");
+        assert_eq!(ErrorCode::UnexpectedFormat.code(), "E011_UNEXPECTED_FORMAT");
+        assert_eq!(ErrorCode::EventsNotArray.code(), "E012_EVENTS_NOT_ARRAY");
+        assert_eq!(ErrorCode::InvalidHeadType.code(), "E013_INVALID_HEAD_TYPE");
+        assert_eq!(ErrorCode::NetworkError.code(), "E014_NETWORK_ERROR");
     }
 
     #[test]
