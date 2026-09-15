@@ -4,17 +4,16 @@ use super::hash::StructuralHash;
 use alloc::{string::String, vec::Vec};
 use core::hash::Hash;
 
-/// Record kind for a persisted HAMT node.
-pub const HAMT_RECORD_KIND_NODE: u8 = 0x01;
+/// Magic prefix for a persisted HAMT node record.
+pub const HAMT_NODE_MAGIC: &[u8; 4] = b"MTHN";
 
-/// Record kind for a persisted state-group root envelope.
-pub const HAMT_RECORD_KIND_STATE_ROOT: u8 = 0x02;
+/// Magic prefix for a persisted state-group root record.
+pub const HAMT_ROOT_MAGIC: &[u8; 4] = b"MTHR";
 
 /// Wire version of the current persisted-node layout (32-byte structural
 /// hashes, inline leaves, then child hashes in nodemap order).
 ///
-/// The record kind is deliberately separate from the codec version so a
-/// state-group root cannot be mistaken for a HAMT node by a decoder.
+/// Recorded after the four-byte magic prefix in every HAMT node.
 pub const HAMT_WIRE_VERSION: u8 = 0x01;
 
 /// Custom binary codec for HAMT leaf payloads.
@@ -258,14 +257,14 @@ where
         let capacity = 1_usize
             .checked_add(4)
             .and_then(|value| value.checked_add(4))
-            .and_then(|value| value.checked_add(1))
+            .and_then(|value| value.checked_add(4))
             .and_then(|value| value.checked_add(4))
             .and_then(|value| value.checked_add(4))
             .and_then(|value| value.checked_add(body.len()))
             .expect("encoded node size overflows usize");
 
         let mut buf = Vec::with_capacity(capacity);
-        buf.push(HAMT_RECORD_KIND_NODE);
+        buf.extend_from_slice(HAMT_NODE_MAGIC);
         buf.push(HAMT_WIRE_VERSION);
         buf.extend_from_slice(&datamap.to_le_bytes());
         buf.extend_from_slice(&nodemap.to_le_bytes());
@@ -278,7 +277,7 @@ where
     /// Encodes the node to a dense binary format.
     ///
     /// Layout:
-    /// - Record kind (1 byte): `0x01` (HAMT node)
+    /// - Magic (4 bytes): `MTHN`
     /// - Version (1 byte): `0x01`
     /// - Datamap (4 bytes, LE)
     /// - Nodemap (4 bytes, LE)
@@ -301,24 +300,24 @@ where
     /// Returns an error when the version byte is invalid or the buffer is too
     /// short for the declared payload.
     pub fn decode_v1_unverified(buf: &[u8]) -> Result<Self, &'static str> {
-        if !matches!(buf.first().copied(), Some(HAMT_RECORD_KIND_NODE)) {
-            return Err("Invalid HAMT record kind");
+        if buf.get(..HAMT_NODE_MAGIC.len()) != Some(HAMT_NODE_MAGIC.as_slice()) {
+            return Err("Invalid HAMT node magic");
         }
-        if !matches!(buf.get(1).copied(), Some(HAMT_WIRE_VERSION)) {
+        if !matches!(buf.get(4).copied(), Some(HAMT_WIRE_VERSION)) {
             return Err("Invalid version byte");
         }
-        if buf.len() < 18 {
+        if buf.len() < 21 {
             return Err("Buffer too short for v1 header");
         }
 
         let datamap = u32::from_le_bytes(
-            buf.get(2..6)
+            buf.get(5..9)
                 .ok_or("Buffer too short for datamap")?
                 .try_into()
                 .map_err(|_| "Buffer too short for datamap")?,
         );
         let nodemap = u32::from_le_bytes(
-            buf.get(6..10)
+            buf.get(9..13)
                 .ok_or("Buffer too short for nodemap")?
                 .try_into()
                 .map_err(|_| "Buffer too short for nodemap")?,
@@ -329,13 +328,13 @@ where
         }
 
         let leaf_count = u32::from_le_bytes(
-            buf.get(10..14)
+            buf.get(13..17)
                 .ok_or("Buffer too short for leaf count")?
                 .try_into()
                 .map_err(|_| "Buffer too short for leaf count")?,
         ) as usize;
         let child_count = u32::from_le_bytes(
-            buf.get(14..18)
+            buf.get(17..21)
                 .ok_or("Buffer too short for child count")?
                 .try_into()
                 .map_err(|_| "Buffer too short for child count")?,
@@ -350,7 +349,7 @@ where
             return Err("Child count does not match nodemap");
         }
 
-        let mut cursor = 18_usize;
+        let mut cursor = 21_usize;
         let mut leaves = Vec::with_capacity(leaf_count);
         for _ in 0..leaf_count {
             let key = K::decode_hamt(buf, &mut cursor)?;
