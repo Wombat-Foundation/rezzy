@@ -45,17 +45,11 @@ doc: ##H Build docs
 	echo '<meta http-equiv="refresh" content="0;url=rezzy/index.html">' > target/doc/index.html
 
 .PHONY: all
-all: format after-format
+all: format lint check doc test install
 	@echo "all: done"
 
-.PHONY: after-format
-after-format:
-	+$(MAKE) lint check doc test install
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Lean targets
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-#.PHONY: lean/build
+.PHONY: check
+check: ##H Cargo check and code dupe
 #lean/build: ##H Build Lean proofs
 #	$(LAKE) build
 #	@printf "\n$${STYLE_GREEN}--- Verification Complete ---$${STYLE_RESET}\n"
