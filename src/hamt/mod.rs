@@ -52,7 +52,7 @@ pub use delta::{
 pub use gc::{LinearRootChain, RefcountTable, RefcountUnderflow};
 pub use hash::{
     state_group_id_from_lthash, RootHandle, StateGroupId, StructuralHash, HAMT_CODEC_VERSION,
-    HAMT_ROUTING_VERSION_V1,
+    HAMT_ROUTING_VERSION,
 };
 
 /// 256-bit routing path hash for a key in the HAMT.

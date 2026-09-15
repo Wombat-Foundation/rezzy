@@ -10,17 +10,7 @@ use core::hash::Hash;
 /// Recorded in the first byte of every encoded node. The storage key
 /// selected by a lookup commits to the exact bytes written, so a node can
 /// only ever be decoded under the version that produced it.
-pub(crate) const HAMT_WIRE_VERSION: u8 = 0x02;
-
-/// Wire version of the original persisted-node layout, which used 16-byte
-/// structural hashes (pre-`e349d0f`).
-///
-/// The layout change from 16- to 32-byte hashes is not recoverable from the
-/// bytes alone, so `0x01` records are rejected explicitly instead of being
-/// silently misparsed. [`decode_v1_legacy_unverified`] exists only for
-/// diagnostics; it cannot re-derive the storage key the record was written
-/// under, so its output is not verifiable.
-pub(crate) const LEGACY_WIRE_VERSION_16_BYTE_HASHES: u8 = 0x01;
+pub(crate) const HAMT_WIRE_VERSION: u8 = 0x01;
 
 /// Custom binary codec for HAMT leaf payloads.
 ///
@@ -281,7 +271,7 @@ where
     /// Encodes the node to a dense binary format.
     ///
     /// Layout:
-    /// - Version (1 byte): `0x02`
+    /// - Version (1 byte): `0x01`
     /// - Datamap (4 bytes, LE)
     /// - Nodemap (4 bytes, LE)
     /// - Leaf count (4 bytes, LE)
@@ -305,12 +295,6 @@ where
     pub fn decode_v1_unverified(buf: &[u8]) -> Result<Self, &'static str> {
         match buf.first().copied() {
             Some(HAMT_WIRE_VERSION) => {}
-            Some(LEGACY_WIRE_VERSION_16_BYTE_HASHES) => {
-                return Err(
-                    "Legacy v1 node (16-byte structural hashes) is unsupported; \
-                     re-persist or migrate before decoding",
-                );
-            }
             _ => return Err("Invalid version byte"),
         }
         if buf.len() < 17 {
@@ -401,7 +385,7 @@ where
         })
     }
 
-    /// Parse-only decoder for pre-`e349d0f` `0x01` records that carried
+    /// Parse-only decoder for pre-`e349d0f` records that carried
     /// 16-byte structural hashes.
     ///
     /// This exists solely so legacy bytes can be inspected or migrated: the
@@ -412,15 +396,12 @@ where
     /// 32-byte [`StructuralHash`] array; the trailing half is zero.
     ///
     /// # Errors
-    /// Returns an error when the buffer lacks the `0x01` version byte or
+    /// Returns an error when the buffer lacks the current version byte or
     /// does not match the legacy layout.
     pub fn decode_v1_legacy_unverified(buf: &[u8]) -> Result<Self, &'static str> {
         const LEGACY_HASH_WIDTH: usize = 16;
 
-        if !matches!(
-            buf.first().copied(),
-            Some(LEGACY_WIRE_VERSION_16_BYTE_HASHES)
-        ) {
+        if !matches!(buf.first().copied(), Some(HAMT_WIRE_VERSION)) {
             return Err("Invalid version byte");
         }
         if buf.len() < 17 {

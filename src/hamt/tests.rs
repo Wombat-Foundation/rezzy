@@ -309,18 +309,14 @@ fn test_encode_v1_writes_current_wire_version() {
         child_hashes: vec![],
     };
     assert_eq!(node.encode_v1()[0], super::codec::HAMT_WIRE_VERSION);
-    assert_ne!(
-        super::codec::HAMT_WIRE_VERSION,
-        super::codec::LEGACY_WIRE_VERSION_16_BYTE_HASHES
-    );
 }
 
 #[test]
-fn test_decode_v1_rejects_legacy_wire_version_explicitly() {
-    // Hand-crafted legacy 0x01 record: version + datamap + nodemap +
+fn test_decode_v1_rejects_short_legacy_layout() {
+    // Hand-crafted pre-current record: version + datamap + nodemap +
     // leaf_count + child_count + one i32 leaf + one 16-byte child hash.
     let mut legacy = Vec::new();
-    legacy.push(super::codec::LEGACY_WIRE_VERSION_16_BYTE_HASHES);
+    legacy.push(super::codec::HAMT_WIRE_VERSION);
     legacy.extend_from_slice(&1_u32.to_le_bytes()); // datamap (bit 0)
     legacy.extend_from_slice(&2_u32.to_le_bytes()); // nodemap (bit 1)
     legacy.extend_from_slice(&1_u32.to_le_bytes()); // leaf_count
@@ -331,17 +327,14 @@ fn test_decode_v1_rejects_legacy_wire_version_explicitly() {
 
     assert_eq!(
         PersistedInternalNode::<i32, i32>::decode_v1_unverified(&legacy),
-        Err(
-            "Legacy v1 node (16-byte structural hashes) is unsupported; \
-             re-persist or migrate before decoding"
-        )
+        Err("Buffer too short for child hashes")
     );
 }
 
 #[test]
 fn test_decode_v1_legacy_unverified_reads_16_byte_hash_layout() {
     let mut legacy = Vec::new();
-    legacy.push(1); // legacy version byte
+    legacy.push(super::codec::HAMT_WIRE_VERSION);
     legacy.extend_from_slice(&1_u32.to_le_bytes()); // datamap (bit 0)
     legacy.extend_from_slice(&2_u32.to_le_bytes()); // nodemap (bit 1)
     legacy.extend_from_slice(&1_u32.to_le_bytes()); // leaf_count

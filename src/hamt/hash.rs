@@ -25,17 +25,17 @@ pub type StructuralHash = [u8; 32];
 /// must not be confused with the local-only `StructuralHash`.
 pub type StateGroupId = [u8; 32];
 
-/// Current codec version (2 = dense format with 32-byte structural hashes).
-pub const HAMT_CODEC_VERSION: u8 = 2;
-/// Default routing version (1 = full keyed structural hash routing).
-pub const HAMT_ROUTING_VERSION_V1: u8 = 1;
+/// Current codec version (1 = dense format with 32-byte structural hashes).
+pub const HAMT_CODEC_VERSION: u8 = 1;
+/// Current routing version (1 = full keyed structural hash routing).
+pub const HAMT_ROUTING_VERSION: u8 = 1;
 
 fn default_codec_version() -> u8 {
     HAMT_CODEC_VERSION
 }
 
 fn default_routing_version_v1() -> u8 {
-    HAMT_ROUTING_VERSION_V1
+    HAMT_ROUTING_VERSION
 }
 
 /// A resolved root handle carrying the local structural hash, global state-group identifier,
@@ -72,7 +72,7 @@ impl RootHandle {
     pub fn from_lthash(structural_hash: StructuralHash, lattice: &crate::state::LtHash) -> Self {
         Self::with_versions(
             HAMT_CODEC_VERSION,
-            HAMT_ROUTING_VERSION_V1,
+            HAMT_ROUTING_VERSION,
             [0; 4],
             structural_hash,
             lattice,
@@ -145,7 +145,7 @@ mod tests {
     fn test_root_handle_hashable() {
         let handle = RootHandle {
             codec_version: HAMT_CODEC_VERSION,
-            routing_version: HAMT_ROUTING_VERSION_V1,
+            routing_version: HAMT_ROUTING_VERSION,
             routing_params: [0; 4],
             structural_hash: [1; 32],
             state_group_id: [2; 32],
@@ -163,7 +163,7 @@ mod tests {
         }"#;
         let decoded: RootHandle = serde_json::from_str(legacy).expect("legacy handle decodes");
         assert_eq!(decoded.codec_version, HAMT_CODEC_VERSION);
-        assert_eq!(decoded.routing_version, HAMT_ROUTING_VERSION_V1);
+        assert_eq!(decoded.routing_version, HAMT_ROUTING_VERSION);
         assert_eq!(decoded.routing_params, [0; 4]);
     }
 }
