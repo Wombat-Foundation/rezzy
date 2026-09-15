@@ -44,9 +44,12 @@ doc: ##H Build docs
 	$(CARGO) doc --no-deps
 	echo '<meta http-equiv="refresh" content="0;url=rezzy/index.html">' > target/doc/index.html
 
-.PHONY: all
+.PHONY: all format lint check doc test install
 all: format lint check doc test install
 	@echo "all: done"
+
+# Ensure format runs before any target that reads source files
+lint check doc test install: format
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Lean targets
