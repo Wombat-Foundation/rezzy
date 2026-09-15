@@ -48,9 +48,11 @@ doc: ##H Build docs
 all: format lint check doc test install
 	@echo "all: done"
 
-.PHONY: check
-check: ##H Cargo check and code dupe
-#lean/build: ##H Build Lean proofs
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Lean targets
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+#.PHONY: lean/build
 #	$(LAKE) build
 #	@printf "\n$${STYLE_GREEN}--- Verification Complete ---$${STYLE_RESET}\n"
 #	@printf "$${STYLE_CYAN}Mapped Theorems & Definitions:$${STYLE_RESET}\n"

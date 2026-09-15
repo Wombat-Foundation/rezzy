@@ -727,8 +727,9 @@ pub mod causal {
     /// The trie is maintained incrementally: `insert_mut` / `extend` update
     /// only the O(256) nodes along each inserted key's path. The immutable
     /// `insert` method clones the cached nodes before applying that update.
-    /// `root()`, `inclusion_proof()`, and `non_inclusion_proof()` are O(1) /
-    /// O(256) rather than O(n·256).
+    /// `root()` is O(log n) (`BTreeMap` lookup), `inclusion_proof()` and
+    /// `non_inclusion_proof()` are O(256 · log n) — 256 cache lookups
+    /// rather than O(n·256).
     #[derive(Debug, Clone, Default, PartialEq, Eq)]
     pub struct CausalSet {
         keys: BTreeSet<Hash>,
@@ -897,7 +898,7 @@ pub mod causal {
         }
 
         /// Computes the canonical sparse Merkle sum trie root for `self`.
-        /// O(1) — reads from the maintained node cache.
+        /// O(log n) — reads from the maintained node cache.
         #[must_use]
         pub fn root(&self) -> Hash {
             if self.keys.is_empty() {
@@ -1280,7 +1281,7 @@ pub mod causal {
         /// Returns the ordered (leaf-to-root) sibling path proving `key` is a
         /// member of `self`, along with `self`'s root and count. Returns
         /// [`None`] if `key` is not a member; there is no inclusion proof for
-        /// a non-member. O(256) — walks the node cache.
+        /// a non-member. O(256 · log n) — walks the node cache.
         #[must_use]
         pub fn inclusion_proof(&self, key: &Hash) -> Option<(Vec<CausalProofStep>, Hash, u64)> {
             if self.keys.is_empty() || !self.keys.contains(key) {
@@ -1305,8 +1306,8 @@ pub mod causal {
         /// NOT a member of `self` (the key-directed path terminates in a
         /// canonical empty subtree at the returned depth), along with
         /// `self`'s root and count. Returns [`None`] if `key` IS a member; no
-        /// non-inclusion proof exists for a member. O(256) — walks the node
-        /// cache.
+        /// non-inclusion proof exists for a member. O(256 · log n) — walks the
+        /// node cache.
         #[must_use]
         pub fn non_inclusion_proof(
             &self,
