@@ -25,13 +25,13 @@ pub type StructuralHash = [u8; 32];
 /// must not be confused with the local-only `StructuralHash`.
 pub type StateGroupId = [u8; 32];
 
-/// Default codec version (1 = dense v1 binary format).
-pub const HAMT_CODEC_VERSION_V1: u8 = 1;
+/// Current codec version (2 = dense format with 32-byte structural hashes).
+pub const HAMT_CODEC_VERSION: u8 = 2;
 /// Default routing version (1 = full keyed structural hash routing).
 pub const HAMT_ROUTING_VERSION_V1: u8 = 1;
 
-fn default_codec_version_v1() -> u8 {
-    HAMT_CODEC_VERSION_V1
+fn default_codec_version() -> u8 {
+    HAMT_CODEC_VERSION
 }
 
 fn default_routing_version_v1() -> u8 {
@@ -55,7 +55,7 @@ fn default_routing_version_v1() -> u8 {
 /// persistence is needed, use a versioned envelope with an explicit format tag.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RootHandle {
-    #[serde(default = "default_codec_version_v1")]
+    #[serde(default = "default_codec_version")]
     pub codec_version: u8,
     #[serde(default = "default_routing_version_v1")]
     pub routing_version: u8,
@@ -66,12 +66,12 @@ pub struct RootHandle {
 }
 
 impl RootHandle {
-    /// Builds a root handle with default v1 codec and v1 routing from a precomputed
+    /// Builds a root handle with the current codec and v1 routing from a precomputed
     /// structural hash and a state lattice.
     #[must_use]
     pub fn from_lthash(structural_hash: StructuralHash, lattice: &crate::state::LtHash) -> Self {
         Self::with_versions(
-            HAMT_CODEC_VERSION_V1,
+            HAMT_CODEC_VERSION,
             HAMT_ROUTING_VERSION_V1,
             [0; 4],
             structural_hash,
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn test_root_handle_hashable() {
         let handle = RootHandle {
-            codec_version: HAMT_CODEC_VERSION_V1,
+            codec_version: HAMT_CODEC_VERSION,
             routing_version: HAMT_ROUTING_VERSION_V1,
             routing_params: [0; 4],
             structural_hash: [1; 32],
@@ -156,13 +156,13 @@ mod tests {
     }
 
     #[test]
-    fn legacy_root_handle_metadata_defaults_to_v1() {
+    fn root_handle_metadata_defaults_to_current_codec() {
         let legacy = r#"{
             "structural_hash": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
             "state_group_id": [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
         }"#;
         let decoded: RootHandle = serde_json::from_str(legacy).expect("legacy handle decodes");
-        assert_eq!(decoded.codec_version, HAMT_CODEC_VERSION_V1);
+        assert_eq!(decoded.codec_version, HAMT_CODEC_VERSION);
         assert_eq!(decoded.routing_version, HAMT_ROUTING_VERSION_V1);
         assert_eq!(decoded.routing_params, [0; 4]);
     }

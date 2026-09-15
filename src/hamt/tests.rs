@@ -618,6 +618,7 @@ fn test_build_hamt_root_handle_tracks_root_identity() {
         .expect("build with handle should work");
 
     assert_eq!(handle.structural_hash, root.structural_hash);
+    assert_eq!(handle.codec_version, super::HAMT_CODEC_VERSION);
     assert_eq!(handle.state_group_id, state_group_id_from_lthash(&lattice));
 }
 

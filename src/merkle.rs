@@ -724,10 +724,11 @@ pub mod causal {
     /// An in-memory population of event-ID keys committed by an MSC4511
     /// 256-level sparse Merkle sum trie.
     ///
-    /// The trie is maintained incrementally: each `insert` / `extend` updates
-    /// only the O(256) nodes along the inserted key's path, so `root()`,
-    /// `inclusion_proof()`, and `non_inclusion_proof()` are O(1) / O(256)
-    /// rather than O(n·256).
+    /// The trie is maintained incrementally: `insert_mut` / `extend` update
+    /// only the O(256) nodes along each inserted key's path. The immutable
+    /// `insert` method clones the cached nodes before applying that update.
+    /// `root()`, `inclusion_proof()`, and `non_inclusion_proof()` are O(1) /
+    /// O(256) rather than O(n·256).
     #[derive(Debug, Clone, Default, PartialEq, Eq)]
     pub struct CausalSet {
         keys: BTreeSet<Hash>,

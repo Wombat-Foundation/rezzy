@@ -51,7 +51,7 @@ pub use delta::{
 #[cfg(feature = "unstable-refcount-gc")]
 pub use gc::{LinearRootChain, RefcountTable, RefcountUnderflow};
 pub use hash::{
-    state_group_id_from_lthash, RootHandle, StateGroupId, StructuralHash, HAMT_CODEC_VERSION_V1,
+    state_group_id_from_lthash, RootHandle, StateGroupId, StructuralHash, HAMT_CODEC_VERSION,
     HAMT_ROUTING_VERSION_V1,
 };
 
