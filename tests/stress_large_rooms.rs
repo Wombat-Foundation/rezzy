@@ -619,9 +619,11 @@ fn test_unredacted_spam_storm_v2_1_1() {
     );
 
     let start_lattice = std::time::Instant::now();
+    let lattice_unconflicted = imbl::OrdMap::new();
+    let lattice_conflicted = map.clone();
     let resolved_lattice = rezzy::resolve_semilattice_fold(
-        imbl::OrdMap::new(),
-        map.clone(),
+        &lattice_unconflicted,
+        &lattice_conflicted,
         &map,
         StateResVersion::V2_1_1,
     );

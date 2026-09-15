@@ -43,7 +43,9 @@ pub use audit::{
     node_reachability_audit, unreachable_node_hashes, IndexedUniverse, NodeReachabilityAudit,
     UniverseTooLarge,
 };
-pub use codec::{HamtCodec, PersistedInternalNode};
+pub use codec::{
+    HamtCodec, PersistedInternalNode, HAMT_NODE_MAGIC, HAMT_ROOT_MAGIC, HAMT_WIRE_VERSION,
+};
 pub use delta::{
     diff_hamt_nodes, diff_node_hashes, isolate_delta, reachable_node_hashes,
     walk_reachable_node_hashes, Delta, DeltaResult, HamtTraversalError, NodeHashDelta,
@@ -51,8 +53,8 @@ pub use delta::{
 #[cfg(feature = "unstable-refcount-gc")]
 pub use gc::{LinearRootChain, RefcountTable, RefcountUnderflow};
 pub use hash::{
-    state_group_id_from_lthash, RootHandle, StateGroupId, StructuralHash, HAMT_CODEC_VERSION_V1,
-    HAMT_ROUTING_VERSION_V1,
+    state_group_id_from_lthash, RootHandle, StateGroupId, StructuralHash, HAMT_CODEC_VERSION,
+    HAMT_ROUTING_VERSION,
 };
 
 /// 256-bit routing path hash for a key in the HAMT.

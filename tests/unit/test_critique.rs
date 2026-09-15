@@ -1,4 +1,5 @@
 use crate::utils;
+use crate::utils_extra;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -237,22 +238,25 @@ fn get_membership(resolved: &ResolvedStateMap, map: &EventMap, user_id: &str) ->
     "none".to_string()
 }
 
-fn resolve_pathology(jsonl_filename: &str) -> (ResolvedStateMap, EventMap) {
+/// Loads a `tests/critique_data/<jsonl_filename>` fixture and its event map.
+/// Shared by [`resolve_pathology`] and [`assert_benign_convergence`].
+fn load_pathology_fixture(jsonl_filename: &str) -> (Vec<LeanEvent>, EventMap) {
     let absolute_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/critique_data")
         .join(jsonl_filename);
     let events = load_fixture(&absolute_path);
     let map = to_event_map(&events);
+    (events, map)
+}
+
+fn resolve_pathology(jsonl_filename: &str) -> (ResolvedStateMap, EventMap) {
+    let (events, map) = load_pathology_fixture(jsonl_filename);
     let resolved = resolve_full(&events, StateResVersion::V2_1_1);
     (resolved, map)
 }
 
 fn assert_benign_convergence(jsonl_filename: &str) -> (ResolvedStateMap, EventMap) {
-    let absolute_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/critique_data")
-        .join(jsonl_filename);
-    let events = load_fixture(&absolute_path);
-    let map = to_event_map(&events);
+    let (events, map) = load_pathology_fixture(jsonl_filename);
 
     let resolved_v2_1 = resolve_full(&events, StateResVersion::V2_1);
     let resolved_v2_1_1 = resolve_full(&events, StateResVersion::V2_1_1);
@@ -290,7 +294,7 @@ fn test_dueling_admins_backdated_kick(version: StateResVersion) {
         "#,
     );
     let auth_context: EventMap = to_event_map(&events);
-    let unconflicted = utils::build_unconflicted_state_from_ids(
+    let unconflicted = utils_extra::build_unconflicted_state_from_ids(
         &auth_context,
         &["$create", "$creator_join", "$a_join", "$c_join"],
     );
@@ -706,10 +710,12 @@ fn test_anomaly_21_concurrent_kick_still_holds() {
 ///   closed transitively over `auth_events` ∪ `prev_events` until fixpoint.
 ///
 /// In the fallback case (no State DAGs), `state_predecessors` = `prev_events`,
-/// so the closure follows both edge types recursively. The ratio is
-/// mathematically ≤ 1 (seed is inside C(P), closure under `prev_events` can't
-/// escape a prev_events-closed set), so the real question is absolute size:
-/// how large is I(P) for late events in a real room?
+/// so the closure follows both edge types recursively. The seed itself sits
+/// inside C(P), but I(P) also follows `auth_events`, which can reach an
+/// event outside C(P)'s `prev_events`-only closure (an auth event need not
+/// be a `prev_events`-ancestor of the head) -- so the ratio is not bounded
+/// by 1 in general; the real question is absolute size: how large is I(P)
+/// for late events in a real room, and how far past 100% the ratio runs.
 #[test]
 #[ignore = "manual analysis tool: prints closure-ratio stats for large fixtures, some of which live outside the repo (/tmp/opencode/res_tmp) and aren't available in CI"]
 fn test_ip_closure_ratio() {

@@ -1,8 +1,9 @@
 use crate::utils;
+use crate::utils_extra;
 
 #[test]
 fn test_jsonl_parser_utility() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
         // This is a comment
         {"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@alice:matrix.org", "content": {"creator": "@alice:matrix.org"}}
@@ -41,7 +42,7 @@ fn test_jsonl_parser_preserves_rejection_flags() {
 
 #[test]
 fn test_jsonl_asserters() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
         {"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@alice:matrix.org"}
         {"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@alice:matrix.org"}
@@ -49,7 +50,7 @@ fn test_jsonl_asserters() {
     );
 
     // This should pass
-    utils::assert_jsonl_state_eq(
+    utils_extra::assert_jsonl_state_eq(
         &state,
         r#"
         {"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@alice:matrix.org"}
@@ -65,7 +66,7 @@ fn test_jsonl_asserters() {
     );
 
     // This should pass
-    utils::assert_jsonl_events_eq(
+    utils_extra::assert_jsonl_events_eq(
         &events,
         r#"
         {"event_id": "$msg1", "type": "m.room.message", "sender": "@alice:matrix.org"}
@@ -77,7 +78,7 @@ fn test_jsonl_asserters() {
 #[test]
 #[should_panic(expected = "Event mismatch")]
 fn test_assert_jsonl_state_eq_detects_mismatch() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
         {"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@alice:matrix.org"}
         {"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@alice:matrix.org"}
@@ -91,7 +92,7 @@ fn test_assert_jsonl_state_eq_detects_mismatch() {
     // instead (see tests/utils/mod.rs), which is field-by-field, so this
     // negative case keeps `event_id` identical and changes only `sender` to
     // specifically exercise that stronger comparison rather than `PartialEq`.
-    utils::assert_jsonl_state_eq(
+    utils_extra::assert_jsonl_state_eq(
         &state,
         r#"
         {"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@alice:matrix.org"}
@@ -114,7 +115,7 @@ fn test_assert_jsonl_events_eq_detects_mismatch() {
     // specifically exercises `lean_events_fully_eq`'s field-by-field
     // comparison (see tests/utils/mod.rs), not just `LeanEvent::PartialEq`
     // (which is event_id-only and would wrongly consider this a match).
-    utils::assert_jsonl_events_eq(
+    utils_extra::assert_jsonl_events_eq(
         &events,
         r#"
         {"event_id": "$msg1", "type": "m.room.message", "sender": "@alice:matrix.org"}
@@ -135,7 +136,7 @@ fn test_compute_local_naive_topological_depth() {
         "#,
     );
 
-    utils::compute_local_naive_topological_depth(&mut events);
+    utils_extra::compute_local_naive_topological_depth(&mut events);
 
     assert_eq!(events[0].depth, 1);
     assert_eq!(events[1].depth, 2);

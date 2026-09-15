@@ -1,7 +1,7 @@
 use rezzy::merkle::causal::{
     compress_causal_path, decompress_causal_path, empty_root, verify_causal_inclusion,
     verify_causal_inclusion_compressed, verify_causal_non_inclusion,
-    verify_causal_non_inclusion_compressed, CausalProofError, CausalSet, CausalSide,
+    verify_causal_non_inclusion_compressed, CausalProofError, CausalProofStep, CausalSet,
     CompressedCausalStep, CAUSAL_DEPTH,
 };
 use rezzy::merkle::Hash;
@@ -134,6 +134,34 @@ fn verify_causal_inclusion_rejects_tampered_sibling() {
 }
 
 #[test]
+fn verify_causal_inclusion_rejects_extended_proof() {
+    let k = key(0xa1);
+    let s = CausalSet::empty().insert(k);
+
+    let (mut path, root, count) = s.inclusion_proof(&k).unwrap();
+    assert_eq!(path.len(), CAUSAL_DEPTH);
+
+    // Append a hand-crafted step beyond CAUSAL_DEPTH.
+    path.push(rezzy::merkle::causal::CausalProofStep {
+        hash: [0xAA; 32],
+        count: 0,
+    });
+    assert_eq!(path.len(), CAUSAL_DEPTH + 1);
+    // The minimality check (path.len() != terminal_depth) must reject this.
+    assert!(!verify_causal_inclusion(&k, &path, root, count));
+
+    // Also test: prepend a step (path too long from the verifier's
+    // perspective — it expects exactly CAUSAL_DEPTH for inclusion).
+    let (path, root, count) = s.inclusion_proof(&k).unwrap();
+    let mut extended = vec![rezzy::merkle::causal::CausalProofStep {
+        hash: [0xBB; 32],
+        count: 1,
+    }];
+    extended.extend_from_slice(&path);
+    assert!(!verify_causal_inclusion(&k, &extended, root, count));
+}
+
+#[test]
 fn verify_causal_non_inclusion_rejects_wrong_terminal_depth() {
     let (a, b, d) = (key(0xa1), key(0xb2), key(0xd4));
     let s = CausalSet::empty().insert(a).insert(b);
@@ -174,21 +202,6 @@ fn verify_causal_inclusion_rejects_count_forgery() {
         assert!(!verify_causal_inclusion(&a, &overflow_path, root, count));
 
         path[0].count = path[0].count.saturating_add(10);
-        assert!(!verify_causal_inclusion(&a, &path, root, count));
-    }
-}
-
-#[test]
-fn verify_causal_inclusion_rejects_side_forgery() {
-    let (a, b) = (key(0xa1), key(0xb2));
-    let s = CausalSet::empty().insert(a).insert(b);
-
-    let (mut path, root, count) = s.inclusion_proof(&a).unwrap();
-    if !path.is_empty() {
-        path[0].side = match path[0].side {
-            CausalSide::Left => CausalSide::Right,
-            CausalSide::Right => CausalSide::Left,
-        };
         assert!(!verify_causal_inclusion(&a, &path, root, count));
     }
 }
@@ -264,7 +277,7 @@ fn compress_inclusion_roundtrip_root_level_sibling() {
         compressed,
         [] as [rezzy::merkle::causal::CompressedCausalStep; 0]
     );
-    let decompressed = decompress_causal_path(&k1, CAUSAL_DEPTH, &compressed).unwrap();
+    let decompressed = decompress_causal_path(CAUSAL_DEPTH, &compressed).unwrap();
     assert_eq!(decompressed.len(), path.len());
     assert!(verify_causal_inclusion(&k1, &decompressed, root, count));
 }
@@ -291,7 +304,7 @@ fn compress_inclusion_roundtrip_many_empty_siblings() {
         }
         other @ CompressedCausalStep::Step(_) => panic!("expected EmptyRun, got {other:?}"),
     }
-    let decompressed = decompress_causal_path(&k, CAUSAL_DEPTH, &compressed).unwrap();
+    let decompressed = decompress_causal_path(CAUSAL_DEPTH, &compressed).unwrap();
     assert!(verify_causal_inclusion(&k, &decompressed, root, count));
 }
 
@@ -305,7 +318,7 @@ fn compress_inclusion_roundtrip_mixed_siblings() {
     for k in [a, b, c] {
         let (path, root, count) = s.inclusion_proof(&k).unwrap();
         let compressed = compress_causal_path(CAUSAL_DEPTH, &path);
-        let decompressed = decompress_causal_path(&k, CAUSAL_DEPTH, &compressed).unwrap();
+        let decompressed = decompress_causal_path(CAUSAL_DEPTH, &compressed).unwrap();
         assert!(verify_causal_inclusion(&k, &decompressed, root, count));
     }
 }
@@ -317,7 +330,7 @@ fn compress_non_inclusion_roundtrip() {
 
     let (path, terminal_depth, root, count) = s.non_inclusion_proof(&d).unwrap();
     let compressed = compress_causal_path(terminal_depth, &path);
-    let decompressed = decompress_causal_path(&d, terminal_depth, &compressed).unwrap();
+    let decompressed = decompress_causal_path(terminal_depth, &compressed).unwrap();
     assert!(verify_causal_non_inclusion(
         &d,
         terminal_depth,
@@ -339,7 +352,7 @@ fn compress_non_inclusion_on_empty_set() {
         compressed,
         [] as [rezzy::merkle::causal::CompressedCausalStep; 0]
     );
-    let decompressed = decompress_causal_path(&d, terminal_depth, &compressed).unwrap();
+    let decompressed = decompress_causal_path(terminal_depth, &compressed).unwrap();
     assert_eq!(
         decompressed,
         [] as [rezzy::merkle::causal::CausalProofStep; 0]
@@ -375,28 +388,29 @@ fn compress_verify_compressed_non_inclusion_api() {
 }
 
 #[test]
-fn decompress_rejects_wrong_key() {
+fn decompress_path_independent_of_key() {
     let (a, b) = (key(0xa1), key(0xb2));
     let s = CausalSet::empty().insert(a).insert(b);
     let (path, root, count) = s.inclusion_proof(&a).unwrap();
     let compressed = compress_causal_path(CAUSAL_DEPTH, &path);
 
-    // Decompressing with the wrong key derives wrong sides.
-    let result = decompress_causal_path(&b, CAUSAL_DEPTH, &compressed);
-    // The decompression itself succeeds (sides are set, not validated
-    // against key here), but verification against the correct root will
-    // fail because the sides are wrong for key `b`.
-    let decompressed = result.unwrap();
-    assert!(!verify_causal_inclusion(&a, &decompressed, root, count));
-    // Conversely, verifying with key `b` also fails (not a member).
-    assert!(!verify_causal_inclusion(&b, &decompressed, root, count));
+    // Decompressing with a different key produces the same { hash, count }
+    // pairs because side is no longer stored — it is derived from the key
+    // at verification time.
+    let decompressed_b = decompress_causal_path(CAUSAL_DEPTH, &compressed).unwrap();
+    let decompressed_a = decompress_causal_path(CAUSAL_DEPTH, &compressed).unwrap();
+    assert_eq!(decompressed_b, decompressed_a);
+
+    // Both verify correctly with the right key.
+    assert!(verify_causal_inclusion(&a, &decompressed_a, root, count));
+    assert!(verify_causal_inclusion(&a, &decompressed_b, root, count));
+    // Verifying with the wrong key (b) fails — not a member.
+    assert!(!verify_causal_inclusion(&b, &decompressed_a, root, count));
 }
 
 #[test]
 fn decompress_rejects_truncated() {
-    let k = key(0xa1);
     let result = decompress_causal_path(
-        &k,
         CAUSAL_DEPTH,
         &[CompressedCausalStep::EmptyRun {
             start_depth: u16::try_from(CAUSAL_DEPTH).unwrap(),
@@ -417,15 +431,13 @@ fn decompress_rejects_excess_data() {
     let mut compressed = compress_causal_path(CAUSAL_DEPTH, &path);
     // Append a spurious step — should be rejected as excess.
     compressed.push(CompressedCausalStep::Step(path[0]));
-    let result = decompress_causal_path(&k, CAUSAL_DEPTH, &compressed);
+    let result = decompress_causal_path(CAUSAL_DEPTH, &compressed);
     assert!(matches!(result, Err(CausalProofError::ExcessData)));
 }
 
 #[test]
 fn decompress_rejects_zero_length_run() {
-    let k = key(0xa1);
     let result = decompress_causal_path(
-        &k,
         CAUSAL_DEPTH,
         &[CompressedCausalStep::EmptyRun {
             start_depth: u16::try_from(CAUSAL_DEPTH).unwrap(),
@@ -437,12 +449,10 @@ fn decompress_rejects_zero_length_run() {
 
 #[test]
 fn decompress_rejects_run_below_root() {
-    let k = key(0xa1);
     // Use terminal_depth=2 so expected_start = 2, making the run
     // contiguous. length=3 > start_depth=2 means the run would expand
     // past sibling depth 1 into depth 0 (the root), which is invalid.
     let result = decompress_causal_path(
-        &k,
         2,
         &[CompressedCausalStep::EmptyRun {
             start_depth: 2,
@@ -454,10 +464,8 @@ fn decompress_rejects_run_below_root() {
 
 #[test]
 fn decompress_rejects_non_contiguous_run() {
-    let k = key(0xa1);
     // start_depth=200 but the path position expects 256 — non-contiguous.
     let result = decompress_causal_path(
-        &k,
         CAUSAL_DEPTH,
         &[CompressedCausalStep::EmptyRun {
             start_depth: 200,
@@ -472,10 +480,8 @@ fn decompress_rejects_non_contiguous_run() {
 
 #[test]
 fn decompress_rejects_invalid_depth() {
-    let k = key(0xa1);
     // start_depth > CAUSAL_DEPTH is invalid.
     let result = decompress_causal_path(
-        &k,
         CAUSAL_DEPTH,
         &[CompressedCausalStep::EmptyRun {
             start_depth: u16::try_from(CAUSAL_DEPTH + 1).unwrap(),
@@ -493,8 +499,7 @@ fn decompress_rejects_terminal_depth_above_causal_depth() {
     // `terminal_depth` itself must not exceed `CAUSAL_DEPTH`, independent of
     // whatever `compressed` claims — an over-depth sequence of explicit
     // `Step` entries must not be silently accepted.
-    let k = key(0xa1);
-    let result = decompress_causal_path(&k, CAUSAL_DEPTH + 1, &[]);
+    let result = decompress_causal_path(CAUSAL_DEPTH + 1, &[]);
     assert!(matches!(
         result,
         Err(CausalProofError::InvalidDepth(d)) if d as usize == CAUSAL_DEPTH + 1
@@ -514,7 +519,7 @@ fn deep_key_prefixes_compressed_roundtrip() {
     for k in [k1, k2] {
         let (path, root, count) = s.inclusion_proof(&k).unwrap();
         let compressed = compress_causal_path(CAUSAL_DEPTH, &path);
-        let decompressed = decompress_causal_path(&k, CAUSAL_DEPTH, &compressed).unwrap();
+        let decompressed = decompress_causal_path(CAUSAL_DEPTH, &compressed).unwrap();
         assert!(verify_causal_inclusion(&k, &decompressed, root, count));
     }
 
@@ -522,7 +527,7 @@ fn deep_key_prefixes_compressed_roundtrip() {
     non_member[31] = 0x02;
     let (path, td, root, count) = s.non_inclusion_proof(&non_member).unwrap();
     let compressed = compress_causal_path(td, &path);
-    let decompressed = decompress_causal_path(&non_member, td, &compressed).unwrap();
+    let decompressed = decompress_causal_path(td, &compressed).unwrap();
     assert!(verify_causal_non_inclusion(
         &non_member,
         td,
@@ -530,4 +535,105 @@ fn deep_key_prefixes_compressed_roundtrip() {
         root,
         count,
     ));
+}
+
+// ── canonicity rejection tests ─────────────────────────────────────
+
+#[test]
+fn decompress_rejects_adjacent_empty_runs() {
+    // Two adjacent EmptyRuns that together cover the full depth: the
+    // second should have been merged into the first.
+    let result = decompress_causal_path(
+        CAUSAL_DEPTH,
+        &[
+            CompressedCausalStep::EmptyRun {
+                start_depth: u16::try_from(CAUSAL_DEPTH).unwrap(),
+                length: 200,
+            },
+            CompressedCausalStep::EmptyRun {
+                start_depth: 56,
+                length: 56,
+            },
+        ],
+    );
+    assert!(matches!(result, Err(CausalProofError::NonMaximalRun)));
+}
+
+#[test]
+fn decompress_rejects_non_canonical_step_with_empty_value() {
+    let k = key(0xa1);
+    let s = CausalSet::empty().insert(k);
+    let (path, _root, _count) = s.inclusion_proof(&k).unwrap();
+    let compressed = compress_causal_path(CAUSAL_DEPTH, &path);
+    let decompressed = decompress_causal_path(CAUSAL_DEPTH, &compressed).unwrap();
+
+    // All siblings in a single-element set are canonical-empty. The
+    // decompressor expands EmptyRuns to steps with hash == empty[d] and
+    // count == 0, which is fine. But if we craft a Step with those
+    // same values directly, it should be rejected as non-canonical.
+    // Use decompressed[0]'s hash which IS the empty hash at that depth.
+    let fake_step = CompressedCausalStep::Step(CausalProofStep {
+        hash: decompressed[0].hash,
+        count: 0,
+    });
+    // This should be rejected because it's a Step carrying a canonical-empty value.
+    let result = decompress_causal_path(CAUSAL_DEPTH, &[fake_step]);
+    assert!(matches!(result, Err(CausalProofError::NonCanonicalStep)));
+}
+
+#[test]
+fn decompress_rejects_non_canonical_step_interleaved_with_run() {
+    let k = key(0xa1);
+    // An EmptyRun followed by a Step with a canonical-empty value at the
+    // next expected depth. The Step should be rejected even though the
+    // EmptyRun is valid on its own.
+    let s = CausalSet::empty().insert(k);
+    let (path, _, _) = s.inclusion_proof(&k).unwrap();
+    let decompressed =
+        decompress_causal_path(CAUSAL_DEPTH, &compress_causal_path(CAUSAL_DEPTH, &path)).unwrap();
+    // The first decompressed step is at sibling depth CAUSAL_DEPTH.
+    let first_hash = decompressed[0].hash;
+
+    // Use a single Step with the first step's values (which IS at a
+    // canonical-empty position), followed by an EmptyRun for the rest.
+    let result = decompress_causal_path(
+        CAUSAL_DEPTH,
+        &[
+            CompressedCausalStep::Step(CausalProofStep {
+                hash: first_hash,
+                count: 0,
+            }),
+            CompressedCausalStep::EmptyRun {
+                start_depth: 255,
+                length: 255,
+            },
+        ],
+    );
+    assert!(matches!(result, Err(CausalProofError::NonCanonicalStep)));
+}
+
+#[test]
+fn decompress_accepts_step_with_nonzero_count_at_empty_position() {
+    let k = key(0xa1);
+    let s = CausalSet::empty().insert(k);
+    let (path, _, _) = s.inclusion_proof(&k).unwrap();
+    let decompressed =
+        decompress_causal_path(CAUSAL_DEPTH, &compress_causal_path(CAUSAL_DEPTH, &path)).unwrap();
+    // Same hash as the first empty sibling, but with count=1. This is
+    // non-empty (count != 0) so it should be accepted — it's a lie about
+    // the count, but that's caught by verify, not decompress.
+    let result = decompress_causal_path(
+        CAUSAL_DEPTH,
+        &[
+            CompressedCausalStep::Step(CausalProofStep {
+                hash: decompressed[0].hash,
+                count: 1,
+            }),
+            CompressedCausalStep::EmptyRun {
+                start_depth: 255,
+                length: 255,
+            },
+        ],
+    );
+    assert!(result.is_ok());
 }

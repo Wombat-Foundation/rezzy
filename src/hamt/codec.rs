@@ -4,6 +4,18 @@ use super::hash::StructuralHash;
 use alloc::{string::String, vec::Vec};
 use core::hash::Hash;
 
+/// Magic prefix for a persisted HAMT node record.
+pub const HAMT_NODE_MAGIC: &[u8; 4] = b"MTHN";
+
+/// Magic prefix for a persisted state-group root record.
+pub const HAMT_ROOT_MAGIC: &[u8; 4] = b"MTHR";
+
+/// Wire version of the current persisted-node layout (32-byte structural
+/// hashes, inline leaves, then child hashes in nodemap order).
+///
+/// Recorded after the four-byte magic prefix in every HAMT node.
+pub const HAMT_WIRE_VERSION: u8 = 0x01;
+
 /// Custom binary codec for HAMT leaf payloads.
 ///
 /// This stays explicit and versioned instead of delegating persistence
@@ -247,11 +259,13 @@ where
             .and_then(|value| value.checked_add(4))
             .and_then(|value| value.checked_add(4))
             .and_then(|value| value.checked_add(4))
+            .and_then(|value| value.checked_add(4))
             .and_then(|value| value.checked_add(body.len()))
             .expect("encoded node size overflows usize");
 
         let mut buf = Vec::with_capacity(capacity);
-        buf.push(0x01);
+        buf.extend_from_slice(HAMT_NODE_MAGIC);
+        buf.push(HAMT_WIRE_VERSION);
         buf.extend_from_slice(&datamap.to_le_bytes());
         buf.extend_from_slice(&nodemap.to_le_bytes());
         buf.extend_from_slice(&leaf_count.to_le_bytes());
@@ -263,6 +277,7 @@ where
     /// Encodes the node to a dense binary format.
     ///
     /// Layout:
+    /// - Magic (4 bytes): `MTHN`
     /// - Version (1 byte): `0x01`
     /// - Datamap (4 bytes, LE)
     /// - Nodemap (4 bytes, LE)
@@ -285,7 +300,120 @@ where
     /// Returns an error when the version byte is invalid or the buffer is too
     /// short for the declared payload.
     pub fn decode_v1_unverified(buf: &[u8]) -> Result<Self, &'static str> {
-        if buf.is_empty() || buf[0] != 0x01 {
+        if buf.get(..HAMT_NODE_MAGIC.len()) != Some(HAMT_NODE_MAGIC.as_slice()) {
+            return Err("Invalid HAMT node magic");
+        }
+        if !matches!(buf.get(4).copied(), Some(HAMT_WIRE_VERSION)) {
+            return Err("Invalid version byte");
+        }
+        if buf.len() < 21 {
+            return Err("Buffer too short for v1 header");
+        }
+
+        let datamap = u32::from_le_bytes(
+            buf.get(5..9)
+                .ok_or("Buffer too short for datamap")?
+                .try_into()
+                .map_err(|_| "Buffer too short for datamap")?,
+        );
+        let nodemap = u32::from_le_bytes(
+            buf.get(9..13)
+                .ok_or("Buffer too short for nodemap")?
+                .try_into()
+                .map_err(|_| "Buffer too short for nodemap")?,
+        );
+
+        if (datamap & nodemap) != 0 {
+            return Err("Datamap and nodemap overlap: node is corrupt");
+        }
+
+        let leaf_count = u32::from_le_bytes(
+            buf.get(13..17)
+                .ok_or("Buffer too short for leaf count")?
+                .try_into()
+                .map_err(|_| "Buffer too short for leaf count")?,
+        ) as usize;
+        let child_count = u32::from_le_bytes(
+            buf.get(17..21)
+                .ok_or("Buffer too short for child count")?
+                .try_into()
+                .map_err(|_| "Buffer too short for child count")?,
+        ) as usize;
+
+        let expected_leaves = datamap.count_ones() as usize;
+        let expected_children = nodemap.count_ones() as usize;
+        if leaf_count != expected_leaves {
+            return Err("Leaf count does not match datamap");
+        }
+        if child_count != expected_children {
+            return Err("Child count does not match nodemap");
+        }
+
+        let mut cursor = 21_usize;
+        let mut leaves = Vec::with_capacity(leaf_count);
+        for _ in 0..leaf_count {
+            let key = K::decode_hamt(buf, &mut cursor)?;
+            let value = V::decode_hamt(buf, &mut cursor)?;
+            leaves.push((key, value));
+        }
+
+        let child_bytes = child_count
+            .checked_mul(core::mem::size_of::<StructuralHash>())
+            .ok_or("Child hash payload size overflows usize")?;
+        let total_len = cursor
+            .checked_add(child_bytes)
+            .ok_or("Child hash payload size overflows usize")?;
+        if buf.len() < total_len {
+            return Err("Buffer too short for child hashes");
+        }
+        if buf.len() > total_len {
+            return Err("Buffer contains trailing bytes");
+        }
+
+        let mut child_hashes = Vec::with_capacity(child_count);
+        for i in 0..child_count {
+            let start = cursor
+                .checked_add(
+                    i.checked_mul(core::mem::size_of::<StructuralHash>())
+                        .ok_or("Child hash index overflows usize")?,
+                )
+                .ok_or("Child hash index overflows usize")?;
+            let end = start
+                .checked_add(core::mem::size_of::<StructuralHash>())
+                .ok_or("Child hash index overflows usize")?;
+            let mut hash = [0u8; core::mem::size_of::<StructuralHash>()];
+            hash.copy_from_slice(&buf[start..end]);
+            child_hashes.push(hash);
+        }
+
+        Ok(Self {
+            datamap,
+            nodemap,
+            leaves,
+            child_hashes,
+        })
+    }
+
+    /// Explicit, parse-only decoder for pre-record-kind records that carried
+    /// 16-byte structural hashes.
+    ///
+    /// This method is never used by the current decoder and must only be
+    /// called by a caller that has independently identified the input as a
+    /// legacy record. It exists solely so legacy bytes can be inspected or
+    /// migrated: the
+    /// current layout cannot recover the storage key those records were
+    /// written under (the key committed to the 16-byte representation), so a
+    /// legacy node can never satisfy [`Self::into_hamt_node_verified`].
+    /// Decoded child hashes hold their legacy 16 bytes left-aligned in the
+    /// 32-byte [`StructuralHash`] array; the trailing half is zero.
+    ///
+    /// # Errors
+    /// Returns an error when the buffer lacks the legacy marker or does not
+    /// match the legacy layout.
+    pub fn decode_v1_legacy_unverified(buf: &[u8]) -> Result<Self, &'static str> {
+        const LEGACY_HASH_WIDTH: usize = 16;
+
+        if !matches!(buf.first().copied(), Some(HAMT_WIRE_VERSION)) {
             return Err("Invalid version byte");
         }
         if buf.len() < 17 {
@@ -340,7 +468,7 @@ where
         }
 
         let child_bytes = child_count
-            .checked_mul(core::mem::size_of::<StructuralHash>())
+            .checked_mul(LEGACY_HASH_WIDTH)
             .ok_or("Child hash payload size overflows usize")?;
         let total_len = cursor
             .checked_add(child_bytes)
@@ -353,19 +481,14 @@ where
         }
 
         let mut child_hashes = Vec::with_capacity(child_count);
-        for i in 0..child_count {
-            let start = cursor
-                .checked_add(
-                    i.checked_mul(core::mem::size_of::<StructuralHash>())
-                        .ok_or("Child hash index overflows usize")?,
-                )
-                .ok_or("Child hash index overflows usize")?;
-            let end = start
-                .checked_add(core::mem::size_of::<StructuralHash>())
+        for _ in 0..child_count {
+            let end = cursor
+                .checked_add(LEGACY_HASH_WIDTH)
                 .ok_or("Child hash index overflows usize")?;
             let mut hash = [0u8; core::mem::size_of::<StructuralHash>()];
-            hash.copy_from_slice(&buf[start..end]);
+            hash[..LEGACY_HASH_WIDTH].copy_from_slice(&buf[cursor..end]);
             child_hashes.push(hash);
+            cursor = end;
         }
 
         Ok(Self {

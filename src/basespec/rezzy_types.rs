@@ -2918,11 +2918,9 @@ pub(crate) fn is_valid_mxid(id: &str) -> bool {
     };
     !localpart.is_empty()
         && !domain.is_empty()
-        && localpart.bytes().all(|b| {
-            b.is_ascii_lowercase()
-                || b.is_ascii_digit()
-                || matches!(b, b'.' | b'_' | b'=' | b'-' | b'/' | b'+')
-        })
+        && localpart.bytes().all(
+            |b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'=' | b'-' | b'/' | b'+'),
+        )
 }
 
 /// Extracts the domain (server name) portion of a Matrix identifier (e.g. `@user:example.com` -> `example.com`,
