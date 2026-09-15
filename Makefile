@@ -46,7 +46,8 @@ doc: ##H Build docs
 
 .PHONY: all
 all:	##H Run all main targets
-all: format lint check doc test install
+all: format
+	+$(MAKE) lint check doc test install
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Lean targets
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
