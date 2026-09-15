@@ -45,9 +45,10 @@ doc: ##H Build docs
 	echo '<meta http-equiv="refresh" content="0;url=rezzy/index.html">' > target/doc/index.html
 
 .PHONY: all
-all:	##H Run all main targets
-all: format
-	+$(MAKE) lint check doc test install
+all: format lint check doc test install
+	@echo "all: done"
+
+lint check doc test install: format
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Lean targets
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
