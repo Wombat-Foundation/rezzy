@@ -43,7 +43,10 @@ pub use audit::{
     node_reachability_audit, unreachable_node_hashes, IndexedUniverse, NodeReachabilityAudit,
     UniverseTooLarge,
 };
-pub use codec::{HamtCodec, PersistedInternalNode};
+pub use codec::{
+    HamtCodec, PersistedInternalNode, HAMT_RECORD_KIND_NODE, HAMT_RECORD_KIND_STATE_ROOT,
+    HAMT_WIRE_VERSION,
+};
 pub use delta::{
     diff_hamt_nodes, diff_node_hashes, isolate_delta, reachable_node_hashes,
     walk_reachable_node_hashes, Delta, DeltaResult, HamtTraversalError, NodeHashDelta,

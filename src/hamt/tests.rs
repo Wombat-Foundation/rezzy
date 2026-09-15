@@ -308,14 +308,35 @@ fn test_encode_v1_writes_current_wire_version() {
         leaves: vec![],
         child_hashes: vec![],
     };
-    assert_eq!(node.encode_v1()[0], super::codec::HAMT_WIRE_VERSION);
+    let encoded = node.encode_v1();
+    assert_eq!(encoded[0], super::codec::HAMT_RECORD_KIND_NODE);
+    assert_eq!(encoded[1], super::codec::HAMT_WIRE_VERSION);
+}
+
+#[test]
+fn test_node_decoder_rejects_state_root_record_kind() {
+    let node = PersistedInternalNode::<i32, i32> {
+        datamap: 0,
+        nodemap: 0,
+        leaves: vec![],
+        child_hashes: vec![],
+    };
+    let mut encoded = node.encode_v1();
+    encoded[0] = super::codec::HAMT_RECORD_KIND_STATE_ROOT;
+
+    assert_eq!(
+        PersistedInternalNode::<i32, i32>::decode_v1_unverified(&encoded),
+        Err("Invalid HAMT record kind")
+    );
 }
 
 #[test]
 fn test_decode_v1_rejects_short_legacy_layout() {
-    // Hand-crafted pre-current record: version + datamap + nodemap +
+    // Hand-crafted current-format record with a legacy-width child hash:
+    // kind + version + datamap + nodemap +
     // leaf_count + child_count + one i32 leaf + one 16-byte child hash.
     let mut legacy = Vec::new();
+    legacy.push(super::codec::HAMT_RECORD_KIND_NODE);
     legacy.push(super::codec::HAMT_WIRE_VERSION);
     legacy.extend_from_slice(&1_u32.to_le_bytes()); // datamap (bit 0)
     legacy.extend_from_slice(&2_u32.to_le_bytes()); // nodemap (bit 1)
@@ -434,7 +455,7 @@ fn test_decode_v1_rejects_shape_mismatches() {
 
     assert_eq!(
         PersistedInternalNode::<i32, i32>::decode_v1_unverified(&[]),
-        Err("Invalid version byte")
+        Err("Invalid HAMT record kind")
     );
     assert_eq!(
         PersistedInternalNode::<i32, i32>::decode_v1_unverified(&encoded[..3]),
@@ -442,14 +463,14 @@ fn test_decode_v1_rejects_shape_mismatches() {
     );
 
     let mut bad_leaf_count = encoded.clone();
-    bad_leaf_count[9..13].copy_from_slice(&0_u32.to_le_bytes());
+    bad_leaf_count[10..14].copy_from_slice(&0_u32.to_le_bytes());
     assert_eq!(
         PersistedInternalNode::<i32, i32>::decode_v1_unverified(&bad_leaf_count),
         Err("Leaf count does not match datamap")
     );
 
     let mut bad_child_count = encoded.clone();
-    bad_child_count[13..17].copy_from_slice(&0_u32.to_le_bytes());
+    bad_child_count[14..18].copy_from_slice(&0_u32.to_le_bytes());
     assert_eq!(
         PersistedInternalNode::<i32, i32>::decode_v1_unverified(&bad_child_count),
         Err("Child count does not match nodemap")
@@ -474,8 +495,8 @@ fn test_decode_v1_rejects_overlapping_datamap_nodemap() {
     let mut encoded = node.encode_v1();
 
     // Overlap bit 1 in both datamap and nodemap.
-    encoded[1] |= 0x02;
-    encoded[5] |= 0x02;
+    encoded[2] |= 0x02;
+    encoded[6] |= 0x02;
 
     assert_eq!(
         PersistedInternalNode::<i32, i32>::decode_v1_unverified(&encoded),
@@ -5617,7 +5638,11 @@ fn test_descend_level_rejects_corruption() {
     let req_hash = crate::hamt::key_path_hash(key, &42_u32);
 
     // 1. Truncated buffer: returns Decode error
-    let truncated_buf = vec![crate::hamt::codec::HAMT_WIRE_VERSION, 0x00];
+    let truncated_buf = vec![
+        crate::hamt::codec::HAMT_RECORD_KIND_NODE,
+        crate::hamt::codec::HAMT_WIRE_VERSION,
+        0x00,
+    ];
     let res =
         descend_level::<u32, u64, _>(key, &[([0; 32], &truncated_buf, 0, &[req_hash])], |k| {
             crate::hamt::key_path_hash(key, k)
@@ -5630,7 +5655,10 @@ fn test_descend_level_rejects_corruption() {
     );
 
     // 2. Overlapping datamap & nodemap: returns Decode error
-    let mut corrupt_header = vec![crate::hamt::codec::HAMT_WIRE_VERSION]; // current version
+    let mut corrupt_header = vec![
+        crate::hamt::codec::HAMT_RECORD_KIND_NODE,
+        crate::hamt::codec::HAMT_WIRE_VERSION,
+    ]; // current node kind and version
     corrupt_header.extend_from_slice(&1_u32.to_le_bytes()); // datamap bit 0
     corrupt_header.extend_from_slice(&1_u32.to_le_bytes()); // nodemap bit 0 (overlap!)
     corrupt_header.extend_from_slice(&1_u32.to_le_bytes()); // leaves count 1

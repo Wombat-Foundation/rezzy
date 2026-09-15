@@ -4,13 +4,18 @@ use super::hash::StructuralHash;
 use alloc::{string::String, vec::Vec};
 use core::hash::Hash;
 
+/// Record kind for a persisted HAMT node.
+pub const HAMT_RECORD_KIND_NODE: u8 = 0x01;
+
+/// Record kind for a persisted state-group root envelope.
+pub const HAMT_RECORD_KIND_STATE_ROOT: u8 = 0x02;
+
 /// Wire version of the current persisted-node layout (32-byte structural
 /// hashes, inline leaves, then child hashes in nodemap order).
 ///
-/// Recorded in the first byte of every encoded node. The storage key
-/// selected by a lookup commits to the exact bytes written, so a node can
-/// only ever be decoded under the version that produced it.
-pub(crate) const HAMT_WIRE_VERSION: u8 = 0x01;
+/// The record kind is deliberately separate from the codec version so a
+/// state-group root cannot be mistaken for a HAMT node by a decoder.
+pub const HAMT_WIRE_VERSION: u8 = 0x01;
 
 /// Custom binary codec for HAMT leaf payloads.
 ///
@@ -253,12 +258,14 @@ where
         let capacity = 1_usize
             .checked_add(4)
             .and_then(|value| value.checked_add(4))
+            .and_then(|value| value.checked_add(1))
             .and_then(|value| value.checked_add(4))
             .and_then(|value| value.checked_add(4))
             .and_then(|value| value.checked_add(body.len()))
             .expect("encoded node size overflows usize");
 
         let mut buf = Vec::with_capacity(capacity);
+        buf.push(HAMT_RECORD_KIND_NODE);
         buf.push(HAMT_WIRE_VERSION);
         buf.extend_from_slice(&datamap.to_le_bytes());
         buf.extend_from_slice(&nodemap.to_le_bytes());
@@ -271,6 +278,7 @@ where
     /// Encodes the node to a dense binary format.
     ///
     /// Layout:
+    /// - Record kind (1 byte): `0x01` (HAMT node)
     /// - Version (1 byte): `0x01`
     /// - Datamap (4 bytes, LE)
     /// - Nodemap (4 bytes, LE)
@@ -293,22 +301,24 @@ where
     /// Returns an error when the version byte is invalid or the buffer is too
     /// short for the declared payload.
     pub fn decode_v1_unverified(buf: &[u8]) -> Result<Self, &'static str> {
-        match buf.first().copied() {
-            Some(HAMT_WIRE_VERSION) => {}
-            _ => return Err("Invalid version byte"),
+        if !matches!(buf.first().copied(), Some(HAMT_RECORD_KIND_NODE)) {
+            return Err("Invalid HAMT record kind");
         }
-        if buf.len() < 17 {
+        if !matches!(buf.get(1).copied(), Some(HAMT_WIRE_VERSION)) {
+            return Err("Invalid version byte");
+        }
+        if buf.len() < 18 {
             return Err("Buffer too short for v1 header");
         }
 
         let datamap = u32::from_le_bytes(
-            buf.get(1..5)
+            buf.get(2..6)
                 .ok_or("Buffer too short for datamap")?
                 .try_into()
                 .map_err(|_| "Buffer too short for datamap")?,
         );
         let nodemap = u32::from_le_bytes(
-            buf.get(5..9)
+            buf.get(6..10)
                 .ok_or("Buffer too short for nodemap")?
                 .try_into()
                 .map_err(|_| "Buffer too short for nodemap")?,
@@ -319,13 +329,13 @@ where
         }
 
         let leaf_count = u32::from_le_bytes(
-            buf.get(9..13)
+            buf.get(10..14)
                 .ok_or("Buffer too short for leaf count")?
                 .try_into()
                 .map_err(|_| "Buffer too short for leaf count")?,
         ) as usize;
         let child_count = u32::from_le_bytes(
-            buf.get(13..17)
+            buf.get(14..18)
                 .ok_or("Buffer too short for child count")?
                 .try_into()
                 .map_err(|_| "Buffer too short for child count")?,
@@ -340,7 +350,7 @@ where
             return Err("Child count does not match nodemap");
         }
 
-        let mut cursor = 17_usize;
+        let mut cursor = 18_usize;
         let mut leaves = Vec::with_capacity(leaf_count);
         for _ in 0..leaf_count {
             let key = K::decode_hamt(buf, &mut cursor)?;
@@ -385,10 +395,13 @@ where
         })
     }
 
-    /// Parse-only decoder for pre-`e349d0f` records that carried
+    /// Explicit, parse-only decoder for pre-record-kind records that carried
     /// 16-byte structural hashes.
     ///
-    /// This exists solely so legacy bytes can be inspected or migrated: the
+    /// This method is never used by the current decoder and must only be
+    /// called by a caller that has independently identified the input as a
+    /// legacy record. It exists solely so legacy bytes can be inspected or
+    /// migrated: the
     /// current layout cannot recover the storage key those records were
     /// written under (the key committed to the 16-byte representation), so a
     /// legacy node can never satisfy [`Self::into_hamt_node_verified`].
@@ -396,8 +409,8 @@ where
     /// 32-byte [`StructuralHash`] array; the trailing half is zero.
     ///
     /// # Errors
-    /// Returns an error when the buffer lacks the current version byte or
-    /// does not match the legacy layout.
+    /// Returns an error when the buffer lacks the legacy marker or does not
+    /// match the legacy layout.
     pub fn decode_v1_legacy_unverified(buf: &[u8]) -> Result<Self, &'static str> {
         const LEGACY_HASH_WIDTH: usize = 16;
 
