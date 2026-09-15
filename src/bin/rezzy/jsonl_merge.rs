@@ -404,6 +404,22 @@ mod tests {
     }
 
     #[test]
+    fn test_shared_missing_reference_does_not_connect_files() {
+        let mut a = ev("$a", 1);
+        a["prev_events"] = json!(["$missing"]);
+        let mut b = ev("$b", 1);
+        b["prev_events"] = json!(["$missing"]);
+
+        let result = merge_event_sets(
+            &[("a.jsonl".into(), vec![a]), ("b.jsonl".into(), vec![b])],
+            false,
+            true,
+        );
+
+        assert_eq!(result.unwrap_err().code(), ErrorCode::DisjointDags);
+    }
+
+    #[test]
     fn test_merge_one_file_only() {
         let a = vec![ev("$1", 1)];
         let result = merge_event_sets(&[("a.jsonl".into(), a)], false, true).unwrap();

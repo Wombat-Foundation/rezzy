@@ -204,6 +204,15 @@ mod tests {
     }
 
     #[test]
+    fn test_io_errors_have_the_io_error_code() {
+        let err = AppError::from(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "input does not exist",
+        ));
+        assert_eq!(err.code(), ErrorCode::IoError);
+    }
+
+    #[test]
     fn test_bail_code_macro() {
         fn do_thing() -> Result<(), AppError> {
             bail_code!(ErrorCode::EmptyInput, "no data in file");
