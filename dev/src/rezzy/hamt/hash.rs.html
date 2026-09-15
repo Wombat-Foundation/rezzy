@@ -25,17 +25,17 @@
 <a href=#25 id=25 data-nosnippet>25</a>/// must not be confused with the local-only `StructuralHash`.
 <a href=#26 id=26 data-nosnippet>26</a></span><span class="kw">pub type </span>StateGroupId = [u8; <span class="number">32</span>];
 <a href=#27 id=27 data-nosnippet>27</a>
-<a href=#28 id=28 data-nosnippet>28</a><span class="doccomment">/// Default codec version (1 = dense v1 binary format).
-<a href=#29 id=29 data-nosnippet>29</a></span><span class="kw">pub const </span>HAMT_CODEC_VERSION_V1: u8 = <span class="number">1</span>;
-<a href=#30 id=30 data-nosnippet>30</a><span class="doccomment">/// Default routing version (1 = full keyed structural hash routing).
-<a href=#31 id=31 data-nosnippet>31</a></span><span class="kw">pub const </span>HAMT_ROUTING_VERSION_V1: u8 = <span class="number">1</span>;
+<a href=#28 id=28 data-nosnippet>28</a><span class="doccomment">/// Current codec version (1 = dense format with 32-byte structural hashes).
+<a href=#29 id=29 data-nosnippet>29</a></span><span class="kw">pub const </span>HAMT_CODEC_VERSION: u8 = <span class="number">1</span>;
+<a href=#30 id=30 data-nosnippet>30</a><span class="doccomment">/// Current routing version (1 = full keyed structural hash routing).
+<a href=#31 id=31 data-nosnippet>31</a></span><span class="kw">pub const </span>HAMT_ROUTING_VERSION: u8 = <span class="number">1</span>;
 <a href=#32 id=32 data-nosnippet>32</a>
-<a href=#33 id=33 data-nosnippet>33</a><span class="kw">fn </span>default_codec_version_v1() -&gt; u8 {
-<a href=#34 id=34 data-nosnippet>34</a>    HAMT_CODEC_VERSION_V1
+<a href=#33 id=33 data-nosnippet>33</a><span class="kw">fn </span>default_codec_version() -&gt; u8 {
+<a href=#34 id=34 data-nosnippet>34</a>    HAMT_CODEC_VERSION
 <a href=#35 id=35 data-nosnippet>35</a>}
 <a href=#36 id=36 data-nosnippet>36</a>
 <a href=#37 id=37 data-nosnippet>37</a><span class="kw">fn </span>default_routing_version_v1() -&gt; u8 {
-<a href=#38 id=38 data-nosnippet>38</a>    HAMT_ROUTING_VERSION_V1
+<a href=#38 id=38 data-nosnippet>38</a>    HAMT_ROUTING_VERSION
 <a href=#39 id=39 data-nosnippet>39</a>}
 <a href=#40 id=40 data-nosnippet>40</a>
 <a href=#41 id=41 data-nosnippet>41</a><span class="doccomment">/// A resolved root handle carrying the local structural hash, global state-group identifier,
@@ -55,7 +55,7 @@
 <a href=#55 id=55 data-nosnippet>55</a>/// persistence is needed, use a versioned envelope with an explicit format tag.
 <a href=#56 id=56 data-nosnippet>56</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 <a href=#57 id=57 data-nosnippet>57</a></span><span class="kw">pub struct </span>RootHandle {
-<a href=#58 id=58 data-nosnippet>58</a>    <span class="attr">#[serde(default = <span class="string">"default_codec_version_v1"</span>)]
+<a href=#58 id=58 data-nosnippet>58</a>    <span class="attr">#[serde(default = <span class="string">"default_codec_version"</span>)]
 <a href=#59 id=59 data-nosnippet>59</a>    </span><span class="kw">pub </span>codec_version: u8,
 <a href=#60 id=60 data-nosnippet>60</a>    <span class="attr">#[serde(default = <span class="string">"default_routing_version_v1"</span>)]
 <a href=#61 id=61 data-nosnippet>61</a>    </span><span class="kw">pub </span>routing_version: u8,
@@ -66,13 +66,13 @@
 <a href=#66 id=66 data-nosnippet>66</a>}
 <a href=#67 id=67 data-nosnippet>67</a>
 <a href=#68 id=68 data-nosnippet>68</a><span class="kw">impl </span>RootHandle {
-<a href=#69 id=69 data-nosnippet>69</a>    <span class="doccomment">/// Builds a root handle with default v1 codec and v1 routing from a precomputed
+<a href=#69 id=69 data-nosnippet>69</a>    <span class="doccomment">/// Builds a root handle with the current codec and v1 routing from a precomputed
 <a href=#70 id=70 data-nosnippet>70</a>    /// structural hash and a state lattice.
 <a href=#71 id=71 data-nosnippet>71</a>    </span><span class="attr">#[must_use]
 <a href=#72 id=72 data-nosnippet>72</a>    </span><span class="kw">pub fn </span>from_lthash(structural_hash: StructuralHash, lattice: <span class="kw-2">&amp;</span><span class="kw">crate</span>::state::LtHash) -&gt; <span class="self">Self </span>{
 <a href=#73 id=73 data-nosnippet>73</a>        <span class="self">Self</span>::with_versions(
-<a href=#74 id=74 data-nosnippet>74</a>            HAMT_CODEC_VERSION_V1,
-<a href=#75 id=75 data-nosnippet>75</a>            HAMT_ROUTING_VERSION_V1,
+<a href=#74 id=74 data-nosnippet>74</a>            HAMT_CODEC_VERSION,
+<a href=#75 id=75 data-nosnippet>75</a>            HAMT_ROUTING_VERSION,
 <a href=#76 id=76 data-nosnippet>76</a>            [<span class="number">0</span>; <span class="number">4</span>],
 <a href=#77 id=77 data-nosnippet>77</a>            structural_hash,
 <a href=#78 id=78 data-nosnippet>78</a>            lattice,
@@ -144,8 +144,8 @@
 <a href=#144 id=144 data-nosnippet>144</a>    <span class="attr">#[test]
 <a href=#145 id=145 data-nosnippet>145</a>    </span><span class="kw">fn </span>test_root_handle_hashable() {
 <a href=#146 id=146 data-nosnippet>146</a>        <span class="kw">let </span>handle = RootHandle {
-<a href=#147 id=147 data-nosnippet>147</a>            codec_version: HAMT_CODEC_VERSION_V1,
-<a href=#148 id=148 data-nosnippet>148</a>            routing_version: HAMT_ROUTING_VERSION_V1,
+<a href=#147 id=147 data-nosnippet>147</a>            codec_version: HAMT_CODEC_VERSION,
+<a href=#148 id=148 data-nosnippet>148</a>            routing_version: HAMT_ROUTING_VERSION,
 <a href=#149 id=149 data-nosnippet>149</a>            routing_params: [<span class="number">0</span>; <span class="number">4</span>],
 <a href=#150 id=150 data-nosnippet>150</a>            structural_hash: [<span class="number">1</span>; <span class="number">32</span>],
 <a href=#151 id=151 data-nosnippet>151</a>            state_group_id: [<span class="number">2</span>; <span class="number">32</span>],
@@ -156,14 +156,14 @@
 <a href=#156 id=156 data-nosnippet>156</a>    }
 <a href=#157 id=157 data-nosnippet>157</a>
 <a href=#158 id=158 data-nosnippet>158</a>    <span class="attr">#[test]
-<a href=#159 id=159 data-nosnippet>159</a>    </span><span class="kw">fn </span>legacy_root_handle_metadata_defaults_to_v1() {
+<a href=#159 id=159 data-nosnippet>159</a>    </span><span class="kw">fn </span>root_handle_metadata_defaults_to_current_codec() {
 <a href=#160 id=160 data-nosnippet>160</a>        <span class="kw">let </span>legacy = <span class="string">r#"{
 <a href=#161 id=161 data-nosnippet>161</a>            "structural_hash": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
 <a href=#162 id=162 data-nosnippet>162</a>            "state_group_id": [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
 <a href=#163 id=163 data-nosnippet>163</a>        }"#</span>;
 <a href=#164 id=164 data-nosnippet>164</a>        <span class="kw">let </span>decoded: RootHandle = serde_json::from_str(legacy).expect(<span class="string">"legacy handle decodes"</span>);
-<a href=#165 id=165 data-nosnippet>165</a>        <span class="macro">assert_eq!</span>(decoded.codec_version, HAMT_CODEC_VERSION_V1);
-<a href=#166 id=166 data-nosnippet>166</a>        <span class="macro">assert_eq!</span>(decoded.routing_version, HAMT_ROUTING_VERSION_V1);
+<a href=#165 id=165 data-nosnippet>165</a>        <span class="macro">assert_eq!</span>(decoded.codec_version, HAMT_CODEC_VERSION);
+<a href=#166 id=166 data-nosnippet>166</a>        <span class="macro">assert_eq!</span>(decoded.routing_version, HAMT_ROUTING_VERSION);
 <a href=#167 id=167 data-nosnippet>167</a>        <span class="macro">assert_eq!</span>(decoded.routing_params, [<span class="number">0</span>; <span class="number">4</span>]);
 <a href=#168 id=168 data-nosnippet>168</a>    }
 <a href=#169 id=169 data-nosnippet>169</a>}
