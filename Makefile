@@ -88,16 +88,16 @@ lint check doc test install: format
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .PHONY: rust/build
-rust/build: ##H Compile Rust binary (release)
+rust/build: format ##H Compile Rust binary (release)
 	$(CARGO) build --locked --release --timings --features cli
 
 .PHONY: rust/so
-rust/so: ##H Compile shared object (librezzy.so) from the library
+rust/so: format ##H Compile shared object (librezzy.so) from the library
 	$(CARGO) rustc --locked --release --lib --crate-type cdylib $(CARGO_FEATURE_ARGS)
 	@echo "Built: target/release/librezzy.so"
 
 .PHONY: rust/test
-rust/test: ##H Run Rust tests (p=NAME for specific test, a=ARGS for test binary args)
+rust/test: format ##H Run Rust tests (p=NAME for specific test, a=ARGS for test binary args)
 ifdef p
 	$(CARGO) test --timings --test $(p) $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
 else
@@ -105,7 +105,7 @@ else
 endif
 
 .PHONY: rust/bench
-rust/bench: ##H Run benchmarks
+rust/bench: format ##H Run benchmarks
 	#$(CARGO) bench --profile release --bench rezzy -- resolve
 	$(CARGO) bench --profile release --benches
 
@@ -113,7 +113,7 @@ rust/bench: ##H Run benchmarks
 export LLVM_COV_FLAGS = -show-region-summary=false -show-branch-summary=false
 
 .PHONY: rust/coverage
-rust/coverage: ##H Run code coverage and generate HTML report
+rust/coverage: format ##H Run code coverage and generate HTML report
 	# TODO: include `src/bin/` in coverage
 	# Run coverage
 	$(CARGO) llvm-cov --lib --tests \
@@ -137,7 +137,7 @@ rust/clean: ##H Remove Rust build artifacts
 	rm -rf .coverage/
 
 .PHONY: rust/install
-rust/install: ##H Install rezzy binary to cargo bin
+rust/install: format ##H Install rezzy binary to cargo bin
 	$(CARGO) install --timings --locked --features cli --path . --bin rezzy
 
 .PHONY: rust/uninstall
@@ -166,12 +166,12 @@ rust/publish: ##H Preview package and simulate dry-run publish
 
 # Convenience aliases
 .PHONY: build test bench install clean uninstall so
-build:   rust/build   ##H Alias for rust/build
-test:    rust/test    ##H Alias for rust/test
-bench:   rust/bench   ##H Alias for rust/bench
-cov:     rust/coverage ##H Alias for rust/coverage
-install: rust/install ##H Alias for rust/install
-uninstall: rust/uninstall ##H Alias for rust/uninstall
+build:   rust/build format   ##H Alias for rust/build
+test:    rust/test format    ##H Alias for rust/test
+bench:   rust/bench format   ##H Alias for rust/bench
+cov:     rust/coverage format ##H Alias for rust/coverage
+install: rust/install format ##H Alias for rust/install
+uninstall: rust/uninstall   ##H Alias for rust/uninstall
 so:      rust/so      ##H Alias for rust/so
 
 .PHONY: clean
