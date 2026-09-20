@@ -571,6 +571,12 @@ impl ReconciliationClient {
             .clamp(MIN_BUCKET_SKETCH_CAPACITY, MAX_BUCKET_SKETCH_CAPACITY);
         let total_capacity = buckets.saturating_mul(per_bucket);
 
+        // `buckets` is structurally bounded by MAX_BUCKET_ROUND_DEPTH (itself
+        // derived from MAX_BUCKETS_PER_ROUND), so the first clause never
+        // trips. The second is live for any max_aggregate_capacity below the
+        // default MAX_BUCKETED_SKETCH_CAPACITY: an operator who configures a
+        // ceiling lower than one round's worst-case provisioning should have
+        // it enforced here, not silently ignored.
         if buckets > MAX_BUCKETS_PER_ROUND || total_capacity > self.max_aggregate_capacity {
             return ClientAction::ExtremityDiff;
         }
@@ -613,6 +619,13 @@ impl ReconciliationClient {
     /// Normal decode failures are retried at a strictly larger capacity. A
     /// missing prior request, a failed maximum-capacity bucket, or an aggregate
     /// retry above the wire cap falls back to bounded extremity discovery.
+    ///
+    /// `aggregate_cap` is trusted as-is, not clamped to
+    /// [`MAX_BUCKETED_SKETCH_CAPACITY`] -- unlike [`ReconciliationClient`]'s
+    /// `select_action`/`BucketExchange` path, this static method has no
+    /// `self` and so no [`ReconciliationClient::with_max_aggregate_capacity`]
+    /// to read; a caller invoking it directly is responsible for passing a
+    /// sane value.
     #[must_use]
     pub fn transition_bucket_batch(
         batch: BucketDecodeBatch,
