@@ -295,7 +295,7 @@ impl RoomAccumulator {
     pub fn etag<'a>(self, extremity_event_ids: impl IntoIterator<Item = &'a str>) -> String {
         let mut extremities: Vec<&str> = extremity_event_ids.into_iter().collect();
         extremities.sort_unstable();
-        let canonical = serde_json::to_vec(&extremities).expect("string arrays are serializable");
+        let canonical = simd_json::to_vec(&extremities).expect("string arrays are serializable");
         let frontier_hash = Sha256::digest(canonical);
         let mut etag = Vec::with_capacity(24);
         etag.extend_from_slice(&self.digest.to_be_bytes());
