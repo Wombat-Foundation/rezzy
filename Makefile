@@ -116,23 +116,19 @@ rust/bench: format ##H Run benchmarks
 export LLVM_COV_FLAGS = -show-region-summary=false -show-branch-summary=false
 
 .PHONY: rust/coverage
-rust/coverage: ##H Run code coverage and generate HTML report
+rust/coverage: ##H Run code coverage and print per-file summary
 	# TODO: include `src/bin/` in coverage
-	# Run coverage
+	$(CARGO) llvm-cov --workspace --lib --tests \
+		--text --output-dir .coverage \
+		--ignore-filename-regex 'src/bin/.*|scripts/.*|build\.rs$$'
+	@cat .coverage/text/index.txt
+
+.PHONY: rust/coverage-html
+rust/coverage-html: ##H Run code coverage and generate HTML report
 	$(CARGO) llvm-cov --workspace --lib --tests \
 		--html --output-dir .coverage \
 		--ignore-filename-regex 'src/bin/.*|scripts/.*|build\.rs$$'
-	# Print per-file summary to the terminal (functions/lines only)
-	@echo ''
-	@echo '══════════════ COVERAGE SUMMARY ══════════════'
-	$(CARGO) llvm-cov report \
-		--ignore-filename-regex 'src/bin/.*|scripts/.*|build\.rs$$'
-	# Process report to codecov-compatible JSON
-	$(CARGO) llvm-cov report \
-		--ignore-filename-regex 'src/bin/.*|scripts/.*|build\.rs$$' \
-		--codecov --output-path .coverage/codecov.json
-	@echo DONE. You may open it with:
-	@echo firefox .coverage/html/index.html
+	@echo 'firefox .coverage/html/index.html'
 
 .PHONY: rust/clean
 rust/clean: ##H Remove Rust build artifacts
