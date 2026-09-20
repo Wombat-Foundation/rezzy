@@ -1247,6 +1247,7 @@ dependencies = [
  "ruma-events",
  "ruma-signatures",
  "ruma-state-res",
+ "rz-cli",
  "rz-core",
  "rz-reconcile",
  "serde",

@@ -15,6 +15,7 @@ repository.workspace = true
 description = "Lightweight and formally verified: State Res v1, v2, and v2.1 reference implementations in Rust."
 keywords = ["matrix", "state-resolution", "federation", "verification"]
 categories = ["algorithms", "mathematics"]
+default-run = "rezzy"
 autobins = false
 autobenches = false
 autotests = false
@@ -62,6 +63,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/gamesguru/rezzy"
 
 [workspace.dependencies]
+rz-cli = { path = "rz-cli" }
 rz-core = { path = "rz-core" }
 rz-reconcile = { path = "rz-reconcile" }
 
@@ -130,6 +132,12 @@ dbg_macro = "warn"
 get_unwrap = "warn"
 
 [[bin]]
+name = "rezzy"
+path = "src/bin/rezzy.rs"
+required-features = ["cli"]
+test = false
+
+[[bin]]
 name = "regen-oracles"
 path = "scripts/regen_oracles.rs"
 required-features = ["regen"]
@@ -144,7 +152,7 @@ test = false
 [features]
 default = ["std"]
 std = ["rz-core/std"]
-cli = ["std", "rz-core/cli"]
+cli = ["std", "rz-core/cli", "dep:rz-cli"]
 regen = ["std"]
 signing = ["rz-core/signing"]
 signing-dalek = ["rz-core/signing-dalek"]
@@ -162,6 +170,7 @@ ruma-common = { workspace = true, optional = true }
 ruma-events = { workspace = true, optional = true }
 ruma-signatures = { workspace = true, optional = true }
 ruma-state-res = { workspace = true, optional = true }
+rz-cli = { workspace = true, optional = true }
 rz-core.workspace = true
 rz-reconcile.workspace = true
 serde_json.workspace = true

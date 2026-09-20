@@ -30,8 +30,8 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use rezzy::state::cache::LeanEventCache;
-//! use rezzy::{LeanEvent, HashMap};
+//! use rz_core::state::cache::LeanEventCache;
+//! use rz_core::{LeanEvent, HashMap};
 //!
 //! let mut cache = LeanEventCache::<String>::new(10_000);
 //!
@@ -235,8 +235,8 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
     /// typically converts a native PDU type into a `LeanEvent`:
     ///
     /// ```rust,no_run
-    /// # use rezzy::state::cache::LeanEventCache;
-    /// # use rezzy::LeanEvent;
+    /// # use rz_core::state::cache::LeanEventCache;
+    /// # use rz_core::LeanEvent;
     /// # let mut cache = LeanEventCache::<String>::new(100);
     /// let event = cache.get_or_insert("$abc", || {
     ///     // Convert from native PDU type

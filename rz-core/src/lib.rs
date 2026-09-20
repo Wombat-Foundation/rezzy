@@ -34,6 +34,9 @@
 
 #[cfg(feature = "std")]
 extern crate std;
+
+#[cfg(feature = "mock-ruma")]
+extern crate ruma_state_res;
 // Copyright 2026 Shane Jaroch
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
