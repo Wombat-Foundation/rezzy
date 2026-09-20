@@ -111,11 +111,66 @@ pub enum OutputFormat {
 }
 
 /// One resolved-state entry in `(type, state_key, event_id)` form.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedStateEntry<Id = String, K = String> {
     pub event_type: EventType,
     pub state_key: K,
     pub event_id: Id,
+}
+
+struct ResolvedStateEntryVisitor<Id, K>(core::marker::PhantomData<fn(Id, K)>);
+
+impl<'de, Id: serde::Deserialize<'de>, K: serde::Deserialize<'de>> serde::de::Visitor<'de>
+    for ResolvedStateEntryVisitor<Id, K>
+{
+    type Value = ResolvedStateEntry<Id, K>;
+    fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.write_str("a ResolvedStateEntry")
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut event_type = None;
+        let mut state_key = None;
+        let mut event_id = None;
+        while let Some(key) = map.next_key::<alloc::string::String>()? {
+            match key.as_str() {
+                "event_type" => event_type = Some(map.next_value()?),
+                "state_key" => state_key = Some(map.next_value()?),
+                "event_id" => event_id = Some(map.next_value()?),
+                _ => {
+                    let _ = map.next_value::<serde::de::IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(ResolvedStateEntry {
+            event_type: event_type.ok_or_else(|| serde::de::Error::missing_field("event_type"))?,
+            state_key: state_key.ok_or_else(|| serde::de::Error::missing_field("state_key"))?,
+            event_id: event_id.ok_or_else(|| serde::de::Error::missing_field("event_id"))?,
+        })
+    }
+}
+
+impl<Id: serde::Serialize, K: serde::Serialize> serde::Serialize for ResolvedStateEntry<Id, K> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("ResolvedStateEntry", 3)?;
+        state.serialize_field("event_type", &self.event_type)?;
+        state.serialize_field("state_key", &self.state_key)?;
+        state.serialize_field("event_id", &self.event_id)?;
+        state.end()
+    }
+}
+
+impl<'de, Id: serde::Deserialize<'de>, K: serde::Deserialize<'de>> serde::Deserialize<'de>
+    for ResolvedStateEntry<Id, K>
+{
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &["event_type", "state_key", "event_id"];
+        deserializer.deserialize_struct(
+            "ResolvedStateEntry",
+            FIELDS,
+            ResolvedStateEntryVisitor(core::marker::PhantomData),
+        )
+    }
 }
 
 /// Converts a resolved state map into a stable, sorted list of entries.
