@@ -70,12 +70,11 @@ rz-reconcile = { path = "rz-reconcile" }
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 blake2 = { version = "0.10", default-features = false }
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
-imbl = { version = "3.0", default-features = false}
+imbl = { version = "3.0", default-features = false }
 roaring = { version = "0.10", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 sha3 = { version = "0.10", default-features = false }
 simd-json = { version = "0.18", default-features = false, features = ["runtime-detection"] }
-
 
 # CLI-only
 clap = { version = "=4.5.48", features = ["derive", "env"] }
@@ -171,8 +170,8 @@ ruma-state-res = { workspace = true, optional = true }
 rz-cli = { workspace = true, optional = true }
 rz-core.workspace = true
 rz-reconcile.workspace = true
-simd-json.workspace = true
 sha2.workspace = true
+simd-json.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
@@ -184,7 +183,6 @@ imbl.workspace = true
 insta.workspace = true
 rand_08.workspace = true
 roaring.workspace = true
-simd-json.workspace = true
 sha2.workspace = true
 simd-json.workspace = true
 similar.workspace = true
