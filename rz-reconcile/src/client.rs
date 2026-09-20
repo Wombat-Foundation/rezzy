@@ -17,7 +17,11 @@ use alloc::collections::VecDeque;
 ///
 /// Paired with [`MAX_BUCKETED_SKETCH_CAPACITY`], the default 20-round limit yields a
 /// default operating point of ~82,000 differing elements before falling back to
-/// extremity-based frame diffing under default client policy.
+/// extremity-based frame diffing under default client policy. This is a default,
+/// not a protocol ceiling: [`ReconciliationClient::with_max_aggregate_capacity`]
+/// raises the per-round capacity (and, through [`derive_gate_threshold`], the
+/// derived round-budget gate) for two implementations that agree out of band to
+/// attempt larger single-exchange deltas.
 // TODO(prefix-grinding): this round budget is also the thing an attacker
 // who can get ground events into the symmetric difference (see
 // `ElementHash::from_digest32`'s doc comment in algebraic.rs for the
@@ -65,11 +69,16 @@ fn provision_capacity(delta: u64, headroom: u64) -> Option<u64> {
         .and_then(|capacity| capacity.checked_add(headroom))
 }
 
-fn derive_gate_threshold(max_rounds: usize) -> Option<u64> {
+/// Derives the round-budget gate threshold from a round count and a
+/// per-round aggregate capacity. Defaults to [`MAX_BUCKETED_SKETCH_CAPACITY`]
+/// for the capacity, but a client that raises its aggregate capacity via
+/// [`ReconciliationClient::with_max_aggregate_capacity`] gets a
+/// correspondingly higher default gate.
+fn derive_gate_threshold(max_rounds: usize, max_aggregate_capacity: usize) -> Option<u64> {
     // Widen to u64 before multiplying: on 32-bit targets, saturating_mul in
     // usize would silently cap at usize::MAX well below the real threshold
     // for large max_rounds, weakening the configured reconciliation limit.
-    (max_rounds as u64).checked_mul(MAX_BUCKETED_SKETCH_CAPACITY as u64)
+    (max_rounds as u64).checked_mul(max_aggregate_capacity as u64)
 }
 
 /// Requester policy for one MSC0501 reconciliation exchange.
@@ -78,6 +87,12 @@ pub struct ReconciliationClient {
     max_sketch_capacity: usize,
     max_rounds: usize,
     gate_threshold: Option<u64>,
+    /// Maximum aggregate bucket capacity provisioned for one reconciliation
+    /// exchange. Defaults to [`MAX_BUCKETED_SKETCH_CAPACITY`]; raising it
+    /// (via [`Self::with_max_aggregate_capacity`]) lets two servers that
+    /// agree out of band attempt larger single-exchange deltas than the
+    /// MSC4521 default operating point.
+    max_aggregate_capacity: usize,
 }
 
 /// Information learned from the responder's room digest.
@@ -149,7 +164,7 @@ impl BucketExchange {
             rounds_emitted: 0,
             max_rounds,
             max_buckets_per_round,
-            max_aggregate_capacity: max_aggregate_capacity.min(MAX_BUCKETED_SKETCH_CAPACITY),
+            max_aggregate_capacity,
             max_pending_requests: max_rounds.saturating_mul(max_buckets_per_round),
             no_progress_rounds: 0,
         }
@@ -395,7 +410,11 @@ impl Default for ReconciliationClient {
         Self {
             max_sketch_capacity: MAX_LOCAL_SKETCH_DECODE_CAPACITY,
             max_rounds: MAX_RECONCILIATION_ROUNDS,
-            gate_threshold: derive_gate_threshold(MAX_RECONCILIATION_ROUNDS),
+            gate_threshold: derive_gate_threshold(
+                MAX_RECONCILIATION_ROUNDS,
+                MAX_BUCKETED_SKETCH_CAPACITY,
+            ),
+            max_aggregate_capacity: MAX_BUCKETED_SKETCH_CAPACITY,
         }
     }
 }
@@ -413,7 +432,11 @@ impl ReconciliationClient {
         Ok(Self {
             max_sketch_capacity,
             max_rounds: MAX_RECONCILIATION_ROUNDS,
-            gate_threshold: derive_gate_threshold(MAX_RECONCILIATION_ROUNDS),
+            gate_threshold: derive_gate_threshold(
+                MAX_RECONCILIATION_ROUNDS,
+                MAX_BUCKETED_SKETCH_CAPACITY,
+            ),
+            max_aggregate_capacity: MAX_BUCKETED_SKETCH_CAPACITY,
         })
     }
 
@@ -424,7 +447,25 @@ impl ReconciliationClient {
     #[must_use]
     pub fn with_max_rounds(mut self, max_rounds: usize) -> Self {
         self.max_rounds = max_rounds;
-        self.gate_threshold = derive_gate_threshold(max_rounds);
+        self.gate_threshold = derive_gate_threshold(max_rounds, self.max_aggregate_capacity);
+        self
+    }
+
+    /// Sets a custom maximum aggregate bucket capacity for one reconciliation
+    /// exchange and recalculates the gate threshold.
+    ///
+    /// Defaults to [`MAX_BUCKETED_SKETCH_CAPACITY`] (the MSC4521 default
+    /// operating point, ~82,000 differing elements at the default round
+    /// count). Raising this is a client-side policy choice: both servers
+    /// must independently configure a matching-or-higher capacity, or the
+    /// side with the lower ceiling still bails to `ExtremityDiff` once its
+    /// own gate is exceeded. This overwrites a threshold configured earlier
+    /// with [`Self::with_gate_threshold`], so builder call order is
+    /// significant.
+    #[must_use]
+    pub fn with_max_aggregate_capacity(mut self, max_aggregate_capacity: usize) -> Self {
+        self.max_aggregate_capacity = max_aggregate_capacity;
+        self.gate_threshold = derive_gate_threshold(self.max_rounds, max_aggregate_capacity);
         self
     }
 
@@ -510,7 +551,7 @@ impl ReconciliationClient {
         // above `MAX_BUCKETED_SKETCH_CAPACITY`, which the value is capped to
         // right below anyway. Converting first would reject those cases as
         // `ExtremityDiff` instead of just clamping.
-        let capped = provisioned.map(|value| value.min(MAX_BUCKETED_SKETCH_CAPACITY as u64));
+        let capped = provisioned.map(|value| value.min(self.max_aggregate_capacity as u64));
         let Some(target_capacity) = capped.and_then(|value| usize::try_from(value).ok()) else {
             return ClientAction::ExtremityDiff;
         };
@@ -530,9 +571,7 @@ impl ReconciliationClient {
             .clamp(MIN_BUCKET_SKETCH_CAPACITY, MAX_BUCKET_SKETCH_CAPACITY);
         let total_capacity = buckets.saturating_mul(per_bucket);
 
-        if buckets > MAX_BUCKETS_PER_ROUND
-            || total_capacity > crate::triage::MAX_BUCKETED_SKETCH_CAPACITY
-        {
+        if buckets > MAX_BUCKETS_PER_ROUND || total_capacity > self.max_aggregate_capacity {
             return ClientAction::ExtremityDiff;
         }
 
@@ -600,7 +639,7 @@ impl ReconciliationClient {
             _ => return ClientAction::ExtremityDiff,
         };
         let share = unaccounted.checked_div(failed_count).unwrap_or(0);
-        let aggregate_limit = aggregate_cap.min(MAX_BUCKETED_SKETCH_CAPACITY);
+        let aggregate_limit = aggregate_cap;
         let mut total = 0_usize;
         let mut requests = alloc::vec::Vec::with_capacity(batch.failed_buckets.len());
 
@@ -685,6 +724,48 @@ mod tests {
 
         let client = client.allow_unlimited_delta();
         assert_eq!(client.gate_threshold(), None);
+    }
+
+    #[test]
+    fn raised_aggregate_capacity_scales_gate_threshold() {
+        let client = ReconciliationClient::default().with_max_aggregate_capacity(8_192);
+        assert_eq!(
+            client.gate_threshold(),
+            Some((MAX_RECONCILIATION_ROUNDS as u64) * 8_192)
+        );
+    }
+
+    /// A delta past the default ~82k gate bails to `ExtremityDiff` under
+    /// default policy, but proceeds to bucketed sketches once
+    /// `with_max_aggregate_capacity` raises the round-budget gate past it.
+    /// The first round's own provisioning is still bounded by
+    /// `MAX_BUCKETS_PER_ROUND * MAX_BUCKET_SKETCH_CAPACITY` regardless --
+    /// raising the aggregate capacity widens how many *rounds* of that fixed
+    /// per-round ceiling the exchange is allowed to spend, via the gate.
+    #[test]
+    fn raised_aggregate_capacity_admits_deltas_past_the_default_gate() {
+        let local = ResidentKernel::new();
+        let remote_digest = RemoteDigest {
+            digest: 1,
+            known_event_count: 100_000,
+            strata: [[0; STRATUM_CAPACITY]; STRATA_COUNT],
+            frame_matches: true,
+            has_unknown_extremity: false,
+        };
+
+        let default_client = ReconciliationClient::default();
+        assert_eq!(
+            default_client.select_action(&local, remote_digest, 0),
+            ClientAction::ExtremityDiff,
+            "100k-element delta should exceed the default ~82k gate"
+        );
+
+        let raised_client = ReconciliationClient::default().with_max_aggregate_capacity(8_192);
+        let action = raised_client.select_action(&local, remote_digest, 0);
+        let ClientAction::BucketSketches { requests, .. } = action else {
+            panic!("expected bucket requests once the gate is raised past 100k, got {action:?}");
+        };
+        assert!(!requests.is_empty());
     }
 
     #[test]
