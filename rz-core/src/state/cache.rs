@@ -81,7 +81,7 @@ use core::cell::{Cell, RefCell};
 /// implementation (which takes `&self`) can update LRU state. This ensures
 /// events accessed through the lazy resolver path are properly marked as
 /// recently used and not prematurely evicted.
-pub struct LeanEventCache<Id: EventId, C: EventContent = serde_json::Value> {
+pub struct LeanEventCache<Id: EventId, C: EventContent = crate::json::Value> {
     map: HashMap<Id, CacheEntry<Id, C>>,
     /// Sorted index: generation → event ID. Enables O(log n) eviction via
     /// `pop_first()`. Wrapped in `RefCell` for interior mutability through

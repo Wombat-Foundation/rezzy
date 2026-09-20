@@ -8,7 +8,7 @@ use alloc::{
 use core::fmt;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use serde_json::Value;
+use crate::json::Value;
 use sha3::{Digest, Sha3_256};
 
 /// SHA3-256 digest size used by MSC4511.
@@ -565,7 +565,7 @@ fn append_canonical_value(out: &mut Vec<u8>, value: &Value) -> Result<(), Merkle
     Ok(())
 }
 
-fn append_number(out: &mut Vec<u8>, number: &serde_json::Number) -> Result<(), MerkleError> {
+fn append_number(out: &mut Vec<u8>, number: &crate::json::Number) -> Result<(), MerkleError> {
     if let Some(n) = number.as_i64() {
         if !(MIN_CANONICAL_INT..=MAX_CANONICAL_INT).contains(&n) {
             return Err(MerkleError::IntegerRange);

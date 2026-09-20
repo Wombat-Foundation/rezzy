@@ -212,7 +212,7 @@ impl fmt::Display for InternId<'_> {
 /// A room-state map keyed by `(InternId<'a>, InternId<'a>)` — both halves
 /// `Copy` — whose `StateProvider` impl converts a `&str` query into the key via
 /// the interner with no allocation. No `Borrow<dyn StateKeyDyn>`, no `'static`.
-pub struct InternedRoomState<'a, Id = alloc::string::String, C = serde_json::Value> {
+pub struct InternedRoomState<'a, Id = alloc::string::String, C = crate::json::Value> {
     interner: &'a Interner,
     map: alloc::collections::BTreeMap<(InternId<'a>, InternId<'a>), LeanEvent<Id, C, InternId<'a>>>,
 }
@@ -348,14 +348,14 @@ mod tests {
         let sk = InternId::from_index(&arena_a, arena_a.id_of("@a:x").unwrap());
         let map = alloc::collections::BTreeMap::from([(
             (et, sk),
-            LeanEvent::<alloc::string::String, serde_json::Value, InternId<'_>> {
+            LeanEvent::<alloc::string::String, crate::json::Value, InternId<'_>> {
                 event_id: "$a".to_string(),
                 event_type: "m.room.member".to_string(),
                 state_key: Some(sk),
                 power_level: 0,
                 origin_server_ts: 0,
                 sender: "@a:x".to_string(),
-                content: serde_json::Value::Null,
+                content: crate::json::Value::Null,
                 prev_events: Vec::new(),
                 auth_events: Vec::new(),
                 depth: 0,
@@ -402,7 +402,7 @@ mod tests {
                         power_level: 0,
                         origin_server_ts: 0,
                         sender: alloc::string::String::from("@a:x"),
-                        content: serde_json::Value::Null,
+                        content: crate::json::Value::Null,
                         prev_events: Vec::new(),
                         auth_events: Vec::new(),
                         depth: 1,
@@ -420,7 +420,7 @@ mod tests {
                         power_level: 0,
                         origin_server_ts: 0,
                         sender: alloc::string::String::from("@b:x"),
-                        content: serde_json::Value::Null,
+                        content: crate::json::Value::Null,
                         prev_events: Vec::new(),
                         auth_events: Vec::new(),
                         depth: 1,

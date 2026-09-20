@@ -5,7 +5,7 @@ use alloc::string::String;
 use alloc::string::ToString;
 
 use ed25519_dalek::{Signature, VerifyingKey};
-use serde_json::Value;
+use crate::json::Value;
 
 use super::SignatureVerifier;
 

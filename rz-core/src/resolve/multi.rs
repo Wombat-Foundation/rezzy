@@ -430,7 +430,7 @@ where
                     sender: ev.sender.clone(),
                     auth_events: ev.auth_events.clone(),
                     prev_events: Vec::new(),
-                    content: serde_json::Value::Null,
+                    content: crate::json::Value::Null,
                     power_level: 0,
                     origin_server_ts: 0,
                     depth: 0,
@@ -656,7 +656,7 @@ mod tests {
             event_type: event_type.into(),
             state_key: Some(state_key.into()),
             sender: sender.into(),
-            content: serde_json::Value::Object(serde_json::Map::new()),
+            content: crate::json::Value::Object(crate::json::Object::new()),
             auth_events,
             prev_events: alloc::vec![],
             depth,
@@ -775,7 +775,7 @@ mod tests {
             &states,
             &HashMap::<
                 alloc::string::String,
-                LeanEvent<alloc::string::String, serde_json::Value, crate::InternedKey>,
+                LeanEvent<alloc::string::String, crate::json::Value, crate::InternedKey>,
             >::new(),
             StateResVersion::V2,
             &crate::InternedKey::new(""),
@@ -856,7 +856,7 @@ mod tests {
         );
         events.insert("$alice_join".into(), {
             let mut ev = alice_join;
-            ev.content = serde_json::json!({"membership": "join"});
+            ev.content = crate::json!({"membership": "join"});
             ev
         });
 
@@ -870,7 +870,7 @@ mod tests {
         );
         events.insert("$bob_join".into(), {
             let mut ev = bob_join;
-            ev.content = serde_json::json!({"membership": "join"});
+            ev.content = crate::json!({"membership": "join"});
             ev
         });
 
@@ -885,7 +885,7 @@ mod tests {
         );
         events.insert("$pl_a".into(), {
             let mut ev = pl_a;
-            ev.content = serde_json::json!({"users": {"@alice:x": 100}});
+            ev.content = crate::json!({"users": {"@alice:x": 100}});
             ev.power_level = 100;
             ev
         });
@@ -901,7 +901,7 @@ mod tests {
         );
         events.insert("$pl_b".into(), {
             let mut ev = pl_b;
-            ev.content = serde_json::json!({"users": {"@bob:x": 100}});
+            ev.content = crate::json!({"users": {"@bob:x": 100}});
             ev.power_level = 0;
             ev
         });
@@ -964,7 +964,7 @@ mod tests {
     #[should_panic(expected = "requires at least one state map")]
     fn test_resolve_empty_panics() {
         let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
-        let _ = resolve_state_maps::<alloc::string::String, serde_json::Value, _>(
+        let _ = resolve_state_maps::<alloc::string::String, crate::json::Value, _>(
             &[],
             &events,
             StateResVersion::V2,
@@ -1030,7 +1030,7 @@ mod tests {
                 alloc::vec!["$create".into()],
                 1,
             );
-            ev.content = serde_json::json!({"membership": "join"});
+            ev.content = crate::json!({"membership": "join"});
             ev
         });
         events.insert("$bob_join".into(), {
@@ -1042,7 +1042,7 @@ mod tests {
                 alloc::vec!["$create".into()],
                 1,
             );
-            ev.content = serde_json::json!({"membership": "join"});
+            ev.content = crate::json!({"membership": "join"});
             ev
         });
 
@@ -1108,7 +1108,7 @@ mod tests {
                 alloc::vec!["$create".into()],
                 1,
             );
-            ev.content = serde_json::json!({"membership": "join"});
+            ev.content = crate::json!({"membership": "join"});
             ev
         });
         events.insert("$bob_join".into(), {
@@ -1120,7 +1120,7 @@ mod tests {
                 alloc::vec!["$create".into()],
                 1,
             );
-            ev.content = serde_json::json!({"membership": "join"});
+            ev.content = crate::json!({"membership": "join"});
             ev
         });
         events.insert("$pl_a".into(), {
@@ -1132,7 +1132,7 @@ mod tests {
                 alloc::vec!["$create".into(), "$alice_join".into()],
                 2,
             );
-            ev.content = serde_json::json!({"users": {"@alice:x": 100}});
+            ev.content = crate::json!({"users": {"@alice:x": 100}});
             ev.power_level = 100;
             ev
         });
@@ -1145,7 +1145,7 @@ mod tests {
                 alloc::vec!["$create".into(), "$bob_join".into()],
                 2,
             );
-            ev.content = serde_json::json!({"users": {"@bob:x": 100}});
+            ev.content = crate::json!({"users": {"@bob:x": 100}});
             ev.power_level = 0;
             ev
         });

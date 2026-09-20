@@ -163,7 +163,7 @@ pub fn expand_v2_power_events_auth_chains<
                 if !power_events.contains_key(aid) {
                     // Prefer moving the already-owned copy out of
                     // non_power_events (avoids deep-cloning the LeanEvent +
-                    // serde_json::Value); fall back to cloning from sort_set
+                    // crate::json::Value); fall back to cloning from sort_set
                     // for events only present there.
                     if let Some(owned) = non_power_events.remove(aid) {
                         power_events.insert(aid.clone(), owned);
@@ -1121,14 +1121,14 @@ mod tests {
             event_type: M_ROOM_MEMBER.into(),
             state_key: Some(target.into()),
             sender: sender.into(),
-            content: serde_json::json!({ "membership": membership }),
+            content: crate::json!({ "membership": membership }),
             ..Default::default()
         }
     }
 
     #[test]
     fn derive_all_conflicted_keys_uses_supplied_empty_key_for_event_without_state_key() {
-        let event: LeanEvent<String, serde_json::Value, String> = LeanEvent {
+        let event: LeanEvent<String, crate::json::Value, String> = LeanEvent {
             event_id: "$message".into(),
             event_type: "m.room.message".into(),
             state_key: None,
@@ -1206,7 +1206,7 @@ mod tests {
             event_type: "m.room.create".into(),
             state_key: Some(String::new()),
             sender: "@admin:example.com".into(),
-            content: serde_json::json!({"room_version": "12.1", "creator": "@admin:example.com"}),
+            content: crate::json!({"room_version": "12.1", "creator": "@admin:example.com"}),
             ..Default::default()
         };
         let admin_join = member_ev(
@@ -1220,7 +1220,7 @@ mod tests {
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
             sender: "@admin:example.com".into(),
-            content: serde_json::json!({
+            content: crate::json!({
                 "users": { "@admin:example.com": 100 },
                 "ban": 50,
                 "state_default": 50
@@ -1233,7 +1233,7 @@ mod tests {
             event_type: "m.room.join_rules".into(),
             state_key: Some(String::new()),
             sender: "@admin:example.com".into(),
-            content: serde_json::json!({"join_rule": "public"}),
+            content: crate::json!({"join_rule": "public"}),
             auth_events: alloc::vec![
                 "$create".to_string(),
                 "$admin_join".to_string(),
@@ -1258,7 +1258,7 @@ mod tests {
             event_type: M_ROOM_MEMBER.into(),
             state_key: Some("@bob:example.com".into()),
             sender: "@admin:example.com".into(),
-            content: serde_json::json!({"membership": MEM_BAN}),
+            content: crate::json!({"membership": MEM_BAN}),
             auth_events: alloc::vec![
                 "$create".to_string(),
                 "$admin_join".to_string(),
@@ -1301,7 +1301,7 @@ mod tests {
             event_type: "m.room.message".into(),
             state_key: Some(String::new()),
             sender: "@bob:example.com".into(),
-            content: serde_json::json!({"body": "spam"}),
+            content: crate::json!({"body": "spam"}),
             auth_events: alloc::vec![
                 "$create".to_string(),
                 "$bob_join".to_string(),
@@ -1314,7 +1314,7 @@ mod tests {
             event_type: "m.room.message".into(),
             state_key: Some(String::new()),
             sender: "@carol:example.com".into(),
-            content: serde_json::json!({"body": "hello"}),
+            content: crate::json!({"body": "hello"}),
             auth_events: alloc::vec![
                 "$create".to_string(),
                 "$carol_join".to_string(),
@@ -1392,7 +1392,7 @@ mod tests {
             event_type: "m.room.message".into(),
             state_key: None,
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({"body": "hi"}),
+            content: crate::json!({"body": "hi"}),
             auth_events: alloc::vec![
                 "$create".to_string(),
                 "$alice_join".to_string(),
@@ -1444,7 +1444,7 @@ mod tests {
             sender: "@admin:example.com".into(),
             // Malformed: not even a JSON object, so any content parsing on this
             // event would also have to tolerate garbage.
-            content: serde_json::json!("not-an-object"),
+            content: crate::json!("not-an-object"),
             ..Default::default()
         };
 
@@ -1569,7 +1569,7 @@ mod tests {
                 event_type: "m.room.power_levels".into(),
                 state_key: Some(String::new()),
                 sender: "@a:example.com".into(),
-                content: serde_json::json!({ "users": { "@a:example.com": 100 } }),
+                content: crate::json!({ "users": { "@a:example.com": 100 } }),
                 auth_events: alloc::vec!["$missing".to_string()],
                 ..Default::default()
             },

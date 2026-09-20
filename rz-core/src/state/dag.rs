@@ -345,7 +345,7 @@ mod state_dag_branch_coverage_tests {
     use super::*;
     use crate::basespec::rezzy_types::RoomId;
     use alloc::{format, string::String};
-    use serde_json::Value;
+    use crate::json::Value;
 
     type TestEvent = LeanEvent<String, Value, String>;
     type TestMap = crate::HashMap<String, TestEvent>;
@@ -1554,7 +1554,7 @@ where
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod targeted_coverage_tests {
     use super::*;
-    use serde_json::Value;
+    use crate::json::Value;
 
     fn event(
         id: &str,

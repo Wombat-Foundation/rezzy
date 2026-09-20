@@ -213,18 +213,6 @@ impl core::hash::Hash for EventType {
     }
 }
 
-impl serde::Serialize for EventType {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for EventType {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        String::deserialize(deserializer).map(Self::from)
-    }
-}
-
 // JSON field keys
 pub const FIELD_MEMBERSHIP: &str = "membership";
 pub const FIELD_USERS: &str = "users";

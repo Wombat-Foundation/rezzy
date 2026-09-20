@@ -40,7 +40,7 @@ use alloc::vec::Vec;
 /// reach this event. When the same `(type, state_key)` is found at multiple
 /// depths, the shallowest (closest) entry wins.
 #[derive(Debug, Clone)]
-pub struct LocalAuthEntry<Id, C = serde_json::Value, K = String> {
+pub struct LocalAuthEntry<Id, C = crate::json::Value, K = String> {
     /// The auth event itself.
     pub event: LeanEvent<Id, C, K>,
     /// Number of auth-chain hops from the original event to this one.
@@ -59,7 +59,7 @@ pub type LocalAuthCacheMap<Id, C, K> = BTreeMap<(EventType, K), LocalAuthEntry<I
 /// This cache tracks which `StateResVersion` its entries were computed for.
 /// Callers must clear the cache when reusing it with a different `StateResVersion`
 /// (higher-level helpers like `resolve_iterative_sort_with_cache*` do this automatically).
-pub struct LocalAuthCache<Id = String, C = serde_json::Value, K = String> {
+pub struct LocalAuthCache<Id = String, C = crate::json::Value, K = String> {
     pub version: StateResVersion,
     pub map: crate::HashMap<Id, LocalAuthCacheMap<Id, C, K>>,
 }
@@ -2676,13 +2676,13 @@ mod tests {
     /// checked below.
     #[test]
     fn test_overlay_state_v2_1_vs_v2_1_1_power_phase_fallback_polarity() {
-        let create_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
+        let create_ev: LeanEvent<String, crate::json::Value> = LeanEvent {
             event_id: "$create".into(),
             event_type: "m.room.create".into(),
             sender: "@creator:example.com".into(),
             ..Default::default()
         };
-        let pl_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
+        let pl_ev: LeanEvent<String, crate::json::Value> = LeanEvent {
             event_id: "$pl".into(),
             event_type: "m.room.power_levels".into(),
             sender: "@creator:example.com".into(),
@@ -2747,28 +2747,28 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn test_overlay_state_coverage_boosters() {
-        let create_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
+        let create_ev: LeanEvent<String, crate::json::Value> = LeanEvent {
             event_id: "$create".into(),
             event_type: "m.room.create".into(),
             sender: "@creator:example.com".into(),
             ..Default::default()
         };
 
-        let pl_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
+        let pl_ev: LeanEvent<String, crate::json::Value> = LeanEvent {
             event_id: "$pl".into(),
             event_type: "m.room.power_levels".into(),
             sender: "@creator:example.com".into(),
             ..Default::default()
         };
 
-        let jr_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
+        let jr_ev: LeanEvent<String, crate::json::Value> = LeanEvent {
             event_id: "$jr".into(),
             event_type: "m.room.join_rules".into(),
             sender: "@creator:example.com".into(),
             ..Default::default()
         };
 
-        let member_ban_ev: LeanEvent<String, serde_json::Value> = LeanEvent {
+        let member_ban_ev: LeanEvent<String, crate::json::Value> = LeanEvent {
             event_id: "$member_ban".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bannee:example.com".into()),
@@ -4577,7 +4577,7 @@ mod tests {
     fn test_update_local_auth_shallower_depth_replaces() {
         let mut local_auth: BTreeMap<
             (EventType, String),
-            LocalAuthEntry<String, serde_json::Value, String>,
+            LocalAuthEntry<String, crate::json::Value, String>,
         > = BTreeMap::new();
 
         // Non-state event has no state_key -> early return.

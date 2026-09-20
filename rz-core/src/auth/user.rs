@@ -139,7 +139,7 @@ mod tests {
 
     type State = BTreeMap<(String, String), LeanEvent>;
 
-    fn state_with_pl(pl: serde_json::Value) -> State {
+    fn state_with_pl(pl: crate::json::Value) -> State {
         let mut s = State::new();
         s.insert(
             ("m.room.power_levels".into(), String::new()),

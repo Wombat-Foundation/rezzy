@@ -90,69 +90,6 @@ pub struct RootHandle {
     pub state_group_id: StateGroupId,
 }
 
-struct RootHandleVisitor;
-
-impl<'de> serde::de::Visitor<'de> for RootHandleVisitor {
-    type Value = RootHandle;
-    fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        f.write_str("a RootHandle")
-    }
-    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-        let mut codec_version = None;
-        let mut routing_version = None;
-        let mut routing_params = None;
-        let mut structural_hash = None;
-        let mut state_group_id = None;
-        while let Some(k) = map.next_key::<alloc::string::String>()? {
-            match k.as_str() {
-                "codec_version" => codec_version = Some(map.next_value()?),
-                "routing_version" => routing_version = Some(map.next_value()?),
-                "routing_params" => routing_params = Some(map.next_value()?),
-                "structural_hash" => structural_hash = Some(map.next_value()?),
-                "state_group_id" => state_group_id = Some(map.next_value()?),
-                _ => {
-                    let _ = map.next_value::<serde::de::IgnoredAny>()?;
-                }
-            }
-        }
-        Ok(RootHandle {
-            codec_version: codec_version.unwrap_or_else(default_codec_version),
-            routing_version: routing_version.unwrap_or_else(default_routing_version_v1),
-            routing_params: routing_params.unwrap_or([0; 4]),
-            structural_hash: structural_hash
-                .ok_or_else(|| serde::de::Error::missing_field("structural_hash"))?,
-            state_group_id: state_group_id
-                .ok_or_else(|| serde::de::Error::missing_field("state_group_id"))?,
-        })
-    }
-}
-
-impl serde::Serialize for RootHandle {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("RootHandle", 5)?;
-        state.serialize_field("codec_version", &self.codec_version)?;
-        state.serialize_field("routing_version", &self.routing_version)?;
-        state.serialize_field("routing_params", &&self.routing_params)?;
-        state.serialize_field("structural_hash", &self.structural_hash)?;
-        state.serialize_field("state_group_id", &self.state_group_id)?;
-        state.end()
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for RootHandle {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        const FIELDS: &[&str] = &[
-            "codec_version",
-            "routing_version",
-            "routing_params",
-            "structural_hash",
-            "state_group_id",
-        ];
-        deserializer.deserialize_struct("RootHandle", FIELDS, RootHandleVisitor)
-    }
-}
-
 impl RootHandle {
     /// Builds a root handle with the current codec and v1 routing from a precomputed
     /// structural hash and a state lattice.
