@@ -1,0 +1,214 @@
+#![no_std]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+//! # Rezzy — Matrix State Resolution Engine
+//!
+//! Spec-compliant implementation of Matrix state resolution versions
+//! **V1**, **V2**, **V2.1** ([MSC4297]), **V2.1.1**, and **V2.2** ([MSC4242]).
+//! Runs in `#![no_std]` environments with `alloc`.
+//!
+//! ## Feature Flags
+//!
+//! | Feature     | Default | Description |
+//! |-------------|:-------:|-------------|
+//! | `std`       | ✓       | Enables `std::collections::{HashMap, HashSet}` and thread-parallel lattice resolution. |
+//! | `cli`       | ✗       | Builds the `rezzy` CLI binary and merge utilities. |
+//! | `mock-ruma` | ✗       | Enables Ruma SDK interop for upstream parity testing. |
+//! | `regen`     | ✗       | Builds the `regen-oracles` snapshot regeneration binary. |
+//! | `signing`   | ✗       | Signature-verification traits (`SignatureVerifier` et al.), backend-agnostic. |
+//! | `signing-dalek` | ✗   | `ed25519-dalek`-backed `SignatureVerifier` implementation. |
+//!
+//! Canonical-JSON SHA-256 hashing is always compiled in — see [`reference_hash`]
+//! and [`verify_content_hash`].
+//!
+//! ## Spec References
+//!
+//! - [Matrix Spec — Server-Server API §3: State Resolution (V1)](https://spec.matrix.org/v1.13/server-server-api/#room-state-resolution)
+//! - [Matrix Spec — Room Versions](https://spec.matrix.org/v1.13/rooms/)
+//! - [MSC1693 — State Resolution V2][MSC1693]
+//! - [MSC4297 — State Resolution V2.1][MSC4297]
+//! - [MSC4242 — State DAGs (V2.2)][MSC4242]
+//!
+//! [MSC1693]: https://github.com/matrix-org/matrix-spec-proposals/pull/1693
+//! [MSC4297]: https://github.com/matrix-org/matrix-spec-proposals/pull/4297
+//! [MSC4242]: https://github.com/matrix-org/matrix-spec-proposals/pull/4242
+
+#[cfg(feature = "std")]
+extern crate std;
+// Copyright 2026 Shane Jaroch
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+
+pub mod auth;
+pub mod basespec;
+pub mod cuckoo_verify;
+pub mod dense_index;
+pub mod hamt;
+pub mod merkle;
+pub mod resolve;
+#[cfg(any(feature = "signing", feature = "signing-dalek"))]
+pub mod signing;
+pub mod state;
+pub mod warnings;
+
+pub use rz_reconcile as reconcile;
+
+pub use basespec::event_types::EventType;
+pub use basespec::rezzy_types::*;
+pub use dense_index::{DenseIndex, IndexTooLarge};
+pub use reconcile::{
+    gf64_mul, verify_residual, AlgebraicError, BucketDecodeBatch, BucketDecodeSuccess,
+    BucketExchange, BucketRequest, ClientAction, ElementHash, EventIdFormat, ForwardGraph,
+    H64Index, ReconciliationClient, ReconciliationContext, RemoteDigest, ResidentKernel,
+    SyndromeSketch,
+};
+pub use reconcile::{
+    build_bucket_sketches, compute_frame_digest, decode_bucket_sketches, estimate_strata,
+    validate_overflow_bucket_requests, MAX_BUCKETS_PER_ROUND, MAX_BATCH_FACTOR_WORK,
+    MAX_BUCKETED_SKETCH_CAPACITY, MAX_DEPTH, MAX_LOCAL_SKETCH_DECODE_CAPACITY,
+    MAX_OVERFLOW_BUCKET_CAPACITY, MAX_OVERFLOW_SKETCH_CAPACITY, MAX_RECONCILIATION_ROUNDS,
+    MAX_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK, H64_TRIE_WIDTH, STRATA_COUNT, STRATUM_CAPACITY,
+};
+pub use resolve::*;
+pub use state::*;
+pub use warnings::{Outcome, Warning};
+
+/// Selects the presentation shape for resolved room data.
+///
+/// This is a library-level input so downstream callers can choose between
+/// timeline-oriented output and the raw resolved-state view without depending
+/// on the CLI binary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
+pub enum OutputFormat {
+    #[default]
+    Events,
+    Default,
+    Deltas,
+    Federation,
+    Summary,
+    Timeline,
+    #[cfg_attr(feature = "cli", value(alias = "resolve_state"))]
+    ResolveState,
+}
+
+/// One resolved-state entry in `(type, state_key, event_id)` form.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ResolvedStateEntry<Id = String, K = String> {
+    pub event_type: EventType,
+    pub state_key: K,
+    pub event_id: Id,
+}
+
+/// Converts a resolved state map into a stable, sorted list of entries.
+#[must_use]
+pub fn resolved_state_entries<Id, K>(
+    final_state_map: &crate::state::at::SharedState<Id, K>,
+) -> Vec<ResolvedStateEntry<Id, K>>
+where
+    Id: basespec::rezzy_types::EventId,
+    K: basespec::rezzy_types::StateKey,
+{
+    let mut entries = final_state_map
+        .iter()
+        .map(|((event_type, state_key), event_id)| ResolvedStateEntry {
+            event_type: event_type.clone(),
+            state_key: state_key.clone(),
+            event_id: event_id.clone(),
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| {
+        a.event_type
+            .cmp(&b.event_type)
+            .then_with(|| a.state_key.cmp(&b.state_key))
+    });
+    entries
+}
+
+/// Re-exported hashmap and hashset — uses `std::collections` when `std` is
+/// enabled, falls back to `hashbrown` for `no_std` targets.
+///
+/// All resolution functions are generic over `BuildHasher`, so this is
+/// purely a convenience for callers who don't need a specific hasher.
+#[cfg(feature = "std")]
+pub use std::collections::{HashMap, HashSet};
+
+/// See the `std` variant's documentation.
+#[cfg(not(feature = "std"))]
+pub use hashbrown::{HashMap, HashSet};
+
+/// Internal-only hashmap/hashset for maps rezzy builds and owns entirely
+/// (never a caller-supplied parameter or a public field), keyed with
+/// `hashbrown`'s `foldhash`-based `DefaultHashBuilder` instead of
+/// `std::collections`'s `SipHash13`.
+///
+/// State keys and event IDs handled by resolution originate from federation
+/// input an attacker can choose, so these maps still benefit from a randomized
+/// hasher. `foldhash` gives us a fast, minimally DoS-resistant, non-cryptographic
+/// default; that is appropriate here because the maps are internal-only, but we
+/// do not treat it as a security boundary. Not part of the public API:
+/// swapping the hasher on a caller-visible `HashMap<K, V, S>` parameter would
+/// silently break every external caller that passes a
+/// `std::collections::HashMap` there, since `S: BuildHasher` genericity only
+/// covers the hasher, not the underlying map type. See `benches/state_backend.rs`
+/// and the perf investigation this followed for how that was found out the hard
+/// way.
+pub(crate) type FastMap<K, V> = hashbrown::HashMap<K, V, hashbrown::DefaultHashBuilder>;
+
+/// A hash set using rezzy's default randomized hasher.
+///
+/// This is public because the narrow-conflict override APIs accept it. Most
+/// callers should not need it: their state resolution entry point derives the
+/// conflicted-key set itself.
+pub type FastSet<K> = hashbrown::HashSet<K, hashbrown::DefaultHashBuilder>;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn resolved_state_entries_orders_by_type_then_state_key() {
+        let mut state: state::at::SharedState<String> = state::at::SharedState::new();
+        state.insert(("m.room.member".into(), "@bob:x".into()), "$b".into());
+        state.insert(("m.room.create".into(), String::new()), "$c".into());
+        state.insert(("m.room.member".into(), "@alice:x".into()), "$a".into());
+
+        let entries = resolved_state_entries(&state);
+        assert_eq!(
+            entries,
+            vec![
+                ResolvedStateEntry {
+                    event_type: EventType::RoomCreate,
+                    state_key: String::new(),
+                    event_id: "$c".into(),
+                },
+                ResolvedStateEntry {
+                    event_type: EventType::RoomMember,
+                    state_key: "@alice:x".into(),
+                    event_id: "$a".into(),
+                },
+                ResolvedStateEntry {
+                    event_type: EventType::RoomMember,
+                    state_key: "@bob:x".into(),
+                    event_id: "$b".into(),
+                },
+            ]
+        );
+    }
+}

@@ -1,5 +1,5 @@
 SHELL=/bin/bash
-.DEFAULT_GOAL=_help
+.DEFAULT_GOAL=_default
 
 LAKE ?= lake
 CARGO ?= cargo
@@ -12,6 +12,9 @@ LINT_LOCS_SH = $$(git ls-files '*.sh')
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Formatting & linting (shared)
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.PHONY: _default
+_default: format lint ##H Default: format + lint (bare `make`)
 
 .PHONY: format
 format: ##H Format codebase (Rust + Lean + scripts)
@@ -231,7 +234,7 @@ STYLE_GREEN := $(shell tput setaf 2 2>/dev/null || echo '\033[32m')
 STYLE_RESET := $(shell tput sgr0 2>/dev/null || echo '\033[0m')
 export STYLE_CYAN STYLE_GREEN STYLE_RESET
 
-.PHONY: _help
-_help:
+.PHONY: help
+help:
 	@grep -hE '^[a-zA-Z0-9_\/-]+:[[:space:]]*##H .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":[[:space:]]*##H "}; {printf "$(STYLE_CYAN)%-18s$(STYLE_RESET) %s\n", $$1, $$2}'

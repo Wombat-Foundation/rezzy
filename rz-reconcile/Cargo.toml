@@ -1,0 +1,49 @@
+[package]
+name = "rz-reconcile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MSC4521 minisketch reconciliation: GF(64) arithmetic, strata estimation, and bucket sketches."
+keywords = ["matrix", "reconciliation", "minisketch", "federation"]
+categories = ["algorithms", "mathematics"]
+
+[dependencies]
+base64.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+test-case.workspace = true
+
+[features]
+default = ["std"]
+std = []
+
+[lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = [
+    "cfg(coverage)",
+    "cfg(coverage_nightly)",
+    "cfg(tarpaulin)",
+    "cfg(has_avx512_support)",
+    "cfg(has_avx512_host_support)",
+] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+similar_names = "allow"
+multiple_crate_versions = "allow"
+arithmetic_side_effects = "warn"
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+get_unwrap = "warn"

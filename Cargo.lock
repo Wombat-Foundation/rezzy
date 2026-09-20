@@ -1234,32 +1234,16 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "rezzy"
 version = "0.6.0-rc.0"
 dependencies = [
- "base64",
  "bincode",
- "blake2",
- "clap",
  "ed25519-consensus",
- "ed25519-dalek",
- "hashbrown 0.15.5",
- "idna_adapter",
- "imbl",
  "insta",
- "mimalloc",
  "rand 0.8.8",
- "roaring",
- "ruma-common",
- "ruma-events",
- "ruma-signatures",
- "ruma-state-res",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sha3",
+ "rz-core",
+ "rz-reconcile",
  "simd-json",
  "similar",
  "test-case",
  "test-log",
- "ureq",
  "zeroize",
 ]
 
@@ -1460,6 +1444,62 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "rz-cli"
+version = "0.6.0-rc.0"
+dependencies = [
+ "clap",
+ "idna_adapter",
+ "mimalloc",
+ "rz-core",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
+name = "rz-core"
+version = "0.6.0-rc.0"
+dependencies = [
+ "base64",
+ "bincode",
+ "blake2",
+ "clap",
+ "ed25519-consensus",
+ "ed25519-dalek",
+ "hashbrown 0.15.5",
+ "idna_adapter",
+ "imbl",
+ "insta",
+ "mimalloc",
+ "rand 0.8.8",
+ "roaring",
+ "ruma-common",
+ "ruma-events",
+ "ruma-signatures",
+ "ruma-state-res",
+ "rz-reconcile",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sha3",
+ "simd-json",
+ "similar",
+ "test-case",
+ "test-log",
+ "ureq",
+ "zeroize",
+]
+
+[[package]]
+name = "rz-reconcile"
+version = "0.6.0-rc.0"
+dependencies = [
+ "base64",
+ "serde_json",
+ "sha2 0.10.9",
+ "test-case",
+]
 
 [[package]]
 name = "same-file"

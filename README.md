@@ -171,7 +171,8 @@ Under the hood:
 - **Content-addressed state hashing**: Incremental lattice hashing (`LtHash`)
   and Canonical JSON SHA-256 reference hashing.
 - **Minisketch set reconciliation**: GF(2^64) PinSketch with SIMD-accelerated
-  root finding for federation sync.
+  root finding for federation sync. Budget-hardened strata estimation prevents
+  32× CPU amplification across the full decode pass.
 - **Generic type decoupling**: Parameterized over `Id: EventId`,
   `K: StateKey`, `C: EventContent`, and `S: BuildHasher`.
 - **`no_std` compatible**: Pure `#![no_std]` core with `alloc` support and zero

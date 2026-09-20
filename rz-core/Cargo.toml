@@ -1,0 +1,94 @@
+[package]
+name = "rz-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core Matrix state resolution engine: auth, state, resolve, HAMT, and Merkle primitives."
+keywords = ["matrix", "state-resolution", "federation", "verification"]
+categories = ["algorithms", "mathematics"]
+
+[package.metadata.cargo-machete]
+ignored = ["idna_adapter", "zeroize"]
+
+[dependencies]
+rz-reconcile.workspace = true
+
+base64.workspace = true
+blake2.workspace = true
+hashbrown.workspace = true
+imbl.workspace = true
+roaring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sha3.workspace = true
+
+# Optional
+clap = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+idna_adapter = { workspace = true, optional = true }
+mimalloc = { workspace = true, optional = true }
+ruma-common = { workspace = true, optional = true }
+ruma-events = { workspace = true, optional = true }
+ruma-signatures = { workspace = true, optional = true }
+ruma-state-res = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
+
+[dev-dependencies]
+bincode.workspace = true
+ed25519-consensus.workspace = true
+insta.workspace = true
+rand_08.workspace = true
+simd-json.workspace = true
+similar.workspace = true
+test-case.workspace = true
+test-log.workspace = true
+zeroize.workspace = true
+
+[features]
+default = ["std"]
+std = ["serde_json/std", "serde/std"]
+cli = ["std", "dep:clap", "dep:ureq", "dep:idna_adapter", "mimalloc", "ureq/tls"]
+regen = ["std"]
+signing = ["signing-dalek"]
+signing-dalek = ["dep:ed25519-dalek"]
+simd-json = []
+simd-json-serde = ["simd-json"]
+mock-ruma = [
+    "dep:ruma-common",
+    "dep:ruma-events",
+    "dep:ruma-state-res",
+    "dep:ruma-signatures",
+]
+stress = []
+mimalloc = ["dep:mimalloc"]
+hashing = []
+unstable-refcount-gc = []
+
+[lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = [
+    "cfg(coverage)",
+    "cfg(coverage_nightly)",
+    "cfg(tarpaulin)",
+    "cfg(has_res_submodule)",
+] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+similar_names = "allow"
+multiple_crate_versions = "allow"
+arithmetic_side_effects = "warn"
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+get_unwrap = "warn"
