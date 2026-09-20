@@ -717,9 +717,8 @@ where
 
 /// Builds a full HAMT from an iterator of key/value entries.
 ///
-/// The caller supplies the structural key used for subtree hashing. Keys are
-/// placed into the trie using a deterministic keyed hash derived from that
-/// same secret.
+/// The caller supplies the `structural_key` (typically the room's `room_id.as_bytes()`)
+/// used for subtree hashing and deterministic routing within this namespace.
 ///
 /// # Errors
 /// Returns [`HamtBuildError::HashCollision`] if the input exhausts the
