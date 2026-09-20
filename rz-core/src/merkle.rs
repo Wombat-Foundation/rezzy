@@ -7,8 +7,8 @@ use alloc::{
 };
 use core::fmt;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use crate::json::Value;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use sha3::{Digest, Sha3_256};
 
 /// SHA3-256 digest size used by MSC4511.

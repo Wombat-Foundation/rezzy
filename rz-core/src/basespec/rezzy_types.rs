@@ -14,11 +14,11 @@
 
 //! Core data types for Matrix state resolution.
 
+use crate::json::Value;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
-use crate::json::Value;
 
 use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER, M_ROOM_REDACTION};
 
@@ -1828,7 +1828,7 @@ impl<'a, T: RawEvent> ParsedEvent<'a, T> {
     /// # Errors
     ///
     /// Returns [`serde_json::Error`] if the raw content string is not valid JSON.
-    pub fn try_new(event: &'a T) -> Result<Self, crate::json::Error> {
+    pub fn try_new(event: &'a T) -> Result<Self, alloc::string::String> {
         let content = Value::parse(event.raw_content_json()).map_err(|e| e.to_string())?;
         Ok(Self {
             raw: event,
@@ -3201,7 +3201,7 @@ impl LeanEvent<String, Value, String> {
         let event_id = if let Some(id) = value.get(FIELD_EVENT_ID).and_then(|v| v.as_str()) {
             String::from(id)
         } else if let Some(ver) = room_version {
-            let rh = reference_hash(value, ver).map_err(serde::de::Error::custom)?;
+            let rh = reference_hash(value, ver)?;
             alloc::format!("${rh}")
         } else {
             return Err(String::from(
@@ -3216,9 +3216,7 @@ impl LeanEvent<String, Value, String> {
             .into();
 
         if event_type.is_empty() {
-            return Err(String::from(
-                "event_type cannot be missing or empty",
-            ));
+            return Err(String::from("event_type cannot be missing or empty"));
         }
         let state_key = value
             .get(FIELD_STATE_KEY)
@@ -3258,20 +3256,19 @@ impl LeanEvent<String, Value, String> {
         let mut content = value.get(FIELD_CONTENT).cloned().unwrap_or(Value::Null);
 
         if event_type == M_ROOM_REDACTION {
-            let top_level_redacts = match value.get(FIELD_REDACTS) {
-                Some(redacts) => Some(redacts.as_str().ok_or_else(|| {
-                    String::from("m.room.redaction redacts must be a string")
-                })?),
-                None => None,
-            };
+            let top_level_redacts =
+                match value.get(FIELD_REDACTS) {
+                    Some(redacts) => Some(redacts.as_str().ok_or_else(|| {
+                        String::from("m.room.redaction redacts must be a string")
+                    })?),
+                    None => None,
+                };
 
             match &mut content {
                 Value::Object(obj) => {
                     if let Some(existing_redacts) = obj.get(FIELD_REDACTS) {
                         let existing_redacts = existing_redacts.as_str().ok_or_else(|| {
-                            String::from(
-                                "m.room.redaction content.redacts must be a string",
-                            )
+                            String::from("m.room.redaction content.redacts must be a string")
                         })?;
                         if let Some(top_level_redacts) = top_level_redacts {
                             if existing_redacts != top_level_redacts {

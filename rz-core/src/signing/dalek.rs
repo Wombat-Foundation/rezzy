@@ -4,8 +4,8 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::string::ToString;
 
-use ed25519_dalek::{Signature, VerifyingKey};
 use crate::json::Value;
+use ed25519_dalek::{Signature, VerifyingKey};
 
 use super::SignatureVerifier;
 
