@@ -42,10 +42,11 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use rezzy::{
-    build_bucket_sketches, estimate_strata, triage::MAX_BUCKET_SKETCH_CAPACITY, BucketDecodeBatch,
-    BucketDecodeSuccess, BucketExchange, ClientAction, ElementHash, H64Index, ReconciliationClient,
-    RemoteDigest, ResidentKernel, SyndromeSketch, MAX_BUCKETED_SKETCH_CAPACITY,
-    MAX_BUCKETS_PER_ROUND, MAX_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK,
+    build_bucket_sketches, estimate_strata, reconcile::triage::MAX_BUCKET_SKETCH_CAPACITY,
+    BucketDecodeBatch, BucketDecodeSuccess, BucketExchange, ClientAction, ElementHash, H64Index,
+    ReconciliationClient, RemoteDigest, ResidentKernel, SyndromeSketch,
+    MAX_BUCKETED_SKETCH_CAPACITY, MAX_BUCKETS_PER_ROUND, MAX_SKETCH_CAPACITY,
+    MAX_STRATA_FACTOR_WORK,
 };
 
 use super::filters::{
@@ -527,7 +528,7 @@ fn simulate_strategy(
 
     let mut exchange = BucketExchange::new(
         accumulated_roots,
-        rezzy::client::MAX_RECONCILIATION_ROUNDS,
+        rezzy::MAX_RECONCILIATION_ROUNDS,
         MAX_BUCKETS_PER_ROUND,
         MAX_BUCKETED_SKETCH_CAPACITY,
     );

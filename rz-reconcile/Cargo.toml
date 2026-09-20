@@ -10,6 +10,10 @@ description = "MSC4521 minisketch reconciliation: GF(64) arithmetic, strata esti
 keywords = ["matrix", "reconciliation", "minisketch", "federation"]
 categories = ["algorithms", "mathematics"]
 
+[features]
+default = ["std"]
+std = []
+
 [dependencies]
 base64.workspace = true
 serde_json.workspace = true
@@ -17,10 +21,6 @@ sha2.workspace = true
 
 [dev-dependencies]
 test-case.workspace = true
-
-[features]
-default = ["std"]
-std = []
 
 [lints.rust]
 unsafe_code = "deny"

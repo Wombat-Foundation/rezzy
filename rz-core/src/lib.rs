@@ -71,17 +71,18 @@ pub use basespec::event_types::EventType;
 pub use basespec::rezzy_types::*;
 pub use dense_index::{DenseIndex, IndexTooLarge};
 pub use reconcile::{
+    build_bucket_sketches, compute_frame_digest, decode_bucket_sketches, estimate_strata,
+    validate_overflow_bucket_requests, H64_TRIE_WIDTH, MAX_BATCH_FACTOR_WORK,
+    MAX_BUCKETED_SKETCH_CAPACITY, MAX_BUCKETS_PER_ROUND, MAX_DEPTH,
+    MAX_LOCAL_SKETCH_DECODE_CAPACITY, MAX_OVERFLOW_BUCKET_CAPACITY, MAX_OVERFLOW_SKETCH_CAPACITY,
+    MAX_RECONCILIATION_ROUNDS, MAX_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK, STRATA_COUNT,
+    STRATUM_CAPACITY,
+};
+pub use reconcile::{
     gf64_mul, verify_residual, AlgebraicError, BucketDecodeBatch, BucketDecodeSuccess,
     BucketExchange, BucketRequest, ClientAction, ElementHash, EventIdFormat, ForwardGraph,
     H64Index, ReconciliationClient, ReconciliationContext, RemoteDigest, ResidentKernel,
     SyndromeSketch,
-};
-pub use reconcile::{
-    build_bucket_sketches, compute_frame_digest, decode_bucket_sketches, estimate_strata,
-    validate_overflow_bucket_requests, MAX_BUCKETS_PER_ROUND, MAX_BATCH_FACTOR_WORK,
-    MAX_BUCKETED_SKETCH_CAPACITY, MAX_DEPTH, MAX_LOCAL_SKETCH_DECODE_CAPACITY,
-    MAX_OVERFLOW_BUCKET_CAPACITY, MAX_OVERFLOW_SKETCH_CAPACITY, MAX_RECONCILIATION_ROUNDS,
-    MAX_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK, H64_TRIE_WIDTH, STRATA_COUNT, STRATUM_CAPACITY,
 };
 pub use resolve::*;
 pub use state::*;

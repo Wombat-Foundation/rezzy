@@ -13,6 +13,25 @@ categories = ["algorithms", "mathematics"]
 [package.metadata.cargo-machete]
 ignored = ["idna_adapter", "zeroize"]
 
+[features]
+default = ["std"]
+std = ["serde_json/std", "serde/std"]
+cli = ["std", "dep:clap"]
+regen = ["std"]
+signing = ["signing-dalek"]
+signing-dalek = ["dep:ed25519-dalek"]
+simd-json = []
+simd-json-serde = ["simd-json"]
+mock-ruma = [
+    "dep:ruma-common",
+    "dep:ruma-events",
+    "dep:ruma-state-res",
+    "dep:ruma-signatures",
+]
+stress = []
+hashing = []
+unstable-refcount-gc = []
+
 [dependencies]
 rz-reconcile.workspace = true
 
@@ -29,13 +48,10 @@ sha3.workspace = true
 # Optional
 clap = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
-idna_adapter = { workspace = true, optional = true }
-mimalloc = { workspace = true, optional = true }
 ruma-common = { workspace = true, optional = true }
 ruma-events = { workspace = true, optional = true }
 ruma-signatures = { workspace = true, optional = true }
 ruma-state-res = { workspace = true, optional = true }
-ureq = { workspace = true, optional = true }
 
 [dev-dependencies]
 bincode.workspace = true
@@ -47,26 +63,6 @@ similar.workspace = true
 test-case.workspace = true
 test-log.workspace = true
 zeroize.workspace = true
-
-[features]
-default = ["std"]
-std = ["serde_json/std", "serde/std"]
-cli = ["std", "dep:clap", "dep:ureq", "dep:idna_adapter", "mimalloc", "ureq/tls"]
-regen = ["std"]
-signing = ["signing-dalek"]
-signing-dalek = ["dep:ed25519-dalek"]
-simd-json = []
-simd-json-serde = ["simd-json"]
-mock-ruma = [
-    "dep:ruma-common",
-    "dep:ruma-events",
-    "dep:ruma-state-res",
-    "dep:ruma-signatures",
-]
-stress = []
-mimalloc = ["dep:mimalloc"]
-hashing = []
-unstable-refcount-gc = []
 
 [lints.rust]
 unsafe_code = "deny"

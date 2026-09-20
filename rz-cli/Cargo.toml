@@ -7,15 +7,9 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "CLI binary for the rezzy Matrix state resolution engine."
+keywords = ["matrix", "state-resolution", "federation", "cli"]
+categories = ["command-line-utilities"]
 autobins = false
-
-[dependencies]
-rz-core.workspace = true
-clap.workspace = true
-ureq.workspace = true
-idna_adapter.workspace = true
-mimalloc = { workspace = true, optional = true }
-serde_json.workspace = true
 
 [[bin]]
 name = "rezzy"
@@ -26,21 +20,15 @@ default = ["std"]
 std = ["rz-core/std", "clap/std"]
 mimalloc = ["dep:mimalloc"]
 
-[lints.rust]
-unsafe_code = "deny"
+[dependencies]
+clap.workspace = true
+idna_adapter.workspace = true
+imbl.workspace = true
+mimalloc = { workspace = true, optional = true }
+roaring.workspace = true
+rz-core = { workspace = true, features = ["cli"] }
+serde_json.workspace = true
+ureq.workspace = true
 
-[lints.clippy]
-pedantic = { level = "warn", priority = -1 }
-perf = { level = "warn", priority = -1 }
-complexity = { level = "warn", priority = -1 }
-style = { level = "warn", priority = -1 }
-correctness = { level = "warn", priority = -1 }
-suspicious = { level = "warn", priority = -1 }
-cargo = { level = "warn", priority = -1 }
-module_name_repetitions = "allow"
-similar_names = "allow"
-multiple_crate_versions = "allow"
-arithmetic_side_effects = "warn"
-undocumented_unsafe_blocks = "warn"
-dbg_macro = "warn"
-get_unwrap = "warn"
+[lints]
+workspace = true

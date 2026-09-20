@@ -27,10 +27,7 @@ pub trait EventId:
     Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display
 {
 }
-impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display> EventId
-    for T
-{
-}
+impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display> EventId for T {}
 
 /// Maximum depth of an `h64` bucket request.
 pub const MAX_DEPTH: u8 = 64;

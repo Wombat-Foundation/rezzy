@@ -1,5 +1,4 @@
 // CLI-only: Multi-file event set merging.
-#![cfg(feature = "cli")]
 use crate::error::{AppError, ErrorCode};
 use std::collections::{HashMap, HashSet};
 use std::string::String;
