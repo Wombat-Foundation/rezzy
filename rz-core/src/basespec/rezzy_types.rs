@@ -1551,7 +1551,7 @@ impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
 ///
 /// ```rust,no_run
 /// use std::borrow::Cow;
-/// use rezzy::{DagNode, EventLike};
+/// use rz_core::{DagNode, EventLike};
 ///
 /// struct MyEvent {
 ///     event_id: String,
@@ -1761,7 +1761,7 @@ impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEvent<Id, C,
 ///
 /// ```rust,no_run
 /// use std::borrow::Cow;
-/// use rezzy::{RawEvent, ParsedEvent};
+/// use rz_core::{RawEvent, ParsedEvent};
 ///
 /// struct Pdu {
 ///     event_id: String,

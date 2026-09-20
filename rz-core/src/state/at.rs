@@ -742,8 +742,8 @@ pub const MERGE_BASE_MAX_STEPS: usize = 5_000;
 /// # Example
 ///
 /// ```rust
-/// use rezzy::{compute_merge_bases, MERGE_BASE_MAX_STEPS, DagNode};
-/// use rezzy::{LeanEvent, HashMap};
+/// use rz_core::{compute_merge_bases, MERGE_BASE_MAX_STEPS, DagNode};
+/// use rz_core::{LeanEvent, HashMap};
 ///
 /// let events: HashMap<String, LeanEvent<String>> = HashMap::new();
 /// let tips = vec!["$tip_a", "$tip_b", "$tip_c"];
@@ -908,8 +908,8 @@ where
 /// # Example
 ///
 /// ```rust
-/// use rezzy::{compute_merge_base, DagNode};
-/// use rezzy::{LeanEvent, HashMap};
+/// use rz_core::{compute_merge_base, DagNode};
+/// use rz_core::{LeanEvent, HashMap};
 ///
 /// let mut events: HashMap<String, LeanEvent<String>> = HashMap::new();
 /// // ... populate events ...
@@ -1370,7 +1370,7 @@ pub struct BackwardExtremity<Id> {
 /// # Example
 ///
 /// ```rust
-/// use rezzy::{find_backward_extremities, LeanEvent, HashMap};
+/// use rz_core::{find_backward_extremities, LeanEvent, HashMap};
 ///
 /// let mut events: HashMap<String, LeanEvent> = HashMap::new();
 /// // ... populate events ...

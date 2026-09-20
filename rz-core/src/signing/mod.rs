@@ -17,7 +17,7 @@
 //! ```
 //! # #[cfg(feature = "signing")]
 //! # fn example() -> Result<(), String> {
-//! use rezzy::signing::{verify_event_signatures, DalekVerifier};
+//! use rz_core::signing::{verify_event_signatures, DalekVerifier};
 //! use serde_json::json;
 //!
 //! let mut keys = DalekVerifier::new();

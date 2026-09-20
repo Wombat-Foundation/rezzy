@@ -23,8 +23,8 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use rezzy::{LeanEvent, SharedState, StateResVersion, HashMap};
-//! use rezzy::resolve::multi::resolve_state_maps;
+//! use rz_core::{LeanEvent, SharedState, StateResVersion, HashMap};
+//! use rz_core::resolve::multi::resolve_state_maps;
 //!
 //! // Two forks with different member events
 //! let mut fork_a = SharedState::new();

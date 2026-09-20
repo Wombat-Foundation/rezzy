@@ -89,8 +89,8 @@ impl<Id, K> StateDiff<Id, K> {
 /// # Example
 ///
 /// ```rust
-/// use rezzy::state::diff::{compute_state_diff, StateDiffEntry};
-/// use rezzy::SharedState;
+/// use rz_core::state::diff::{compute_state_diff, StateDiffEntry};
+/// use rz_core::SharedState;
 ///
 /// let mut old: SharedState<String> = SharedState::new();
 /// old.insert(("m.room.topic".into(), "".into()), "$t1".into());

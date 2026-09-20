@@ -499,8 +499,8 @@ where
 /// history), pass the trusted state snapshot as `unconflicted_state`:
 ///
 /// ```rust,no_run
-/// # use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion, HashMap};
-/// # use rezzy::basespec::event_types::EventType;
+/// # use rz_core::{resolve_iterative_sort, LeanEvent, StateResVersion, HashMap};
+/// # use rz_core::basespec::event_types::EventType;
 /// # use imbl::OrdMap;
 /// // State snapshot from /send_join response
 /// let checkpoint: imbl::OrdMap<(EventType, String), String> = /* ... */
