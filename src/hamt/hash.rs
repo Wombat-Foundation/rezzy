@@ -17,6 +17,33 @@ use core::hash::Hasher;
 /// in both routing and node identity. Its public nature does not raise the
 /// cost of a collision within a namespace, so a full 256-bit digest is retained
 /// to provide a 128-bit generic collision-security margin.
+///
+/// # Threat model
+///
+/// The `structural_key` is **not a secret** — it is public within its
+/// namespace (room members learn it from the server). This is safe for
+/// HAMT routing because:
+///
+/// - **BLAKE2b-256 is collision-resistant** at 128-bit security. Grinding
+///   a shallow-prefix collision (k levels of 5-bit agreement) costs
+///   `2^(5k)` hash evaluations; for k ≤ ~10 this is practical (seconds),
+///   but only causes O(depth) slowdown — the tree still terminates.
+/// - **Full-depth exhaustion** (52 levels = 2^260 hashes) is
+///   computationally infeasible.
+/// - `HamtBuildError::HashCollision` at max depth is a safe error return,
+///   not a panic or data corruption.
+///
+/// The threat model assumes:
+/// 1. The structural key is per-room (or per-namespace), not shared across
+///    rooms.
+/// 2. Callers of `build_hamt_with_key_hash` do **not** feed wire-derived
+///    path hashes through the custom `key_hash` closure without local
+///    re-keying via `key_path_hash(structural_key, key)`.
+/// 3. The server does not weaken the key (short, reused, or predictable
+///    values reduce grinding cost for shallow chains).
+///
+/// If any of these assumptions are violated, an adversary can force deeper
+/// subtrees or cache-poisoning via structural-hash collisions.
 pub type StructuralHash = [u8; 32];
 
 /// A 32-byte state-group identifier derived from the full root lattice.

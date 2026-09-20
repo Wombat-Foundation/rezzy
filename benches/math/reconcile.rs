@@ -6,6 +6,7 @@ use rezzy::{
     BucketDecodeSuccess, BucketExchange, BucketRequest, ClientAction, ElementHash,
     ReconciliationClient, RemoteDigest, ResidentKernel, SyndromeSketch, MAX_BATCH_FACTOR_WORK,
     MAX_BUCKETED_SKETCH_CAPACITY, MAX_BUCKETS_PER_ROUND, MAX_SKETCH_CAPACITY,
+    MAX_STRATA_FACTOR_WORK,
 };
 
 fn hash(index: u64) -> ElementHash {
@@ -257,7 +258,7 @@ fn benchmark_bucket_exchange_from_pool(
         has_unknown_extremity: false,
     };
     let estimated_delta = Some(
-        estimate_strata(local.strata(), remote.strata())
+        estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK)
             .unwrap()
             .delta,
     );
@@ -378,7 +379,8 @@ fn benchmark_presplit_antichain_exchange_from_pool(
 
     let setup_elapsed = setup_start.elapsed();
     let estimated_delta = usize::try_from(
-        estimate_strata(local.strata(), remote.strata()).map_or(500, |est| est.delta.max(1)),
+        estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK)
+            .map_or(500, |est| est.delta.max(1)),
     )
     .unwrap_or(500);
 
@@ -532,7 +534,11 @@ pub fn run() {
         }
         let iterations = if count == 100 { 10 } else { 100 };
         let elapsed = measure(iterations, || {
-            let _ = black_box(estimate_strata(local.strata(), remote.strata()));
+            let _ = black_box(estimate_strata(
+                local.strata(),
+                remote.strata(),
+                MAX_STRATA_FACTOR_WORK,
+            ));
         });
         report(
             &format!("triage/estimate strata/{count}"),

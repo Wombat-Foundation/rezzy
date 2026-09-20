@@ -483,11 +483,14 @@ impl ReconciliationClient {
             .accumulator()
             .known_event_count()
             .abs_diff(remote.known_event_count);
-        let estimated_delta =
-            match crate::reconcile::triage::estimate_strata(local.strata(), &remote.strata) {
-                Ok(estimate) => estimate.delta.max(count_delta),
-                Err(_) => return ClientAction::ExtremityDiff,
-            };
+        let estimated_delta = match crate::reconcile::triage::estimate_strata(
+            local.strata(),
+            &remote.strata,
+            crate::reconcile::triage::MAX_STRATA_FACTOR_WORK,
+        ) {
+            Ok(estimate) => estimate.delta.max(count_delta),
+            Err(_) => return ClientAction::ExtremityDiff,
+        };
 
         if estimated_delta >= SATURATED_DELTA_ESTIMATE {
             return ClientAction::ExtremityDiff;

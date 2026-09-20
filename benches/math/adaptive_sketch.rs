@@ -14,6 +14,7 @@ use rezzy::{
     BucketDecodeSuccess, BucketExchange, BucketRequest, ClientAction, ElementHash, H64Index,
     ReconciliationClient, RemoteDigest, ResidentKernel, SyndromeSketch,
     MAX_BUCKETED_SKETCH_CAPACITY, MAX_BUCKETS_PER_ROUND, MAX_RECONCILIATION_ROUNDS,
+    MAX_STRATA_FACTOR_WORK,
 };
 
 const EXACT_ELEM_BYTES: usize = std::mem::size_of::<u64>();
@@ -173,7 +174,7 @@ fn simulate_strategy(
     else {
         return result(Duration::ZERO, Duration::ZERO, 0, 0, false);
     };
-    let estimate = estimate_strata(local.strata(), remote.strata())
+    let estimate = estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK)
         .ok()
         .map(|value| value.delta);
     let mut exchange = BucketExchange::new(

@@ -26,6 +26,18 @@ pub const MAX_BATCH_FACTOR_WORK: usize = MAX_BUCKETS_PER_ROUND
         Some(ceiling) => ceiling,
         None => panic!("single_call_work_ceiling overflowed for MAX_BUCKET_SKETCH_CAPACITY"),
     };
+/// Recommended default work budget for [`estimate_strata`], sized to
+/// cover a full strata-estimator pass: [`STRATA_COUNT`] strata each at
+/// the worst-case per-stratum work ceiling for [`STRATUM_CAPACITY`].
+/// Without this, each stratum gets its own implicit `MAX_FACTOR_WORK`
+/// from the unbudgeted `pinsketch::decode` path, so a batch of 32
+/// strata could cost up to 32× that ceiling -- the strata count was
+/// not a cost input. See `estimate_strata`'s doc comment.
+pub const MAX_STRATA_FACTOR_WORK: usize = STRATA_COUNT
+    * match pinsketch::single_call_work_ceiling(STRATUM_CAPACITY) {
+        Some(ceiling) => ceiling,
+        None => panic!("single_call_work_ceiling overflowed for STRATUM_CAPACITY"),
+    };
 /// Maximum capacity permitted only through the local overflow request path.
 ///
 /// This is not a negotiated protocol capability. Normal bucket requests remain
@@ -121,7 +133,7 @@ fn estimate_delta(
     local: &[[u64; STRATUM_CAPACITY]; STRATA_COUNT],
     remote: &[[u64; STRATUM_CAPACITY]; STRATA_COUNT],
 ) -> Result<u64, AlgebraicError> {
-    Ok(estimate_delta_internal(local, remote)?.0)
+    Ok(estimate_delta_internal(local, remote, MAX_STRATA_FACTOR_WORK)?.0)
 }
 
 /// Estimates the symmetric difference and whether that estimate is provisional.
@@ -136,13 +148,21 @@ fn estimate_delta(
 /// [`StrataEstimate::low_confidence`] so the caller can route away from sketch
 /// mode.
 ///
+/// `budget` bounds the *total* factoring work across all 32 strata, not just
+/// each stratum individually. Without this, each stratum gets its own implicit
+/// `MAX_FACTOR_WORK` from the unbudgeted decode path, so a full pass could
+/// cost up to 32× that ceiling -- the strata count was not a cost input.
+/// [`MAX_STRATA_FACTOR_WORK`] is sized to cover a full pass and is the right
+/// default absent a caller-specific budget.
+///
 /// # Errors
 /// Returns an error when root finding exceeds its work budget.
 pub fn estimate_strata(
     local: &[[u64; STRATUM_CAPACITY]; STRATA_COUNT],
     remote: &[[u64; STRATUM_CAPACITY]; STRATA_COUNT],
+    budget: usize,
 ) -> Result<StrataEstimate, AlgebraicError> {
-    let (delta, low_confidence) = estimate_delta_internal(local, remote)?;
+    let (delta, low_confidence) = estimate_delta_internal(local, remote, budget)?;
     Ok(StrataEstimate {
         delta,
         low_confidence,
@@ -152,6 +172,7 @@ pub fn estimate_strata(
 fn estimate_delta_internal(
     local: &[[u64; STRATUM_CAPACITY]; STRATA_COUNT],
     remote: &[[u64; STRATUM_CAPACITY]; STRATA_COUNT],
+    mut budget: usize,
 ) -> Result<(u64, bool), AlgebraicError> {
     let mut decoded_tail = 0_u64;
     let mut lowest_decoded = None;
@@ -160,7 +181,11 @@ fn estimate_delta_internal(
         let residual: [u64; STRATUM_CAPACITY] =
             core::array::from_fn(|index| local[stratum][index] ^ remote[stratum][index]);
 
-        match pinsketch::decode(&residual, STRATUM_CAPACITY) {
+        let ceiling = pinsketch::single_call_work_ceiling(STRATUM_CAPACITY)
+            .ok_or(AlgebraicError::InvalidSketchCapacity)?;
+        let allowance = budget.min(ceiling);
+        let mut remaining = allowance;
+        match pinsketch::decode_with_budget(&residual, STRATUM_CAPACITY, &mut remaining) {
             Ok(roots) => {
                 let cardinality =
                     u64::try_from(roots.len()).map_err(|_| AlgebraicError::CountOverflow)?;
@@ -186,6 +211,16 @@ fn estimate_delta_internal(
             }
             Err(error) => return Err(error),
         }
+        debug_assert!(
+            remaining <= allowance,
+            "estimator decode violated budget bounds: remaining={remaining} > allowance={allowance}"
+        );
+        let spent = allowance
+            .checked_sub(remaining)
+            .ok_or(AlgebraicError::BudgetExhausted)?;
+        budget = budget
+            .checked_sub(spent)
+            .ok_or(AlgebraicError::BudgetExhausted)?;
     }
 
     let stratum = lowest_decoded.expect("all strata decoded implies stratum 0 decoded");
@@ -545,7 +580,7 @@ mod tests {
             Err(AlgebraicError::DecodeFailure)
         );
         assert_eq!(
-            estimate_strata(&local, &remote),
+            estimate_strata(&local, &remote, MAX_STRATA_FACTOR_WORK),
             Ok(StrataEstimate {
                 delta: 18,
                 low_confidence: true,
@@ -566,7 +601,7 @@ mod tests {
 
         assert_eq!(estimate_delta(&local, &remote), Ok(320));
         assert_eq!(
-            estimate_strata(&local, &remote),
+            estimate_strata(&local, &remote, MAX_STRATA_FACTOR_WORK),
             Ok(StrataEstimate {
                 delta: 320,
                 low_confidence: true,
@@ -593,7 +628,7 @@ mod tests {
             Ok(SATURATED_DELTA_ESTIMATE)
         );
         assert_eq!(
-            estimate_strata(&local, &remote),
+            estimate_strata(&local, &remote, MAX_STRATA_FACTOR_WORK),
             Ok(StrataEstimate {
                 delta: SATURATED_DELTA_ESTIMATE,
                 low_confidence: true,
@@ -715,6 +750,20 @@ mod tests {
                 MAX_BATCH_FACTOR_WORK
             ),
             Err(AlgebraicError::InvalidSketchLength)
+        );
+    }
+
+    #[test]
+    fn strata_estimator_exhausts_budget_cleanly() {
+        let local = [[0; STRATUM_CAPACITY]; STRATA_COUNT];
+        let mut remote = local;
+        populate_stratum(&mut remote, 0, &[1, 3, 5]);
+
+        // A tiny budget must cleanly fail with BudgetExhausted without
+        // panic or miscalculation.
+        assert_eq!(
+            estimate_strata(&local, &remote, 10),
+            Err(AlgebraicError::BudgetExhausted)
         );
     }
 }
