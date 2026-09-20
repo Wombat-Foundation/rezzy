@@ -872,11 +872,7 @@ mod tests {
                 hard_fallback_threshold: 1_000,
             },
         );
-        let requests = [BucketRequest::new(
-            crate::MAX_DEPTH.saturating_add(1),
-            0,
-            1,
-        )];
+        let requests = [BucketRequest::new(crate::MAX_DEPTH.saturating_add(1), 0, 1)];
 
         assert!(matches!(
             builder.build(&requests),

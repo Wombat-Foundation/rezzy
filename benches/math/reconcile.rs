@@ -278,7 +278,7 @@ fn benchmark_bucket_exchange_from_pool(
 
     let mut exchange = BucketExchange::new(
         accumulated_roots,
-        rezzy::client::MAX_RECONCILIATION_ROUNDS,
+        rezzy::MAX_RECONCILIATION_ROUNDS,
         MAX_BUCKETS_PER_ROUND,
         MAX_BUCKETED_SKETCH_CAPACITY,
     );
@@ -400,7 +400,7 @@ fn benchmark_presplit_antichain_exchange_from_pool(
 
     let mut exchange = BucketExchange::new(
         Vec::new(),
-        rezzy::client::MAX_RECONCILIATION_ROUNDS,
+        rezzy::MAX_RECONCILIATION_ROUNDS,
         MAX_BUCKETS_PER_ROUND,
         MAX_BUCKETED_SKETCH_CAPACITY,
     );

@@ -203,26 +203,14 @@ fn poly_mod(modulus: &[u64], value: &mut Polynomial) -> Option<()> {
     match crate::gf64_simd::get_evaluator() {
         #[cfg(all(target_arch = "x86_64", has_avx512_support))]
         crate::gf64_simd::EvaluatorBackend::Avx512 => {
-            poly_mod_reduce::<crate::gf64_simd::Avx512Evaluator>(
-                modulus_degree,
-                modulus,
-                value,
-            )?;
+            poly_mod_reduce::<crate::gf64_simd::Avx512Evaluator>(modulus_degree, modulus, value)?;
         }
         #[cfg(target_arch = "x86_64")]
         crate::gf64_simd::EvaluatorBackend::Sse => {
-            poly_mod_reduce::<crate::gf64_simd::SseEvaluator>(
-                modulus_degree,
-                modulus,
-                value,
-            )?;
+            poly_mod_reduce::<crate::gf64_simd::SseEvaluator>(modulus_degree, modulus, value)?;
         }
         crate::gf64_simd::EvaluatorBackend::Scalar => {
-            poly_mod_reduce::<crate::gf64_simd::ScalarEvaluator>(
-                modulus_degree,
-                modulus,
-                value,
-            )?;
+            poly_mod_reduce::<crate::gf64_simd::ScalarEvaluator>(modulus_degree, modulus, value)?;
         }
     }
     trim(value);

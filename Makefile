@@ -92,7 +92,7 @@ lint check doc test install: format
 
 .PHONY: rust/build
 rust/build: format ##H Compile Rust binary (release)
-	$(CARGO) build --locked --release --timings --features cli
+	$(CARGO) build --locked --release --timings -p rz-cli
 
 .PHONY: rust/so
 rust/so: format ##H Compile shared object (librezzy.so) from the library
@@ -141,7 +141,7 @@ rust/clean: ##H Remove Rust build artifacts
 
 .PHONY: rust/install
 rust/install: format ##H Install rezzy binary to cargo bin
-	$(CARGO) install --timings --locked --features cli --path . --bin rezzy
+	$(CARGO) install --timings --locked --path rz-cli --bin rezzy
 
 .PHONY: rust/uninstall
 rust/uninstall: ##H Uninstall rezzy binary from cargo bin
@@ -154,7 +154,7 @@ rust/e2e: ##H Run e2e integration test on real JSON
 		ARGS=""; \
 		if [ "$$f" = "res/real_dag_52k_room.json" -o "$$f" = "res/real_dag_nheko.json" ]; then ARGS="--state-res v2"; fi; \
 		if [ "$$f" = "res/remote-dag-sM2LwqNHGQOgLf35gqxPMy9D7oYde2q9ADg8HPBM3kE-v12-unredacted.org-PARTIAL.jsonl" ]; then ARGS="--state-res v2-1"; fi; \
-		$(CARGO) run --release --features cli -- $$ARGS -i "$$f" || exit 1; \
+		$(CARGO) run --release -p rz-cli -- $$ARGS -i "$$f" || exit 1; \
 	done
 
 .PHONY: rust/publish

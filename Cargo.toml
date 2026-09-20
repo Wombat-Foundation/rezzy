@@ -1,105 +1,3 @@
-[workspace]
-resolver = "2"
-members = ["rz-core", "rz-reconcile", "rz-cli"]
-
-[workspace.package]
-version = "0.6.0-rc.0"
-edition = "2021"
-rust-version = "1.81"
-authors = ["Shane Jaroch <chown_tee@proton.me>"]
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/gamesguru/rezzy"
-
-[workspace.dependencies]
-rz-core = { path = "rz-core" }
-rz-reconcile = { path = "rz-reconcile" }
-
-base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
-blake2 = { version = "0.10", default-features = false }
-hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
-imbl = { version = "3.0", default-features = false, features = ["serde"] }
-roaring = { version = "0.10", default-features = false }
-serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
-serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
-sha2 = { version = "0.10", default-features = false }
-sha3 = { version = "0.10", default-features = false }
-
-# CLI-only
-clap = { version = "=4.5.48", features = ["derive", "env"] }
-ureq = { version = "2.9", default-features = false, features = ["json"] }
-idna_adapter = { version = ">=1.0, <1.2", default-features = false }
-mimalloc = { version = "0.1.52" }
-
-# Signing
-ed25519-dalek = { version = "2", default-features = false, features = ["std", "batch"] }
-
-# Ruma interop (dev/test)
-ruma-common = { version = "0.19.0" }
-ruma-events = { version = "0.34.0" }
-ruma-signatures = { version = "0.21" }
-ruma-state-res = { version = "0.17.0", features = ["__criterion"] }
-
-# Dev dependencies
-bincode = "1"
-ed25519-consensus = { version = "2.1", default-features = false, features = ["std"] }
-insta = "1.47.2"
-rand_08 = { package = "rand", version = "0.8" }
-simd-json = { version = "0.18", default-features = false, features = ["serde_impl", "swar-number-parsing", "runtime-detection"] }
-similar = "2.7.0"
-test-case = "3.3.1"
-test-log = "0.2.20"
-zeroize = "=1.8.1"
-
-[workspace.lints.rust]
-unsafe_code = "deny"
-unexpected_cfgs = { level = "warn", check-cfg = [
-    "cfg(coverage)",
-    "cfg(coverage_nightly)",
-    "cfg(tarpaulin)",
-    "cfg(has_res_submodule)",
-    "cfg(has_avx512_support)",
-    "cfg(has_avx512_host_support)",
-] }
-
-[workspace.lints.clippy]
-pedantic = { level = "warn", priority = -1 }
-perf = { level = "warn", priority = -1 }
-complexity = { level = "warn", priority = -1 }
-style = { level = "warn", priority = -1 }
-correctness = { level = "warn", priority = -1 }
-suspicious = { level = "warn", priority = -1 }
-cargo = { level = "warn", priority = -1 }
-module_name_repetitions = "allow"
-similar_names = "allow"
-multiple_crate_versions = "allow"
-arithmetic_side_effects = "warn"
-undocumented_unsafe_blocks = "warn"
-dbg_macro = "warn"
-get_unwrap = "warn"
-
-[profile.release-max-perf]
-inherits = "release"
-strip = "symbols"
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-
-[profile.release]
-strip = "symbols"
-lto = "thin"
-
-[profile.dev]
-opt-level = 0
-debug = 0
-strip = "debuginfo"
-incremental = true
-codegen-units = 256
-
-[profile.test]
-debug = 0
-strip = "debuginfo"
-incremental = true
-codegen-units = 256
 
 # ──────────────────────────────────────────────────────────────────
 # Root facade package — re-exports rz-core for backwards compat.
@@ -151,21 +49,84 @@ exclude = [
 
 [package.metadata.cargo-machete]
 ignored = ["idna_adapter", "zeroize"]
+[workspace]
+resolver = "2"
+members = ["rz-cli", "rz-core", "rz-reconcile"]
 
-[dependencies]
-rz-core.workspace = true
-rz-reconcile.workspace = true
+[workspace.package]
+version = "0.6.0-rc.0"
+edition = "2021"
+rust-version = "1.81"
+authors = ["Shane Jaroch <chown_tee@proton.me>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/gamesguru/rezzy"
 
-[dev-dependencies]
-bincode.workspace = true
-ed25519-consensus.workspace = true
-insta.workspace = true
-rand_08.workspace = true
-simd-json.workspace = true
-similar.workspace = true
-test-case.workspace = true
-test-log.workspace = true
-zeroize.workspace = true
+[workspace.dependencies]
+rz-core = { path = "rz-core" }
+rz-reconcile = { path = "rz-reconcile" }
+
+base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
+blake2 = { version = "0.10", default-features = false }
+hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
+imbl = { version = "3.0", default-features = false, features = ["serde"] }
+roaring = { version = "0.10", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.10", default-features = false }
+sha3 = { version = "0.10", default-features = false }
+
+# CLI-only
+clap = { version = "=4.5.48", features = ["derive", "env"] }
+idna_adapter = { version = ">=1.0, <1.2", default-features = false }
+mimalloc = { version = "0.1.52" }
+ureq = { version = "2.9", default-features = false, features = ["json"] }
+
+# Signing
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "batch"] }
+
+# Ruma interop (dev/test)
+ruma-common = { version = "0.19.0" }
+ruma-events = { version = "0.34.0" }
+ruma-signatures = { version = "0.21" }
+ruma-state-res = { version = "0.17.0", features = ["__criterion"] }
+
+# Dev dependencies
+bincode = "1"
+ed25519-consensus = { version = "2.1", default-features = false, features = ["std"] }
+insta = "1.47.2"
+rand_08 = { package = "rand", version = "0.8" }
+simd-json = { version = "0.18", default-features = false, features = ["serde_impl", "swar-number-parsing", "runtime-detection"] }
+similar = "2.7.0"
+test-case = "3.3.1"
+test-log = "0.2.20"
+zeroize = "=1.8.1"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = [
+    "cfg(coverage)",
+    "cfg(coverage_nightly)",
+    "cfg(tarpaulin)",
+    "cfg(has_res_submodule)",
+    "cfg(has_avx512_support)",
+    "cfg(has_avx512_host_support)",
+] }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+similar_names = "allow"
+multiple_crate_versions = "allow"
+arithmetic_side_effects = "warn"
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+get_unwrap = "warn"
 
 [[bin]]
 name = "regen-oracles"
@@ -192,6 +153,59 @@ mock-ruma = ["rz-core/mock-ruma"]
 stress = []
 hashing = []
 unstable-refcount-gc = ["rz-core/unstable-refcount-gc"]
+
+[dependencies]
+base64.workspace = true
+imbl.workspace = true
+ruma-common = { workspace = true, optional = true }
+ruma-events = { workspace = true, optional = true }
+ruma-signatures = { workspace = true, optional = true }
+ruma-state-res = { workspace = true, optional = true }
+rz-core.workspace = true
+rz-reconcile.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+bincode.workspace = true
+ed25519-consensus.workspace = true
+hashbrown.workspace = true
+imbl.workspace = true
+insta.workspace = true
+rand_08.workspace = true
+roaring.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+simd-json.workspace = true
+similar.workspace = true
+test-case.workspace = true
+test-log.workspace = true
+zeroize.workspace = true
+
+[profile.release-max-perf]
+inherits = "release"
+strip = "symbols"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.release]
+strip = "symbols"
+lto = "thin"
+
+[profile.dev]
+opt-level = 0
+debug = 0
+strip = "debuginfo"
+incremental = true
+codegen-units = 256
+
+[profile.test]
+debug = 0
+strip = "debuginfo"
+incremental = true
+codegen-units = 256
 
 [[example]]
 name = "bench_files"
