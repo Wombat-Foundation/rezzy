@@ -23,29 +23,26 @@ const FACTOR_PARAMETER_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
 #[cfg(test)]
 const TRACE_SQUARES: usize = 63;
 // KNOWN GAP, still open: this covers observed *balanced* recursive
-// splitting, not a proven worst case.
+// splitting, not a proven worst-case recursion bound.
 //
-// Measured directly (`find_roots_with_budget`'s own consumption, not a
-// hand derivation) against both random and adversarial-consecutive-value
-// degree-256 inputs: a full successful decode costs ~9.0-9.3M, and a
-// single node's full non-splitting 72-trial ladder (the shape a genuinely
-// undecodable degree-256 sketch produces) costs ~10.0M -- both comfortably
-// inside this budget with real, if modest, headroom.
+// Measured directly via `find_roots_with_budget`'s consumption:
+// - Typical degree-256 successful decodes (over both random and structured/
+//   consecutive-value inputs) require ~9.0–9.3M work units.
+// - A single node's full non-splitting 72-trial ladder at degree 256
+//   (`single_call_work_ceiling(256)`) draws 10,092,544 units (~10.1M).
+// Both remain within this 16.0M budget with measurable headroom.
 //
-// What's still unbounded is a *chain* of nodes each needing a full
-// non-splitting ladder before finally splitting -- e.g. a degenerate
-// sequence of (1, d-1) splits. Computed from this file's own cost
-// functions (`frobenius_basis_cost` + `FACTOR_TRIALS` *
-// `factor_trial_cost_with_basis` + `split_cost`, summed over degrees
-// d, d-1, ..., 2), that chain totals ~917M at d=256 -- ~57x this budget.
-// Random locators split near-binomially in practice (matching the
-// measurements above), so this degenerate shape is not something a
-// benchmark surfaces, and it fails safe into `BudgetExhausted` (routing
-// to the same fallback ladder callers already handle) rather than
-// corrupting anything -- but "degree 256 is decodable within
-// MAX_FACTOR_WORK" remains a statement about typical inputs, not a proven
-// bound. A real worst-case bound on the recursion, or a balance guarantee
-// on the splitting itself, would be needed to close this properly.
+// What remains an open theoretical gap is a pathological *chain* of nodes
+// where each recursion step needs a full non-splitting ladder before splitting
+// off a single root (e.g. a degenerate sequence of (1, d-1) splits).
+// Evaluated using `single_call_work_ceiling(d)` summed over d = 2..=256,
+// that hypothetical worst-case chain totals exactly 916,609,400 work units
+// (~917M, ~57x this budget). Constructing an algebraic locator polynomial
+// that forces this exact split sequence is an open problem; if encountered,
+// `find_roots_with_budget` deducts cost with checked arithmetic and fails
+// safe with `AlgebraicError::BudgetExhausted` (prompting client-side fallback).
+// Thus, "degree 256 is decodable within MAX_FACTOR_WORK" applies to typical/
+// practical inputs, while the absolute worst-case bound remains an open gap.
 const MAX_FACTOR_WORK: usize = 16_000_000;
 
 pub(crate) fn decode(
@@ -858,5 +855,49 @@ mod tests {
             })
             .expect("the absolute trace is a nonzero linear map");
         assert_eq!(solve_quadratic_form(target), None);
+    }
+
+    #[test]
+    fn single_call_work_ceiling_matches_derivation() {
+        // Degree 256 single-node ceiling:
+        // frobenius_basis_cost(256) = 256^2 * 63 = 4,128,768
+        // factor_trial_cost_with_basis(256) = 64 * 256 + 256^2 = 81,920
+        // ladder (72 trials) = 72 * 81,920 = 5,898,240
+        // split_cost(256) = 256^2 = 65,536
+        // Total = 4,128,768 + 5,898,240 + 65,536 = 10,092,544 (~10.09M)
+        assert_eq!(single_call_work_ceiling(256), Some(10_092_544));
+    }
+
+    #[test]
+    fn theoretical_degenerate_chain_cost_evaluation() {
+        // Sum of single_call_work_ceiling(d) for d in 2..=256:
+        // sum_{d=2}^{256} [63 d^2 + 72 (64 d + d^2) + d^2] = 916,609,400 (~917M)
+        let total_degenerate_work: usize = (2..=256)
+            .map(|d| single_call_work_ceiling(d).expect("does not overflow"))
+            .sum();
+        assert_eq!(total_degenerate_work, 916_609_400);
+    }
+
+    #[test]
+    fn consecutive_elements_decode_within_budget() {
+        // Structured consecutive values (1..=N) produce deterministic syndromic
+        // sketches that decode within the normal work budget.
+        for count in [4, 8, 16, 32] {
+            let mut odd_syndromes = vec![0_u64; count];
+            for i in 1..=count {
+                let elem = i as u64;
+                let mut power = elem;
+                for syn in &mut odd_syndromes {
+                    *syn ^= power;
+                    power = gf64_mul(power, gf64_mul(elem, elem)); // elem^(2k+1)
+                }
+            }
+            let recovered = decode(&odd_syndromes, count).expect("decodes successfully");
+            let mut expected: Vec<u64> = (1..=count as u64).collect();
+            let mut sorted_recovered = recovered;
+            expected.sort_unstable();
+            sorted_recovered.sort_unstable();
+            assert_eq!(sorted_recovered, expected);
+        }
     }
 }
