@@ -20,8 +20,9 @@ use core::{
 
 pub type Object = BTreeMap<String, Value>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum Value {
+    #[default]
     Null,
     Bool(bool),
     Number(Number),
@@ -50,6 +51,7 @@ impl Number {
         Some(Self(normalize_exponent(buffer.format_finite(value))))
     }
 
+    #[must_use]
     pub fn from_f64(value: f64) -> Option<Self> {
         if !value.is_finite() {
             return None;
@@ -58,18 +60,22 @@ impl Number {
         Some(Self(normalize_exponent(buffer.format_finite(value))))
     }
 
+    #[must_use]
     pub fn as_i64(&self) -> Option<i64> {
         self.0.parse().ok()
     }
 
+    #[must_use]
     pub fn as_u64(&self) -> Option<u64> {
         self.0.parse().ok()
     }
 
+    #[must_use]
     pub fn as_f64(&self) -> Option<f64> {
         self.0.parse().ok()
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -101,13 +107,8 @@ impl fmt::Display for Number {
     }
 }
 
-impl Default for Value {
-    fn default() -> Self {
-        Self::Null
-    }
-}
-
 impl Value {
+    #[must_use]
     pub fn get(&self, key: &str) -> Option<&Self> {
         match self {
             Self::Object(obj) => obj.get(key),
@@ -120,6 +121,7 @@ impl Value {
             _ => None,
         }
     }
+    #[must_use]
     pub fn as_object(&self) -> Option<&Object> {
         match self {
             Self::Object(obj) => Some(obj),
@@ -132,54 +134,65 @@ impl Value {
             _ => None,
         }
     }
+    #[must_use]
     pub fn as_array(&self) -> Option<&Vec<Self>> {
         match self {
             Self::Array(items) => Some(items),
             _ => None,
         }
     }
+    #[must_use]
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Self::String(s) => Some(s),
             _ => None,
         }
     }
+    #[must_use]
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Self::Bool(v) => Some(*v),
             _ => None,
         }
     }
+    #[must_use]
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Self::Number(n) => n.as_i64(),
             _ => None,
         }
     }
+    #[must_use]
     pub fn as_u64(&self) -> Option<u64> {
         match self {
             Self::Number(n) => n.as_u64(),
             _ => None,
         }
     }
+    #[must_use]
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             Self::Number(n) => n.as_f64(),
             _ => None,
         }
     }
+    #[must_use]
     pub fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
+    #[must_use]
     pub fn is_array(&self) -> bool {
         matches!(self, Self::Array(_))
     }
+    #[must_use]
     pub fn is_object(&self) -> bool {
         matches!(self, Self::Object(_))
     }
+    #[must_use]
     pub fn is_i64(&self) -> bool {
         self.as_i64().is_some()
     }
+    #[must_use]
     pub fn is_u64(&self) -> bool {
         self.as_u64().is_some()
     }
@@ -372,12 +385,15 @@ macro_rules! json {
 pub fn to_value(value: impl Into<Value>) -> Value {
     value.into()
 }
+#[must_use]
 pub fn empty_array() -> Vec<Value> {
     Vec::new()
 }
+#[must_use]
 pub fn empty_object() -> Object {
     Object::new()
 }
+#[must_use]
 pub fn key(value: &str) -> String {
     value.to_string()
 }
