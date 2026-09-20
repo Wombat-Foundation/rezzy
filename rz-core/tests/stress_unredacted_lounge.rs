@@ -11,8 +11,8 @@
 mod utils;
 
 use rz_core::basespec::event_types::EventType;
+use rz_core::JsonValue as Value;
 use rz_core::{resolve_iterative_sort, LeanEvent, StateResVersion};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};

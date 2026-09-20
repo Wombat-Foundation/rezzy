@@ -34,8 +34,28 @@ pub enum Value {
 pub struct Number(String);
 
 impl Number {
+    fn parse(source: &str) -> Option<Self> {
+        if source == "-0" {
+            return Some(Self("-0.0".to_string()));
+        }
+        let is_float = source.bytes().any(|b| matches!(b, b'.' | b'e' | b'E'));
+        if !is_float && (source.parse::<i64>().is_ok() || source.parse::<u64>().is_ok()) {
+            return Some(Self(source.to_string()));
+        }
+        let value = source.parse::<f64>().ok()?;
+        if !value.is_finite() {
+            return None;
+        }
+        let mut buffer = ryu::Buffer::new();
+        Some(Self(normalize_exponent(buffer.format_finite(value))))
+    }
+
     pub fn from_f64(value: f64) -> Option<Self> {
-        value.is_finite().then(|| Self(value.to_string()))
+        if !value.is_finite() {
+            return None;
+        }
+        let mut buffer = ryu::Buffer::new();
+        Some(Self(normalize_exponent(buffer.format_finite(value))))
     }
 
     pub fn as_i64(&self) -> Option<i64> {
@@ -53,6 +73,15 @@ impl Number {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+fn normalize_exponent(formatted: &str) -> String {
+    if let Some(index) = formatted.find('e') {
+        if !formatted[index + 1..].starts_with('-') {
+            return alloc::format!("{}e+{}", &formatted[..index], &formatted[index + 1..]);
+        }
+    }
+    formatted.to_string()
 }
 
 impl From<u64> for Number {
@@ -278,7 +307,11 @@ impl<T: Into<Value>> From<Option<T>> for Value {
 }
 impl From<f64> for Value {
     fn from(v: f64) -> Self {
-        Self::Number(Number::from_f64(v).expect("JSON numbers must be finite"))
+        let mut number = Number::from_f64(v).expect("JSON numbers must be finite");
+        if v == 0.0 && v.is_sign_negative() {
+            number.0 = "-0.0".to_string();
+        }
+        Self::Number(number)
     }
 }
 
@@ -406,18 +439,17 @@ pub fn write_string_value(value: &Value) -> Result<String, fmt::Error> {
 }
 
 pub fn write_string_pretty(value: &Value) -> Result<String, fmt::Error> {
-    use fmt::Write as _;
     fn write_value(out: &mut String, value: &Value, depth: usize) -> fmt::Result {
         match value {
             Value::Array(items) if !items.is_empty() => {
                 out.push('[');
                 for (i, item) in items.iter().enumerate() {
-                    out.push('\n');
-                    indent(out, depth + 1)?;
-                    if i != 0 {
+                    if i == 0 {
+                        out.push('\n');
+                    } else {
                         out.push_str(",\n");
-                        indent(out, depth + 1)?;
                     }
+                    indent(out, depth + 1)?;
                     write_value(out, item, depth + 1)?;
                 }
                 out.push('\n');
@@ -479,7 +511,7 @@ impl fmt::Display for Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{write_string_value, Value};
+    use super::{write_string_pretty, write_string_value, Value};
 
     #[test]
     fn parses_nested_values_and_sorts_object_keys() {
@@ -508,6 +540,19 @@ mod tests {
         for input in ["01", "1.", "1e", "--1", r#""\ud800""#] {
             assert!(Value::parse(input).is_err(), "accepted {input}");
         }
+    }
+
+    #[test]
+    fn compact_and_pretty_writers_escape_and_indent() {
+        let value = Value::parse(r#"{"a":[1,{"b":"x\n"}],"z":true}"#).unwrap();
+        assert_eq!(
+            write_string_value(&value).unwrap(),
+            r#"{"a":[1,{"b":"x\n"}],"z":true}"#
+        );
+        assert_eq!(
+            write_string_pretty(&value).unwrap(),
+            "{\n  \"a\": [\n    1,\n    {\n      \"b\": \"x\\n\"\n    }\n  ],\n  \"z\": true\n}"
+        );
     }
 }
 
@@ -641,7 +686,7 @@ impl Parser<'_> {
         if !valid_number(s) {
             return Err(Error::InvalidNumber);
         }
-        Ok(Value::Number(Number(s.to_string())))
+        Ok(Value::Number(Number::parse(s).ok_or(Error::InvalidNumber)?))
     }
     fn array(&mut self) -> Result<Value, Error> {
         self.pos += 1;

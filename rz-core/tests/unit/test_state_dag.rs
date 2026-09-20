@@ -19,13 +19,13 @@ use rz_core::basespec::event_types::{
     EventType, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
 };
 use rz_core::basespec::rezzy_types::{LeanEvent, RoomId, StateResVersion};
+use rz_core::json;
 use rz_core::state::dag::{
     compute_state_after_from_dag, compute_state_before_from_dag, derive_auth_events_from_state_dag,
     order_missing_state_events_deterministic, validate_msc4242_prev_state_events, walk_state_dag,
     StateDagCompleteness, StateDagValidationError, StateDagWalkOptions,
 };
 use rz_core::HashMap;
-use serde_json::json;
 
 fn make_state_event(
     id: &str,
@@ -33,7 +33,7 @@ fn make_state_event(
     state_key: &str,
     sender: &str,
     prev_state_events: Vec<&str>,
-    content: serde_json::Value,
+    content: rz_core::JsonValue,
     room_id: Option<&str>,
 ) -> LeanEvent {
     LeanEvent {
@@ -58,7 +58,7 @@ fn make_timeline_event(
     event_type: &str,
     sender: &str,
     prev_state_events: Vec<&str>,
-    content: serde_json::Value,
+    content: rz_core::JsonValue,
     room_id: Option<&str>,
 ) -> LeanEvent {
     LeanEvent {

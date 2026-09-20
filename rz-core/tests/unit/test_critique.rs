@@ -1,7 +1,7 @@
 use crate::utils;
 use crate::utils_extra;
+use rz_core::JsonValue as Value;
 use rz_core::{resolve_iterative_sort, LeanEvent, StateResVersion};
-use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use test_case::test_case;
 
@@ -218,7 +218,7 @@ fn get_user_power_level(resolved: &ResolvedStateMap, map: &EventMap, user_id: &s
     if let Some(event_id) = resolved.get(&key) {
         if let Some(ev) = map.get(event_id) {
             if let Some(users) = ev.content.get("users").and_then(|u| u.as_object()) {
-                if let Some(pl) = users.get(user_id).and_then(serde_json::Value::as_i64) {
+                if let Some(pl) = users.get(user_id).and_then(rz_core::JsonValue::as_i64) {
                     return pl;
                 }
             }

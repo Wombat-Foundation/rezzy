@@ -1,5 +1,5 @@
+use rz_core::json;
 use rz_core::{redact_json, reference_hash, LeanEvent};
-use serde_json::json;
 
 #[test]
 fn test_from_value_derives_reference_hash_event_id() {

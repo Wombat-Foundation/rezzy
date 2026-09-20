@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn test_is_ban_or_kick_self_leave_and_kick() {
-        use serde_json::json;
+        use rz_core::json;
 
         // Ban event: state_key doesn't matter (though typically is the target), is_ban_or_kick should be true
         let ban_event: LeanEvent = LeanEvent {
@@ -108,12 +108,12 @@ mod tests {
 
     #[test]
     fn test_route_power_events_excludes_third_party_invite() {
-        use serde_json::json;
+        use rz_core::json;
         use std::collections::HashMap;
 
         let mut sort_set = HashMap::new();
 
-        let create_ev: LeanEvent<String, serde_json::Value, String> = LeanEvent {
+        let create_ev: LeanEvent<String, rz_core::JsonValue, String> = LeanEvent {
             event_id: "$create".into(),
             event_type: "m.room.create".into(),
             ..Default::default()
@@ -176,12 +176,12 @@ mod tests {
 
         // Let's have a kick event whose auth chain contains an event in the conflicted set ($auth_in_set).
         // Since $kick is a power event, $auth_in_set should be promoted to a power event as well.
-        let kick_ev: LeanEvent<String, serde_json::Value, String> = LeanEvent {
+        let kick_ev: LeanEvent<String, rz_core::JsonValue, String> = LeanEvent {
             event_id: "$kick".into(),
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "membership": "leave" }),
+            content: rz_core::json!({ "membership": "leave" }),
             auth_events: vec!["$auth_in_set".to_string()],
             ..Default::default()
         };
@@ -190,7 +190,7 @@ mod tests {
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "membership": "join" }),
+            content: rz_core::json!({ "membership": "join" }),
             auth_events: vec!["$deep_auth_in_set".to_string()],
             ..Default::default()
         };
@@ -199,7 +199,7 @@ mod tests {
             event_type: "m.room.member".into(),
             state_key: Some("@charlie:example.com".into()),
             sender: "@charlie:example.com".into(),
-            content: serde_json::json!({ "membership": "join" }),
+            content: rz_core::json!({ "membership": "join" }),
             ..Default::default()
         };
 
@@ -511,7 +511,7 @@ mod tests {
             event_id: "pl".into(),
             event_type: "m.room.power_levels".into(),
             sender: "@creator:example.com".into(),
-            content: serde_json::json!({
+            content: rz_core::json!({
                 "users": {
                     "@alice:example.com": 100,
                     "@bob:example.com": 50
@@ -618,7 +618,7 @@ mod tests {
             event_id: "pl".into(),
             event_type: "m.room.power_levels".into(),
             sender: "@creator:example.com".into(),
-            content: serde_json::json!({
+            content: rz_core::json!({
                 "users": {
                     "@alice:example.com": 10,
                     "@bob:example.com": 100
@@ -799,22 +799,22 @@ mod tests {
     fn test_coerce_json_to_i64_all_branches() {
         use rz_core::coerce_json_to_i64;
         // int
-        assert_eq!(coerce_json_to_i64(&serde_json::json!(50)), Some(50));
+        assert_eq!(coerce_json_to_i64(&rz_core::json!(50)), Some(50));
         // uint (overflow clamps to MAX_POWER_LEVEL_JSON = 2^53 - 1)
         assert_eq!(
-            coerce_json_to_i64(&serde_json::json!(u64::MAX)),
+            coerce_json_to_i64(&rz_core::json!(u64::MAX)),
             Some(9_007_199_254_740_991)
         );
         // legacy float power levels: truncate toward zero, then range-check and cast to i64
-        assert_eq!(coerce_json_to_i64(&serde_json::json!(50.0)), Some(50));
-        assert_eq!(coerce_json_to_i64(&serde_json::json!(50.9)), Some(50));
-        assert_eq!(coerce_json_to_i64(&serde_json::json!(-50.9)), Some(-50));
+        assert_eq!(coerce_json_to_i64(&rz_core::json!(50.0)), Some(50));
+        assert_eq!(coerce_json_to_i64(&rz_core::json!(50.9)), Some(50));
+        assert_eq!(coerce_json_to_i64(&rz_core::json!(-50.9)), Some(-50));
         // string-encoded
-        assert_eq!(coerce_json_to_i64(&serde_json::json!("42")), Some(42));
+        assert_eq!(coerce_json_to_i64(&rz_core::json!("42")), Some(42));
         // non-integer -> None
-        assert_eq!(coerce_json_to_i64(&serde_json::json!("abc")), None);
-        assert_eq!(coerce_json_to_i64(&serde_json::Value::Null), None);
-        assert_eq!(coerce_json_to_i64(&serde_json::json!([1, 2, 3])), None);
+        assert_eq!(coerce_json_to_i64(&rz_core::json!("abc")), None);
+        assert_eq!(coerce_json_to_i64(&rz_core::JsonValue::Null), None);
+        assert_eq!(coerce_json_to_i64(&rz_core::json!([1, 2, 3])), None);
     }
 
     #[test]
@@ -1004,7 +1004,7 @@ mod tests {
     /// repeatedly and reused afterward.
     #[test]
     fn test_resolve_iterative_sort_borrows_inputs() {
-        use serde_json::json;
+        use rz_core::json;
 
         let mk = |id: &str, typ: &str, sk: Option<&str>, sender: &str| -> LeanEvent {
             LeanEvent {
@@ -1096,7 +1096,7 @@ mod tests {
 
     #[test]
     fn test_resolve_iterative_sort_v2_1_overlay() {
-        use serde_json::json;
+        use rz_core::json;
 
         // Uncontested state: Alice is already joined, Bob's old event is the prior state.
         let mut unconflicted = imbl::OrdMap::new();
@@ -2130,7 +2130,7 @@ mod tests {
             auth_events: auth.into_iter().map(ToString::to_string).collect(),
             depth: 1,
             sender: "@user:example.com".into(),
-            content: serde_json::Value::Object(serde_json::Map::new()),
+            content: rz_core::JsonValue::Object(serde_json::Map::new()),
             room_id: None,
         }
     }
@@ -2224,7 +2224,7 @@ mod tests {
 
     #[test]
     fn test_cdo_causal_domination_filter() {
-        use serde_json::json;
+        use rz_core::json;
 
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let mut auth: HashMap<String, LeanEvent> = HashMap::new();
@@ -2304,7 +2304,7 @@ mod tests {
     // 0, exercising the Kahn source promotion (cdo.rs:244, 268).
     #[test]
     fn test_cdo_multihop_auth_chain_closure() {
-        use serde_json::json;
+        use rz_core::json;
 
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let mut auth: HashMap<String, LeanEvent> = HashMap::new();
@@ -2353,7 +2353,7 @@ mod tests {
     // order rather than dropping them from the sweep.
     #[test]
     fn test_cdo_cycle_leftover_fallback() {
-        use serde_json::json;
+        use rz_core::json;
 
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let auth: HashMap<String, LeanEvent> = HashMap::new();
@@ -2398,7 +2398,7 @@ mod tests {
     // would drop the cyclic event based on an unreliable ordering.
     #[test]
     fn test_cdo_cycle_leftover_not_dominated() {
-        use serde_json::json;
+        use rz_core::json;
 
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let auth: HashMap<String, LeanEvent> = HashMap::new();
@@ -2463,7 +2463,7 @@ mod tests {
     #[test]
     fn test_cdo_dominator_validity_closed_v2_1_1_keeps_winner() {
         use rz_core::basespec::event_types::EventType;
-        use serde_json::json;
+        use rz_core::json;
 
         let mut ts = 1000u64;
         let create: LeanEvent = LeanEvent {
@@ -2606,7 +2606,7 @@ mod tests {
     // already-dropped events and must skip them via `continue`.
     #[test]
     fn test_cdo_multichunk_revisits_dropped_event() {
-        use serde_json::json;
+        use rz_core::json;
 
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let auth: HashMap<String, LeanEvent> = HashMap::new();
@@ -2707,7 +2707,7 @@ mod tests {
     #[test]
     fn test_coverage_booster_auth_cases() {
         use rz_core::auth::{check_auth, check_auth_chain, AuthError, RoomState};
-        use serde_json::json;
+        use rz_core::json;
 
         // 1. Format every single variant of AuthError to ensure 100% Display coverage
         let errs = vec![
@@ -3008,7 +3008,7 @@ mod tests {
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
-            content: serde_json::from_value(serde_json::json!({
+            content: serde_json::from_value(rz_core::json!({
                 "users": { "@alice:example.com": 100 }
             }))
             .unwrap(),
@@ -3024,7 +3024,7 @@ mod tests {
             state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
             auth_events: vec!["B".into(), "CREATE".into()],
-            content: serde_json::from_value(serde_json::json!({
+            content: serde_json::from_value(rz_core::json!({
                 "users": { "@alice:example.com": 100 }
             }))
             .unwrap(),
@@ -3036,7 +3036,7 @@ mod tests {
             state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
             auth_events: vec!["A".into(), "CREATE".into()],
-            content: serde_json::from_value(serde_json::json!({
+            content: serde_json::from_value(rz_core::json!({
                 "users": { "@alice:example.com": 100 }
             }))
             .unwrap(),
@@ -3084,7 +3084,7 @@ mod tests {
 
     #[test]
     fn test_cdo_unbounded_stride_overflow() {
-        use serde_json::json;
+        use rz_core::json;
 
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
         let mut auth: HashMap<String, LeanEvent> = HashMap::new();
@@ -3181,7 +3181,7 @@ mod tests {
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "membership": "join" }),
+            content: rz_core::json!({ "membership": "join" }),
             auth_events: vec!["$create".into()],
             ..Default::default()
         };
@@ -3193,7 +3193,7 @@ mod tests {
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({
+            content: rz_core::json!({
                 "users": { "@bob:example.com": 50 }
             }),
             auth_events: vec!["$create".into(), "$join_alice".into()],
@@ -3207,7 +3207,7 @@ mod tests {
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
             sender: "@bob:example.com".into(),
-            content: serde_json::json!({ "membership": "join" }),
+            content: rz_core::json!({ "membership": "join" }),
             auth_events: vec!["$create".into(), "$pl_alice".into()],
             ..Default::default()
         };
@@ -3219,7 +3219,7 @@ mod tests {
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
             sender: "@bob:example.com".into(),
-            content: serde_json::json!({
+            content: rz_core::json!({
                 "users": { "@bob:example.com": 50, "@charlie:example.com": 50 }
             }),
             auth_events: vec!["$pl_alice".into(), "$join_bob".into()],
@@ -3231,7 +3231,7 @@ mod tests {
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
             sender: "@bob:example.com".into(),
-            content: serde_json::json!({
+            content: rz_core::json!({
                 "users": { "@bob:example.com": 50, "@charlie:example.com": 100 }
             }),
             auth_events: vec!["$pl_alice".into(), "$join_bob".into()],
@@ -3267,7 +3267,7 @@ mod tests {
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "membership": "leave" }),
+            content: rz_core::json!({ "membership": "leave" }),
             ..Default::default()
         };
         assert!(!self_leave.is_ban_or_kick());
@@ -3278,7 +3278,7 @@ mod tests {
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "membership": "leave" }),
+            content: rz_core::json!({ "membership": "leave" }),
             ..Default::default()
         };
         assert!(kick.is_ban_or_kick());
@@ -3289,7 +3289,7 @@ mod tests {
             event_type: "m.room.member".into(),
             state_key: Some("@bob:example.com".into()),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "membership": "ban" }),
+            content: rz_core::json!({ "membership": "ban" }),
             ..Default::default()
         };
         assert!(ban.is_ban_or_kick());
@@ -3300,12 +3300,13 @@ mod tests {
         use rz_core::basespec::rezzy_types::coerce_json_to_i64;
 
         // Value beyond standard i64 should return None securely so it defaults/clamps to 0 (minimum power/most secure fallback)
-        let large_positive = serde_json::Value::String("99999999999999999999999999999".to_string());
+        let large_positive =
+            rz_core::JsonValue::String("99999999999999999999999999999".to_string());
         let clamped_pos = coerce_json_to_i64(&large_positive);
         assert_eq!(clamped_pos, None);
 
         let large_negative =
-            serde_json::Value::String("-99999999999999999999999999999".to_string());
+            rz_core::JsonValue::String("-99999999999999999999999999999".to_string());
         let clamped_neg = coerce_json_to_i64(&large_negative);
         assert_eq!(clamped_neg, None);
     }
@@ -3491,46 +3492,46 @@ fn test_types_validate_syntactic_create_rules() {
     };
 
     // Rule 1.3: m.room.create must not declare an unrecognised content.room_version.
-    ev.content = serde_json::json!({ "room_version": "999", "creator": "@alice:example.com" });
+    ev.content = rz_core::json!({ "room_version": "999", "creator": "@alice:example.com" });
     assert_eq!(
         ev.validate_syntactic("11"),
         Err("m.room.create content.room_version is not a recognised room version")
     );
-    ev.content = serde_json::json!({ "room_version": "11", "creator": "@alice:example.com" });
+    ev.content = rz_core::json!({ "room_version": "11", "creator": "@alice:example.com" });
     assert!(ev.validate_syntactic("11").is_ok());
-    ev.content = serde_json::json!({ "creator": "@alice:example.com" });
+    ev.content = rz_core::json!({ "creator": "@alice:example.com" });
     assert!(
         ev.validate_syntactic("11").is_ok(),
         "absent room_version defaults to \"1\" per spec, not rejected"
     );
 
     // Rule 1.4 (pre-v12): m.room.create must have a `creator` property.
-    ev.content = serde_json::json!({});
+    ev.content = rz_core::json!({});
     assert_eq!(
         ev.validate_syntactic("11"),
         Err("m.room.create content must have a 'creator' property")
     );
-    ev.content = serde_json::json!({ "creator": "not-a-mxid" });
+    ev.content = rz_core::json!({ "creator": "not-a-mxid" });
     assert_eq!(
         ev.validate_syntactic("11"),
         Err("m.room.create content.creator must be a valid MXID string")
     );
-    ev.content = serde_json::json!({ "creator": "@alice:example.com" });
+    ev.content = rz_core::json!({ "creator": "@alice:example.com" });
     assert!(ev.validate_syntactic("11").is_ok());
 
     // Rule 1.4 (v12+): `creator` is no longer required, but any
     // `additional_creators` entries must pass the same MXID grammar as `sender`.
-    ev.content = serde_json::json!({});
+    ev.content = rz_core::json!({});
     assert!(
         ev.validate_syntactic("12").is_ok(),
         "v12+ derives creators from sender/additional_creators, not the creator field"
     );
-    ev.content = serde_json::json!({ "additional_creators": ["@bob:example.com", "not-a-mxid"] });
+    ev.content = rz_core::json!({ "additional_creators": ["@bob:example.com", "not-a-mxid"] });
     assert_eq!(
         ev.validate_syntactic("12"),
         Err("m.room.create content.additional_creators must be an array of valid MXID strings")
     );
-    ev.content = serde_json::json!({ "additional_creators": ["@bob:example.com"] });
+    ev.content = rz_core::json!({ "additional_creators": ["@bob:example.com"] });
     assert!(ev.validate_syntactic("12").is_ok());
 }
 
@@ -3720,7 +3721,7 @@ fn test_redaction_application_strips_content() {
         event_type: "m.room.message".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 1000,
-        content: serde_json::json!({ "body": "spam", "msgtype": "m.text" }),
+        content: rz_core::json!({ "body": "spam", "msgtype": "m.text" }),
         ..Default::default()
     };
     let redaction: LeanEvent = LeanEvent {
@@ -3728,13 +3729,13 @@ fn test_redaction_application_strips_content() {
         event_type: "m.room.redaction".into(),
         sender: "@alice:example.com".into(),
         origin_server_ts: 1100,
-        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        content: rz_core::json!({ "redacts": "$msg:example.com" }),
         ..Default::default()
     };
     let redacted = apply_redaction(&msg, &redaction, "12").expect("valid redaction should apply");
     assert_eq!(
         redacted.content,
-        serde_json::json!({}),
+        rz_core::json!({}),
         "m.room.message content is fully stripped"
     );
     // Envelope preserved.
@@ -3748,21 +3749,21 @@ fn test_redaction_application_strips_content() {
         event_type: "m.room.member".into(),
         state_key: Some("@bob:example.com".into()),
         sender: "@bob:example.com".into(),
-        content: serde_json::json!({ "membership": "join", "displayname": "Bob" }),
+        content: rz_core::json!({ "membership": "join", "displayname": "Bob" }),
         ..Default::default()
     };
     let redact_member: LeanEvent = LeanEvent {
         event_id: "$rm:example.com".into(),
         event_type: "m.room.redaction".into(),
         sender: "@alice:example.com".into(),
-        content: serde_json::json!({ "redacts": "$join:example.com" }),
+        content: rz_core::json!({ "redacts": "$join:example.com" }),
         ..Default::default()
     };
     let redacted_member =
         apply_redaction(&member, &redact_member, "12").expect("valid redaction should apply");
     assert_eq!(
         redacted_member.content,
-        serde_json::json!({ "membership": "join" }),
+        rz_core::json!({ "membership": "join" }),
         "only the membership key survives"
     );
 
@@ -3772,7 +3773,7 @@ fn test_redaction_application_strips_content() {
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
         sender: "@alice:example.com".into(),
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": { "@alice:example.com": 100 },
             "users_default": 0,
             "state_default": 50,
@@ -3784,13 +3785,13 @@ fn test_redaction_application_strips_content() {
         event_id: "$rp:example.com".into(),
         event_type: "m.room.redaction".into(),
         sender: "@alice:example.com".into(),
-        content: serde_json::json!({ "redacts": "$pl:example.com" }),
+        content: rz_core::json!({ "redacts": "$pl:example.com" }),
         ..Default::default()
     };
     let redacted_pl = apply_redaction(&pl, &redact_pl, "12").expect("valid redaction should apply");
     assert_eq!(
         redacted_pl.content,
-        serde_json::json!({
+        rz_core::json!({
             "users": { "@alice:example.com": 100 },
             "users_default": 0,
             "state_default": 50
@@ -3807,13 +3808,13 @@ fn test_redaction_application_strips_content() {
         event_type: "m.room.create".into(),
         state_key: Some(String::new()),
         sender: "@alice:example.com".into(),
-        content: serde_json::json!({ "room_version": "12", "creator": "@alice:example.com", "m.federate": true }),
+        content: rz_core::json!({ "room_version": "12", "creator": "@alice:example.com", "m.federate": true }),
         ..Default::default()
     };
     let redacted_create = create.redacted("12");
     assert_eq!(
         redacted_create.content,
-        serde_json::json!({ "room_version": "12", "creator": "@alice:example.com", "m.federate": true }),
+        rz_core::json!({ "room_version": "12", "creator": "@alice:example.com", "m.federate": true }),
         "v11+ create preserves all content on redaction"
     );
 }
@@ -3826,7 +3827,7 @@ fn test_redaction_application_guards() {
         event_id: "$msg:example.com".into(),
         event_type: "m.room.message".into(),
         sender: "@bob:example.com".into(),
-        content: serde_json::json!({ "body": "spam" }),
+        content: rz_core::json!({ "body": "spam" }),
         ..Default::default()
     };
     // Redaction targeting a DIFFERENT event -> None.
@@ -3834,7 +3835,7 @@ fn test_redaction_application_guards() {
         event_id: "$r:example.com".into(),
         event_type: "m.room.redaction".into(),
         sender: "@alice:example.com".into(),
-        content: serde_json::json!({ "redacts": "$other:example.com" }),
+        content: rz_core::json!({ "redacts": "$other:example.com" }),
         ..Default::default()
     };
     assert!(apply_redaction(&msg, &wrong, "12").is_none());
@@ -3846,26 +3847,26 @@ fn test_redaction_application_guards() {
         event_type: "m.room.create".into(),
         state_key: Some(String::new()),
         sender: "@alice:example.com".into(),
-        content: serde_json::json!({ "room_version": "12", "creator": "@alice:example.com" }),
+        content: rz_core::json!({ "room_version": "12", "creator": "@alice:example.com" }),
         ..Default::default()
     };
     let redact_create: LeanEvent = LeanEvent {
         event_id: "$rc:example.com".into(),
         event_type: "m.room.redaction".into(),
         sender: "@alice:example.com".into(),
-        content: serde_json::json!({ "redacts": "$create:example.com" }),
+        content: rz_core::json!({ "redacts": "$create:example.com" }),
         ..Default::default()
     };
     let redacted_v12 = apply_redaction(&create, &redact_create, "12").unwrap();
     assert_eq!(
         redacted_v12.content,
-        serde_json::json!({ "room_version": "12", "creator": "@alice:example.com" })
+        rz_core::json!({ "room_version": "12", "creator": "@alice:example.com" })
     );
     // Pre-v11 create redaction preserves only `creator`.
     let redacted_v10 = apply_redaction(&create, &redact_create, "10").unwrap();
     assert_eq!(
         redacted_v10.content,
-        serde_json::json!({ "creator": "@alice:example.com" })
+        rz_core::json!({ "creator": "@alice:example.com" })
     );
 }
 
@@ -3875,7 +3876,7 @@ fn test_content_hash_verification_on_raw_pdu() {
 
     // A raw PDU carrying unsigned/signatures; hashes.sha256 covers the
     // UNREDACTED event with unsigned/signatures/hashes removed.
-    let mut pdu = serde_json::json!({
+    let mut pdu = rz_core::json!({
         "event_id": "$1:example.com",
         "type": "m.room.message",
         "sender": "@bob:example.com",
@@ -3887,16 +3888,16 @@ fn test_content_hash_verification_on_raw_pdu() {
     });
 
     // A bogus hash fails.
-    pdu["hashes"] = serde_json::json!({ "sha256": "abc123" });
+    pdu["hashes"] = rz_core::json!({ "sha256": "abc123" });
     assert!(verify_content_hash(&pdu, "11").is_err());
 
     // A real content hash passes.
     let hash = compute_content_hash(&pdu, "11").unwrap();
-    pdu["hashes"] = serde_json::json!({ "sha256": hash });
+    pdu["hashes"] = rz_core::json!({ "sha256": hash });
     assert!(verify_content_hash(&pdu, "11").is_ok());
 
     // Tampering with content breaks the commitment.
-    pdu["content"] = serde_json::json!({ "body": "evil" });
+    pdu["content"] = rz_core::json!({ "body": "evil" });
     assert!(verify_content_hash(&pdu, "11").is_err());
 
     // Missing hashes dict -> nothing to verify -> Err.
@@ -3908,14 +3909,14 @@ fn test_content_hash_verification_on_raw_pdu() {
 fn test_ingest_events_verifies_hashes_and_preserves_content() {
     use rz_core::{compute_content_hash, ingest_events, reference_hash};
 
-    let msg = serde_json::json!({
+    let msg = rz_core::json!({
         "type": "m.room.message",
         "sender": "@bob:example.com",
         "origin_server_ts": 10,
         "depth": 1,
         "content": { "body": "spam" }
     });
-    let redaction = serde_json::json!({
+    let redaction = rz_core::json!({
         "type": "m.room.redaction",
         "sender": "@alice:example.com",
         "origin_server_ts": 11,
@@ -3930,21 +3931,21 @@ fn test_ingest_events_verifies_hashes_and_preserves_content() {
     let message_id = format!("${}", reference_hash(&msg, "11").unwrap());
     let events = ingest_events(&[msg.clone(), redaction.clone()], "11", None).unwrap();
     let target = events.iter().find(|e| e.event_id == message_id).unwrap();
-    assert_eq!(target.content, serde_json::json!({ "body": "spam" }));
+    assert_eq!(target.content, rz_core::json!({ "body": "spam" }));
     // The redaction event itself is retained.
     assert_eq!(events.len(), 2);
 
     // A valid content hash on the message -> verification passes at ingest.
     let mut hashed = msg.clone();
     let hash = compute_content_hash(&hashed, "11").unwrap();
-    hashed["hashes"] = serde_json::json!({ "sha256": hash });
+    hashed["hashes"] = rz_core::json!({ "sha256": hash });
     let hashed_message_id = format!("${}", reference_hash(&hashed, "11").unwrap());
     let events = ingest_events(&[hashed.clone(), redaction.clone()], "11", None).unwrap();
     assert!(events.iter().any(|e| e.event_id == hashed_message_id));
 
     // A tampered content hash -> ingest rejects the batch.
     let mut tampered = hashed.clone();
-    tampered["content"] = serde_json::json!({ "body": "evil" });
+    tampered["content"] = rz_core::json!({ "body": "evil" });
     assert!(ingest_events(&[tampered, redaction.clone()], "11", None).is_err());
 }
 
@@ -3955,7 +3956,7 @@ fn test_ingest_events_verifies_hashes_and_preserves_content() {
 fn test_ingest_events_rejects_explicit_event_id_in_v3_and_later() {
     use rz_core::ingest_events;
 
-    let pdu = serde_json::json!({
+    let pdu = rz_core::json!({
         "event_id": "$attacker:example.org",
         "type": "m.room.message",
         "sender": "@alice:example.org",
@@ -3979,7 +3980,7 @@ fn test_coverage_ingest_events_parse_error_aborts_batch() {
 
     // No "type" field -> `from_value` sees an empty event_type and returns
     // Err, surfacing through ingest_events' `map_err(|e| e.to_string())?`.
-    let malformed = serde_json::json!({
+    let malformed = rz_core::json!({
         "sender": "@bob:example.com",
         "origin_server_ts": 10,
         "depth": 1,
@@ -4002,7 +4003,7 @@ fn test_coverage_ingest_events_parse_error_aborts_batch() {
 fn test_ingest_events_stamps_caller_supplied_room_id_not_the_pdus_own() {
     use rz_core::ingest_events;
 
-    let msg = serde_json::json!({
+    let msg = rz_core::json!({
         "type": "m.room.message",
         "sender": "@alice:example.com",
         "origin_server_ts": 10,
@@ -4010,7 +4011,7 @@ fn test_ingest_events_stamps_caller_supplied_room_id_not_the_pdus_own() {
         "room_id": "!attacker-claimed:example.com",
         "content": { "body": "hi" }
     });
-    let other = serde_json::json!({
+    let other = rz_core::json!({
         "type": "m.room.message",
         "sender": "@bob:example.com",
         "origin_server_ts": 11,
@@ -4030,7 +4031,7 @@ fn test_ingest_events_stamps_caller_supplied_room_id_not_the_pdus_own() {
     }
 
     // `None` matches the pre-existing behavior: no event carries a room_id.
-    let msg2 = serde_json::json!({
+    let msg2 = rz_core::json!({
         "type": "m.room.message",
         "sender": "@alice:example.com",
         "origin_server_ts": 10,
@@ -4050,7 +4051,7 @@ fn test_ingest_events_stamps_caller_supplied_room_id_not_the_pdus_own() {
 fn test_ingest_events_does_not_apply_unauthorized_redaction() {
     use rz_core::{ingest_events, reference_hash};
 
-    let msg = serde_json::json!({
+    let msg = rz_core::json!({
         "type": "m.room.message",
         "sender": "@bob:example.com",
         "origin_server_ts": 10,
@@ -4058,7 +4059,7 @@ fn test_ingest_events_does_not_apply_unauthorized_redaction() {
         "content": { "body": "spam" }
     });
     // Mallory (no power, not the target's sender) attempts to redact Bob's message.
-    let redaction = serde_json::json!({
+    let redaction = rz_core::json!({
         "type": "m.room.redaction",
         "sender": "@mallory:example.com",
         "origin_server_ts": 11,
@@ -4072,7 +4073,7 @@ fn test_ingest_events_does_not_apply_unauthorized_redaction() {
     let target = events.iter().find(|e| e.event_id == message_id).unwrap();
     assert_eq!(
         target.content,
-        serde_json::json!({ "body": "spam" }),
+        rz_core::json!({ "body": "spam" }),
         "ingest_events must preserve target content: it has no room state to \
          authorize this (unauthorized) redaction against"
     );
@@ -4094,7 +4095,7 @@ fn test_apply_authorized_redactions_only_strips_authorized_targets() {
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
         sender: "@admin:example.com".into(),
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": {
                 "@admin:example.com": 100,
                 "@bob:example.com": 0,
@@ -4112,7 +4113,7 @@ fn test_apply_authorized_redactions_only_strips_authorized_targets() {
         event_type: "m.room.message".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 10,
-        content: serde_json::json!({ "body": "secret" }),
+        content: rz_core::json!({ "body": "secret" }),
         ..Default::default()
     };
     let mallory_redact: LeanEvent = LeanEvent {
@@ -4120,7 +4121,7 @@ fn test_apply_authorized_redactions_only_strips_authorized_targets() {
         event_type: "m.room.redaction".into(),
         sender: "@mallory:example.com".into(),
         origin_server_ts: 11,
-        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        content: rz_core::json!({ "redacts": "$msg:example.com" }),
         ..Default::default()
     };
     let self_redact: LeanEvent = LeanEvent {
@@ -4128,7 +4129,7 @@ fn test_apply_authorized_redactions_only_strips_authorized_targets() {
         event_type: "m.room.redaction".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 12,
-        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        content: rz_core::json!({ "redacts": "$msg:example.com" }),
         ..Default::default()
     };
 
@@ -4148,7 +4149,7 @@ fn test_apply_authorized_redactions_only_strips_authorized_targets() {
         .unwrap();
     assert_eq!(
         target.content,
-        serde_json::json!({ "body": "secret" }),
+        rz_core::json!({ "body": "secret" }),
         "an unauthorized redaction must not strip the target"
     );
 
@@ -4167,7 +4168,7 @@ fn test_apply_authorized_redactions_only_strips_authorized_targets() {
         .unwrap();
     assert_eq!(
         target.content,
-        serde_json::json!({}),
+        rz_core::json!({}),
         "a self-redaction must strip the target content"
     );
     // Order-invariance: the redaction preceding its target (the opposite
@@ -4180,7 +4181,7 @@ fn test_apply_authorized_redactions_only_strips_authorized_targets() {
         .unwrap();
     assert_eq!(
         target.content,
-        serde_json::json!({}),
+        rz_core::json!({}),
         "redaction order within the set must not change the outcome"
     );
 }
@@ -4200,7 +4201,7 @@ fn test_apply_authorized_redactions_redaction_of_redaction_order() {
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
         sender: "@admin:example.com".into(),
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": {
                 "@admin:example.com": 100,
                 "@bob:example.com": 0
@@ -4217,7 +4218,7 @@ fn test_apply_authorized_redactions_redaction_of_redaction_order() {
         event_type: "m.room.message".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 10,
-        content: serde_json::json!({ "body": "secret" }),
+        content: rz_core::json!({ "body": "secret" }),
         ..Default::default()
     };
     let r1: LeanEvent = LeanEvent {
@@ -4225,7 +4226,7 @@ fn test_apply_authorized_redactions_redaction_of_redaction_order() {
         event_type: "m.room.redaction".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 11,
-        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        content: rz_core::json!({ "redacts": "$msg:example.com" }),
         ..Default::default()
     };
     let r2: LeanEvent = LeanEvent {
@@ -4233,7 +4234,7 @@ fn test_apply_authorized_redactions_redaction_of_redaction_order() {
         event_type: "m.room.redaction".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 12,
-        content: serde_json::json!({ "redacts": "$r1:example.com" }),
+        content: rz_core::json!({ "redacts": "$r1:example.com" }),
         ..Default::default()
     };
 
@@ -4247,7 +4248,7 @@ fn test_apply_authorized_redactions_redaction_of_redaction_order() {
         .unwrap();
     assert_eq!(
         m.content,
-        serde_json::json!({}),
+        rz_core::json!({}),
         "M must be redacted by R1 (R1 spent as redactor before R2 replaces it)"
     );
     let r1_ev = events
@@ -4256,7 +4257,7 @@ fn test_apply_authorized_redactions_redaction_of_redaction_order() {
         .unwrap();
     assert_eq!(
         r1_ev.content,
-        serde_json::json!({ "redacts": "$msg:example.com" }),
+        rz_core::json!({ "redacts": "$msg:example.com" }),
         "R1's redacted form preserves its `redacts` key (it must still be usable)"
     );
     assert!(
@@ -4287,7 +4288,7 @@ fn test_apply_authorized_redactions_long_chain_reverse_order() {
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
         sender: "@admin:example.com".into(),
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": { "@admin:example.com": 100, "@bob:example.com": 0 },
             "redact": 50
         }),
@@ -4301,7 +4302,7 @@ fn test_apply_authorized_redactions_long_chain_reverse_order() {
         event_type: "m.room.message".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 10,
-        content: serde_json::json!({ "body": "secret" }),
+        content: rz_core::json!({ "body": "secret" }),
         ..Default::default()
     };
     let r1: LeanEvent = LeanEvent {
@@ -4309,7 +4310,7 @@ fn test_apply_authorized_redactions_long_chain_reverse_order() {
         event_type: "m.room.redaction".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 11,
-        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        content: rz_core::json!({ "redacts": "$msg:example.com" }),
         ..Default::default()
     };
     let r2: LeanEvent = LeanEvent {
@@ -4317,7 +4318,7 @@ fn test_apply_authorized_redactions_long_chain_reverse_order() {
         event_type: "m.room.redaction".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 12,
-        content: serde_json::json!({ "redacts": "$r1:example.com" }),
+        content: rz_core::json!({ "redacts": "$r1:example.com" }),
         ..Default::default()
     };
     let r3: LeanEvent = LeanEvent {
@@ -4325,7 +4326,7 @@ fn test_apply_authorized_redactions_long_chain_reverse_order() {
         event_type: "m.room.redaction".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 13,
-        content: serde_json::json!({ "redacts": "$r2:example.com" }),
+        content: rz_core::json!({ "redacts": "$r2:example.com" }),
         ..Default::default()
     };
 
@@ -4339,7 +4340,7 @@ fn test_apply_authorized_redactions_long_chain_reverse_order() {
         .unwrap();
     assert_eq!(
         m.content,
-        serde_json::json!({}),
+        rz_core::json!({}),
         "M must be redacted by R1 despite the fully reversed batch order"
     );
     let r1_ev = events
@@ -4348,7 +4349,7 @@ fn test_apply_authorized_redactions_long_chain_reverse_order() {
         .unwrap();
     assert_eq!(
         r1_ev.content,
-        serde_json::json!({ "redacts": "$msg:example.com" }),
+        rz_core::json!({ "redacts": "$msg:example.com" }),
         "R1 must be spent as a redactor (on M) before being replaced as a target (by R2)"
     );
     let r2_ev = events
@@ -4357,7 +4358,7 @@ fn test_apply_authorized_redactions_long_chain_reverse_order() {
         .unwrap();
     assert_eq!(
         r2_ev.content,
-        serde_json::json!({ "redacts": "$r1:example.com" }),
+        rz_core::json!({ "redacts": "$r1:example.com" }),
         "R2 must be spent as a redactor (on R1) before being replaced as a target (by R3)"
     );
     assert_eq!(report.applied.len(), 3, "all three redactions must apply");
@@ -4376,7 +4377,7 @@ fn test_apply_authorized_redactions_redactor_with_power_level() {
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
         sender: "@admin:example.com".into(),
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": {
                 "@admin:example.com": 100,
                 "@bob:example.com": 0
@@ -4393,7 +4394,7 @@ fn test_apply_authorized_redactions_redactor_with_power_level() {
         event_type: "m.room.message".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 10,
-        content: serde_json::json!({ "body": "secret" }),
+        content: rz_core::json!({ "body": "secret" }),
         ..Default::default()
     };
     let admin_redact: LeanEvent = LeanEvent {
@@ -4401,7 +4402,7 @@ fn test_apply_authorized_redactions_redactor_with_power_level() {
         event_type: "m.room.redaction".into(),
         sender: "@admin:example.com".into(),
         origin_server_ts: 11,
-        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        content: rz_core::json!({ "redacts": "$msg:example.com" }),
         ..Default::default()
     };
 
@@ -4418,7 +4419,7 @@ fn test_apply_authorized_redactions_redactor_with_power_level() {
         .iter()
         .find(|e| e.event_id == "$msg:example.com")
         .unwrap();
-    assert_eq!(m.content, serde_json::json!({}));
+    assert_eq!(m.content, rz_core::json!({}));
 }
 
 /// `apply_authorized_redactions_with_state_at` authorizes each redaction
@@ -4442,7 +4443,7 @@ fn test_apply_authorized_redactions_event_time_vs_final_state_diverge() {
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
         sender: "@admin:example.com".into(),
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": {
                 "@admin:example.com": 100,
                 "@mallory:other.example": 50,
@@ -4464,7 +4465,7 @@ fn test_apply_authorized_redactions_event_time_vs_final_state_diverge() {
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
         sender: "@admin:example.com".into(),
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": {
                 "@admin:example.com": 100,
                 "@mallory:other.example": 0,
@@ -4482,7 +4483,7 @@ fn test_apply_authorized_redactions_event_time_vs_final_state_diverge() {
         event_type: "m.room.message".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 10,
-        content: serde_json::json!({ "body": "secret" }),
+        content: rz_core::json!({ "body": "secret" }),
         ..Default::default()
     };
     // Cross-domain, non-self redactor, so only the PL branch of
@@ -4493,7 +4494,7 @@ fn test_apply_authorized_redactions_event_time_vs_final_state_diverge() {
         event_type: "m.room.redaction".into(),
         sender: "@mallory:other.example".into(),
         origin_server_ts: 11,
-        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        content: rz_core::json!({ "redacts": "$msg:example.com" }),
         ..Default::default()
     };
 
@@ -4535,7 +4536,7 @@ fn test_apply_authorized_redactions_event_time_vs_final_state_diverge() {
         event_type: "m.room.message".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 20,
-        content: serde_json::json!({ "body": "secret2" }),
+        content: rz_core::json!({ "body": "secret2" }),
         ..Default::default()
     };
     let mallory_redact2: LeanEvent = LeanEvent {
@@ -4543,7 +4544,7 @@ fn test_apply_authorized_redactions_event_time_vs_final_state_diverge() {
         event_type: "m.room.redaction".into(),
         sender: "@mallory:other.example".into(),
         origin_server_ts: 21,
-        content: serde_json::json!({ "redacts": "$msg2:example.com" }),
+        content: rz_core::json!({ "redacts": "$msg2:example.com" }),
         ..Default::default()
     };
     let mut state_map: std::collections::HashMap<String, RoomState> =
@@ -4608,7 +4609,7 @@ fn test_apply_authorized_redactions_v1_v2_domain_rule() {
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
         sender: "@admin:example.com".into(),
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": {
                 "@admin:example.com": 100,
                 "@mallory:example.com": 0
@@ -4625,7 +4626,7 @@ fn test_apply_authorized_redactions_v1_v2_domain_rule() {
         event_type: "m.room.message".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 10,
-        content: serde_json::json!({ "body": "secret" }),
+        content: rz_core::json!({ "body": "secret" }),
         ..Default::default()
     };
 
@@ -4635,7 +4636,7 @@ fn test_apply_authorized_redactions_v1_v2_domain_rule() {
         event_type: "m.room.redaction".into(),
         sender: "@mallory:example.com".into(),
         origin_server_ts: 11,
-        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        content: rz_core::json!({ "redacts": "$msg:example.com" }),
         ..Default::default()
     };
     let mut events = vec![msg.clone(), same_domain.clone()];
@@ -4653,7 +4654,7 @@ fn test_apply_authorized_redactions_v1_v2_domain_rule() {
         event_type: "m.room.redaction".into(),
         sender: "@mallory:example.com".into(),
         origin_server_ts: 12,
-        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        content: rz_core::json!({ "redacts": "$msg:example.com" }),
         ..Default::default()
     };
     let mut events = vec![msg.clone(), cross_domain.clone()];
@@ -4678,7 +4679,7 @@ fn test_apply_authorized_redactions_ignores_redaction_without_redacts() {
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
         sender: "@admin:example.com".into(),
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": { "@admin:example.com": 100, "@bob:example.com": 0 },
             "redact": 50
         }),
@@ -4692,7 +4693,7 @@ fn test_apply_authorized_redactions_ignores_redaction_without_redacts() {
         event_type: "m.room.message".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 10,
-        content: serde_json::json!({ "body": "secret" }),
+        content: rz_core::json!({ "body": "secret" }),
         ..Default::default()
     };
     let no_redacts: LeanEvent = LeanEvent {
@@ -4700,7 +4701,7 @@ fn test_apply_authorized_redactions_ignores_redaction_without_redacts() {
         event_type: "m.room.redaction".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 11,
-        content: serde_json::json!({}),
+        content: rz_core::json!({}),
         ..Default::default()
     };
 
@@ -4716,7 +4717,7 @@ fn test_apply_authorized_redactions_ignores_redaction_without_redacts() {
         .iter()
         .find(|e| e.event_id == "$msg:example.com")
         .unwrap();
-    assert_eq!(m.content, serde_json::json!({ "body": "secret" }));
+    assert_eq!(m.content, rz_core::json!({ "body": "secret" }));
 }
 
 /// `StateResVersion::has_join_authorised_via_users_server` is a coarse
@@ -4750,7 +4751,7 @@ fn test_apply_authorized_redactions_report() {
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
         sender: "@admin:example.com".into(),
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": {
                 "@admin:example.com": 100,
                 "@bob:example.com": 0,
@@ -4768,7 +4769,7 @@ fn test_apply_authorized_redactions_report() {
         event_type: "m.room.message".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 10,
-        content: serde_json::json!({ "body": "secret" }),
+        content: rz_core::json!({ "body": "secret" }),
         ..Default::default()
     };
     let mallory_redact: LeanEvent = LeanEvent {
@@ -4776,7 +4777,7 @@ fn test_apply_authorized_redactions_report() {
         event_type: "m.room.redaction".into(),
         sender: "@mallory:example.com".into(),
         origin_server_ts: 11,
-        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        content: rz_core::json!({ "redacts": "$msg:example.com" }),
         ..Default::default()
     };
     let self_redact: LeanEvent = LeanEvent {
@@ -4784,7 +4785,7 @@ fn test_apply_authorized_redactions_report() {
         event_type: "m.room.redaction".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 12,
-        content: serde_json::json!({ "redacts": "$msg:example.com" }),
+        content: rz_core::json!({ "redacts": "$msg:example.com" }),
         ..Default::default()
     };
     // A redaction whose target is absent from this batch -> deferred.
@@ -4793,7 +4794,7 @@ fn test_apply_authorized_redactions_report() {
         event_type: "m.room.redaction".into(),
         sender: "@bob:example.com".into(),
         origin_server_ts: 13,
-        content: serde_json::json!({ "redacts": "$not_here:example.com" }),
+        content: rz_core::json!({ "redacts": "$not_here:example.com" }),
         ..Default::default()
     };
 
@@ -4832,13 +4833,13 @@ fn test_apply_authorized_redactions_report() {
         .iter()
         .find(|e| e.event_id == "$msg:example.com")
         .unwrap();
-    assert_eq!(target.content, serde_json::json!({}));
+    assert_eq!(target.content, rz_core::json!({}));
 }
 
 #[test]
 fn test_apply_authorized_redactions_no_redactions_fast_path() {
     use rz_core::auth::{apply_authorized_redactions, RedactionReport, RoomState};
-    let state = RoomState::<String, serde_json::Value, String>::new();
+    let state = RoomState::<String, rz_core::JsonValue, String>::new();
     let mut empty_events: Vec<LeanEvent> = Vec::new();
     let report = apply_authorized_redactions(&mut empty_events, &state, StateResVersion::V2, "11");
     assert_eq!(report, RedactionReport::default());
@@ -4861,22 +4862,22 @@ fn test_apply_authorized_redactions_different_id_types() {
 
     // Test with Arc<str>
     let mut arc_events = vec![
-        LeanEvent::<Arc<str>, serde_json::Value, String> {
+        LeanEvent::<Arc<str>, rz_core::JsonValue, String> {
             event_id: Arc::from("$target"),
             event_type: "m.room.message".into(),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "body": "hello" }),
+            content: rz_core::json!({ "body": "hello" }),
             ..Default::default()
         },
-        LeanEvent::<Arc<str>, serde_json::Value, String> {
+        LeanEvent::<Arc<str>, rz_core::JsonValue, String> {
             event_id: Arc::from("$redaction"),
             event_type: "m.room.redaction".into(),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "redacts": "$target" }),
+            content: rz_core::json!({ "redacts": "$target" }),
             ..Default::default()
         },
     ];
-    let arc_state = RoomState::<Arc<str>, serde_json::Value, String>::new();
+    let arc_state = RoomState::<Arc<str>, rz_core::JsonValue, String>::new();
     let report =
         apply_authorized_redactions(&mut arc_events, &arc_state, StateResVersion::V2, "11");
     assert_eq!(
@@ -4886,22 +4887,22 @@ fn test_apply_authorized_redactions_different_id_types() {
 
     // Test with Box<str>
     let mut box_events = vec![
-        LeanEvent::<Box<str>, serde_json::Value, String> {
+        LeanEvent::<Box<str>, rz_core::JsonValue, String> {
             event_id: Box::from("$target"),
             event_type: "m.room.message".into(),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "body": "hello" }),
+            content: rz_core::json!({ "body": "hello" }),
             ..Default::default()
         },
-        LeanEvent::<Box<str>, serde_json::Value, String> {
+        LeanEvent::<Box<str>, rz_core::JsonValue, String> {
             event_id: Box::from("$redaction"),
             event_type: "m.room.redaction".into(),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "redacts": "$target" }),
+            content: rz_core::json!({ "redacts": "$target" }),
             ..Default::default()
         },
     ];
-    let box_state = RoomState::<Box<str>, serde_json::Value, String>::new();
+    let box_state = RoomState::<Box<str>, rz_core::JsonValue, String>::new();
     let report =
         apply_authorized_redactions(&mut box_events, &box_state, StateResVersion::V2, "11");
     assert_eq!(
@@ -4911,22 +4912,22 @@ fn test_apply_authorized_redactions_different_id_types() {
 
     // Test with u64 ID type (which falls back to Cow::Owned via ToString)
     let mut u64_events = vec![
-        LeanEvent::<u64, serde_json::Value, String> {
+        LeanEvent::<u64, rz_core::JsonValue, String> {
             event_id: 1,
             event_type: "m.room.message".into(),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "body": "hello" }),
+            content: rz_core::json!({ "body": "hello" }),
             ..Default::default()
         },
-        LeanEvent::<u64, serde_json::Value, String> {
+        LeanEvent::<u64, rz_core::JsonValue, String> {
             event_id: 2,
             event_type: "m.room.redaction".into(),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "redacts": "1" }),
+            content: rz_core::json!({ "redacts": "1" }),
             ..Default::default()
         },
     ];
-    let u64_state = RoomState::<u64, serde_json::Value, String>::new();
+    let u64_state = RoomState::<u64, rz_core::JsonValue, String>::new();
     let report =
         apply_authorized_redactions(&mut u64_events, &u64_state, StateResVersion::V2, "11");
     assert_eq!(report.applied, vec![(2, 1)]);
@@ -4940,7 +4941,7 @@ fn test_lean_event_is_redaction() {
     // A redaction with a valid `redacts` target -> true.
     let redaction: LeanEvent = LeanEvent {
         event_type: "m.room.redaction".into(),
-        content: serde_json::json!({ "redacts": "$x:example.com" }),
+        content: rz_core::json!({ "redacts": "$x:example.com" }),
         ..Default::default()
     };
     assert!(redaction.is_redaction());
@@ -4948,7 +4949,7 @@ fn test_lean_event_is_redaction() {
     // A non-redaction event -> false (event_type mismatch).
     let msg: LeanEvent = LeanEvent {
         event_type: "m.room.message".into(),
-        content: serde_json::json!({ "body": "hi" }),
+        content: rz_core::json!({ "body": "hi" }),
         ..Default::default()
     };
     assert!(!msg.is_redaction());
@@ -4956,7 +4957,7 @@ fn test_lean_event_is_redaction() {
     // A redaction lacking `redacts` -> false (get_redacts() is None).
     let no_target: LeanEvent = LeanEvent {
         event_type: "m.room.redaction".into(),
-        content: serde_json::json!({}),
+        content: rz_core::json!({}),
         ..Default::default()
     };
     assert!(!no_target.is_redaction());
@@ -4970,7 +4971,7 @@ fn test_reference_hash_is_redaction_invariant() {
     // So redaction must not change the reference hash: event_id(e) ==
     // event_id(redact(e)). This is what lets a redaction be applied to an event
     // already in the DAG without breaking references to it.
-    let pdu = serde_json::json!({
+    let pdu = rz_core::json!({
         "event_id": "$1:example.com",
         "type": "m.room.message",
         "sender": "@bob:example.com",
@@ -4987,7 +4988,7 @@ fn test_reference_hash_is_redaction_invariant() {
 
     // m.room.message preserves no content keys, so redaction empties it.
     let redacted = redact_json(&pdu, "11");
-    assert_eq!(redacted["content"], serde_json::json!({}));
+    assert_eq!(redacted["content"], rz_core::json!({}));
     assert_eq!(redacted["event_id"], "$1:example.com");
 }
 
@@ -5628,11 +5629,11 @@ fn test_msc4289_sorting_v2_creator_gets_pl_100() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn test_resolve_iterative_sort_with_deltas_parity() {
+    use rz_core::json;
     use rz_core::state::delta::ResolvePhase;
     use rz_core::{
         resolve_iterative_sort, resolve_iterative_sort_with_deltas, LeanEvent, StateResVersion,
     };
-    use serde_json::json;
     use std::collections::HashMap;
 
     // Build auth context
@@ -5837,7 +5838,7 @@ fn test_resolve_iterative_sort_with_deltas_no_duplicate_power_events() {
         event_type: "m.room.member".into(),
         state_key: Some("@alice:example.com".into()),
         sender: "@alice:example.com".into(),
-        content: serde_json::json!({ "membership": "join" }),
+        content: rz_core::json!({ "membership": "join" }),
         auth_events: vec!["$create".into()],
         ..Default::default()
     };
@@ -5848,7 +5849,7 @@ fn test_resolve_iterative_sort_with_deltas_no_duplicate_power_events() {
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
         sender: "@alice:example.com".into(),
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": { "@alice:example.com": 100 }
         }),
         auth_events: vec!["$create".into(), "$join_alice".into()],
@@ -5965,7 +5966,7 @@ fn test_deltas_supplemental_power_event_from_auth_context() {
 fn test_types_empty_event_type() {
     use rz_core::LeanEvent;
 
-    let json_missing_type = serde_json::json!({
+    let json_missing_type = rz_core::json!({
         "event_id": "$missing_type",
         "sender": "@alice:example.com",
         "content": {}
@@ -5974,7 +5975,7 @@ fn test_types_empty_event_type() {
     let result: Result<LeanEvent, _> = serde_json::from_value(json_missing_type);
     assert!(result.is_err(), "Expected error for missing event_type");
 
-    let json_empty_type = serde_json::json!({
+    let json_empty_type = rz_core::json!({
         "event_id": "$empty_type",
         "type": "",
         "sender": "@alice:example.com",
@@ -5989,7 +5990,7 @@ fn test_types_empty_event_type() {
 fn test_types_clamp_power_levels() {
     use rz_core::LeanEvent;
 
-    let json_pl = serde_json::json!({
+    let json_pl = rz_core::json!({
         "event_id": "$pl",
         "type": "m.room.power_levels",
         "sender": "@alice:example.com",
@@ -6020,7 +6021,7 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
         event_type: "m.room.member".into(),
         state_key: Some("@alice:example.com".into()),
         sender: "@alice:example.com".into(),
-        content: serde_json::json!({ "membership": "join" }),
+        content: rz_core::json!({ "membership": "join" }),
         ..Default::default()
     };
 
@@ -6029,7 +6030,7 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
         event_type: "m.room.member".into(),
         state_key: Some("@bob:example.com".into()),
         sender: "@alice:example.com".into(),
-        content: serde_json::json!({ "membership": "leave" }), // Kick is leave where sender != state_key
+        content: rz_core::json!({ "membership": "leave" }), // Kick is leave where sender != state_key
         ..Default::default()
     };
 
@@ -6038,7 +6039,7 @@ fn test_v2_vs_v2_1_member_power_event_classification() {
         event_type: "m.room.member".into(),
         state_key: Some("@charlie:example.com".into()),
         sender: "@charlie:example.com".into(),
-        content: serde_json::json!({ "membership": "leave" }), // Self-leave
+        content: rz_core::json!({ "membership": "leave" }), // Self-leave
         ..Default::default()
     };
 
@@ -6129,7 +6130,7 @@ fn test_lean_event_serialize_roundtrip() {
         power_level: 0,
         sender: "@alice:x.com".into(),
         origin_server_ts: 1_234_567_890,
-        content: serde_json::json!({"body": "hello"}),
+        content: rz_core::json!({"body": "hello"}),
         prev_events: vec!["$prev".into()],
         auth_events: vec!["$auth".into()],
         depth: 5,
@@ -6189,7 +6190,7 @@ fn test_lean_event_deserialize_accepts_legacy_rejection_flags() {
 fn test_event_content_blanket_impl_all_methods() {
     use rz_core::basespec::rezzy_types::EventContent;
 
-    let content = serde_json::json!({
+    let content = rz_core::json!({
         "membership": "join",
         "join_rule": "public",
         "ban": 60,
@@ -6221,7 +6222,7 @@ fn test_event_content_blanket_impl_all_methods() {
 #[test]
 fn test_msc4289_additional_creators_version_gating() {
     use rz_core::basespec::rezzy_types::EventContent;
-    let content = serde_json::json!({
+    let content = rz_core::json!({
         "additional_creators": ["@ac:x.com"]
     });
     // The TestContent wrapper correctly parses it regardless of version
@@ -6267,7 +6268,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
             event_type: "m.room.create".into(),
             state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "creator": "@alice:example.com" }),
+            content: rz_core::json!({ "creator": "@alice:example.com" }),
             prev_events: vec![],
             auth_events: vec![],
             depth: 1,
@@ -6283,7 +6284,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({
+            content: rz_core::json!({
                 "users": { "@alice:example.com": 100 },
                 "users_default": 0,
                 "state_default": 50,
@@ -6304,7 +6305,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "membership": "join" }),
+            content: rz_core::json!({ "membership": "join" }),
             prev_events: vec!["$pl".into()],
             auth_events: vec!["$create".into(), "$pl".into()],
             depth: 3,
@@ -6320,7 +6321,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
             event_type: "m.room.member".into(),
             state_key: Some("@alice:example.com".into()),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "membership": "leave" }),
+            content: rz_core::json!({ "membership": "leave" }),
             prev_events: vec!["$alice_join".into()],
             auth_events: vec!["$create".into(), "$pl".into(), "$alice_join".into()],
             depth: 10,
@@ -6369,7 +6370,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
             event_type: "m.room.join_rules".into(),
             state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "join_rule": "invite" }),
+            content: rz_core::json!({ "join_rule": "invite" }),
             prev_events: vec!["$alice_join".into()],
             auth_events: vec!["$create".into(), "$pl".into(), "$alice_join".into()],
             depth: 5,
@@ -6386,7 +6387,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
             event_type: "m.room.join_rules".into(),
             state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "join_rule": "public" }),
+            content: rz_core::json!({ "join_rule": "public" }),
             prev_events: vec!["$alice_join".into()],
             auth_events: vec!["$create".into(), "$pl".into(), "$alice_join".into()],
             depth: 4,
@@ -6625,7 +6626,7 @@ fn test_msc4289_lean_event_get_redact_and_creator() {
     let ev = LeanEvent::<String> {
         event_id: "ev".into(),
         event_type: "m.room.power_levels".into(),
-        content: serde_json::json!({"redact": 50, "creator": "@bob:x.com"}),
+        content: rz_core::json!({"redact": 50, "creator": "@bob:x.com"}),
         ..Default::default()
     };
     assert_eq!(ev.get_redact(), Some(50));
@@ -6758,7 +6759,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
         sender: "@alice:x.com".into(),
-        content: serde_json::json!({"users": {"@alice:x.com": 100}}),
+        content: rz_core::json!({"users": {"@alice:x.com": 100}}),
         auth_events: vec!["$create".into()],
         ..Default::default()
     };
@@ -6772,7 +6773,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         event_type: "m.room.power_levels".into(),
         state_key: Some(String::new()),
         sender: "@bob:x.com".into(), // not a member (no join): rejected for non-membership
-        content: serde_json::json!({"users": {"@bob:x.com": 100}}),
+        content: rz_core::json!({"users": {"@bob:x.com": 100}}),
         auth_events: vec!["$create".into(), "$pl".into()],
         ..Default::default()
     };
@@ -6815,7 +6816,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
         .any(|d| d.event_id == "$bogus_topic" && !d.accepted));
 
     // Cover BTreeMap EventProvider (types.rs)
-    let btree_provider: BTreeMap<String, LeanEvent<String, serde_json::Value>> = BTreeMap::new();
+    let btree_provider: BTreeMap<String, LeanEvent<String, rz_core::JsonValue>> = BTreeMap::new();
     assert!(btree_provider.get_event(&"$none".to_string()).is_none());
 
     // Cover reconstruct_state_batch broken chain branches
@@ -7111,13 +7112,13 @@ fn test_event_content_get_room_version() {
         fn visit_user_keys<'a>(&'a self, _v: &mut dyn FnMut(&'a str)) {}
     }
 
-    let with_version = serde_json::json!({"room_version": "11"});
+    let with_version = rz_core::json!({"room_version": "11"});
     assert_eq!(with_version.get_room_version(), Some("11"));
 
-    let without = serde_json::json!({"membership": "join"});
+    let without = rz_core::json!({"membership": "join"});
     assert_eq!(without.get_room_version(), None);
 
-    let non_string = serde_json::json!({"room_version": 42});
+    let non_string = rz_core::json!({"room_version": 42});
     assert_eq!(non_string.get_room_version(), None);
 
     // Verify the default trait implementation returns None
@@ -7143,7 +7144,7 @@ fn test_lean_event_get_room_version() {
         event_type: "m.room.create".into(),
         state_key: Some(String::new()),
         sender: "@a:x".into(),
-        content: serde_json::json!({"room_version": "10"}),
+        content: rz_core::json!({"room_version": "10"}),
         ..Default::default()
     };
     assert_eq!(event.get_room_version(), Some("10"));
@@ -7156,7 +7157,7 @@ fn test_lean_event_get_join_authorised_via_users_server() {
         event_type: "m.room.member".into(),
         state_key: Some("@bob:x".into()),
         sender: "@bob:x".into(),
-        content: serde_json::json!({
+        content: rz_core::json!({
             "membership": "join",
             "join_authorised_via_users_server": "@alice:x"
         }),
@@ -7168,7 +7169,7 @@ fn test_lean_event_get_join_authorised_via_users_server() {
     );
 
     let without = LeanEvent::<String> {
-        content: serde_json::json!({"membership": "join"}),
+        content: rz_core::json!({"membership": "join"}),
         ..event.clone()
     };
     assert_eq!(without.get_join_authorised_via_users_server(), None);
@@ -7183,7 +7184,7 @@ fn test_lean_event_borrowed_view_roundtrip() {
         power_level: 42,
         origin_server_ts: 1_234_567_890,
         sender: "@alice:x.com".into(),
-        content: serde_json::json!({"body": "hello"}),
+        content: rz_core::json!({"body": "hello"}),
         prev_events: vec!["$prev".into()],
         auth_events: vec!["$auth".into()],
         depth: 5,
@@ -7232,7 +7233,7 @@ fn test_lean_event_borrowed_view_accessors() {
         power_level: 7,
         origin_server_ts: 1_234_567_890,
         sender: "@alice:x.com".into(),
-        content: serde_json::json!({"body": "hello"}),
+        content: rz_core::json!({"body": "hello"}),
         prev_events: vec!["$prev".into()],
         auth_events: vec!["$auth".into()],
         depth: 5,
@@ -7262,7 +7263,7 @@ fn test_event_like_default_rejection_flags() {
 
     struct MinimalEventLike {
         id: String,
-        content: serde_json::Value,
+        content: rz_core::JsonValue,
     }
 
     impl DagNode for MinimalEventLike {
@@ -7283,7 +7284,7 @@ fn test_event_like_default_rejection_flags() {
     }
 
     impl EventLike for MinimalEventLike {
-        type Content = serde_json::Value;
+        type Content = rz_core::JsonValue;
 
         fn event_type(&self) -> std::borrow::Cow<'_, str> {
             std::borrow::Cow::Borrowed("m.room.message")
@@ -7300,14 +7301,14 @@ fn test_event_like_default_rejection_flags() {
         fn origin_server_ts(&self) -> u64 {
             0
         }
-        fn content(&self) -> &serde_json::Value {
+        fn content(&self) -> &rz_core::JsonValue {
             &self.content
         }
     }
 
     let event = MinimalEventLike {
         id: "$default-flags".into(),
-        content: serde_json::json!({}),
+        content: rz_core::json!({}),
     };
 
     assert!(!event.rejected());
@@ -7331,7 +7332,7 @@ fn test_event_like_default_methods_on_lean_event() {
         sender: "@admin:x".into(),
         power_level: 100,
         origin_server_ts: 1_700_000_000,
-        content: serde_json::json!({
+        content: rz_core::json!({
             "ban": 50,
             "kick": 50,
             "invite": 25,
@@ -7378,7 +7379,7 @@ fn test_restricts_sender_false_for_non_admin_event() {
         event_type: "m.room.message".into(),
         state_key: None,
         sender: "@alice:x".into(),
-        content: serde_json::json!({"body": "hello"}),
+        content: rz_core::json!({"body": "hello"}),
         ..Default::default()
     };
     // Should return false — not a ban/kick/demotion
@@ -8012,7 +8013,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
         state_key: Some(String::new()),
         sender: users[0].clone(),
         origin_server_ts: ts,
-        content: serde_json::json!({"room_version": "12"}),
+        content: rz_core::json!({"room_version": "12"}),
         ..Default::default()
     });
     ts += 1;
@@ -8024,7 +8025,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
         state_key: Some(users[0].clone()),
         sender: users[0].clone(),
         origin_server_ts: ts,
-        content: serde_json::json!({"membership": "join"}),
+        content: rz_core::json!({"membership": "join"}),
         auth_events: vec!["$create".into()],
         ..Default::default()
     });
@@ -8034,7 +8035,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
     // issue PL changes — the key ingredient for a PL war)
     let mut users_pl = serde_json::Map::new();
     for (i, u) in users.iter().enumerate() {
-        users_pl.insert(u.clone(), serde_json::json!(if i == 0 { 100 } else { 50 }));
+        users_pl.insert(u.clone(), rz_core::json!(if i == 0 { 100 } else { 50 }));
     }
     events.push(rz_core::LeanEvent {
         event_id: "$pl_root".into(),
@@ -8042,7 +8043,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
         state_key: Some(String::new()),
         sender: users[0].clone(),
         origin_server_ts: ts,
-        content: serde_json::json!({"users": users_pl}),
+        content: rz_core::json!({"users": users_pl}),
         auth_events: vec!["$join_0".into()],
         ..Default::default()
     });
@@ -8055,7 +8056,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
         state_key: Some(String::new()),
         sender: users[0].clone(),
         origin_server_ts: ts,
-        content: serde_json::json!({"join_rule": "public"}),
+        content: rz_core::json!({"join_rule": "public"}),
         auth_events: vec!["$join_0".into(), "$pl_root".into()],
         ..Default::default()
     });
@@ -8069,7 +8070,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
             state_key: Some(user.clone()),
             sender: user.clone(),
             origin_server_ts: ts,
-            content: serde_json::json!({"membership": "join"}),
+            content: rz_core::json!({"membership": "join"}),
             auth_events: vec!["$pl_root".into(), "$jr".into()],
             ..Default::default()
         });
@@ -8104,10 +8105,10 @@ fn test_performance_and_correctness_dense_bifurcations() {
                 } else {
                     50
                 };
-                fork_users_pl.insert(u.clone(), serde_json::json!(pl));
+                fork_users_pl.insert(u.clone(), rz_core::json!(pl));
             }
             // user0 always 100 (room admin)
-            fork_users_pl.insert(users[0].clone(), serde_json::json!(100));
+            fork_users_pl.insert(users[0].clone(), rz_core::json!(100));
 
             events.push(rz_core::LeanEvent {
                 event_id: ev_id.clone(),
@@ -8115,7 +8116,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
                 state_key: Some(String::new()),
                 sender: fork_user.clone(),
                 origin_server_ts: ts,
-                content: serde_json::json!({"users": fork_users_pl}),
+                content: rz_core::json!({"users": fork_users_pl}),
                 auth_events: vec![prev_pl_id.clone(), format!("$join_{fork}")],
                 ..Default::default()
             });
@@ -8138,7 +8139,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
                 state_key: Some(extra_user.clone()),
                 sender: extra_user.clone(),
                 origin_server_ts: ts,
-                content: serde_json::json!({"membership": "join"}),
+                content: rz_core::json!({"membership": "join"}),
                 auth_events: vec![prev_pl_id.clone(), "$jr".into()],
                 ..Default::default()
             });
@@ -8395,7 +8396,7 @@ fn test_lean_event_serialize_propagates_write_error() {
         power_level: 0,
         sender: "@alice:x.com".into(),
         origin_server_ts: 1,
-        content: serde_json::json!({}),
+        content: rz_core::json!({}),
         prev_events: vec![],
         auth_events: vec![],
         depth: 1,

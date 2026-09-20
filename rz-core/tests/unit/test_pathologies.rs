@@ -1,9 +1,9 @@
 use crate::utils;
+use rz_core::JsonValue as Value;
 use rz_core::{
     resolve_iterative_sort, resolve_iterative_sort_with_cache, LeanEvent, LocalAuthCache,
     StateResVersion,
 };
-use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};

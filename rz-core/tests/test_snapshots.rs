@@ -11,8 +11,8 @@
 //! Run: `cargo test --features std --test snapshots`
 mod utils;
 
+use rz_core::JsonValue as Value;
 use rz_core::{resolve_iterative_sort, LeanEvent, StateResVersion};
-use serde_json::Value;
 use std::collections::HashMap;
 
 fn to_event_map(events: &[LeanEvent]) -> HashMap<String, LeanEvent> {

@@ -1,7 +1,7 @@
 // Quick scratch test - run from ruma-lean root
 use rz_core::auth::{check_auth, RoomState};
+use rz_core::json;
 use rz_core::{LeanEvent, StateResVersion};
-use serde_json::json;
 
 #[test]
 fn test_tombstone_auth() {

@@ -123,12 +123,6 @@ impl From<std::io::Error> for AppError {
     }
 }
 
-impl From<serde_json::Error> for AppError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::new(ErrorCode::MalformedJson, e.to_string())
-    }
-}
-
 impl From<rz_core::JsonError> for AppError {
     fn from(e: rz_core::JsonError) -> Self {
         Self::new(ErrorCode::MalformedJson, e.to_string())

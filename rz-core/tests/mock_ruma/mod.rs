@@ -14,8 +14,8 @@ use rz_core::LeanEvent;
 
 fn ruma_to_lean_event<E: Event>(ev: &E) -> LeanEvent {
     use alloc::string::ToString;
-    let content_val: serde_json::Value =
-        serde_json::from_str(ev.content().get()).unwrap_or(serde_json::Value::Null);
+    let content_val: rz_core::JsonValue =
+        serde_json::from_str(ev.content().get()).unwrap_or(rz_core::JsonValue::Null);
     let power_level = content_val
         .get("power_level")
         .and_then(rz_core::basespec::rezzy_types::coerce_json_to_i64)
