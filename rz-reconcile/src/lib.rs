@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Minisketch reconciliation helpers (MSC4521).
 //!
 //! This crate is independent of the core state resolution engine and depends

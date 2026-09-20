@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 #[macro_use]
 mod error;
 mod format;
