@@ -801,8 +801,8 @@ mod tests {
         M_EMPTY_STATE_KEY, M_ROOM_CREATE, M_ROOM_MEMBER, M_ROOM_NAME, M_ROOM_POWER_LEVELS,
         M_ROOM_TOPIC,
     };
-    use alloc::string::String;
     use crate::json::Value;
+    use alloc::string::String;
 
     #[derive(Default)]
     struct TestAdmission {

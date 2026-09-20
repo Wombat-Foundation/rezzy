@@ -344,8 +344,8 @@ mod state_dag_error_display_tests {
 mod state_dag_branch_coverage_tests {
     use super::*;
     use crate::basespec::rezzy_types::RoomId;
-    use alloc::{format, string::String};
     use crate::json::Value;
+    use alloc::{format, string::String};
 
     type TestEvent = LeanEvent<String, Value, String>;
     type TestMap = crate::HashMap<String, TestEvent>;
