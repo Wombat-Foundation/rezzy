@@ -32,6 +32,8 @@
 #[path = "../utils/mod.rs"]
 mod utils;
 
+mod utils_extra;
+
 mod differential_harness;
 mod test_auth;
 mod test_bench_filters;

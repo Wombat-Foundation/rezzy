@@ -13,7 +13,7 @@
 //! | `std`       | ✓       | Enables `std::collections::{HashMap, HashSet}` and thread-parallel lattice resolution. |
 //! | `cli`       | ✗       | Builds the `rezzy` CLI binary and merge utilities. |
 //! | `mock-ruma` | ✗       | Enables Ruma SDK interop for upstream parity testing. |
-//! | `regen`     | ✗       | Builds the `regen_oracles` snapshot regeneration binary. |
+//! | `regen`     | ✗       | Builds the `regen-oracles` snapshot regeneration binary. |
 //! | `signing`   | ✗       | Signature-verification traits (`SignatureVerifier` et al.), backend-agnostic. |
 //! | `signing-dalek` | ✗   | `ed25519-dalek`-backed `SignatureVerifier` implementation. |
 //!
@@ -156,9 +156,12 @@ pub use hashbrown::{HashMap, HashSet};
 /// way.
 pub(crate) type FastMap<K, V> = hashbrown::HashMap<K, V, hashbrown::DefaultHashBuilder>;
 
-/// See [`FastMap`]'s documentation.
-#[allow(dead_code)]
-pub(crate) type FastSet<K> = hashbrown::HashSet<K, hashbrown::DefaultHashBuilder>;
+/// A hash set using rezzy's default randomized hasher.
+///
+/// This is public because the narrow-conflict override APIs accept it. Most
+/// callers should not need it: their state resolution entry point derives the
+/// conflicted-key set itself.
+pub type FastSet<K> = hashbrown::HashSet<K, hashbrown::DefaultHashBuilder>;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]

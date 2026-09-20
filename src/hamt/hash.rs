@@ -17,6 +17,33 @@ use core::hash::Hasher;
 /// in both routing and node identity. Its public nature does not raise the
 /// cost of a collision within a namespace, so a full 256-bit digest is retained
 /// to provide a 128-bit generic collision-security margin.
+///
+/// # Threat model
+///
+/// The `structural_key` is **not a secret** — it is public within its
+/// namespace (room members learn it from the server). This is safe for
+/// HAMT routing because:
+///
+/// - **BLAKE2b-256 is collision-resistant** at 128-bit security. Grinding
+///   a shallow-prefix collision (k levels of 5-bit agreement) costs
+///   `2^(5k)` hash evaluations; for k ≤ ~10 this is practical (seconds),
+///   but only causes O(depth) slowdown — the tree still terminates.
+/// - **Full-depth exhaustion** (52 levels = 2^260 hashes) is
+///   computationally infeasible.
+/// - `HamtBuildError::HashCollision` at max depth is a safe error return,
+///   not a panic or data corruption.
+///
+/// The threat model assumes:
+/// 1. The structural key is per-room (or per-namespace), not shared across
+///    rooms.
+/// 2. Callers of `build_hamt_with_key_hash` do **not** feed wire-derived
+///    path hashes through the custom `key_hash` closure without local
+///    re-keying via `key_path_hash(structural_key, key)`.
+/// 3. The server does not weaken the key (short, reused, or predictable
+///    values reduce grinding cost for shallow chains).
+///
+/// If any of these assumptions are violated, an adversary can force deeper
+/// subtrees or cache-poisoning via structural-hash collisions.
 pub type StructuralHash = [u8; 32];
 
 /// A 32-byte state-group identifier derived from the full root lattice.
@@ -25,17 +52,17 @@ pub type StructuralHash = [u8; 32];
 /// must not be confused with the local-only `StructuralHash`.
 pub type StateGroupId = [u8; 32];
 
-/// Default codec version (1 = dense v1 binary format).
-pub const HAMT_CODEC_VERSION_V1: u8 = 1;
-/// Default routing version (1 = full keyed structural hash routing).
-pub const HAMT_ROUTING_VERSION_V1: u8 = 1;
+/// Current codec version (1 = dense format with 32-byte structural hashes).
+pub const HAMT_CODEC_VERSION: u8 = 1;
+/// Current routing version (1 = full keyed structural hash routing).
+pub const HAMT_ROUTING_VERSION: u8 = 1;
 
-fn default_codec_version_v1() -> u8 {
-    HAMT_CODEC_VERSION_V1
+fn default_codec_version() -> u8 {
+    HAMT_CODEC_VERSION
 }
 
 fn default_routing_version_v1() -> u8 {
-    HAMT_ROUTING_VERSION_V1
+    HAMT_ROUTING_VERSION
 }
 
 /// A resolved root handle carrying the local structural hash, global state-group identifier,
@@ -55,7 +82,7 @@ fn default_routing_version_v1() -> u8 {
 /// persistence is needed, use a versioned envelope with an explicit format tag.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RootHandle {
-    #[serde(default = "default_codec_version_v1")]
+    #[serde(default = "default_codec_version")]
     pub codec_version: u8,
     #[serde(default = "default_routing_version_v1")]
     pub routing_version: u8,
@@ -66,13 +93,13 @@ pub struct RootHandle {
 }
 
 impl RootHandle {
-    /// Builds a root handle with default v1 codec and v1 routing from a precomputed
+    /// Builds a root handle with the current codec and v1 routing from a precomputed
     /// structural hash and a state lattice.
     #[must_use]
     pub fn from_lthash(structural_hash: StructuralHash, lattice: &crate::state::LtHash) -> Self {
         Self::with_versions(
-            HAMT_CODEC_VERSION_V1,
-            HAMT_ROUTING_VERSION_V1,
+            HAMT_CODEC_VERSION,
+            HAMT_ROUTING_VERSION,
             [0; 4],
             structural_hash,
             lattice,
@@ -144,8 +171,8 @@ mod tests {
     #[test]
     fn test_root_handle_hashable() {
         let handle = RootHandle {
-            codec_version: HAMT_CODEC_VERSION_V1,
-            routing_version: HAMT_ROUTING_VERSION_V1,
+            codec_version: HAMT_CODEC_VERSION,
+            routing_version: HAMT_ROUTING_VERSION,
             routing_params: [0; 4],
             structural_hash: [1; 32],
             state_group_id: [2; 32],
@@ -156,14 +183,14 @@ mod tests {
     }
 
     #[test]
-    fn legacy_root_handle_metadata_defaults_to_v1() {
+    fn root_handle_metadata_defaults_to_current_codec() {
         let legacy = r#"{
             "structural_hash": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
             "state_group_id": [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
         }"#;
         let decoded: RootHandle = serde_json::from_str(legacy).expect("legacy handle decodes");
-        assert_eq!(decoded.codec_version, HAMT_CODEC_VERSION_V1);
-        assert_eq!(decoded.routing_version, HAMT_ROUTING_VERSION_V1);
+        assert_eq!(decoded.codec_version, HAMT_CODEC_VERSION);
+        assert_eq!(decoded.routing_version, HAMT_ROUTING_VERSION);
         assert_eq!(decoded.routing_params, [0; 4]);
     }
 }

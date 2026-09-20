@@ -17,7 +17,7 @@ pub fn fetch_room_state(
     homeserver: &str,
     room_id: &str,
     token: Option<&str>,
-) -> anyhow::Result<serde_json::Value> {
+) -> Result<serde_json::Value, crate::error::AppError> {
     let base = if homeserver.starts_with("http://") || homeserver.starts_with("https://") {
         homeserver.to_string()
     } else {
@@ -34,17 +34,22 @@ pub fn fetch_room_state(
         Ok(resp) => resp,
         Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();
-            anyhow::bail!("HTTP {code}: {body}");
+            bail_code!(crate::error::ErrorCode::NetworkError, "HTTP {code}: {body}");
         }
-        Err(e) => anyhow::bail!("Request failed: {e}"),
+        Err(e) => bail_code!(crate::error::ErrorCode::NetworkError, "Request failed: {e}"),
     };
-    let body = response.into_string()?;
+    let body = response.into_string().map_err(|e| {
+        crate::error::AppError::new(crate::error::ErrorCode::NetworkError, e.to_string())
+    })?;
 
     let val: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
-        anyhow::anyhow!(
-            "Failed to parse JSON: {}. Response: {}",
-            e,
-            &body[..body.len().min(500)]
+        crate::error::AppError::new(
+            crate::error::ErrorCode::NetworkError,
+            format!(
+                "Failed to parse JSON: {}. Response: {}",
+                e,
+                &body[..body.len().min(500)]
+            ),
         )
     })?;
     Ok(val)

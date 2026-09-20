@@ -37,7 +37,7 @@ use crate::{
     state::delta::{ResolutionDelta, ResolvePhase},
     FastMap, HashMap,
 };
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 
 /// The V2 iterative cascade has no V3 semantics. Keep this guard at every
 /// internal terminal entry point so `tk.nutra.cdo.12` cannot silently resolve
@@ -591,9 +591,8 @@ where
 ///
 /// When `conflicted_keys_override` is `Some`, the caller-supplied set is used
 /// instead of deriving `conflicted_keys` from `conflicted_events`.  This lets
-/// a pipeline that has already computed a *narrow* (pre-widening) key set make
-/// the `debug_assert` in `fold_lattice_chunk` load-bearing against the
-/// widened set, rather than trivially true.
+/// a pipeline that has already computed a *narrow* (pre-widening) key set
+/// prevent supplemental events from deciding their own state keys.
 #[must_use]
 #[allow(clippy::implicit_hasher, clippy::too_many_arguments)]
 pub fn resolve_iterative_sort_with_cache<
@@ -635,6 +634,40 @@ where
         &mut FastMap::default(),
         conflicted_keys,
         empty_key,
+    )
+}
+
+/// Resolves state with a caller-supplied set of genuinely conflicted keys.
+///
+/// This is the cache-free counterpart of [`resolve_iterative_sort_with_cache`]
+/// for callers that need to exclude supplemental auth-chain events from
+/// deciding their own state keys. Its inputs intentionally match
+/// [`crate::resolve::semilattice::resolve_semilattice_fold_with_conflicted_keys`]
+/// so the two resolver strategies can be compared directly.
+#[must_use]
+pub fn resolve_iterative_sort_with_conflicted_keys<
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent + Clone,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+>(
+    unconflicted_state: &crate::state::at::SharedState<Id>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    version: StateResVersion,
+    conflicted_keys: &crate::FastSet<(EventType, String)>,
+) -> crate::state::at::SharedState<Id> {
+    let mut pl_cache: HashMap<Id, i64> = HashMap::default();
+    let empty_key = String::new();
+    resolve_iterative_sort_with_cache(
+        unconflicted_state,
+        conflicted_events,
+        auth_context,
+        None,
+        version,
+        &mut pl_cache,
+        Some(conflicted_keys),
+        &empty_key,
     )
 }
 

@@ -29,6 +29,7 @@ use rezzy::reconcile::resident::ResidentKernel;
 use rezzy::reconcile::server::build_bucket_sketches;
 use rezzy::reconcile::triage::{
     estimate_strata, BucketDecodeBatch, BucketDecodeSuccess, MAX_BUCKETED_SKETCH_CAPACITY,
+    MAX_STRATA_FACTOR_WORK,
 };
 use rezzy::reconcile::ElementHash;
 
@@ -171,7 +172,7 @@ fn run_round_trip(
         ClientAction::ResolveRoots { roots } => return (1, roots, "ResolveRoots"),
     };
 
-    let estimated_delta = estimate_strata(local.strata(), remote.strata())
+    let estimated_delta = estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK)
         .ok()
         .map(|estimate| estimate.delta);
 
@@ -295,7 +296,8 @@ fn low_confidence_estimate_still_converges() {
 
     // The injected differences cluster in the low strata (stratum == trailing
     // zeros of h128), overflowing one and forcing the low_confidence fallback.
-    let estimate = estimate_strata(local.strata(), remote.strata()).unwrap();
+    let estimate =
+        estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK).unwrap();
     assert!(
         estimate.low_confidence,
         "a genuine per-stratum difference must force the low_confidence fallback"

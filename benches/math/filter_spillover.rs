@@ -45,7 +45,7 @@ use rezzy::{
     build_bucket_sketches, estimate_strata, triage::MAX_BUCKET_SKETCH_CAPACITY, BucketDecodeBatch,
     BucketDecodeSuccess, BucketExchange, ClientAction, ElementHash, H64Index, ReconciliationClient,
     RemoteDigest, ResidentKernel, SyndromeSketch, MAX_BUCKETED_SKETCH_CAPACITY,
-    MAX_BUCKETS_PER_ROUND, MAX_SKETCH_CAPACITY,
+    MAX_BUCKETS_PER_ROUND, MAX_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK,
 };
 
 use super::filters::{
@@ -185,7 +185,7 @@ fn prepare_input(local_hashes: &[ElementHash], remote_hashes: &[ElementHash]) ->
         frame_matches: true,
         has_unknown_extremity: false,
     };
-    let estimated_delta = estimate_strata(local.strata(), remote.strata())
+    let estimated_delta = estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK)
         .map_or(500, |estimate| estimate.delta.max(1));
 
     PreparedInput {

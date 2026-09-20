@@ -457,7 +457,7 @@ fn compressed_causal_proofs_round_trip() {
 
         let compressed = compress_causal_path(merkle::causal::CAUSAL_DEPTH, &path);
         let decompressed =
-            decompress_causal_path(k, merkle::causal::CAUSAL_DEPTH, &compressed).unwrap();
+            decompress_causal_path(merkle::causal::CAUSAL_DEPTH, &compressed).unwrap();
         assert_eq!(decompressed, path);
         assert!(verify_causal_inclusion_compressed(k, &compressed, root, count).unwrap());
     }
@@ -473,7 +473,7 @@ fn compressed_causal_proofs_round_trip() {
     ));
 
     let compressed = compress_causal_path(depth, &path);
-    let decompressed = decompress_causal_path(&absent, depth, &compressed).unwrap();
+    let decompressed = decompress_causal_path(depth, &compressed).unwrap();
     assert_eq!(decompressed, path);
     assert!(
         verify_causal_non_inclusion_compressed(&absent, depth, &compressed, root, count).unwrap()

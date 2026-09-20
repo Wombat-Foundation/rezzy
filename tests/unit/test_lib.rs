@@ -3386,12 +3386,6 @@ fn test_types_validate_syntactic() {
     ev.sender = "@alice:example.com".to_string();
     assert!(ev.validate_syntactic("11").is_ok());
 
-    // Test sender localpart charset (only a-z, 0-9, '.', '_', '=', '-', '/', '+')
-    ev.sender = "@Alice:example.com".to_string();
-    assert!(
-        ev.validate_syntactic("11").is_err(),
-        "uppercase is not a valid localpart character"
-    );
     ev.sender = "@:example.com".to_string();
     assert!(
         ev.validate_syntactic("11").is_err(),
@@ -3466,6 +3460,25 @@ fn test_types_validate_syntactic() {
     );
     ev.state_key = Some("@alice:example.com".to_string());
     assert!(ev.validate_syntactic("11").is_ok());
+}
+
+#[test_case::test_case("11"; "v11")]
+#[test_case::test_case("12"; "v12")]
+#[test_case::test_case("12.1"; "v12_1")]
+fn test_types_validate_syntactic_rejects_uppercase_sender(room_version: &str) {
+    let ev: LeanEvent = LeanEvent {
+        event_id: "$valid_event_id:example.com".to_string(),
+        event_type: "m.room.message".to_string(),
+        sender: "@Alice:example.com".to_string(),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        ev.validate_syntactic(room_version),
+        Err(
+            "sender must be a valid MXID: '@' prefix, ':' separator, non-empty domain, and a localpart of only a-z, 0-9, '.', '_', '=', '-', '/', '+'"
+        )
+    );
 }
 
 #[test]
@@ -6655,9 +6668,11 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     assert!(!is_ancestor(&"A".to_string(), &"B".to_string(), &context));
 
     // Cover resolve_semilattice_fold
+    let lattice_unconflicted = imbl::OrdMap::new();
+    let lattice_conflicted = context.clone();
     let lattice_res = resolve_semilattice_fold(
-        imbl::OrdMap::new(),
-        context.clone(),
+        &lattice_unconflicted,
+        &lattice_conflicted,
         &HashMap::new(),
         StateResVersion::V2,
     );

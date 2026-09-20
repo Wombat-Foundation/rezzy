@@ -1,5 +1,6 @@
 #![allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
 use crate::utils;
+use crate::utils_extra;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use serde_json::json;
 use std::collections::HashMap;
@@ -677,7 +678,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
     auth_context.insert("$eve_join".to_string(), eve_join.clone());
     auth_context.insert("$pl_demote".to_string(), pl_demote.clone());
 
-    let unconflicted = utils::build_unconflicted_state_from_ids(
+    let unconflicted = utils_extra::build_unconflicted_state_from_ids(
         &auth_context,
         &["$create", "$pl_promo", "$join_rules", "$eve_join"],
     );
@@ -842,7 +843,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
     auth_context.insert("$join_rules".to_string(), join_rules.clone());
     auth_context.insert("$bob_join".to_string(), bob_join.clone());
 
-    let unconflicted = utils::build_unconflicted_state_from_ids(
+    let unconflicted = utils_extra::build_unconflicted_state_from_ids(
         &auth_context,
         &["$create", "$pl", "$join_rules", "$bob_join"],
     );
@@ -1327,7 +1328,7 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
     auth_context.insert("$join_rules".to_string(), join_rules.clone());
     auth_context.insert("$bob_join".to_string(), bob_join.clone());
 
-    let unconflicted = utils::build_unconflicted_state_from_ids(
+    let unconflicted = utils_extra::build_unconflicted_state_from_ids(
         &auth_context,
         &["$create", "$pl", "$join_rules", "$bob_join"],
     );
@@ -1725,7 +1726,7 @@ fn test_v2_1_1_power_phase_ban_supplementation() {
     auth_context.insert("$mallory_join".to_string(), mallory_join.clone());
     auth_context.insert("$mallory_ban".to_string(), mallory_ban.clone());
 
-    let unconflicted = utils::build_unconflicted_state_from_ids(
+    let unconflicted = utils_extra::build_unconflicted_state_from_ids(
         &auth_context,
         &[
             "$create",

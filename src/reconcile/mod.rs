@@ -45,7 +45,7 @@ pub use server::{
 pub use triage::{
     decode_bucket_sketches, estimate_strata, validate_overflow_bucket_requests, BucketDecodeBatch,
     BucketDecodeSuccess, BucketRequest, StrataEstimate, MAX_BATCH_FACTOR_WORK,
-    MAX_BUCKETED_SKETCH_CAPACITY, MAX_OVERFLOW_BUCKET_CAPACITY,
+    MAX_BUCKETED_SKETCH_CAPACITY, MAX_OVERFLOW_BUCKET_CAPACITY, MAX_STRATA_FACTOR_WORK,
 };
 
 // These are cross-module invariant checks, not dead asserts on a literal --
@@ -75,3 +75,8 @@ const _: () = assert!(triage::MAX_BUCKETED_SKETCH_CAPACITY == 4_096);
 // rather than silently moving the batch-decode default.
 #[allow(clippy::assertions_on_constants)]
 const _: () = assert!(triage::MAX_BATCH_FACTOR_WORK == 36_700_160);
+// Same reasoning as above: pinning the derived literal so a change to
+// STRATA_COUNT, STRATUM_CAPACITY, or the pinsketch cost model surfaces
+// as a build failure rather than silently shifting the estimator budget.
+#[allow(clippy::assertions_on_constants)]
+const _: () = assert!(triage::MAX_STRATA_FACTOR_WORK == 1_458_176);

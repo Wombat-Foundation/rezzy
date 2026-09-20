@@ -1,6 +1,6 @@
 [package]
 name = "rezzy"
-version = "0.6.0"
+version = "0.6.0-rc.0"
 edition = "2021"
 rust-version = "1.81"
 resolver = "2"
@@ -63,13 +63,13 @@ required-features = ["cli"]
 test = false
 
 [[bin]]
-name = "regen_oracles"
+name = "regen-oracles"
 path = "tests/bin/regen_oracles.rs"
 required-features = ["regen"]
 test = false
 
 [[bin]]
-name = "bench_ruma_vs_rezzy"
+name = "bench-ruma-vs-rezzy"
 path = "scripts/bench_ruma_vs_rezzy.rs"
 required-features = ["mock-ruma"]
 test = false
@@ -86,15 +86,7 @@ std = ["serde_json/std", "serde/std"]
 # `cargo clippy --all-targets` pulled dev-deps in. With that pin,
 # `cargo metadata --features cli` shows clap (1.74) as the real `cli` MSRV
 # floor -- below the crate's own 1.81, not above it.
-cli = [
-    "std",
-    "dep:clap",
-    "dep:anyhow",
-    "dep:ureq",
-    "dep:idna_adapter",
-    "mimalloc",
-    "ureq/tls",
-]
+cli = ["std", "dep:clap", "dep:ureq", "dep:idna_adapter", "mimalloc", "ureq/tls"]
 regen = ["std"]
 # Event signature verification uses the RFC-8032 (ed25519-dalek) backend,
 # which shares rezzy's sha2 0.10 (no duplicate production hash crate).
@@ -106,17 +98,15 @@ signing-dalek = ["dep:ed25519-dalek"]
 # enabled, keep the SIMD parsing/`runtime-detection` speed features but NOT
 # `serde_impl` (serde JSON interop); that is pulled only by `simd-json-serde`
 # for dev/bench.
-simd-json = ["dep:simd-json"]
-simd-json-serde = ["simd-json", "simd-json/serde_impl"]
+simd-json = []
+simd-json-serde = ["simd-json"]
 mock-ruma = [
-    "dep:insta",
     "dep:ruma-common",
     "dep:ruma-events",
     "dep:ruma-state-res",
     "dep:ruma-signatures",
-    "dep:test-log",
 ]
-stress = ["dep:bincode"]
+stress = []
 mimalloc = ["dep:mimalloc"]
 # Compatibility alias: the `hashing` feature was removed, but downstream
 # manifests that request `rezzy/hashing` must still resolve.
@@ -127,9 +117,7 @@ hashing = []
 unstable-refcount-gc = []
 
 [dependencies]
-anyhow = { version = "1.0", optional = true }
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
-bincode = { version = "1", optional = true }
 blake2 = { version = "0.10", default-features = false }
 clap = { version = "=4.5.48", optional = true, features = ["derive", "env"] }
 ed25519-dalek = { version = "2", optional = true, default-features = false, features = [
@@ -142,7 +130,6 @@ hashbrown = { version = "0.15", default-features = false, features = [
 ] }
 idna_adapter = { version = ">=1.0, <1.2", optional = true, default-features = false }
 imbl = { version = "3.0", default-features = false, features = ["serde"] }
-insta = { version = "1.47.2", optional = true }
 mimalloc = { version = "0.1.52", optional = true }
 
 roaring = { version = "0.10", default-features = false } # compatible with the Rust 1.81 MSRV
@@ -159,25 +146,25 @@ serde = { version = "1.0", default-features = false, features = [
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }
 sha3 = { version = "0.10", default-features = false }
-simd-json = { version = "0.18", optional = true, default-features = false, features = [
-    "swar-number-parsing",
-    "runtime-detection",
-] }
-test-log = { version = "0.2.20", optional = true }
 ureq = { version = "2.9", optional = true, default-features = false, features = [
     "json",
 ] }
-# Keep the transitive TLS dependency compatible with the CLI's Rust 1.82 CI.
-# The exact requirement prevents `cargo update` from selecting zeroize 1.9+.
-# This is intentionally unconditional: dev-dependencies are resolved by the
-# default-features CI job too, so an optional CLI-only pin would not protect
-# the crate's MSRV there.
-zeroize = "=1.8.1"
 [dev-dependencies]
+bincode = "1"
 ed25519-consensus = { version = "2.1", default-features = false, features = ["std"] }
+insta = "1.47.2"
 rand_08 = { package = "rand", version = "0.8" }
+simd-json = { version = "0.18", default-features = false, features = [
+    "serde_impl",
+    "swar-number-parsing",
+    "runtime-detection",
+] }
 similar = "2.7.0"
 test-case = "3.3.1"
+test-log = "0.2.20"
+# Transitive pin: prevents cargo update from selecting zeroize 1.9+
+# (which raises rust-version to 1.85 and breaks the 1.81 MSRV).
+zeroize = "=1.8.1"
 
 [[example]]
 name = "bench_files"

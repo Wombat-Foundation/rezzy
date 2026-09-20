@@ -1,4 +1,5 @@
 use crate::utils;
+use crate::utils_extra;
 use rezzy::auth::*;
 use rezzy::basespec::event_types::{M_ROOM_CREATE, M_ROOM_MEMBER};
 use rezzy::*;
@@ -1063,7 +1064,7 @@ fn test_auth_error_display() {
 /// above the sender's PL.
 #[test]
 fn test_notifications_change_above_sender_pl_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@admin:x.com", "content": {"creator": "@admin:x.com"}}
 {"event_id": "$j1", "type": "m.room.member", "state_key": "@alice:x.com", "sender": "@alice:x.com", "content": {"membership": "join"}}
@@ -1090,7 +1091,7 @@ fn test_notifications_change_above_sender_pl_rejected() {
 /// when the PL event has an `events` map with an override for the event type.
 #[test]
 fn test_event_type_power_level_override() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@admin:x.com", "content": {"creator": "@admin:x.com"}}
 {"event_id": "$j1", "type": "m.room.member", "state_key": "@alice:x.com", "sender": "@alice:x.com", "content": {"membership": "join"}}
@@ -1126,7 +1127,7 @@ fn test_event_type_power_level_override() {
 /// Cover invite-join-rule branch: invited user self-joining under invite rules.
 #[test]
 fn test_invited_user_self_join_allowed() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@admin:x.com", "content": {"creator": "@admin:x.com"}}
 {"event_id": "$jr", "type": "m.room.join_rules", "state_key": "", "sender": "@admin:x.com", "content": {"join_rule": "invite"}}
@@ -1847,7 +1848,7 @@ fn test_msc4289_creator_implicit_power_level() {
 /// the room creator gets PL 100 and other users get PL 0.
 #[test]
 fn test_v1_v11_missing_pl_event_creator_fallback() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@creator:example.com", "content": {"creator": "@creator:example.com", "room_version": "10"}}
 {"event_id": "$join1", "type": "m.room.member", "state_key": "@creator:example.com", "sender": "@creator:example.com", "content": {"membership": "join"}}
@@ -3803,7 +3804,7 @@ fn test_empty_event_type_rejected() {
 /// Rule 10.3: `users` map with a non-user-ID key should be rejected.
 #[test]
 fn test_pl_validation_users_invalid_key_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
@@ -3830,7 +3831,7 @@ fn test_pl_validation_users_invalid_key_rejected() {
 /// Rule 10.6: sender tries to set `ban` higher than their own PL → reject.
 #[test]
 fn test_pl_validation_scalar_escalation_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
@@ -3853,7 +3854,7 @@ fn test_pl_validation_scalar_escalation_rejected() {
 /// Rule 10.6: sender sets `ban` to a value ≤ their PL → allow.
 #[test]
 fn test_pl_validation_scalar_change_allowed() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
@@ -3876,7 +3877,7 @@ fn test_pl_validation_scalar_change_allowed() {
 /// Rules 10.7–10.8: sender adds an `events` entry > their PL → reject.
 #[test]
 fn test_pl_validation_events_escalation_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
@@ -3899,7 +3900,7 @@ fn test_pl_validation_events_escalation_rejected() {
 /// Rule 10.10: sender promotes another user above their own PL → reject.
 #[test]
 fn test_pl_validation_users_promote_above_self_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
 {"event_id": "$join1", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
@@ -3923,7 +3924,7 @@ fn test_pl_validation_users_promote_above_self_rejected() {
 /// Rule 10.9: sender tries to demote a user at equal PL → reject (uses >=).
 #[test]
 fn test_pl_validation_users_demote_equal_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
 {"event_id": "$join1", "type": "m.room.member", "state_key": "@mod1:example.com", "sender": "@mod1:example.com", "content": {"membership": "join"}}
@@ -3947,7 +3948,7 @@ fn test_pl_validation_users_demote_equal_rejected() {
 /// Rule 10.9: sender demotes a user below their own PL → allow.
 #[test]
 fn test_pl_validation_users_demote_lower_allowed() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
 {"event_id": "$join1", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
@@ -3971,7 +3972,7 @@ fn test_pl_validation_users_demote_lower_allowed() {
 /// Rule 10.9 exemption: sender lowers their own PL → allow (self-entry exempt).
 #[test]
 fn test_pl_validation_users_self_demote_allowed() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
@@ -3991,7 +3992,7 @@ fn test_pl_validation_users_self_demote_allowed() {
 /// Rule 10.7: mod tries to change an `events` entry whose current value > mod's PL -> reject.
 #[test]
 fn test_pl_validation_events_old_value_too_high_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
@@ -4014,7 +4015,7 @@ fn test_pl_validation_events_old_value_too_high_rejected() {
 /// Rule 10.6: mod tries to change a scalar property whose current value > mod's PL → reject.
 #[test]
 fn test_pl_validation_scalar_old_value_too_high_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
@@ -4041,7 +4042,7 @@ fn test_pl_validation_scalar_old_value_too_high_rejected() {
 /// Rule 10.1 (V12): scalar PL property that is not an integer → reject.
 #[test]
 fn test_pl_v12_scalar_not_integer_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
@@ -4064,7 +4065,7 @@ fn test_pl_v12_scalar_not_integer_rejected() {
 /// V10+ enforces integer types; V9 and earlier do not.
 #[test]
 fn test_pl_v2_scalar_not_integer_allowed() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "9"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
@@ -4087,7 +4088,7 @@ fn test_pl_v2_scalar_not_integer_allowed() {
 /// rules without weakening this general auth check.
 #[test]
 fn test_pl_missing_create_event_returns_error() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}"#,
     );
     let events = utils::parse_jsonl_events(
@@ -4124,7 +4125,7 @@ fn test_auth_missing_create_event_in_v2_room_state_with_context() {
 /// Rule 10.2 (V12): `events` map with non-integer value → reject.
 #[test]
 fn test_pl_v12_events_map_non_integer_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
@@ -4145,7 +4146,7 @@ fn test_pl_v12_events_map_non_integer_rejected() {
 /// Rule 10.2 (V12): `events` is not an object → reject.
 #[test]
 fn test_pl_v12_events_not_object_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
@@ -4166,7 +4167,7 @@ fn test_pl_v12_events_not_object_rejected() {
 /// Rule 10.4 (V12): `users` map contains the room creator → reject.
 #[test]
 fn test_pl_v12_users_contains_creator_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
@@ -4188,7 +4189,7 @@ fn test_pl_v12_users_contains_creator_rejected() {
 /// Rule 10.4 (V12): `users` map contains an `additional_creator` → reject.
 #[test]
 fn test_pl_v12_users_contains_additional_creator_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12", "additional_creators": ["@extra:example.com"]}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@other:example.com", "sender": "@other:example.com", "content": {"membership": "join"}}
@@ -4209,7 +4210,7 @@ fn test_pl_v12_users_contains_additional_creator_rejected() {
 /// Rule 10.2 (V12): `notifications` map with non-integer value → reject.
 #[test]
 fn test_pl_v12_notifications_non_integer_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "12"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
@@ -4230,7 +4231,7 @@ fn test_pl_v12_notifications_non_integer_rejected() {
 /// Rule 10.8: mod tries to set `notifications[room]` above own PL -> reject.
 #[test]
 fn test_pl_validation_notifications_escalation_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
@@ -4253,7 +4254,7 @@ fn test_pl_validation_notifications_escalation_rejected() {
 /// Rule 10.7: mod tries to lower `notifications[room]` whose old value > own PL -> reject.
 #[test]
 fn test_pl_validation_notifications_old_value_too_high_rejected() {
-    let state = utils::parse_jsonl_state(
+    let state = utils_extra::parse_jsonl_state(
         r#"
 {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
 {"event_id": "$join", "type": "m.room.member", "state_key": "@mod:example.com", "sender": "@mod:example.com", "content": {"membership": "join"}}
