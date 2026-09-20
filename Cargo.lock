@@ -1454,7 +1454,6 @@ version = "0.6.0-rc.0"
 dependencies = [
  "base64",
  "sha2 0.10.9",
- "simd-json",
  "test-case",
 ]
 

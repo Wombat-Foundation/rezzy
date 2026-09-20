@@ -288,15 +288,19 @@ impl RoomAccumulator {
     }
 
     /// Computes the unquoted opaque value for the MSC0501 HTTP `ETag`.
-    ///
-    /// # Panics
-    /// Panics only if `serde_json` fails to serialize a sequence of strings.
     #[must_use]
     pub fn etag<'a>(self, extremity_event_ids: impl IntoIterator<Item = &'a str>) -> String {
         let mut extremities: Vec<&str> = extremity_event_ids.into_iter().collect();
         extremities.sort_unstable();
-        let canonical = simd_json::to_vec(&extremities).expect("string arrays are serializable");
-        let frontier_hash = Sha256::digest(canonical);
+        let canonical = alloc::format!(
+            "[{}]",
+            extremities
+                .iter()
+                .map(|s| alloc::format!("\"{s}\""))
+                .collect::<alloc::vec::Vec<_>>()
+                .join(",")
+        );
+        let frontier_hash = Sha256::digest(canonical.as_bytes());
         let mut etag = Vec::with_capacity(24);
         etag.extend_from_slice(&self.digest.to_be_bytes());
         etag.extend_from_slice(&frontier_hash[..8]);
