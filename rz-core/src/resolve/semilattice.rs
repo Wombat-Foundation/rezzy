@@ -1,0 +1,513 @@
+// Copyright 2026 Shane Jaroch
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Lattice-coordinatized state resolution.
+//!
+//! This module provides [`resolve_semilattice_fold`], an alternative to
+//! [`crate::resolve::iterative::resolve_iterative_sort`] that replaces the sequential mainline sort
+//! with a parallel causal coordinatization projection and commutative
+//! join-semilattice fold. Note that this is currently an exploratory hypothesis
+//! that approximates iterative auth-checks using a fixed terminal snapshot.
+//!
+//! ## How it works
+//!
+//! 1. The **power phase** is identical to [`resolve_iterative_sort`](crate::resolve::iterative::resolve_iterative_sort).
+//! 2. Instead of sorting non-power events, each event is assigned a **mainline
+//!    coordinate** (its closest position on the power-levels chain).
+//! 3. Events are folded per `(type, state_key)` using a commutative **Least
+//!    Upper Bound** (LUB) operator — the event with the best coordinate wins.
+//! 4. The fold is embarrassingly parallel and runs on `std::thread::scope`
+//!    when the `std` feature is enabled.
+//!
+//! # Panics
+//!
+//! Panics if the resolved mainline does not begin with the resolved
+//! `m.room.power_levels` event.
+//!
+//! Also contains [`route_power_events`], which classifies events into
+//! power vs. non-power buckets.
+//!
+//! ### Internal Pipeline
+//!
+//! The non-power phase is implemented by three internal functions:
+//!
+//! 1. **`fold_lattice_chunk`** — processes a slice of events in a single thread,
+//!    auth-checking each and folding per-`(type, state_key)` winners via the LUB operator.
+//! 2. **`update_winner_if_better`** — merges thread-local winner maps back into
+//!    the global result using the same LUB comparator.
+//! 3. **`compute_lattice_coordinatized_winners`** — orchestrates the parallel
+//!    fan-out via `std::thread::scope`, splits events into chunks, and coordinates
+//!    the fold-then-merge pipeline.
+
+use crate::basespec::event_types::EventType;
+use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
+use crate::{
+    resolve::sorting::{build_mainline, compute_closest_mainline_positions},
+    state::at::{compute_local_auth, iterative_auth_ok},
+    HashMap,
+};
+use alloc::string::String;
+
+/// Determines whether `ev` beats `current_winner` under the Least Upper Bound (LUB)
+/// tie-breaking rules.
+///
+/// The comparison cascade is:
+/// 1. **Mainline position**: closer to the current PL event (smaller index) wins.
+/// 2. **`origin_server_ts`**: later timestamp wins.
+/// 3. **`event_id`**: lexicographically largest ID wins.
+///
+/// This operator is **commutative** and **associative**, which is what allows
+/// the fold to be parallelized without affecting the result.
+#[must_use]
+pub fn is_semilattice_winner_better<Id, C, S: core::hash::BuildHasher>(
+    ev: &LeanEvent<Id, C>,
+    current_winner: &LeanEvent<Id, C>,
+    mainline_distances: &HashMap<Id, usize, S>,
+    mainline_len: usize,
+) -> bool
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+{
+    let ev_pos = mainline_distances
+        .get(&ev.event_id)
+        .copied()
+        .unwrap_or(mainline_len);
+    let winner_pos = mainline_distances
+        .get(&current_winner.event_id)
+        .copied()
+        .unwrap_or(mainline_len);
+
+    // The Commutative Join Operator (Least Upper Bound):
+    if ev_pos < winner_pos {
+        true // Closer to mainline wins
+    } else if ev_pos > winner_pos {
+        false
+    } else if ev.origin_server_ts > current_winner.origin_server_ts {
+        true // Later timestamp wins
+    } else if ev.origin_server_ts < current_winner.origin_server_ts {
+        false
+    } else {
+        // Lexicographical sort: LARGEST string wins.
+        ev.event_id > current_winner.event_id
+    }
+}
+
+fn update_winner_if_better<'a, Id, C>(
+    winners: &mut HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
+    key: (EventType, String),
+    ev: &'a LeanEvent<Id, C>,
+    mainline_distances: &HashMap<Id, usize>,
+    mainline_len: usize,
+) where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+{
+    let is_better = if let Some(current_winner) = winners.get(&key) {
+        is_semilattice_winner_better(ev, current_winner, mainline_distances, mainline_len)
+    } else {
+        true // First event for this state key inherently wins
+    };
+
+    if is_better {
+        winners.insert(key, ev);
+    }
+}
+
+/// Auth-checks a single event and, if it passes, competes it for the LUB
+/// winner of its `(type, state_key)` slot in `winners`. Shared by
+/// [`fold_lattice_chunk`]'s sequential loop and each worker thread's loop in
+/// [`compute_lattice_coordinatized_winners`]'s std fan-out -- the two must
+/// stay in lockstep on authentication and conflicted-key admission.
+#[allow(clippy::too_many_arguments)]
+fn process_lattice_event<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash::BuildHasher>(
+    ev: &'a LeanEvent<Id, C>,
+    mainline_distances: &HashMap<Id, usize>,
+    mainline_len: usize,
+    terminal_power_state: &crate::state::at::SharedState<Id>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    sort_set: &HashMap<Id, LeanEvent<Id, C>, S3>,
+    version: StateResVersion,
+    create_ev: Option<&LeanEvent<Id, C>>,
+    conflicted_keys: &crate::FastSet<(EventType, String)>,
+    local_auth_cache: &mut crate::state::at::LocalAuthCache<Id, C>,
+    winners: &mut HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
+) where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent + Clone,
+{
+    // VALIDATE FIRST (filters out Byzantine garbage/supremum deletion attacks)
+    let local_auth = compute_local_auth(ev, auth_context, sort_set, local_auth_cache, version);
+
+    if !iterative_auth_ok(
+        ev,
+        terminal_power_state,
+        auth_context,
+        sort_set,
+        local_auth,
+        create_ev,
+        version,
+        false,
+    ) {
+        return; // Drop unauthorized events before they can compete for the LUB!
+    }
+
+    // Skip events with no `state_key` (e.g. `m.room.redaction`)
+    if ev.state_key.is_none() {
+        return;
+    }
+
+    // NOW COMPETE FOR LUB
+    let key = (
+        EventType::from(ev.event_type.as_str()),
+        ev.state_key.clone().unwrap(),
+    );
+    // `conflicted_events` may contain supplemental auth-chain/subgraph events
+    // whose own state key was not conflicted. They may authenticate this
+    // candidate, but must never replace the unconflicted resolved value.
+    if !conflicted_keys.contains(&key) {
+        return;
+    }
+    update_winner_if_better(winners, key, ev, mainline_distances, mainline_len);
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(feature = "std", allow(dead_code))]
+fn fold_lattice_chunk<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash::BuildHasher>(
+    chunk: &[&'a LeanEvent<Id, C>],
+    mainline_distances: &HashMap<Id, usize>,
+    mainline_len: usize,
+    terminal_power_state: &crate::state::at::SharedState<Id>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    sort_set: &HashMap<Id, LeanEvent<Id, C>, S3>,
+    version: StateResVersion,
+    create_ev: Option<&LeanEvent<Id, C>>,
+    conflicted_keys: &crate::FastSet<(EventType, String)>,
+) -> HashMap<(EventType, String), &'a LeanEvent<Id, C>>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent + Clone,
+{
+    let mut thread_res: HashMap<(EventType, String), &'a LeanEvent<Id, C>> = HashMap::new();
+    let mut local_auth_cache = crate::state::at::LocalAuthCache::<Id, C>::new(version);
+
+    for &ev in chunk {
+        process_lattice_event(
+            ev,
+            mainline_distances,
+            mainline_len,
+            terminal_power_state,
+            auth_context,
+            sort_set,
+            version,
+            create_ev,
+            conflicted_keys,
+            &mut local_auth_cache,
+            &mut thread_res,
+        );
+    }
+    thread_res
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_lattice_coordinatized_winners<
+    'a,
+    Id,
+    C,
+    S2: core::hash::BuildHasher + Sync + Send,
+    S3: core::hash::BuildHasher + Sync + Send,
+>(
+    // jscpd:ignore-start
+    events: &[&'a LeanEvent<Id, C>],
+    mainline_distances: &HashMap<Id, usize>,
+    mainline_len: usize,
+    terminal_power_state: &crate::state::at::SharedState<Id>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    sort_set: &HashMap<Id, LeanEvent<Id, C>, S3>,
+    version: StateResVersion,
+    create_ev: Option<&LeanEvent<Id, C>>,
+    // jscpd:ignore-end
+    conflicted_keys: &crate::FastSet<(EventType, String)>,
+    key_winners: &mut HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
+) where
+    Id: crate::basespec::rezzy_types::EventId + Sync + Send,
+    C: crate::basespec::rezzy_types::EventContent + Clone + Sync + Send,
+{
+    #[cfg(feature = "std")]
+    {
+        let num_threads =
+            std::thread::available_parallelism().map_or(4, core::num::NonZeroUsize::get);
+
+        // Dynamic scheduling via shared atomic cursor: faster threads pull more
+        // work, so wall-clock time tracks the total work divided by total
+        // threads rather than the slowest pre-partitioned chunk.
+        let cursor = std::sync::atomic::AtomicUsize::new(0);
+        let len = events.len();
+
+        let winners = std::sync::Mutex::new(HashMap::new());
+        std::thread::scope(|s| {
+            for _ in 0..num_threads {
+                s.spawn(|| {
+                    let mut local = HashMap::new();
+                    let mut local_auth_cache =
+                        crate::state::at::LocalAuthCache::<Id, C>::new(version);
+                    loop {
+                        let idx = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if idx >= len {
+                            break;
+                        }
+                        // Auth-check + LUB fold for this single event.
+                        process_lattice_event(
+                            events[idx],
+                            mainline_distances,
+                            mainline_len,
+                            terminal_power_state,
+                            auth_context,
+                            sort_set,
+                            version,
+                            create_ev,
+                            conflicted_keys,
+                            &mut local_auth_cache,
+                            &mut local,
+                        );
+                    }
+                    let mut winners = winners.lock().unwrap();
+                    for (key, ev) in local {
+                        update_winner_if_better(
+                            &mut winners,
+                            key,
+                            ev,
+                            mainline_distances,
+                            mainline_len,
+                        );
+                    }
+                });
+            }
+        });
+        *key_winners = winners.into_inner().unwrap();
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        *key_winners = fold_lattice_chunk(
+            &events,
+            mainline_distances,
+            mainline_len,
+            terminal_power_state,
+            auth_context,
+            sort_set,
+            version,
+            create_ev,
+            conflicted_keys,
+        );
+    }
+}
+
+/// Classifies conflicted events into power events and non-power events.
+///
+/// Power events are those that affect the room's administrative state:
+/// - `m.room.create`
+/// - `m.room.power_levels`
+/// - `m.room.join_rules`
+/// - `m.room.member` events that are bans or kicks (V2.1+ only; V2 treats
+///   **all** member events as power events)
+///
+/// Non-power events are everything else (messages, topics, `m.room.third_party_invite`, etc.).
+pub fn route_power_events<
+    Id: crate::basespec::rezzy_types::EventId,
+    C: Clone + crate::basespec::rezzy_types::EventContent,
+    S1: core::hash::BuildHasher,
+    S2: core::hash::BuildHasher,
+    S3: core::hash::BuildHasher,
+    K: Clone + AsRef<str>,
+>(
+    sort_set: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    power_events: &mut HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    non_power_events: &mut HashMap<Id, LeanEvent<Id, C, K>, S3>,
+    version: crate::StateResVersion,
+) {
+    for (id, ev) in sort_set {
+        if ev.is_power_event(version) {
+            power_events.insert(id.clone(), ev.clone());
+        } else {
+            non_power_events.insert(id.clone(), ev.clone());
+        }
+    }
+}
+
+/// Resolves conflicted state using causal coordinatization projection
+/// and commutative join-semilattice folding.
+///
+/// This is an exploratory hypothesis that approximates [`crate::resolve::iterative::resolve_iterative_sort`] but
+/// replaces the sequential mainline sort + iterative auth-check loop with a
+/// parallel per-key fold. Each non-power event competes for its `(type, state_key)`
+/// slot via the [`is_semilattice_winner_better`] LUB operator.
+///
+/// Use this variant when:
+/// - The conflicted set is large (thousands of events).
+/// - The `std` feature is enabled (to benefit from thread parallelism).
+///
+/// The power phase (Steps 1–2) is shared with `resolve_iterative_sort`.
+///
+/// **Note:** V2.1+ rooms delegate entirely to [`resolve_iterative_sort`](crate::resolve::iterative::resolve_iterative_sort)
+/// because the lattice fold does not support MSC4297's conflicted subgraph. This
+/// changes the parallelism characteristics for V2.1+ callers.
+///
+/// # Panics
+///
+/// Panics if the resolved mainline does not begin with the resolved
+/// `m.room.power_levels` event.
+// jscpd:ignore-start
+#[must_use]
+pub fn resolve_semilattice_fold<
+    Id,
+    C,
+    S1: core::hash::BuildHasher + Sync + Send,
+    S2: core::hash::BuildHasher + Sync + Send,
+>(
+    unconflicted_state: &crate::state::at::SharedState<Id>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    version: StateResVersion,
+) -> crate::state::at::SharedState<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId + Sync + Send,
+    C: crate::basespec::rezzy_types::EventContent + Sync + Send + Clone,
+{
+    // jscpd:ignore-end
+    let empty_key = alloc::string::String::new();
+    let conflicted_keys =
+        crate::resolve::iterative::derive_all_conflicted_keys(conflicted_events, &empty_key);
+    resolve_semilattice_fold_with_conflicted_keys(
+        unconflicted_state,
+        conflicted_events,
+        auth_context,
+        version,
+        &conflicted_keys,
+    )
+}
+
+/// Like [`resolve_semilattice_fold`], but accepts a pre-derived `conflicted_keys`
+/// set from the caller.
+///
+/// This allows callers who compute `conflicted_keys` from a *narrow*,
+/// pre-widening event set (e.g. before MSC4297's conflicted subgraph supplement)
+/// to keep supplemental events from deciding their own state keys.
+///
+/// When in doubt, use [`resolve_semilattice_fold`] which derives `conflicted_keys`
+/// internally.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_semilattice_fold_with_conflicted_keys<
+    Id,
+    C,
+    S1: core::hash::BuildHasher + Sync + Send,
+    S2: core::hash::BuildHasher + Sync + Send,
+>(
+    unconflicted_state: &crate::state::at::SharedState<Id>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
+    version: StateResVersion,
+    conflicted_keys: &crate::FastSet<(EventType, String)>,
+) -> crate::state::at::SharedState<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId + Sync + Send,
+    C: crate::basespec::rezzy_types::EventContent + Sync + Send + Clone,
+{
+    let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
+
+    // Empty-key sentinel for the `(EventType, K)` lookups below (the
+    // "" state key used for singleton events like power_levels/create).
+    // `K = String` throughout this exploratory path.
+    let empty_key = alloc::string::String::new();
+
+    if version.is_v2_1_plus() {
+        return crate::resolve::iterative::resolve_iterative_sort_with_conflicted_keys(
+            unconflicted_state,
+            conflicted_events,
+            auth_context,
+            version,
+            conflicted_keys,
+        );
+    }
+
+    let original_conflicted_keys = crate::resolve::iterative::prepare_conflicted_and_keys(
+        conflicted_events,
+        auth_context,
+        version,
+    );
+
+    let mut resolved =
+        crate::resolve::iterative::get_initial_resolved_state(unconflicted_state, version);
+
+    let (sort_context, power_events, non_power_events, create_ev) =
+        crate::resolve::iterative::execute_power_phase(
+            unconflicted_state,
+            conflicted_events,
+            auth_context,
+            &original_conflicted_keys,
+            version,
+            &empty_key,
+        );
+
+    // Initialize local auth cache for power-phase checks
+    let mut local_auth_cache = crate::state::at::LocalAuthCache::<Id, C>::new(version);
+
+    crate::resolve::iterative::run_power_phase_iterative_checks(
+        &mut resolved,
+        &power_events,
+        &sort_context,
+        auth_context,
+        conflicted_events,
+        version,
+        &mut local_auth_cache,
+        create_ev,
+        &mut pl_cache,
+        conflicted_keys,
+    );
+
+    let sort_set = conflicted_events;
+
+    // Coordinate Projection Phase (Mainline distance mapping)
+    let mainline = build_mainline(&resolved, &sort_context, &empty_key, version);
+    let mut target_events: alloc::vec::Vec<&LeanEvent<Id, C>> = non_power_events.values().collect();
+    let mainline_distances =
+        compute_closest_mainline_positions(&mut target_events, &mainline, &sort_context, version);
+    let mainline_len = mainline.len();
+
+    // Semilattice Fold Phase
+    let mut key_winners = HashMap::new();
+    compute_lattice_coordinatized_winners(
+        &target_events,
+        &mainline_distances,
+        mainline_len,
+        &resolved,
+        auth_context,
+        sort_set,
+        version,
+        create_ev,
+        conflicted_keys,
+        &mut key_winners,
+    );
+
+    // Merge Winners into Final Resolved State
+    let mut final_resolved = unconflicted_state.clone();
+    for (k, v) in resolved {
+        final_resolved.insert(k, v);
+    }
+    for (k, ev) in key_winners {
+        final_resolved.insert(k, ev.event_id.clone());
+    }
+
+    final_resolved
+}

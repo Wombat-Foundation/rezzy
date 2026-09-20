@@ -1,19 +1,125 @@
-[package]
-name = "rezzy"
+[workspace]
+resolver = "2"
+members = ["rz-core", "rz-reconcile", "rz-cli"]
+
+[workspace.package]
 version = "0.6.0-rc.0"
 edition = "2021"
 rust-version = "1.81"
-resolver = "2"
-autobins = false
-autobenches = false
-autotests = false
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/gamesguru/rezzy"
+
+[workspace.dependencies]
+rz-core = { path = "rz-core" }
+rz-reconcile = { path = "rz-reconcile" }
+
+base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
+blake2 = { version = "0.10", default-features = false }
+hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
+imbl = { version = "3.0", default-features = false, features = ["serde"] }
+roaring = { version = "0.10", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.10", default-features = false }
+sha3 = { version = "0.10", default-features = false }
+
+# CLI-only
+clap = { version = "=4.5.48", features = ["derive", "env"] }
+ureq = { version = "2.9", default-features = false, features = ["json"] }
+idna_adapter = { version = ">=1.0, <1.2", default-features = false }
+mimalloc = { version = "0.1.52" }
+
+# Signing
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "batch"] }
+
+# Ruma interop (dev/test)
+ruma-common = { version = "0.19.0" }
+ruma-events = { version = "0.34.0" }
+ruma-signatures = { version = "0.21" }
+ruma-state-res = { version = "0.17.0", features = ["__criterion"] }
+
+# Dev dependencies
+bincode = "1"
+ed25519-consensus = { version = "2.1", default-features = false, features = ["std"] }
+insta = "1.47.2"
+rand_08 = { package = "rand", version = "0.8" }
+simd-json = { version = "0.18", default-features = false, features = ["serde_impl", "swar-number-parsing", "runtime-detection"] }
+similar = "2.7.0"
+test-case = "3.3.1"
+test-log = "0.2.20"
+zeroize = "=1.8.1"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = [
+    "cfg(coverage)",
+    "cfg(coverage_nightly)",
+    "cfg(tarpaulin)",
+    "cfg(has_res_submodule)",
+    "cfg(has_avx512_support)",
+    "cfg(has_avx512_host_support)",
+] }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+similar_names = "allow"
+multiple_crate_versions = "allow"
+arithmetic_side_effects = "warn"
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+get_unwrap = "warn"
+
+[profile.release-max-perf]
+inherits = "release"
+strip = "symbols"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.release]
+strip = "symbols"
+lto = "thin"
+
+[profile.dev]
+opt-level = 0
+debug = 0
+strip = "debuginfo"
+incremental = true
+codegen-units = 256
+
+[profile.test]
+debug = 0
+strip = "debuginfo"
+incremental = true
+codegen-units = 256
+
+# ──────────────────────────────────────────────────────────────────
+# Root facade package — re-exports rz-core for backwards compat.
+# Tests, benches, and auxiliary binaries live here.
+# ──────────────────────────────────────────────────────────────────
+
+[package]
+name = "rezzy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Lightweight and formally verified: State Res v1, v2, and v2.1 reference implementations in Rust."
 keywords = ["matrix", "state-resolution", "federation", "verification"]
 categories = ["algorithms", "mathematics"]
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/gamesguru/rezzy"
-default-run = "rezzy"
+autobins = false
+autobenches = false
+autotests = false
 exclude = [
     "build.rs",
     "res/",
@@ -44,23 +150,22 @@ exclude = [
 ]
 
 [package.metadata.cargo-machete]
-ignored = [
-    # Direct optional anchors for transitive CLI dependency versions that still
-    # parse and build on the Rust 1.81 MSRV.
-    "idna_adapter",
-    # Never used directly -- an exact-version pin on a transitive dependency
-    # (via ed25519-consensus, a dev-dependency) to stop `cargo update` from
-    # selecting zeroize 1.9+, which raises its own rust-version to 1.85 and
-    # breaks this crate's 1.81 MSRV even on the default-features build. See
-    # the comment beside the pin itself.
-    "zeroize",
-]
+ignored = ["idna_adapter", "zeroize"]
 
-[[bin]]
-name = "rezzy"
-path = "src/bin/rezzy/main.rs"
-required-features = ["cli"]
-test = false
+[dependencies]
+rz-core.workspace = true
+rz-reconcile.workspace = true
+
+[dev-dependencies]
+bincode.workspace = true
+ed25519-consensus.workspace = true
+insta.workspace = true
+rand_08.workspace = true
+simd-json.workspace = true
+similar.workspace = true
+test-case.workspace = true
+test-log.workspace = true
+zeroize.workspace = true
 
 [[bin]]
 name = "regen-oracles"
@@ -76,95 +181,17 @@ test = false
 
 [features]
 default = ["std"]
-std = ["serde_json/std", "serde/std"]
-# NOTE: `cli` is tested at the same 1.81.0 MSRV as the default build (see
-# the `cli feature` matrix entry in .github/workflows/rust.yml for the full
-# picture). `zeroize` is pinned below to 1.8.1 (rust-version = "1.60")
-# because 1.9.0 (transitive via ed25519-consensus, a *dev*-dependency used
-# for differential signing tests, unrelated to `cli`/ureq) declares
-# rust-version = "1.85" and broke even the default-features job once
-# `cargo clippy --all-targets` pulled dev-deps in. With that pin,
-# `cargo metadata --features cli` shows clap (1.74) as the real `cli` MSRV
-# floor -- below the crate's own 1.81, not above it.
-cli = ["std", "dep:clap", "dep:ureq", "dep:idna_adapter", "mimalloc", "ureq/tls"]
+std = ["rz-core/std"]
+cli = ["std", "rz-core/cli"]
 regen = ["std"]
-# Event signature verification uses the RFC-8032 (ed25519-dalek) backend,
-# which shares rezzy's sha2 0.10 (no duplicate production hash crate).
-signing = ["signing-dalek"]
-signing-dalek = ["dep:ed25519-dalek"]
-# Fast JSON parsing (simd-json) — opt-in. simd-json only wins on LARGE single
-# JSON documents; at PDU scale serde_json measures ~1.1x faster (small PDUs,
-# per-call mutable-buffer clone), so it is NOT a default dependency. When
-# enabled, keep the SIMD parsing/`runtime-detection` speed features but NOT
-# `serde_impl` (serde JSON interop); that is pulled only by `simd-json-serde`
-# for dev/bench.
-simd-json = []
+signing = ["rz-core/signing"]
+signing-dalek = ["rz-core/signing-dalek"]
+simd-json = ["rz-core/simd-json"]
 simd-json-serde = ["simd-json"]
-mock-ruma = [
-    "dep:ruma-common",
-    "dep:ruma-events",
-    "dep:ruma-state-res",
-    "dep:ruma-signatures",
-]
+mock-ruma = ["rz-core/mock-ruma"]
 stress = []
-mimalloc = ["dep:mimalloc"]
-# Compatibility alias: the `hashing` feature was removed, but downstream
-# manifests that request `rezzy/hashing` must still resolve.
 hashing = []
-# Experimental incremental GC is only sound for a strict linear root history;
-# normal Matrix state-group lifetimes branch. Opt in only with an integration
-# that enforces that precondition.
-unstable-refcount-gc = []
-
-[dependencies]
-base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
-blake2 = { version = "0.10", default-features = false }
-clap = { version = "=4.5.48", optional = true, features = ["derive", "env"] }
-ed25519-dalek = { version = "2", optional = true, default-features = false, features = [
-    "std",
-    "batch",
-] }
-hashbrown = { version = "0.15", default-features = false, features = [
-    "default-hasher",
-    "inline-more",
-] }
-idna_adapter = { version = ">=1.0, <1.2", optional = true, default-features = false }
-imbl = { version = "3.0", default-features = false, features = ["serde"] }
-mimalloc = { version = "0.1.52", optional = true }
-
-roaring = { version = "0.10", default-features = false } # compatible with the Rust 1.81 MSRV
-ruma-common = { version = "0.19.0", optional = true }
-ruma-events = { version = "0.34.0", optional = true }
-ruma-signatures = { version = "0.21", optional = true }
-ruma-state-res = { version = "0.17.0", optional = true, features = [
-    "__criterion",
-] }
-serde = { version = "1.0", default-features = false, features = [
-    "alloc",
-    "derive",
-] }
-serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
-sha2 = { version = "0.10", default-features = false }
-sha3 = { version = "0.10", default-features = false }
-ureq = { version = "2.9", optional = true, default-features = false, features = [
-    "json",
-] }
-[dev-dependencies]
-bincode = "1"
-ed25519-consensus = { version = "2.1", default-features = false, features = ["std"] }
-insta = "1.47.2"
-rand_08 = { package = "rand", version = "0.8" }
-simd-json = { version = "0.18", default-features = false, features = [
-    "serde_impl",
-    "swar-number-parsing",
-    "runtime-detection",
-] }
-similar = "2.7.0"
-test-case = "3.3.1"
-test-log = "0.2.20"
-# Transitive pin: prevents cargo update from selecting zeroize 1.9+
-# (which raises rust-version to 1.85 and breaks the 1.81 MSRV).
-zeroize = "=1.8.1"
+unstable-refcount-gc = ["rz-core/unstable-refcount-gc"]
 
 [[example]]
 name = "bench_files"
@@ -219,58 +246,5 @@ name = "test_resolve"
 path = "tests/test_resolve.rs"
 required-features = ["mock-ruma"]
 
-[lints.rust]
-unsafe_code = "deny"
-unexpected_cfgs = { level = "warn", check-cfg = [
-    "cfg(coverage)",
-    "cfg(coverage_nightly)",
-    "cfg(tarpaulin)",
-    "cfg(has_res_submodule)",
-] }
-
-[lints.clippy]
-pedantic = { level = "warn", priority = -1 }
-perf = { level = "warn", priority = -1 }
-complexity = { level = "warn", priority = -1 }
-style = { level = "warn", priority = -1 }
-correctness = { level = "warn", priority = -1 }
-suspicious = { level = "warn", priority = -1 }
-cargo = { level = "warn", priority = -1 }
-module_name_repetitions = "allow"
-similar_names = "allow"
-# Build-time proc-macro duplication only: curve25519-dalek-derive uses syn 3.0
-# while most of the graph is on syn 2.0. This is unavoidable, benign, and does
-# not affect the runtime binary.
-multiple_crate_versions = "allow"
-
-# High-Value Security & Robustness restrictions
-arithmetic_side_effects = "warn"
-undocumented_unsafe_blocks = "warn"
-dbg_macro = "warn"
-get_unwrap = "warn"
-
-[profile.release-max-perf]
-inherits = "release"
-strip = "symbols"
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-
-[profile.release]
-strip = "symbols"
-lto = "thin"
-
-# Optimize for quick edit/compile cycles. Full debug info makes artifacts much
-# larger and slows linking; use a debug build with symbols only when needed.
-[profile.dev]
-opt-level = 0
-debug = 0
-strip = "debuginfo"
-incremental = true
-codegen-units = 256
-
-[profile.test]
-debug = 0
-strip = "debuginfo"
-incremental = true
-codegen-units = 256
+[lints]
+workspace = true
