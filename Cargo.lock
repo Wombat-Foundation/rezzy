@@ -790,7 +790,6 @@ dependencies = [
  "imbl-sized-chunks",
  "rand_core 0.6.4",
  "rand_xoshiro",
- "serde",
  "version_check",
 ]
 
@@ -1447,11 +1446,9 @@ dependencies = [
  "ruma-signatures",
  "ruma-state-res",
  "rz-reconcile",
- "serde",
  "serde_json",
  "sha2 0.10.9",
  "sha3",
- "simd-json",
  "similar",
  "test-case",
  "test-log",

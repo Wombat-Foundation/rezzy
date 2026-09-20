@@ -1,0 +1,255 @@
+//! Small `alloc`-only JSON value and parser used by the no-std core.
+//!
+//! Objects use `BTreeMap` so iteration is deterministic and already suitable
+//! for Matrix canonical JSON. Numbers retain their source spelling; canonical
+//! validation and writing decide which spellings are acceptable.
+
+use alloc::{
+    collections::BTreeMap,
+    string::{String, ToString},
+    vec::Vec,
+};
+use core::{fmt, ops::{Index, IndexMut}};
+
+pub type Object = BTreeMap<String, Value>;
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Value {
+    Null,
+    Bool(bool),
+    Number(Number),
+    String(String),
+    Array(Vec<Value>),
+    Object(Object),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Number(String);
+
+impl Number {
+    pub fn from_f64(value: f64) -> Option<Self> {
+        value.is_finite().then(|| Self(value.to_string()))
+    }
+
+    pub fn as_i64(&self) -> Option<i64> {
+        self.0.parse().ok()
+    }
+
+    pub fn as_u64(&self) -> Option<u64> {
+        self.0.parse().ok()
+    }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        self.0.parse().ok()
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Number {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Default for Value {
+    fn default() -> Self { Self::Null }
+}
+
+impl Value {
+    pub fn get(&self, key: &str) -> Option<&Self> {
+        match self { Self::Object(obj) => obj.get(key), _ => None }
+    }
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut Self> {
+        match self { Self::Object(obj) => obj.get_mut(key), _ => None }
+    }
+    pub fn as_object(&self) -> Option<&Object> {
+        match self { Self::Object(obj) => Some(obj), _ => None }
+    }
+    pub fn as_object_mut(&mut self) -> Option<&mut Object> {
+        match self { Self::Object(obj) => Some(obj), _ => None }
+    }
+    pub fn as_array(&self) -> Option<&Vec<Self>> {
+        match self { Self::Array(items) => Some(items), _ => None }
+    }
+    pub fn as_str(&self) -> Option<&str> {
+        match self { Self::String(s) => Some(s), _ => None }
+    }
+    pub fn as_bool(&self) -> Option<bool> {
+        match self { Self::Bool(v) => Some(*v), _ => None }
+    }
+    pub fn as_i64(&self) -> Option<i64> {
+        match self { Self::Number(n) => n.as_i64(), _ => None }
+    }
+    pub fn as_u64(&self) -> Option<u64> {
+        match self { Self::Number(n) => n.as_u64(), _ => None }
+    }
+    pub fn as_f64(&self) -> Option<f64> {
+        match self { Self::Number(n) => n.as_f64(), _ => None }
+    }
+    pub fn is_null(&self) -> bool { matches!(self, Self::Null) }
+    pub fn is_array(&self) -> bool { matches!(self, Self::Array(_)) }
+    pub fn is_object(&self) -> bool { matches!(self, Self::Object(_)) }
+    pub fn insert(&mut self, key: String, value: Self) -> Option<Self> {
+        self.as_object_mut()?.insert(key, value)
+    }
+    pub fn parse(input: &str) -> Result<Self, Error> {
+        let mut parser = Parser { input: input.as_bytes(), pos: 0 };
+        let value = parser.value()?;
+        parser.ws();
+        if parser.pos != parser.input.len() { return Err(Error::TrailingCharacters); }
+        Ok(value)
+    }
+}
+
+impl Index<&str> for Value {
+    type Output = Value;
+    fn index(&self, key: &str) -> &Value {
+        self.get(key).unwrap_or(&NULL)
+    }
+}
+
+static NULL: Value = Value::Null;
+
+impl IndexMut<&str> for Value {
+    fn index_mut(&mut self, key: &str) -> &mut Value {
+        if !self.is_object() { *self = Value::Object(Object::new()); }
+        match self { Value::Object(obj) => obj.entry(key.to_string()).or_insert(Value::Null), _ => unreachable!() }
+    }
+}
+
+impl From<String> for Value { fn from(v: String) -> Self { Self::String(v) } }
+impl From<&str> for Value { fn from(v: &str) -> Self { Self::String(v.to_string()) } }
+impl From<&String> for Value { fn from(v: &String) -> Self { Self::String(v.clone()) } }
+impl From<bool> for Value { fn from(v: bool) -> Self { Self::Bool(v) } }
+impl From<i64> for Value { fn from(v: i64) -> Self { Self::Number(Number(v.to_string())) } }
+impl From<u64> for Value { fn from(v: u64) -> Self { Self::Number(Number(v.to_string())) } }
+impl From<i32> for Value { fn from(v: i32) -> Self { Self::from(i64::from(v)) } }
+impl From<u32> for Value { fn from(v: u32) -> Self { Self::from(u64::from(v)) } }
+impl From<usize> for Value { fn from(v: usize) -> Self { Self::from(v as u64) } }
+impl From<Vec<Value>> for Value { fn from(v: Vec<Value>) -> Self { Self::Array(v) } }
+impl From<Object> for Value { fn from(v: Object) -> Self { Self::Object(v) } }
+impl From<f64> for Value { fn from(v: f64) -> Self { Self::Number(Number::from_f64(v).expect("JSON numbers must be finite")) } }
+
+#[macro_export]
+macro_rules! json {
+    (null) => { $crate::json::Value::Null };
+    ([ $( $value:expr ),* $(,)? ]) => {{
+        let mut values = $crate::json::empty_array();
+        $(values.push($crate::json::to_value($value));)*
+        $crate::json::Value::Array(values)
+    }};
+    ({ $( $key:literal : $value:expr ),* $(,)? }) => {{
+        let mut object = $crate::json::empty_object();
+        $(object.insert($crate::json::key($key), $crate::json::to_value($value));)*
+        $crate::json::Value::Object(object)
+    }};
+    ($value:expr) => { $crate::json::to_value($value) };
+}
+
+pub fn to_value(value: impl Into<Value>) -> Value { value.into() }
+pub fn empty_array() -> Vec<Value> { Vec::new() }
+pub fn empty_object() -> Object { Object::new() }
+pub fn key(value: &str) -> String { value.to_string() }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error { UnexpectedEnd, InvalidToken, InvalidNumber, InvalidString, InvalidEscape, TrailingCharacters }
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "invalid JSON: {self:?}") }
+}
+
+struct Parser<'a> { input: &'a [u8], pos: usize }
+
+impl Parser<'_> {
+    fn ws(&mut self) { while self.input.get(self.pos).is_some_and(u8::is_ascii_whitespace) { self.pos += 1; } }
+    fn value(&mut self) -> Result<Value, Error> {
+        self.ws();
+        match self.input.get(self.pos).copied().ok_or(Error::UnexpectedEnd)? {
+            b'n' => { self.word(b"null")?; Ok(Value::Null) },
+            b't' => { self.word(b"true")?; Ok(Value::Bool(true)) },
+            b'f' => { self.word(b"false")?; Ok(Value::Bool(false)) },
+            b'"' => self.string().map(Value::String),
+            b'[' => self.array(),
+            b'{' => self.object(),
+            b'-' | b'0'..=b'9' => self.number(),
+            _ => Err(Error::InvalidToken),
+        }
+    }
+    fn word(&mut self, expected: &[u8]) -> Result<(), Error> {
+        if self.input.get(self.pos..self.pos + expected.len()) == Some(expected) { self.pos += expected.len(); Ok(()) } else { Err(Error::InvalidToken) }
+    }
+    fn string(&mut self) -> Result<String, Error> {
+        self.pos += 1;
+        let mut out = String::new();
+        let mut start = self.pos;
+        loop {
+            let b = *self.input.get(self.pos).ok_or(Error::UnexpectedEnd)?;
+            match b {
+                b'"' => {
+                    let part = core::str::from_utf8(&self.input[start..self.pos]).map_err(|_| Error::InvalidString)?;
+                    out.push_str(part); self.pos += 1; return Ok(out);
+                }
+                b'\\' => {
+                    let part = core::str::from_utf8(&self.input[start..self.pos]).map_err(|_| Error::InvalidString)?;
+                    out.push_str(part); self.pos += 1;
+                    let escaped = *self.input.get(self.pos).ok_or(Error::UnexpectedEnd)?; self.pos += 1;
+                    match escaped {
+                        b'"' => out.push('"'), b'\\' => out.push('\\'), b'/' => out.push('/'),
+                        b'b' => out.push('\u{8}'), b'f' => out.push('\u{c}'), b'n' => out.push('\n'), b'r' => out.push('\r'), b't' => out.push('\t'),
+                        b'u' => out.push(self.unicode_escape()?), _ => return Err(Error::InvalidEscape),
+                    }
+                    start = self.pos;
+                }
+                0..=0x1f => return Err(Error::InvalidString),
+                _ => self.pos += 1,
+            }
+        }
+    }
+    fn unicode_escape(&mut self) -> Result<char, Error> {
+        let high = self.hex4()?;
+        let scalar = if (0xd800..=0xdbff).contains(&high) {
+            if self.input.get(self.pos..self.pos + 2) != Some(b"\\u") { return Err(Error::InvalidEscape); }
+            self.pos += 2;
+            let low = self.hex4()?;
+            if !(0xdc00..=0xdfff).contains(&low) { return Err(Error::InvalidEscape); }
+            0x10000 + ((u32::from(high) - 0xd800) << 10) + (u32::from(low) - 0xdc00)
+        } else { u32::from(high) };
+        char::from_u32(scalar).ok_or(Error::InvalidEscape)
+    }
+    fn hex4(&mut self) -> Result<u16, Error> {
+        let mut n = 0u16;
+        for _ in 0..4 { let b = *self.input.get(self.pos).ok_or(Error::UnexpectedEnd)?; self.pos += 1; n = (n << 4) | u16::from((b as char).to_digit(16).ok_or(Error::InvalidEscape)? as u8); }
+        Ok(n)
+    }
+    fn number(&mut self) -> Result<Value, Error> {
+        let start = self.pos;
+        while self.input.get(self.pos).is_some_and(|b| matches!(b, b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9')) { self.pos += 1; }
+        let s = core::str::from_utf8(&self.input[start..self.pos]).map_err(|_| Error::InvalidNumber)?;
+        if !valid_number(s) { return Err(Error::InvalidNumber); }
+        Ok(Value::Number(Number(s.to_string())))
+    }
+    fn array(&mut self) -> Result<Value, Error> {
+        self.pos += 1; self.ws(); let mut values = Vec::new();
+        if self.input.get(self.pos) == Some(&b']') { self.pos += 1; return Ok(Value::Array(values)); }
+        loop { values.push(self.value()?); self.ws(); match self.input.get(self.pos) { Some(b',') => self.pos += 1, Some(b']') => { self.pos += 1; break; }, _ => return Err(Error::InvalidToken) } }
+        Ok(Value::Array(values))
+    }
+    fn object(&mut self) -> Result<Value, Error> {
+        self.pos += 1; self.ws(); let mut values = Object::new();
+        if self.input.get(self.pos) == Some(&b'}') { self.pos += 1; return Ok(Value::Object(values)); }
+        loop { self.ws(); if self.input.get(self.pos) != Some(&b'"') { return Err(Error::InvalidToken); } let key = self.string()?; self.ws(); if self.input.get(self.pos) != Some(&b':') { return Err(Error::InvalidToken); } self.pos += 1; let value = self.value()?; values.insert(key, value); self.ws(); match self.input.get(self.pos) { Some(b',') => self.pos += 1, Some(b'}') => { self.pos += 1; break; }, _ => return Err(Error::InvalidToken) } }
+        Ok(Value::Object(values))
+    }
+}
+
+fn valid_number(s: &str) -> bool {
+    let b = s.as_bytes(); let mut i = 0;
+    if b.get(i) == Some(&b'-') { i += 1; }
+    match b.get(i) { Some(b'0') => i += 1, Some(b'1'..=b'9') => { i += 1; while b.get(i).is_some_and(u8::is_ascii_digit) { i += 1; } }, _ => return false }
+    if b.get(i) == Some(&b'.') { i += 1; let start = i; while b.get(i).is_some_and(u8::is_ascii_digit) { i += 1; } if i == start { return false; } }
+    if matches!(b.get(i), Some(b'e' | b'E')) { i += 1; if matches!(b.get(i), Some(b'+' | b'-')) { i += 1; } let start = i; while b.get(i).is_some_and(u8::is_ascii_digit) { i += 1; } if i == start { return false; } }
+    i == b.len()
+}

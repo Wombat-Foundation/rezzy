@@ -33,35 +33,6 @@ pub enum ResolvePhase {
     NonPower,
 }
 
-impl serde::Serialize for ResolvePhase {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Self::Power => serializer.serialize_unit_variant("ResolvePhase", 0, "Power"),
-            Self::NonPower => serializer.serialize_unit_variant("ResolvePhase", 1, "NonPower"),
-        }
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for ResolvePhase {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct PhaseVisitor;
-        impl<'de> serde::de::Visitor<'de> for PhaseVisitor {
-            type Value = ResolvePhase;
-            fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-                f.write_str("ResolvePhase variant")
-            }
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                match v {
-                    "Power" => Ok(ResolvePhase::Power),
-                    "NonPower" => Ok(ResolvePhase::NonPower),
-                    other => Err(E::unknown_variant(other, &["Power", "NonPower"])),
-                }
-            }
-        }
-        deserializer.deserialize_enum("ResolvePhase", &["Power", "NonPower"], PhaseVisitor)
-    }
-}
-
 /// A per-event record of what changed in the resolved state during resolution.
 ///
 /// [`resolve_iterative_sort_with_deltas`](crate::resolve_iterative_sort_with_deltas) emits one of
@@ -82,77 +53,6 @@ pub struct ResolutionDelta<Id: crate::basespec::rezzy_types::EventId = String, K
     pub phase: ResolvePhase,
 }
 
-struct ResolutionDeltaVisitor<Id, K>(core::marker::PhantomData<fn(Id, K)>);
-
-impl<
-        'de,
-        Id: serde::Deserialize<'de> + crate::basespec::rezzy_types::EventId,
-        K: serde::Deserialize<'de>,
-    > serde::de::Visitor<'de> for ResolutionDeltaVisitor<Id, K>
-{
-    type Value = ResolutionDelta<Id, K>;
-    fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        f.write_str("a ResolutionDelta")
-    }
-    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-        let mut event_id = None;
-        let mut accepted = None;
-        let mut key = None;
-        let mut replaced = None;
-        let mut phase = None;
-        while let Some(k) = map.next_key::<alloc::string::String>()? {
-            match k.as_str() {
-                "event_id" => event_id = Some(map.next_value()?),
-                "accepted" => accepted = Some(map.next_value()?),
-                "key" => key = Some(map.next_value()?),
-                "replaced" => replaced = Some(map.next_value()?),
-                "phase" => phase = Some(map.next_value()?),
-                _ => {
-                    let _ = map.next_value::<serde::de::IgnoredAny>()?;
-                }
-            }
-        }
-        Ok(ResolutionDelta {
-            event_id: event_id.ok_or_else(|| serde::de::Error::missing_field("event_id"))?,
-            accepted: accepted.ok_or_else(|| serde::de::Error::missing_field("accepted"))?,
-            key: key.ok_or_else(|| serde::de::Error::missing_field("key"))?,
-            replaced: replaced.ok_or_else(|| serde::de::Error::missing_field("replaced"))?,
-            phase: phase.ok_or_else(|| serde::de::Error::missing_field("phase"))?,
-        })
-    }
-}
-
-impl<Id: serde::Serialize + crate::basespec::rezzy_types::EventId, K: serde::Serialize>
-    serde::Serialize for ResolutionDelta<Id, K>
-{
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("ResolutionDelta", 5)?;
-        state.serialize_field("event_id", &self.event_id)?;
-        state.serialize_field("accepted", &self.accepted)?;
-        state.serialize_field("key", &self.key)?;
-        state.serialize_field("replaced", &self.replaced)?;
-        state.serialize_field("phase", &self.phase)?;
-        state.end()
-    }
-}
-
-impl<
-        'de,
-        Id: serde::Deserialize<'de> + crate::basespec::rezzy_types::EventId,
-        K: serde::Deserialize<'de>,
-    > serde::Deserialize<'de> for ResolutionDelta<Id, K>
-{
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        const FIELDS: &[&str] = &["event_id", "accepted", "key", "replaced", "phase"];
-        deserializer.deserialize_struct(
-            "ResolutionDelta",
-            FIELDS,
-            ResolutionDeltaVisitor(core::marker::PhantomData),
-        )
-    }
-}
-
 /// A single state delta entry — an addition, modification, or deletion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateDelta<Id: crate::basespec::rezzy_types::EventId = String> {
@@ -162,59 +62,6 @@ pub struct StateDelta<Id: crate::basespec::rezzy_types::EventId = String> {
     pub state_key: String,
     /// The new event ID, or `None` if this key was deleted.
     pub event_id: Option<Id>,
-}
-
-struct StateDeltaVisitor<Id>(core::marker::PhantomData<Id>);
-
-impl<'de, Id: serde::Deserialize<'de> + crate::basespec::rezzy_types::EventId>
-    serde::de::Visitor<'de> for StateDeltaVisitor<Id>
-{
-    type Value = StateDelta<Id>;
-    fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        f.write_str("a StateDelta")
-    }
-    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-        let mut event_type = None;
-        let mut state_key = None;
-        let mut event_id = None;
-        while let Some(k) = map.next_key::<alloc::string::String>()? {
-            match k.as_str() {
-                "event_type" => event_type = Some(map.next_value()?),
-                "state_key" => state_key = Some(map.next_value()?),
-                "event_id" => event_id = Some(map.next_value()?),
-                _ => {
-                    let _ = map.next_value::<serde::de::IgnoredAny>()?;
-                }
-            }
-        }
-        Ok(StateDelta {
-            event_type: event_type.ok_or_else(|| serde::de::Error::missing_field("event_type"))?,
-            state_key: state_key.ok_or_else(|| serde::de::Error::missing_field("state_key"))?,
-            event_id: event_id.ok_or_else(|| serde::de::Error::missing_field("event_id"))?,
-        })
-    }
-}
-
-impl<Id: serde::Serialize + crate::basespec::rezzy_types::EventId> serde::Serialize
-    for StateDelta<Id>
-{
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("StateDelta", 3)?;
-        state.serialize_field("event_type", &self.event_type)?;
-        state.serialize_field("state_key", &self.state_key)?;
-        state.serialize_field("event_id", &self.event_id)?;
-        state.end()
-    }
-}
-
-impl<'de, Id: serde::Deserialize<'de> + crate::basespec::rezzy_types::EventId>
-    serde::Deserialize<'de> for StateDelta<Id>
-{
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        const FIELDS: &[&str] = &["event_type", "state_key", "event_id"];
-        deserializer.deserialize_struct("StateDelta", FIELDS, StateDeltaVisitor)
-    }
 }
 
 /// Computes the delta between a parent state and the current state.
@@ -308,58 +155,6 @@ fn decode_hex_32(s: &str) -> Result<[u8; 32], &'static str> {
     Ok(bytes)
 }
 
-pub mod hex_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    /// # Errors
-    /// Returns an error if the hex string fails to serialize.
-    pub fn serialize<S: Serializer>(bytes: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error> {
-        let mut hex = alloc::string::String::with_capacity(64);
-        for b in bytes {
-            use core::fmt::Write;
-            write!(hex, "{b:02x}").expect("String formatting is infallible");
-        }
-        serializer.serialize_str(&hex)
-    }
-
-    /// # Errors
-    /// Returns an error if the string is not exactly 64 ASCII hex characters.
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 32], D::Error> {
-        let s = alloc::string::String::deserialize(deserializer)?;
-        super::decode_hex_32(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-pub mod hex_serde_opt {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    /// # Errors
-    /// Returns an error if the underlying hex string fails to serialize.
-    pub fn serialize<S: Serializer>(
-        bytes: &Option<[u8; 32]>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        match bytes {
-            Some(b) => super::hex_serde::serialize(b, serializer),
-            None => serializer.serialize_none(),
-        }
-    }
-
-    /// # Errors
-    /// Returns an error if the string is present but is not exactly 64 ASCII hex characters.
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<[u8; 32]>, D::Error> {
-        let opt = Option::<alloc::string::String>::deserialize(deserializer)?;
-        match opt {
-            Some(s) => super::decode_hex_32(&s)
-                .map(Some)
-                .map_err(serde::de::Error::custom),
-            None => Ok(None),
-        }
-    }
-}
-
 /// Maximum number of delta hops before a full snapshot is inserted (default: 100,
 /// configurable: true).
 ///
@@ -388,105 +183,6 @@ pub struct CompactedCheckpoint<Id: crate::basespec::rezzy_types::EventId = Strin
     /// Full state snapshot, present every [`MAX_DELTA_CHAIN_HOPS`] checkpoints.
     /// When this is `Some`, `deltas` is empty and reconstruction starts here.
     pub snapshot: Option<crate::state::at::SharedState<Id>>,
-}
-
-struct CompactedCheckpointVisitor;
-
-impl<'de, Id: serde::Deserialize<'de> + crate::basespec::rezzy_types::EventId>
-    serde::de::Visitor<'de> for CompactedCheckpointVisitor
-{
-    type Value = CompactedCheckpoint<Id>;
-    fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        f.write_str("a CompactedCheckpoint")
-    }
-    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-        let mut state_hash = None;
-        let mut parent_hash = None;
-        let mut event_id = None;
-        let mut deltas = None;
-        let mut snapshot = None;
-        while let Some(k) = map.next_key::<alloc::string::String>()? {
-            match k.as_str() {
-                "state_hash" => {
-                    let s: alloc::string::String = map.next_value()?;
-                    state_hash = Some(decode_hex_32(&s).map_err(serde::de::Error::custom)?);
-                }
-                "parent_hash" => {
-                    let opt_s: Option<alloc::string::String> = map.next_value()?;
-                    parent_hash = Some(match opt_s {
-                        Some(s) => Some(decode_hex_32(&s).map_err(serde::de::Error::custom)?),
-                        None => None,
-                    });
-                }
-                "event_id" => event_id = Some(map.next_value()?),
-                "deltas" => deltas = Some(map.next_value()?),
-                "snapshot" => snapshot = Some(map.next_value()?),
-                _ => {
-                    let _ = map.next_value::<serde::de::IgnoredAny>()?;
-                }
-            }
-        }
-        Ok(CompactedCheckpoint {
-            state_hash: state_hash.ok_or_else(|| serde::de::Error::missing_field("state_hash"))?,
-            parent_hash: parent_hash
-                .ok_or_else(|| serde::de::Error::missing_field("parent_hash"))?,
-            event_id: event_id.ok_or_else(|| serde::de::Error::missing_field("event_id"))?,
-            deltas: deltas.ok_or_else(|| serde::de::Error::missing_field("deltas"))?,
-            snapshot: snapshot.ok_or_else(|| serde::de::Error::missing_field("snapshot"))?,
-        })
-    }
-}
-
-impl<Id: serde::Serialize + crate::basespec::rezzy_types::EventId> serde::Serialize
-    for CompactedCheckpoint<Id>
-{
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("CompactedCheckpoint", 5)?;
-        state.serialize_field("state_hash", &HexBytes(&self.state_hash))?;
-        state.serialize_field("parent_hash", &HexOptBytes(&self.parent_hash))?;
-        state.serialize_field("event_id", &self.event_id)?;
-        state.serialize_field("deltas", &self.deltas)?;
-        state.serialize_field("snapshot", &self.snapshot)?;
-        state.end()
-    }
-}
-
-struct HexBytes<'a>(&'a [u8; 32]);
-impl serde::Serialize for HexBytes<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut hex = alloc::string::String::with_capacity(64);
-        for b in self.0 {
-            use core::fmt::Write;
-            write!(hex, "{b:02x}").expect("String formatting is infallible");
-        }
-        serializer.serialize_str(&hex)
-    }
-}
-
-struct HexOptBytes<'a>(&'a Option<[u8; 32]>);
-impl serde::Serialize for HexOptBytes<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self.0 {
-            Some(b) => HexBytes(b).serialize(serializer),
-            None => serializer.serialize_none(),
-        }
-    }
-}
-
-impl<'de, Id: serde::Deserialize<'de> + crate::basespec::rezzy_types::EventId>
-    serde::Deserialize<'de> for CompactedCheckpoint<Id>
-{
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        const FIELDS: &[&str] = &[
-            "state_hash",
-            "parent_hash",
-            "event_id",
-            "deltas",
-            "snapshot",
-        ];
-        deserializer.deserialize_struct("CompactedCheckpoint", FIELDS, CompactedCheckpointVisitor)
-    }
 }
 
 /// Builds a compacted delta chain from pre-resolved `(event_id, state_map)` pairs,

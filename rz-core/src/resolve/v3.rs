@@ -802,7 +802,7 @@ mod tests {
         M_ROOM_TOPIC,
     };
     use alloc::string::String;
-    use serde_json::Value;
+    use crate::json::Value;
 
     #[derive(Default)]
     struct TestAdmission {
@@ -898,7 +898,7 @@ mod tests {
             event_id: event_id.into(),
             event_type: M_ROOM_MEMBER.into(),
             state_key: Some(target.into()),
-            content: serde_json::json!({ "membership": membership }),
+            content: crate::json!({ "membership": membership }),
             ..Default::default()
         }
     }
@@ -1007,7 +1007,7 @@ mod tests {
             event_type: M_ROOM_CREATE.into(),
             state_key: Some(M_EMPTY_STATE_KEY.into()),
             sender: "@creator:example.com".into(),
-            content: serde_json::json!({
+            content: crate::json!({
                 "creator": "@creator:example.com",
                 "room_version": "tk.nutra.cdo.12",
             }),
@@ -1061,7 +1061,7 @@ mod tests {
             event_id: "$message".into(),
             event_type: "m.room.message".into(),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({}),
+            content: crate::json!({}),
             ..Default::default()
         };
         let join: LeanEvent<String, Value, String> = LeanEvent {
@@ -1069,7 +1069,7 @@ mod tests {
             event_type: M_ROOM_MEMBER.into(),
             state_key: Some("@alice:example.com".into()),
             sender: "@alice:example.com".into(),
-            content: serde_json::json!({ "membership": MEM_JOIN }),
+            content: crate::json!({ "membership": MEM_JOIN }),
             ..Default::default()
         };
         let mut branch_auth = crate::auth::RoomState::new();
@@ -1100,7 +1100,7 @@ mod tests {
             event_type: M_ROOM_CREATE.into(),
             state_key: Some(String::new()),
             sender: "@creator:example.com".into(),
-            content: serde_json::json!({ "creator": "@creator:example.com" }),
+            content: crate::json!({ "creator": "@creator:example.com" }),
             ..Default::default()
         };
         let b_join = LeanEvent {
@@ -1108,7 +1108,7 @@ mod tests {
             event_type: M_ROOM_MEMBER.into(),
             state_key: Some("@b:example.com".into()),
             sender: "@b:example.com".into(),
-            content: serde_json::json!({ "membership": MEM_JOIN }),
+            content: crate::json!({ "membership": MEM_JOIN }),
             ..Default::default()
         };
         let prior_power = LeanEvent {
@@ -1116,7 +1116,7 @@ mod tests {
             event_type: M_ROOM_POWER_LEVELS.into(),
             state_key: Some(String::new()),
             sender: "@creator:example.com".into(),
-            content: serde_json::json!({
+            content: crate::json!({
                 "users": { "@b:example.com": 0, "@not_creator:example.com": 100 },
             }),
             ..Default::default()
@@ -1126,7 +1126,7 @@ mod tests {
             event_type: M_ROOM_POWER_LEVELS.into(),
             state_key: Some(String::new()),
             sender: "@creator:example.com".into(),
-            content: serde_json::json!({
+            content: crate::json!({
                 "users": { "@b:example.com": 100 },
                 "tk.nutra.cdo": { "active_member": "$b_join" },
             }),
@@ -1145,7 +1145,7 @@ mod tests {
         assert_eq!(certified.target_power_level(), 100);
 
         let missing_witness = LeanEvent {
-            content: serde_json::json!({ "users": { "@b:example.com": 100 } }),
+            content: crate::json!({ "users": { "@b:example.com": 100 } }),
             ..grant.clone()
         };
         assert!(certify_promotion_grant(
@@ -1156,7 +1156,7 @@ mod tests {
         .is_none());
 
         let stale_witness = LeanEvent {
-            content: serde_json::json!({
+            content: crate::json!({
                 "users": { "@b:example.com": 100 },
                 "tk.nutra.cdo": { "active_member": "$b_left" },
             }),
@@ -1172,7 +1172,7 @@ mod tests {
         // that's the whole point of the narrower scope.
         let wrong_sender = LeanEvent {
             sender: "@not_creator:example.com".into(),
-            content: serde_json::json!({
+            content: crate::json!({
                 "users": { "@not_creator:example.com": 100, "@b:example.com": 100 },
                 "tk.nutra.cdo": { "active_member": "$b_join" },
             }),
@@ -1194,7 +1194,7 @@ mod tests {
 
         let b_leave = LeanEvent {
             event_id: "$b_leave".into(),
-            content: serde_json::json!({ "membership": MEM_LEAVE }),
+            content: crate::json!({ "membership": MEM_LEAVE }),
             ..branch_auth
                 .get_event(M_ROOM_MEMBER, "@b:example.com")
                 .unwrap()
@@ -1203,7 +1203,7 @@ mod tests {
         let mut left_branch = branch_auth.clone();
         left_branch.insert((M_ROOM_MEMBER.into(), "@b:example.com".into()), b_leave);
         let leave_witness = LeanEvent {
-            content: serde_json::json!({
+            content: crate::json!({
                 "users": { "@b:example.com": 100 },
                 "tk.nutra.cdo": { "active_member": "$b_leave" },
             }),
@@ -1224,7 +1224,7 @@ mod tests {
         let mut mismatched_branch = branch_auth.clone();
         mismatched_branch.insert((M_ROOM_NAME.into(), String::new()), stale_join);
         let mismatched_witness = LeanEvent {
-            content: serde_json::json!({
+            content: crate::json!({
                 "users": { "@b:example.com": 100 },
                 "tk.nutra.cdo": { "active_member": "$stale_join" },
             }),
@@ -1249,7 +1249,7 @@ mod tests {
             event_type: M_ROOM_CREATE.into(),
             state_key: Some(String::new()),
             sender: "@creator:example.com".into(),
-            content: serde_json::json!({ "creator": "@creator:example.com" }),
+            content: crate::json!({ "creator": "@creator:example.com" }),
             ..Default::default()
         };
         let b_join = LeanEvent {
@@ -1257,7 +1257,7 @@ mod tests {
             event_type: M_ROOM_MEMBER.into(),
             state_key: Some("@b:example.com".into()),
             sender: "@b:example.com".into(),
-            content: serde_json::json!({ "membership": MEM_JOIN }),
+            content: crate::json!({ "membership": MEM_JOIN }),
             ..Default::default()
         };
         let prior_power = LeanEvent {
@@ -1265,7 +1265,7 @@ mod tests {
             event_type: M_ROOM_POWER_LEVELS.into(),
             state_key: Some(String::new()),
             sender: "@creator:example.com".into(),
-            content: serde_json::json!({ "users_default": 10 }),
+            content: crate::json!({ "users_default": 10 }),
             ..Default::default()
         };
         let grant = LeanEvent {
@@ -1273,7 +1273,7 @@ mod tests {
             event_type: M_ROOM_POWER_LEVELS.into(),
             state_key: Some(String::new()),
             sender: "@creator:example.com".into(),
-            content: serde_json::json!({
+            content: crate::json!({
                 "users_default": 100,
                 "tk.nutra.cdo": { "active_member": "$b_join" },
             }),
@@ -1292,7 +1292,7 @@ mod tests {
         // A grant that only matches (not exceeds) the users_default-derived
         // prior level must not certify.
         let no_increase = LeanEvent {
-            content: serde_json::json!({
+            content: crate::json!({
                 "users_default": 10,
                 "tk.nutra.cdo": { "active_member": "$b_join" },
             }),
@@ -1318,7 +1318,7 @@ mod tests {
             event_type: M_ROOM_CREATE.into(),
             state_key: Some(String::new()),
             sender: "@creator:example.com".into(),
-            content: serde_json::json!({ "creator": "@creator:example.com" }),
+            content: crate::json!({ "creator": "@creator:example.com" }),
             ..Default::default()
         };
         let a_join = LeanEvent {
@@ -1326,7 +1326,7 @@ mod tests {
             event_type: M_ROOM_MEMBER.into(),
             state_key: Some("@a:example.com".into()),
             sender: "@a:example.com".into(),
-            content: serde_json::json!({ "membership": MEM_JOIN }),
+            content: crate::json!({ "membership": MEM_JOIN }),
             ..Default::default()
         };
         let prior_power = LeanEvent {
@@ -1334,7 +1334,7 @@ mod tests {
             event_type: M_ROOM_POWER_LEVELS.into(),
             state_key: Some(String::new()),
             sender: "@creator:example.com".into(),
-            content: serde_json::json!({ "users_default": 10 }),
+            content: crate::json!({ "users_default": 10 }),
             ..Default::default()
         };
         let self_grant = LeanEvent {
@@ -1342,7 +1342,7 @@ mod tests {
             event_type: M_ROOM_POWER_LEVELS.into(),
             state_key: Some(String::new()),
             sender: "@a:example.com".into(),
-            content: serde_json::json!({
+            content: crate::json!({
                 "users": { "@a:example.com": 100 },
                 "tk.nutra.cdo": { "active_member": "$a_join" },
             }),
@@ -1375,7 +1375,7 @@ mod tests {
             event_type: M_ROOM_CREATE.into(),
             state_key: Some(String::new()),
             sender: "@creator:example.com".into(),
-            content: serde_json::json!({ "creator": "@creator:example.com" }),
+            content: crate::json!({ "creator": "@creator:example.com" }),
             ..Default::default()
         };
         let c_join = LeanEvent {
@@ -1383,7 +1383,7 @@ mod tests {
             event_type: M_ROOM_MEMBER.into(),
             state_key: Some("@c:example.com".into()),
             sender: "@c:example.com".into(),
-            content: serde_json::json!({ "membership": MEM_JOIN }),
+            content: crate::json!({ "membership": MEM_JOIN }),
             ..Default::default()
         };
         let prior_power = LeanEvent {
@@ -1391,7 +1391,7 @@ mod tests {
             event_type: M_ROOM_POWER_LEVELS.into(),
             state_key: Some(String::new()),
             sender: "@creator:example.com".into(),
-            content: serde_json::json!({
+            content: crate::json!({
                 "users": { "@senior_admin:example.com": 100, "@c:example.com": 0 },
             }),
             ..Default::default()
@@ -1401,7 +1401,7 @@ mod tests {
             event_type: M_ROOM_POWER_LEVELS.into(),
             state_key: Some(String::new()),
             sender: "@senior_admin:example.com".into(),
-            content: serde_json::json!({
+            content: crate::json!({
                 "users": {
                     "@senior_admin:example.com": 100,
                     "@c:example.com": 50,
@@ -1423,7 +1423,7 @@ mod tests {
 
         // The same admin cannot certify a grant above their own PL (101 > 100).
         let overreach = LeanEvent {
-            content: serde_json::json!({
+            content: crate::json!({
                 "users": {
                     "@senior_admin:example.com": 100,
                     "@c:example.com": 101,
@@ -1451,11 +1451,11 @@ mod tests {
         assert!((ban_class.0 as i8) > (join_class.0 as i8));
 
         let public = LeanEvent {
-            content: serde_json::json!({ "join_rule": RULE_PUBLIC }),
+            content: crate::json!({ "join_rule": RULE_PUBLIC }),
             ..state_event("$public", M_ROOM_JOIN_RULES, "")
         };
         let restrictive = LeanEvent {
-            content: serde_json::json!({ "join_rule": "invite" }),
+            content: crate::json!({ "join_rule": "invite" }),
             ..public.clone()
         };
         assert_eq!(
@@ -1734,7 +1734,7 @@ mod tests {
     #[test]
     fn concurrent_lockdown_rejects_new_join_without_evicting_established_member() {
         let lockdown = LeanEvent {
-            content: serde_json::json!({ "join_rule": "invite" }),
+            content: crate::json!({ "join_rule": "invite" }),
             ..state_event("$lockdown", M_ROOM_JOIN_RULES, "")
         };
         let new_join = membership_for("$new_join", "@new:example.com", MEM_JOIN);

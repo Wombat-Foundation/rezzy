@@ -255,13 +255,13 @@ impl Ord for dyn StateKeyDyn + '_ {
 /// The built-in implementation is [`RoomState`] (a `BTreeMap`), but the
 /// resolution engine uses a more complex `OverlayState` internally
 /// that layers resolved state, local auth context, and the create event.
-pub trait StateProvider<Id = String, C = serde_json::Value, E = LeanEvent<Id, C>> {
+pub trait StateProvider<Id = String, C = crate::json::Value, E = LeanEvent<Id, C>> {
     /// Look up a state event by its type and state key.
     fn get_event(&self, event_type: &str, state_key: &str) -> Option<&E>;
 }
 
 /// The room state at a specific point in the DAG (keyed by (type, `state_key`) -> event).
-pub type RoomState<Id = String, C = serde_json::Value, K = String> =
+pub type RoomState<Id = String, C = crate::json::Value, K = String> =
     alloc::collections::BTreeMap<(String, K), LeanEvent<Id, C, K>>;
 
 impl<Id, C, K> StateProvider<Id, C, LeanEvent<Id, C, K>> for RoomState<Id, C, K>
@@ -1304,14 +1304,14 @@ pub(crate) fn event_id_to_wire_cow<Id: core::fmt::Display + 'static>(
 /// Rejected or soft-failed redaction events are never applied.
 #[must_use]
 pub fn apply_authorized_redactions<Id, E, K>(
-    events: &mut [LeanEvent<Id, serde_json::Value, K>],
-    state: &impl StateProvider<Id, serde_json::Value, E>,
+    events: &mut [LeanEvent<Id, crate::json::Value, K>],
+    state: &impl StateProvider<Id, crate::json::Value, E>,
     version: StateResVersion,
     room_version: &str,
 ) -> RedactionReport<Id>
 where
     Id: crate::basespec::rezzy_types::EventId + Clone + 'static,
-    E: EventLike<Id = Id, Content = serde_json::Value>,
+    E: EventLike<Id = Id, Content = crate::json::Value>,
     K: crate::basespec::rezzy_types::StateKey + Clone,
 {
     apply_authorized_redactions_with_state_at(
@@ -1339,16 +1339,16 @@ where
 /// (the `events` slice, in-place mutation, rejected/soft-failed handling).
 #[must_use]
 pub fn apply_authorized_redactions_with_state_at<'s, Id, E, K, S>(
-    events: &mut [LeanEvent<Id, serde_json::Value, K>],
+    events: &mut [LeanEvent<Id, crate::json::Value, K>],
     state_at: impl Fn(&Id) -> Option<&'s S>,
     version: StateResVersion,
     room_version: &str,
 ) -> RedactionReport<Id>
 where
     Id: crate::basespec::rezzy_types::EventId + Clone + 'static,
-    E: EventLike<Id = Id, Content = serde_json::Value>,
+    E: EventLike<Id = Id, Content = crate::json::Value>,
     K: crate::basespec::rezzy_types::StateKey + Clone,
-    S: StateProvider<Id, serde_json::Value, E> + 's,
+    S: StateProvider<Id, crate::json::Value, E> + 's,
 {
     // Collect active redaction positions first. If there are no redactions
     // in this batch, return immediately without constructing the index map.
@@ -2344,7 +2344,7 @@ pub fn warn_unexpected_auth_events<
 /// Trait-generic counterpart to [`auth_types_for_event`], used by rule 2.2's
 /// completeness check in `check_auth_with_context`. Operates on
 /// [`EventLike`]/[`crate::basespec::rezzy_types::EventContent`] accessors
-/// rather than raw `serde_json::Value`, so it works for any event
+/// rather than raw `crate::json::Value`, so it works for any event
 /// representation (not just JSON-backed ones).
 ///
 /// Delegates to the shared selection core [`auth_types_for_event_core`], so it
@@ -2450,7 +2450,7 @@ pub fn auth_types_for_event(
     event_type: &str,
     sender: &str,
     state_key: Option<&str>,
-    content: &serde_json::Value,
+    content: &crate::json::Value,
     version: StateResVersion,
     room_version: &str,
 ) -> Vec<(String, String)> {
@@ -2512,7 +2512,7 @@ mod tests {
         id: &str,
         ev_type: &str,
         sender: &str,
-        content: serde_json::Value,
+        content: crate::json::Value,
     ) -> LeanEvent {
         LeanEvent {
             event_id: id.into(),
@@ -3045,7 +3045,7 @@ mod tests {
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
             sender: "@admin:example.com".into(),
-            content: serde_json::json!({
+            content: crate::json!({
                 "users": { "@admin:example.com": 100 },
                 "redact": 0
             }),
@@ -3060,7 +3060,7 @@ mod tests {
             event_type: "m.room.redaction".into(),
             sender: "@alice:example.com".into(),
             origin_server_ts: 10,
-            content: serde_json::json!({ "redacts": "$self_redact:example.com" }),
+            content: crate::json!({ "redacts": "$self_redact:example.com" }),
             ..Default::default()
         };
 
@@ -3103,7 +3103,7 @@ mod tests {
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
             sender: "@admin:example.com".into(),
-            content: serde_json::json!({
+            content: crate::json!({
                 "users": { "@alice:example.com": 50 },
                 "redact": 0
             }),
@@ -3118,7 +3118,7 @@ mod tests {
             event_type: "m.room.redaction".into(),
             sender: "@alice:example.com".into(),
             origin_server_ts: 10,
-            content: serde_json::json!({ "redacts": "$r2:example.com" }),
+            content: crate::json!({ "redacts": "$r2:example.com" }),
             ..Default::default()
         };
         // R2 redacts R1 — a cycle.
@@ -3127,7 +3127,7 @@ mod tests {
             event_type: "m.room.redaction".into(),
             sender: "@alice:example.com".into(),
             origin_server_ts: 11,
-            content: serde_json::json!({ "redacts": "$r1:example.com" }),
+            content: crate::json!({ "redacts": "$r1:example.com" }),
             ..Default::default()
         };
 

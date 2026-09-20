@@ -18,8 +18,7 @@ use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
-use serde::Deserialize;
-use serde_json::Value;
+use crate::json::Value;
 
 use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER, M_ROOM_REDACTION};
 
@@ -479,7 +478,7 @@ mod canonicalization_error_tests {
 
     #[test]
     fn validate_rejects_large_u64() {
-        let n = serde_json::Number::from(u64::MAX);
+        let n = crate::json::Number::from(u64::MAX);
         assert!(n.as_i64().is_none(), "u64::MAX must not fit in i64");
         assert_eq!(
             validate_canonical_number(&n),
@@ -619,19 +618,19 @@ pub fn split_redaction_content(
 /// recursing one level for the `third_party_invite`-shaped nested-path case.
 fn redactable_content_remainder(content: &Value, redacted: &Value) -> Value {
     let Value::Object(content_obj) = content else {
-        return Value::Object(serde_json::Map::default());
+        return Value::Object(crate::json::Object::default());
     };
-    let empty = serde_json::Map::default();
+    let empty = crate::json::Object::default();
     let redacted_obj = match redacted {
         Value::Object(m) => m,
         _ => &empty,
     };
-    let mut out = serde_json::Map::new();
+    let mut out = crate::json::Object::new();
     for (key, value) in content_obj {
         match (redacted_obj.get(key), value) {
             (Some(preserved), _) if preserved == value => {}
             (Some(Value::Object(preserved_inner)), Value::Object(full_inner)) => {
-                let mut remainder = serde_json::Map::new();
+                let mut remainder = crate::json::Object::new();
                 for (inner_key, inner_value) in full_inner {
                     if preserved_inner.get(inner_key) != Some(inner_value) {
                         remainder.insert(inner_key.clone(), inner_value.clone());
@@ -656,10 +655,10 @@ fn redactable_content_remainder(content: &Value, redacted: &Value) -> Value {
 /// an empty object.
 fn redact_content(content: &Value, rule: RedactionRule) -> Value {
     match rule {
-        RedactionRule::None => Value::Object(serde_json::Map::default()),
+        RedactionRule::None => Value::Object(crate::json::Object::default()),
         RedactionRule::All => content.clone(),
         RedactionRule::Keys(paths) => {
-            let mut out = serde_json::Map::new();
+            let mut out = crate::json::Object::new();
             for path in paths {
                 if let Some((top, rest)) = path.split_once('.') {
                     if let Some(Value::Object(inner)) = content.get(top) {
@@ -669,7 +668,7 @@ fn redact_content(content: &Value, rule: RedactionRule) -> Value {
                             if let Some(Value::Object(parent)) = out.get_mut(top) {
                                 parent.insert(rest.to_string(), v.clone());
                             } else {
-                                let mut parent = serde_json::Map::new();
+                                let mut parent = crate::json::Object::new();
                                 parent.insert(rest.to_string(), v.clone());
                                 out.insert(top.to_string(), Value::Object(parent));
                             }
@@ -699,22 +698,22 @@ fn redact_content(content: &Value, rule: RedactionRule) -> Value {
 /// `auth_events` for `prev_state_events` is modeled in `redact_top_level`:
 /// the swapped-in field is preserved alongside `auth_events`.
 #[must_use]
-fn redact_top_level(value: &Value, room_version: &str) -> serde_json::Map<String, Value> {
+fn redact_top_level(value: &Value, room_version: &str) -> crate::json::Object {
     use crate::basespec::event_types::{
         FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_HASHES,
         FIELD_ORIGIN_SERVER_TS, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_SIGNATURES, FIELD_STATE_KEY,
         FIELD_TYPE,
     };
     let Value::Object(obj) = value else {
-        return serde_json::Map::new();
+        return crate::json::Object::new();
     };
     // MSC4291 (room IDs as hashes, room v12+): the create event carries no
     // room_id, so it must not be preserved on redaction.
     let is_v12_create = obj.get(FIELD_TYPE).and_then(Value::as_str)
         == Some(crate::basespec::event_types::M_ROOM_CREATE)
         && room_version_is_v12_or_later(room_version);
-    let mut out = serde_json::Map::new();
-    let take = |key: &str, out: &mut serde_json::Map<String, Value>| {
+    let mut out = crate::json::Object::new();
+    let take = |key: &str, out: &mut crate::json::Object| {
         if let Some(v) = obj.get(key) {
             out.insert(String::from(key), v.clone());
         }
@@ -788,7 +787,7 @@ pub fn redact_json(value: &Value, room_version: &str) -> Value {
     let content = out
         .get(crate::basespec::event_types::FIELD_CONTENT)
         .map_or_else(
-            || Value::Object(serde_json::Map::default()),
+            || Value::Object(crate::json::Object::default()),
             |c| redact_content(c, rule),
         );
     out.insert(
@@ -807,7 +806,7 @@ pub fn redact_json(value: &Value, room_version: &str) -> Value {
 /// Canonicalization is tolerant of out-of-range integers (like Synapse's
 /// `relaxed` mode): `serde_json::to_string` serializes whatever numbers are
 /// present rather than rejecting them. Keys are already lexicographically
-/// sorted because `serde_json::Map` is a `BTreeMap`.
+/// sorted because `crate::json::Object` is a `BTreeMap`.
 ///
 /// # Errors
 /// Returns `Err` when the room version has no reference hash (v1/v2, whose
@@ -921,7 +920,7 @@ pub fn verify_content_hash(value: &Value, room_version: &str) -> Result<(), allo
 /// # Panics
 /// Panics if strict-number validation fails (fractional numbers in v6+
 /// rooms) or if the canonical JSON cannot be serialized. The latter is
-/// unreachable for a `serde_json::Value` (a safe `Value` cannot hold a
+/// unreachable for a `crate::json::Value` (a safe `Value` cannot hold a
 /// non-finite number); the former is a caller invariant.
 #[must_use]
 pub fn canonical_redacted_json(value: &Value, room_version: &str) -> alloc::string::String {
@@ -958,7 +957,7 @@ pub fn try_canonical_redacted_json(
 // ---------------------------------------------------------------------------
 // Zero-copy canonical JSON writer.
 //
-// `serde_json::Map` is a `BTreeMap`, so object keys are already sorted. This
+// `crate::json::Object` is a `BTreeMap`, so object keys are already sorted. This
 // writer emits canonical JSON by descending the tree directly into a
 // `core::fmt::Write` sink — skipping the intermediate `Value` clone + re-sort
 // that `redact_json`/`value.clone()` + `serde_json::to_string` would pay, and
@@ -967,7 +966,7 @@ pub fn try_canonical_redacted_json(
 // Byte-parity with `serde_json` is load-bearing (hashes/signatures cover these
 // exact bytes), so it is pinned by `canonical_parity_tests` and every
 // reference-hash vector. Number formatting is delegated to
-// `serde_json::Number::to_string` (identical to what serde_json emits, incl.
+// `crate::json::Number::to_string` (identical to what serde_json emits, incl.
 // ryu float formatting), which removes any float/`-0`/exponent divergence risk.
 // ---------------------------------------------------------------------------
 
@@ -1028,7 +1027,7 @@ fn write_json_string<W: core::fmt::Write>(out: &mut W, s: &str) -> core::fmt::Re
 /// and out-of-range (beyond ±(2^53 − 1)) numbers.
 ///
 /// For legacy room versions (pre-v6) no validation is performed.
-fn validate_canonical_number(n: &serde_json::Number) -> Result<(), CanonicalizationError> {
+fn validate_canonical_number(n: &crate::json::Number) -> Result<(), CanonicalizationError> {
     let s = n.to_string();
     // Fractional or exponent form.
     if s.contains('.') || s.contains('e') || s.contains('E') {
@@ -1356,54 +1355,6 @@ pub fn ingest_events(
     Ok(events)
 }
 
-impl serde::Serialize for StateResVersion {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let s = match self {
-            StateResVersion::V1 => "V1",
-            StateResVersion::V2 => "V2",
-            StateResVersion::V2_1 => "V2_1",
-            StateResVersion::V2_1_1 => "V2_1_1",
-            StateResVersion::V2_2 => "V2_2",
-            StateResVersion::V3 => "V3",
-        };
-        serializer.serialize_str(s)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for StateResVersion {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct StateResVersionVisitor;
-
-        impl serde::de::Visitor<'_> for StateResVersionVisitor {
-            type Value = StateResVersion;
-
-            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
-                formatter.write_str("a StateResVersion string")
-            }
-
-            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
-                match value {
-                    "V1" => Ok(StateResVersion::V1),
-                    "V2" => Ok(StateResVersion::V2),
-                    "V2_1" => Ok(StateResVersion::V2_1),
-                    "V2_1_1" => Ok(StateResVersion::V2_1_1),
-                    "V2_2" => Ok(StateResVersion::V2_2),
-                    "V3" => Ok(StateResVersion::V3),
-                    _ => Err(E::custom(alloc::format!("unknown variant `{value}`"))),
-                }
-            }
-        }
-
-        deserializer.deserialize_str(StateResVersionVisitor)
-    }
-}
-
 /// Result of Kahn's topological sort with diagnostic information.
 #[derive(Debug, Clone)]
 pub enum KahnSortResult<Id = String> {
@@ -1556,7 +1507,7 @@ impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
 /// struct MyEvent {
 ///     event_id: String,
 ///     sender: String,
-///     parsed_content: serde_json::Value,
+///     parsed_content: crate::json::Value,
 /// }
 ///
 /// impl DagNode for MyEvent {
@@ -1568,17 +1519,17 @@ impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
 /// }
 ///
 /// impl EventLike for MyEvent {
-///     type Content = serde_json::Value;
+///     type Content = crate::json::Value;
 ///     fn event_type(&self) -> Cow<'_, str> { Cow::Borrowed("m.room.message") }
 ///     fn sender(&self) -> &str { &self.sender }
 ///     fn state_key(&self) -> Option<&str> { None }
 ///     fn power_level(&self) -> i64 { 0 }
 ///     fn origin_server_ts(&self) -> u64 { 0 }
-///     fn content(&self) -> &serde_json::Value { &self.parsed_content }
+///     fn content(&self) -> &crate::json::Value { &self.parsed_content }
 /// }
 /// ```
 pub trait EventLike: DagNode {
-    /// The content type (e.g. `serde_json::Value` or a typed struct).
+    /// The content type (e.g. `crate::json::Value` or a typed struct).
     type Content: EventContent;
 
     /// Matrix event type (e.g. `m.room.member`, `m.room.power_levels`).
@@ -1858,13 +1809,13 @@ pub trait RawEvent {
 }
 
 /// Wraps a `&T` (where `T: RawEvent`) with a cached parsed
-/// `serde_json::Value` content, providing [`DagNode`] + [`EventLike`]
+/// `crate::json::Value` content, providing [`DagNode`] + [`EventLike`]
 /// for free.
 ///
 /// Content is parsed once at construction from [`RawEvent::raw_content_json`].
 pub struct ParsedEvent<'a, T: RawEvent> {
     raw: &'a T,
-    content: serde_json::Value,
+    content: crate::json::Value,
 }
 
 impl<'a, T: RawEvent> ParsedEvent<'a, T> {
@@ -1877,8 +1828,8 @@ impl<'a, T: RawEvent> ParsedEvent<'a, T> {
     /// # Errors
     ///
     /// Returns [`serde_json::Error`] if the raw content string is not valid JSON.
-    pub fn try_new(event: &'a T) -> Result<Self, serde_json::Error> {
-        let content = serde_json::from_str(event.raw_content_json())?;
+    pub fn try_new(event: &'a T) -> Result<Self, crate::json::Error> {
+        let content = Value::parse(event.raw_content_json()).map_err(|e| e.to_string())?;
         Ok(Self {
             raw: event,
             content,
@@ -1892,7 +1843,7 @@ impl<'a, T: RawEvent> ParsedEvent<'a, T> {
     /// Use [`try_new`](Self::try_new) for strict error handling.
     #[must_use]
     pub fn new(event: &'a T) -> Self {
-        let content = serde_json::from_str(event.raw_content_json()).unwrap_or_default();
+        let content = Value::parse(event.raw_content_json()).unwrap_or_default();
         Self {
             raw: event,
             content,
@@ -1925,7 +1876,7 @@ impl<T: RawEvent> DagNode for ParsedEvent<'_, T> {
 }
 
 impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
-    type Content = serde_json::Value;
+    type Content = crate::json::Value;
 
     fn event_type(&self) -> alloc::borrow::Cow<'_, str> {
         self.raw.raw_event_type()
@@ -1947,7 +1898,7 @@ impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
         self.raw.raw_origin_server_ts()
     }
 
-    fn content(&self) -> &serde_json::Value {
+    fn content(&self) -> &crate::json::Value {
         &self.content
     }
 
@@ -2344,46 +2295,9 @@ impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEventRef<'_,
     }
 }
 
-impl<Id: serde::Serialize, C: serde::Serialize, K: AsRef<str>> serde::Serialize
-    for LeanEvent<Id, C, K>
-{
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use crate::basespec::event_types::{
-            FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
-            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_REJECTED, FIELD_SENDER, FIELD_SOFT_FAIL,
-            FIELD_STATE_KEY, FIELD_TYPE,
-        };
-        use serde::ser::SerializeStruct;
-        // TODO: trait forces `Result` here, so `?` shows as dead coverage; see
-        // docs/tech_debt.md for the refactor investigation.
-        let mut state = serializer.serialize_struct("LeanEvent", 12)?;
-        state.serialize_field(FIELD_EVENT_ID, &self.event_id)?;
-        state.serialize_field(FIELD_TYPE, &self.event_type)?;
-        if let Some(ref sk) = self.state_key {
-            state.serialize_field(FIELD_STATE_KEY, sk.as_ref())?;
-        }
-        state.serialize_field(FIELD_POWER_LEVEL, &self.power_level)?;
-        state.serialize_field(FIELD_ORIGIN_SERVER_TS, &self.origin_server_ts)?;
-        state.serialize_field(FIELD_SENDER, &self.sender)?;
-        state.serialize_field(FIELD_CONTENT, &self.content)?;
-        state.serialize_field(FIELD_PREV_EVENTS, &self.prev_events)?;
-        state.serialize_field(FIELD_AUTH_EVENTS, &self.auth_events)?;
-        // NOTE: `prev_state_events` is MSC4242-only (room v11+/v12). It must
-        // NOT be emitted here — the generic serializer is room-version-neutral.
-        // Room-version-specific serialization handles this field when needed.
-        state.serialize_field(FIELD_DEPTH, &self.depth)?;
-        state.serialize_field(FIELD_REJECTED, &self.rejected)?;
-        state.serialize_field(FIELD_SOFT_FAIL, &self.soft_fail)?;
-        state.end()
-    }
-}
-
 /// Trait abstracting event content access for state resolution.
 ///
-/// Implement this for custom content types to avoid `serde_json::Value` overhead.
+/// Implement this for custom content types to avoid `crate::json::Value` overhead.
 /// The default `Value` implementation preserves full backwards compatibility.
 pub trait EventContent: Clone + core::fmt::Debug + Default {
     fn get_membership(&self) -> Option<&str>;
@@ -2469,7 +2383,7 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     ///
     /// Returning an empty vec means "no entries exist" — the Rule 10 diff sees
     /// no changes and no escalation, so validation passes without bypassing
-    /// anything.  The only production impl (`serde_json::Value`) overrides this.
+    /// anything.  The only production impl (`crate::json::Value`) overrides this.
     /// Custom implementations **must** override this for PL map validation to
     /// detect escalation in the `events` map.
     /// Visit `(event_type, power_level)` entries in the `events` map.
@@ -3269,7 +3183,7 @@ impl LeanEvent<String, Value, String> {
     pub fn from_value(
         value: &Value,
         room_version: Option<&str>,
-    ) -> Result<LeanEvent<String, Value, String>, serde_json::Error> {
+    ) -> Result<LeanEvent<String, Value, String>, String> {
         use crate::basespec::event_types::{
             FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
             FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_PREV_STATE_EVENTS, FIELD_REDACTS,
@@ -3279,7 +3193,7 @@ impl LeanEvent<String, Value, String> {
 
         let is_msc4242 = room_version.is_some_and(is_msc4242_room_version);
         if is_msc4242 && value.get(FIELD_AUTH_EVENTS).is_some() {
-            return Err(serde::de::Error::custom(
+            return Err(String::from(
                 "auth_events is not permitted in MSC4242 events; use prev_state_events",
             ));
         }
@@ -3290,7 +3204,7 @@ impl LeanEvent<String, Value, String> {
             let rh = reference_hash(value, ver).map_err(serde::de::Error::custom)?;
             alloc::format!("${rh}")
         } else {
-            return Err(serde::de::Error::custom(
+            return Err(String::from(
                 "event_id is required; pass `room_version` to `from_value` to derive it via the reference hash",
             ));
         };
@@ -3302,7 +3216,7 @@ impl LeanEvent<String, Value, String> {
             .into();
 
         if event_type.is_empty() {
-            return Err(serde::de::Error::custom(
+            return Err(String::from(
                 "event_type cannot be missing or empty",
             ));
         }
@@ -3325,7 +3239,7 @@ impl LeanEvent<String, Value, String> {
                         0
                     }
                 } else {
-                    return Err(serde::de::Error::custom("invalid power_level type"));
+                    return Err(String::from("invalid power_level type"));
                 }
             }
             None => 0,
@@ -3346,7 +3260,7 @@ impl LeanEvent<String, Value, String> {
         if event_type == M_ROOM_REDACTION {
             let top_level_redacts = match value.get(FIELD_REDACTS) {
                 Some(redacts) => Some(redacts.as_str().ok_or_else(|| {
-                    serde::de::Error::custom("m.room.redaction redacts must be a string")
+                    String::from("m.room.redaction redacts must be a string")
                 })?),
                 None => None,
             };
@@ -3355,13 +3269,13 @@ impl LeanEvent<String, Value, String> {
                 Value::Object(obj) => {
                     if let Some(existing_redacts) = obj.get(FIELD_REDACTS) {
                         let existing_redacts = existing_redacts.as_str().ok_or_else(|| {
-                            serde::de::Error::custom(
+                            String::from(
                                 "m.room.redaction content.redacts must be a string",
                             )
                         })?;
                         if let Some(top_level_redacts) = top_level_redacts {
                             if existing_redacts != top_level_redacts {
-                                return Err(serde::de::Error::custom(
+                                return Err(String::from(
                                     "m.room.redaction redacts mismatch between top-level field and content",
                                 ));
                             }
@@ -3375,7 +3289,7 @@ impl LeanEvent<String, Value, String> {
                 }
                 Value::Null => {
                     if let Some(top_level_redacts) = top_level_redacts {
-                        let mut obj = serde_json::Map::new();
+                        let mut obj = crate::json::Object::new();
                         obj.insert(
                             String::from(FIELD_REDACTS),
                             Value::String(String::from(top_level_redacts)),
@@ -3384,7 +3298,7 @@ impl LeanEvent<String, Value, String> {
                     }
                 }
                 _ => {
-                    return Err(serde::de::Error::custom(
+                    return Err(String::from(
                         "m.room.redaction content must be an object or null",
                     ));
                 }
@@ -3412,20 +3326,20 @@ impl LeanEvent<String, Value, String> {
         let depth = match value.get(FIELD_DEPTH) {
             Some(depth) => depth
                 .as_u64()
-                .ok_or_else(|| serde::de::Error::custom("invalid depth value"))?,
+                .ok_or_else(|| String::from("invalid depth value"))?,
             None => 0,
         };
 
         let rejected = value
             .get(FIELD_REJECTED)
             .or_else(|| value.get("rejected"))
-            .and_then(serde_json::Value::as_bool)
+            .and_then(crate::json::Value::as_bool)
             .unwrap_or(false);
 
         let soft_fail = value
             .get(FIELD_SOFT_FAIL)
             .or_else(|| value.get("soft_fail"))
-            .and_then(serde_json::Value::as_bool)
+            .and_then(crate::json::Value::as_bool)
             .unwrap_or(false);
 
         Ok(LeanEvent {
@@ -3450,16 +3364,6 @@ impl LeanEvent<String, Value, String> {
             // `ingest_events`), after this deserialize step.
             room_id: None,
         })
-    }
-}
-
-impl<'de> Deserialize<'de> for LeanEvent<String, Value, String> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = Value::deserialize(deserializer)?;
-        LeanEvent::from_value(&value, None).map_err(serde::de::Error::custom)
     }
 }
 
@@ -4166,7 +4070,7 @@ mod canonical_parity_tests {
     #[test]
     fn validate_canonical_number_rejects_negative_zero_f64() {
         use super::validate_canonical_number;
-        let neg_zero = serde_json::Number::from_f64(-0.0).expect("from_f64");
+        let neg_zero = crate::json::Number::from_f64(-0.0).expect("from_f64");
         assert!(
             neg_zero.to_string().contains('.'),
             "from_f64(-0.0) should produce a string with '.'"

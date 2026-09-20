@@ -34,7 +34,7 @@
 
 use alloc::string::String;
 use alloc::string::ToString;
-use serde_json::Value;
+use crate::json::Value;
 
 use crate::basespec::rezzy_types::{try_canonical_redacted_json, EventVerifier};
 
