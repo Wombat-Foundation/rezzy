@@ -70,12 +70,13 @@ rz-reconcile = { path = "rz-reconcile" }
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 blake2 = { version = "0.10", default-features = false }
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
-imbl = { version = "3.0", default-features = false }
+imbl = { version = "3.0", default-features = false, features = ["serde"] }
 roaring = { version = "0.10", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }
 sha3 = { version = "0.10", default-features = false }
+simd-json = { version = "=0.14.3", default-features = false, features = ["swar-number-parsing"] }
 
 # CLI-only
 clap = { version = "=4.5.48", features = ["derive", "env"] }
