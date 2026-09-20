@@ -17,6 +17,7 @@ ignored = ["idna_adapter", "zeroize"]
 
 [features]
 default = ["std"]
+std = []
 cli = ["std", "dep:clap"]
 regen = ["std"]
 signing = ["signing-dalek"]
@@ -40,9 +41,9 @@ blake2.workspace = true
 hashbrown.workspace = true
 imbl.workspace = true
 roaring.workspace = true
-simd-json.workspace = true
 sha2.workspace = true
 sha3.workspace = true
+simd-json.workspace = true
 
 # Optional
 clap = { workspace = true, optional = true }
