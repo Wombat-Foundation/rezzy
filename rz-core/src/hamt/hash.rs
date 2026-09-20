@@ -72,9 +72,9 @@ fn default_routing_version_v1() -> u8 {
 /// # Persistence contract
 ///
 /// `RootHandle` is designed for **JSON persistence only**. Its `[u8; 32]` fields
-/// serialize as JSON number arrays, and the `#[serde(default)]` attributes on the
-/// version fields ensure backward compatibility with legacy JSON documents that
-/// predate `codec_version` / `routing_version` / `routing_params`.
+/// map naturally to JSON number arrays. External JSON adapters should default
+/// missing version metadata when reading documents written before those fields
+/// were added.
 ///
 /// **Do not use bincode or other positional binary formats** with this struct.
 /// The field layout has changed since initial design (`StructuralHash` widened from
