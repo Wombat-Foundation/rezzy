@@ -17,13 +17,11 @@ ignored = ["idna_adapter", "zeroize"]
 
 [features]
 default = ["std"]
-std = ["serde_json/std", "serde/std"]
 cli = ["std", "dep:clap"]
 regen = ["std"]
 signing = ["signing-dalek"]
 signing-dalek = ["dep:ed25519-dalek"]
 simd-json = []
-simd-json-serde = ["simd-json"]
 mock-ruma = [
     "dep:ruma-common",
     "dep:ruma-events",
@@ -42,8 +40,7 @@ blake2.workspace = true
 hashbrown.workspace = true
 imbl.workspace = true
 roaring.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+simd-json.workspace = true
 sha2.workspace = true
 sha3.workspace = true
 
@@ -63,7 +60,6 @@ hashbrown.workspace = true
 imbl.workspace = true
 insta.workspace = true
 rand_08.workspace = true
-serde_json.workspace = true
 sha2.workspace = true
 simd-json.workspace = true
 similar.workspace = true

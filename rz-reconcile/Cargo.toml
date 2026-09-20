@@ -16,7 +16,7 @@ std = []
 
 [dependencies]
 base64.workspace = true
-serde_json.workspace = true
+simd-json.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]

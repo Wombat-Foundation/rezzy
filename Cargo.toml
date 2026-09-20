@@ -70,12 +70,12 @@ rz-reconcile = { path = "rz-reconcile" }
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 blake2 = { version = "0.10", default-features = false }
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
-imbl = { version = "3.0", default-features = false, features = ["serde"] }
+imbl = { version = "3.0", default-features = false}
 roaring = { version = "0.10", default-features = false }
-serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
-serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }
 sha3 = { version = "0.10", default-features = false }
+simd-json = { version = "0.18", default-features = false, features = ["runtime-detection"] }
+
 
 # CLI-only
 clap = { version = "=4.5.48", features = ["derive", "env"] }
@@ -97,7 +97,6 @@ bincode = "1"
 ed25519-consensus = { version = "2.1", default-features = false, features = ["std"] }
 insta = "1.47.2"
 rand_08 = { package = "rand", version = "0.8" }
-simd-json = { version = "0.18", default-features = false, features = ["serde_impl", "swar-number-parsing", "runtime-detection"] }
 similar = "2.7.0"
 test-case = "3.3.1"
 test-log = "0.2.20"
@@ -157,7 +156,6 @@ regen = ["std"]
 signing = ["rz-core/signing"]
 signing-dalek = ["rz-core/signing-dalek"]
 simd-json = ["rz-core/simd-json"]
-simd-json-serde = ["simd-json"]
 mock-ruma = ["rz-core/mock-ruma"]
 stress = []
 hashing = []
@@ -173,7 +171,7 @@ ruma-state-res = { workspace = true, optional = true }
 rz-cli = { workspace = true, optional = true }
 rz-core.workspace = true
 rz-reconcile.workspace = true
-serde_json.workspace = true
+simd-json.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
@@ -186,8 +184,7 @@ imbl.workspace = true
 insta.workspace = true
 rand_08.workspace = true
 roaring.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+simd-json.workspace = true
 sha2.workspace = true
 simd-json.workspace = true
 similar.workspace = true
@@ -234,7 +231,7 @@ name = "signature_verify"
 path = "benches/signature_verify.rs"
 harness = false
 test = false
-required-features = ["signing", "mock-ruma", "simd-json-serde"]
+required-features = ["signing", "mock-ruma", "simd-json"]
 
 [[bench]]
 name = "ed25519_backends"

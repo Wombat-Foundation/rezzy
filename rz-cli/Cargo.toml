@@ -27,7 +27,7 @@ imbl.workspace = true
 mimalloc = { workspace = true, optional = true }
 roaring.workspace = true
 rz-core = { workspace = true, features = ["cli"] }
-serde_json.workspace = true
+simd-json.workspace = true
 ureq.workspace = true
 
 [lints]
