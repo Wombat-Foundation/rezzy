@@ -20,8 +20,8 @@ use core::hash::Hasher;
 ///
 /// # Threat model
 ///
-/// The `structural_key` is **not a secret** — it is public within its
-/// namespace (room members learn it from the server). This is safe for
+/// The `structural_key` is the room's `room_id`: fully public, not a secret,
+/// and known in advance to anyone who can address the room. This is safe for
 /// HAMT routing because:
 ///
 /// - **BLAKE2b-256 is collision-resistant** at 128-bit security. Grinding
@@ -34,16 +34,17 @@ use core::hash::Hasher;
 ///   not a panic or data corruption.
 ///
 /// The threat model assumes:
-/// 1. The structural key is per-room (or per-namespace), not shared across
-///    rooms.
+/// 1. The structural key is per-room (`room_id`), so precomputed collisions
+///    for one room cannot be transferred to another.
 /// 2. Callers of `build_hamt_with_key_hash` do **not** feed wire-derived
 ///    path hashes through the custom `key_hash` closure without local
 ///    re-keying via `key_path_hash(structural_key, key)`.
-/// 3. The server does not weaken the key (short, reused, or predictable
-///    values reduce grinding cost for shallow chains).
 ///
-/// If any of these assumptions are violated, an adversary can force deeper
-/// subtrees or cache-poisoning via structural-hash collisions.
+/// Because the key is public and fixed to `room_id`, an attacker can precompute
+/// shallow collisions against a known room. That residual cost (seconds of compute
+/// for a handful of extra tree levels) is bounded and accepted; defending against
+/// deliberate depth spam within a single room is an admission / rate-limiting
+/// concern at the homeserver level.
 pub type StructuralHash = [u8; 32];
 
 /// A 32-byte state-group identifier derived from the full root lattice.
