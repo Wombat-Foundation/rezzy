@@ -2505,8 +2505,8 @@ pub fn auth_types_for_event_like<'a, E: EventLike + ?Sized>(
 mod tests {
     use super::*;
     use crate::basespec::event_types::M_ROOM_ALIASES;
+    use crate::json;
     use alloc::vec;
-    use serde_json::json;
 
     fn make_test_event(
         id: &str,

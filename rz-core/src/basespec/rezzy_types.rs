@@ -120,6 +120,17 @@ pub enum StateResVersion {
     V3,
 }
 
+impl From<StateResVersion> for crate::json::Value {
+    fn from(value: StateResVersion) -> Self {
+        Self::String(alloc::format!("{value:?}"))
+    }
+}
+impl From<&StateResVersion> for crate::json::Value {
+    fn from(value: &StateResVersion) -> Self {
+        Self::String(alloc::format!("{value:?}"))
+    }
+}
+
 impl StateResVersion {
     /// Map a Matrix room version string (e.g. `"10"`, `"12"`) to the corresponding
     /// state resolution algorithm version.
@@ -1827,7 +1838,7 @@ impl<'a, T: RawEvent> ParsedEvent<'a, T> {
     ///
     /// # Errors
     ///
-    /// Returns [`serde_json::Error`] if the raw content string is not valid JSON.
+    /// Returns [`crate::json::Error`] if the raw content string is not valid JSON.
     pub fn try_new(event: &'a T) -> Result<Self, alloc::string::String> {
         let content = Value::parse(event.raw_content_json()).map_err(|e| e.to_string())?;
         Ok(Self {
@@ -3697,7 +3708,7 @@ mod redaction_preserved_keys_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod redact_content_tests {
     use super::{redact_content, RedactionRule};
-    use serde_json::json;
+    use crate::json;
 
     /// Coverage for `redact_content`'s "existing parent" accumulation branch
     /// (a second dotted-path key merging into a parent object already
@@ -3729,7 +3740,7 @@ mod redact_content_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod redact_top_level_tests {
     use super::redact_top_level;
-    use serde_json::json;
+    use crate::json;
 
     /// MSC4242's unstable `org.matrix.msc4242.12` room version swaps
     /// `auth_events` for `prev_state_events`. Redaction must preserve the
@@ -3898,8 +3909,8 @@ mod dag_node_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod canonical_parity_tests {
     use super::*;
+    use crate::json;
     use alloc::string::String;
-    use serde_json::json;
 
     fn content_hash_writer(v: &Value) -> String {
         let mut out = String::new();
@@ -3914,7 +3925,13 @@ mod canonical_parity_tests {
             o.remove("signatures");
             o.remove("hashes");
         }
-        serde_json::to_string(&c).expect("infallible")
+        serde_json::to_string(
+            &serde_json::from_str::<serde_json::Value>(
+                &crate::json::write_string_value(&c).expect("infallible"),
+            )
+            .expect("valid JSON"),
+        )
+        .expect("infallible")
     }
 
     fn redacted_writer(v: &Value, rv: &str) -> String {
@@ -3929,7 +3946,13 @@ mod canonical_parity_tests {
             o.remove("unsigned");
             o.remove("signatures");
         }
-        serde_json::to_string(&r).expect("infallible")
+        serde_json::to_string(
+            &serde_json::from_str::<serde_json::Value>(
+                &crate::json::write_string_value(&r).expect("infallible"),
+            )
+            .expect("valid JSON"),
+        )
+        .expect("infallible")
     }
 
     /// The zero-copy writers must be byte-identical to what `serde_json` emits
@@ -3944,7 +3967,11 @@ mod canonical_parity_tests {
             json!({ "negative":-42,"big":9_007_199_254_740_993_u64,"float":-0.0,"arr":[true,false,null,1] }),
         ];
         for c in cases {
-            assert_eq!(content_hash_writer(&c), content_hash_serde(&c), "case: {c}");
+            assert_eq!(
+                content_hash_writer(&c),
+                content_hash_serde(&c),
+                "case: {c:?}"
+            );
         }
 
         let mut output = String::new();
@@ -4018,7 +4045,7 @@ mod canonical_parity_tests {
             assert_eq!(
                 redacted_writer(&c, rv),
                 redacted_serde(&c, rv),
-                "case: {c} rv={rv}"
+                "case: {c:?} rv={rv}"
             );
         }
     }
@@ -4226,7 +4253,7 @@ mod canonical_parity_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod canonical_redacted_json_tests {
     use super::{canonical_redacted_json, redactable_content_remainder, split_redaction_content};
-    use serde_json::json;
+    use crate::json;
 
     #[test]
     fn canonical_redacted_json_returns_redacted_canonical_bytes() {
@@ -4268,7 +4295,7 @@ mod canonical_redacted_json_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod cdo_content_tests {
     use super::EventContent;
-    use serde_json::json;
+    use crate::json;
 
     #[test]
     fn cdo_active_member_is_optional_and_string_typed() {

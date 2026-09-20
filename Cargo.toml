@@ -52,7 +52,7 @@ exclude = [
 ignored = ["idna_adapter", "zeroize"]
 [workspace]
 resolver = "2"
-members = ["rz-cli", "rz-core", "rz-reconcile"]
+members = ["rz-cli", "rz-core", "rz-json", "rz-reconcile"]
 
 [workspace.package]
 version = "0.6.0-rc.0"
@@ -65,6 +65,7 @@ repository = "https://github.com/gamesguru/rezzy"
 [workspace.dependencies]
 rz-cli = { path = "rz-cli" }
 rz-core = { path = "rz-core" }
+rz-json = { path = "rz-json" }
 rz-reconcile = { path = "rz-reconcile" }
 
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
@@ -72,6 +73,7 @@ blake2 = { version = "0.10", default-features = false }
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
 imbl = { version = "3.0", default-features = false }
 roaring = { version = "0.10", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }
 sha3 = { version = "0.10", default-features = false }
@@ -158,6 +160,7 @@ signing-dalek = ["rz-core/signing-dalek"]
 mock-ruma = ["rz-core/mock-ruma"]
 stress = []
 hashing = []
+simd-json-bench = ["dep:simd-json"]
 unstable-refcount-gc = ["rz-core/unstable-refcount-gc"]
 
 [dependencies]
@@ -170,7 +173,9 @@ ruma-state-res = { workspace = true, optional = true }
 rz-cli = { workspace = true, optional = true }
 rz-core.workspace = true
 rz-reconcile.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
+simd-json = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64.workspace = true
@@ -182,8 +187,10 @@ imbl.workspace = true
 insta.workspace = true
 rand_08.workspace = true
 roaring.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+simd-json.workspace = true
 similar.workspace = true
 test-case.workspace = true
 test-log.workspace = true
@@ -228,7 +235,7 @@ name = "signature_verify"
 path = "benches/signature_verify.rs"
 harness = false
 test = false
-required-features = ["signing", "mock-ruma", "simd-json"]
+required-features = ["signing", "mock-ruma", "simd-json-bench"]
 
 [[bench]]
 name = "ed25519_backends"

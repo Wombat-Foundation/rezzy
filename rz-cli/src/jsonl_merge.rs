@@ -101,7 +101,7 @@ fn perform_connectivity_check(per_file_refs: &[FileRefs]) -> Result<(), AppError
 }
 
 /// Report the highest shared depths.
-fn report_highest_shared_depths(per_file_refs: &[FileRefs], merged: &[serde_json::Value]) {
+fn report_highest_shared_depths(per_file_refs: &[FileRefs], merged: &[rz_core::JsonValue]) {
     let num_files = per_file_refs.len();
     let all_sets: Vec<HashSet<&String>> = per_file_refs.iter().map(|r| r.all_ids()).collect();
     let shared_all: HashSet<&String> = {
@@ -131,7 +131,7 @@ fn report_highest_shared_depths(per_file_refs: &[FileRefs], merged: &[serde_json
     );
 }
 
-fn collect_refs(val: &serde_json::Value, refs: &mut FileRefs, event_id: &str) {
+fn collect_refs(val: &rz_core::JsonValue, refs: &mut FileRefs, event_id: &str) {
     if let Some(auth) = val.get("auth_events").and_then(|a| a.as_array()) {
         for ae in auth {
             if let Some(aid) = ae.as_str() {
@@ -188,13 +188,13 @@ fn collect_refs(val: &serde_json::Value, refs: &mut FileRefs, event_id: &str) {
 ///
 /// Returns an error if the files describe disjoint DAGs that share no history.
 pub fn merge_event_sets(
-    file_sets: &[(String, Vec<serde_json::Value>)],
+    file_sets: &[(String, Vec<rz_core::JsonValue>)],
     debug: bool,
     quiet: bool,
-) -> Result<Vec<serde_json::Value>, AppError> {
+) -> Result<Vec<rz_core::JsonValue>, AppError> {
     let num_files = file_sets.len();
     let mut seen_ids: HashSet<String> = HashSet::new();
-    let mut merged: Vec<serde_json::Value> = Vec::new();
+    let mut merged: Vec<rz_core::JsonValue> = Vec::new();
     let mut per_file_refs: Vec<FileRefs> = Vec::with_capacity(num_files);
 
     for (label, events) in file_sets {
@@ -278,9 +278,9 @@ pub fn merge_event_sets(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use rz_core::json;
 
-    fn ev(id: &str, depth: u64) -> serde_json::Value {
+    fn ev(id: &str, depth: u64) -> rz_core::JsonValue {
         json!({
             "event_id": id,
             "type": "m.room.member",

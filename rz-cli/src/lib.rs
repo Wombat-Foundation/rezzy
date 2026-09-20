@@ -76,13 +76,13 @@ pub struct Args {
 
 /// Run the CLI application.
 #[allow(clippy::too_many_lines)]
-pub fn run_cli(args: &Args) -> Result<serde_json::Value, error::AppError> {
+pub fn run_cli(args: &Args) -> Result<rz_core::JsonValue, error::AppError> {
     let input_val = load_or_fetch_input_value(args)?;
     let (raw_events, heads) = parse_and_extract_heads(&input_val, args.debug)?;
 
     // --check mode: validate input only, suppress state output
     if args.check {
-        return Ok(serde_json::json!({ "status": "ok" }));
+        return Ok(rz_core::json!({ "status": "ok" }));
     }
 
     let event_count = raw_events.len();
@@ -336,7 +336,10 @@ pub fn main_entry() {
                 None => Box::new(BufWriter::new(io::stdout())),
             };
             let mut buffered_out = output_writer;
-            serde_json::to_writer_pretty(&mut buffered_out, &output)
+            let pretty =
+                rz_core::json::write_string_pretty(&output).expect("JSON formatting is infallible");
+            buffered_out
+                .write_all(pretty.as_bytes())
                 .expect("Failed to write output");
             if let Err(e) = writeln!(buffered_out) {
                 if e.kind() == std::io::ErrorKind::BrokenPipe {
@@ -348,12 +351,14 @@ pub fn main_entry() {
         }
         Err(e) => {
             eprintln!("Error: {e}");
-            let err_json = serde_json::json!({
+            let err_json = rz_core::json!({
                 "status": "error",
                 "code": e.code().code(),
                 "error": e.to_string()
             });
-            serde_json::to_writer_pretty(io::stderr(), &err_json).ok();
+            if let Ok(pretty) = rz_core::json::write_string_pretty(&err_json) {
+                let _ = io::stderr().write_all(pretty.as_bytes());
+            }
             eprintln!();
             std::process::exit(1);
         }

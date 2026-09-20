@@ -2555,9 +2555,9 @@ mod tests {
     use super::*;
     use crate::auth::StateProvider;
     use crate::basespec::event_types::M_ROOM_POWER_LEVELS;
+    use crate::json;
     use alloc::string::ToString;
     use alloc::vec;
-    use serde_json::json;
     use std::collections::BTreeSet;
 
     #[test]

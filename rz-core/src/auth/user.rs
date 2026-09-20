@@ -133,9 +133,9 @@ pub fn user_can_redact<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
 mod tests {
     use super::*;
     use crate::basespec::rezzy_types::LeanEvent;
+    use crate::json;
     use alloc::collections::BTreeMap;
     use alloc::string::String;
-    use serde_json::json;
 
     type State = BTreeMap<(String, String), LeanEvent>;
 

@@ -53,7 +53,8 @@ extern crate ruma_state_res;
 
 extern crate alloc;
 
-pub mod json;
+pub use rz_json as json;
+pub use rz_json::json;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -75,7 +76,6 @@ pub use rz_reconcile as reconcile;
 pub use basespec::event_types::EventType;
 pub use basespec::rezzy_types::*;
 pub use dense_index::{DenseIndex, IndexTooLarge};
-pub use json::{Number as JsonNumber, Object as JsonObject, Value as JsonValue};
 pub use reconcile::{
     build_bucket_sketches, compute_frame_digest, decode_bucket_sketches, estimate_strata,
     validate_overflow_bucket_requests, H64_TRIE_WIDTH, MAX_BATCH_FACTOR_WORK,
@@ -91,6 +91,9 @@ pub use reconcile::{
     SyndromeSketch,
 };
 pub use resolve::*;
+pub use rz_json::{
+    Error as JsonError, Number as JsonNumber, Object as JsonObject, Value as JsonValue,
+};
 pub use state::*;
 pub use warnings::{Outcome, Warning};
 

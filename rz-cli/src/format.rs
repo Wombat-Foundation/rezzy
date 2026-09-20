@@ -22,7 +22,7 @@ use std::collections::HashMap;
 pub struct FormattingContext<'a> {
     pub args: &'a Args,
     pub events_map: &'a HashMap<String, LeanEvent>,
-    pub raw_map: &'a HashMap<String, serde_json::Value>,
+    pub raw_map: &'a HashMap<String, rz_core::JsonValue>,
     pub heads: &'a [String],
     pub final_state_map: &'a imbl::OrdMap<(EventType, String), String>,
     pub resolved_state_list: &'a [String],
@@ -35,7 +35,7 @@ pub struct FormattingContext<'a> {
 }
 
 /// Format the output for deltas.
-pub fn format_deltas_output(ctx: &FormattingContext) -> serde_json::Value {
+pub fn format_deltas_output(ctx: &FormattingContext) -> rz_core::JsonValue {
     let debug = ctx.args.debug;
     let total = ctx.event_count;
     let progress_interval = if debug { 10_000 } else { 50_000 };
@@ -134,9 +134,9 @@ pub fn format_deltas_output(ctx: &FormattingContext) -> serde_json::Value {
         let mut deltas = Vec::new();
         if ev.prev_events.is_empty() {
             for (key, event_id) in state_after.as_ref() {
-                deltas.push(serde_json::json!({
-                    "type": key.0,
-                    "state_key": key.1,
+                deltas.push(rz_core::json!({
+                    "type": &key.0,
+                    "state_key": &key.1,
                     "event_id": event_id,
                 }));
             }
@@ -146,9 +146,9 @@ pub fn format_deltas_output(ctx: &FormattingContext) -> serde_json::Value {
                 match parent_state.get(key) {
                     Some(parent_event_id) if parent_event_id == event_id => {}
                     _ => {
-                        deltas.push(serde_json::json!({
-                            "type": key.0,
-                            "state_key": key.1,
+                        deltas.push(rz_core::json!({
+                            "type": &key.0,
+                            "state_key": &key.1,
                             "event_id": event_id,
                         }));
                     }
@@ -156,19 +156,19 @@ pub fn format_deltas_output(ctx: &FormattingContext) -> serde_json::Value {
             }
             for key in parent_state.keys() {
                 if !state_after.contains_key(key) {
-                    deltas.push(serde_json::json!({
-                        "type": key.0,
-                        "state_key": key.1,
-                        "event_id": serde_json::Value::Null,
+                    deltas.push(rz_core::json!({
+                        "type": &key.0,
+                        "state_key": &key.1,
+                        "event_id": rz_core::JsonValue::Null,
                     }));
                 }
             }
         }
 
-        checkpoints.push(serde_json::json!({
+        checkpoints.push(rz_core::json!({
             "hash": hash_str,
             "parent": parent_hash,
-            "event_id": ev.event_id,
+            "event_id": &ev.event_id,
             "deltas": deltas,
         }));
     }
@@ -181,7 +181,7 @@ pub fn format_deltas_output(ctx: &FormattingContext) -> serde_json::Value {
         );
     }
 
-    serde_json::json!(checkpoints)
+    rz_core::json!(checkpoints)
 }
 
 /// Compute the roots of the components.
@@ -250,9 +250,9 @@ pub fn compute_component_roots(
 }
 
 /// Format the summary output.
-pub fn format_summary_output(ctx: &FormattingContext) -> serde_json::Value {
-    let mut state_entries: Vec<serde_json::Value> = Vec::new();
-    let mut members: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+pub fn format_summary_output(ctx: &FormattingContext) -> rz_core::JsonValue {
+    let mut state_entries: Vec<rz_core::JsonValue> = Vec::new();
+    let mut members: HashMap<String, Vec<rz_core::JsonValue>> = HashMap::new();
 
     for ((typ, sk), eid) in ctx.final_state_map {
         let ev = ctx.events_map.get(eid);
@@ -268,14 +268,14 @@ pub fn format_summary_output(ctx: &FormattingContext) -> serde_json::Value {
             members
                 .entry(membership.to_string())
                 .or_default()
-                .push(serde_json::json!({
+                .push(rz_core::json!({
                     "user_id": sk,
                     "displayname": displayname,
                     "event_id": eid,
                     "depth": ev.map_or(0, |e| e.depth),
                 }));
         } else {
-            state_entries.push(serde_json::json!({
+            state_entries.push(rz_core::json!({
                 "type": typ,
                 "state_key": sk,
                 "event_id": eid,
@@ -304,12 +304,12 @@ pub fn format_summary_output(ctx: &FormattingContext) -> serde_json::Value {
     }
 
     let membership_order = ["join", "invite", "knock", "leave", "ban"];
-    let mut membership_obj = serde_json::Map::new();
+    let mut membership_obj = rz_core::JsonObject::new();
     for status in &membership_order {
         if let Some(list) = members.get(*status) {
             membership_obj.insert(
                 (*status).to_string(),
-                serde_json::json!({
+                rz_core::json!({
                     "count": list.len(),
                     "users": list
                 }),
@@ -320,7 +320,7 @@ pub fn format_summary_output(ctx: &FormattingContext) -> serde_json::Value {
         if !membership_order.contains(&status.as_str()) {
             membership_obj.insert(
                 status.clone(),
-                serde_json::json!({
+                rz_core::json!({
                     "count": list.len(),
                     "users": list
                 }),
@@ -340,7 +340,7 @@ pub fn format_summary_output(ctx: &FormattingContext) -> serde_json::Value {
     let component_roots_auth = compute_component_roots(ctx.events_map, false, true);
     let component_roots_union = compute_component_roots(ctx.events_map, true, true);
 
-    serde_json::json!({
+    rz_core::json!({
         "status": "success",
         "version": ctx.version,
         "duration_ms": ctx.duration.as_millis(),
@@ -360,11 +360,11 @@ pub fn format_summary_output(ctx: &FormattingContext) -> serde_json::Value {
     })
 }
 
-fn format_resolve_state_output(ctx: &FormattingContext) -> serde_json::Value {
-    let resolved_state: Vec<serde_json::Value> = resolved_state_entries(ctx.final_state_map)
+fn format_resolve_state_output(ctx: &FormattingContext) -> rz_core::JsonValue {
+    let resolved_state: Vec<rz_core::JsonValue> = resolved_state_entries(ctx.final_state_map)
         .into_iter()
         .map(|entry| {
-            serde_json::json!({
+            rz_core::json!({
                 "type": entry.event_type,
                 "state_key": entry.state_key,
                 "event_id": entry.event_id,
@@ -372,7 +372,7 @@ fn format_resolve_state_output(ctx: &FormattingContext) -> serde_json::Value {
         })
         .collect();
 
-    serde_json::json!({
+    rz_core::json!({
         "status": "success",
         "format": "resolve_state",
         "resolved_state": resolved_state,
@@ -537,7 +537,7 @@ fn render_timeline(ctx: &FormattingContext) -> String {
     // depth-based ordering is insufficient because depth is untrusted and does
     // not guarantee parent-before-child processing. A future fix should use
     // apply_authorized_redactions_with_state_at with proper state resolution.
-    let mut room_state: RoomState<String, serde_json::Value, String> = RoomState::new();
+    let mut room_state: RoomState<String, rz_core::JsonValue, String> = RoomState::new();
     for ((typ, sk), eid) in ctx.final_state_map {
         if let Some(ev) = ctx.events_map.get(eid) {
             room_state.insert((typ.as_str().to_string(), sk.clone()), ev.clone());
@@ -639,9 +639,9 @@ fn render_timeline(ctx: &FormattingContext) -> String {
 }
 
 /// Format the timeline output, printing the rendered timeline to stderr.
-pub fn format_timeline_output(ctx: &FormattingContext) -> serde_json::Value {
+pub fn format_timeline_output(ctx: &FormattingContext) -> rz_core::JsonValue {
     eprint!("{}", render_timeline(ctx));
-    serde_json::json!({
+    rz_core::json!({
         "status": "success",
         "format": "timeline",
         "events": ctx.event_count
@@ -649,14 +649,14 @@ pub fn format_timeline_output(ctx: &FormattingContext) -> serde_json::Value {
 }
 
 /// Format the main CLI output.
-pub fn format_cli_output(ctx: &FormattingContext) -> serde_json::Value {
+pub fn format_cli_output(ctx: &FormattingContext) -> rz_core::JsonValue {
     match ctx.args.format {
         OutputFormat::Deltas => format_deltas_output(ctx),
         OutputFormat::Summary => format_summary_output(ctx),
         OutputFormat::ResolveState => format_resolve_state_output(ctx),
         OutputFormat::Timeline => format_timeline_output(ctx),
         OutputFormat::Events => {
-            let mut state_events: Vec<&serde_json::Value> = ctx
+            let mut state_events: Vec<&rz_core::JsonValue> = ctx
                 .resolved_state_list
                 .iter()
                 .filter_map(|id| ctx.raw_map.get(id))
@@ -680,27 +680,27 @@ pub fn format_cli_output(ctx: &FormattingContext) -> serde_json::Value {
                     a_id.cmp(b_id)
                 })
             });
-            serde_json::json!(state_events)
+            rz_core::json!(state_events)
         }
         OutputFormat::Federation => {
-            let state_events: Vec<&serde_json::Value> = ctx
+            let state_events: Vec<&rz_core::JsonValue> = ctx
                 .resolved_state_list
                 .iter()
                 .filter_map(|id| ctx.raw_map.get(id))
                 .collect();
-            let auth_chain_events: Vec<&serde_json::Value> = ctx
+            let auth_chain_events: Vec<&rz_core::JsonValue> = ctx
                 .auth_chain_ids
                 .iter()
                 .filter_map(|id| ctx.raw_map.get(id))
                 .collect();
 
-            serde_json::json!({
-                "origin": ctx.args.origin,
+            rz_core::json!({
+                "origin": &ctx.args.origin,
                 "state": state_events,
                 "auth_chain": auth_chain_events
             })
         }
-        OutputFormat::Default => serde_json::json!({
+        OutputFormat::Default => rz_core::json!({
             "status": "success",
             "version": ctx.version,
             "duration_ms": ctx.duration.as_millis(),
@@ -762,7 +762,7 @@ mod tests {
         assert_eq!(output["format"], "resolve_state");
         assert_eq!(
             output["resolved_state"],
-            serde_json::json!([
+            rz_core::json!([
                 {
                     "type": "m.room.create",
                     "state_key": "",
@@ -829,7 +829,7 @@ mod tests {
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
             sender: "@admin:x".into(),
-            content: serde_json::json!({
+            content: rz_core::json!({
                 "users": { "@admin:x": 100, "@bob:x": 0, "@mallory:x": 0 },
                 "redact": 50
             }),
@@ -840,7 +840,7 @@ mod tests {
             event_type: "m.room.message".into(),
             sender: "@bob:x".into(),
             origin_server_ts: 10,
-            content: serde_json::json!({ "body": "secret" }),
+            content: rz_core::json!({ "body": "secret" }),
             ..Default::default()
         };
         let mallory_redact: LeanEvent = LeanEvent {
@@ -848,7 +848,7 @@ mod tests {
             event_type: "m.room.redaction".into(),
             sender: "@mallory:x".into(),
             origin_server_ts: 11,
-            content: serde_json::json!({ "redacts": "$msg" }),
+            content: rz_core::json!({ "redacts": "$msg" }),
             ..Default::default()
         };
         let self_redact: LeanEvent = LeanEvent {
@@ -856,7 +856,7 @@ mod tests {
             event_type: "m.room.redaction".into(),
             sender: "@bob:x".into(),
             origin_server_ts: 12,
-            content: serde_json::json!({ "redacts": "$msg" }),
+            content: rz_core::json!({ "redacts": "$msg" }),
             ..Default::default()
         };
 

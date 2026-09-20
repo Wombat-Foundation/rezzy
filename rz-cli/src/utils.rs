@@ -41,7 +41,7 @@ pub fn parse_room_version(ver: &str) -> Result<StateResVersion, AppError> {
 
 /// Detect the room version from a state map.
 pub fn detect_version(
-    events: &[serde_json::Value],
+    events: &[rz_core::JsonValue],
     debug: bool,
 ) -> Result<StateResVersion, AppError> {
     for ev in events {
@@ -76,7 +76,7 @@ pub fn detect_version(
 /// `m.room.create` event is present or its `content.room_version` is absent
 /// -- callers should apply the spec's "missing `room_version` defaults to 1"
 /// rule themselves.
-pub fn detect_room_version_string(events: &[serde_json::Value]) -> Option<String> {
+pub fn detect_room_version_string(events: &[rz_core::JsonValue]) -> Option<String> {
     events.iter().find_map(|ev| {
         if ev.get(FIELD_TYPE).and_then(|t| t.as_str()) != Some(M_ROOM_CREATE) {
             return None;
@@ -146,7 +146,7 @@ pub fn compute_state_hash(state: &imbl::OrdMap<(EventType, String), String>) -> 
 }
 
 /// Load a JSON file.
-pub fn load_file(input_path: &PathBuf) -> Result<Vec<serde_json::Value>, AppError> {
+pub fn load_file(input_path: &PathBuf) -> Result<Vec<rz_core::JsonValue>, AppError> {
     let input_reader: Box<dyn Read> = if input_path.to_str() == Some("-") {
         Box::new(io::stdin())
     } else {
@@ -166,7 +166,7 @@ pub fn load_file(input_path: &PathBuf) -> Result<Vec<serde_json::Value>, AppErro
             if line.trim().is_empty() {
                 continue;
             }
-            let val: serde_json::Value = serde_json::from_str(&line)?;
+            let val = rz_core::JsonValue::parse(&line)?;
             values.push(val);
         }
         if values.is_empty() {
@@ -195,16 +195,16 @@ pub fn load_file(input_path: &PathBuf) -> Result<Vec<serde_json::Value>, AppErro
                 "No input data provided before empty line or EOF."
             );
         }
-        let val: serde_json::Value = serde_json::from_slice(&input_data)?;
+        let val = rz_core::JsonValue::parse_bytes(&input_data)?;
         match val {
-            serde_json::Value::Array(arr) => Ok(arr),
+            rz_core::JsonValue::Array(arr) => Ok(arr),
             other => Ok(vec![other]),
         }
     }
 }
 
 /// Load or fetch the input value from args.
-pub fn load_or_fetch_input_value(args: &Args) -> Result<serde_json::Value, AppError> {
+pub fn load_or_fetch_input_value(args: &Args) -> Result<rz_core::JsonValue, AppError> {
     if let Some(room_id) = &args.room {
         let homeserver = args.homeserver.as_deref().ok_or_else(|| {
             err!(
@@ -234,10 +234,10 @@ pub fn load_or_fetch_input_value(args: &Args) -> Result<serde_json::Value, AppEr
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"));
             if is_jsonl {
                 let events = load_file(input_path)?;
-                Ok(serde_json::Value::Array(events))
+                Ok(rz_core::JsonValue::Array(events))
             } else {
                 let content = std::fs::read(input_path)?;
-                let val: serde_json::Value = serde_json::from_slice(&content)?;
+                let val = rz_core::JsonValue::parse_bytes(&content)?;
                 Ok(val)
             }
         } else {
@@ -266,7 +266,7 @@ pub fn load_or_fetch_input_value(args: &Args) -> Result<serde_json::Value, AppEr
                 );
             }
             let t = Instant::now();
-            let out = serde_json::Value::Array(merged);
+            let out = rz_core::JsonValue::Array(merged);
             if args.debug {
                 eprintln!("[DEBUG] packaged merged events in {:.2?}", t.elapsed());
             }
@@ -282,9 +282,9 @@ pub fn load_or_fetch_input_value(args: &Args) -> Result<serde_json::Value, AppEr
 
 /// Parse input and extract the state heads.
 pub fn parse_and_extract_heads(
-    input_val: &serde_json::Value,
+    input_val: &rz_core::JsonValue,
     debug: bool,
-) -> Result<(Vec<serde_json::Value>, Vec<String>), AppError> {
+) -> Result<(Vec<rz_core::JsonValue>, Vec<String>), AppError> {
     if let Some(obj) = input_val.as_object() {
         if obj.contains_key("events") {
             let arr = obj.get("events").unwrap().as_array().ok_or_else(|| {
@@ -365,7 +365,7 @@ fn collect_reachable_events<'a>(
 
 fn build_state_map(
     sorted_events: Vec<&LeanEvent>,
-    raw_map: &HashMap<String, serde_json::Value>,
+    raw_map: &HashMap<String, rz_core::JsonValue>,
 ) -> HashMap<(EventType, String), String> {
     let mut state_map = HashMap::new();
     for ev in sorted_events {
@@ -387,7 +387,7 @@ fn build_state_map(
 pub fn compute_state_maps(
     heads: &[String],
     events_map: &HashMap<String, LeanEvent>,
-    raw_map: &HashMap<String, serde_json::Value>,
+    raw_map: &HashMap<String, rz_core::JsonValue>,
     debug: bool,
 ) -> Vec<HashMap<(EventType, String), String>> {
     if heads.len() <= 1 {
@@ -628,7 +628,7 @@ pub fn apply_global_power_levels(
             if let Some(pl_val) = ev
                 .content
                 .get(FIELD_USERS_DEFAULT)
-                .and_then(serde_json::Value::as_i64)
+                .and_then(rz_core::JsonValue::as_i64)
             {
                 default_power_level = pl_val;
             }
@@ -688,8 +688,11 @@ mod tests {
             .lines()
             .filter(|l| !l.trim().is_empty())
             .map(|l| {
-                let e: LeanEvent = serde_json::from_str(l).unwrap_or_else(|err| {
+                let value = rz_core::JsonValue::parse(l).unwrap_or_else(|err| {
                     panic!("failed to parse JSONL fixture line: {err}\nline: {l}")
+                });
+                let e = LeanEvent::from_value(&value, None).unwrap_or_else(|err| {
+                    panic!("failed to parse event in JSONL fixture: {err}\nline: {l}")
                 });
                 (e.event_id.clone(), e)
             })

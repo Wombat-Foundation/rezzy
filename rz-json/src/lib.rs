@@ -4,6 +4,10 @@
 //! for Matrix canonical JSON. Numbers retain their source spelling; canonical
 //! validation and writing decide which spellings are acceptable.
 
+#![no_std]
+
+extern crate alloc;
+
 use alloc::{
     collections::BTreeMap,
     string::{String, ToString},
@@ -48,6 +52,17 @@ impl Number {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl From<u64> for Number {
+    fn from(v: u64) -> Self {
+        Self(v.to_string())
+    }
+}
+impl From<i64> for Number {
+    fn from(v: i64) -> Self {
+        Self(v.to_string())
     }
 }
 
@@ -154,6 +169,10 @@ impl Value {
         }
         Ok(value)
     }
+    pub fn parse_bytes(input: &[u8]) -> Result<Self, Error> {
+        let text = core::str::from_utf8(input).map_err(|_| Error::InvalidString)?;
+        Self::parse(text)
+    }
 }
 
 impl Index<&str> for Value {
@@ -182,6 +201,11 @@ impl From<String> for Value {
         Self::String(v)
     }
 }
+impl From<&Value> for Value {
+    fn from(v: &Value) -> Self {
+        v.clone()
+    }
+}
 impl From<&str> for Value {
     fn from(v: &str) -> Self {
         Self::String(v.to_string())
@@ -207,6 +231,11 @@ impl From<u64> for Value {
         Self::Number(Number(v.to_string()))
     }
 }
+impl From<u128> for Value {
+    fn from(v: u128) -> Self {
+        Self::Number(Number(v.to_string()))
+    }
+}
 impl From<i32> for Value {
     fn from(v: i32) -> Self {
         Self::from(i64::from(v))
@@ -222,14 +251,29 @@ impl From<usize> for Value {
         Self::from(v as u64)
     }
 }
-impl From<Vec<Value>> for Value {
-    fn from(v: Vec<Value>) -> Self {
-        Self::Array(v)
+impl<T: Into<Value>> From<Vec<T>> for Value {
+    fn from(v: Vec<T>) -> Self {
+        Self::Array(v.into_iter().map(Into::into).collect())
+    }
+}
+impl<T: Clone + Into<Value>> From<&Vec<T>> for Value {
+    fn from(v: &Vec<T>) -> Self {
+        Self::Array(v.iter().cloned().map(Into::into).collect())
+    }
+}
+impl<T: Clone + Into<Value>> From<&[T]> for Value {
+    fn from(v: &[T]) -> Self {
+        Self::Array(v.iter().cloned().map(Into::into).collect())
     }
 }
 impl From<Object> for Value {
     fn from(v: Object) -> Self {
         Self::Object(v)
+    }
+}
+impl<T: Into<Value>> From<Option<T>> for Value {
+    fn from(v: Option<T>) -> Self {
+        v.map_or(Self::Null, Into::into)
     }
 }
 impl From<f64> for Value {
@@ -240,18 +284,56 @@ impl From<f64> for Value {
 
 #[macro_export]
 macro_rules! json {
-    (null) => { $crate::json::Value::Null };
-    ([ $( $value:expr ),* $(,)? ]) => {{
-        let mut values = $crate::json::empty_array();
-        $(values.push($crate::json::to_value($value));)*
-        $crate::json::Value::Array(values)
+    (null) => { $crate::Value::Null };
+    ([ $($values:tt)* ]) => {{
+        let mut values = $crate::empty_array();
+        $crate::json!(@array values; $($values)*);
+        $crate::Value::Array(values)
     }};
-    ({ $( $key:literal : $value:expr ),* $(,)? }) => {{
-        let mut object = $crate::json::empty_object();
-        $(object.insert($crate::json::key($key), $crate::json::to_value($value));)*
-        $crate::json::Value::Object(object)
+    ({ $($values:tt)* }) => {{
+        let mut object = $crate::empty_object();
+        $crate::json!(@object object; $($values)*);
+        $crate::Value::Object(object)
     }};
-    ($value:expr) => { $crate::json::to_value($value) };
+    (@array $values:ident;) => {};
+    (@array $values:ident; null $(, $($rest:tt)*)?) => {{
+        $values.push($crate::Value::Null);
+        $crate::json!(@array $values; $($($rest)*)?);
+    }};
+    (@array $values:ident; { $($inner:tt)* } $(, $($rest:tt)*)?) => {{
+        $values.push($crate::json!({ $($inner)* }));
+        $crate::json!(@array $values; $($($rest)*)?);
+    }};
+    (@array $values:ident; [ $($inner:tt)* ] $(, $($rest:tt)*)?) => {{
+        $values.push($crate::json!([ $($inner)* ]));
+        $crate::json!(@array $values; $($($rest)*)?);
+    }};
+    (@array $values:ident; $value:expr, $($rest:tt)*) => {{
+        $values.push($crate::to_value($value));
+        $crate::json!(@array $values; $($rest)*);
+    }};
+    (@array $values:ident; $value:expr) => { $values.push($crate::to_value($value)); };
+    (@object $object:ident;) => {};
+    (@object $object:ident; $key:literal : null $(, $($rest:tt)*)?) => {{
+        $object.insert($crate::key($key), $crate::Value::Null);
+        $crate::json!(@object $object; $($($rest)*)?);
+    }};
+    (@object $object:ident; $key:literal : { $($inner:tt)* } $(, $($rest:tt)*)?) => {{
+        $object.insert($crate::key($key), $crate::json!({ $($inner)* }));
+        $crate::json!(@object $object; $($($rest)*)?);
+    }};
+    (@object $object:ident; $key:literal : [ $($inner:tt)* ] $(, $($rest:tt)*)?) => {{
+        $object.insert($crate::key($key), $crate::json!([ $($inner)* ]));
+        $crate::json!(@object $object; $($($rest)*)?);
+    }};
+    (@object $object:ident; $key:literal : $value:expr, $($rest:tt)*) => {{
+        $object.insert($crate::key($key), $crate::to_value($value));
+        $crate::json!(@object $object; $($rest)*);
+    }};
+    (@object $object:ident; $key:literal : $value:expr) => {
+        $object.insert($crate::key($key), $crate::to_value($value));
+    };
+    ($value:expr) => { $crate::to_value($value) };
 }
 
 pub fn to_value(value: impl Into<Value>) -> Value {
@@ -323,6 +405,62 @@ pub fn write_string_value(value: &Value) -> Result<String, fmt::Error> {
     Ok(out)
 }
 
+pub fn write_string_pretty(value: &Value) -> Result<String, fmt::Error> {
+    use fmt::Write as _;
+    fn write_value(out: &mut String, value: &Value, depth: usize) -> fmt::Result {
+        match value {
+            Value::Array(items) if !items.is_empty() => {
+                out.push('[');
+                for (i, item) in items.iter().enumerate() {
+                    out.push('\n');
+                    indent(out, depth + 1)?;
+                    if i != 0 {
+                        out.push_str(",\n");
+                        indent(out, depth + 1)?;
+                    }
+                    write_value(out, item, depth + 1)?;
+                }
+                out.push('\n');
+                indent(out, depth)?;
+                out.push(']');
+            }
+            Value::Object(obj) if !obj.is_empty() => {
+                out.push('{');
+                for (i, (key, item)) in obj.iter().enumerate() {
+                    if i != 0 {
+                        out.push(',');
+                    }
+                    out.push('\n');
+                    indent(out, depth + 1)?;
+                    write_quoted(out, key)?;
+                    out.push_str(": ");
+                    write_value(out, item, depth + 1)?;
+                }
+                out.push('\n');
+                indent(out, depth)?;
+                out.push('}');
+            }
+            Value::Array(_) | Value::Object(_) => out.push_str(&write_string_value(value)?),
+            _ => out.push_str(&write_string_value(value)?),
+        }
+        Ok(())
+    }
+    fn indent(out: &mut String, depth: usize) -> fmt::Result {
+        for _ in 0..depth {
+            out.push_str("  ");
+        }
+        Ok(())
+    }
+    fn write_quoted(out: &mut String, value: &str) -> fmt::Result {
+        let quoted = write_string_value(&Value::String(value.to_string()))?;
+        out.push_str(&quoted);
+        Ok(())
+    }
+    let mut out = String::new();
+    write_value(&mut out, value, 0)?;
+    Ok(out)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     UnexpectedEnd,
@@ -336,6 +474,40 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "invalid JSON: {self:?}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{write_string_value, Value};
+
+    #[test]
+    fn parses_nested_values_and_sorts_object_keys() {
+        let value = Value::parse(r#"{"z":[true,null],"a":{"n":-12}}"#).unwrap();
+        assert_eq!(
+            write_string_value(&value).unwrap(),
+            r#"{"a":{"n":-12},"z":[true,null]}"#
+        );
+    }
+
+    #[test]
+    fn decodes_unicode_escapes_and_surrogate_pairs() {
+        let value = Value::parse(r#"["\u0061","\ud83d\ude00"]"#).unwrap();
+        assert_eq!(value.as_array().unwrap()[0].as_str(), Some("a"));
+        assert_eq!(value.as_array().unwrap()[1].as_str(), Some("😀"));
+    }
+
+    #[test]
+    fn duplicate_keys_use_last_value() {
+        let value = Value::parse(r#"{"x":1,"x":2}"#).unwrap();
+        assert_eq!(value["x"].as_u64(), Some(2));
+    }
+
+    #[test]
+    fn rejects_invalid_number_forms_and_surrogates() {
+        for input in ["01", "1.", "1e", "--1", r#""\ud800""#] {
+            assert!(Value::parse(input).is_err(), "accepted {input}");
+        }
     }
 }
 

@@ -17,7 +17,7 @@ pub fn fetch_room_state(
     homeserver: &str,
     room_id: &str,
     token: Option<&str>,
-) -> Result<serde_json::Value, crate::error::AppError> {
+) -> Result<rz_core::JsonValue, crate::error::AppError> {
     let base = if homeserver.starts_with("http://") || homeserver.starts_with("https://") {
         homeserver.to_string()
     } else {
@@ -42,7 +42,7 @@ pub fn fetch_room_state(
         crate::error::AppError::new(crate::error::ErrorCode::NetworkError, e.to_string())
     })?;
 
-    let val: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+    let val: rz_core::JsonValue = rz_core::JsonValue::parse(&body).map_err(|e| {
         crate::error::AppError::new(
             crate::error::ErrorCode::NetworkError,
             format!(

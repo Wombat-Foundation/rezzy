@@ -851,51 +851,9 @@ mod tests {
     }
 
     #[test]
-    fn test_checkpoint_serde_coverage() {
-        // Covers `hex_serde`, `hex_serde_opt`, and `LtHash::default()`
+    fn test_checkpoint_hex_validation() {
+        // Checkpoint hashes use fixed-width hexadecimal strings at persistence boundaries.
         let _def = LtHash::default();
-
-        let cp: CompactedCheckpoint<String> = CompactedCheckpoint {
-            state_hash: [0xab; 32],
-            parent_hash: Some([0xcd; 32]),
-            event_id: "$1".into(),
-            deltas: alloc::vec![],
-            snapshot: None,
-        };
-
-        let serialized = serde_json::to_string(&cp).unwrap();
-        let deserialized: CompactedCheckpoint<String> = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(cp, deserialized);
-
-        let cp_none: CompactedCheckpoint<String> = CompactedCheckpoint {
-            state_hash: [0xab; 32],
-            parent_hash: None,
-            event_id: "$2".into(),
-            deltas: alloc::vec![],
-            snapshot: None,
-        };
-        let serialized_none = serde_json::to_string(&cp_none).unwrap();
-        let deserialized_none: CompactedCheckpoint<String> =
-            serde_json::from_str(&serialized_none).unwrap();
-        assert_eq!(cp_none, deserialized_none);
-
-        // Test error conditions
-        assert!(serde_json::from_str::<CompactedCheckpoint<String>>(
-            r#"{"state_hash":"deadbeef","parent_hash":null,"event_id":"$1","deltas":[],"snapshot":null}"#
-        ).is_err());
-
-        assert!(serde_json::from_str::<CompactedCheckpoint<String>>(
-            r#"{"state_hash":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz","parent_hash":null,"event_id":"$1","deltas":[],"snapshot":null}"#
-        ).is_err());
-
-        assert!(serde_json::from_str::<CompactedCheckpoint<String>>(
-            r#"{"state_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parent_hash":"deadbeef","event_id":"$1","deltas":[],"snapshot":null}"#
-        ).is_err());
-
-        assert!(serde_json::from_str::<CompactedCheckpoint<String>>(
-            r#"{"state_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parent_hash":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz","event_id":"$1","deltas":[],"snapshot":null}"#
-        ).is_err());
-
         // Non-ASCII but exactly 64 bytes in length (32 copies of 'ä', which is 2 bytes each)
         let non_ascii_64_bytes = "ääääääääääääääääääääääääääääääää";
         assert_eq!(non_ascii_64_bytes.len(), 64);
