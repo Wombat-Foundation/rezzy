@@ -6,4 +6,4 @@ fo = "fo"
 fpr = "fpr"
 
 [files]
-extend-exclude = ["tests/critique_data/**", "tests/fixtures/**"]
+extend-exclude = ["rz-core/tests/critique_data/**", "rz-core/tests/fixtures/**"]

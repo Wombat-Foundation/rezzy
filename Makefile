@@ -52,7 +52,7 @@ all: format lint check doc test install
 	@echo "all: done"
 
 # Ensure format runs before any target that reads source files
-lint check doc test install: format
+lint check doc install: format
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Lean targets
@@ -100,11 +100,11 @@ rust/so: format ##H Compile shared object (librezzy.so) from the library
 	@echo "Built: target/release/librezzy.so"
 
 .PHONY: rust/test
-rust/test: format ##H Run Rust tests (p=NAME for specific test, a=ARGS for test binary args)
+rust/test: ##H Run Rust tests (p=NAME for specific test, a=ARGS for test binary args)
 ifdef p
-	$(CARGO) test --timings --test $(p) $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
+	$(CARGO) test --timings --workspace --test $(p) $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
 else
-	$(CARGO) test --timings --lib --tests $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
+	$(CARGO) test --timings --workspace --lib --tests $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
 endif
 
 .PHONY: rust/bench
@@ -116,7 +116,7 @@ rust/bench: format ##H Run benchmarks
 export LLVM_COV_FLAGS = -show-region-summary=false -show-branch-summary=false
 
 .PHONY: rust/coverage
-rust/coverage: format ##H Run code coverage and generate HTML report
+rust/coverage: ##H Run code coverage and generate HTML report
 	# TODO: include `src/bin/` in coverage
 	# Run coverage
 	$(CARGO) llvm-cov --lib --tests \
@@ -170,9 +170,9 @@ rust/publish: ##H Preview package and simulate dry-run publish
 # Convenience aliases
 .PHONY: build test bench install clean uninstall so
 build:   rust/build format   ##H Alias for rust/build
-test:    rust/test format    ##H Alias for rust/test
+test:    rust/test           ##H Alias for rust/test
 bench:   rust/bench format   ##H Alias for rust/bench
-cov:     rust/coverage format ##H Alias for rust/coverage
+cov:     rust/coverage      ##H Alias for rust/coverage
 install: rust/install format ##H Alias for rust/install
 uninstall: rust/uninstall   ##H Alias for rust/uninstall
 so:      rust/so      ##H Alias for rust/so
