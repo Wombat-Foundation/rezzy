@@ -1,8 +1,8 @@
 #![allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
 use crate::utils;
 use crate::utils_extra;
+use rz_core::json;
 use rz_core::{resolve_iterative_sort, LeanEvent, StateResVersion};
-use serde_json::json;
 use std::collections::HashMap;
 
 fn run_auth_lookup_scenario(join_auth_includes_pl: bool, exp_v21: bool, exp_v211: bool) {
@@ -325,7 +325,7 @@ fn test_v2_1_1_ancient_prev_event_allowed() {
         state_key: Some(String::new()),
         sender: "@creator:example.com".to_string(),
         origin_server_ts: 200,
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": { "@alice:example.com": 100 },
             "state_default": 50
         }),
@@ -339,7 +339,7 @@ fn test_v2_1_1_ancient_prev_event_allowed() {
         state_key: Some("@alice:example.com".to_string()),
         sender: "@alice:example.com".to_string(),
         origin_server_ts: 300,
-        content: serde_json::json!({ "membership": "join" }),
+        content: rz_core::json!({ "membership": "join" }),
         auth_events: vec!["$create".to_string(), "$pl".to_string()],
         ..Default::default()
     };
@@ -356,7 +356,7 @@ fn test_v2_1_1_ancient_prev_event_allowed() {
         state_key: Some(String::new()),
         sender: "@alice:example.com".to_string(),
         origin_server_ts: 1000,
-        content: serde_json::json!({ "name": "Alice's Room" }),
+        content: rz_core::json!({ "name": "Alice's Room" }),
         auth_events: vec![
             "$create".to_string(),
             "$join".to_string(),
@@ -602,7 +602,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
         state_key: Some(String::new()),
         sender: "@alice:example.com".to_string(),
         origin_server_ts: 200,
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": { "@eve:evil.com": 100 },
             "state_default": 50
         }),
@@ -620,7 +620,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
         state_key: Some(String::new()),
         sender: "@alice:example.com".to_string(),
         origin_server_ts: 250,
-        content: serde_json::json!({ "join_rule": "public" }),
+        content: rz_core::json!({ "join_rule": "public" }),
         auth_events: vec!["$create".to_string(), "$pl_promo".to_string()],
         ..Default::default()
     };
@@ -632,7 +632,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
         state_key: Some("@eve:evil.com".to_string()),
         sender: "@eve:evil.com".to_string(),
         origin_server_ts: 300,
-        content: serde_json::json!({ "membership": "join" }),
+        content: rz_core::json!({ "membership": "join" }),
         auth_events: vec![
             "$create".to_string(),
             "$pl_promo".to_string(),
@@ -648,7 +648,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
         state_key: Some(String::new()),
         sender: "@alice:example.com".to_string(),
         origin_server_ts: 400,
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": { "@eve:evil.com": 0 },
             "state_default": 50
         }),
@@ -665,7 +665,7 @@ fn test_v2_1_1_cve_demotion_evasion() {
         state_key: Some(String::new()),
         sender: "@eve:evil.com".to_string(),
         origin_server_ts: 500,
-        content: serde_json::json!({ "name": "Hacked by Eve" }),
+        content: rz_core::json!({ "name": "Hacked by Eve" }),
         // OMITTED: "$pl_demote"
         auth_events: vec!["$create".to_string(), "$eve_join".to_string()],
         ..Default::default()
@@ -766,7 +766,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
         state_key: Some(String::new()),
         sender: "@alice:example.com".to_string(),
         origin_server_ts: 200,
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": { "@bob:example.com": 50 },
             "state_default": 50
         }),
@@ -784,7 +784,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
         state_key: Some(String::new()),
         sender: "@alice:example.com".to_string(),
         origin_server_ts: 250,
-        content: serde_json::json!({ "join_rule": "public" }),
+        content: rz_core::json!({ "join_rule": "public" }),
         auth_events: vec!["$create".to_string(), "$pl".to_string()],
         ..Default::default()
     };
@@ -795,7 +795,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
         state_key: Some("@bob:example.com".to_string()),
         sender: "@bob:example.com".to_string(),
         origin_server_ts: 300,
-        content: serde_json::json!({ "membership": "join" }),
+        content: rz_core::json!({ "membership": "join" }),
         auth_events: vec![
             "$create".to_string(),
             "$pl".to_string(),
@@ -811,7 +811,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
         state_key: Some("@bob:example.com".to_string()),
         sender: "@alice:example.com".to_string(),
         origin_server_ts: 400,
-        content: serde_json::json!({ "membership": "ban" }),
+        content: rz_core::json!({ "membership": "ban" }),
         auth_events: vec![
             "$create".to_string(),
             "$pl".to_string(),
@@ -827,7 +827,7 @@ fn test_v2_1_flaw_concurrent_ban_evasion() {
         state_key: Some(String::new()),
         sender: "@bob:example.com".to_string(),
         origin_server_ts: 405,
-        content: serde_json::json!({ "name": "Bob Rules" }),
+        content: rz_core::json!({ "name": "Bob Rules" }),
         // Bob's local auth chain knows nothing of the ban on Fork A
         auth_events: vec![
             "$create".to_string(),
@@ -937,7 +937,7 @@ fn test_v2_1_strictness_future_v2_2_should_pass() {
         state_key: Some(String::new()),
         sender: "@alice:example.com".to_string(),
         origin_server_ts: 200,
-        content: serde_json::json!({ "join_rule": "public" }),
+        content: rz_core::json!({ "join_rule": "public" }),
         auth_events: vec!["$create".to_string()],
         ..Default::default()
     };
@@ -950,7 +950,7 @@ fn test_v2_1_strictness_future_v2_2_should_pass() {
         state_key: Some("@bob:example.com".to_string()),
         sender: "@bob:example.com".to_string(),
         origin_server_ts: 300,
-        content: serde_json::json!({ "membership": "join" }),
+        content: rz_core::json!({ "membership": "join" }),
         // BUG: Missing "$jr"
         auth_events: vec!["$create".to_string()],
         ..Default::default()
@@ -1124,7 +1124,7 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
         state_key: Some(String::new()),
         sender: "@admin:example.com".to_string(),
         origin_server_ts: 200,
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": { "@admin:example.com": 100 },
         }),
         auth_events: vec!["$create".to_string()],
@@ -1137,7 +1137,7 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
         state_key: Some(String::new()),
         sender: "@admin:example.com".to_string(),
         origin_server_ts: 300,
-        content: serde_json::json!({ "join_rule": "public" }),
+        content: rz_core::json!({ "join_rule": "public" }),
         auth_events: vec!["$create".to_string(), "$pl".to_string()],
         ..Default::default()
     };
@@ -1149,7 +1149,7 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
         state_key: Some(String::new()),
         sender: "@admin:example.com".to_string(),
         origin_server_ts: 400,
-        content: serde_json::json!({ "join_rule": "invite" }),
+        content: rz_core::json!({ "join_rule": "invite" }),
         auth_events: vec!["$create".to_string(), "$pl".to_string()],
         ..Default::default()
     };
@@ -1161,7 +1161,7 @@ fn test_v2_1_1_anomaly_02_admin_lockout() {
         state_key: Some("@spammer:example.com".to_string()),
         sender: "@spammer:example.com".to_string(),
         origin_server_ts: 450,
-        content: serde_json::json!({ "membership": "join" }),
+        content: rz_core::json!({ "membership": "join" }),
         auth_events: vec![
             "$create".to_string(),
             "$pl".to_string(),
@@ -1252,7 +1252,7 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
         state_key: Some(String::new()),
         sender: "@alice:example.com".to_string(),
         origin_server_ts: 200,
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": { "@bob:example.com": 50 },
             "state_default": 50
         }),
@@ -1270,7 +1270,7 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
         state_key: Some(String::new()),
         sender: "@alice:example.com".to_string(),
         origin_server_ts: 250,
-        content: serde_json::json!({ "join_rule": "public" }),
+        content: rz_core::json!({ "join_rule": "public" }),
         auth_events: vec!["$create".to_string(), "$pl".to_string()],
         ..Default::default()
     };
@@ -1281,7 +1281,7 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
         state_key: Some("@bob:example.com".to_string()),
         sender: "@bob:example.com".to_string(),
         origin_server_ts: 300,
-        content: serde_json::json!({ "membership": "join" }),
+        content: rz_core::json!({ "membership": "join" }),
         auth_events: vec![
             "$create".to_string(),
             "$pl".to_string(),
@@ -1297,7 +1297,7 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
         state_key: Some("@bob:example.com".to_string()),
         sender: "@alice:example.com".to_string(),
         origin_server_ts: 400,
-        content: serde_json::json!({ "membership": "ban" }),
+        content: rz_core::json!({ "membership": "ban" }),
         auth_events: vec![
             "$create".to_string(),
             "$pl".to_string(),
@@ -1313,7 +1313,7 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
         state_key: Some(String::new()),
         sender: "@bob:example.com".to_string(),
         origin_server_ts: 405,
-        content: serde_json::json!({ "topic": "Bob's Space" }),
+        content: rz_core::json!({ "topic": "Bob's Space" }),
         auth_events: vec![
             "$create".to_string(),
             "$bob_join".to_string(),
@@ -1390,7 +1390,7 @@ fn test_v2_1_spec_compliant_step_4_supplementation() {
 }
 #[test]
 fn test_missing_auth_diff_mainline_distortion() {
-    let mut events_map: HashMap<&'static str, LeanEvent<&'static str, serde_json::Value>> =
+    let mut events_map: HashMap<&'static str, LeanEvent<&'static str, rz_core::JsonValue>> =
         HashMap::new();
 
     let create_ev = LeanEvent {
@@ -1405,7 +1405,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         power_level: 100,
         prev_events: vec![],
         auth_events: vec![],
-        content: serde_json::Value::Null,
+        content: rz_core::JsonValue::Null,
         room_id: None,
     };
     events_map.insert("CREATE", create_ev);
@@ -1422,7 +1422,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         power_level: 100,
         prev_events: vec!["CREATE"],
         auth_events: vec!["CREATE"],
-        content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
+        content: rz_core::json!({ "users": { "alice": 100, "bob": 100 } }),
         room_id: None,
     };
     events_map.insert("PL0", pl0);
@@ -1439,7 +1439,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         power_level: 100,
         prev_events: vec!["PL0"],
         auth_events: vec!["PL0"],
-        content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
+        content: rz_core::json!({ "users": { "alice": 100, "bob": 100 } }),
         room_id: None,
     };
     events_map.insert("PL1", pl1);
@@ -1456,7 +1456,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         power_level: 0,
         prev_events: vec!["PL1"],
         auth_events: vec!["PL1"],
-        content: serde_json::Value::Null,
+        content: rz_core::JsonValue::Null,
         room_id: None,
     };
     events_map.insert("S_A1", sa1);
@@ -1473,7 +1473,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         power_level: 100,
         prev_events: vec!["S_A1"],
         auth_events: vec!["PL1"],
-        content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
+        content: rz_core::json!({ "users": { "alice": 100, "bob": 100 } }),
         room_id: None,
     };
     events_map.insert("PL2", pl2);
@@ -1490,7 +1490,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         power_level: 0,
         prev_events: vec!["PL0"],
         auth_events: vec!["PL0"],
-        content: serde_json::Value::Null,
+        content: rz_core::JsonValue::Null,
         room_id: None,
     };
     events_map.insert("S_B1", sb1);
@@ -1507,7 +1507,7 @@ fn test_missing_auth_diff_mainline_distortion() {
         power_level: 100,
         prev_events: vec!["S_B1"],
         auth_events: vec!["PL0"],
-        content: serde_json::json!({ "users": { "alice": 100, "bob": 100 } }),
+        content: rz_core::json!({ "users": { "alice": 100, "bob": 100 } }),
         room_id: None,
     };
     events_map.insert("PL_B", pl_b);

@@ -45,7 +45,7 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
         if line.is_empty() || line.starts_with("//") {
             continue;
         }
-        let value: serde_json::Value = serde_json::from_str(line).expect("Invalid JSONL line");
+        let value = rz_core::JsonValue::parse(line).expect("Invalid JSONL line");
 
         let event_id = value
             .get("event_id")
@@ -66,20 +66,17 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
             .and_then(|v| v.as_str())
             .expect("JSONL event must contain string 'sender'")
             .to_string();
-        let content = value
-            .get("content")
-            .cloned()
-            .unwrap_or(serde_json::json!({}));
+        let content = value.get("content").cloned().unwrap_or(rz_core::json!({}));
 
         let rejected = value
             .get("__rejected")
             .or_else(|| value.get("rejected"))
-            .and_then(serde_json::Value::as_bool)
+            .and_then(rz_core::JsonValue::as_bool)
             .unwrap_or(false);
         let soft_fail = value
             .get("__soft_fail")
             .or_else(|| value.get("soft_fail"))
-            .and_then(serde_json::Value::as_bool)
+            .and_then(rz_core::JsonValue::as_bool)
             .unwrap_or(false);
 
         events.push(LeanEvent {
@@ -90,11 +87,11 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
             state_key,
             power_level: value
                 .get("power_level")
-                .and_then(serde_json::Value::as_i64)
+                .and_then(rz_core::JsonValue::as_i64)
                 .unwrap_or(0),
             origin_server_ts: value
                 .get("origin_server_ts")
-                .and_then(serde_json::Value::as_u64)
+                .and_then(rz_core::JsonValue::as_u64)
                 .unwrap_or(0),
             sender,
             content,
@@ -118,11 +115,11 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
                 .unwrap_or_default(),
             depth: value
                 .get("depth")
-                .and_then(serde_json::Value::as_u64)
+                .and_then(rz_core::JsonValue::as_u64)
                 .unwrap_or(0),
             room_id: value
                 .get("room_id")
-                .and_then(serde_json::Value::as_str)
+                .and_then(rz_core::JsonValue::as_str)
                 .map(RoomId::from),
         });
     }
@@ -151,9 +148,9 @@ pub fn print_canonical_hash(json_str: &str) {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use sha2::{Digest, Sha256};
 
-    fn sort_keys(value: &mut serde_json::Value) {
+    fn sort_keys(value: &mut rz_core::JsonValue) {
         match value {
-            serde_json::Value::Object(map) => {
+            rz_core::JsonValue::Object(map) => {
                 let mut sorted = std::collections::BTreeMap::new();
                 for (k, mut v) in core::mem::take(map) {
                     sort_keys(&mut v);
@@ -163,7 +160,7 @@ pub fn print_canonical_hash(json_str: &str) {
                     map.insert(k, v);
                 }
             }
-            serde_json::Value::Array(arr) => {
+            rz_core::JsonValue::Array(arr) => {
                 for v in arr {
                     sort_keys(v);
                 }
@@ -172,7 +169,7 @@ pub fn print_canonical_hash(json_str: &str) {
         }
     }
 
-    let mut value: serde_json::Value = serde_json::from_str(json_str).expect("Invalid JSON");
+    let mut value = rz_core::JsonValue::parse(json_str).expect("Invalid JSON");
     if let Some(obj) = value.as_object_mut() {
         obj.remove("event_id");
         obj.remove("unsigned");
@@ -180,7 +177,7 @@ pub fn print_canonical_hash(json_str: &str) {
     }
 
     sort_keys(&mut value);
-    let canonical = serde_json::to_string(&value).unwrap();
+    let canonical = rz_core::json::write_string_value(&value).unwrap();
 
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());

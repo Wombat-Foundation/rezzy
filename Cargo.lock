@@ -1424,8 +1424,6 @@ dependencies = [
  "mimalloc",
  "roaring",
  "rz-core",
- "serde_json",
- "simd-json",
  "ureq",
 ]
 
@@ -1462,6 +1460,9 @@ dependencies = [
 [[package]]
 name = "rz-json"
 version = "0.6.0-rc.0"
+dependencies = [
+ "ryu",
+]
 
 [[package]]
 name = "rz-reconcile"

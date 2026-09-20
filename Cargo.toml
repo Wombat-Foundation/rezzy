@@ -73,6 +73,7 @@ blake2 = { version = "0.10", default-features = false }
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
 imbl = { version = "3.0", default-features = false }
 roaring = { version = "0.10", default-features = false }
+ryu = { version = "1.0", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }
@@ -173,7 +174,6 @@ ruma-state-res = { workspace = true, optional = true }
 rz-cli = { workspace = true, optional = true }
 rz-core.workspace = true
 rz-reconcile.workspace = true
-serde_json.workspace = true
 sha2.workspace = true
 simd-json = { workspace = true, optional = true }
 

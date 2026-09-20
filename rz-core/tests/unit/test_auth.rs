@@ -2,15 +2,15 @@ use crate::utils;
 use crate::utils_extra;
 use rz_core::auth::*;
 use rz_core::basespec::event_types::{M_ROOM_CREATE, M_ROOM_MEMBER};
+use rz_core::json;
 use rz_core::*;
-use serde_json::json;
 
 fn make_event(
     id: &str,
     event_type: &str,
     state_key: Option<&str>,
     sender: &str,
-    content: serde_json::Value,
+    content: rz_core::JsonValue,
 ) -> LeanEvent {
     LeanEvent {
         event_id: id.into(),
@@ -5547,7 +5547,7 @@ fn test_interned_key_as_lean_event_state_key() {
     assert_eq!(rz_core::InternedKey::default().as_ref(), "");
 
     // Drops in as LeanEvent's K generic parameter directly.
-    let ev: LeanEvent<String, serde_json::Value, rz_core::InternedKey> = LeanEvent {
+    let ev: LeanEvent<String, rz_core::JsonValue, rz_core::InternedKey> = LeanEvent {
         event_id: "$m:example.com".into(),
         event_type: "m.room.member".into(),
         state_key: Some(rz_core::InternedKey::new("@bob:example.com")),
@@ -5569,7 +5569,7 @@ fn test_msc4242_prev_state_events_limit_in_check_auth() {
         event_id: String,
         auth_events: Vec<String>,
         prev_state_events: Vec<String>,
-        content: serde_json::Value,
+        content: rz_core::JsonValue,
     }
 
     impl DagNode for EventWithSeparateStateEdges {
@@ -5597,7 +5597,7 @@ fn test_msc4242_prev_state_events_limit_in_check_auth() {
     }
 
     impl EventLike for EventWithSeparateStateEdges {
-        type Content = serde_json::Value;
+        type Content = rz_core::JsonValue;
 
         fn event_type(&self) -> std::borrow::Cow<'_, str> {
             std::borrow::Cow::Borrowed("m.room.message")
@@ -5626,7 +5626,7 @@ fn test_msc4242_prev_state_events_limit_in_check_auth() {
 
     struct EmptyState;
 
-    impl StateProvider<String, serde_json::Value, EventWithSeparateStateEdges> for EmptyState {
+    impl StateProvider<String, rz_core::JsonValue, EventWithSeparateStateEdges> for EmptyState {
         fn get_event(
             &self,
             _event_type: &str,

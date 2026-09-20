@@ -1017,7 +1017,7 @@ fn test_interned_key_matches_string_path() {
 
     let interned_map: HashMap<
         String,
-        rz_core::LeanEvent<String, serde_json::Value, rz_core::InternedKey>,
+        rz_core::LeanEvent<String, rz_core::JsonValue, rz_core::InternedKey>,
     > = events_map
         .iter()
         .map(|(id, ev)| (id.clone(), ev.clone().into_interned_state_key()))
@@ -1090,7 +1090,7 @@ fn test_integer_intern_id_as_state_key() {
     .map(|e| (e.event_id.clone(), e))
     .collect();
 
-    let interned_map: HashMap<String, rz_core::LeanEvent<String, serde_json::Value, InternId>> =
+    let interned_map: HashMap<String, rz_core::LeanEvent<String, rz_core::JsonValue, InternId>> =
         events_map
             .iter()
             .map(|(id, ev)| {

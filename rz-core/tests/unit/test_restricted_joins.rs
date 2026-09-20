@@ -5,15 +5,15 @@
 //! rejected with `NotMember` errors. These tests verify the fix.
 
 use rz_core::auth::{check_auth, AuthError, RoomState};
+use rz_core::json;
 use rz_core::{LeanEvent, StateResVersion};
-use serde_json::json;
 
 fn make_event(
     id: &str,
     event_type: &str,
     state_key: Option<&str>,
     sender: &str,
-    content: serde_json::Value,
+    content: rz_core::JsonValue,
 ) -> LeanEvent {
     LeanEvent {
         event_id: id.into(),

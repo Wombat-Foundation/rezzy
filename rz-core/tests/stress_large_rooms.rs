@@ -54,7 +54,7 @@ fn sort_and_verify(events: &[LeanEvent], version: StateResVersion) -> Vec<String
 #[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_benchmark_1k_sort_no_cycles() {
     let content = std::fs::read_to_string("res/benchmark_1k.json").expect("benchmark_1k.json");
-    let data: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let data: rz_core::JsonValue = serde_json::from_str(&content).unwrap();
     let events: Vec<LeanEvent> = serde_json::from_value(data["events"].clone()).unwrap();
     let sorted = sort_and_verify(&events, StateResVersion::V2);
     assert_eq!(sorted.len(), 1000);
@@ -66,7 +66,7 @@ fn test_benchmark_1k_sort_no_cycles() {
 fn test_benchmark_1k_v2_1_sort_no_cycles() {
     let content =
         std::fs::read_to_string("res/benchmark_1k_v2_1.json").expect("benchmark_1k_v2_1.json");
-    let data: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let data: rz_core::JsonValue = serde_json::from_str(&content).unwrap();
     let events: Vec<LeanEvent> = serde_json::from_value(data["events"].clone()).unwrap();
     let sorted = sort_and_verify(&events, StateResVersion::V2_1);
     assert_eq!(sorted.len(), 1000);
@@ -77,7 +77,7 @@ fn test_benchmark_1k_v2_1_sort_no_cycles() {
 #[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_benchmark_1k_resolution_determinism() {
     let content = std::fs::read_to_string("res/benchmark_1k.json").expect("benchmark_1k.json");
-    let data: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let data: rz_core::JsonValue = serde_json::from_str(&content).unwrap();
     let events: Vec<LeanEvent> = serde_json::from_value(data["events"].clone()).unwrap();
 
     // Run resolution twice and verify determinism
@@ -133,7 +133,7 @@ fn test_ruma_bootstrap_auth_chain() {
 fn load_large_room() -> Vec<LeanEvent> {
     let content = std::fs::read_to_string("res/realistic_large_room.json")
         .expect("realistic_large_room.json");
-    let data: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let data: rz_core::JsonValue = serde_json::from_str(&content).unwrap();
     serde_json::from_value(data["events"].clone()).unwrap()
 }
 
@@ -330,7 +330,7 @@ fn test_real_room_42k_power_level_coercion() {
 fn test_real_room_v2_1_deserialization() {
     let path = "res/real_matrix_state_v2_1.json";
     let content = std::fs::read_to_string(path).unwrap();
-    let val: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let val: rz_core::JsonValue = serde_json::from_str(&content).unwrap();
     let events: Vec<LeanEvent> = if val.is_array() {
         serde_json::from_value(val).unwrap()
     } else {
@@ -349,7 +349,7 @@ fn test_real_room_v2_1_deserialization() {
 
 fn load_real_dag(path: &str) -> Vec<LeanEvent> {
     let content = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("Missing {path}"));
-    let data: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let data: rz_core::JsonValue = serde_json::from_str(&content).unwrap();
     serde_json::from_value(data["events"].clone()).unwrap()
 }
 
@@ -469,7 +469,7 @@ fn parse_jsonl_line(line: &str) -> LeanEvent {
     if let Ok(ev) = serde_json::from_str::<LeanEvent>(line) {
         return ev;
     }
-    let val: serde_json::Value = serde_json::from_str(line)
+    let val: rz_core::JsonValue = serde_json::from_str(line)
         .unwrap_or_else(|e| panic!("Failed to parse line as JSON: {e}. Line: {line}"));
     if let Some(source) = val.get("_source") {
         serde_json::from_value::<LeanEvent>(source.clone()).unwrap_or_else(|e| {

@@ -34,7 +34,7 @@ fn env_id_list(var: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn load_events(path: &str) -> Vec<serde_json::Value> {
+fn load_events(path: &str) -> Vec<rz_core::JsonValue> {
     let file = File::open(path).expect("open jsonl");
     let reader = BufReader::new(file);
     let mut raw_events = Vec::new();
@@ -43,13 +43,13 @@ fn load_events(path: &str) -> Vec<serde_json::Value> {
         if line.trim().is_empty() {
             continue;
         }
-        raw_events.push(serde_json::from_str(&line).unwrap());
+        raw_events.push(rz_core::JsonValue::parse(&line).unwrap());
     }
     raw_events
 }
 
 fn build_lean_events(
-    raw_events: &[serde_json::Value],
+    raw_events: &[rz_core::JsonValue],
 ) -> (Vec<Meta>, HashMap<String, LeanEvent>, String) {
     let mut metas = Vec::new();
     let mut lean_events: HashMap<String, LeanEvent> = HashMap::new();
@@ -66,7 +66,7 @@ fn build_lean_events(
         let content = val
             .get("content")
             .cloned()
-            .unwrap_or(serde_json::Value::Null);
+            .unwrap_or(rz_core::JsonValue::Null);
         let prev: Vec<String> = val
             .get("prev_events")
             .and_then(|v| v.as_array())
@@ -87,7 +87,7 @@ fn build_lean_events(
             .unwrap_or_default();
         let depth = val
             .get("depth")
-            .and_then(serde_json::Value::as_u64)
+            .and_then(rz_core::JsonValue::as_u64)
             .unwrap_or(0);
         let is_state = state_key.is_some();
 
@@ -356,7 +356,7 @@ fn print_tip_state(
     check_users: &[String],
     lean_events: &HashMap<String, LeanEvent>,
     resolved_state_at: &HashMap<String, StateMap>,
-    raw_events: &[serde_json::Value],
+    raw_events: &[rz_core::JsonValue],
 ) {
     for tip in heads {
         match walk_to_resolved(tip, lean_events, resolved_state_at) {
@@ -371,7 +371,10 @@ fn print_tip_state(
                 if let Some(jr) = m.get(&("m.room.join_rules".to_string(), String::new())) {
                     println!("m.room.join_rules -> {jr}");
                     if let Some(v) = raw_events.iter().find(|e| e["event_id"] == *jr) {
-                        println!("  content: {}", v["content"]);
+                        println!(
+                            "  content: {}",
+                            rz_core::json::write_string_value(&v["content"]).unwrap()
+                        );
                     }
                 } else {
                     println!("m.room.join_rules -> <absent>");

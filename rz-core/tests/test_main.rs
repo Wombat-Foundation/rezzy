@@ -1,7 +1,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-use serde_json::json;
+use rz_core::json;
 
-fn ev(id: &str, depth: u64) -> serde_json::Value {
+fn ev(id: &str, depth: u64) -> rz_core::JsonValue {
     json!({
         "event_id": id,
         "type": "m.room.member",

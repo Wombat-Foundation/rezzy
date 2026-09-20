@@ -758,8 +758,8 @@ mod tests {
         };
 
         let output = format_cli_output(&ctx);
-        assert_eq!(output["status"], "success");
-        assert_eq!(output["format"], "resolve_state");
+        assert_eq!(output["status"].as_str(), Some("success"));
+        assert_eq!(output["format"].as_str(), Some("resolve_state"));
         assert_eq!(
             output["resolved_state"],
             rz_core::json!([

@@ -11,6 +11,7 @@ keywords = ["json", "canonical-json", "matrix"]
 categories = ["encoding"]
 
 [dependencies]
+ryu.workspace = true
 
 [lints.rust]
 unsafe_code = "deny"

@@ -103,7 +103,7 @@ fn mem_event(
         state_key: Some(target.to_string()),
         sender: sender.to_string(),
         origin_server_ts: ts,
-        content: serde_json::json!({ "membership": membership }),
+        content: rz_core::json!({ "membership": membership }),
         prev_events,
         auth_events,
         depth,
@@ -129,7 +129,7 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         state_key: Some(String::new()),
         sender: "@admin:x".to_string(),
         origin_server_ts: ts,
-        content: serde_json::json!({ "room_version": "12.1", "creator": "@admin:x" }),
+        content: rz_core::json!({ "room_version": "12.1", "creator": "@admin:x" }),
         ..Default::default()
     };
     ts += 1;
@@ -146,10 +146,10 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
     ts += 1;
 
     let mut pl_users = serde_json::Map::new();
-    pl_users.insert("@admin:x".to_string(), serde_json::json!(100));
+    pl_users.insert("@admin:x".to_string(), rz_core::json!(100));
     for u in users {
         if rng.below(3) == 0 {
-            pl_users.insert(u.to_string(), serde_json::json!(50));
+            pl_users.insert(u.to_string(), rz_core::json!(50));
         }
     }
     let pl: LeanEvent = LeanEvent {
@@ -158,7 +158,7 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         state_key: Some(String::new()),
         sender: "@admin:x".to_string(),
         origin_server_ts: ts,
-        content: serde_json::json!({ "users": pl_users, "state_default": 50, "ban": 50 }),
+        content: rz_core::json!({ "users": pl_users, "state_default": 50, "ban": 50 }),
         auth_events: vec!["$create".to_string(), "$admin_join".to_string()],
         prev_events: vec!["$admin_join".to_string()],
         depth: 3,
@@ -171,7 +171,7 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         state_key: Some(String::new()),
         sender: "@admin:x".to_string(),
         origin_server_ts: ts,
-        content: serde_json::json!({ "join_rule": "public" }),
+        content: rz_core::json!({ "join_rule": "public" }),
         auth_events: vec![
             "$create".to_string(),
             "$admin_join".to_string(),
@@ -262,7 +262,7 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
                 state_key: Some(String::new()),
                 sender: "@admin:x".to_string(),
                 origin_server_ts: ts,
-                content: serde_json::json!({ "join_rule": "invite" }),
+                content: rz_core::json!({ "join_rule": "invite" }),
                 auth_events: vec![
                     "$create".to_string(),
                     "$admin_join".to_string(),
@@ -281,7 +281,7 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
                 state_key: Some(String::new()),
                 sender: "@admin:x".to_string(),
                 origin_server_ts: ts,
-                content: serde_json::json!({ "users": { "@admin:x": 100 }, "state_default": 0 }),
+                content: rz_core::json!({ "users": { "@admin:x": 100 }, "state_default": 0 }),
                 auth_events: vec![
                     "$create".to_string(),
                     "$admin_join".to_string(),
@@ -485,7 +485,7 @@ fn gen_dominated_winner_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         state_key: Some(String::new()),
         sender: "@admin:x".into(),
         origin_server_ts: ts,
-        content: serde_json::json!({ "room_version": "12.1", "creator": "@admin:x" }),
+        content: rz_core::json!({ "room_version": "12.1", "creator": "@admin:x" }),
         ..Default::default()
     };
     ts += 1;
@@ -507,7 +507,7 @@ fn gen_dominated_winner_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         state_key: Some(String::new()),
         sender: "@admin:x".into(),
         origin_server_ts: ts,
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": { "@admin:x": 100 },
             "users_default": 0,
             "state_default": 50,
@@ -525,7 +525,7 @@ fn gen_dominated_winner_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         state_key: Some(String::new()),
         sender: "@admin:x".into(),
         origin_server_ts: ts,
-        content: serde_json::json!({ "join_rule": "public" }),
+        content: rz_core::json!({ "join_rule": "public" }),
         auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
         prev_events: vec!["$pl".into()],
         depth: 4,
@@ -558,7 +558,7 @@ fn gen_dominated_winner_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         sender: attacker.to_string(),
         origin_server_ts: seed_base_ts + 1000,
         power_level: 0, // no forged priority: earlier ts breaks the tie vs the join
-        content: serde_json::json!({ "membership": atk_membership }),
+        content: rz_core::json!({ "membership": atk_membership }),
         auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
         prev_events: vec!["$jr".into()],
         depth: 5,
@@ -571,7 +571,7 @@ fn gen_dominated_winner_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         sender: "@victim:x".into(),
         origin_server_ts: seed_base_ts + 1100,
         power_level: 0,
-        content: serde_json::json!({ "membership": "join" }),
+        content: rz_core::json!({ "membership": "join" }),
         auth_events: vec![
             "$create".into(),
             "$admin_join".into(),
@@ -617,7 +617,7 @@ fn gen_power_phase_fallback_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem
         state_key: Some(String::new()),
         sender: "@admin:x".into(),
         origin_server_ts: ts,
-        content: serde_json::json!({ "room_version": "12.1", "creator": "@admin:x" }),
+        content: rz_core::json!({ "room_version": "12.1", "creator": "@admin:x" }),
         ..Default::default()
     };
     ts += 1;
@@ -643,7 +643,7 @@ fn gen_power_phase_fallback_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem
         state_key: Some(String::new()),
         sender: "@admin:x".into(),
         origin_server_ts: ts,
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": { "@admin:x": 100, "@u2:x": u2_power },
             "users_default": 0,
             "state_default": 50,
@@ -661,7 +661,7 @@ fn gen_power_phase_fallback_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem
         state_key: Some(String::new()),
         sender: "@admin:x".into(),
         origin_server_ts: ts,
-        content: serde_json::json!({
+        content: rz_core::json!({
             "users": { "@admin:x": 100, "@u2:x": u2_power.saturating_sub(20) },
             "users_default": 0,
             "state_default": 50,
@@ -679,7 +679,7 @@ fn gen_power_phase_fallback_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem
         state_key: Some(String::new()),
         sender: "@admin:x".into(),
         origin_server_ts: ts,
-        content: serde_json::json!({ "join_rule": "public" }),
+        content: rz_core::json!({ "join_rule": "public" }),
         auth_events: vec![
             "$create".into(),
             "$admin_join".into(),
@@ -696,7 +696,7 @@ fn gen_power_phase_fallback_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem
         state_key: Some("@u2:x".into()),
         sender: "@u2:x".into(),
         origin_server_ts: ts,
-        content: serde_json::json!({ "membership": "join" }),
+        content: rz_core::json!({ "membership": "join" }),
         auth_events: vec![
             "$create".into(),
             "$admin_join".into(),
@@ -734,7 +734,7 @@ fn gen_power_phase_fallback_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem
         state_key: None,
         sender: "@u2:x".into(),
         origin_server_ts: ts,
-        content: serde_json::json!({ "body": "hi" }),
+        content: rz_core::json!({ "body": "hi" }),
         auth_events: vec![
             "$create".into(),
             "$admin_join".into(),
@@ -917,7 +917,7 @@ fn cdo_dominator_validity_gap_scope_inverted() {
             sender: "@admin:x".into(),
             origin_server_ts: ts,
             depth: 1,
-            content: serde_json::json!({ "room_version": "12.1", "creator": "@admin:x" }),
+            content: rz_core::json!({ "room_version": "12.1", "creator": "@admin:x" }),
             ..Default::default()
         };
         ts += 1;
@@ -930,7 +930,7 @@ fn cdo_dominator_validity_gap_scope_inverted() {
             depth: 2,
             prev_events: vec!["$create".into()],
             auth_events: vec!["$create".into()],
-            content: serde_json::json!({ "membership": "join" }),
+            content: rz_core::json!({ "membership": "join" }),
             ..Default::default()
         };
         ts += 1;
@@ -941,7 +941,7 @@ fn cdo_dominator_validity_gap_scope_inverted() {
             sender: "@admin:x".into(),
             origin_server_ts: ts,
             depth: 3,
-            content: serde_json::json!({ "users": { "@admin:x": 100 }, "users_default": 0, "state_default": 50, "ban": 50 }),
+            content: rz_core::json!({ "users": { "@admin:x": 100 }, "users_default": 0, "state_default": 50, "ban": 50 }),
             auth_events: vec!["$create".into(), "$admin_join".into()],
             prev_events: vec!["$admin_join".into()],
             ..Default::default()
@@ -954,7 +954,7 @@ fn cdo_dominator_validity_gap_scope_inverted() {
             sender: "@admin:x".into(),
             origin_server_ts: ts,
             depth: 4,
-            content: serde_json::json!({ "join_rule": "public" }),
+            content: rz_core::json!({ "join_rule": "public" }),
             auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
             prev_events: vec!["$pl".into()],
             ..Default::default()
@@ -994,7 +994,7 @@ fn cdo_dominator_validity_gap_scope_inverted() {
             origin_server_ts: 6000,
             depth: 5,
             power_level: 0,
-            content: serde_json::json!({ "membership": "ban" }),
+            content: rz_core::json!({ "membership": "ban" }),
             auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
             prev_events: vec!["$jr".into()],
             ..Default::default()
@@ -1008,7 +1008,7 @@ fn cdo_dominator_validity_gap_scope_inverted() {
             origin_server_ts: 6000,
             depth: 5,
             power_level: 0,
-            content: serde_json::json!({ "join_rule": "invite" }),
+            content: rz_core::json!({ "join_rule": "invite" }),
             auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
             prev_events: vec!["$jr".into()],
             ..Default::default()
@@ -1022,7 +1022,7 @@ fn cdo_dominator_validity_gap_scope_inverted() {
             origin_server_ts: 6000,
             depth: 5,
             power_level: 0,
-            content: serde_json::json!({ "users": { "@admin:x": 100, "@victim:x": 0 }, "users_default": 0 }),
+            content: rz_core::json!({ "users": { "@admin:x": 100, "@victim:x": 0 }, "users_default": 0 }),
             auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
             prev_events: vec!["$jr".into()],
             ..Default::default()
@@ -1038,7 +1038,7 @@ fn cdo_dominator_validity_gap_scope_inverted() {
             origin_server_ts: 6100,
             depth: 5,
             power_level: 0,
-            content: serde_json::json!({ "membership": "join" }),
+            content: rz_core::json!({ "membership": "join" }),
             auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
             prev_events: vec!["$jr".into()],
             ..Default::default()

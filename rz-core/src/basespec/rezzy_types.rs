@@ -4002,6 +4002,26 @@ mod canonical_parity_tests {
     }
 
     #[test]
+    fn parsed_number_spellings_match_serde_json() {
+        for number in [
+            "-0",
+            "1.0",
+            "1e3",
+            "1E+3",
+            "1e-7",
+            "1e20",
+            "18446744073709551616",
+        ] {
+            let value = crate::json::Value::parse(number).unwrap();
+            let ours = crate::json::write_string_value(&value).unwrap();
+            let oracle =
+                serde_json::to_string(&serde_json::from_str::<serde_json::Value>(number).unwrap())
+                    .unwrap();
+            assert_eq!(ours, oracle, "number spelling {number}");
+        }
+    }
+
+    #[test]
     fn redacted_writer_is_byte_identical_to_serde() {
         let cases = [
             (

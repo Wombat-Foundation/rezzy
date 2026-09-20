@@ -70,7 +70,7 @@ fn test_compute_state_at_correctness_and_performance() {
             power_level: 0,
             origin_server_ts: u_i * 1000,
             sender: "alice".to_string(),
-            content: serde_json::Value::Null,
+            content: rz_core::JsonValue::Null,
             prev_events,
             auth_events: Vec::new(),
             depth: u_i,
@@ -176,7 +176,7 @@ fn test_compute_state_at_batch() {
             power_level: 0,
             origin_server_ts: u_i * 1000,
             sender: "alice".to_string(),
-            content: serde_json::Value::Null,
+            content: rz_core::JsonValue::Null,
             prev_events,
             auth_events: Vec::new(),
             depth: u_i,
@@ -215,7 +215,7 @@ fn test_compute_state_at_batch() {
     assert_eq!(batch_results[tip_id].len(), 100);
 
     // Verify empty batch handles gracefully
-    let empty_results = compute_state_at_batch::<String, serde_json::Value, str, _, _>(
+    let empty_results = compute_state_at_batch::<String, rz_core::JsonValue, str, _, _>(
         &[],
         &events_map,
         StateResVersion::V2,
@@ -269,7 +269,7 @@ fn test_streaming_correctness_with_branched_dag() {
                 power_level: 0,
                 origin_server_ts: i * 1000,
                 sender: "alice".to_string(),
-                content: serde_json::Value::Null,
+                content: rz_core::JsonValue::Null,
                 prev_events,
                 auth_events: Vec::new(),
                 depth: i,
@@ -296,7 +296,7 @@ fn test_streaming_correctness_with_branched_dag() {
                 power_level: 0,
                 origin_server_ts: i * 1000,
                 sender: "alice".to_string(),
-                content: serde_json::Value::Null,
+                content: rz_core::JsonValue::Null,
                 prev_events: vec![prev],
                 auth_events: Vec::new(),
                 depth: i,
@@ -331,7 +331,7 @@ fn test_streaming_correctness_with_branched_dag() {
                 power_level: 0,
                 origin_server_ts: (i * 1000) + 500, // Slightly later TS
                 sender: "bob".to_string(),
-                content: serde_json::Value::Null,
+                content: rz_core::JsonValue::Null,
                 prev_events: vec![prev],
                 auth_events: Vec::new(),
                 depth: i,
@@ -352,7 +352,7 @@ fn test_streaming_correctness_with_branched_dag() {
             power_level: 0,
             origin_server_ts: 50000,
             sender: "charlie".to_string(),
-            content: serde_json::Value::Null,
+            content: rz_core::JsonValue::Null,
             prev_events: vec!["$49a".to_string(), "$49b".to_string()],
             auth_events: Vec::new(),
             depth: 50,

@@ -5,11 +5,11 @@
 //! non-String event IDs. Previously these were hardcoded to `String`.
 
 use rz_core::auth::roaring::AuthGraph;
+use rz_core::json;
 use rz_core::resolve::subgraph::{
     compute_v2_1_conflicted_subgraph, compute_v2_1_conflicted_subgraph_bounded,
 };
 use rz_core::{HashMap, LeanEvent};
-use serde_json::json;
 
 /// Helper: build a `LeanEvent<u32>` with integer event ID.
 fn make_u32_event(id: u32, event_type: &str, auth_events: Vec<u32>) -> LeanEvent<u32> {
