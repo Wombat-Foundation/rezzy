@@ -9,6 +9,8 @@ repository.workspace = true
 description = "Core Matrix state resolution engine: auth, state, resolve, HAMT, and Merkle primitives."
 keywords = ["matrix", "state-resolution", "federation", "verification"]
 categories = ["algorithms", "mathematics"]
+exclude = ["tests/"]
+autotests = false
 
 [package.metadata.cargo-machete]
 ignored = ["idna_adapter", "zeroize"]
@@ -54,10 +56,15 @@ ruma-signatures = { workspace = true, optional = true }
 ruma-state-res = { workspace = true, optional = true }
 
 [dev-dependencies]
+base64.workspace = true
 bincode.workspace = true
 ed25519-consensus.workspace = true
+hashbrown.workspace = true
+imbl.workspace = true
 insta.workspace = true
 rand_08.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 simd-json.workspace = true
 similar.workspace = true
 test-case.workspace = true
@@ -88,3 +95,32 @@ arithmetic_side_effects = "warn"
 undocumented_unsafe_blocks = "warn"
 dbg_macro = "warn"
 get_unwrap = "warn"
+
+[[test]]
+name = "unit"
+path = "tests/unit/main.rs"
+
+[[test]]
+name = "test_resolve"
+path = "tests/test_resolve.rs"
+required-features = ["mock-ruma"]
+
+[[test]]
+name = "test_snapshots"
+path = "tests/test_snapshots.rs"
+required-features = ["stress"]
+
+[[test]]
+name = "stress_large_rooms"
+path = "tests/stress_large_rooms.rs"
+required-features = ["stress"]
+
+[[test]]
+name = "stress_unredacted_lounge"
+path = "tests/stress_unredacted_lounge.rs"
+required-features = ["stress"]
+
+[[test]]
+name = "test_main"
+path = "tests/test_main.rs"
+required-features = ["cli"]

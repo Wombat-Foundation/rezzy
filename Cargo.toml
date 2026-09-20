@@ -130,7 +130,7 @@ get_unwrap = "warn"
 
 [[bin]]
 name = "regen-oracles"
-path = "tests/bin/regen_oracles.rs"
+path = "scripts/regen_oracles.rs"
 required-features = ["regen"]
 test = false
 
@@ -232,35 +232,6 @@ path = "benches/ed25519_backends.rs"
 harness = false
 test = false
 required-features = ["signing-dalek"]
-
-[[test]]
-name = "unit"
-path = "tests/unit/main.rs"
-
-[[test]]
-name = "test_snapshots"
-path = "tests/test_snapshots.rs"
-required-features = ["stress"]
-
-[[test]]
-name = "stress_large_rooms"
-path = "tests/stress_large_rooms.rs"
-required-features = ["stress"]
-
-[[test]]
-name = "test_main"
-path = "tests/test_main.rs"
-required-features = ["cli"]
-
-[[test]]
-name = "stress_unredacted_lounge"
-path = "tests/stress_unredacted_lounge.rs"
-required-features = ["stress"]
-
-[[test]]
-name = "test_resolve"
-path = "tests/test_resolve.rs"
-required-features = ["mock-ruma"]
 
 [lints]
 workspace = true
