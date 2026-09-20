@@ -22,7 +22,6 @@ cli = ["std", "dep:clap"]
 regen = ["std"]
 signing = ["signing-dalek"]
 signing-dalek = ["dep:ed25519-dalek"]
-simd-json = []
 mock-ruma = [
     "dep:ruma-common",
     "dep:ruma-events",

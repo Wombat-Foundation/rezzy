@@ -72,9 +72,10 @@ blake2 = { version = "0.10", default-features = false }
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
 imbl = { version = "3.0", default-features = false }
 roaring = { version = "0.10", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["alloc"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }
 sha3 = { version = "0.10", default-features = false }
-simd-json = { version = "0.18", default-features = false, features = ["runtime-detection"] }
 
 # CLI-only
 clap = { version = "=4.5.48", features = ["derive", "env"] }
@@ -154,7 +155,6 @@ cli = ["std", "rz-core/cli", "dep:rz-cli"]
 regen = ["std"]
 signing = ["rz-core/signing"]
 signing-dalek = ["rz-core/signing-dalek"]
-simd-json = ["rz-core/simd-json"]
 mock-ruma = ["rz-core/mock-ruma"]
 stress = []
 hashing = []
@@ -170,8 +170,8 @@ ruma-state-res = { workspace = true, optional = true }
 rz-cli = { workspace = true, optional = true }
 rz-core.workspace = true
 rz-reconcile.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
-simd-json.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
@@ -183,8 +183,8 @@ imbl.workspace = true
 insta.workspace = true
 rand_08.workspace = true
 roaring.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
-simd-json.workspace = true
 similar.workspace = true
 test-case.workspace = true
 test-log.workspace = true
