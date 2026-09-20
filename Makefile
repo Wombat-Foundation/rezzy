@@ -119,7 +119,7 @@ export LLVM_COV_FLAGS = -show-region-summary=false -show-branch-summary=false
 rust/coverage: ##H Run code coverage and generate HTML report
 	# TODO: include `src/bin/` in coverage
 	# Run coverage
-	$(CARGO) llvm-cov --lib --tests \
+	$(CARGO) llvm-cov --workspace --lib --tests \
 		--html --output-dir .coverage \
 		--ignore-filename-regex 'src/bin/.*|scripts/.*|build\.rs$$'
 	# Print per-file summary to the terminal (functions/lines only)

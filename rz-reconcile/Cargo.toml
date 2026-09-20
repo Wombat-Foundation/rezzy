@@ -28,6 +28,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     "cfg(coverage)",
     "cfg(coverage_nightly)",
     "cfg(tarpaulin)",
+    "cfg(tarpaulin_include)",
     "cfg(has_avx512_support)",
     "cfg(has_avx512_host_support)",
 ] }
