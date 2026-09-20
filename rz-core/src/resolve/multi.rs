@@ -674,8 +674,10 @@ mod tests {
             if line.is_empty() || line.starts_with("//") {
                 continue;
             }
-            let ev: LeanEvent = serde_json::from_str(line)
+            let value = crate::json::Value::parse(line)
                 .unwrap_or_else(|e| panic!("bad JSONL: {e}\n  line: {line}"));
+            let ev = LeanEvent::from_value(&value, None)
+                .unwrap_or_else(|e| panic!("bad event: {e}\n  line: {line}"));
             map.insert(ev.event_id.clone(), ev);
         }
         map

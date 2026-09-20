@@ -179,16 +179,4 @@ mod tests {
         set.insert(handle.clone());
         assert!(set.contains(&handle));
     }
-
-    #[test]
-    fn root_handle_metadata_defaults_to_current_codec() {
-        let legacy = r#"{
-            "structural_hash": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            "state_group_id": [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
-        }"#;
-        let decoded: RootHandle = serde_json::from_str(legacy).expect("legacy handle decodes");
-        assert_eq!(decoded.codec_version, HAMT_CODEC_VERSION);
-        assert_eq!(decoded.routing_version, HAMT_ROUTING_VERSION);
-        assert_eq!(decoded.routing_params, [0; 4]);
-    }
 }

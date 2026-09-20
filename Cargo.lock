@@ -1255,8 +1255,10 @@ dependencies = [
  "rz-cli",
  "rz-core",
  "rz-reconcile",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
+ "simd-json",
  "similar",
  "test-case",
  "test-log",
@@ -1422,6 +1424,7 @@ dependencies = [
  "mimalloc",
  "roaring",
  "rz-core",
+ "serde_json",
  "simd-json",
  "ureq",
 ]
@@ -1445,6 +1448,7 @@ dependencies = [
  "ruma-events",
  "ruma-signatures",
  "ruma-state-res",
+ "rz-json",
  "rz-reconcile",
  "serde_json",
  "sha2 0.10.9",
@@ -1454,6 +1458,10 @@ dependencies = [
  "test-log",
  "zeroize",
 ]
+
+[[package]]
+name = "rz-json"
+version = "0.6.0-rc.0"
 
 [[package]]
 name = "rz-reconcile"

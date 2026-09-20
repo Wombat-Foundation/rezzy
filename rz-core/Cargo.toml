@@ -33,6 +33,7 @@ hashing = []
 unstable-refcount-gc = []
 
 [dependencies]
+rz-json.workspace = true
 rz-reconcile.workspace = true
 
 base64.workspace = true

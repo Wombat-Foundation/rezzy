@@ -129,6 +129,12 @@ impl From<serde_json::Error> for AppError {
     }
 }
 
+impl From<rz_core::JsonError> for AppError {
+    fn from(e: rz_core::JsonError) -> Self {
+        Self::new(ErrorCode::MalformedJson, e.to_string())
+    }
+}
+
 /// Bail with an [`ErrorCode`] and formatted message.
 ///
 /// # Examples

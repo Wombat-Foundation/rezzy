@@ -187,6 +187,17 @@ impl AsRef<str> for EventType {
     }
 }
 
+impl From<EventType> for crate::json::Value {
+    fn from(value: EventType) -> Self {
+        Self::String(alloc::string::String::from(value.as_str()))
+    }
+}
+impl From<&EventType> for crate::json::Value {
+    fn from(value: &EventType) -> Self {
+        Self::String(alloc::string::String::from(value.as_str()))
+    }
+}
+
 impl PartialEq for EventType {
     fn eq(&self, other: &Self) -> bool {
         self.as_str() == other.as_str()
@@ -446,17 +457,19 @@ mod event_type_tests {
     }
 
     #[test]
-    fn serde_round_trips_known_and_custom_variants() {
+    fn wire_strings_round_trip_known_and_custom_variants() {
         let known = EventType::RoomPowerLevels;
-        let json = serde_json::to_string(&known).unwrap();
+        let json =
+            crate::json::write_string_value(&crate::json::Value::from(known.as_str())).unwrap();
         assert_eq!(json, "\"m.room.power_levels\"");
-        let back: EventType = serde_json::from_str(&json).unwrap();
+        let back = EventType::from(crate::json::Value::parse(&json).unwrap().as_str().unwrap());
         assert_eq!(back, known);
 
         let custom = EventType::from("org.example.custom");
-        let json = serde_json::to_string(&custom).unwrap();
+        let json =
+            crate::json::write_string_value(&crate::json::Value::from(custom.as_str())).unwrap();
         assert_eq!(json, "\"org.example.custom\"");
-        let back: EventType = serde_json::from_str(&json).unwrap();
+        let back = EventType::from(crate::json::Value::parse(&json).unwrap().as_str().unwrap());
         assert_eq!(back, custom);
     }
 

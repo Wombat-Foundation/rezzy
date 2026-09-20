@@ -21,8 +21,8 @@ use alloc::vec::Vec;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
-use serde_json::json;
 
+use crate::json::json;
 use crate::merkle::UnsignedRoot;
 
 /// A [`UnsignedRoot`] signed by a single responder, plus enough context to

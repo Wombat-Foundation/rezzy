@@ -18,7 +18,7 @@
 //! # #[cfg(feature = "signing")]
 //! # fn example() -> Result<(), String> {
 //! use rz_core::signing::{verify_event_signatures, DalekVerifier};
-//! use serde_json::json;
+//! use crate::json;
 //!
 //! let mut keys = DalekVerifier::new();
 //! keys.insert_public_key("example.com", "ed25519:0", &[0_u8; 32])?;
@@ -279,11 +279,11 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod dalek_tests {
     use super::*;
+    use crate::json;
     use alloc::format;
     use alloc::vec::Vec;
     use base64::Engine as _;
     use ed25519_dalek::{Signer as _, SigningKey};
-    use serde_json::json;
 
     fn signed_event(
         mut value: Value,
