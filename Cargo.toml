@@ -84,7 +84,7 @@ simd-json = { version = "=0.14.3", default-features = false, features = ["runtim
 clap = { version = "=4.5.48", features = ["derive", "env"] }
 idna_adapter = { version = ">=1.0, <1.2", default-features = false }
 mimalloc = { version = "0.1.52" }
-ureq = { version = "2.9", default-features = false, features = ["json"] }
+ureq = { version = "2.9", default-features = false }
 
 # Signing
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "batch"] }
@@ -96,7 +96,6 @@ ruma-signatures = { version = "0.21" }
 ruma-state-res = { version = "0.17.0", features = ["__criterion"] }
 
 # Dev dependencies
-bincode = "1"
 ed25519-consensus = { version = "2.1", default-features = false, features = ["std"] }
 insta = "1.47.2"
 rand_08 = { package = "rand", version = "0.8" }
@@ -187,7 +186,6 @@ simd-json = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64.workspace = true
-bincode.workspace = true
 ed25519-consensus.workspace = true
 ed25519-dalek.workspace = true
 hashbrown.workspace = true
@@ -195,7 +193,6 @@ imbl.workspace = true
 insta.workspace = true
 rand_08.workspace = true
 roaring.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 simd-json.workspace = true
