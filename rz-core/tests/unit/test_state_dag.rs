@@ -160,7 +160,7 @@ fn test_prev_state_events_fanout_limit_only_applies_to_v22() {
         "type": M_ROOM_MEMBER,
         "state_key": "@a:example.com",
         "sender": "@a:example.com",
-        "prev_state_events": prev_state_events,
+        "prev_state_events": &prev_state_events,
         "content": { "membership": "join" }
     });
 

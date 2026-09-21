@@ -16,16 +16,16 @@ fn load_fixture(path: &std::path::Path) -> Vec<LeanEvent> {
             .lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| {
-                serde_json::from_str(line)
+                utils::parse_event_json(line)
                     .unwrap_or_else(|e| panic!("Failed to parse line in {}: {e}", path.display()))
             })
             .collect()
     } else {
-        let val: Value = serde_json::from_str(&content).unwrap();
+        let val: Value = Value::parse(&content).unwrap();
         if val.is_array() {
-            serde_json::from_value(val).unwrap()
+            utils::parse_events_value(&val).unwrap()
         } else {
-            serde_json::from_value(val["events"].clone()).unwrap()
+            utils::parse_events_value(&val["events"]).unwrap()
         }
     }
 }

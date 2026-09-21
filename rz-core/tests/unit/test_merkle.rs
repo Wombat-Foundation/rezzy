@@ -2,7 +2,7 @@ use rz_core::merkle::{
     self, AuthEventsHash, ContentHash, Field, Header, MerkleError, OtherSignedFieldsHash,
     PrevEventsHash, Side,
 };
-use serde_json::{json, Value};
+use rz_core::{json, JsonNumber as Number, JsonValue as Value};
 use std::fmt::Write;
 
 fn sample_fields() -> Vec<Field> {
@@ -71,7 +71,7 @@ fn canonical_json_rejects_out_of_range_integers_and_floats() {
 
 #[test]
 fn canonical_json_covers_unsigned_number_branch() {
-    let too_large = serde_json::Number::from(u64::MAX);
+    let too_large = Number::from(u64::MAX);
     assert_eq!(
         merkle::canonical_json(&Value::Number(too_large)).unwrap_err(),
         MerkleError::IntegerRange
@@ -80,7 +80,7 @@ fn canonical_json_covers_unsigned_number_branch() {
 
 #[test]
 fn canonical_json_accepts_small_u64_number() {
-    let in_range = serde_json::Number::from(7_u64);
+    let in_range = Number::from(7_u64);
     assert_eq!(
         String::from_utf8(merkle::canonical_json(&Value::Number(in_range)).unwrap()).unwrap(),
         "7"

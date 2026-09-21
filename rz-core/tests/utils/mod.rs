@@ -2,6 +2,25 @@ use rz_core::basespec::rezzy_types::LeanEvent;
 use rz_core::basespec::rezzy_types::RoomId;
 use std::collections::HashMap;
 
+pub fn parse_event_json(input: &str) -> Result<LeanEvent, String> {
+    let value = rz_core::JsonValue::parse(input).map_err(|error| error.to_string())?;
+    LeanEvent::from_value(&value, None)
+}
+
+pub fn parse_events_value(value: &rz_core::JsonValue) -> Result<Vec<LeanEvent>, String> {
+    let values = value
+        .as_array()
+        .ok_or_else(|| String::from("expected an array of events"))?;
+    values
+        .iter()
+        .map(|value| LeanEvent::from_value(value, None))
+        .collect()
+}
+
+pub fn parse_event_value(value: &rz_core::JsonValue) -> Result<LeanEvent, String> {
+    LeanEvent::from_value(value, None)
+}
+
 /// Builds an initial unconflicted state map containing only the `m.room.create` event
 /// extracted from the provided `auth_context`. This avoids needing a massive `auth_context`
 /// fallback in the production state resolution algorithm just for test fixtures.
