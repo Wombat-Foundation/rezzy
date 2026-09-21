@@ -151,7 +151,7 @@ pub fn run_cli(args: &Args) -> Result<rz_core::JsonValue, error::AppError> {
                 if args.debug {
                     eprintln!("[DEBUG] Failed to parse event: {val:?}. Error: {e}");
                 }
-                let msg = e.to_string();
+                let msg = e.clone();
                 let code = if msg.contains("event_type") {
                     error::ErrorCode::EmptyEventType
                 } else {

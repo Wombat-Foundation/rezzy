@@ -76,6 +76,7 @@ pub fn detect_version(
 /// `m.room.create` event is present or its `content.room_version` is absent
 /// -- callers should apply the spec's "missing `room_version` defaults to 1"
 /// rule themselves.
+#[must_use]
 pub fn detect_room_version_string(events: &[rz_core::JsonValue]) -> Option<String> {
     events.iter().find_map(|ev| {
         if ev.get(FIELD_TYPE).and_then(|t| t.as_str()) != Some(M_ROOM_CREATE) {
@@ -120,6 +121,7 @@ where
 }
 
 /// Computes an FNV-1a hash of `StateEntries`.
+#[must_use]
 pub fn compute_state_hash(state: &imbl::OrdMap<(EventType, String), String>) -> String {
     let mut hash: u64 = 14_695_981_039_346_656_037; // FNV offset basis
     for ((event_type, state_key), event_id) in state {
@@ -286,44 +288,46 @@ pub fn parse_and_extract_heads(
     debug: bool,
 ) -> Result<(Vec<rz_core::JsonValue>, Vec<String>), AppError> {
     if let Some(obj) = input_val.as_object() {
-        if obj.contains_key("events") {
-            let arr = obj.get("events").unwrap().as_array().ok_or_else(|| {
-                err!(
-                    ErrorCode::EventsNotArray,
-                    "'events' field must be a JSON array"
-                )
-            })?;
-            if debug {
-                eprintln!(
-                    "[DEBUG] cloning {} events out of 'events' field...",
-                    arr.len()
-                );
-            }
-            let t = Instant::now();
-            let evs = arr.clone();
-            if debug {
-                eprintln!("[DEBUG] cloned events in {:.2?}", t.elapsed());
-            }
-            let mut hds = Vec::new();
-            if let Some(hds_arr) = obj.get("heads").and_then(|h| h.as_array()) {
-                for v in hds_arr {
-                    hds.push(
-                        v.as_str()
-                            .ok_or_else(|| {
-                                err!(ErrorCode::InvalidHeadType, "each 'head' must be a string")
-                            })?
-                            .to_string(),
+        match obj.get("events") {
+            Some(events) => {
+                let arr = events.as_array().ok_or_else(|| {
+                    err!(
+                        ErrorCode::EventsNotArray,
+                        "'events' field must be a JSON array"
+                    )
+                })?;
+                if debug {
+                    eprintln!(
+                        "[DEBUG] cloning {} events out of 'events' field...",
+                        arr.len()
                     );
                 }
+                let t = Instant::now();
+                let evs = arr.clone();
+                if debug {
+                    eprintln!("[DEBUG] cloned events in {:.2?}", t.elapsed());
+                }
+                let mut hds = Vec::new();
+                if let Some(hds_arr) = obj.get("heads").and_then(|h| h.as_array()) {
+                    for v in hds_arr {
+                        hds.push(
+                            v.as_str()
+                                .ok_or_else(|| {
+                                    err!(ErrorCode::InvalidHeadType, "each 'head' must be a string")
+                                })?
+                                .to_string(),
+                        );
+                    }
+                }
+                Ok((evs, hds))
             }
-            return Ok((evs, hds));
-        } else if obj.contains_key(FIELD_EVENT_ID) || obj.contains_key(FIELD_TYPE) {
-            return Ok((vec![input_val.clone()], Vec::new()));
-        } else {
-            bail_code!(
+            None if obj.contains_key(FIELD_EVENT_ID) || obj.contains_key(FIELD_TYPE) => {
+                Ok((vec![input_val.clone()], Vec::new()))
+            }
+            None => bail_code!(
                 ErrorCode::UnrecognisedStructure,
                 "Unrecognized JSON object structure. Top-level object must either contain 'events' or represent a single event with 'event_id' or 'type'."
-            );
+            ),
         }
     } else if let Some(arr) = input_val.as_array() {
         if debug {
@@ -334,12 +338,12 @@ pub fn parse_and_extract_heads(
         if debug {
             eprintln!("[DEBUG] cloned events in {:.2?}", t.elapsed());
         }
-        return Ok((evs, Vec::new()));
+        Ok((evs, Vec::new()))
     } else {
         bail_code!(
             ErrorCode::UnexpectedFormat,
             "Unexpected JSON format: expected object or array"
-        );
+        )
     }
 }
 
@@ -384,6 +388,7 @@ fn build_state_map(
 }
 
 /// Compute state maps for the given events.
+#[must_use]
 pub fn compute_state_maps(
     heads: &[String],
     events_map: &HashMap<String, LeanEvent>,
@@ -438,6 +443,7 @@ pub fn compute_state_maps(
 pub type ResolvedState = imbl::OrdMap<(EventType, String), String>;
 
 /// Resolve parent states for a set of events.
+#[must_use]
 pub fn resolve_parent_states(
     parent_states: &[SharedStateMap],
     events_map: &HashMap<String, LeanEvent>,
@@ -494,6 +500,7 @@ pub fn resolve_parent_states(
 }
 
 /// Partition and resolve state across components.
+#[must_use]
 pub fn partition_and_resolve_state(
     heads: &[String],
     events_map: &HashMap<String, LeanEvent>,
@@ -643,6 +650,7 @@ pub fn apply_global_power_levels(
 }
 
 /// Convert epoch days to a YMD tuple.
+#[must_use]
 pub fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
     let z = days.wrapping_add(719_468);
     let era = (if z >= 0 { z } else { z.wrapping_sub(146_096) }).wrapping_div(146_097);
