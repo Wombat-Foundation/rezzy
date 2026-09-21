@@ -95,11 +95,11 @@ all: format lint check doc test install
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .PHONY: rust/build
-rust/build: format ##H Compile Rust binary (release)
+rust/build: ##H Compile Rust binary (release)
 	$(CARGO) build --locked --release --timings -p rz-cli
 
 .PHONY: rust/so
-rust/so: format ##H Compile shared object (librezzy.so) from the library
+rust/so: ##H Compile shared object (librezzy.so) from the library
 	$(CARGO) rustc --locked --release --lib --crate-type cdylib $(CARGO_FEATURE_ARGS)
 	@echo "Built: target/release/librezzy.so"
 
@@ -112,7 +112,7 @@ else
 endif
 
 .PHONY: rust/bench
-rust/bench: format ##H Run benchmarks
+rust/bench: ##H Run benchmarks
 	#$(CARGO) bench --profile release --bench rezzy -- resolve
 	$(CARGO) bench --profile release --benches
 
@@ -140,7 +140,7 @@ rust/clean: ##H Remove Rust build artifacts
 	rm -rf .coverage/
 
 .PHONY: rust/install
-rust/install: format ##H Install rezzy binary to cargo bin
+rust/install: ##H Install rezzy binary to cargo bin
 	$(CARGO) install --timings --locked --path rz-cli --bin rezzy
 
 .PHONY: rust/uninstall
@@ -169,11 +169,11 @@ rust/publish: ##H Preview package and simulate dry-run publish
 
 # Convenience aliases
 .PHONY: build test bench install clean uninstall so
-build:   rust/build format   ##H Alias for rust/build
+build:   rust/build   ##H Alias for rust/build
 test:    rust/test           ##H Alias for rust/test
-bench:   rust/bench format   ##H Alias for rust/bench
+bench:   rust/bench   ##H Alias for rust/bench
 cov:     rust/coverage      ##H Alias for rust/coverage
-install: rust/install format ##H Alias for rust/install
+install: rust/install ##H Alias for rust/install
 uninstall: rust/uninstall   ##H Alias for rust/uninstall
 so:      rust/so      ##H Alias for rust/so
 
