@@ -31,6 +31,12 @@ pub enum Value {
     Object(Object),
 }
 
+impl PartialEq<&str> for Value {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == Some(*other)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Number(String);
 

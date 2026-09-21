@@ -145,7 +145,7 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
     );
     ts += 1;
 
-    let mut pl_users = serde_json::Map::new();
+    let mut pl_users = rz_core::JsonObject::new();
     pl_users.insert("@admin:x".to_string(), rz_core::json!(100));
     for u in users {
         if rng.below(3) == 0 {
@@ -558,7 +558,7 @@ fn gen_dominated_winner_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         sender: attacker.to_string(),
         origin_server_ts: seed_base_ts + 1000,
         power_level: 0, // no forged priority: earlier ts breaks the tie vs the join
-        content: rz_core::json!({ "membership": atk_membership }),
+        content: rz_core::json!({ "membership": *atk_membership }),
         auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
         prev_events: vec!["$jr".into()],
         depth: 5,

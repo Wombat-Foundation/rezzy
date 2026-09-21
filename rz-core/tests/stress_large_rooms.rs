@@ -22,7 +22,13 @@ use std::collections::HashMap;
 fn load_fixture(path: &str) -> Vec<LeanEvent> {
     let content = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("Failed to read fixture {path}: {e}"));
-    serde_json::from_str(&content).unwrap_or_else(|e| panic!("Failed to parse fixture {path}: {e}"))
+    let value = rz_core::JsonValue::parse(&content)
+        .unwrap_or_else(|e| panic!("Failed to parse fixture {path}: {e}"));
+    if value.is_array() {
+        utils::parse_events_value(&value).unwrap()
+    } else {
+        utils::parse_events_value(&value["events"]).unwrap()
+    }
 }
 
 /// Build a `HashMap`<String, `LeanEvent`> from a list of events (keyed by `event_id`).
@@ -54,8 +60,8 @@ fn sort_and_verify(events: &[LeanEvent], version: StateResVersion) -> Vec<String
 #[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_benchmark_1k_sort_no_cycles() {
     let content = std::fs::read_to_string("res/benchmark_1k.json").expect("benchmark_1k.json");
-    let data: rz_core::JsonValue = serde_json::from_str(&content).unwrap();
-    let events: Vec<LeanEvent> = serde_json::from_value(data["events"].clone()).unwrap();
+    let data: rz_core::JsonValue = rz_core::JsonValue::parse(&content).unwrap();
+    let events: Vec<LeanEvent> = utils::parse_events_value(&data["events"]).unwrap();
     let sorted = sort_and_verify(&events, StateResVersion::V2);
     assert_eq!(sorted.len(), 1000);
     assert_eq!(sorted[0], "$00000-m-room-create");
@@ -66,8 +72,8 @@ fn test_benchmark_1k_sort_no_cycles() {
 fn test_benchmark_1k_v2_1_sort_no_cycles() {
     let content =
         std::fs::read_to_string("res/benchmark_1k_v2_1.json").expect("benchmark_1k_v2_1.json");
-    let data: rz_core::JsonValue = serde_json::from_str(&content).unwrap();
-    let events: Vec<LeanEvent> = serde_json::from_value(data["events"].clone()).unwrap();
+    let data: rz_core::JsonValue = rz_core::JsonValue::parse(&content).unwrap();
+    let events: Vec<LeanEvent> = utils::parse_events_value(&data["events"]).unwrap();
     let sorted = sort_and_verify(&events, StateResVersion::V2_1);
     assert_eq!(sorted.len(), 1000);
     assert_eq!(sorted[0], "$00000-m-room-create");
@@ -77,8 +83,8 @@ fn test_benchmark_1k_v2_1_sort_no_cycles() {
 #[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_benchmark_1k_resolution_determinism() {
     let content = std::fs::read_to_string("res/benchmark_1k.json").expect("benchmark_1k.json");
-    let data: rz_core::JsonValue = serde_json::from_str(&content).unwrap();
-    let events: Vec<LeanEvent> = serde_json::from_value(data["events"].clone()).unwrap();
+    let data: rz_core::JsonValue = rz_core::JsonValue::parse(&content).unwrap();
+    let events: Vec<LeanEvent> = utils::parse_events_value(&data["events"]).unwrap();
 
     // Run resolution twice and verify determinism
     let resolved1 = resolve_iterative_sort(
@@ -133,8 +139,8 @@ fn test_ruma_bootstrap_auth_chain() {
 fn load_large_room() -> Vec<LeanEvent> {
     let content = std::fs::read_to_string("res/realistic_large_room.json")
         .expect("realistic_large_room.json");
-    let data: rz_core::JsonValue = serde_json::from_str(&content).unwrap();
-    serde_json::from_value(data["events"].clone()).unwrap()
+    let data: rz_core::JsonValue = rz_core::JsonValue::parse(&content).unwrap();
+    utils::parse_events_value(&data["events"]).unwrap()
 }
 
 #[test]
@@ -288,7 +294,8 @@ fn test_large_room_10k_auth_chain() {
 fn test_real_room_42k_state_deserialization() {
     let path = "res/real_matrix_state.json";
     let content = std::fs::read_to_string(path).unwrap();
-    let events: Vec<LeanEvent> = serde_json::from_str(&content).unwrap();
+    let value = rz_core::JsonValue::parse(&content).unwrap();
+    let events = utils::parse_events_value(&value).unwrap();
     assert!(
         events.len() > 40000,
         "Should have 42K+ events, got {}",
@@ -306,7 +313,8 @@ fn test_real_room_42k_power_level_coercion() {
     let path = "res/real_matrix_state.json";
     // The real room dump likely has string/float power levels from old Synapse versions.
     let content = std::fs::read_to_string(path).unwrap();
-    let events: Vec<LeanEvent> = serde_json::from_str(&content).unwrap();
+    let value = rz_core::JsonValue::parse(&content).unwrap();
+    let events = utils::parse_events_value(&value).unwrap();
     // Find PL events and verify they deserialize without panicking
     let pl_events: Vec<_> = events
         .iter()
@@ -330,11 +338,11 @@ fn test_real_room_42k_power_level_coercion() {
 fn test_real_room_v2_1_deserialization() {
     let path = "res/real_matrix_state_v2_1.json";
     let content = std::fs::read_to_string(path).unwrap();
-    let val: rz_core::JsonValue = serde_json::from_str(&content).unwrap();
+    let val: rz_core::JsonValue = rz_core::JsonValue::parse(&content).unwrap();
     let events: Vec<LeanEvent> = if val.is_array() {
-        serde_json::from_value(val).unwrap()
+        utils::parse_events_value(&val).unwrap()
     } else {
-        serde_json::from_value(val["events"].clone()).unwrap()
+        utils::parse_events_value(&val["events"]).unwrap()
     };
     assert!(
         events.len() > 10,
@@ -349,8 +357,8 @@ fn test_real_room_v2_1_deserialization() {
 
 fn load_real_dag(path: &str) -> Vec<LeanEvent> {
     let content = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("Missing {path}"));
-    let data: rz_core::JsonValue = serde_json::from_str(&content).unwrap();
-    serde_json::from_value(data["events"].clone()).unwrap()
+    let data: rz_core::JsonValue = rz_core::JsonValue::parse(&content).unwrap();
+    utils::parse_events_value(&data["events"]).unwrap()
 }
 
 #[test]
@@ -466,17 +474,17 @@ fn test_real_dag_nheko_room_106_heads() {
 }
 
 fn parse_jsonl_line(line: &str) -> LeanEvent {
-    if let Ok(ev) = serde_json::from_str::<LeanEvent>(line) {
+    if let Ok(ev) = utils::parse_event_json(line) {
         return ev;
     }
-    let val: rz_core::JsonValue = serde_json::from_str(line)
+    let val: rz_core::JsonValue = rz_core::JsonValue::parse(line)
         .unwrap_or_else(|e| panic!("Failed to parse line as JSON: {e}. Line: {line}"));
     if let Some(source) = val.get("_source") {
-        serde_json::from_value::<LeanEvent>(source.clone()).unwrap_or_else(|e| {
+        utils::parse_event_value(source).unwrap_or_else(|e| {
             panic!("Failed to parse '_source' field as LeanEvent: {e}. Line: {line}")
         })
     } else if let Some(event) = val.get("event") {
-        serde_json::from_value::<LeanEvent>(event.clone()).unwrap_or_else(|e| {
+        utils::parse_event_value(event).unwrap_or_else(|e| {
             panic!("Failed to parse 'event' field as LeanEvent: {e}. Line: {line}")
         })
     } else {

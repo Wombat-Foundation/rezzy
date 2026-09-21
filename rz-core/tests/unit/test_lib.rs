@@ -27,7 +27,7 @@ mod tests {
             "type": "m.room.message",
             "origin_server_ts": 12345
         }"#;
-        let ev: LeanEvent = serde_json::from_str(json).unwrap();
+        let ev: LeanEvent = utils::parse_event_json(json).unwrap();
         assert_eq!(ev.event_id, "$test");
         assert_eq!(ev.event_type, "m.room.message");
         assert_eq!(ev.origin_server_ts, 12345);
@@ -727,43 +727,17 @@ mod tests {
     }
 
     #[test]
-    fn test_serialization_roundtrip() {
-        let event: LeanEvent = LeanEvent {
-            event_id: "$abc".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@alice:example.com".into()),
-            power_level: 100,
-            origin_server_ts: 12345,
-            prev_events: vec![],
-            auth_events: vec![],
-            depth: 5,
-            ..Default::default()
-        };
-        let serialized = serde_json::to_string(&event).unwrap();
-        let deserialized: LeanEvent = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(event, deserialized);
+    fn json_value_compact_roundtrip() {
+        let value = JsonValue::parse(r#"{"a":[true,null],"z":"x"}"#).unwrap();
+        let encoded = rz_core::json::write_string_value(&value).unwrap();
+        assert_eq!(JsonValue::parse(&encoded).unwrap(), value);
     }
 
     #[test]
-    fn test_serialization_roundtrip_state_key_none() {
-        // A LeanEvent with no state_key: the Serialize impl's
-        // `if let Some(state_key)` branch is skipped, exercising the None
-        // fall-through.
-        let event: LeanEvent = LeanEvent {
-            event_id: "$abc".into(),
-            event_type: "m.room.message".into(),
-            state_key: None,
-            power_level: 100,
-            origin_server_ts: 12345,
-            prev_events: vec![],
-            auth_events: vec![],
-            depth: 5,
-            ..Default::default()
-        };
-        let serialized = serde_json::to_string(&event).unwrap();
-        let deserialized: LeanEvent = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(event, deserialized);
-        assert_eq!(deserialized.state_key, None);
+    fn json_value_pretty_writer_preserves_null() {
+        let value = rz_core::json!({ "state_key": null });
+        let encoded = rz_core::json::write_string_pretty(&value).unwrap();
+        assert_eq!(JsonValue::parse(&encoded).unwrap(), value);
     }
 
     #[test]
@@ -775,7 +749,7 @@ mod tests {
             "content": {},
             "redacts": "$target:example.com"
         }"#;
-        let event: LeanEvent = serde_json::from_str(event_json).unwrap();
+        let event: LeanEvent = utils::parse_event_json(event_json).unwrap();
         assert_eq!(event.get_redacts(), Some("$target:example.com"));
     }
 
@@ -791,7 +765,7 @@ mod tests {
             "content": { "redacts": "$target:example.com" },
             "redacts": "$target:example.com"
         }"#;
-        let event: LeanEvent = serde_json::from_str(event_json).unwrap();
+        let event: LeanEvent = utils::parse_event_json(event_json).unwrap();
         assert_eq!(event.get_redacts(), Some("$target:example.com"));
     }
 
@@ -1891,28 +1865,28 @@ mod tests {
     #[test]
     fn test_power_level_coercion_integer() {
         let json = r#"{"event_id": "$1", "type": "m.room.member", "origin_server_ts": 1, "power_level": 100}"#;
-        let ev: LeanEvent = serde_json::from_str(json).unwrap();
+        let ev: LeanEvent = utils::parse_event_json(json).unwrap();
         assert_eq!(ev.power_level, 100);
     }
 
     #[test]
     fn test_power_level_coercion_string() {
         let json = r#"{"event_id": "$1", "type": "m.room.member", "origin_server_ts": 1, "power_level": "100"}"#;
-        let ev: LeanEvent = serde_json::from_str(json).unwrap();
+        let ev: LeanEvent = utils::parse_event_json(json).unwrap();
         assert_eq!(ev.power_level, 100);
     }
 
     #[test]
     fn test_power_level_coercion_float() {
         let json = r#"{"event_id": "$1", "type": "m.room.member", "origin_server_ts": 1, "power_level": 100.0}"#;
-        let res: Result<LeanEvent, _> = serde_json::from_str(json);
+        let res: Result<LeanEvent, _> = utils::parse_event_json(json);
         assert!(res.is_err());
     }
 
     #[test]
     fn test_power_level_coercion_invalid_string() {
         let json = r#"{"event_id": "$1", "type": "m.room.member", "origin_server_ts": 1, "power_level": "abc"}"#;
-        let ev: LeanEvent = serde_json::from_str(json).unwrap();
+        let ev: LeanEvent = utils::parse_event_json(json).unwrap();
         assert_eq!(ev.power_level, 0);
     }
 
@@ -2130,7 +2104,7 @@ mod tests {
             auth_events: auth.into_iter().map(ToString::to_string).collect(),
             depth: 1,
             sender: "@user:example.com".into(),
-            content: rz_core::JsonValue::Object(serde_json::Map::new()),
+            content: rz_core::JsonValue::Object(rz_core::JsonObject::new()),
             room_id: None,
         }
     }
@@ -3008,10 +2982,9 @@ mod tests {
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
-            content: serde_json::from_value(rz_core::json!({
+            content: rz_core::json!({
                 "users": { "@alice:example.com": 100 }
-            }))
-            .unwrap(),
+            }),
             auth_events: vec!["CREATE".into()],
             ..Default::default()
         };
@@ -3024,10 +2997,9 @@ mod tests {
             state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
             auth_events: vec!["B".into(), "CREATE".into()],
-            content: serde_json::from_value(rz_core::json!({
+            content: rz_core::json!({
                 "users": { "@alice:example.com": 100 }
-            }))
-            .unwrap(),
+            }),
             ..Default::default()
         };
         let b: LeanEvent = LeanEvent {
@@ -3036,10 +3008,9 @@ mod tests {
             state_key: Some(String::new()),
             sender: "@alice:example.com".into(),
             auth_events: vec!["A".into(), "CREATE".into()],
-            content: serde_json::from_value(rz_core::json!({
+            content: rz_core::json!({
                 "users": { "@alice:example.com": 100 }
-            }))
-            .unwrap(),
+            }),
             ..Default::default()
         };
         conflicted.insert("A".into(), a);
@@ -4996,24 +4967,24 @@ fn test_reference_hash_is_redaction_invariant() {
 fn test_types_deserialize_power_level_variants() {
     let json_int =
         r#"{"event_id":"$1","type":"m.room.message","origin_server_ts":1,"power_level":100}"#;
-    let ev1: LeanEvent = serde_json::from_str(json_int).unwrap();
+    let ev1: LeanEvent = utils::parse_event_json(json_int).unwrap();
     assert_eq!(ev1.power_level, 100);
 
     let json_str =
         r#"{"event_id":"$1","type":"m.room.message","origin_server_ts":1,"power_level":"200"}"#;
-    let ev2: LeanEvent = serde_json::from_str(json_str).unwrap();
+    let ev2: LeanEvent = utils::parse_event_json(json_str).unwrap();
     assert_eq!(ev2.power_level, 200);
 
     let json_str_invalid =
         r#"{"event_id":"$1","type":"m.room.message","origin_server_ts":1,"power_level":"invalid"}"#;
-    let ev3: LeanEvent = serde_json::from_str(json_str_invalid).unwrap();
+    let ev3: LeanEvent = utils::parse_event_json(json_str_invalid).unwrap();
     assert_eq!(ev3.power_level, 0);
 
     let json_large = format!(
         r#"{{"event_id":"$1","type":"m.room.message","origin_server_ts":1,"power_level":{}}}"#,
         u64::MAX
     );
-    let ev4: LeanEvent = serde_json::from_str(&json_large).unwrap();
+    let ev4: LeanEvent = utils::parse_event_json(&json_large).unwrap();
     assert_eq!(ev4.power_level, rz_core::auth::MAX_POWER_LEVEL_JSON);
 }
 
@@ -5021,11 +4992,11 @@ fn test_types_deserialize_power_level_variants() {
 fn test_types_deserialize_depth_and_redaction_validation() {
     let json_negative_depth =
         r#"{"event_id":"$1","type":"m.room.message","origin_server_ts":1,"depth":-1}"#;
-    assert!(serde_json::from_str::<LeanEvent>(json_negative_depth).is_err());
+    assert!(utils::parse_event_json(json_negative_depth).is_err());
 
     let json_fractional_depth =
         r#"{"event_id":"$1","type":"m.room.message","origin_server_ts":1,"depth":1.5}"#;
-    assert!(serde_json::from_str::<LeanEvent>(json_fractional_depth).is_err());
+    assert!(utils::parse_event_json(json_fractional_depth).is_err());
 
     let json_redaction_mismatch = r#"{
         "event_id": "$redact",
@@ -5034,7 +5005,7 @@ fn test_types_deserialize_depth_and_redaction_validation() {
         "content": {"redacts": "$different:example.com"},
         "redacts": "$target:example.com"
     }"#;
-    assert!(serde_json::from_str::<LeanEvent>(json_redaction_mismatch).is_err());
+    assert!(utils::parse_event_json(json_redaction_mismatch).is_err());
 
     let json_redaction_non_string_top_level_redacts = r#"{
         "event_id": "$redact",
@@ -5043,9 +5014,7 @@ fn test_types_deserialize_depth_and_redaction_validation() {
         "content": {},
         "redacts": 42
     }"#;
-    assert!(
-        serde_json::from_str::<LeanEvent>(json_redaction_non_string_top_level_redacts).is_err()
-    );
+    assert!(utils::parse_event_json(json_redaction_non_string_top_level_redacts).is_err());
 
     let json_redaction_non_string_content_redacts = r#"{
         "event_id": "$redact",
@@ -5054,7 +5023,7 @@ fn test_types_deserialize_depth_and_redaction_validation() {
         "content": {"redacts": 42},
         "redacts": "$target:example.com"
     }"#;
-    assert!(serde_json::from_str::<LeanEvent>(json_redaction_non_string_content_redacts).is_err());
+    assert!(utils::parse_event_json(json_redaction_non_string_content_redacts).is_err());
 
     let json_redaction_null_content = r#"{
         "event_id": "$redact",
@@ -5063,7 +5032,7 @@ fn test_types_deserialize_depth_and_redaction_validation() {
         "content": null,
         "redacts": "$target:example.com"
     }"#;
-    let ev: LeanEvent = serde_json::from_str(json_redaction_null_content).unwrap();
+    let ev: LeanEvent = utils::parse_event_json(json_redaction_null_content).unwrap();
     assert_eq!(ev.get_redacts(), Some("$target:example.com"));
 
     let json_redaction_no_redacts = r#"{
@@ -5072,7 +5041,7 @@ fn test_types_deserialize_depth_and_redaction_validation() {
         "sender": "@alice:example.com",
         "content": {"reason": "cleanup"}
     }"#;
-    let ev: LeanEvent = serde_json::from_str(json_redaction_no_redacts).unwrap();
+    let ev: LeanEvent = utils::parse_event_json(json_redaction_no_redacts).unwrap();
     assert_eq!(ev.get_redacts(), None);
 
     let json_redaction_non_object_content = r#"{
@@ -5082,7 +5051,7 @@ fn test_types_deserialize_depth_and_redaction_validation() {
         "content": "invalid",
         "redacts": "$target:example.com"
     }"#;
-    assert!(serde_json::from_str::<LeanEvent>(json_redaction_non_object_content).is_err());
+    assert!(utils::parse_event_json(json_redaction_non_object_content).is_err());
 }
 
 #[test]
@@ -5972,7 +5941,7 @@ fn test_types_empty_event_type() {
         "content": {}
     });
 
-    let result: Result<LeanEvent, _> = serde_json::from_value(json_missing_type);
+    let result = LeanEvent::from_value(&json_missing_type, None);
     assert!(result.is_err(), "Expected error for missing event_type");
 
     let json_empty_type = rz_core::json!({
@@ -5982,7 +5951,7 @@ fn test_types_empty_event_type() {
         "content": {}
     });
 
-    let result: Result<LeanEvent, _> = serde_json::from_value(json_empty_type);
+    let result = LeanEvent::from_value(&json_empty_type, None);
     assert!(result.is_err(), "Expected error for empty event_type");
 }
 
@@ -6002,7 +5971,7 @@ fn test_types_clamp_power_levels() {
         }
     });
 
-    let ev: LeanEvent = serde_json::from_value(json_pl).unwrap();
+    let ev: LeanEvent = LeanEvent::from_value(&json_pl, None).unwrap();
     let max_pl = 9_007_199_254_740_991; // MAX_POWER_LEVEL
 
     assert_eq!(ev.get_user_power_level("@bob:example.com"), Some(max_pl));
@@ -6138,8 +6107,22 @@ fn test_lean_event_serialize_roundtrip() {
         soft_fail: true,
         room_id: None,
     };
-    let json = serde_json::to_string(&ev).unwrap();
-    let back: LeanEvent<String> = serde_json::from_str(&json).unwrap();
+    let value = rz_core::json!({
+        "event_id": ev.event_id.as_str(),
+        "type": ev.event_type.as_str(),
+        "state_key": ev.state_key.as_deref(),
+        "power_level": ev.power_level,
+        "sender": ev.sender.as_str(),
+        "origin_server_ts": ev.origin_server_ts,
+        "content": &ev.content,
+        "prev_events": &ev.prev_events,
+        "auth_events": &ev.auth_events,
+        "depth": ev.depth,
+        "rejected": ev.rejected,
+        "soft_fail": ev.soft_fail
+    });
+    let json = rz_core::json::write_string_value(&value).unwrap();
+    let back: LeanEvent<String> = utils::parse_event_json(&json).unwrap();
     assert_eq!(ev.event_id, back.event_id);
     assert_eq!(ev.event_type, back.event_type);
     assert_eq!(ev.state_key, back.state_key);
@@ -6164,7 +6147,7 @@ fn test_lean_event_serialize_roundtrip() {
 
 #[test]
 fn test_lean_event_deserialize_accepts_legacy_rejection_flags() {
-    let ev: LeanEvent<String> = serde_json::from_str(
+    let ev: LeanEvent<String> = utils::parse_event_json(
         r#"{
             "event_id": "$test",
             "type": "m.room.message",
@@ -6437,7 +6420,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
 }
 
 #[test]
-fn test_state_res_version_serde_roundtrip() {
+fn state_resolution_versions_have_json_names() {
     let versions = vec![
         StateResVersion::V1,
         StateResVersion::V2,
@@ -6445,26 +6428,11 @@ fn test_state_res_version_serde_roundtrip() {
         StateResVersion::V2_1_1,
         StateResVersion::V2_2,
     ];
-    for v in &versions {
-        let json = serde_json::to_string(v).unwrap();
-        let back: StateResVersion = serde_json::from_str(&json).unwrap();
-        assert_eq!(*v, back, "Roundtrip failed for {v:?}");
+    let expected = ["V1", "V2", "V2_1", "V2_1_1", "V2_2"];
+    for (version, expected) in versions.iter().zip(expected) {
+        let value = rz_core::JsonValue::from(*version);
+        assert_eq!(value.as_str(), Some(expected));
     }
-    // Unknown variant must fail
-    let invalid: Result<StateResVersion, _> = serde_json::from_str("\"V99\"");
-    assert!(invalid.is_err());
-
-    // Non-string type triggers `expecting`
-    let wrong_type: Result<StateResVersion, _> = serde_json::from_str("42");
-    assert!(
-        wrong_type.is_err(),
-        "Deserializing an integer must fail with 'expected a StateResVersion string'"
-    );
-    let err_msg = wrong_type.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("StateResVersion"),
-        "Error message must mention StateResVersion: {err_msg}"
-    );
 }
 
 /// Coverage: default `EventContent` trait method impls (lines 299-316).
@@ -8033,7 +8001,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
 
     // Initial PL: user0 = 100, all others = 50 (so each fork user can
     // issue PL changes — the key ingredient for a PL war)
-    let mut users_pl = serde_json::Map::new();
+    let mut users_pl = rz_core::JsonObject::new();
     for (i, u) in users.iter().enumerate() {
         users_pl.insert(u.clone(), rz_core::json!(if i == 0 { 100 } else { 50 }));
     }
@@ -8092,7 +8060,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
             let ev_id = format!("$pl_f{fork}_d{depth}");
             // Each level shuffles PLs: user at (fork+depth)%K gets 50+depth,
             // creating unique PL configurations per fork×depth combo
-            let mut fork_users_pl = serde_json::Map::new();
+            let mut fork_users_pl = rz_core::JsonObject::new();
             for (i, u) in users.iter().enumerate() {
                 let pl = if i == fork {
                     50 // fork owner keeps 50
@@ -8363,55 +8331,6 @@ fn test_performance_and_correctness_dense_bifurcations() {
             "V2 and V2.1.1 must agree on bootstrap member {user}"
         );
     }
-}
-
-#[test]
-fn test_lean_event_serialize_propagates_write_error() {
-    // Accumulates everything written so far and searches the whole buffer on
-    // every call, rather than assuming `state_key` arrives in a single
-    // `write()` call. serde_json's chunking of a `write_all`/formatter call
-    // into individual `write()` calls is an implementation detail that can
-    // change across versions, so the match must be robust to the needle
-    // landing on either side of a call boundary.
-    struct FailingWriter {
-        buffered: Vec<u8>,
-    }
-    impl std::io::Write for FailingWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.buffered.extend_from_slice(buf);
-            if self.buffered.windows(9).any(|w| w == b"state_key") {
-                return Err(std::io::Error::other("simulated I/O failure"));
-            }
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    let ev = LeanEvent::<String> {
-        event_id: "$test".into(),
-        event_type: "m.room.message".into(),
-        state_key: Some("x".into()),
-        power_level: 0,
-        sender: "@alice:x.com".into(),
-        origin_server_ts: 1,
-        content: rz_core::json!({}),
-        prev_events: vec![],
-        auth_events: vec![],
-        depth: 1,
-        rejected: false,
-        soft_fail: false,
-        room_id: None,
-    };
-
-    let result = serde_json::to_writer(
-        FailingWriter {
-            buffered: Vec::new(),
-        },
-        &ev,
-    );
-    assert!(result.is_err());
 }
 
 /// Regression coverage for conflicted-key derivation before CDO filtering.

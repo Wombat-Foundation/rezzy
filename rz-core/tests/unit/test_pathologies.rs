@@ -1,5 +1,4 @@
 use crate::utils;
-use rz_core::JsonValue as Value;
 use rz_core::{
     resolve_iterative_sort, resolve_iterative_sort_with_cache, LeanEvent, LocalAuthCache,
     StateResVersion,
@@ -21,8 +20,7 @@ fn parse_jsonl_dag<P: AsRef<Path>>(path: P) -> Vec<LeanEvent> {
         if line.trim().is_empty() {
             continue;
         }
-        let val: Value = serde_json::from_str(&line).expect("Failed to parse JSON line");
-        let ev = serde_json::from_value::<LeanEvent>(val).expect("Failed to convert to LeanEvent");
+        let ev = utils::parse_event_json(&line).expect("Failed to parse event JSON line");
         events.push(ev);
     }
     events

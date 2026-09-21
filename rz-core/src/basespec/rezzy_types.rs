@@ -1518,7 +1518,7 @@ impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
 /// struct MyEvent {
 ///     event_id: String,
 ///     sender: String,
-///     parsed_content: crate::json::Value,
+///     parsed_content: rz_core::JsonValue,
 /// }
 ///
 /// impl DagNode for MyEvent {
@@ -1530,17 +1530,17 @@ impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
 /// }
 ///
 /// impl EventLike for MyEvent {
-///     type Content = crate::json::Value;
+///     type Content = rz_core::JsonValue;
 ///     fn event_type(&self) -> Cow<'_, str> { Cow::Borrowed("m.room.message") }
 ///     fn sender(&self) -> &str { &self.sender }
 ///     fn state_key(&self) -> Option<&str> { None }
 ///     fn power_level(&self) -> i64 { 0 }
 ///     fn origin_server_ts(&self) -> u64 { 0 }
-///     fn content(&self) -> &crate::json::Value { &self.parsed_content }
+///     fn content(&self) -> &rz_core::JsonValue { &self.parsed_content }
 /// }
 /// ```
 pub trait EventLike: DagNode {
-    /// The content type (e.g. `crate::json::Value` or a typed struct).
+    /// The content type (e.g. [`crate::json::Value`] or a typed struct).
     type Content: EventContent;
 
     /// Matrix event type (e.g. `m.room.member`, `m.room.power_levels`).

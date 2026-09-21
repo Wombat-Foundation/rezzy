@@ -370,7 +370,10 @@ fn print_tip_state(
                 println!("\n=== state at tip {tip} (resolved via {cur}) ===");
                 if let Some(jr) = m.get(&("m.room.join_rules".to_string(), String::new())) {
                     println!("m.room.join_rules -> {jr}");
-                    if let Some(v) = raw_events.iter().find(|e| e["event_id"] == *jr) {
+                    if let Some(v) = raw_events
+                        .iter()
+                        .find(|e| e["event_id"].as_str() == Some(jr.as_str()))
+                    {
                         println!(
                             "  content: {}",
                             rz_core::json::write_string_value(&v["content"]).unwrap()
