@@ -103,7 +103,6 @@ pub use warnings::{Outcome, Warning};
 /// timeline-oriented output and the raw resolved-state view without depending
 /// on the CLI binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum OutputFormat {
     #[default]
     Events,
@@ -112,8 +111,36 @@ pub enum OutputFormat {
     Federation,
     Summary,
     Timeline,
-    #[cfg_attr(feature = "cli", value(alias = "resolve_state"))]
     ResolveState,
+}
+
+#[cfg(feature = "cli")]
+impl clap::ValueEnum for OutputFormat {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[
+            Self::Events,
+            Self::Default,
+            Self::Deltas,
+            Self::Federation,
+            Self::Summary,
+            Self::Timeline,
+            Self::ResolveState,
+        ]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(match self {
+            Self::Events => clap::builder::PossibleValue::new("events"),
+            Self::Default => clap::builder::PossibleValue::new("default"),
+            Self::Deltas => clap::builder::PossibleValue::new("deltas"),
+            Self::Federation => clap::builder::PossibleValue::new("federation"),
+            Self::Summary => clap::builder::PossibleValue::new("summary"),
+            Self::Timeline => clap::builder::PossibleValue::new("timeline"),
+            Self::ResolveState => {
+                clap::builder::PossibleValue::new("resolve-state").alias("resolve_state")
+            }
+        })
+    }
 }
 
 /// One resolved-state entry in `(type, state_key, event_id)` form.

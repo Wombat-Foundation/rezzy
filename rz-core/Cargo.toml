@@ -22,13 +22,7 @@ cli = ["std", "dep:clap"]
 regen = ["std"]
 signing = ["signing-dalek"]
 signing-dalek = ["dep:ed25519-dalek"]
-mock-ruma = [
-    "dep:ruma-common",
-    "dep:ruma-events",
-    "dep:ruma-state-res",
-    "dep:ruma-signatures",
-    "dep:serde",
-]
+mock-ruma = ["dep:ruma-common", "dep:ruma-events", "dep:ruma-state-res", "dep:serde"]
 stress = []
 hashing = []
 unstable-refcount-gc = []
@@ -50,7 +44,6 @@ clap = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 ruma-common = { workspace = true, optional = true }
 ruma-events = { workspace = true, optional = true }
-ruma-signatures = { workspace = true, optional = true }
 ruma-state-res = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 

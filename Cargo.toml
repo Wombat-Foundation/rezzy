@@ -49,7 +49,7 @@ exclude = [
 ]
 
 [package.metadata.cargo-machete]
-ignored = ["idna_adapter", "zeroize"]
+ignored = ["zeroize"]
 [workspace]
 resolver = "2"
 members = ["rz-cli", "rz-core", "rz-json", "rz-reconcile"]
@@ -81,8 +81,7 @@ sha3 = { version = "0.10", default-features = false }
 simd-json = { version = "=0.14.3", default-features = false, features = ["runtime-detection", "swar-number-parsing"] }
 
 # CLI-only
-clap = { version = "=4.5.48", features = ["derive", "env"] }
-idna_adapter = { version = ">=1.0, <1.2", default-features = false }
+clap = { version = "=4.5.48", default-features = false, features = ["std", "env", "help", "usage", "error-context", "color", "suggestions"] }
 mimalloc = { version = "0.1.52" }
 ureq = { version = "2.9", default-features = false }
 
@@ -179,7 +178,6 @@ ruma-signatures = { workspace = true, optional = true }
 ruma-state-res = { workspace = true, optional = true }
 rz-cli = { workspace = true, optional = true }
 rz-core.workspace = true
-rz-reconcile.workspace = true
 serde_json = { workspace = true, optional = true }
 sha2.workspace = true
 

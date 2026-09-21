@@ -21,9 +21,8 @@ pub mod jsonl_merge;
 pub mod network;
 pub mod utils;
 
-use clap::Parser;
 use format::{format_cli_output, FormattingContext};
-pub use rz_core::OutputFormat;
+use rz_core::OutputFormat;
 use rz_core::{LeanEvent, StateResVersion};
 use std::collections::HashMap;
 use std::fs::File;
@@ -35,43 +34,131 @@ use utils::{
     parse_and_extract_heads, partition_and_resolve_state,
 };
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[derive(Debug)]
 pub struct Args {
-    #[arg(short, long, num_args(1..))]
     pub input: Vec<PathBuf>,
 
-    #[arg(short, long)]
     pub room: Option<String>,
 
-    #[arg(long, env = "MATRIX_HOMESERVER")]
     pub homeserver: Option<String>,
 
     /// Matrix access token. Falls back to per-domain env var (e.g. `MTOKEN_MATRIX_UNREDACTED_ORG`)
-    #[arg(long, env = "MATRIX_TOKEN", hide_env_values = true)]
     pub token: Option<String>,
 
-    #[arg(short, long)]
     pub output: Option<PathBuf>,
 
-    #[arg(short, long, value_enum)]
     pub state_res: Option<StateResVersion>,
 
-    #[arg(short, long, value_enum, default_value = "default")]
     pub format: OutputFormat,
 
-    #[arg(long)]
     pub debug: bool,
 
-    #[arg(short, long)]
     pub quiet: bool,
 
     /// Validate input only; suppress state output and exit.
-    #[arg(short = 'c', long)]
     pub check: bool,
 
-    #[arg(long, default_value = "matrix.org")]
     pub origin: String,
+}
+
+impl Args {
+    /// Parse the process arguments.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the command line cannot be parsed (clap prints usage and exits).
+    #[must_use]
+    pub fn parse() -> Self {
+        let matches = clap::Command::new("rezzy")
+            .version(env!("CARGO_PKG_VERSION"))
+            .about(env!("CARGO_PKG_DESCRIPTION"))
+            .arg(
+                clap::Arg::new("input")
+                    .short('i')
+                    .long("input")
+                    .num_args(1..)
+                    .value_parser(clap::value_parser!(PathBuf)),
+            )
+            .arg(clap::Arg::new("room").short('r').long("room"))
+            .arg(
+                clap::Arg::new("homeserver")
+                    .long("homeserver")
+                    .env("MATRIX_HOMESERVER"),
+            )
+            .arg(
+                clap::Arg::new("token")
+                    .long("token")
+                    .env("MATRIX_TOKEN")
+                    .hide_env_values(true),
+            )
+            .arg(
+                clap::Arg::new("output")
+                    .short('o')
+                    .long("output")
+                    .value_parser(clap::value_parser!(PathBuf)),
+            )
+            .arg(
+                clap::Arg::new("state_res")
+                    .short('s')
+                    .long("state-res")
+                    .value_parser(clap::builder::EnumValueParser::<StateResVersion>::new()),
+            )
+            .arg(
+                clap::Arg::new("format")
+                    .short('f')
+                    .long("format")
+                    .value_parser(clap::builder::EnumValueParser::<OutputFormat>::new())
+                    .default_value("default"),
+            )
+            .arg(
+                clap::Arg::new("debug")
+                    .long("debug")
+                    .action(clap::ArgAction::SetTrue),
+            )
+            .arg(
+                clap::Arg::new("quiet")
+                    .short('q')
+                    .long("quiet")
+                    .action(clap::ArgAction::SetTrue),
+            )
+            .arg(
+                clap::Arg::new("check")
+                    .short('c')
+                    .long("check")
+                    .action(clap::ArgAction::SetTrue),
+            )
+            .arg(
+                clap::Arg::new("origin")
+                    .long("origin")
+                    .default_value("matrix.org"),
+            )
+            .get_matches();
+
+        let input = matches
+            .get_many::<PathBuf>("input")
+            .map(|values| values.cloned().collect())
+            .unwrap_or_default();
+
+        Self {
+            input,
+            room: matches.get_one::<String>("room").cloned(),
+            homeserver: matches.get_one::<String>("homeserver").cloned(),
+            token: matches.get_one::<String>("token").cloned(),
+            output: matches.get_one::<PathBuf>("output").cloned(),
+            state_res: matches.get_one::<StateResVersion>("state_res").copied(),
+            format: matches
+                .get_one::<OutputFormat>("format")
+                .copied()
+                .unwrap_or_default(),
+            debug: matches.get_flag("debug"),
+            quiet: matches.get_flag("quiet"),
+            check: matches.get_flag("check"),
+            origin: matches
+                .get_one::<String>("origin")
+                .cloned()
+                .unwrap_or_else(|| String::from("matrix.org")),
+        }
+    }
 }
 
 /// Run the CLI application.
