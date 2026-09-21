@@ -710,6 +710,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8588661a8607108a5ca69cab034063441a0413a0b041c13618a7dd348021ef6f"
 dependencies = [
  "hashbrown 0.14.5",
+ "serde",
 ]
 
 [[package]]
@@ -1448,6 +1449,7 @@ dependencies = [
  "ruma-state-res",
  "rz-json",
  "rz-reconcile",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "sha3",
@@ -1620,6 +1622,8 @@ dependencies = [
  "getrandom 0.2.17",
  "halfbrown",
  "ref-cast",
+ "serde",
+ "serde_json",
  "simdutf8",
  "value-trait",
 ]

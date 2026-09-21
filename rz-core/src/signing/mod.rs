@@ -18,7 +18,7 @@
 //! # #[cfg(feature = "signing")]
 //! # fn example() -> Result<(), String> {
 //! use rz_core::signing::{verify_event_signatures, DalekVerifier};
-//! use crate::json;
+//! use rz_core::json;
 //!
 //! let mut keys = DalekVerifier::new();
 //! keys.insert_public_key("example.com", "ed25519:0", &[0_u8; 32])?;
@@ -296,11 +296,13 @@ mod dalek_tests {
         let sig = sk.sign(canonical.as_bytes());
         let sig_b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(sig.to_bytes());
         let obj = value.as_object_mut().expect("event is an object");
-        obj.entry("signatures")
+        let mut inner = crate::json::Object::new();
+        inner.insert(key_id.to_string(), Value::String(sig_b64));
+        obj.entry("signatures".to_string())
             .or_insert_with(|| json!({}))
             .as_object_mut()
             .expect("signatures is an object")
-            .insert(server.to_string(), json!({ key_id: sig_b64 }));
+            .insert(server.to_string(), Value::Object(inner));
         value
     }
 

@@ -89,8 +89,10 @@ impl Number {
 
 fn normalize_exponent(formatted: &str) -> String {
     if let Some(index) = formatted.find('e') {
-        if !formatted[index + 1..].starts_with('-') {
-            return alloc::format!("{}e+{}", &formatted[..index], &formatted[index + 1..]);
+        let rest = formatted.get(index.saturating_add(1)..).unwrap_or("");
+        if !rest.starts_with('-') {
+            let head = formatted.get(..index).unwrap_or("");
+            return alloc::format!("{head}e+{rest}");
         }
     }
     formatted.to_string()
@@ -205,6 +207,10 @@ impl Value {
     pub fn insert(&mut self, key: String, value: Self) -> Option<Self> {
         self.as_object_mut()?.insert(key, value)
     }
+    /// Parses a complete JSON document from `input`.
+    ///
+    /// # Errors
+    /// Returns [`Error`] if `input` is not valid JSON or has trailing content.
     pub fn parse(input: &str) -> Result<Self, Error> {
         let mut parser = Parser {
             input: input.as_bytes(),
@@ -217,6 +223,10 @@ impl Value {
         }
         Ok(value)
     }
+    /// Parses a complete JSON document from UTF-8 `input` bytes.
+    ///
+    /// # Errors
+    /// Returns [`Error`] if `input` is not valid UTF-8 or not valid JSON.
     pub fn parse_bytes(input: &[u8]) -> Result<Self, Error> {
         let text = core::str::from_utf8(input).map_err(|_| Error::InvalidString)?;
         Self::parse(text)
@@ -404,6 +414,10 @@ pub fn key(value: &str) -> String {
     value.to_string()
 }
 
+/// Writes `value` as compact canonical JSON.
+///
+/// # Errors
+/// Returns [`fmt::Error`] if writing to the output string fails.
 pub fn write_string_value(value: &Value) -> Result<String, fmt::Error> {
     use fmt::Write as _;
     fn write_value(out: &mut String, value: &Value) -> fmt::Result {
@@ -460,59 +474,73 @@ pub fn write_string_value(value: &Value) -> Result<String, fmt::Error> {
     Ok(out)
 }
 
-pub fn write_string_pretty(value: &Value) -> Result<String, fmt::Error> {
-    fn write_value(out: &mut String, value: &Value, depth: usize) -> fmt::Result {
-        match value {
-            Value::Array(items) if !items.is_empty() => {
-                out.push('[');
-                for (i, item) in items.iter().enumerate() {
-                    if i == 0 {
-                        out.push('\n');
-                    } else {
-                        out.push_str(",\n");
-                    }
-                    indent(out, depth + 1)?;
-                    write_value(out, item, depth + 1)?;
-                }
-                out.push('\n');
-                indent(out, depth)?;
-                out.push(']');
-            }
-            Value::Object(obj) if !obj.is_empty() => {
-                out.push('{');
-                for (i, (key, item)) in obj.iter().enumerate() {
-                    if i != 0 {
-                        out.push(',');
-                    }
+/// Writes `value` as indented, human-readable JSON.
+///
+/// # Errors
+/// Returns [`fmt::Error`] if writing to the output string fails.
+// `depth` is a nesting counter bounded by the input's nesting depth; the
+// increment cannot realistically overflow `usize`.
+#[allow(clippy::arithmetic_side_effects)]
+fn write_value_pretty(out: &mut String, value: &Value, depth: usize) -> fmt::Result {
+    match value {
+        Value::Array(items) if !items.is_empty() => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i == 0 {
                     out.push('\n');
-                    indent(out, depth + 1)?;
-                    write_quoted(out, key)?;
-                    out.push_str(": ");
-                    write_value(out, item, depth + 1)?;
+                } else {
+                    out.push_str(",\n");
+                }
+                indent(out, depth + 1);
+                write_value_pretty(out, item, depth + 1)?;
+            }
+            out.push('\n');
+            indent(out, depth);
+            out.push(']');
+        }
+        Value::Object(obj) if !obj.is_empty() => {
+            out.push('{');
+            for (i, (key, item)) in obj.iter().enumerate() {
+                if i != 0 {
+                    out.push(',');
                 }
                 out.push('\n');
-                indent(out, depth)?;
-                out.push('}');
+                indent(out, depth + 1);
+                write_quoted(out, key)?;
+                out.push_str(": ");
+                write_value_pretty(out, item, depth + 1)?;
             }
-            Value::Array(_) | Value::Object(_) => out.push_str(&write_string_value(value)?),
-            _ => out.push_str(&write_string_value(value)?),
+            out.push('\n');
+            indent(out, depth);
+            out.push('}');
         }
-        Ok(())
-    }
-    fn indent(out: &mut String, depth: usize) -> fmt::Result {
-        for _ in 0..depth {
-            out.push_str("  ");
+        _ => {
+            out.push_str(&write_string_value(value)?);
         }
-        Ok(())
     }
-    fn write_quoted(out: &mut String, value: &str) -> fmt::Result {
-        let quoted = write_string_value(&Value::String(value.to_string()))?;
-        out.push_str(&quoted);
-        Ok(())
-    }
+    Ok(())
+}
+
+/// Writes `value` as indented, human-readable JSON.
+///
+/// # Errors
+/// Returns [`fmt::Error`] if writing to the output string fails.
+pub fn write_string_pretty(value: &Value) -> Result<String, fmt::Error> {
     let mut out = String::new();
-    write_value(&mut out, value, 0)?;
+    write_value_pretty(&mut out, value, 0)?;
     Ok(out)
+}
+
+fn indent(out: &mut String, depth: usize) {
+    for _ in 0..depth {
+        out.push_str("  ");
+    }
+}
+
+fn write_quoted(out: &mut String, value: &str) -> fmt::Result {
+    let quoted = write_string_value(&Value::String(value.to_string()))?;
+    out.push_str(&quoted);
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -531,58 +559,18 @@ impl fmt::Display for Error {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{write_string_pretty, write_string_value, Value};
-
-    #[test]
-    fn parses_nested_values_and_sorts_object_keys() {
-        let value = Value::parse(r#"{"z":[true,null],"a":{"n":-12}}"#).unwrap();
-        assert_eq!(
-            write_string_value(&value).unwrap(),
-            r#"{"a":{"n":-12},"z":[true,null]}"#
-        );
-    }
-
-    #[test]
-    fn decodes_unicode_escapes_and_surrogate_pairs() {
-        let value = Value::parse(r#"["\u0061","\ud83d\ude00"]"#).unwrap();
-        assert_eq!(value.as_array().unwrap()[0].as_str(), Some("a"));
-        assert_eq!(value.as_array().unwrap()[1].as_str(), Some("😀"));
-    }
-
-    #[test]
-    fn duplicate_keys_use_last_value() {
-        let value = Value::parse(r#"{"x":1,"x":2}"#).unwrap();
-        assert_eq!(value["x"].as_u64(), Some(2));
-    }
-
-    #[test]
-    fn rejects_invalid_number_forms_and_surrogates() {
-        for input in ["01", "1.", "1e", "--1", r#""\ud800""#] {
-            assert!(Value::parse(input).is_err(), "accepted {input}");
-        }
-    }
-
-    #[test]
-    fn compact_and_pretty_writers_escape_and_indent() {
-        let value = Value::parse(r#"{"a":[1,{"b":"x\n"}],"z":true}"#).unwrap();
-        assert_eq!(
-            write_string_value(&value).unwrap(),
-            r#"{"a":[1,{"b":"x\n"}],"z":true}"#
-        );
-        assert_eq!(
-            write_string_pretty(&value).unwrap(),
-            "{\n  \"a\": [\n    1,\n    {\n      \"b\": \"x\\n\"\n    }\n  ],\n  \"z\": true\n}"
-        );
-    }
-}
-
+// Parser cursor arithmetic is on `usize` offsets bounded by `input.len()`; each
+// increment is preceded by a `.get()` bounds check, so the operations cannot
+// overflow or wrap in practice.
 struct Parser<'a> {
     input: &'a [u8],
     pos: usize,
 }
 
+// Parser cursor arithmetic is on `usize` offsets bounded by `input.len()`; each
+// increment is preceded by a `.get()` bounds check, so the operations cannot
+// overflow or wrap in practice.
+#[allow(clippy::arithmetic_side_effects)]
 impl Parser<'_> {
     fn ws(&mut self) {
         while self
@@ -690,7 +678,9 @@ impl Parser<'_> {
         for _ in 0..4 {
             let b = *self.input.get(self.pos).ok_or(Error::UnexpectedEnd)?;
             self.pos += 1;
-            n = (n << 4) | u16::from((b as char).to_digit(16).ok_or(Error::InvalidEscape)? as u8);
+            let digit = (b as char).to_digit(16).ok_or(Error::InvalidEscape)?;
+            let digit = u8::try_from(digit).map_err(|_| Error::InvalidEscape)?;
+            n = (n << 4) | u16::from(digit);
         }
         Ok(n)
     }
@@ -767,6 +757,8 @@ impl Parser<'_> {
     }
 }
 
+// Index arithmetic is bounded by `s.len()` via the surrounding `.get()` checks.
+#[allow(clippy::arithmetic_side_effects)]
 fn valid_number(s: &str) -> bool {
     let b = s.as_bytes();
     let mut i = 0;
@@ -807,4 +799,51 @@ fn valid_number(s: &str) -> bool {
         }
     }
     i == b.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{write_string_pretty, write_string_value, Value};
+
+    #[test]
+    fn parses_nested_values_and_sorts_object_keys() {
+        let value = Value::parse(r#"{"z":[true,null],"a":{"n":-12}}"#).unwrap();
+        assert_eq!(
+            write_string_value(&value).unwrap(),
+            r#"{"a":{"n":-12},"z":[true,null]}"#
+        );
+    }
+
+    #[test]
+    fn decodes_unicode_escapes_and_surrogate_pairs() {
+        let value = Value::parse(r#"["\u0061","\ud83d\ude00"]"#).unwrap();
+        assert_eq!(value.as_array().unwrap()[0].as_str(), Some("a"));
+        assert_eq!(value.as_array().unwrap()[1].as_str(), Some("😀"));
+    }
+
+    #[test]
+    fn duplicate_keys_use_last_value() {
+        let value = Value::parse(r#"{"x":1,"x":2}"#).unwrap();
+        assert_eq!(value["x"].as_u64(), Some(2));
+    }
+
+    #[test]
+    fn rejects_invalid_number_forms_and_surrogates() {
+        for input in ["01", "1.", "1e", "--1", r#""\ud800""#] {
+            assert!(Value::parse(input).is_err(), "accepted {input}");
+        }
+    }
+
+    #[test]
+    fn compact_and_pretty_writers_escape_and_indent() {
+        let value = Value::parse(r#"{"a":[1,{"b":"x\n"}],"z":true}"#).unwrap();
+        assert_eq!(
+            write_string_value(&value).unwrap(),
+            r#"{"a":[1,{"b":"x\n"}],"z":true}"#
+        );
+        assert_eq!(
+            write_string_pretty(&value).unwrap(),
+            "{\n  \"a\": [\n    1,\n    {\n      \"b\": \"x\\n\"\n    }\n  ],\n  \"z\": true\n}"
+        );
+    }
 }

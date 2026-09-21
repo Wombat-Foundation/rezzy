@@ -38,10 +38,12 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use rezzy::{compute_state_at, compute_state_at_batch, LeanEvent, StateResVersion};
+use rezzy::{
+    compute_state_at, compute_state_at_batch, json, JsonValue, LeanEvent, StateResVersion,
+};
 
-fn pl_content(level: i64) -> serde_json::Value {
-    serde_json::json!({ "users_default": level })
+fn pl_content(level: i64) -> JsonValue {
+    json!({ "users_default": level })
 }
 
 const PL_AUTH_HOPS: usize = 8;
@@ -65,7 +67,7 @@ fn insert_pl_auth_chain(
                 *ts
             },
             sender: "@creator:example.org".to_string(),
-            content: serde_json::json!({ "join_rule": "public" }),
+            content: json!({ "join_rule": "public" }),
             prev_events: Vec::new(),
             auth_events: Vec::new(),
             depth,
@@ -92,7 +94,7 @@ fn insert_pl_auth_chain(
                     *ts
                 },
                 sender: helper_user,
-                content: serde_json::json!({ "membership": "join" }),
+                content: json!({ "membership": "join" }),
                 prev_events: Vec::new(),
                 auth_events: if hop == 0 {
                     vec![root_id.clone()]
@@ -132,7 +134,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                 ts
             },
             sender: "@creator:example.org".to_string(),
-            content: serde_json::json!({ "creator": "@creator:example.org" }),
+            content: json!({ "creator": "@creator:example.org" }),
             prev_events: Vec::new(),
             auth_events: Vec::new(),
             depth: 0,
@@ -198,7 +200,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                     ts
                 },
                 sender: shared_member.clone(),
-                content: serde_json::json!({ "membership": "join" }),
+                content: json!({ "membership": "join" }),
                 prev_events: vec![top_pl.clone()],
                 auth_events: vec![top_pl.clone(), pl_auth_root.clone()],
                 depth,
@@ -219,7 +221,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                     ts
                 },
                 sender: shared_member.clone(),
-                content: serde_json::json!({ "membership": "join" }),
+                content: json!({ "membership": "join" }),
                 prev_events: vec![top_pl.clone()],
                 auth_events: vec![top_pl.clone(), pl_auth_root],
                 depth,
@@ -240,7 +242,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
                     ts
                 },
                 sender: shared_member,
-                content: serde_json::json!({ "body": "merge" }),
+                content: json!({ "body": "merge" }),
                 prev_events: vec![a_id, b_id],
                 auth_events: vec![top_pl.clone()],
                 depth: depth + 1,
@@ -288,7 +290,7 @@ pub fn run() {
             || {
                 let mut total_states = 0usize;
                 for &target in &target_refs {
-                    let state = compute_state_at::<String, serde_json::Value, str, _, String>(
+                    let state = compute_state_at::<String, JsonValue, str, _, String>(
                         target,
                         &events,
                         StateResVersion::V2_1,

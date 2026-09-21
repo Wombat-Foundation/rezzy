@@ -51,7 +51,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use rezzy::{compute_state_at, compute_state_at_batch, InternedKey, LeanEvent, StateResVersion};
+use rezzy::{
+    compute_state_at, compute_state_at_batch, json, InternedKey, JsonValue, LeanEvent,
+    StateResVersion,
+};
 
 /// A flat `u32` index into an interned string arena — the C-style key: `Copy`,
 /// no atomic refcount, no per-clone allocation, integer compare/hash. Ids are
@@ -132,7 +135,7 @@ fn str_to_id() -> HashMap<String, InternId> {
 fn to_u32_events(
     events: &HashMap<String, LeanEvent>,
     str_to_id: &HashMap<String, InternId>,
-) -> HashMap<String, LeanEvent<String, serde_json::Value, InternId>> {
+) -> HashMap<String, LeanEvent<String, JsonValue, InternId>> {
     events
         .iter()
         .map(|(id, ev)| {
@@ -176,7 +179,7 @@ fn build_room(member_count: usize) -> (HashMap<String, LeanEvent>, Vec<String>) 
                 ts
             },
             sender: "@creator:example.org".to_string(),
-            content: serde_json::json!({ "creator": "@creator:example.org" }),
+            content: json!({ "creator": "@creator:example.org" }),
             prev_events: Vec::new(),
             auth_events: Vec::new(),
             depth: 0,
@@ -199,7 +202,7 @@ fn build_room(member_count: usize) -> (HashMap<String, LeanEvent>, Vec<String>) 
                 ts
             },
             sender: "@creator:example.org".to_string(),
-            content: serde_json::json!({ "users_default": 50 }),
+            content: json!({ "users_default": 50 }),
             prev_events: vec![create_id.clone()],
             // V2.1+ (this bench uses `StateResVersion::V2_1` throughout)
             // forbids citing `m.room.create` in `auth_events` (rule 2.4) --
@@ -226,7 +229,7 @@ fn build_room(member_count: usize) -> (HashMap<String, LeanEvent>, Vec<String>) 
                 ts
             },
             sender: "@creator:example.org".to_string(),
-            content: serde_json::json!({ "join_rule": "public" }),
+            content: json!({ "join_rule": "public" }),
             prev_events: vec![pl_id.clone()],
             auth_events: vec![pl_id.clone()],
             depth: 2,
@@ -259,7 +262,7 @@ fn build_room(member_count: usize) -> (HashMap<String, LeanEvent>, Vec<String>) 
                     ts
                 },
                 sender: user,
-                content: serde_json::json!({ "membership": "join" }),
+                content: json!({ "membership": "join" }),
                 prev_events: vec![prev.clone()],
                 // For `i == 0`, `prev` is `join_rules_id` itself (the loop's
                 // initial value) -- citing it twice would be a duplicate.
@@ -315,7 +318,7 @@ fn build_conflicting_room(conflict_count: usize) -> (HashMap<String, LeanEvent>,
                 ts
             },
             sender: "@creator:example.org".to_string(),
-            content: serde_json::json!({ "creator": "@creator:example.org" }),
+            content: json!({ "creator": "@creator:example.org" }),
             prev_events: Vec::new(),
             auth_events: Vec::new(),
             depth: 0,
@@ -338,7 +341,7 @@ fn build_conflicting_room(conflict_count: usize) -> (HashMap<String, LeanEvent>,
                 ts
             },
             sender: "@creator:example.org".to_string(),
-            content: serde_json::json!({ "users_default": 50 }),
+            content: json!({ "users_default": 50 }),
             prev_events: vec![create_id.clone()],
             auth_events: Vec::new(),
             depth: 1,
@@ -367,7 +370,7 @@ fn build_conflicting_room(conflict_count: usize) -> (HashMap<String, LeanEvent>,
                 ts
             },
             sender: "@creator:example.org".to_string(),
-            content: serde_json::json!({ "join_rule": "public" }),
+            content: json!({ "join_rule": "public" }),
             prev_events: vec![pl_id.clone()],
             // V2.1+ (this bench uses `StateResVersion::V2_1` throughout)
             // forbids citing `m.room.create` in `auth_events` (rule 2.4) --
@@ -407,7 +410,7 @@ fn build_conflicting_room(conflict_count: usize) -> (HashMap<String, LeanEvent>,
                     ts
                 },
                 sender: user.clone(),
-                content: serde_json::json!({ "membership": "join" }),
+                content: json!({ "membership": "join" }),
                 prev_events: vec![tip.clone()],
                 auth_events: branch_auth.clone(),
                 depth,
@@ -428,7 +431,7 @@ fn build_conflicting_room(conflict_count: usize) -> (HashMap<String, LeanEvent>,
                     ts
                 },
                 sender: "@creator:example.org".to_string(),
-                content: serde_json::json!({ "membership": "ban" }),
+                content: json!({ "membership": "ban" }),
                 prev_events: vec![tip.clone()],
                 auth_events: branch_auth,
                 depth,
@@ -457,7 +460,7 @@ fn build_conflicting_room(conflict_count: usize) -> (HashMap<String, LeanEvent>,
                     ts
                 },
                 sender: merge_user,
-                content: serde_json::json!({ "membership": "join" }),
+                content: json!({ "membership": "join" }),
                 prev_events: vec![a_id.clone(), b_id.clone()],
                 auth_events: vec![pl_id.clone(), join_rules_id.clone()],
                 depth,
@@ -536,25 +539,25 @@ pub fn run() {
     for (n, events, targets) in &rooms {
         let target_refs: Vec<&str> = targets.iter().map(String::as_str).collect();
 
-        let interned: HashMap<String, LeanEvent<String, serde_json::Value, InternedKey>> = events
+        let interned: HashMap<String, LeanEvent<String, JsonValue, InternedKey>> = events
             .iter()
             .map(|(id, ev)| (id.clone(), ev.clone().into_interned_state_key()))
             .collect();
-        let u32_events: HashMap<String, LeanEvent<String, serde_json::Value, InternId>> =
+        let u32_events: HashMap<String, LeanEvent<String, JsonValue, InternId>> =
             to_u32_events(events, &str_to_id);
 
         // Correctness gate: the interned-u32 path must resolve to the *same*
         // state as String (keyed back to strings), so the perf number isn't
         // measuring a silently-wrong ordering/default() path.
         let last = targets.last().unwrap();
-        let str_state = compute_state_at::<String, serde_json::Value, String, _, String>(
+        let str_state = compute_state_at::<String, JsonValue, String, _, String>(
             last,
             events,
             StateResVersion::V2_1,
             &String::new(),
         )
         .expect("last member must resolve (String)");
-        let u32_state = compute_state_at::<String, serde_json::Value, String, _, InternId>(
+        let u32_state = compute_state_at::<String, JsonValue, String, _, InternId>(
             last,
             &u32_events,
             StateResVersion::V2_1,
@@ -625,7 +628,7 @@ pub fn run() {
         // Serial (cache-free) control at the last (deepest) member.
         let last = target_refs.last().copied().unwrap();
         let ser_str = measure(&format!("serial String    n={n}"), reps, || {
-            let state = compute_state_at::<String, serde_json::Value, str, _, String>(
+            let state = compute_state_at::<String, JsonValue, str, _, String>(
                 last,
                 events,
                 StateResVersion::V2_1,
@@ -635,7 +638,7 @@ pub fn run() {
             std::hint::black_box(state.len());
         });
         let ser_interned = measure(&format!("serial InternedKey n={n}"), reps, || {
-            let state = compute_state_at::<String, serde_json::Value, str, _, InternedKey>(
+            let state = compute_state_at::<String, JsonValue, str, _, InternedKey>(
                 last,
                 &interned,
                 StateResVersion::V2_1,
@@ -645,7 +648,7 @@ pub fn run() {
             std::hint::black_box(state.len());
         });
         let ser_u32 = measure(&format!("serial u32 InternId n={n}"), reps, || {
-            let state = compute_state_at::<String, serde_json::Value, str, _, InternId>(
+            let state = compute_state_at::<String, JsonValue, str, _, InternId>(
                 last,
                 &u32_events,
                 StateResVersion::V2_1,
@@ -687,14 +690,14 @@ pub fn run() {
 
         // Correctness gate, same discipline as the linear-room bench above:
         // the interned-u32 path must resolve to the same winners as String.
-        let str_state = compute_state_at::<String, serde_json::Value, String, _, String>(
+        let str_state = compute_state_at::<String, JsonValue, String, _, String>(
             last,
             events,
             StateResVersion::V2_1,
             &String::new(),
         )
         .expect("last merge event must resolve (String)");
-        let u32_state = compute_state_at::<String, serde_json::Value, String, _, InternId>(
+        let u32_state = compute_state_at::<String, JsonValue, String, _, InternId>(
             last,
             &u32_events,
             StateResVersion::V2_1,
@@ -721,7 +724,7 @@ pub fn run() {
             _ => 10,
         };
         let str_dur = measure(&format!("conflict String    n={n}"), reps, || {
-            let state = compute_state_at::<String, serde_json::Value, str, _, String>(
+            let state = compute_state_at::<String, JsonValue, str, _, String>(
                 last,
                 events,
                 StateResVersion::V2_1,
@@ -731,7 +734,7 @@ pub fn run() {
             std::hint::black_box(state.len());
         });
         let u32_dur = measure(&format!("conflict u32 InternId n={n}"), reps, || {
-            let state = compute_state_at::<String, serde_json::Value, str, _, InternId>(
+            let state = compute_state_at::<String, JsonValue, str, _, InternId>(
                 last,
                 &u32_events,
                 StateResVersion::V2_1,

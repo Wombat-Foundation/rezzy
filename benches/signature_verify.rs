@@ -25,16 +25,17 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use ruma_common::room_version_rules::RoomVersionRules;
 use ruma_common::{serde::Base64, CanonicalJsonObject, RoomVersionId};
 use ruma_signatures::{verify_event, PublicKeyMap, PublicKeySet};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use rezzy::basespec::rezzy_types::{compute_content_hash, verify_content_hash};
 use rezzy::signing::{verify_event_signatures, DalekVerifier};
+use rezzy::{json, JsonValue};
 
 const ROOM_VERSION: &str = "10";
 
 /// Builds a signed, content-hash-valid `m.room.message` PDU signed by
 /// `example.com` under `ed25519:0`. Returns the event plus the raw public key.
-fn build_signed_event() -> (Value, [u8; 32]) {
+fn build_signed_event() -> (JsonValue, [u8; 32]) {
     let sk = SigningKey::from_bytes(&[42_u8; 32]);
     let vk = sk.verifying_key();
 
@@ -62,7 +63,7 @@ fn build_signed_event() -> (Value, [u8; 32]) {
     (value, vk.to_bytes())
 }
 
-fn bench_rezzy(value: &Value, keys: &DalekVerifier) -> Result<(), String> {
+fn bench_rezzy(value: &JsonValue, keys: &DalekVerifier) -> Result<(), String> {
     verify_event_signatures(value, ROOM_VERSION, keys)?;
     verify_content_hash(value, ROOM_VERSION)?;
     Ok(())
@@ -89,7 +90,8 @@ fn time<F: FnMut()>(label: &str, iters: u32, mut f: F) -> Duration {
 
 fn main() {
     let (value, vk) = build_signed_event();
-    let object: CanonicalJsonObject = serde_json::from_value(value.clone()).expect("convert");
+    let value_json = rezzy::json::write_string_value(&value).expect("serialize fixture");
+    let object: CanonicalJsonObject = serde_json::from_str(&value_json).expect("convert");
     let iters = 10_000;
 
     // Build both key maps once, outside the timed loop.
@@ -123,7 +125,7 @@ fn main() {
     bench_sequential(&value, &keys, 5_000, 20);
 
     // Parse: bytes -> Value, serde_json vs simd-json.
-    let event_bytes = serde_json::to_vec(&value).expect("serialize");
+    let event_bytes = value_json.as_bytes().to_vec();
     let parse_iters = 10_000;
     println!("\nparse bytes -> Value (event JSON)");
     let pj = time("serde_json parse", parse_iters, || {
@@ -147,9 +149,9 @@ fn main() {
 /// `verify_strict` loop internally (see its doc comment for why it isn't a
 /// true batch), so this measures per-call/allocation overhead of the two
 /// entry points, not a batch-verification speedup.
-fn bench_sequential(value: &Value, keys: &DalekVerifier, n: usize, iters: u32) {
+fn bench_sequential(value: &JsonValue, keys: &DalekVerifier, n: usize, iters: u32) {
     let sk = ed25519_dalek::SigningKey::from_bytes(&[42_u8; 32]);
-    let events: Vec<Value> = (0..n)
+    let events: Vec<JsonValue> = (0..n)
         .map(|i| {
             let mut v = value.clone();
             v["origin_server_ts"] = json!(i);
