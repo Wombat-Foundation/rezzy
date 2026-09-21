@@ -17,10 +17,6 @@ pub fn parse_events_value(value: &rz_core::JsonValue) -> Result<Vec<LeanEvent>, 
         .collect()
 }
 
-pub fn parse_event_value(value: &rz_core::JsonValue) -> Result<LeanEvent, String> {
-    LeanEvent::from_value(value, None)
-}
-
 /// Builds an initial unconflicted state map containing only the `m.room.create` event
 /// extracted from the provided `auth_context`. This avoids needing a massive `auth_context`
 /// fallback in the production state resolution algorithm just for test fixtures.
