@@ -778,7 +778,7 @@ mod tests {
         let ClientAction::BucketSketches { requests, .. } = action else {
             panic!("expected bucket requests once the gate is raised past 100k, got {action:?}");
         };
-        assert!(!requests.is_empty());
+        assert!(!requests.is_empty(), "expected at least one bucket request");
     }
 
     #[test]

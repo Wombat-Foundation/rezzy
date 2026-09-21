@@ -1339,7 +1339,7 @@ fn test_hamt_is_empty() {
         children: vec![],
         structural_hash: [1; 32],
     };
-    assert!(!leaf_node.is_empty());
+    assert!(!leaf_node.is_empty(), "leaf node should be non-empty");
 }
 
 #[test]
@@ -4061,7 +4061,7 @@ fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates()
         3,
         "duplicate hash must not inflate the count"
     );
-    assert!(!universe.is_empty());
+    assert!(!universe.is_empty(), "universe should be non-empty");
 
     let idx1 = universe.index_of(&h1).expect("h1 was indexed");
     let idx2 = universe.index_of(&h2).expect("h2 was indexed");

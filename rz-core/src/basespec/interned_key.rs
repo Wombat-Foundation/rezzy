@@ -313,7 +313,10 @@ mod tests {
         assert_eq!(interner.len(), 1);
 
         interner.intern("m.room.create");
-        assert!(!interner.is_empty());
+        assert!(
+            !interner.is_empty(),
+            "interner should be non-empty after interning"
+        );
         assert_eq!(interner.len(), 2);
     }
 
