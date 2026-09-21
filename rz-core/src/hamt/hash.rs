@@ -58,14 +58,6 @@ pub const HAMT_CODEC_VERSION: u8 = 1;
 /// Current routing version (1 = full keyed structural hash routing).
 pub const HAMT_ROUTING_VERSION: u8 = 1;
 
-fn default_codec_version() -> u8 {
-    HAMT_CODEC_VERSION
-}
-
-fn default_routing_version_v1() -> u8 {
-    HAMT_ROUTING_VERSION
-}
-
 /// A resolved root handle carrying the local structural hash, global state-group identifier,
 /// and explicit codec/routing version metadata.
 ///

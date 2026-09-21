@@ -403,8 +403,8 @@ fn build_multi_fork_dag(
 }
 
 fn to_rezzy_lean(ev: &TestEvent) -> rezzy::LeanEvent {
-    let content_val: serde_json::Value =
-        serde_json::from_str(ev.content.get()).unwrap_or(serde_json::Value::Null);
+    let content_val: rezzy::JsonValue =
+        rezzy::JsonValue::parse(ev.content.get()).unwrap_or(rezzy::JsonValue::Null);
     let power_level = content_val
         .get("power_level")
         .and_then(rezzy::basespec::rezzy_types::coerce_json_to_i64)

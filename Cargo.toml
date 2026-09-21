@@ -158,10 +158,17 @@ cli = ["std", "rz-core/cli", "dep:rz-cli"]
 regen = ["std"]
 signing = ["rz-core/signing"]
 signing-dalek = ["rz-core/signing-dalek"]
-mock-ruma = ["rz-core/mock-ruma"]
+mock-ruma = [
+    "rz-core/mock-ruma",
+    "dep:ruma-common",
+    "dep:ruma-events",
+    "dep:ruma-signatures",
+    "dep:ruma-state-res",
+    "dep:serde_json",
+]
 stress = []
 hashing = []
-simd-json-bench = ["dep:simd-json"]
+simd-json-bench = ["dep:simd-json", "simd-json/serde_impl"]
 unstable-refcount-gc = ["rz-core/unstable-refcount-gc"]
 
 [dependencies]
@@ -174,6 +181,7 @@ ruma-state-res = { workspace = true, optional = true }
 rz-cli = { workspace = true, optional = true }
 rz-core.workspace = true
 rz-reconcile.workspace = true
+serde_json = { workspace = true, optional = true }
 sha2.workspace = true
 simd-json = { workspace = true, optional = true }
 

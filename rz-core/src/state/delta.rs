@@ -136,6 +136,7 @@ pub fn apply_state_delta<Id: crate::basespec::rezzy_types::EventId>(
 /// Returns `Err` with a static message if the input is not exactly 64 ASCII
 /// hex characters. This rejects non-ASCII UTF-8 up front, preventing panics
 /// from slicing inside multibyte character boundaries.
+#[cfg(test)]
 fn decode_hex_32(s: &str) -> Result<[u8; 32], &'static str> {
     if s.len() != 64 {
         return Err("expected 64-character hex string");

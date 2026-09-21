@@ -499,7 +499,6 @@ fn parse_jsonl_line(line: &str) -> LeanEvent {
 #[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_unredacted_spam_storm_v2_1_1() {
     use std::io::BufRead;
-    const CACHE_FORMAT_VERSION: &str = "1";
 
     let path = "res/remote-dag-sM2LwqNHGQOgLf35gqxPMy9D7oYde2q9ADg8HPBM3kE-v12-merged.jsonl";
 
@@ -522,52 +521,12 @@ fn test_unredacted_spam_storm_v2_1_1() {
                 }
             }
         }
-        let version_prefix = format!(
-            "LEAN_{}_FMT{}",
-            env!("CARGO_PKG_VERSION"),
-            CACHE_FORMAT_VERSION
-        );
-        let mut encoded = version_prefix.as_bytes().to_vec();
-        encoded.extend(bincode::serialize(&parsed_events).unwrap());
-        let _ = std::fs::write(format!("{path}.bincode"), encoded);
         Some(parsed_events)
     };
 
-    let cache_path = format!("{path}.bincode");
-    let events: Vec<LeanEvent> = if let Ok(bytes) = std::fs::read(&cache_path) {
-        let version_prefix = format!(
-            "LEAN_{}_FMT{}",
-            env!("CARGO_PKG_VERSION"),
-            CACHE_FORMAT_VERSION
-        );
-        let prefix_bytes = version_prefix.as_bytes();
-
-        if bytes.starts_with(prefix_bytes) {
-            let encoded = &bytes[prefix_bytes.len()..];
-            match bincode::deserialize::<Vec<LeanEvent>>(encoded) {
-                Ok(cached_events) => {
-                    println!("Loaded from Bincode cache");
-                    cached_events
-                }
-                Err(e) => {
-                    println!("Cache decode failed ({e}), rebuilding from JSONL");
-                    match load_from_jsonl() {
-                        Some(ev) => ev,
-                        None => return,
-                    }
-                }
-            }
-        } else {
-            match load_from_jsonl() {
-                Some(ev) => ev,
-                None => return,
-            }
-        }
-    } else {
-        match load_from_jsonl() {
-            Some(ev) => ev,
-            None => return,
-        }
+    let events: Vec<LeanEvent> = match load_from_jsonl() {
+        Some(ev) => ev,
+        None => return,
     };
 
     assert!(
