@@ -103,7 +103,6 @@ impl<T: Clone + Eq + core::hash::Hash + Ord + AsRef<str>> StateKey for T {}
 /// **Key invariant:** `users` in `m.room.power_levels` is preserved on redaction
 /// in ALL versions. Redaction alone cannot cause the PL wipeout vulnerability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 #[allow(non_camel_case_types)]
 pub enum StateResVersion {
     /// State Resolution V1 (room version 1).
@@ -118,6 +117,31 @@ pub enum StateResVersion {
     V2_2,
     /// Rezzy V3 — certified causal governance for `tk.nutra.cdo.12`.
     V3,
+}
+
+#[cfg(feature = "cli")]
+impl clap::ValueEnum for StateResVersion {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[
+            Self::V1,
+            Self::V2,
+            Self::V2_1,
+            Self::V2_1_1,
+            Self::V2_2,
+            Self::V3,
+        ]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(match self {
+            Self::V1 => clap::builder::PossibleValue::new("v1"),
+            Self::V2 => clap::builder::PossibleValue::new("v2"),
+            Self::V2_1 => clap::builder::PossibleValue::new("v2_1"),
+            Self::V2_1_1 => clap::builder::PossibleValue::new("v2_1_1"),
+            Self::V2_2 => clap::builder::PossibleValue::new("v2_2"),
+            Self::V3 => clap::builder::PossibleValue::new("v3"),
+        })
+    }
 }
 
 impl From<StateResVersion> for crate::json::Value {

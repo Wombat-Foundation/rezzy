@@ -266,7 +266,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2134bb3ea021b78629caa971416385309e0131b351b25e01dc16fb54e1b5fae"
 dependencies = [
  "clap_builder",
- "clap_derive",
 ]
 
 [[package]]
@@ -279,18 +278,6 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
-]
-
-[[package]]
-name = "clap_derive"
-version = "4.5.47"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbfd7eae0b0f1a6e63d4b13c9c478de77c2eb546fba158ad50b4203dc24b9f9c"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -728,12 +715,6 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
-
-[[package]]
-name = "heck"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hex"
@@ -1245,7 +1226,6 @@ dependencies = [
  "ruma-state-res",
  "rz-cli",
  "rz-core",
- "rz-reconcile",
  "serde_json",
  "sha2 0.10.9",
  "simd-json",
@@ -1433,7 +1413,6 @@ dependencies = [
  "roaring",
  "ruma-common",
  "ruma-events",
- "ruma-signatures",
  "ruma-state-res",
  "rz-json",
  "rz-reconcile",
