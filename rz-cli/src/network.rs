@@ -13,6 +13,11 @@
 // limitations under the License.
 
 /// Fetch the room state over the network.
+///
+/// # Errors
+///
+/// Returns an error when the request fails, the server returns a non-success
+/// status, or the response body is not valid JSON.
 pub fn fetch_room_state(
     homeserver: &str,
     room_id: &str,

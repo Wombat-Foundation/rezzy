@@ -75,6 +75,15 @@ pub struct Args {
 }
 
 /// Run the CLI application.
+///
+/// # Errors
+///
+/// Returns an error when input loading, parsing, or state resolution fails.
+///
+/// # Panics
+///
+/// Panics if an auth-chain index produced by the graph cannot be looked up in
+/// that same graph's index.
 #[allow(clippy::too_many_lines)]
 pub fn run_cli(args: &Args) -> Result<rz_core::JsonValue, error::AppError> {
     let input_val = load_or_fetch_input_value(args)?;
@@ -161,7 +170,7 @@ pub fn run_cli(args: &Args) -> Result<rz_core::JsonValue, error::AppError> {
             }
         }
         parsed = parsed.saturating_add(1);
-        if !args.quiet && parsed % progress_interval == 0 {
+        if !args.quiet && parsed.checked_rem(progress_interval) == Some(0) {
             eprintln!("[progress] parsed {parsed}/{event_count} events, {} in graph, {syntactically_rejected} rejected", events_map.len());
         }
     }
@@ -325,6 +334,12 @@ pub fn run_cli(args: &Args) -> Result<rz_core::JsonValue, error::AppError> {
     Ok(format_cli_output(&ctx))
 }
 
+/// Run the command-line entry point and write its JSON output.
+///
+/// # Panics
+///
+/// Panics if the output file cannot be created or written, or if the JSON
+/// output cannot be formatted.
 pub fn main_entry() {
     let args = Args::parse();
     match run_cli(&args) {

@@ -30,6 +30,10 @@ use std::time::Instant;
 pub type SharedStateMap = std::sync::Arc<ResolvedState>;
 
 /// Parse a room version string.
+///
+/// # Errors
+///
+/// Returns an error when the room version is unsupported.
 pub fn parse_room_version(ver: &str) -> Result<StateResVersion, AppError> {
     StateResVersion::from_room_version(ver).ok_or_else(|| {
         err!(
@@ -40,6 +44,11 @@ pub fn parse_room_version(ver: &str) -> Result<StateResVersion, AppError> {
 }
 
 /// Detect the room version from a state map.
+///
+/// # Errors
+///
+/// Returns an error when no create event is present or its room version is
+/// unsupported.
 pub fn detect_version(
     events: &[rz_core::JsonValue],
     debug: bool,
@@ -105,8 +114,8 @@ pub fn detect_room_version_string(events: &[rz_core::JsonValue]) -> Option<Strin
 /// A `|_| false` oracle means "known iff present in `events_map`".
 ///
 /// Returns `(backward_extremities, missing_auth_events)`.
-pub fn report_gaps<F>(
-    events_map: &HashMap<String, LeanEvent>,
+pub fn report_gaps<F, S: std::hash::BuildHasher>(
+    events_map: &HashMap<String, LeanEvent, S>,
     exists: F,
 ) -> (
     Vec<rz_core::state::BackwardExtremity<String>>,
@@ -148,6 +157,11 @@ pub fn compute_state_hash(state: &imbl::OrdMap<(EventType, String), String>) -> 
 }
 
 /// Load a JSON file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or its contents are invalid
+/// JSON (including an empty JSONL file).
 pub fn load_file(input_path: &PathBuf) -> Result<Vec<rz_core::JsonValue>, AppError> {
     let input_reader: Box<dyn Read> = if input_path.to_str() == Some("-") {
         Box::new(io::stdin())
@@ -206,6 +220,10 @@ pub fn load_file(input_path: &PathBuf) -> Result<Vec<rz_core::JsonValue>, AppErr
 }
 
 /// Load or fetch the input value from args.
+///
+/// # Errors
+///
+/// Returns an error if input cannot be read or the network request fails.
 pub fn load_or_fetch_input_value(args: &Args) -> Result<rz_core::JsonValue, AppError> {
     if let Some(room_id) = &args.room {
         let homeserver = args.homeserver.as_deref().ok_or_else(|| {
@@ -283,6 +301,11 @@ pub fn load_or_fetch_input_value(args: &Args) -> Result<rz_core::JsonValue, AppE
 }
 
 /// Parse input and extract the state heads.
+///
+/// # Errors
+///
+/// Returns an error when the input structure is unsupported, the `events`
+/// field is not an array, or a head is not a string.
 pub fn parse_and_extract_heads(
     input_val: &rz_core::JsonValue,
     debug: bool,
@@ -347,9 +370,9 @@ pub fn parse_and_extract_heads(
     }
 }
 
-fn collect_reachable_events<'a>(
+fn collect_reachable_events<'a, S: std::hash::BuildHasher>(
     start_id: &str,
-    events_map: &'a HashMap<String, LeanEvent>,
+    events_map: &'a HashMap<String, LeanEvent, S>,
 ) -> Vec<&'a LeanEvent> {
     let mut visited = std::collections::HashSet::new();
     let mut stack = vec![start_id.to_string()];
@@ -367,9 +390,9 @@ fn collect_reachable_events<'a>(
     reachable
 }
 
-fn build_state_map(
+fn build_state_map<S: std::hash::BuildHasher>(
     sorted_events: Vec<&LeanEvent>,
-    raw_map: &HashMap<String, rz_core::JsonValue>,
+    raw_map: &HashMap<String, rz_core::JsonValue, S>,
 ) -> HashMap<(EventType, String), String> {
     let mut state_map = HashMap::new();
     for ev in sorted_events {
@@ -389,10 +412,10 @@ fn build_state_map(
 
 /// Compute state maps for the given events.
 #[must_use]
-pub fn compute_state_maps(
+pub fn compute_state_maps<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     heads: &[String],
-    events_map: &HashMap<String, LeanEvent>,
-    raw_map: &HashMap<String, rz_core::JsonValue>,
+    events_map: &HashMap<String, LeanEvent, S1>,
+    raw_map: &HashMap<String, rz_core::JsonValue, S2>,
     debug: bool,
 ) -> Vec<HashMap<(EventType, String), String>> {
     if heads.len() <= 1 {
@@ -444,9 +467,9 @@ pub type ResolvedState = imbl::OrdMap<(EventType, String), String>;
 
 /// Resolve parent states for a set of events.
 #[must_use]
-pub fn resolve_parent_states(
+pub fn resolve_parent_states<S: std::hash::BuildHasher>(
     parent_states: &[SharedStateMap],
-    events_map: &HashMap<String, LeanEvent>,
+    events_map: &HashMap<String, LeanEvent, S>,
     version: StateResVersion,
     auth_graph: &rz_core::auth::roaring::AuthGraph,
 ) -> SharedStateMap {
@@ -500,11 +523,16 @@ pub fn resolve_parent_states(
 }
 
 /// Partition and resolve state across components.
+///
+/// # Panics
+///
+/// Panics only if an auth-chain bitmap contains an index absent from its own
+/// graph index.
 #[must_use]
-pub fn partition_and_resolve_state(
+pub fn partition_and_resolve_state<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     heads: &[String],
-    events_map: &HashMap<String, LeanEvent>,
-    state_maps: &[HashMap<(EventType, String), String>],
+    events_map: &HashMap<String, LeanEvent, S1>,
+    state_maps: &[HashMap<(EventType, String), String, S2>],
     version: StateResVersion,
     auth_graph: &rz_core::auth::roaring::AuthGraph,
 ) -> (ResolvedState, std::time::Duration) {
@@ -582,8 +610,8 @@ pub fn partition_and_resolve_state(
 }
 
 /// Apply global power levels to the state.
-pub fn apply_global_power_levels(
-    events_map: &mut HashMap<String, LeanEvent>,
+pub fn apply_global_power_levels<S: std::hash::BuildHasher>(
+    events_map: &mut HashMap<String, LeanEvent, S>,
     creator_user_id: &str,
     version: StateResVersion,
 ) {
@@ -617,7 +645,9 @@ pub fn apply_global_power_levels(
     let mut resolved_power_state = imbl::OrdMap::new();
     for id in sorted_power_ids {
         if let Some(ev) = power_events.get(&id) {
-            resolved_power_state.insert((ev.event_type.clone(), ev.state_key.clone().unwrap()), id);
+            if let Some(state_key) = &ev.state_key {
+                resolved_power_state.insert((ev.event_type.clone(), state_key.clone()), id);
+            }
         }
     }
 
@@ -650,6 +680,11 @@ pub fn apply_global_power_levels(
 }
 
 /// Convert epoch days to a YMD tuple.
+///
+/// # Panics
+///
+/// Panics if an intermediate date component cannot be represented by its
+/// destination integer type.
 #[must_use]
 pub fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
     let z = days.wrapping_add(719_468);
