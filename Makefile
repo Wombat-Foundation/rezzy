@@ -3,6 +3,7 @@ SHELL=/bin/bash
 
 LAKE ?= lake
 CARGO ?= cargo
+PYTHON ?= python3
 TEST_FEATURES ?=
 CARGO_FEATURE_ARGS ?= $(if $(TEST_FEATURES),--features $(TEST_FEATURES),)
 
@@ -38,8 +39,11 @@ lint: ##H Run all linters
 	$(CARGO) clippy --all-targets $(CARGO_FEATURE_ARGS)
 
 .PHONY: fix
-fix:	##H Clippy auto-fix
-	$(CARGO) clippy --allow-dirty --allow-staged --fix --lib --bins --tests $(CARGO_FEATURE_ARGS)
+fix:	##H Clippy auto-fix (per-package; workspace-wide --fix silently drops fixes)
+	@for pkg in $$($(CARGO) metadata --no-deps --format-version 1 | $(PYTHON) -c 'import json,sys; print(" ".join(p["name"] for p in json.load(sys.stdin)["packages"]))'); do \
+		echo "fix: $$pkg"; \
+		$(CARGO) clippy --allow-dirty --allow-staged --fix --lib --bins --tests -p $$pkg $(CARGO_FEATURE_ARGS); \
+	done
 
 
 .PHONY: doc

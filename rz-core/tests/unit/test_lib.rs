@@ -6421,7 +6421,7 @@ fn test_compute_state_at_v2_vs_v2_1_divergence() {
 
 #[test]
 fn state_resolution_versions_have_json_names() {
-    let versions = vec![
+    let versions = [
         StateResVersion::V1,
         StateResVersion::V2,
         StateResVersion::V2_1,
