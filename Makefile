@@ -39,7 +39,7 @@ lint: ##H Run all linters
 
 .PHONY: fix
 fix:	##H Clippy auto-fix
-	$(CARGO) clippy --allow-dirty --allow-staged --fix --all-targets $(CARGO_FEATURE_ARGS)
+	$(CARGO) clippy --allow-dirty --allow-staged --fix --lib --bins --tests $(CARGO_FEATURE_ARGS)
 
 
 .PHONY: doc
@@ -51,8 +51,8 @@ doc: ##H Build docs
 all: format lint check doc test install
 	@echo "all: done"
 
-# Ensure format runs before any target that reads source files
-lint check doc install: format
+# `all` sequences format before the rest; lint/check/doc/install must not
+# mutate source files as a side effect of running.
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Lean targets

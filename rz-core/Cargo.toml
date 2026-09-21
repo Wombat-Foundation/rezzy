@@ -27,6 +27,7 @@ mock-ruma = [
     "dep:ruma-events",
     "dep:ruma-state-res",
     "dep:ruma-signatures",
+    "dep:serde",
 ]
 stress = []
 hashing = []
@@ -51,16 +52,15 @@ ruma-common = { workspace = true, optional = true }
 ruma-events = { workspace = true, optional = true }
 ruma-signatures = { workspace = true, optional = true }
 ruma-state-res = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64.workspace = true
-bincode.workspace = true
 ed25519-consensus.workspace = true
 hashbrown.workspace = true
 imbl.workspace = true
 insta.workspace = true
 rand_08.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 similar.workspace = true
