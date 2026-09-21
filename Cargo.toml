@@ -167,7 +167,7 @@ mock-ruma = [
 ]
 stress = []
 hashing = []
-simd-json-bench = ["dep:simd-json", "simd-json/serde_impl"]
+simd-json-bench = []
 unstable-refcount-gc = ["rz-core/unstable-refcount-gc"]
 
 [dependencies]
@@ -182,7 +182,6 @@ rz-core.workspace = true
 rz-reconcile.workspace = true
 serde_json = { workspace = true, optional = true }
 sha2.workspace = true
-simd-json = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64.workspace = true
@@ -195,7 +194,7 @@ rand_08.workspace = true
 roaring.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-simd-json.workspace = true
+simd-json = { workspace = true, features = ["serde_impl"] }
 similar.workspace = true
 test-case.workspace = true
 test-log.workspace = true
