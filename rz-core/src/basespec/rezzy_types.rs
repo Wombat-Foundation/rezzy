@@ -2859,7 +2859,12 @@ fn room_version_is_v12_or_later(room_version: &str) -> bool {
 ///
 /// Shared by the `sender` check and, for V12+ rooms, `additional_creators`
 /// entries — both are held to the same grammar per MSC4289.
-pub(crate) fn is_valid_mxid(id: &str) -> bool {
+///
+/// Exposed so downstream adapters that keep JSON in another value type (e.g. a
+/// `serde_json::Value` tree) can enforce the identical grammar without copying
+/// it.
+#[must_use]
+pub fn is_valid_mxid(id: &str) -> bool {
     let Some((localpart, domain)) = id.strip_prefix('@').and_then(|rest| rest.split_once(':'))
     else {
         return false;
@@ -3637,16 +3642,30 @@ impl<E: EventLike> PartialOrd for SortPriority<'_, E> {
 /// and strings in the JSON, which is why `rezzy` has this `coerce_json_to_i64`
 /// function in the first place!
 #[must_use]
-// Truncating a legacy float power level toward zero is intentional, and Rust's
-// `f64 as i64` is saturating (no UB out of range), so the casts are deliberate.
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
-    let val = pl
-        .as_i64()
-        .or_else(|| pl.as_u64().map(|u| i64::try_from(u).unwrap_or(i64::MAX)))
+    coerce_json_integer_parts(pl.as_i64(), pl.as_u64(), pl.as_f64(), pl.as_str())
+}
+
+/// Apply Rezzy's power-level integer coercion to primitive JSON accessor results.
+///
+/// This lets adapters for other JSON value types share the exact integer,
+/// unsigned, float, and string coercion rules without converting an entire
+/// value tree into [`Value`]: call it with the adapter's own
+/// `as_i64`/`as_u64`/`as_f64`/`as_str` results for the one scalar being read.
+#[must_use]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+pub fn coerce_json_integer_parts(
+    signed: Option<i64>,
+    unsigned: Option<u64>,
+    float: Option<f64>,
+    string: Option<&str>,
+) -> Option<i64> {
+    let val = signed
+        .or_else(|| unsigned.map(|u| i64::try_from(u).unwrap_or(i64::MAX)))
         // Legacy float power levels (e.g. 50.0) — truncate toward zero.
         .or_else(|| {
-            pl.as_f64().and_then(|f| {
+            float.and_then(|f| {
                 // `Number::from_f64(...).as_i64()` can't be used here: serde_json
                 // returns `None` for float-backed numbers. Truncate the f64 and
                 // range-check before casting instead.
@@ -3654,7 +3673,7 @@ pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
                 (t >= i64::MIN as f64 && t <= i64::MAX as f64).then_some(t as i64)
             })
         })
-        .or_else(|| pl.as_str().and_then(|s| s.parse::<i64>().ok()));
+        .or_else(|| string.and_then(|s| s.parse::<i64>().ok()));
     // Matrix Spec (Client-Server API) — m.room.power_levels:
     // "The power level ... must be an integer between -2^53 + 1 and 2^53 - 1."
     val.map(|v| v.clamp(-MAX_POWER_LEVEL_JSON, MAX_POWER_LEVEL_JSON))
