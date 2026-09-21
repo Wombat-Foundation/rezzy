@@ -35,6 +35,7 @@ pub struct FormattingContext<'a> {
 }
 
 /// Format the output for deltas.
+#[allow(clippy::too_many_lines)]
 #[must_use]
 pub fn format_deltas_output(ctx: &FormattingContext) -> rz_core::JsonValue {
     let debug = ctx.args.debug;
@@ -58,7 +59,7 @@ pub fn format_deltas_output(ctx: &FormattingContext) -> rz_core::JsonValue {
 
     for ev in &sorted_events {
         processed = processed.saturating_add(1);
-        if debug && processed % progress_interval == 0 {
+        if debug && processed.checked_rem(progress_interval) == Some(0) {
             eprintln!(
                 "[DEBUG] deltas: {processed}/{total} events walked ({fork_count} forks resolved, {:.2?} spent in state-res) elapsed {:.2?}",
                 fork_time,
@@ -116,13 +117,10 @@ pub fn format_deltas_output(ctx: &FormattingContext) -> rz_core::JsonValue {
         }
 
         let mut state_after = state_before.clone();
-        if ev.state_key.is_some() {
+        if let Some(state_key) = &ev.state_key {
             let mut modified = state_before.as_ref().clone();
             modified.insert(
-                (
-                    EventType::from(ev.event_type.clone()),
-                    ev.state_key.clone().unwrap(),
-                ),
+                (EventType::from(ev.event_type.clone()), state_key.clone()),
                 ev.event_id.clone(),
             );
             state_after = std::sync::Arc::new(modified);
@@ -188,7 +186,7 @@ pub fn format_deltas_output(ctx: &FormattingContext) -> rz_core::JsonValue {
 /// Compute the roots of the components.
 #[must_use]
 pub fn compute_component_roots(
-    events_map: &HashMap<String, LeanEvent>,
+    events_map: &HashMap<String, LeanEvent, impl std::hash::BuildHasher>,
     include_prev: bool,
     include_auth: bool,
 ) -> Vec<String> {
@@ -383,7 +381,10 @@ fn format_resolve_state_output(ctx: &FormattingContext) -> rz_core::JsonValue {
 
 /// Get a user's display name.
 #[must_use]
-pub fn get_user_displayname(user_id: &str, displaynames: &HashMap<String, String>) -> String {
+pub fn get_user_displayname(
+    user_id: &str,
+    displaynames: &HashMap<String, String, impl std::hash::BuildHasher>,
+) -> String {
     displaynames.get(user_id).cloned().unwrap_or_else(|| {
         user_id
             .split(':')
@@ -399,7 +400,7 @@ pub fn get_user_displayname(user_id: &str, displaynames: &HashMap<String, String
 pub fn format_event_description(
     ev: &LeanEvent,
     sender: &str,
-    displaynames: &HashMap<String, String>,
+    displaynames: &HashMap<String, String, impl std::hash::BuildHasher>,
 ) -> Option<String> {
     match ev.event_type.as_str() {
         "m.room.create" => Some(format!("{sender} sent m.room.create state event")),
