@@ -480,11 +480,11 @@ fn parse_jsonl_line(line: &str) -> LeanEvent {
     let val: rz_core::JsonValue = rz_core::JsonValue::parse(line)
         .unwrap_or_else(|e| panic!("Failed to parse line as JSON: {e}. Line: {line}"));
     if let Some(source) = val.get("_source") {
-        utils::parse_event_value(source).unwrap_or_else(|e| {
+        LeanEvent::from_value(source, None).unwrap_or_else(|e| {
             panic!("Failed to parse '_source' field as LeanEvent: {e}. Line: {line}")
         })
     } else if let Some(event) = val.get("event") {
-        utils::parse_event_value(event).unwrap_or_else(|e| {
+        LeanEvent::from_value(event, None).unwrap_or_else(|e| {
             panic!("Failed to parse 'event' field as LeanEvent: {e}. Line: {line}")
         })
     } else {
