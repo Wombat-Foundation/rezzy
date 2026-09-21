@@ -35,6 +35,7 @@ pub struct FormattingContext<'a> {
 }
 
 /// Format the output for deltas.
+#[must_use]
 pub fn format_deltas_output(ctx: &FormattingContext) -> rz_core::JsonValue {
     let debug = ctx.args.debug;
     let total = ctx.event_count;
@@ -185,6 +186,7 @@ pub fn format_deltas_output(ctx: &FormattingContext) -> rz_core::JsonValue {
 }
 
 /// Compute the roots of the components.
+#[must_use]
 pub fn compute_component_roots(
     events_map: &HashMap<String, LeanEvent>,
     include_prev: bool,
@@ -380,6 +382,7 @@ fn format_resolve_state_output(ctx: &FormattingContext) -> rz_core::JsonValue {
 }
 
 /// Get a user's display name.
+#[must_use]
 pub fn get_user_displayname(user_id: &str, displaynames: &HashMap<String, String>) -> String {
     displaynames.get(user_id).cloned().unwrap_or_else(|| {
         user_id
@@ -392,6 +395,7 @@ pub fn get_user_displayname(user_id: &str, displaynames: &HashMap<String, String
 }
 
 /// Format an event description.
+#[must_use]
 pub fn format_event_description(
     ev: &LeanEvent,
     sender: &str,
@@ -639,6 +643,7 @@ fn render_timeline(ctx: &FormattingContext) -> String {
 }
 
 /// Format the timeline output, printing the rendered timeline to stderr.
+#[must_use]
 pub fn format_timeline_output(ctx: &FormattingContext) -> rz_core::JsonValue {
     eprint!("{}", render_timeline(ctx));
     rz_core::json!({
@@ -649,6 +654,7 @@ pub fn format_timeline_output(ctx: &FormattingContext) -> rz_core::JsonValue {
 }
 
 /// Format the main CLI output.
+#[must_use]
 pub fn format_cli_output(ctx: &FormattingContext) -> rz_core::JsonValue {
     match ctx.args.format {
         OutputFormat::Deltas => format_deltas_output(ctx),

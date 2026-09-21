@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::string::String;
 use std::vec::Vec;
 
-/// Per-file reference index: own event_ids plus every id the file *mentions*.
+/// Per-file reference index: own `event_ids` plus every id the file *mentions*.
 struct FileRefs {
     /// Top-level `event_id` values owned by this file.
     event_ids: HashSet<String>,
