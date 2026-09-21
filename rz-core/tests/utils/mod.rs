@@ -2,6 +2,7 @@ use rz_core::basespec::rezzy_types::LeanEvent;
 use rz_core::basespec::rezzy_types::RoomId;
 use std::collections::HashMap;
 
+#[allow(dead_code)] // Shared test helper; the oracle regeneration binary does not use it.
 pub fn parse_event_json(input: &str) -> Result<LeanEvent, String> {
     let value = rz_core::JsonValue::parse(input).map_err(|error| error.to_string())?;
     LeanEvent::from_value(&value, None)
