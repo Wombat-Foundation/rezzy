@@ -192,7 +192,7 @@ fn test_msc4242_rejects_legacy_auth_events_field() {
         "content": {"membership": "join"}
     });
     let err = LeanEvent::from_value(&raw, Some("org.matrix.msc4242.12")).unwrap_err();
-    assert!(err.to_string().contains("auth_events is not permitted"));
+    assert!(err.clone().contains("auth_events is not permitted"));
 }
 
 #[test]

@@ -685,7 +685,7 @@ fn redact_content(content: &Value, rule: RedactionRule) -> Value {
                             }
                         }
                     }
-                } else if let Some(v) = content.get(*path) {
+                } else if let Some(v) = content.get(path) {
                     out.insert((*path).to_string(), v.clone());
                 }
             }
@@ -1357,8 +1357,7 @@ pub fn ingest_events(
     for pdu in pdus {
         // TODO: `?` here is reachable (malformed PDU) — candidate to soften
         // into a `Warning` + skip rather than abort the whole batch.
-        let mut event =
-            LeanEvent::from_value(pdu, Some(room_version)).map_err(|e| e.to_string())?;
+        let mut event = LeanEvent::from_value(pdu, Some(room_version)).map_err(|e| e.clone())?;
         event.room_id.clone_from(&shared_room_id);
         events.push(event);
     }
