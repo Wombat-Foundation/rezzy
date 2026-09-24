@@ -146,11 +146,9 @@ simd-json-bench = []
 unstable-refcount-gc = ["rz-core/unstable-refcount-gc"]
 
 [dependencies]
-base64.workspace = true
 imbl.workspace = true
 rz-cli = { workspace = true, optional = true }
 rz-core.workspace = true
-sha2.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
