@@ -52,6 +52,8 @@ pub enum ErrorCode {
     InvalidHeadType,
     /// Network / HTTP error when fetching room state.
     NetworkError,
+    /// An aggregate does not match its raw inputs or manifest.
+    AggregateStale,
 }
 
 impl ErrorCode {
@@ -74,6 +76,7 @@ impl ErrorCode {
             Self::EventsNotArray => "E012_EVENTS_NOT_ARRAY",
             Self::InvalidHeadType => "E013_INVALID_HEAD_TYPE",
             Self::NetworkError => "E014_NETWORK_ERROR",
+            Self::AggregateStale => "E015_AGGREGATE_STALE",
         }
     }
 }
@@ -182,6 +185,7 @@ mod tests {
         assert_eq!(ErrorCode::EventsNotArray.code(), "E012_EVENTS_NOT_ARRAY");
         assert_eq!(ErrorCode::InvalidHeadType.code(), "E013_INVALID_HEAD_TYPE");
         assert_eq!(ErrorCode::NetworkError.code(), "E014_NETWORK_ERROR");
+        assert_eq!(ErrorCode::AggregateStale.code(), "E015_AGGREGATE_STALE");
     }
 
     #[test]

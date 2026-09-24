@@ -1,0 +1,35 @@
+# Raw JSONL and aggregates
+
+Keep downloaded or otherwise unmerged event files in `unmerged/`. Treat them as
+immutable evidence. `rezzy aggregate` creates a derived, sorted event set in
+`merged/` and records the exact input files and hashes in a manifest.
+
+For one room:
+
+```sh
+cargo run --release --bin rezzy -- aggregate \
+  --input-dir unmerged \
+  --room c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk \
+  --output merged/merged-c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk.jsonl \
+  --manifest merged/merged-c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk.manifest.json
+```
+
+The command deduplicates by `event_id`, retains the first copy from the
+lexically sorted input files, and sorts the result by `depth`,
+`origin_server_ts`, and `event_id`. It never modifies `unmerged/`.
+
+After new raw files arrive, rerun the same command to update the aggregate. To
+check whether it needs updating without writing anything:
+
+```sh
+cargo run --release --bin rezzy -- aggregate \
+  --input-dir unmerged \
+  --room c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk \
+  --output merged/merged-c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk.jsonl \
+  --manifest merged/merged-c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk.manifest.json \
+  --check
+```
+
+`--check` exits successfully only when both the aggregate bytes and manifest
+match the current raw inputs. The existing multi-`--input` resolution path is
+unchanged; use the aggregate command when you want a persisted artifact.
