@@ -26,10 +26,9 @@ retains identical duplicates only once, rejects conflicting payloads, and sorts
 the result by `depth`, `origin_server_ts`, and `event_id`. It never modifies
 `unmerged/`.
 
-Use `--output` instead of `--output-dir` for an unusual destination. The output
-is excluded from input discovery, but the input and output directories must be
-different. This prevents an old aggregate from being discovered as another
-matching input after the output name changes.
+Use `--output` instead of `--output-dir` for an unusual destination. The input
+and output directories must be different. This prevents an old aggregate from
+being discovered as another matching input after the output name changes.
 
 The room slug must identify one filename family. Matching inputs must either all
 be unversioned or all contain the same delimiter-bounded `-v<number>` token.
