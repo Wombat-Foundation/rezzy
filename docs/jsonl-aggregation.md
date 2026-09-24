@@ -25,11 +25,21 @@ If the same `event_id` appears with different payloads, aggregation fails
 instead of selecting one arbitrarily. Use `--allow-conflicts` to retain the
 first copy intentionally; the choice is recorded in the manifest. Identical
 duplicate copies are retained only once and counted separately from conflicting
-copies in the manifest.
+copies in the manifest; conflicting copies are included in the duplicate total.
+The `--allow-conflicts` setting is part of the manifest, so `--check` must use
+the same setting. The manifest records the rezzy version for provenance, but
+version changes alone do not make an otherwise identical aggregate stale.
 
 Output and manifest files are written through temporary files, synced, and
 renamed separately. A crash between those two renames can leave a detectable
 mismatch; `--check` reports it as stale so the pair can be regenerated.
+Temporary files are created beside their targets and may remain as `.tmp-*`
+orphans after a process crash; they are safe to remove after confirming no
+aggregation process is running.
+
+Durability warnings are included in the successful JSON result under
+`warnings`; they are also printed to stderr unless `--quiet` is used. The
+`--allow-conflicts` setting must match when running `--check`.
 
 After new raw files arrive, rerun the same command to update the aggregate. To
 check whether it needs updating without writing anything:

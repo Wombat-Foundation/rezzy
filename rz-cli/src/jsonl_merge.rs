@@ -192,30 +192,39 @@ pub fn merge_event_sets(
     debug: bool,
     quiet: bool,
 ) -> Result<Vec<rz_core::JsonValue>, AppError> {
-    Ok(merge_event_sets_internal(file_sets, debug, quiet, false)?.events)
+    Ok(merge_event_sets_internal(
+        file_sets,
+        MergeOptions {
+            debug,
+            quiet,
+            conflict_mode: ConflictMode::Allow,
+            collect_stats: false,
+        },
+    )?
+    .events)
 }
 
 /// Details from merging borrowed event slices.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct MergeResult {
     pub events: Vec<rz_core::JsonValue>,
     pub duplicate_copies: usize,
     pub conflicting_copies: usize,
 }
 
-/// Merge borrowed event slices, optionally rejecting conflicting duplicate IDs.
-///
-/// # Errors
-///
-/// Returns an error for disjoint DAGs or, when requested, conflicting duplicate
-/// event IDs.
-pub fn merge_event_slices(
-    file_sets: &[(String, &[rz_core::JsonValue])],
+#[derive(Clone, Copy)]
+enum ConflictMode {
+    Allow,
+    Reject,
+}
+
+#[derive(Clone, Copy)]
+struct MergeOptions {
     debug: bool,
     quiet: bool,
-    reject_conflicts: bool,
-) -> Result<Vec<rz_core::JsonValue>, AppError> {
-    Ok(merge_event_sets_internal(file_sets, debug, quiet, reject_conflicts)?.events)
+    conflict_mode: ConflictMode,
+    collect_stats: bool,
 }
 
 /// Merge borrowed event slices and return duplicate statistics.
@@ -230,14 +239,24 @@ pub fn merge_event_slices_with_stats(
     quiet: bool,
     reject_conflicts: bool,
 ) -> Result<MergeResult, AppError> {
-    merge_event_sets_internal(file_sets, debug, quiet, reject_conflicts)
+    merge_event_sets_internal(
+        file_sets,
+        MergeOptions {
+            debug,
+            quiet,
+            conflict_mode: if reject_conflicts {
+                ConflictMode::Reject
+            } else {
+                ConflictMode::Allow
+            },
+            collect_stats: true,
+        },
+    )
 }
 
 fn merge_event_sets_internal<I: AsRef<[rz_core::JsonValue]>>(
     file_sets: &[(String, I)],
-    debug: bool,
-    quiet: bool,
-    reject_conflicts: bool,
+    options: MergeOptions,
 ) -> Result<MergeResult, AppError> {
     let num_files = file_sets.len();
     let mut seen_ids: HashMap<String, usize> = HashMap::new();
@@ -267,9 +286,9 @@ fn merge_event_sets_internal<I: AsRef<[rz_core::JsonValue]>>(
 
             if let Some(&first_index) = seen_ids.get(&event_id) {
                 duplicate_copies = duplicate_copies.saturating_add(1);
-                if merged[first_index] != *val {
+                if options.collect_stats && merged[first_index] != *val {
                     conflicting_copies = conflicting_copies.saturating_add(1);
-                    if reject_conflicts {
+                    if matches!(options.conflict_mode, ConflictMode::Reject) {
                         bail_code!(
                             ErrorCode::AggregateConflict,
                             "event_id {} has different payloads in input file {}",
@@ -286,7 +305,7 @@ fn merge_event_sets_internal<I: AsRef<[rz_core::JsonValue]>>(
             }
         }
 
-        if !quiet {
+        if !options.quiet {
             std::eprintln!(
                 "[merge] {:<50} {:>6} {:>6} {:>6}  {:>5} {:>6} {:>7} {:>6} {:>5}",
                 label,
@@ -319,18 +338,18 @@ fn merge_event_sets_internal<I: AsRef<[rz_core::JsonValue]>>(
             shared_ids.len()
         };
 
-        if !quiet {
+        if !options.quiet {
             std::eprintln!(
                 "[merge] merge-base: {total_shared} shared refs across {num_files} inputs"
             );
         }
 
-        if debug {
+        if options.debug {
             report_highest_shared_depths(&per_file_refs, &merged);
         }
     }
 
-    if !quiet {
+    if !options.quiet {
         std::eprintln!("[merge] total: {} unique events", merged.len());
     }
 

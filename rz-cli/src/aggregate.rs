@@ -286,7 +286,7 @@ fn manifest_value(
     })
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<Option<String>, AppError> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -299,6 +299,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
     let temp = parent.join(format!(".{name}.tmp-{}-{nonce}", std::process::id()));
+    let mut warning = None;
     let result = (|| {
         let mut file = fs::OpenOptions::new()
             .write(true)
@@ -307,18 +308,19 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
         file.write_all(bytes)?;
         file.sync_all()?;
         fs::rename(&temp, path)?;
+        #[cfg(unix)]
         if let Err(error) = fs::File::open(parent).and_then(|directory| directory.sync_all()) {
-            eprintln!(
-                "[WARN] committed {} but directory fsync failed: {error}",
+            warning = Some(format!(
+                "committed {} but directory fsync failed: {error}",
                 path.display()
-            );
+            ));
         }
         Ok::<(), std::io::Error>(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     }
-    result.map_err(AppError::from)
+    result.map(|()| warning).map_err(AppError::from)
 }
 
 fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
@@ -373,8 +375,12 @@ fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
         }
         let mut expected_for_check = manifest.clone();
         let mut parsed_for_check = parsed.clone();
-        expected_for_check["tool_version"] = rz_core::JsonValue::Null;
-        parsed_for_check["tool_version"] = rz_core::JsonValue::Null;
+        if let Some(object) = expected_for_check.as_object_mut() {
+            object.remove("tool_version");
+        }
+        if let Some(object) = parsed_for_check.as_object_mut() {
+            object.remove("tool_version");
+        }
         if existing_output != output || parsed_for_check != expected_for_check {
             return Err(AppError::new(
                 ErrorCode::AggregateStale,
@@ -392,10 +398,21 @@ fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
     if let Some(parent) = options.manifest.parent() {
         fs::create_dir_all(parent)?;
     }
-    write_atomic(&options.output, &output)?;
-    write_atomic(&options.manifest, &json_bytes(&manifest)?)?;
+    let mut warnings = Vec::new();
+    if let Some(warning) = write_atomic(&options.output, &output)? {
+        if !options.quiet {
+            eprintln!("[WARN] {warning}");
+        }
+        warnings.push(warning);
+    }
+    if let Some(warning) = write_atomic(&options.manifest, &json_bytes(&manifest)?)? {
+        if !options.quiet {
+            eprintln!("[WARN] {warning}");
+        }
+        warnings.push(warning);
+    }
     Ok(
-        rz_core::json!({"status": "written", "output": options.output.to_string_lossy().to_string(), "manifest": options.manifest.to_string_lossy().to_string(), "unique_events": events.len(), "input_files": files.len(), "duplicate_event_copies": merge.duplicate_copies, "conflicting_event_copies": merge.conflicting_copies}),
+        rz_core::json!({"status": "written", "output": options.output.to_string_lossy().to_string(), "manifest": options.manifest.to_string_lossy().to_string(), "unique_events": events.len(), "input_files": files.len(), "duplicate_event_copies": merge.duplicate_copies, "conflicting_event_copies": merge.conflicting_copies, "warnings": warnings}),
     )
 }
 
@@ -502,17 +519,26 @@ mod tests {
             aggregate(&options(&root, true)).unwrap()["status"],
             "current"
         );
+        let manifest_path = root.join("merged/room.manifest.json");
+        let mut versioned_manifest =
+            rz_core::JsonValue::parse_bytes(&fs::read(&manifest_path).unwrap()).unwrap();
+        versioned_manifest["tool_version"] = rz_core::json!("older-rezzy");
+        fs::write(&manifest_path, json_bytes(&versioned_manifest).unwrap()).unwrap();
+        assert_eq!(
+            aggregate(&options(&root, true)).unwrap()["status"],
+            "current"
+        );
         fs::remove_file(root.join("merged/room.manifest.json")).unwrap();
         assert_eq!(
             aggregate(&options(&root, true)).unwrap_err().code(),
             ErrorCode::AggregateStale
         );
         aggregate(&options(&root, false)).unwrap();
-        let manifest_path = root.join("merged/room.manifest.json");
+        let old_manifest_path = root.join("merged/room.manifest.json");
         let mut old_manifest =
-            rz_core::JsonValue::parse_bytes(&fs::read(&manifest_path).unwrap()).unwrap();
+            rz_core::JsonValue::parse_bytes(&fs::read(&old_manifest_path).unwrap()).unwrap();
         old_manifest["manifest_version"] = rz_core::json!(2);
-        fs::write(&manifest_path, json_bytes(&old_manifest).unwrap()).unwrap();
+        fs::write(&old_manifest_path, json_bytes(&old_manifest).unwrap()).unwrap();
         let old_version = aggregate(&options(&root, true)).unwrap_err();
         assert!(old_version
             .to_string()
@@ -579,6 +605,28 @@ mod tests {
         let report = aggregate(&permissive).unwrap();
         assert_eq!(report["duplicate_event_copies"].as_u64(), Some(1));
         assert_eq!(report["conflicting_event_copies"].as_u64(), Some(1));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn conflicting_duplicate_ids_within_one_file_are_reported() {
+        let root = unique_test_dir();
+        let raw_dir = root.join("unmerged");
+        fs::create_dir_all(&raw_dir).unwrap();
+        let first = event("$same", 1, 100, &[]);
+        let mut second = first.clone();
+        second["origin_server_ts"] = rz_core::json!(101);
+        let first_line = rz_core::json::write_string_value(&first).unwrap();
+        let second_line = rz_core::json::write_string_value(&second).unwrap();
+        fs::write(
+            raw_dir.join("room-single.jsonl"),
+            format!("{first_line}\n{second_line}\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            aggregate(&options(&root, false)).unwrap_err().code(),
+            ErrorCode::AggregateConflict
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }
