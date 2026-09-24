@@ -3,7 +3,7 @@
 //! Minisketch reconciliation helpers (MSC4521).
 //!
 //! This crate is independent of the core state resolution engine and depends
-//! only on `base64`, `sha2`, `serde_json`, and the `EventId` trait alias it
+//! only on `base64`, `sha2`, and the local `EventId` trait alias it
 //! defines locally.
 
 #[cfg(feature = "std")]
