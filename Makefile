@@ -30,6 +30,7 @@ format: ##H Format codebase (Rust + Lean + scripts)
 .PHONY: check
 check:	##H Cargo check and code dupe
 	$(CARGO) check --all-targets --all-features
+	cd benches/ && $(CARGO) check --all-targets --all-features
 	-jscpd $$(git ls-files '*.rs')
 	# $(CARGO) fix --all-targets --allow-dirty
 
