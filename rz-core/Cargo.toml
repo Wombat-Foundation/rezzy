@@ -22,7 +22,6 @@ cli = ["std", "dep:clap"]
 regen = ["std"]
 signing = ["signing-dalek"]
 signing-dalek = ["dep:ed25519-dalek"]
-mock-ruma = ["dep:ruma-common", "dep:ruma-events", "dep:ruma-state-res", "dep:serde"]
 stress = []
 hashing = []
 unstable-refcount-gc = []
@@ -42,10 +41,6 @@ sha3.workspace = true
 # Optional
 clap = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
-ruma-common = { workspace = true, optional = true }
-ruma-events = { workspace = true, optional = true }
-ruma-state-res = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64.workspace = true
@@ -54,8 +49,8 @@ hashbrown.workspace = true
 imbl.workspace = true
 insta.workspace = true
 rand_08.workspace = true
-serde_json.workspace = true
 sha2.workspace = true
+simd-json.workspace = true
 similar.workspace = true
 test-case.workspace = true
 test-log.workspace = true
@@ -89,11 +84,6 @@ get_unwrap = "warn"
 [[test]]
 name = "unit"
 path = "tests/unit/main.rs"
-
-[[test]]
-name = "test_resolve"
-path = "tests/test_resolve.rs"
-required-features = ["mock-ruma"]
 
 [[test]]
 name = "test_snapshots"

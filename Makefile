@@ -137,6 +137,7 @@ rust/coverage-html: ##H Run code coverage and generate HTML report
 .PHONY: rust/clean
 rust/clean: ##H Remove Rust build artifacts
 	-$(CARGO) clean
+	-cd benches/ && $(CARGO) clean
 	rm -rf .coverage/
 
 .PHONY: rust/install
