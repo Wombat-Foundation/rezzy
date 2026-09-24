@@ -408,12 +408,20 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn event(id: &str, depth: u64, ts: u64, prev_events: &[&str]) -> rz_core::JsonValue {
-        rz_core::json!({"event_id": id, "type": "m.room.message", "sender": "@alice:example.org", "origin_server_ts": ts, "depth": depth, "prev_events": prev_events, "auth_events": []})
+        rz_core::json!({
+            "event_id": id,
+            "type": "m.room.message",
+            "sender": "@alice:example.org",
+            "origin_server_ts": ts,
+            "depth": depth,
+            "prev_events": prev_events,
+            "auth_events": []
+        })
     }
     fn unique_test_dir() -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("system clock is after the Unix epoch")
             .as_nanos();
         std::env::temp_dir().join(format!(
             "rezzy-aggregate-test-{}-{nanos}",
@@ -530,10 +538,11 @@ mod tests {
     }
 
     #[test]
-    fn atomic_write_requires_a_valid_parent() {
+    fn atomic_write_rejects_missing_parent_without_target() {
         let root = unique_test_dir();
         let error = write_atomic(&root.join("missing/aggregate.jsonl"), b"test").unwrap_err();
         assert_eq!(error.code(), ErrorCode::IoError);
+        assert!(!root.join("missing/aggregate.jsonl").exists());
     }
     #[test]
     fn conflicting_duplicate_ids_fail() {
