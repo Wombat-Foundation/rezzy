@@ -440,6 +440,26 @@ pub fn run_cli(args: &Args) -> Result<rz_core::JsonValue, error::AppError> {
 pub fn main_entry() {
     let matches = cli_command().get_matches();
     if let Some(("aggregate", aggregate_matches)) = matches.subcommand() {
+        for id in [
+            "input",
+            "room",
+            "homeserver",
+            "token",
+            "output",
+            "state_res",
+            "format",
+            "debug",
+            "quiet",
+            "check",
+            "origin",
+        ] {
+            if matches.value_source(id) == Some(clap::parser::ValueSource::CommandLine) {
+                eprintln!(
+                    "Error: --{id} belongs after the aggregate subcommand; use `rezzy aggregate --help`"
+                );
+                std::process::exit(2);
+            }
+        }
         match aggregate::run_from_matches(aggregate_matches) {
             Ok(output) => {
                 let pretty = rz_core::json::write_string_pretty(&output)

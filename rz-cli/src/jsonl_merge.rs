@@ -193,7 +193,7 @@ pub fn merge_event_sets(
     quiet: bool,
 ) -> Result<Vec<rz_core::JsonValue>, AppError> {
     let num_files = file_sets.len();
-    let mut seen_ids: HashSet<String> = HashSet::new();
+    let mut seen_ids: HashMap<String, rz_core::JsonValue> = HashMap::new();
     let mut merged: Vec<rz_core::JsonValue> = Vec::new();
     let mut per_file_refs: Vec<FileRefs> = Vec::with_capacity(num_files);
 
@@ -215,11 +215,20 @@ pub fn merge_event_sets(
 
             collect_refs(val, &mut refs, &event_id);
 
-            if seen_ids.insert(event_id) {
+            if let Some(first) = seen_ids.get(&event_id) {
+                if first != val {
+                    bail_code!(
+                        ErrorCode::AggregateConflict,
+                        "event_id {} has different payloads in input file {}",
+                        event_id,
+                        label
+                    );
+                }
+                dupes = dupes.saturating_add(1);
+            } else {
+                seen_ids.insert(event_id, val.clone());
                 merged.push(val.clone());
                 added = added.saturating_add(1);
-            } else {
-                dupes = dupes.saturating_add(1);
             }
         }
 
