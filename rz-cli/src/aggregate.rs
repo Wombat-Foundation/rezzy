@@ -178,6 +178,7 @@ fn output_bytes(events: &[rz_core::JsonValue]) -> Result<Vec<u8>, AppError> {
 struct RawInput {
     label: String,
     bytes: Vec<u8>,
+    lines: usize,
     events: Vec<rz_core::JsonValue>,
 }
 
@@ -189,7 +190,9 @@ fn read_raw_input(path: &Path, input_dir: &Path) -> Result<RawInput, AppError> {
         .to_string_lossy()
         .into_owned();
     let mut events = Vec::new();
+    let mut lines = 0usize;
     for line in bytes.split(|byte| *byte == b'\n') {
+        lines = lines.saturating_add(1);
         let line = std::str::from_utf8(line)
             .map_err(|e| AppError::new(ErrorCode::MalformedJson, format!("{label}: {e}")))?
             .trim();
@@ -207,11 +210,11 @@ fn read_raw_input(path: &Path, input_dir: &Path) -> Result<RawInput, AppError> {
     Ok(RawInput {
         label,
         bytes,
+        lines,
         events,
     })
 }
 
-#[allow(clippy::naive_bytecount)]
 fn manifest_value(
     inputs: &[RawInput],
     room: Option<&str>,
@@ -226,7 +229,7 @@ fn manifest_value(
                 "path": input.label.clone(),
                 "sha256": sha256(&input.bytes),
                 "bytes": input.bytes.len(),
-                "lines": input.bytes.iter().filter(|&&byte| byte == b'\n').count()
+                "lines": input.lines
             })
         })
         .collect();
