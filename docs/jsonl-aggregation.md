@@ -30,8 +30,10 @@ Use `--output` instead of `--output-dir` for an unusual destination. The output
 is excluded from input discovery, so using the same directory for raw and
 derived files does not feed the aggregate back into the next run.
 
-The room slug must identify one filename family. If it matches multiple room
-versions, include the version in `--room` or use a more specific slug.
+The room slug must identify one filename family. Matching inputs must either all
+be unversioned or all contain the same delimiter-bounded `-v<number>` token.
+If the slug mixes versioned and unversioned names, or multiple versions, include
+the version in `--room` or use a more specific slug.
 
 To check whether the named aggregate is current, regenerate the deterministic
 bytes in memory and compare them without writing:

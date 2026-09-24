@@ -111,9 +111,7 @@ fn filename_matches_room(path: &Path, room: &str) -> bool {
 fn filename_version(path: &Path) -> Option<String> {
     let name = path.file_stem()?.to_string_lossy();
     for (start, _) in name.match_indices("-v") {
-        let Some(suffix) = name.get(start..).and_then(|value| value.strip_prefix("-v")) else {
-            continue;
-        };
+        let suffix = name.get(start..)?.strip_prefix("-v")?;
         let digits: String = suffix.chars().take_while(char::is_ascii_digit).collect();
         let next = suffix.chars().nth(digits.chars().count());
         if !digits.is_empty() && !next.is_some_and(|character| character.is_ascii_alphanumeric()) {
@@ -136,7 +134,10 @@ fn normalized_path(path: &Path) -> Option<PathBuf> {
 }
 
 fn same_path(left: &Path, right: &Path) -> bool {
-    normalized_path(left) == normalized_path(right)
+    match (normalized_path(left), normalized_path(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
 }
 
 fn input_files(dir: &Path, room: &str, output: &Path) -> Result<Vec<PathBuf>, AppError> {
@@ -145,9 +146,6 @@ fn input_files(dir: &Path, room: &str, output: &Path) -> Result<Vec<PathBuf>, Ap
         let path = entry?.path();
         if path.is_file()
             && !same_path(&path, output)
-            && !path
-                .file_stem()
-                .is_some_and(|stem| stem.to_string_lossy().starts_with("merged-"))
             && path
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
@@ -171,7 +169,7 @@ fn input_files(dir: &Path, room: &str, output: &Path) -> Result<Vec<PathBuf>, Ap
         return Err(AppError::new(
             ErrorCode::AggregateConflict,
             format!(
-                "room slug {room} matches multiple room versions: {}",
+                "room slug {room} mixes versioned and unversioned or multiple versioned input filenames: {}",
                 versions.into_iter().collect::<Vec<_>>().join(", ")
             ),
         ));
@@ -432,6 +430,45 @@ mod tests {
         let error = input_files(&raw_dir, "room", &root.join("merged-room.jsonl"))
             .expect_err("multiple versions should not share an aggregate");
         assert_eq!(error.code(), ErrorCode::AggregateConflict);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn versioned_and_unversioned_inputs_are_rejected() {
+        let root = unique_test_dir();
+        let raw_dir = root.join("unmerged");
+        fs::create_dir_all(&raw_dir).unwrap();
+        fs::write(raw_dir.join("room-v12.jsonl"), b"{}\n").unwrap();
+        fs::write(raw_dir.join("room-other.jsonl"), b"{}\n").unwrap();
+        let error = input_files(&raw_dir, "room", &root.join("merged-room.jsonl"))
+            .expect_err("versioned and unversioned inputs should not mix");
+        assert!(error.to_string().contains("versioned and unversioned"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_normalized_paths_are_not_equal() {
+        let root = std::env::temp_dir().join(format!(
+            "rezzy-missing-paths-{}-{}",
+            std::process::id(),
+            UNIX_EPOCH.elapsed().unwrap().as_nanos()
+        ));
+        assert!(!same_path(&root.join("a.jsonl"), &root.join("b.jsonl")));
+    }
+
+    #[test]
+    fn relative_and_absolute_first_run_paths_match() {
+        let root = PathBuf::from(format!(
+            ".rezzy-relative-path-{}-{}",
+            std::process::id(),
+            UNIX_EPOCH.elapsed().unwrap().as_nanos()
+        ));
+        fs::create_dir_all(root.join("raw")).unwrap();
+        let relative = root.join("raw/aggregate.jsonl");
+        let absolute = std::env::current_dir().unwrap().join(&relative);
+        assert!(!relative.exists());
+        assert!(!absolute.exists());
+        assert!(same_path(&relative, &absolute));
         fs::remove_dir_all(root).unwrap();
     }
 
