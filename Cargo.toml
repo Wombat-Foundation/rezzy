@@ -85,7 +85,6 @@ ureq = { version = "2.9", default-features = false }
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "batch"] }
 
 # Dev dependencies
-ed25519-consensus = { version = "2.1", default-features = false, features = ["std"] }
 insta = "1.47.2"
 rand_08 = { package = "rand", version = "0.8" }
 similar = "2.7.0"
@@ -152,8 +151,6 @@ rz-core.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
-ed25519-consensus.workspace = true
-ed25519-dalek.workspace = true
 hashbrown.workspace = true
 imbl.workspace = true
 insta.workspace = true
