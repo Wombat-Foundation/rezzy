@@ -48,8 +48,6 @@ exclude = [
     "Makefile",
 ]
 
-[package.metadata.cargo-machete]
-ignored = ["zeroize"]
 [workspace]
 resolver = "2"
 members = ["rz-cli", "rz-core", "rz-json", "rz-reconcile"]
