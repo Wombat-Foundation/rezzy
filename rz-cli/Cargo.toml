@@ -32,7 +32,6 @@ imbl.workspace = true
 mimalloc = { workspace = true, optional = true }
 roaring.workspace = true
 rz-core = { workspace = true, features = ["cli"] }
-sha2.workspace = true
 ureq.workspace = true
 
 [lints]
