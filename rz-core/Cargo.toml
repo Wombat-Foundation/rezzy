@@ -44,7 +44,6 @@ ed25519-dalek = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64.workspace = true
-ed25519-consensus.workspace = true
 hashbrown.workspace = true
 imbl.workspace = true
 insta.workspace = true

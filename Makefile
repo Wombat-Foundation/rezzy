@@ -127,6 +127,7 @@ rust/coverage: ##H Run code coverage and print per-file summary
 		--text --output-dir .coverage \
 		--ignore-filename-regex 'src/bin/.*|scripts/.*|build\.rs$$'
 	@cat .coverage/text/index.txt
+	@echo
 
 .PHONY: rust/coverage-html
 rust/coverage-html: ##H Run code coverage and generate HTML report
