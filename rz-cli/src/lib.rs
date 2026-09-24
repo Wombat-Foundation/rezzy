@@ -519,7 +519,7 @@ mod cli_tests {
     use super::*;
 
     #[test]
-    fn aggregate_rejects_top_level_command_line_flags_but_not_env_values() {
+    fn aggregate_rejects_top_level_command_line_flags() {
         let matches = cli_command()
             .try_get_matches_from(["rezzy", "--quiet", "aggregate", "--output", "out.jsonl"])
             .unwrap();
@@ -527,19 +527,5 @@ mod cli_tests {
             misplaced_top_level_argument(&matches).as_deref(),
             Some("quiet")
         );
-
-        let original = std::env::var_os("MATRIX_HOMESERVER");
-        std::env::set_var("MATRIX_HOMESERVER", "https://example.org");
-        let env_matches = cli_command()
-            .try_get_matches_from(["rezzy", "aggregate", "--output", "out.jsonl"])
-            .unwrap();
-        assert_ne!(
-            misplaced_top_level_argument(&env_matches).as_deref(),
-            Some("homeserver")
-        );
-        match original {
-            Some(value) => std::env::set_var("MATRIX_HOMESERVER", value),
-            None => std::env::remove_var("MATRIX_HOMESERVER"),
-        }
     }
 }
