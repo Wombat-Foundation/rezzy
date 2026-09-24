@@ -43,6 +43,7 @@ name = "ed25519_backends"
 path = "ed25519_backends.rs"
 harness = false
 
-[[bin]]
+[[bench]]
 name = "compare-ruma"
 path = "compare_ruma.rs"
+harness = false
