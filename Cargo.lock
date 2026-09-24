@@ -897,7 +897,6 @@ dependencies = [
  "mimalloc",
  "roaring",
  "rz-core",
- "sha2 0.10.9",
  "ureq",
 ]
 

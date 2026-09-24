@@ -521,11 +521,36 @@ mod cli_tests {
     #[test]
     fn aggregate_rejects_top_level_command_line_flags() {
         let matches = cli_command()
-            .try_get_matches_from(["rezzy", "--quiet", "aggregate", "--output", "out.jsonl"])
+            .try_get_matches_from([
+                "rezzy",
+                "--quiet",
+                "aggregate",
+                "--room",
+                "room",
+                "--output",
+                "out.jsonl",
+            ])
             .unwrap();
         assert_eq!(
             misplaced_top_level_argument(&matches).as_deref(),
             Some("quiet")
         );
+    }
+
+    #[test]
+    fn aggregate_rejects_output_and_output_dir_together() {
+        let error = cli_command()
+            .try_get_matches_from([
+                "rezzy",
+                "aggregate",
+                "--room",
+                "room",
+                "--output",
+                "out.jsonl",
+                "--output-dir",
+                "merged",
+            ])
+            .expect_err("--output and --output-dir should conflict");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 }

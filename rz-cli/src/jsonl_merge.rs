@@ -201,7 +201,7 @@ pub fn merge_event_sets(
 pub struct MergeResult {
     /// Unique events retained in merge order.
     pub events: Vec<rz_core::JsonValue>,
-    /// All duplicate copies, including conflicting copies.
+    /// Identical duplicate copies skipped during the merge.
     pub duplicate_copies: usize,
 }
 
@@ -209,8 +209,7 @@ pub struct MergeResult {
 ///
 /// # Errors
 ///
-/// Returns an error for disjoint DAGs or, when requested, conflicting duplicate
-/// event IDs.
+/// Returns an error for disjoint DAGs or conflicting duplicate event IDs.
 pub fn merge_event_slices(
     file_sets: &[(String, &[rz_core::JsonValue])],
     debug: bool,

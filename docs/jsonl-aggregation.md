@@ -1,8 +1,10 @@
 # Raw JSONL and aggregates
 
 Keep downloaded or otherwise unmerged event files in `unmerged/`. Treat them as
-immutable evidence. `rezzy aggregate` creates a derived, sorted event set in
-`merged/` and records the exact input files and hashes in a manifest.
+immutable evidence. `rezzy aggregate` creates one derived, sorted event set in
+`merged/` for a room. The room slug selects the raw filename family and the
+aggregate filename is its identity; no manifest or
+sidecar file is created.
 
 For one room:
 
@@ -10,44 +12,46 @@ For one room:
 cargo run --release --bin rezzy -- aggregate \
   --input-dir unmerged \
   --room c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk \
-  --output merged/merged-c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk.jsonl \
-  --manifest merged/merged-c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk.manifest.json
+  --output-dir merged
 ```
 
-The command deduplicates by `event_id`, retains identical duplicates only once,
-and rejects conflicting payloads for the same ID. It sorts the result by
-`depth`, `origin_server_ts`, and `event_id`. It never modifies `unmerged/`. The v3
-manifest records logical non-empty JSONL records, not the trailing empty split
-created by a final newline.
+This writes:
 
-If the same `event_id` appears with different payloads, aggregation fails
-instead of selecting one arbitrarily. Identical duplicate copies are retained
-only once and counted in the manifest. The manifest records the rezzy version
-for provenance, but version changes alone do not make an otherwise identical
-aggregate stale.
+```text
+merged/merged-c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk.jsonl
+```
 
-Output and manifest files are written through temporary files, synced, and
-renamed separately. A crash between those two renames can leave a detectable
-mismatch; `--check` reports it as stale so the pair can be regenerated.
-Temporary files are created beside their targets and may remain as `.tmp-*`
-orphans after a process crash; they are safe to remove after confirming no
-aggregation process is running.
+The command discovers matching `.jsonl` inputs, deduplicates by `event_id`,
+retains identical duplicates only once, rejects conflicting payloads, and sorts
+the result by `depth`, `origin_server_ts`, and `event_id`. It never modifies
+`unmerged/`.
 
-Durability warnings are included in the successful JSON result under
-`warnings`; they are also printed to stderr unless `--quiet` is used.
+Use `--output` instead of `--output-dir` for an unusual destination. The output
+is excluded from input discovery, so using the same directory for raw and
+derived files does not feed the aggregate back into the next run.
 
-After new raw files arrive, rerun the same command to update the aggregate. To
-check whether it needs updating without writing anything:
+The room slug must identify one filename family. If it matches multiple room
+versions, include the version in `--room` or use a more specific slug.
+
+To check whether the named aggregate is current, regenerate the deterministic
+bytes in memory and compare them without writing:
 
 ```sh
 cargo run --release --bin rezzy -- aggregate \
   --input-dir unmerged \
   --room c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk \
-  --output merged/merged-c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk.jsonl \
-  --manifest merged/merged-c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk.manifest.json \
+  --output-dir merged \
   --check
 ```
 
-`--check` exits successfully only when both the aggregate bytes and manifest
-match the current raw inputs. The existing multi-`--input` resolution path is
-unchanged; use the aggregate command when you want a persisted artifact.
+`--check` exits successfully only when the aggregate bytes match the current
+raw inputs. It does not provide input provenance; a different raw input set
+that produces identical aggregate bytes is considered current. Output files
+are written through a temporary file, synced, and atomically renamed. The
+parent-directory sync is attempted where supported by the platform and its
+failure is ignored because the aggregate is regenerable. Temporary `.tmp-*`
+files may remain after a process crash and are safe to remove after confirming
+that no aggregation process is running.
+
+The existing multi-`--input` resolution path also rejects conflicting duplicate
+event payloads.
