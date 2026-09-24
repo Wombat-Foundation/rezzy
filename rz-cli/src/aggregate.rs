@@ -1,7 +1,7 @@
 //! Deterministic raw-JSONL aggregation with provenance and stale checks.
 
 use crate::error::{AppError, ErrorCode};
-use crate::jsonl_merge::merge_event_slices;
+use crate::jsonl_merge::merge_event_slices_with_stats;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -241,6 +241,7 @@ fn read_raw_input(path: &Path, input_dir: &Path) -> Result<RawInput, AppError> {
         ));
     }
     validate_event_ids(&events, &label)?;
+    validate_sort_metadata(&events, &label)?;
     Ok(RawInput {
         label,
         sha256,
@@ -257,6 +258,7 @@ fn manifest_value(
     output: &[u8],
     event_count: usize,
     duplicate_count: usize,
+    conflicting_count: usize,
 ) -> rz_core::JsonValue {
     let files: Vec<rz_core::JsonValue> = inputs
         .iter()
@@ -279,6 +281,7 @@ fn manifest_value(
         "inputs": files,
         "unique_events": event_count,
         "duplicate_event_copies": duplicate_count,
+        "conflicting_event_copies": conflicting_count,
         "output": {"sha256": sha256(output), "bytes": output.len()}
     })
 }
@@ -305,10 +308,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
         file.sync_all()?;
         fs::rename(&temp, path)?;
         if let Err(error) = fs::File::open(parent).and_then(|directory| directory.sync_all()) {
-            return Err(std::io::Error::other(format!(
-                "committed {} but directory fsync failed: {error}",
+            eprintln!(
+                "[WARN] committed {} but directory fsync failed: {error}",
                 path.display()
-            )));
+            );
         }
         Ok::<(), std::io::Error>(())
     })();
@@ -328,10 +331,10 @@ fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
         .iter()
         .map(|input| (input.label.clone(), input.events.as_slice()))
         .collect();
-    let mut events = merge_event_slices(&sets, false, options.quiet, !options.allow_conflicts)?;
-    let input_event_count: usize = inputs.iter().map(|input| input.events.len()).sum();
+    let merge =
+        merge_event_slices_with_stats(&sets, false, options.quiet, !options.allow_conflicts)?;
+    let mut events = merge.events;
     sort_events(&mut events)?;
-    let duplicate_count = input_event_count.saturating_sub(events.len());
     let output = output_bytes(&events)?;
     let manifest = manifest_value(
         &inputs,
@@ -339,7 +342,8 @@ fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
         options.allow_conflicts,
         &output,
         events.len(),
-        duplicate_count,
+        merge.duplicate_copies,
+        merge.conflicting_copies,
     );
 
     if options.check {
@@ -367,7 +371,11 @@ fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
                 "manifest version is outdated; rerun without --check to regenerate it",
             ));
         }
-        if existing_output != output || parsed != manifest {
+        let mut expected_for_check = manifest.clone();
+        let mut parsed_for_check = parsed.clone();
+        expected_for_check["tool_version"] = rz_core::JsonValue::Null;
+        parsed_for_check["tool_version"] = rz_core::JsonValue::Null;
+        if existing_output != output || parsed_for_check != expected_for_check {
             return Err(AppError::new(
                 ErrorCode::AggregateStale,
                 format!(
@@ -387,7 +395,7 @@ fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
     write_atomic(&options.output, &output)?;
     write_atomic(&options.manifest, &json_bytes(&manifest)?)?;
     Ok(
-        rz_core::json!({"status": "written", "output": options.output.to_string_lossy().to_string(), "manifest": options.manifest.to_string_lossy().to_string(), "unique_events": events.len(), "input_files": files.len(), "duplicate_event_copies": duplicate_count}),
+        rz_core::json!({"status": "written", "output": options.output.to_string_lossy().to_string(), "manifest": options.manifest.to_string_lossy().to_string(), "unique_events": events.len(), "input_files": files.len(), "duplicate_event_copies": merge.duplicate_copies, "conflicting_event_copies": merge.conflicting_copies}),
     )
 }
 
@@ -568,10 +576,9 @@ mod tests {
         );
         let mut permissive = options(&root, false);
         permissive.allow_conflicts = true;
-        assert_eq!(
-            aggregate(&permissive).unwrap()["duplicate_event_copies"].as_u64(),
-            Some(1)
-        );
+        let report = aggregate(&permissive).unwrap();
+        assert_eq!(report["duplicate_event_copies"].as_u64(), Some(1));
+        assert_eq!(report["conflicting_event_copies"].as_u64(), Some(1));
         fs::remove_dir_all(root).unwrap();
     }
 }
