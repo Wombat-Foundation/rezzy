@@ -16,6 +16,7 @@
 
 #[macro_use]
 pub mod error;
+pub mod aggregate;
 pub mod format;
 pub mod jsonl_merge;
 pub mod network;
@@ -69,71 +70,19 @@ impl Args {
     /// Panics if the command line cannot be parsed (clap prints usage and exits).
     #[must_use]
     pub fn parse() -> Self {
-        let matches = clap::Command::new("rezzy")
-            .version(env!("CARGO_PKG_VERSION"))
-            .about(env!("CARGO_PKG_DESCRIPTION"))
-            .arg(
-                clap::Arg::new("input")
-                    .short('i')
-                    .long("input")
-                    .num_args(1..)
-                    .value_parser(clap::value_parser!(PathBuf)),
-            )
-            .arg(clap::Arg::new("room").short('r').long("room"))
-            .arg(
-                clap::Arg::new("homeserver")
-                    .long("homeserver")
-                    .env("MATRIX_HOMESERVER"),
-            )
-            .arg(
-                clap::Arg::new("token")
-                    .long("token")
-                    .env("MATRIX_TOKEN")
-                    .hide_env_values(true),
-            )
-            .arg(
-                clap::Arg::new("output")
-                    .short('o')
-                    .long("output")
-                    .value_parser(clap::value_parser!(PathBuf)),
-            )
-            .arg(
-                clap::Arg::new("state_res")
-                    .short('s')
-                    .long("state-res")
-                    .value_parser(clap::builder::EnumValueParser::<StateResVersion>::new()),
-            )
-            .arg(
-                clap::Arg::new("format")
-                    .short('f')
-                    .long("format")
-                    .value_parser(clap::builder::EnumValueParser::<OutputFormat>::new())
-                    .default_value("default"),
-            )
-            .arg(
-                clap::Arg::new("debug")
-                    .long("debug")
-                    .action(clap::ArgAction::SetTrue),
-            )
-            .arg(
-                clap::Arg::new("quiet")
-                    .short('q')
-                    .long("quiet")
-                    .action(clap::ArgAction::SetTrue),
-            )
-            .arg(
-                clap::Arg::new("check")
-                    .short('c')
-                    .long("check")
-                    .action(clap::ArgAction::SetTrue),
-            )
-            .arg(
-                clap::Arg::new("origin")
-                    .long("origin")
-                    .default_value("matrix.org"),
-            )
-            .get_matches();
+        let matches = cli_command().get_matches();
+        if let Some(name) = matches.subcommand_name() {
+            cli_command()
+                .error(
+                    clap::error::ErrorKind::InvalidSubcommand,
+                    format!("subcommand {name} must be handled by rezzy's command dispatcher"),
+                )
+                .exit();
+        }
+        Self::from_matches(&matches)
+    }
 
+    fn from_matches(matches: &clap::ArgMatches) -> Self {
         let input = matches
             .get_many::<PathBuf>("input")
             .map(|values| values.cloned().collect())
@@ -159,6 +108,83 @@ impl Args {
                 .unwrap_or_else(|| String::from("matrix.org")),
         }
     }
+}
+
+/// Build the top-level CLI parser, including subcommands.
+#[must_use]
+pub fn cli_command() -> clap::Command {
+    clap::Command::new("rezzy")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about(env!("CARGO_PKG_DESCRIPTION"))
+        .arg(
+            clap::Arg::new("input")
+                .short('i')
+                .long("input")
+                .num_args(1..)
+                .value_parser(clap::value_parser!(PathBuf)),
+        )
+        .arg(clap::Arg::new("room").short('r').long("room"))
+        .arg(
+            clap::Arg::new("homeserver")
+                .long("homeserver")
+                .env("MATRIX_HOMESERVER"),
+        )
+        .arg(
+            clap::Arg::new("token")
+                .long("token")
+                .env("MATRIX_TOKEN")
+                .hide_env_values(true),
+        )
+        .arg(
+            clap::Arg::new("output")
+                .short('o')
+                .long("output")
+                .value_parser(clap::value_parser!(PathBuf)),
+        )
+        .arg(
+            clap::Arg::new("state_res")
+                .short('s')
+                .long("state-res")
+                .value_parser(clap::builder::EnumValueParser::<StateResVersion>::new()),
+        )
+        .arg(
+            clap::Arg::new("format")
+                .short('f')
+                .long("format")
+                .value_parser(clap::builder::EnumValueParser::<OutputFormat>::new())
+                .default_value("default"),
+        )
+        .arg(
+            clap::Arg::new("debug")
+                .long("debug")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            clap::Arg::new("quiet")
+                .short('q')
+                .long("quiet")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            clap::Arg::new("check")
+                .short('c')
+                .long("check")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            clap::Arg::new("origin")
+                .long("origin")
+                .default_value("matrix.org"),
+        )
+        .subcommand(aggregate::command())
+}
+
+fn misplaced_top_level_argument(matches: &clap::ArgMatches) -> Option<String> {
+    cli_command().get_arguments().find_map(|arg| {
+        let id = arg.get_id().as_str();
+        (matches.value_source(id) == Some(clap::parser::ValueSource::CommandLine))
+            .then(|| id.to_owned())
+    })
 }
 
 /// Run the CLI application.
@@ -428,7 +454,28 @@ pub fn run_cli(args: &Args) -> Result<rz_core::JsonValue, error::AppError> {
 /// Panics if the output file cannot be created or written, or if the JSON
 /// output cannot be formatted.
 pub fn main_entry() {
-    let args = Args::parse();
+    let matches = cli_command().get_matches();
+    if let Some(("aggregate", aggregate_matches)) = matches.subcommand() {
+        if let Some(id) = misplaced_top_level_argument(&matches) {
+            eprintln!(
+                "Error: --{id} belongs after the aggregate subcommand; use `rezzy aggregate --help`"
+            );
+            std::process::exit(2);
+        }
+        match aggregate::run_from_matches(aggregate_matches) {
+            Ok(output) => {
+                let pretty = rz_core::json::write_string_pretty(&output)
+                    .expect("JSON formatting is infallible");
+                println!("{pretty}");
+            }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    let args = Args::from_matches(&matches);
     match run_cli(&args) {
         Ok(output) => {
             let output_writer: Box<dyn Write> = match args.output {
@@ -553,5 +600,47 @@ mod tests {
         let error = run_cli(&args).expect_err("missing homeserver fails");
 
         assert_eq!(error.code(), ErrorCode::MissingHomeserver);
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_rejects_top_level_command_line_flags() {
+        let matches = cli_command()
+            .try_get_matches_from([
+                "rezzy",
+                "--quiet",
+                "aggregate",
+                "--room",
+                "room",
+                "--output",
+                "out.jsonl",
+            ])
+            .unwrap();
+        assert_eq!(
+            misplaced_top_level_argument(&matches).as_deref(),
+            Some("quiet")
+        );
+    }
+
+    #[test]
+    fn aggregate_rejects_output_and_output_dir_together() {
+        let error = cli_command()
+            .try_get_matches_from([
+                "rezzy",
+                "aggregate",
+                "--room",
+                "room",
+                "--output",
+                "out.jsonl",
+                "--output-dir",
+                "merged",
+            ])
+            .expect_err("--output and --output-dir should conflict");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 }

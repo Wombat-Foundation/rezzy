@@ -192,12 +192,45 @@ pub fn merge_event_sets(
     debug: bool,
     quiet: bool,
 ) -> Result<Vec<rz_core::JsonValue>, AppError> {
+    Ok(merge_event_sets_internal(file_sets, debug, quiet)?.events)
+}
+
+/// Details from merging borrowed event slices.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct MergeResult {
+    /// Unique events retained in merge order.
+    pub events: Vec<rz_core::JsonValue>,
+    /// Identical duplicate copies skipped during the merge.
+    pub duplicate_copies: usize,
+}
+
+/// Merge borrowed event slices for aggregation and return duplicate statistics.
+///
+/// # Errors
+///
+/// Returns an error for disjoint DAGs or conflicting duplicate event IDs.
+pub fn merge_event_slices(
+    file_sets: &[(String, &[rz_core::JsonValue])],
+    debug: bool,
+    quiet: bool,
+) -> Result<MergeResult, AppError> {
+    merge_event_sets_internal(file_sets, debug, quiet)
+}
+
+fn merge_event_sets_internal<I: AsRef<[rz_core::JsonValue]>>(
+    file_sets: &[(String, I)],
+    debug: bool,
+    quiet: bool,
+) -> Result<MergeResult, AppError> {
     let num_files = file_sets.len();
-    let mut seen_ids: HashSet<String> = HashSet::new();
+    let mut seen_ids: HashMap<String, usize> = HashMap::new();
     let mut merged: Vec<rz_core::JsonValue> = Vec::new();
+    let mut duplicate_copies = 0usize;
     let mut per_file_refs: Vec<FileRefs> = Vec::with_capacity(num_files);
 
-    for (label, events) in file_sets {
+    for (label, input) in file_sets {
+        let events = input.as_ref();
         let mut refs = FileRefs::with_capacity(events.len());
         let mut added = 0usize;
         let mut dupes = 0usize;
@@ -215,11 +248,21 @@ pub fn merge_event_sets(
 
             collect_refs(val, &mut refs, &event_id);
 
-            if seen_ids.insert(event_id) {
+            if let Some(&first_index) = seen_ids.get(&event_id) {
+                duplicate_copies = duplicate_copies.saturating_add(1);
+                if merged[first_index] != *val {
+                    bail_code!(
+                        ErrorCode::AggregateConflict,
+                        "event_id {} has different payloads in input file {}",
+                        event_id,
+                        label
+                    );
+                }
+                dupes = dupes.saturating_add(1);
+            } else {
+                seen_ids.insert(event_id, merged.len());
                 merged.push(val.clone());
                 added = added.saturating_add(1);
-            } else {
-                dupes = dupes.saturating_add(1);
             }
         }
 
@@ -271,7 +314,10 @@ pub fn merge_event_sets(
         std::eprintln!("[merge] total: {} unique events", merged.len());
     }
 
-    Ok(merged)
+    Ok(MergeResult {
+        events: merged,
+        duplicate_copies,
+    })
 }
 
 #[cfg(test)]
@@ -400,6 +446,23 @@ mod tests {
         let result =
             merge_event_sets(&[("a.jsonl".into(), a), ("b.jsonl".into(), b)], false, true).unwrap();
         assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn merge_rejects_conflicting_duplicate_for_all_callers() {
+        let mut first = ev("$same", 1);
+        let mut second = first.clone();
+        first["origin_server_ts"] = json!(1000);
+        second["origin_server_ts"] = json!(2000);
+        let result = merge_event_sets(
+            &[
+                ("a.jsonl".into(), vec![first]),
+                ("b.jsonl".into(), vec![second]),
+            ],
+            false,
+            true,
+        );
+        assert_eq!(result.unwrap_err().code(), ErrorCode::AggregateConflict);
     }
 
     #[test]
