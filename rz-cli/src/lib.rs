@@ -16,6 +16,7 @@
 
 #[macro_use]
 pub mod error;
+pub mod aggregate;
 pub mod format;
 pub mod jsonl_merge;
 pub mod network;
@@ -428,6 +429,20 @@ pub fn run_cli(args: &Args) -> Result<rz_core::JsonValue, error::AppError> {
 /// Panics if the output file cannot be created or written, or if the JSON
 /// output cannot be formatted.
 pub fn main_entry() {
+    if std::env::args().nth(1).as_deref() == Some("aggregate") {
+        match aggregate::run_from_process_args() {
+            Ok(output) => {
+                let pretty = rz_core::json::write_string_pretty(&output)
+                    .expect("JSON formatting is infallible");
+                println!("{pretty}");
+            }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let args = Args::parse();
     match run_cli(&args) {
         Ok(output) => {
