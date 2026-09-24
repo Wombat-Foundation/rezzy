@@ -71,6 +71,14 @@ impl Args {
     #[must_use]
     pub fn parse() -> Self {
         let matches = cli_command().get_matches();
+        if let Some(name) = matches.subcommand_name() {
+            cli_command()
+                .error(
+                    clap::error::ErrorKind::InvalidSubcommand,
+                    format!("subcommand {name} must be handled by rezzy's command dispatcher"),
+                )
+                .exit();
+        }
         Self::from_matches(&matches)
     }
 
@@ -169,6 +177,14 @@ pub fn cli_command() -> clap::Command {
                 .default_value("matrix.org"),
         )
         .subcommand(aggregate::command())
+}
+
+fn misplaced_top_level_argument(matches: &clap::ArgMatches) -> Option<String> {
+    cli_command().get_arguments().find_map(|arg| {
+        let id = arg.get_id().as_str();
+        (matches.value_source(id) == Some(clap::parser::ValueSource::CommandLine))
+            .then(|| id.to_owned())
+    })
 }
 
 /// Run the CLI application.
@@ -440,25 +456,11 @@ pub fn run_cli(args: &Args) -> Result<rz_core::JsonValue, error::AppError> {
 pub fn main_entry() {
     let matches = cli_command().get_matches();
     if let Some(("aggregate", aggregate_matches)) = matches.subcommand() {
-        for id in [
-            "input",
-            "room",
-            "homeserver",
-            "token",
-            "output",
-            "state_res",
-            "format",
-            "debug",
-            "quiet",
-            "check",
-            "origin",
-        ] {
-            if matches.value_source(id) == Some(clap::parser::ValueSource::CommandLine) {
-                eprintln!(
-                    "Error: --{id} belongs after the aggregate subcommand; use `rezzy aggregate --help`"
-                );
-                std::process::exit(2);
-            }
+        if let Some(id) = misplaced_top_level_argument(&matches) {
+            eprintln!(
+                "Error: --{id} belongs after the aggregate subcommand; use `rezzy aggregate --help`"
+            );
+            std::process::exit(2);
         }
         match aggregate::run_from_matches(aggregate_matches) {
             Ok(output) => {
@@ -508,6 +510,36 @@ pub fn main_entry() {
             }
             eprintln!();
             std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_rejects_top_level_command_line_flags_but_not_env_values() {
+        let matches = cli_command()
+            .try_get_matches_from(["rezzy", "--quiet", "aggregate", "--output", "out.jsonl"])
+            .unwrap();
+        assert_eq!(
+            misplaced_top_level_argument(&matches).as_deref(),
+            Some("quiet")
+        );
+
+        let original = std::env::var_os("MATRIX_HOMESERVER");
+        std::env::set_var("MATRIX_HOMESERVER", "https://example.org");
+        let env_matches = cli_command()
+            .try_get_matches_from(["rezzy", "aggregate", "--output", "out.jsonl"])
+            .unwrap();
+        assert_ne!(
+            misplaced_top_level_argument(&env_matches).as_deref(),
+            Some("homeserver")
+        );
+        match original {
+            Some(value) => std::env::set_var("MATRIX_HOMESERVER", value),
+            None => std::env::remove_var("MATRIX_HOMESERVER"),
         }
     }
 }
