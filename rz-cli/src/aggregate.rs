@@ -141,12 +141,11 @@ fn same_path(left: &Path, right: &Path) -> bool {
     }
 }
 
-fn input_files(dir: &Path, room: &str, output: &Path) -> Result<Vec<PathBuf>, AppError> {
+fn input_files(dir: &Path, room: &str) -> Result<Vec<PathBuf>, AppError> {
     let mut files = Vec::new();
     for entry in fs::read_dir(dir)? {
         let path = entry?.path();
         if path.is_file()
-            && !same_path(&path, output)
             && path
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
@@ -320,7 +319,7 @@ fn reject_input_output_overlap(options: &Options) -> Result<(), AppError> {
 
 fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
     reject_input_output_overlap(options)?;
-    let files = input_files(&options.input_dir, &options.room, &options.output)?;
+    let files = input_files(&options.input_dir, &options.room)?;
     let inputs: Vec<RawInput> = files
         .iter()
         .map(|path| read_raw_input(path, &options.input_dir))
@@ -448,7 +447,7 @@ mod tests {
         fs::create_dir_all(&raw_dir).unwrap();
         fs::write(raw_dir.join("room-v11.jsonl"), b"{}\n").unwrap();
         fs::write(raw_dir.join("room-v12.jsonl"), b"{}\n").unwrap();
-        let error = input_files(&raw_dir, "room", &root.join("merged-room.jsonl"))
+        let error = input_files(&raw_dir, "room")
             .expect_err("multiple versions should not share an aggregate");
         assert_eq!(error.code(), ErrorCode::AggregateConflict);
         fs::remove_dir_all(root).unwrap();
@@ -461,7 +460,7 @@ mod tests {
         fs::create_dir_all(&raw_dir).unwrap();
         fs::write(raw_dir.join("room-v12.jsonl"), b"{}\n").unwrap();
         fs::write(raw_dir.join("room-other.jsonl"), b"{}\n").unwrap();
-        let error = input_files(&raw_dir, "room", &root.join("merged-room.jsonl"))
+        let error = input_files(&raw_dir, "room")
             .expect_err("versioned and unversioned inputs should not mix");
         assert!(error.to_string().contains("versioned and unversioned"));
         fs::remove_dir_all(root).unwrap();
@@ -508,12 +507,7 @@ mod tests {
         fs::write(&first_path, &first_line).unwrap();
         fs::write(&second_path, &second_line).unwrap();
         assert!(filename_matches_room(&first_path, "room"));
-        assert_eq!(
-            input_files(&raw_dir, "room", &options(&root, false).output)
-                .unwrap()
-                .len(),
-            2
-        );
+        assert_eq!(input_files(&raw_dir, "room").unwrap().len(), 2);
         let raw_before = fs::read(&first_path).unwrap();
         aggregate(&options(&root, false)).unwrap();
         assert_eq!(fs::read(&first_path).unwrap(), raw_before);
@@ -547,18 +541,6 @@ mod tests {
             aggregate(&options(&root, false)).unwrap_err().code(),
             ErrorCode::EmptyInput
         );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn output_file_is_not_reused_as_input() {
-        let root = unique_test_dir();
-        let raw_dir = root.join("unmerged");
-        fs::create_dir_all(&raw_dir).unwrap();
-        let output = raw_dir.join("merged-room.jsonl");
-        fs::write(raw_dir.join("room-a.jsonl"), b"{}\n").unwrap();
-        fs::write(&output, b"{}\n").unwrap();
-        assert_eq!(input_files(&raw_dir, "room", &output).unwrap().len(), 1);
         fs::remove_dir_all(root).unwrap();
     }
 
