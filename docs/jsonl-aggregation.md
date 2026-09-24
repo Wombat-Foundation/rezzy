@@ -16,7 +16,13 @@ cargo run --release --bin rezzy -- aggregate \
 
 The command deduplicates by `event_id`, retains the first copy from the
 lexically sorted input files, and sorts the result by `depth`,
-`origin_server_ts`, and `event_id`. It never modifies `unmerged/`.
+`origin_server_ts`, and `event_id`. It never modifies `unmerged/`. The v2
+manifest records logical non-empty JSONL records, not the trailing empty split
+created by a final newline.
+
+If the same `event_id` appears with different payloads, aggregation fails
+instead of selecting one arbitrarily. Identical duplicate copies are retained
+only once and counted in the manifest.
 
 After new raw files arrive, rerun the same command to update the aggregate. To
 check whether it needs updating without writing anything:
