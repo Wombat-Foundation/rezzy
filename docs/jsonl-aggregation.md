@@ -27,8 +27,9 @@ the result by `depth`, `origin_server_ts`, and `event_id`. It never modifies
 `unmerged/`.
 
 Use `--output` instead of `--output-dir` for an unusual destination. The output
-is excluded from input discovery, so using the same directory for raw and
-derived files does not feed the aggregate back into the next run.
+is excluded from input discovery, but the input and output directories must be
+different. This prevents an old aggregate from being discovered as another
+matching input after the output name changes.
 
 The room slug must identify one filename family. Matching inputs must either all
 be unversioned or all contain the same delimiter-bounded `-v<number>` token.

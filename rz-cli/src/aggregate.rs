@@ -111,7 +111,8 @@ fn filename_matches_room(path: &Path, room: &str) -> bool {
 fn filename_version(path: &Path) -> Option<String> {
     let name = path.file_stem()?.to_string_lossy();
     for (start, _) in name.match_indices("-v") {
-        let suffix = name.get(start..)?.strip_prefix("-v")?;
+        let suffix = &name[start..];
+        let suffix = &suffix[2..];
         let digits: String = suffix.chars().take_while(char::is_ascii_digit).collect();
         let next = suffix.chars().nth(digits.chars().count());
         if !digits.is_empty() && !next.is_some_and(|character| character.is_ascii_alphanumeric()) {
@@ -298,7 +299,23 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     result.map_err(AppError::from)
 }
 
+fn reject_input_output_overlap(options: &Options) -> Result<(), AppError> {
+    let output_dir = options.output.parent().unwrap_or_else(|| Path::new("."));
+    if same_path(&options.input_dir, output_dir) {
+        return Err(AppError::new(
+            ErrorCode::AggregateConflict,
+            format!(
+                "input directory {} and output directory {} must be different",
+                options.input_dir.display(),
+                output_dir.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
+    reject_input_output_overlap(options)?;
     let files = input_files(&options.input_dir, &options.room, &options.output)?;
     let inputs: Vec<RawInput> = files
         .iter()
@@ -458,18 +475,11 @@ mod tests {
 
     #[test]
     fn relative_and_absolute_first_run_paths_match() {
-        let root = PathBuf::from(format!(
-            ".rezzy-relative-path-{}-{}",
-            std::process::id(),
-            UNIX_EPOCH.elapsed().unwrap().as_nanos()
-        ));
-        fs::create_dir_all(root.join("raw")).unwrap();
-        let relative = root.join("raw/aggregate.jsonl");
+        let relative = PathBuf::from(".rezzy-nonexistent-aggregate.jsonl");
         let absolute = std::env::current_dir().unwrap().join(&relative);
         assert!(!relative.exists());
         assert!(!absolute.exists());
         assert!(same_path(&relative, &absolute));
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -545,6 +555,19 @@ mod tests {
         fs::write(raw_dir.join("room-a.jsonl"), b"{}\n").unwrap();
         fs::write(&output, b"{}\n").unwrap();
         assert_eq!(input_files(&raw_dir, "room", &output).unwrap().len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn input_and_output_directories_must_differ() {
+        let root = unique_test_dir();
+        let raw_dir = root.join("unmerged");
+        fs::create_dir_all(&raw_dir).unwrap();
+        let mut overlapping = options(&root, false);
+        overlapping.output = raw_dir.join("merged-room.jsonl");
+        let error = aggregate(&overlapping).expect_err("directory overlap should be rejected");
+        assert_eq!(error.code(), ErrorCode::AggregateConflict);
+        assert!(error.to_string().contains("must be different"));
         fs::remove_dir_all(root).unwrap();
     }
 
