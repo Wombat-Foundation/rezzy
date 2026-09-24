@@ -70,71 +70,11 @@ impl Args {
     /// Panics if the command line cannot be parsed (clap prints usage and exits).
     #[must_use]
     pub fn parse() -> Self {
-        let matches = clap::Command::new("rezzy")
-            .version(env!("CARGO_PKG_VERSION"))
-            .about(env!("CARGO_PKG_DESCRIPTION"))
-            .arg(
-                clap::Arg::new("input")
-                    .short('i')
-                    .long("input")
-                    .num_args(1..)
-                    .value_parser(clap::value_parser!(PathBuf)),
-            )
-            .arg(clap::Arg::new("room").short('r').long("room"))
-            .arg(
-                clap::Arg::new("homeserver")
-                    .long("homeserver")
-                    .env("MATRIX_HOMESERVER"),
-            )
-            .arg(
-                clap::Arg::new("token")
-                    .long("token")
-                    .env("MATRIX_TOKEN")
-                    .hide_env_values(true),
-            )
-            .arg(
-                clap::Arg::new("output")
-                    .short('o')
-                    .long("output")
-                    .value_parser(clap::value_parser!(PathBuf)),
-            )
-            .arg(
-                clap::Arg::new("state_res")
-                    .short('s')
-                    .long("state-res")
-                    .value_parser(clap::builder::EnumValueParser::<StateResVersion>::new()),
-            )
-            .arg(
-                clap::Arg::new("format")
-                    .short('f')
-                    .long("format")
-                    .value_parser(clap::builder::EnumValueParser::<OutputFormat>::new())
-                    .default_value("default"),
-            )
-            .arg(
-                clap::Arg::new("debug")
-                    .long("debug")
-                    .action(clap::ArgAction::SetTrue),
-            )
-            .arg(
-                clap::Arg::new("quiet")
-                    .short('q')
-                    .long("quiet")
-                    .action(clap::ArgAction::SetTrue),
-            )
-            .arg(
-                clap::Arg::new("check")
-                    .short('c')
-                    .long("check")
-                    .action(clap::ArgAction::SetTrue),
-            )
-            .arg(
-                clap::Arg::new("origin")
-                    .long("origin")
-                    .default_value("matrix.org"),
-            )
-            .get_matches();
+        let matches = cli_command().get_matches();
+        Self::from_matches(&matches)
+    }
 
+    fn from_matches(matches: &clap::ArgMatches) -> Self {
         let input = matches
             .get_many::<PathBuf>("input")
             .map(|values| values.cloned().collect())
@@ -160,6 +100,75 @@ impl Args {
                 .unwrap_or_else(|| String::from("matrix.org")),
         }
     }
+}
+
+/// Build the top-level CLI parser, including subcommands.
+#[must_use]
+pub fn cli_command() -> clap::Command {
+    clap::Command::new("rezzy")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about(env!("CARGO_PKG_DESCRIPTION"))
+        .arg(
+            clap::Arg::new("input")
+                .short('i')
+                .long("input")
+                .num_args(1..)
+                .value_parser(clap::value_parser!(PathBuf)),
+        )
+        .arg(clap::Arg::new("room").short('r').long("room"))
+        .arg(
+            clap::Arg::new("homeserver")
+                .long("homeserver")
+                .env("MATRIX_HOMESERVER"),
+        )
+        .arg(
+            clap::Arg::new("token")
+                .long("token")
+                .env("MATRIX_TOKEN")
+                .hide_env_values(true),
+        )
+        .arg(
+            clap::Arg::new("output")
+                .short('o')
+                .long("output")
+                .value_parser(clap::value_parser!(PathBuf)),
+        )
+        .arg(
+            clap::Arg::new("state_res")
+                .short('s')
+                .long("state-res")
+                .value_parser(clap::builder::EnumValueParser::<StateResVersion>::new()),
+        )
+        .arg(
+            clap::Arg::new("format")
+                .short('f')
+                .long("format")
+                .value_parser(clap::builder::EnumValueParser::<OutputFormat>::new())
+                .default_value("default"),
+        )
+        .arg(
+            clap::Arg::new("debug")
+                .long("debug")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            clap::Arg::new("quiet")
+                .short('q')
+                .long("quiet")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            clap::Arg::new("check")
+                .short('c')
+                .long("check")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            clap::Arg::new("origin")
+                .long("origin")
+                .default_value("matrix.org"),
+        )
+        .subcommand(aggregate::command())
 }
 
 /// Run the CLI application.
@@ -429,8 +438,9 @@ pub fn run_cli(args: &Args) -> Result<rz_core::JsonValue, error::AppError> {
 /// Panics if the output file cannot be created or written, or if the JSON
 /// output cannot be formatted.
 pub fn main_entry() {
-    if std::env::args().nth(1).as_deref() == Some("aggregate") {
-        match aggregate::run_from_process_args() {
+    let matches = cli_command().get_matches();
+    if let Some(("aggregate", aggregate_matches)) = matches.subcommand() {
+        match aggregate::run_from_matches(aggregate_matches) {
             Ok(output) => {
                 let pretty = rz_core::json::write_string_pretty(&output)
                     .expect("JSON formatting is infallible");
@@ -443,7 +453,7 @@ pub fn main_entry() {
         }
         return;
     }
-    let args = Args::parse();
+    let args = Args::from_matches(&matches);
     match run_cli(&args) {
         Ok(output) => {
             let output_writer: Box<dyn Write> = match args.output {
