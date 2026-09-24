@@ -4,7 +4,6 @@ use crate::error::{AppError, ErrorCode};
 use crate::jsonl_merge::merge_event_sets;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -96,16 +95,25 @@ fn filename_matches_room(path: &Path, room: &str) -> bool {
     let Some(name) = path.file_name().map(|name| name.to_string_lossy()) else {
         return false;
     };
-    let Some(start) = name.find(room) else {
-        return false;
-    };
-    let end = start.saturating_add(room.len());
     let is_word = |byte: Option<u8>| byte.is_some_and(|b| b.is_ascii_alphanumeric());
-    !is_word(
-        start
-            .checked_sub(1)
-            .and_then(|index| name.as_bytes().get(index).copied()),
-    ) && !is_word(name.as_bytes().get(end).copied())
+    let mut offset = 0;
+    while let Some(relative_start) = name[offset..].find(room) {
+        let start = offset.saturating_add(relative_start);
+        let end = start.saturating_add(room.len());
+        if !is_word(
+            start
+                .checked_sub(1)
+                .and_then(|index| name.as_bytes().get(index).copied()),
+        ) && !is_word(name.as_bytes().get(end).copied())
+        {
+            return true;
+        }
+        offset = end;
+        if offset >= name.len() {
+            break;
+        }
+    }
+    false
 }
 
 fn input_files(dir: &Path, room: Option<&str>) -> Result<Vec<PathBuf>, AppError> {
@@ -149,7 +157,8 @@ fn validate_sort_metadata(events: &[rz_core::JsonValue], label: &str) -> Result<
     Ok(())
 }
 
-fn sort_events(events: &mut [rz_core::JsonValue]) {
+fn sort_events(events: &mut [rz_core::JsonValue]) -> Result<(), AppError> {
+    validate_sort_metadata(events, "merged aggregate")?;
     events.sort_by(|a, b| {
         let depth = |v: &rz_core::JsonValue| v["depth"].as_u64().unwrap();
         let ts = |v: &rz_core::JsonValue| v["origin_server_ts"].as_u64().unwrap();
@@ -164,6 +173,7 @@ fn sort_events(events: &mut [rz_core::JsonValue]) {
             .then_with(|| ts(a).cmp(&ts(b)))
             .then_with(|| id(a).cmp(&id(b)))
     });
+    Ok(())
 }
 
 fn output_bytes(events: &[rz_core::JsonValue]) -> Result<Vec<u8>, AppError> {
@@ -192,11 +202,11 @@ fn read_raw_input(path: &Path, input_dir: &Path) -> Result<RawInput, AppError> {
     let mut events = Vec::new();
     let mut lines = 0usize;
     for line in bytes.split(|byte| *byte == b'\n') {
-        lines = lines.saturating_add(1);
         let line = std::str::from_utf8(line)
             .map_err(|e| AppError::new(ErrorCode::MalformedJson, format!("{label}: {e}")))?
             .trim();
         if !line.is_empty() {
+            lines = lines.saturating_add(1);
             events.push(rz_core::JsonValue::parse(line)?);
         }
     }
@@ -262,6 +272,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
         file.write_all(bytes)?;
         file.sync_all()?;
         fs::rename(&temp, path)?;
+        fs::File::open(parent)?.sync_all()?;
         Ok::<(), std::io::Error>(())
     })();
     if result.is_err() {
@@ -276,38 +287,14 @@ fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
         .iter()
         .map(|path| read_raw_input(path, &options.input_dir))
         .collect::<Result<_, _>>()?;
-    let mut seen: HashMap<String, (String, rz_core::JsonValue)> = HashMap::new();
-    let mut duplicate_count = 0usize;
-    for input in &inputs {
-        for event in &input.events {
-            let Some(event_id) = event["event_id"].as_str() else {
-                return Err(AppError::new(
-                    ErrorCode::MalformedJson,
-                    format!("{}: event is missing a string event_id", input.label),
-                ));
-            };
-            if let Some((first_label, first_event)) = seen.get(event_id) {
-                duplicate_count = duplicate_count.saturating_add(1);
-                if first_event != event {
-                    return Err(AppError::new(
-                        ErrorCode::AggregateConflict,
-                        format!(
-                            "event_id {event_id} differs between {first_label} and {}",
-                            input.label
-                        ),
-                    ));
-                }
-            } else {
-                seen.insert(event_id.to_owned(), (input.label.clone(), event.clone()));
-            }
-        }
-    }
     let sets: Vec<(String, Vec<rz_core::JsonValue>)> = inputs
         .iter()
         .map(|input| (input.label.clone(), input.events.clone()))
         .collect();
     let mut events = merge_event_sets(&sets, false, options.quiet)?;
-    sort_events(&mut events);
+    let input_event_count: usize = inputs.iter().map(|input| input.events.len()).sum();
+    sort_events(&mut events)?;
+    let duplicate_count = input_event_count.saturating_sub(events.len());
     let output = output_bytes(&events)?;
     let manifest = manifest_value(
         &inputs,
@@ -336,6 +323,12 @@ fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
                 format!("manifest is invalid: {e}"),
             )
         })?;
+        if parsed["manifest_version"].as_u64() != Some(MANIFEST_VERSION) {
+            return Err(AppError::new(
+                ErrorCode::AggregateStale,
+                "manifest version is outdated; rerun without --check to regenerate it",
+            ));
+        }
         if existing_output != output || parsed != manifest {
             return Err(AppError::new(
                 ErrorCode::AggregateStale,
@@ -402,7 +395,7 @@ mod tests {
     #[test]
     fn sorting_rejects_missing_metadata_and_uses_event_id_tiebreaker() {
         let mut events = vec![event("$b", 2, 100, &["$a"]), event("$a", 1, 200, &[])];
-        sort_events(&mut events);
+        sort_events(&mut events).unwrap();
         assert_eq!(events[0]["event_id"], "$a");
         let mut missing = vec![rz_core::json!({"event_id": "$bad"})];
         assert!(validate_sort_metadata(&missing, "test").is_err());
@@ -438,10 +431,24 @@ mod tests {
         let raw_before = fs::read(&first_path).unwrap();
         aggregate(&options(&root, false)).unwrap();
         assert_eq!(fs::read(&first_path).unwrap(), raw_before);
+        let manifest = rz_core::JsonValue::parse_bytes(
+            &fs::read(root.join("merged/room.manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            manifest["inputs"].as_array().unwrap()[0]["lines"].as_u64(),
+            Some(1)
+        );
         assert_eq!(
             aggregate(&options(&root, true)).unwrap()["status"],
             "current"
         );
+        fs::write(root.join("merged/room.jsonl"), b"tampered\n").unwrap();
+        assert_eq!(
+            aggregate(&options(&root, true)).unwrap_err().code(),
+            ErrorCode::AggregateStale
+        );
+        aggregate(&options(&root, false)).unwrap();
         let third = event("$c", 3, 300, &["$b"]);
         let third_line = format!("{}\n", rz_core::json::write_string_value(&third).unwrap());
         fs::write(&second_path, format!("{second_line}{third_line}")).unwrap();
@@ -450,6 +457,24 @@ mod tests {
             ErrorCode::AggregateStale
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_directory_is_rejected() {
+        let root = unique_test_dir();
+        fs::create_dir_all(root.join("unmerged")).unwrap();
+        assert_eq!(
+            aggregate(&options(&root, false)).unwrap_err().code(),
+            ErrorCode::EmptyInput
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_requires_a_valid_parent() {
+        let root = unique_test_dir();
+        let error = write_atomic(&root.join("missing/aggregate.jsonl"), b"test").unwrap_err();
+        assert_eq!(error.code(), ErrorCode::IoError);
     }
     #[test]
     fn conflicting_duplicate_ids_fail() {
