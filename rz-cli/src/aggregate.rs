@@ -300,7 +300,11 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
 }
 
 fn reject_input_output_overlap(options: &Options) -> Result<(), AppError> {
-    let output_dir = options.output.parent().unwrap_or_else(|| Path::new("."));
+    let output_dir = options
+        .output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     if same_path(&options.input_dir, output_dir) {
         return Err(AppError::new(
             ErrorCode::AggregateConflict,
@@ -569,6 +573,20 @@ mod tests {
         assert_eq!(error.code(), ErrorCode::AggregateConflict);
         assert!(error.to_string().contains("must be different"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bare_output_name_rejects_current_directory_input() {
+        let options = Options {
+            input_dir: PathBuf::from("."),
+            room: "room".to_owned(),
+            output: PathBuf::from("out.jsonl"),
+            check: false,
+            quiet: true,
+        };
+        let error = reject_input_output_overlap(&options)
+            .expect_err("a bare output name belongs to the current directory");
+        assert_eq!(error.code(), ErrorCode::AggregateConflict);
     }
 
     #[test]
