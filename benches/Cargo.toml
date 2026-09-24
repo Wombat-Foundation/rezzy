@@ -1,0 +1,48 @@
+[package]
+name = "rezzy-benches"
+version = "0.6.0-rc.0"
+edition = "2021"
+rust-version = "1.81"
+publish = false
+autobenches = false
+
+# Keep benchmark-only comparison dependencies out of the main workspace.
+[workspace]
+
+[dependencies]
+base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "batch"] }
+imbl = { version = "3.0", default-features = false }
+roaring = { version = "0.10", default-features = false }
+rezzy = { path = "..", features = ["signing", "signing-dalek"] }
+ruma-common = "0.19.0"
+ruma-events = "0.34.0"
+ruma-signatures = "0.21"
+ruma-state-res = { version = "0.17.0", features = ["__criterion"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = { version = "0.10", default-features = false }
+
+[dev-dependencies]
+ed25519-consensus = { version = "2.1", default-features = false, features = ["std"] }
+rand_08 = { package = "rand", version = "0.8" }
+simd-json = { version = "0.14.3", features = ["serde_impl", "runtime-detection", "swar-number-parsing"] }
+
+[[bench]]
+name = "rezzy"
+path = "main.rs"
+harness = false
+
+[[bench]]
+name = "signature_verify"
+path = "signature_verify.rs"
+harness = false
+
+[[bench]]
+name = "ed25519_backends"
+path = "ed25519_backends.rs"
+harness = false
+
+[[bin]]
+name = "compare-ruma"
+path = "compare_ruma.rs"

@@ -30,6 +30,7 @@ format: ##H Format codebase (Rust + Lean + scripts)
 .PHONY: check
 check:	##H Cargo check and code dupe
 	$(CARGO) check --all-targets --all-features
+	cd benches/ && $(CARGO) check --all-targets --all-features
 	-jscpd $$(git ls-files '*.rs')
 	# $(CARGO) fix --all-targets --allow-dirty
 
@@ -126,6 +127,7 @@ rust/coverage: ##H Run code coverage and print per-file summary
 		--text --output-dir .coverage \
 		--ignore-filename-regex 'src/bin/.*|scripts/.*|build\.rs$$'
 	@cat .coverage/text/index.txt
+	@echo
 
 .PHONY: rust/coverage-html
 rust/coverage-html: ##H Run code coverage and generate HTML report
@@ -137,6 +139,7 @@ rust/coverage-html: ##H Run code coverage and generate HTML report
 .PHONY: rust/clean
 rust/clean: ##H Remove Rust build artifacts
 	-$(CARGO) clean
+	-cd benches/ && $(CARGO) clean
 	rm -rf .coverage/
 
 .PHONY: rust/install

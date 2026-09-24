@@ -724,6 +724,67 @@ mod tests {
     use super::*;
 
     #[test]
+    fn empty_context_supports_all_non_timeline_output_formats() {
+        let events_map = HashMap::new();
+        let raw_map = HashMap::new();
+        let heads = Vec::new();
+        let final_state_map = imbl::OrdMap::new();
+        let resolved_state_list = Vec::new();
+        let auth_chain_ids = Vec::new();
+        let auth_graph = rz_core::auth::roaring::AuthGraph::build(&events_map);
+
+        let render = |format| {
+            let args = Args {
+                input: Vec::new(),
+                room: None,
+                homeserver: None,
+                token: None,
+                output: None,
+                state_res: None,
+                format,
+                debug: false,
+                quiet: false,
+                check: false,
+                origin: String::from("matrix.org"),
+            };
+            let ctx = FormattingContext {
+                args: &args,
+                events_map: &events_map,
+                raw_map: &raw_map,
+                heads: &heads,
+                final_state_map: &final_state_map,
+                resolved_state_list: &resolved_state_list,
+                auth_chain_ids: &auth_chain_ids,
+                auth_graph: &auth_graph,
+                version: StateResVersion::V2,
+                room_version: None,
+                duration: std::time::Duration::ZERO,
+                event_count: 0,
+            };
+            format_cli_output(&ctx)
+        };
+
+        assert_eq!(render(OutputFormat::Events), rz_core::json!([]));
+        assert_eq!(
+            render(OutputFormat::Federation),
+            rz_core::json!({"origin": "matrix.org", "state": [], "auth_chain": []})
+        );
+        assert_eq!(
+            render(OutputFormat::Default)["status"].as_str(),
+            Some("success")
+        );
+        assert_eq!(
+            render(OutputFormat::Summary)["status"].as_str(),
+            Some("success")
+        );
+        assert_eq!(render(OutputFormat::Deltas), rz_core::json!([]));
+        assert_eq!(
+            render(OutputFormat::ResolveState)["resolved_state"],
+            rz_core::json!([])
+        );
+    }
+
+    #[test]
     fn resolve_state_output_exposes_the_resolved_state_entries() {
         let args = Args {
             input: Vec::new(),

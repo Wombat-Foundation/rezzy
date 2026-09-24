@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![cfg_attr(all(coverage_nightly, test), feature(coverage_attribute))]
 
 #[macro_use]
 pub mod error;
@@ -464,5 +464,94 @@ pub fn main_entry() {
             eprintln!();
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::{run_cli, Args};
+    use crate::error::ErrorCode;
+    use rz_core::OutputFormat;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct TempFixture {
+        path: PathBuf,
+    }
+
+    impl Drop for TempFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    fn args_without_input() -> Args {
+        Args {
+            input: Vec::new(),
+            room: None,
+            homeserver: None,
+            token: None,
+            output: None,
+            state_res: None,
+            format: OutputFormat::Default,
+            debug: false,
+            quiet: true,
+            check: true,
+            origin: String::from("matrix.org"),
+        }
+    }
+
+    fn args_for_input(path: PathBuf) -> Args {
+        let mut args = args_without_input();
+        args.input = vec![path];
+        args
+    }
+
+    fn write_fixture(contents: &str) -> TempFixture {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "rezzy-cli-test-{}-{}.json",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, contents).expect("write CLI test fixture");
+        TempFixture { path }
+    }
+
+    #[test]
+    fn check_mode_validates_a_file_without_resolving_it() {
+        let fixture = write_fixture(r#"{"event_id":"$event","type":"m.room.message"}"#);
+        let result = run_cli(&args_for_input(fixture.path.clone())).expect("check mode succeeds");
+
+        assert_eq!(result, rz_core::json!({ "status": "ok" }));
+    }
+
+    #[test]
+    fn malformed_file_returns_malformed_json_error() {
+        let fixture = write_fixture("not JSON");
+        let error =
+            run_cli(&args_for_input(fixture.path.clone())).expect_err("malformed input fails");
+
+        assert_eq!(error.code(), ErrorCode::MalformedJson);
+    }
+
+    #[test]
+    fn missing_input_returns_missing_input_error() {
+        let args = args_without_input();
+
+        let error = run_cli(&args).expect_err("missing input fails");
+
+        assert_eq!(error.code(), ErrorCode::MissingInputFlag);
+    }
+
+    #[test]
+    fn room_input_requires_a_homeserver() {
+        let mut args = args_without_input();
+        args.room = Some(String::from("!room:example.org"));
+
+        let error = run_cli(&args).expect_err("missing homeserver fails");
+
+        assert_eq!(error.code(), ErrorCode::MissingHomeserver);
     }
 }
