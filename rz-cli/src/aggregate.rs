@@ -147,7 +147,7 @@ fn input_files(dir: &Path, room: Option<&str>) -> Result<Vec<PathBuf>, AppError>
     Ok(files)
 }
 
-fn validate_sort_metadata(events: &[rz_core::JsonValue], label: &str) -> Result<(), AppError> {
+fn validate_event_ids(events: &[rz_core::JsonValue], label: &str) -> Result<(), AppError> {
     for event in events {
         if event["event_id"].as_str().map_or(true, str::is_empty) {
             return Err(AppError::new(
@@ -155,6 +155,12 @@ fn validate_sort_metadata(events: &[rz_core::JsonValue], label: &str) -> Result<
                 format!("{label}: event is missing a non-empty string event_id"),
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_sort_metadata(events: &[rz_core::JsonValue], label: &str) -> Result<(), AppError> {
+    for event in events {
         if event["depth"].as_u64().is_none() {
             return Err(AppError::new(
                 ErrorCode::MalformedJson,
@@ -234,7 +240,7 @@ fn read_raw_input(path: &Path, input_dir: &Path) -> Result<RawInput, AppError> {
             format!("No input data provided in {label}"),
         ));
     }
-    validate_sort_metadata(&events, &label)?;
+    validate_event_ids(&events, &label)?;
     Ok(RawInput {
         label,
         sha256,
