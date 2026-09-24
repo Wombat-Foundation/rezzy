@@ -235,3 +235,94 @@ fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
 pub fn run_from_process_args() -> Result<rz_core::JsonValue, AppError> {
     aggregate(&parse_options())
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn event(id: &str, depth: u64, ts: u64, prev_events: &[&str]) -> rz_core::JsonValue {
+        rz_core::json!({
+            "event_id": id,
+            "type": "m.room.message",
+            "sender": "@alice:example.org",
+            "origin_server_ts": ts,
+            "depth": depth,
+            "prev_events": prev_events,
+            "auth_events": []
+        })
+    }
+
+    fn unique_test_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "rezzy-aggregate-test-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn sorting_is_deterministic_with_event_id_tiebreaker() {
+        let mut events = vec![
+            event("$b", 2, 100, &["$a"]),
+            event("$a", 1, 200, &[]),
+            event("$c", 2, 100, &["$a"]),
+        ];
+        sort_events(&mut events);
+        let ids: Vec<&str> = events
+            .iter()
+            .map(|value| value["event_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["$a", "$b", "$c"]);
+    }
+
+    #[test]
+    fn aggregate_writes_manifest_preserves_raw_and_detects_stale_inputs() {
+        let root = unique_test_dir();
+        let raw_dir = root.join("unmerged");
+        let output = root.join("merged/room.jsonl");
+        let manifest = root.join("merged/room.manifest.json");
+        fs::create_dir_all(&raw_dir).unwrap();
+
+        let first = event("$a", 1, 100, &[]);
+        let second = event("$b", 2, 200, &["$a"]);
+        let first_line = format!("{}\n", rz_core::json::write_string_value(&first).unwrap());
+        let second_line = format!("{}\n", rz_core::json::write_string_value(&second).unwrap());
+        let first_path = raw_dir.join("room-a.jsonl");
+        let second_path = raw_dir.join("room-b.jsonl");
+        fs::write(&first_path, &first_line).unwrap();
+        fs::write(&second_path, &second_line).unwrap();
+        let raw_before = fs::read(&first_path).unwrap();
+
+        let options = Options {
+            input_dir: raw_dir.clone(),
+            room: Some("room".to_owned()),
+            output: output.clone(),
+            manifest: manifest.clone(),
+            check: false,
+            quiet: true,
+        };
+        let result = aggregate(&options).unwrap();
+        assert_eq!(result["status"], "written");
+        assert_eq!(result["unique_events"].as_u64(), Some(2));
+        assert_eq!(fs::read(&first_path).unwrap(), raw_before);
+        assert!(output.is_file());
+        assert!(manifest.is_file());
+
+        let mut check_options = options;
+        check_options.check = true;
+        assert_eq!(aggregate(&check_options).unwrap()["status"], "current");
+
+        let third = event("$c", 3, 300, &["$b"]);
+        let third_line = format!("{}\n", rz_core::json::write_string_value(&third).unwrap());
+        fs::write(&second_path, format!("{second_line}{third_line}")).unwrap();
+        let stale = aggregate(&check_options).unwrap_err();
+        assert_eq!(stale.code(), ErrorCode::AggregateStale);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+}
