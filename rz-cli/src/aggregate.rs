@@ -1,7 +1,7 @@
 //! Deterministic raw-JSONL aggregation with provenance and stale checks.
 
 use crate::error::{AppError, ErrorCode};
-use crate::jsonl_merge::merge_event_slices_with_stats;
+use crate::jsonl_merge::merge_event_slices;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -19,7 +19,6 @@ struct Options {
     manifest: PathBuf,
     check: bool,
     quiet: bool,
-    allow_conflicts: bool,
 }
 
 #[must_use]
@@ -51,12 +50,6 @@ pub fn command() -> Command {
         )
         .arg(Arg::new("check").long("check").action(ArgAction::SetTrue))
         .arg(
-            Arg::new("allow-conflicts")
-                .long("allow-conflicts")
-                .action(ArgAction::SetTrue)
-                .help("Keep the first copy when duplicate event IDs have different payloads"),
-        )
-        .arg(
             Arg::new("quiet")
                 .long("quiet")
                 .short('q')
@@ -83,7 +76,6 @@ fn options_from_matches(matches: &ArgMatches) -> Options {
         manifest,
         check: matches.get_flag("check"),
         quiet: matches.get_flag("quiet"),
-        allow_conflicts: matches.get_flag("allow-conflicts"),
     }
 }
 
@@ -254,11 +246,9 @@ fn read_raw_input(path: &Path, input_dir: &Path) -> Result<RawInput, AppError> {
 fn manifest_value(
     inputs: &[RawInput],
     room: Option<&str>,
-    allow_conflicts: bool,
     output: &[u8],
     event_count: usize,
     duplicate_count: usize,
-    conflicting_count: usize,
 ) -> rz_core::JsonValue {
     let files: Vec<rz_core::JsonValue> = inputs
         .iter()
@@ -277,11 +267,9 @@ fn manifest_value(
         "tool_version": env!("CARGO_PKG_VERSION"),
         "algorithm": "deduplicate by event_id; sort by depth, origin_server_ts, event_id",
         "room_filter": room.unwrap_or(""),
-        "allow_conflicts": allow_conflicts,
         "inputs": files,
         "unique_events": event_count,
         "duplicate_event_copies": duplicate_count,
-        "conflicting_event_copies": conflicting_count,
         "output": {"sha256": sha256(output), "bytes": output.len()}
     })
 }
@@ -299,6 +287,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<Option<String>, AppError> {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
     let temp = parent.join(format!(".{name}.tmp-{}-{nonce}", std::process::id()));
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut warning = None;
     let result = (|| {
         let mut file = fs::OpenOptions::new()
@@ -333,19 +322,16 @@ fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
         .iter()
         .map(|input| (input.label.clone(), input.events.as_slice()))
         .collect();
-    let merge =
-        merge_event_slices_with_stats(&sets, false, options.quiet, !options.allow_conflicts)?;
+    let merge = merge_event_slices(&sets, false, options.quiet)?;
     let mut events = merge.events;
     sort_events(&mut events)?;
     let output = output_bytes(&events)?;
     let manifest = manifest_value(
         &inputs,
         options.room.as_deref(),
-        options.allow_conflicts,
         &output,
         events.len(),
         merge.duplicate_copies,
-        merge.conflicting_copies,
     );
 
     if options.check {
@@ -398,6 +384,9 @@ fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
     if let Some(parent) = options.manifest.parent() {
         fs::create_dir_all(parent)?;
     }
+    if options.manifest.exists() {
+        fs::remove_file(&options.manifest)?;
+    }
     let mut warnings = Vec::new();
     if let Some(warning) = write_atomic(&options.output, &output)? {
         if !options.quiet {
@@ -412,7 +401,7 @@ fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
         warnings.push(warning);
     }
     Ok(
-        rz_core::json!({"status": "written", "output": options.output.to_string_lossy().to_string(), "manifest": options.manifest.to_string_lossy().to_string(), "unique_events": events.len(), "input_files": files.len(), "duplicate_event_copies": merge.duplicate_copies, "conflicting_event_copies": merge.conflicting_copies, "warnings": warnings}),
+        rz_core::json!({"status": "written", "output": options.output.to_string_lossy().to_string(), "manifest": options.manifest.to_string_lossy().to_string(), "unique_events": events.len(), "input_files": files.len(), "duplicate_event_copies": merge.duplicate_copies, "warnings": warnings}),
     )
 }
 
@@ -461,7 +450,6 @@ mod tests {
             manifest: root.join("merged/room.manifest.json"),
             check,
             quiet: true,
-            allow_conflicts: false,
         }
     }
     #[test]
@@ -600,11 +588,6 @@ mod tests {
             aggregate(&options(&root, false)).unwrap_err().code(),
             ErrorCode::AggregateConflict
         );
-        let mut permissive = options(&root, false);
-        permissive.allow_conflicts = true;
-        let report = aggregate(&permissive).unwrap();
-        assert_eq!(report["duplicate_event_copies"].as_u64(), Some(1));
-        assert_eq!(report["conflicting_event_copies"].as_u64(), Some(1));
         fs::remove_dir_all(root).unwrap();
     }
 
