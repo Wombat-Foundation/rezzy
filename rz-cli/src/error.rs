@@ -54,6 +54,8 @@ pub enum ErrorCode {
     NetworkError,
     /// An aggregate does not match its raw inputs or manifest.
     AggregateStale,
+    /// Raw inputs contain different payloads for one event ID.
+    AggregateConflict,
 }
 
 impl ErrorCode {
@@ -77,6 +79,7 @@ impl ErrorCode {
             Self::InvalidHeadType => "E013_INVALID_HEAD_TYPE",
             Self::NetworkError => "E014_NETWORK_ERROR",
             Self::AggregateStale => "E015_AGGREGATE_STALE",
+            Self::AggregateConflict => "E016_AGGREGATE_CONFLICT",
         }
     }
 }
