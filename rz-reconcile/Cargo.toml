@@ -6,6 +6,7 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../README.md"
 description = "MSC4521 minisketch reconciliation: GF(64) arithmetic, strata estimation, and bucket sketches."
 keywords = ["matrix", "reconciliation", "minisketch", "federation"]
 categories = ["algorithms", "mathematics"]

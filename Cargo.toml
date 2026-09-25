@@ -78,6 +78,7 @@ simd-json = { version = "=0.14.3", default-features = false, features = ["runtim
 
 # CLI-only
 clap = { version = "=4.5.48", default-features = false, features = ["std", "env", "help", "usage", "error-context", "color", "suggestions"] }
+clap_complete = { version = "=4.5.48", default-features = false }
 mimalloc = { version = "0.1.52" }
 ureq = { version = "2.9", default-features = false }
 

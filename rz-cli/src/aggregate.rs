@@ -9,10 +9,22 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const DEFAULT_INPUT_DIR: &str = "unmerged";
+const DEFAULT_OUTPUT_DIR: &str = "merged";
+
+/// Where an aggregate gets its raw inputs from.
+#[derive(Debug)]
+enum Source {
+    /// Every matching `.jsonl` file in `input_dir` for one room slug.
+    Dir { room: String },
+    /// An explicit, already-grouped set of raw input files.
+    Files(Vec<PathBuf>),
+}
+
 #[derive(Debug)]
 struct Options {
     input_dir: PathBuf,
-    room: String,
+    source: Source,
     output: PathBuf,
     check: bool,
     quiet: bool,
@@ -26,13 +38,22 @@ pub fn command() -> Command {
             Arg::new("input-dir")
                 .long("input-dir")
                 .value_parser(clap::value_parser!(PathBuf))
-                .default_value("unmerged"),
+                .default_value(DEFAULT_INPUT_DIR),
         )
         .arg(
             Arg::new("room")
                 .long("room")
-                .required(true)
+                .required_unless_present("input")
+                .conflicts_with("input")
                 .help("Room slug used to select inputs and name the aggregate"),
+        )
+        .arg(
+            Arg::new("input")
+                .long("input")
+                .short('i')
+                .num_args(1..)
+                .value_parser(clap::value_parser!(PathBuf))
+                .help("Explicit input files; grouped by room slug (derived from filename) and each group aggregated"),
         )
         .arg(
             Arg::new("output")
@@ -58,23 +79,39 @@ pub fn command() -> Command {
 }
 
 fn options_from_matches(matches: &ArgMatches) -> Options {
-    let room = matches.get_one::<String>("room").unwrap().clone();
+    let room = matches
+        .get_one::<String>("room")
+        .cloned()
+        .unwrap_or_default();
     let output = matches
         .get_one::<PathBuf>("output")
         .cloned()
         .unwrap_or_else(|| {
             matches
                 .get_one::<PathBuf>("output-dir")
-                .unwrap()
+                .cloned()
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_OUTPUT_DIR))
                 .join(format!("merged-{room}.jsonl"))
         });
     Options {
-        input_dir: matches.get_one::<PathBuf>("input-dir").unwrap().clone(),
-        room,
+        input_dir: matches
+            .get_one::<PathBuf>("input-dir")
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_INPUT_DIR)),
+        source: Source::Dir { room },
         output,
         check: matches.get_flag("check"),
         quiet: matches.get_flag("quiet"),
     }
+}
+
+/// The output directory an aggregate writes into.
+fn output_dir(options: &Options) -> &Path {
+    options
+        .output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 fn json_bytes(value: &rz_core::JsonValue) -> Result<Vec<u8>, AppError> {
@@ -109,17 +146,47 @@ fn filename_matches_room(path: &Path, room: &str) -> bool {
 }
 
 fn filename_version(path: &Path) -> Option<String> {
-    let name = path.file_stem()?.to_string_lossy();
+    version_token(&path.file_stem()?.to_string_lossy())
+}
+
+/// First delimited `-v<digits>` token in `name`: the byte offset of its
+/// leading `-`, plus the digit run (without the `-v`).
+fn version_token_at(name: &str) -> Option<(usize, String)> {
     for (start, _) in name.match_indices("-v") {
-        let suffix = &name[start..];
-        let suffix = &suffix[2..];
-        let digits: String = suffix.chars().take_while(char::is_ascii_digit).collect();
-        let next = suffix.chars().nth(digits.chars().count());
+        let rest = &name[start..];
+        let after_marker = &rest[2..];
+        let digits: String = after_marker
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        let next = after_marker.chars().nth(digits.chars().count());
         if !digits.is_empty() && !next.is_some_and(|character| character.is_ascii_alphanumeric()) {
-            return Some(format!("-v{digits}"));
+            return Some((start, digits));
         }
     }
     None
+}
+
+fn version_token(name: &str) -> Option<String> {
+    let (_, digits) = version_token_at(name)?;
+    Some(format!("-v{digits}"))
+}
+
+/// Room slug from a raw filename: drops `local-`/`remote-` and `dag-`
+/// prefixes and the per-server suffix following the `-v<number>` token.
+///
+/// The returned slug is the filename truncated after the *matching* version
+/// token, so `remote-room-v12-merged.jsonl` and `local-dag-room-v12.jsonl`
+/// both yield `room-v12`. Returns `None` when no version token is present.
+fn room_slug_from_filename(path: &Path) -> Option<String> {
+    let name = path.file_stem()?.to_string_lossy();
+    let name = name
+        .strip_prefix("local-")
+        .or_else(|| name.strip_prefix("remote-"))
+        .unwrap_or(&name);
+    let name = name.strip_prefix("dag-").unwrap_or(name);
+    let (start, digits) = version_token_at(name)?;
+    Some(format!("{}-v{}", &name[..start], digits))
 }
 
 fn normalized_path(path: &Path) -> Option<PathBuf> {
@@ -299,30 +366,74 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
 }
 
 fn reject_input_output_overlap(options: &Options) -> Result<(), AppError> {
-    let output_dir = options
-        .output
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    if same_path(&options.input_dir, output_dir) {
+    if same_path(&options.input_dir, output_dir(options)) {
         return Err(AppError::new(
             ErrorCode::AggregateConflict,
             format!(
                 "input directory {} and output directory {} must be different",
                 options.input_dir.display(),
-                output_dir.display()
+                output_dir(options).display()
             ),
         ));
     }
     Ok(())
 }
 
+/// Reject explicit `-i` inputs that would collide with, or be rewritten as,
+/// the aggregate output.
+///
+/// This mirrors the directory-mode check but only rejects inputs that are the
+/// output itself or a direct child of its directory: directory discovery is
+/// non-recursive, so deeper subdirectories cannot be swept back in. Symlinked
+/// paths compare by their [`normalized_path`] resolution.
+fn reject_explicit_output_overlap(options: &Options, files: &[PathBuf]) -> Result<(), AppError> {
+    let destination = output_dir(options);
+    for file in files {
+        if same_path(file, &options.output) {
+            return Err(AppError::new(
+                ErrorCode::AggregateConflict,
+                format!(
+                    "input file {} is the same as the output file {}",
+                    file.display(),
+                    options.output.display()
+                ),
+            ));
+        }
+        let parent_matches = normalized_path(file)
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .zip(normalized_path(destination))
+            .is_some_and(|(parent, output)| parent == output);
+        if parent_matches {
+            return Err(AppError::new(
+                ErrorCode::AggregateConflict,
+                format!(
+                    "input file {} is inside output directory {}; use a different --output-dir",
+                    file.display(),
+                    destination.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
-    reject_input_output_overlap(options)?;
-    let files = input_files(&options.input_dir, &options.room)?;
+    let (files, label_base) = match &options.source {
+        Source::Files(files) => {
+            reject_explicit_output_overlap(options, files)?;
+            (files.clone(), Path::new(""))
+        }
+        Source::Dir { room } => {
+            reject_input_output_overlap(options)?;
+            (
+                input_files(&options.input_dir, room)?,
+                options.input_dir.as_path(),
+            )
+        }
+    };
     let inputs: Vec<RawInput> = files
         .iter()
-        .map(|path| read_raw_input(path, &options.input_dir))
+        .map(|path| read_raw_input(path, label_base))
         .collect::<Result<_, _>>()?;
     let sets: Vec<(String, &[rz_core::JsonValue])> = inputs
         .iter()
@@ -359,14 +470,103 @@ fn aggregate(options: &Options) -> Result<rz_core::JsonValue, AppError> {
     )
 }
 
+/// Outcome of an aggregate command.
+#[derive(Debug)]
+pub enum AggregateOutcome {
+    /// Every requested room aggregated successfully.
+    Complete(rz_core::JsonValue),
+    /// Some rooms failed; the JSON still carries every per-room result and a
+    /// structured error entry for each failure.
+    Partial(rz_core::JsonValue),
+}
+
 /// Run the aggregation command from parsed arguments.
+///
+/// Returns a single-room result unchanged, or a per-room report object for
+/// `-i` grouping that preserves successful rooms even when others fail.
+///
+/// Filename/slug errors abort the whole run before any room is processed;
+/// per-room aggregation failures are instead reported in the `Partial`
+/// outcome, so a bad room never discards a good one.
 ///
 /// # Errors
 ///
 /// Returns an error when an input is malformed, duplicate event IDs conflict,
-/// files cannot be read or written, or an existing aggregate is stale.
-pub fn run_from_matches(matches: &ArgMatches) -> Result<rz_core::JsonValue, AppError> {
-    aggregate(&options_from_matches(matches))
+/// files cannot be read or written, an existing aggregate is stale, an input
+/// filename has no derivable room slug, or `-o` is combined with multi-room
+/// input.
+pub fn run_from_matches(matches: &ArgMatches) -> Result<AggregateOutcome, AppError> {
+    let base = options_from_matches(matches);
+    let Some(inputs) = matches.get_many::<PathBuf>("input") else {
+        return aggregate(&base).map(AggregateOutcome::Complete);
+    };
+    let mut groups: std::collections::BTreeMap<String, Vec<PathBuf>> =
+        std::collections::BTreeMap::new();
+    for path in inputs {
+        let slug = room_slug_from_filename(path).ok_or_else(|| {
+            AppError::new(
+                ErrorCode::AggregateConflict,
+                format!(
+                    "cannot derive a versioned room slug from {}",
+                    path.display()
+                ),
+            )
+        })?;
+        groups.entry(slug).or_default().push(path.clone());
+    }
+    let output_override = matches.get_one::<PathBuf>("output").cloned();
+    let default_output_dir = matches
+        .get_one::<PathBuf>("output-dir")
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_OUTPUT_DIR));
+    if output_override.is_some() && groups.len() > 1 {
+        return Err(AppError::new(
+            ErrorCode::AggregateConflict,
+            format!(
+                "-o needs a single room, but inputs span {} rooms",
+                groups.len()
+            ),
+        ));
+    }
+    let mut rooms = Vec::new();
+    let mut failed = 0_usize;
+    for (room, files) in groups {
+        let output = output_override
+            .clone()
+            .unwrap_or_else(|| default_output_dir.join(format!("merged-{room}.jsonl")));
+        let options = Options {
+            source: Source::Files(files),
+            input_dir: base.input_dir.clone(),
+            output,
+            check: base.check,
+            quiet: base.quiet,
+        };
+        match aggregate(&options) {
+            Ok(mut result) => {
+                let _ = result.insert("room".to_owned(), rz_core::json!(room));
+                rooms.push(result);
+            }
+            Err(e) => {
+                failed = failed.saturating_add(1);
+                rooms.push(rz_core::json!({
+                    "room": room,
+                    "status": "error",
+                    "code": e.code().code(),
+                    "error": e.to_string(),
+                }));
+            }
+        }
+    }
+    let report = rz_core::json!({
+        "status": if failed == 0 { "written" } else { "partial" },
+        "failed": failed,
+        "rooms": rooms,
+    });
+    if failed > 0 {
+        Ok(AggregateOutcome::Partial(report))
+    } else {
+        Ok(AggregateOutcome::Complete(report))
+    }
 }
 
 #[cfg(test)]
@@ -399,7 +599,9 @@ mod tests {
     fn options(root: &Path, check: bool) -> Options {
         Options {
             input_dir: root.join("unmerged"),
-            room: "room".to_owned(),
+            source: Source::Dir {
+                room: "room".to_owned(),
+            },
             output: root.join("merged/room.jsonl"),
             check,
             quiet: true,
@@ -561,7 +763,9 @@ mod tests {
     fn bare_output_name_rejects_current_directory_input() {
         let options = Options {
             input_dir: PathBuf::from("."),
-            room: "room".to_owned(),
+            source: Source::Dir {
+                room: "room".to_owned(),
+            },
             output: PathBuf::from("out.jsonl"),
             check: false,
             quiet: true,
@@ -622,6 +826,255 @@ mod tests {
             aggregate(&options(&root, false)).unwrap_err().code(),
             ErrorCode::AggregateConflict
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn room_slug_truncates_at_the_matching_version_token() {
+        assert_eq!(
+            room_slug_from_filename(Path::new("remote-room-v12x-v12-merged.jsonl")),
+            Some("room-v12x-v12".to_owned())
+        );
+        assert_eq!(
+            room_slug_from_filename(Path::new("local-room-v12.jsonl")),
+            Some("room-v12".to_owned())
+        );
+    }
+
+    #[test]
+    fn room_slug_is_shared_across_raw_filename_styles() {
+        let expected = Some("room-v12".to_owned());
+        for name in [
+            "local-room-v12.jsonl",
+            "remote-room-v12.jsonl",
+            "remote-dag-room-v12-merged.jsonl",
+            "local-dag-room-v12.jsonl",
+        ] {
+            assert_eq!(room_slug_from_filename(Path::new(name)), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn room_slug_requires_a_version_token() {
+        assert_eq!(room_slug_from_filename(Path::new("room.jsonl")), None);
+        assert_eq!(
+            room_slug_from_filename(Path::new("remote-room.jsonl")),
+            None
+        );
+    }
+
+    #[test]
+    fn explicit_input_labels_keep_the_full_path() {
+        let root = unique_test_dir();
+        let raw_dir = root.join("unmerged");
+        fs::create_dir_all(&raw_dir).unwrap();
+        let path = raw_dir.join("remote-room-v12.jsonl");
+        let only = event("$a", 1, 100, &[]);
+        fs::write(
+            &path,
+            format!("{}\n", rz_core::json::write_string_value(&only).unwrap()),
+        )
+        .unwrap();
+        let input = read_raw_input(&path, Path::new("")).unwrap();
+        assert_eq!(input.label, path.to_string_lossy());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_input_inside_output_directory_is_rejected() {
+        let root = unique_test_dir();
+        let existing = root.join("merged/local-room-v12.jsonl");
+        fs::create_dir_all(existing.parent().unwrap()).unwrap();
+        fs::write(&existing, b"{}\n").unwrap();
+        let mut options = options(&root, false);
+        options.source = Source::Files(vec![existing]);
+        options.output = root.join("merged/merged-room.jsonl");
+        let error = aggregate(&options).expect_err("input inside output dir should be rejected");
+        assert_eq!(error.code(), ErrorCode::AggregateConflict);
+        assert!(error.to_string().contains("inside output directory"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_input_equal_to_output_is_rejected() {
+        let root = unique_test_dir();
+        let output = root.join("merged/merged-room.jsonl");
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+        fs::write(&output, b"{}\n").unwrap();
+        let mut options = options(&root, false);
+        options.source = Source::Files(vec![output.clone()]);
+        options.output = output;
+        let error = aggregate(&options).expect_err("input equal to output should be rejected");
+        assert_eq!(error.code(), ErrorCode::AggregateConflict);
+        assert!(error.to_string().contains("same as the output file"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn explicit_matches(paths: &[&Path], extra: &[&str]) -> ArgMatches {
+        let mut args: Vec<String> = vec!["aggregate".to_owned(), "-i".to_owned()];
+        args.extend(paths.iter().map(|path| path.to_string_lossy().into_owned()));
+        args.extend(extra.iter().map(|value| (*value).to_owned()));
+        command()
+            .try_get_matches_from(args)
+            .expect("explicit aggregate arguments should parse")
+    }
+
+    fn room_file(dir: &Path, name: &str, id: &str) -> PathBuf {
+        fs::create_dir_all(dir).unwrap();
+        let path = dir.join(name);
+        let only = event(id, 1, 100, &[]);
+        fs::write(
+            &path,
+            format!("{}\n", rz_core::json::write_string_value(&only).unwrap()),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn explicit_inputs_group_by_room_and_write_each_aggregate() {
+        let root = unique_test_dir();
+        let raw_dir = root.join("raw");
+        let first = room_file(&raw_dir, "remote-room-a-v12.jsonl", "$a");
+        let second = room_file(&raw_dir, "local-room-b-v12.jsonl", "$b");
+        let out_dir = root.join("merged");
+        let out_dir_lossy = out_dir.to_string_lossy();
+        let matches = explicit_matches(
+            &[first.as_path(), second.as_path()],
+            &["--output-dir", out_dir_lossy.as_ref()],
+        );
+        let report = match run_from_matches(&matches).unwrap() {
+            AggregateOutcome::Complete(report) => report,
+            AggregateOutcome::Partial(report) => panic!("unexpected partial: {report:?}"),
+        };
+        assert_eq!(report["status"].as_str(), Some("written"));
+        assert_eq!(report["failed"].as_u64(), Some(0));
+        assert_eq!(report["rooms"].as_array().unwrap().len(), 2);
+        assert!(out_dir.join("merged-room-a-v12.jsonl").exists());
+        assert!(out_dir.join("merged-room-b-v12.jsonl").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn output_override_requires_a_single_room() {
+        let root = unique_test_dir();
+        let first = root.join("room-a-v12.jsonl");
+        let second = root.join("room-b-v12.jsonl");
+        let matches = explicit_matches(&[first.as_path(), second.as_path()], &["-o", "out.jsonl"]);
+        let error = run_from_matches(&matches).expect_err("multi-room -o should fail");
+        assert_eq!(error.code(), ErrorCode::AggregateConflict);
+        assert!(error.to_string().contains("single room"));
+    }
+
+    #[test]
+    fn distinct_raw_names_for_one_room_are_grouped() {
+        let root = unique_test_dir();
+        let raw_dir = root.join("raw");
+        fs::create_dir_all(&raw_dir).unwrap();
+        let first = raw_dir.join("local-room-v12.jsonl");
+        let second = raw_dir.join("remote-room-v12-federated.jsonl");
+        let event_a = event("$a", 1, 100, &[]);
+        let event_b = event("$b", 2, 200, &["$a"]);
+        fs::write(
+            &first,
+            format!("{}\n", rz_core::json::write_string_value(&event_a).unwrap()),
+        )
+        .unwrap();
+        fs::write(
+            &second,
+            format!("{}\n", rz_core::json::write_string_value(&event_b).unwrap()),
+        )
+        .unwrap();
+        let out_dir = root.join("merged");
+        let out_dir_lossy = out_dir.to_string_lossy();
+        let matches = explicit_matches(
+            &[first.as_path(), second.as_path()],
+            &["--output-dir", out_dir_lossy.as_ref()],
+        );
+        let report = match run_from_matches(&matches).unwrap() {
+            AggregateOutcome::Complete(report) => report,
+            AggregateOutcome::Partial(report) => panic!("unexpected partial: {report:?}"),
+        };
+        let rooms = report["rooms"].as_array().unwrap();
+        assert_eq!(rooms.len(), 1, "both raw names belong to room-v12");
+        assert_eq!(rooms[0]["room"].as_str(), Some("room-v12"));
+        assert_eq!(rooms[0]["input_files"].as_u64(), Some(2));
+        assert!(out_dir.join("merged-room-v12.jsonl").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn check_mode_in_explicit_mode_uses_content_not_labels() {
+        let root = unique_test_dir();
+        let raw_dir = root.join("raw");
+        let raw = room_file(&raw_dir, "remote-room-a-v12.jsonl", "$a");
+        let out_dir = root.join("merged");
+        let out_dir_lossy = out_dir.to_string_lossy();
+        let write_matches =
+            explicit_matches(&[raw.as_path()], &["--output-dir", out_dir_lossy.as_ref()]);
+        assert!(matches!(
+            run_from_matches(&write_matches).unwrap(),
+            AggregateOutcome::Complete(_)
+        ));
+        let check_matches = explicit_matches(
+            &[raw.as_path()],
+            &["--check", "--output-dir", out_dir_lossy.as_ref()],
+        );
+        let report = match run_from_matches(&check_matches).unwrap() {
+            AggregateOutcome::Complete(report) => report,
+            AggregateOutcome::Partial(report) => panic!("unexpected partial: {report:?}"),
+        };
+        assert_eq!(
+            report["rooms"].as_array().unwrap()[0]["status"].as_str(),
+            Some("current")
+        );
+        // A changed input makes the same check stale, proving labels are not
+        // part of the compared aggregate bytes.
+        let changed = event("$a", 1, 101, &[]);
+        fs::write(
+            &raw,
+            format!("{}\n", rz_core::json::write_string_value(&changed).unwrap()),
+        )
+        .unwrap();
+        let stale = match run_from_matches(&check_matches).unwrap() {
+            AggregateOutcome::Partial(report) => report,
+            AggregateOutcome::Complete(report) => panic!("expected partial: {report:?}"),
+        };
+        assert_eq!(
+            stale["rooms"].as_array().unwrap()[0]["code"].as_str(),
+            Some("E015_AGGREGATE_STALE")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn partial_failure_preserves_successful_rooms() {
+        let root = unique_test_dir();
+        let raw_dir = root.join("raw");
+        let good = room_file(&raw_dir, "remote-room-a-v12.jsonl", "$a");
+        let bad = raw_dir.join("local-room-b-v12.jsonl");
+        fs::write(&bad, b"not json\n").unwrap();
+        let out_dir = root.join("merged");
+        let out_dir_lossy = out_dir.to_string_lossy();
+        let matches = explicit_matches(
+            &[good.as_path(), bad.as_path()],
+            &["--output-dir", out_dir_lossy.as_ref()],
+        );
+        let report = match run_from_matches(&matches).unwrap() {
+            AggregateOutcome::Partial(report) => report,
+            AggregateOutcome::Complete(report) => panic!("expected partial: {report:?}"),
+        };
+        assert_eq!(report["status"].as_str(), Some("partial"));
+        assert_eq!(report["failed"].as_u64(), Some(1));
+        let rooms = report["rooms"].as_array().unwrap();
+        let failures: Vec<_> = rooms
+            .iter()
+            .filter(|room| room["status"].as_str() == Some("error"))
+            .collect();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0]["room"].as_str(), Some("room-b-v12"));
+        assert_eq!(failures[0]["code"].as_str(), Some("E006_MALFORMED_JSON"));
+        assert!(out_dir.join("merged-room-a-v12.jsonl").exists());
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -177,6 +177,15 @@ pub fn cli_command() -> clap::Command {
                 .default_value("matrix.org"),
         )
         .subcommand(aggregate::command())
+        .subcommand(
+            clap::Command::new("completions")
+                .about("Print a shell completion script to stdout")
+                .arg(
+                    clap::Arg::new("shell")
+                        .required(true)
+                        .value_parser(clap::value_parser!(clap_complete::Shell)),
+                ),
+        )
 }
 
 fn misplaced_top_level_argument(matches: &clap::ArgMatches) -> Option<String> {
@@ -454,7 +463,16 @@ pub fn run_cli(args: &Args) -> Result<rz_core::JsonValue, error::AppError> {
 /// Panics if the output file cannot be created or written, or if the JSON
 /// output cannot be formatted.
 pub fn main_entry() {
-    let matches = cli_command().get_matches();
+    let mut command = cli_command();
+    let matches = command.get_matches_mut();
+    if let Some(("completions", sub)) = matches.subcommand() {
+        let shell = *sub
+            .get_one::<clap_complete::Shell>("shell")
+            .expect("shell is required");
+        let name = command.get_name().to_owned();
+        clap_complete::generate(shell, &mut command, name, &mut io::stdout());
+        return;
+    }
     if let Some(("aggregate", aggregate_matches)) = matches.subcommand() {
         if let Some(id) = misplaced_top_level_argument(&matches) {
             eprintln!(
@@ -463,10 +481,21 @@ pub fn main_entry() {
             std::process::exit(2);
         }
         match aggregate::run_from_matches(aggregate_matches) {
-            Ok(output) => {
-                let pretty = rz_core::json::write_string_pretty(&output)
+            Ok(outcome) => {
+                let output = match &outcome {
+                    aggregate::AggregateOutcome::Complete(output)
+                    | aggregate::AggregateOutcome::Partial(output) => output,
+                };
+                let pretty = rz_core::json::write_string_pretty(output)
                     .expect("JSON formatting is infallible");
                 println!("{pretty}");
+                if let aggregate::AggregateOutcome::Partial(report) = &outcome {
+                    if !aggregate_matches.get_flag("quiet") {
+                        let failed = report["failed"].as_u64().unwrap_or(0);
+                        eprintln!("Error: {failed} room(s) failed; see the JSON report");
+                    }
+                    std::process::exit(1);
+                }
             }
             Err(e) => {
                 eprintln!("Error: {e}");
@@ -666,6 +695,31 @@ mod cli_tests {
             misplaced_top_level_argument(&matches).as_deref(),
             Some("quiet")
         );
+    }
+
+    #[test]
+    fn completions_subcommand_parses_a_shell() {
+        let matches = cli_command()
+            .try_get_matches_from(["rezzy", "completions", "bash"])
+            .expect("completions should accept a shell");
+        let Some(("completions", sub)) = matches.subcommand() else {
+            panic!("completions subcommand missing");
+        };
+        assert_eq!(
+            sub.get_one::<clap_complete::Shell>("shell").copied(),
+            Some(clap_complete::Shell::Bash)
+        );
+    }
+
+    #[test]
+    fn completions_generate_a_bash_script() {
+        let mut command = cli_command();
+        let name = command.get_name().to_owned();
+        let mut buffer = Vec::new();
+        clap_complete::generate(clap_complete::Shell::Bash, &mut command, name, &mut buffer);
+        let script = String::from_utf8(buffer).expect("completion output is UTF-8");
+        assert!(!script.is_empty());
+        assert!(script.contains("rezzy"));
     }
 
     #[test]
