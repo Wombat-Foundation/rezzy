@@ -664,7 +664,13 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<AggregateOutcome, AppErr
         }
     }
     let report = rz_core::json!({
-        "status": if failed == 0 { "written" } else { "partial" },
+        "status": if failed > 0 {
+            "partial"
+        } else if base.check {
+            "current"
+        } else {
+            "written"
+        },
         "failed": failed,
         "skipped": skipped,
         "rooms": rooms,
@@ -1160,6 +1166,11 @@ mod tests {
         assert_eq!(
             report["rooms"].as_array().unwrap()[0]["status"].as_str(),
             Some("current")
+        );
+        assert_eq!(
+            report["status"].as_str(),
+            Some("current"),
+            "top-level status must not claim `written` when --check wrote nothing"
         );
         // A changed input makes the same check stale, proving labels are not
         // part of the compared aggregate bytes.
