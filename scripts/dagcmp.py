@@ -5,6 +5,8 @@ Usage:
     dagcmp.py <room-slug> [--prefix PREFIX] [--verbose] [--rank] [--chain]
 """
 
+# pylint: disable=duplicate-code
+
 import argparse
 import json
 import re
@@ -13,10 +15,25 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypedDict
+
+
+class ChainResult(TypedDict):
+    """A single greedy-chain analysis result for one server."""
+
+    server: str
+    joined: int
+    left: int
+    ban: int
+    chain_len: int
+    partners: list[str]
 
 
 @dataclass
 class ServerReport:
+    """Aggregated per-server metrics and state-res fidelity scores."""
+
+    # pylint: disable=too-many-instance-attributes
     server: str
     events: int = 0
     min_depth: int = 0
@@ -41,6 +58,7 @@ class ServerReport:
 
 
 def run_ruma(files: list[str], version: str = "v2-1") -> dict | None:
+    """Run rezzy state-res over the given files and return the summary JSON."""
     inputs = []
     for f in files:
         inputs.extend(["-i", f])
@@ -53,7 +71,7 @@ def run_ruma(files: list[str], version: str = "v2-1") -> dict | None:
         "-f",
         "summary",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         return None
     try:
@@ -65,7 +83,7 @@ def run_ruma(files: list[str], version: str = "v2-1") -> dict | None:
 def load_event_ids(path: str) -> set[str]:
     """Load all event_ids from a JSONL file."""
     ids = set()
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -86,7 +104,7 @@ def get_depth_stats(path: str) -> tuple[int, int, str, float]:
     root_id = ""
     total_prev = 0
     n_events = 0
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -97,8 +115,7 @@ def get_depth_stats(path: str) -> tuple[int, int, str, float]:
                 if d < min_d:
                     min_d = d
                     root_id = obj.get("event_id", "")
-                if d > max_d:
-                    max_d = d
+                max_d = max(max_d, d)
                 prev = obj.get("prev_events", [])
                 total_prev += len(prev) if isinstance(prev, list) else 0
                 n_events += 1
@@ -128,7 +145,7 @@ def get_member_event_ids(
     summary: dict,
 ) -> dict[str, dict[str, str]]:
     """Map category -> {user_id: event_id}."""
-    result = {}
+    result: dict[str, dict[str, str]] = {}
     for cat in ("join", "leave", "ban", "invite", "knock"):
         result[cat] = {}
         cat_data = summary.get("membership", {}).get(cat, {})
@@ -144,6 +161,8 @@ def analyze(
     rank: bool,
     chain_analysis: bool,
 ):
+    """Compare server DAGs against merged ground truth and rank fidelity."""
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
     pattern = f"{prefix}-{room}-*.jsonl"
     files = sorted(Path(".").glob(pattern))
 
@@ -212,8 +231,7 @@ def analyze(
             if f_min < min_d:
                 min_d = f_min
                 root_id = f_root
-            if f_max > max_d:
-                max_d = f_max
+            max_d = max(max_d, f_max)
             # Accumulate for BF
             n_f = len(load_event_ids(str(f)))
             total_prev += int(f_bf * n_f)
@@ -359,7 +377,7 @@ def analyze(
     for cat in ("join", "leave", "ban", "invite"):
         target_eids.update(gt_member_eids.get(cat, {}).values())
 
-    chain_results = []
+    chain_results: list[ChainResult] = []
 
     for start in sorted(domain_files.keys()):
         current_chain = [start]
@@ -386,7 +404,7 @@ def analyze(
             uncovered -= best_added
 
         # State-res on the chain
-        chain_files = []
+        chain_files: list[str] = []
         for d in current_chain:
             chain_files.extend(str(f) for f in domain_files[d])
 
@@ -442,6 +460,7 @@ def analyze(
 
 
 def main():
+    """Parse CLI args and run the DAG comparison analysis."""
     parser = argparse.ArgumentParser(description="Federated DAG comparison tool")
     parser.add_argument("room", help="Room slug (e.g. c10y-...-v12)")
     parser.add_argument(

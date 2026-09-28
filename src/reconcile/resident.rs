@@ -16,6 +16,16 @@ pub const STRATA_COUNT: usize = 32;
 pub const STRATUM_CAPACITY: usize = 8;
 
 /// Per-population resident reconciliation state.
+// TODO(prefix-grinding): this structure is built once and incrementally
+// maintained, then reused to serve every peer that reconciles against it --
+// deliberately, to amortize the build cost across many sessions. That
+// design is in tension with the standard fix for h64 placement grinding
+// (a per-session keyed hash): keying would make bucket geometry
+// session-specific, forcing either a resident structure per active peer or
+// a coarser (room-scoped) key that doesn't defend against a malicious room
+// member, who already knows any room-scoped secret. See
+// `ElementHash::from_digest32`'s doc comment in algebraic.rs for the full
+// analysis; this is the amortization side of that tradeoff.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResidentKernel {
     accumulator: RoomAccumulator,

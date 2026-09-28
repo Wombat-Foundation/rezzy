@@ -99,7 +99,6 @@ pub fn to_persisted<K: Clone, V: Clone>(node: &HamtNode<K, V>) -> PersistedInter
     PersistedInternalNode {
         datamap: node.datamap,
         nodemap: node.nodemap,
-        structural_hash: node.structural_hash,
         leaves: node.leaves.clone(),
         child_hashes: node
             .children

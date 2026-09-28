@@ -246,6 +246,7 @@ fn run_streaming(
                 }
             }
         },
+        &String::new(),
     );
 
     (resolved_state_at, completed)

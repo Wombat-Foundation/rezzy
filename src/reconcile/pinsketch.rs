@@ -17,8 +17,36 @@ const FIELD_BITS: usize = 64;
 const MIXED_FACTOR_TRIALS: usize = 8;
 const FACTOR_TRIALS: usize = MIXED_FACTOR_TRIALS + FIELD_BITS;
 const FACTOR_PARAMETER_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
+// Only the test-only reference `trace_mod` still uses this directly; the
+// production path (`build_frobenius_basis`) derives the same round count
+// from `FIELD_BITS - 1`.
+#[cfg(test)]
 const TRACE_SQUARES: usize = 63;
-const MAX_FACTOR_WORK: usize = 8_000_000;
+// KNOWN GAP, still open: this covers observed *balanced* recursive
+// splitting, not a proven worst case.
+//
+// Measured directly (`find_roots_with_budget`'s own consumption, not a
+// hand derivation) against both random and adversarial-consecutive-value
+// degree-256 inputs: a full successful decode costs ~9.0-9.3M, and a
+// single node's full non-splitting 72-trial ladder (the shape a genuinely
+// undecodable degree-256 sketch produces) costs ~10.0M -- both comfortably
+// inside this budget with real, if modest, headroom.
+//
+// What's still unbounded is a *chain* of nodes each needing a full
+// non-splitting ladder before finally splitting -- e.g. a degenerate
+// sequence of (1, d-1) splits. Computed from this file's own cost
+// functions (`frobenius_basis_cost` + `FACTOR_TRIALS` *
+// `factor_trial_cost_with_basis` + `split_cost`, summed over degrees
+// d, d-1, ..., 2), that chain totals ~917M at d=256 -- ~57x this budget.
+// Random locators split near-binomially in practice (matching the
+// measurements above), so this degenerate shape is not something a
+// benchmark surfaces, and it fails safe into `BudgetExhausted` (routing
+// to the same fallback ladder callers already handle) rather than
+// corrupting anything -- but "degree 256 is decodable within
+// MAX_FACTOR_WORK" remains a statement about typical inputs, not a proven
+// bound. A real worst-case bound on the recursion, or a balance guarantee
+// on the splitting itself, would be needed to close this properly.
+const MAX_FACTOR_WORK: usize = 16_000_000;
 
 pub(crate) fn decode(
     odd_syndromes: &[u64],
@@ -36,6 +64,34 @@ pub(crate) fn decode(
         .ok_or(AlgebraicError::DecodeFailure)?;
     let mut roots = Vec::with_capacity(expected);
     find_roots(locator, &mut roots)?;
+    if roots.len() != expected || roots.contains(&0) {
+        return Err(AlgebraicError::DecodeFailure);
+    }
+    roots.sort_unstable();
+    Ok(roots)
+}
+
+/// Like [`decode`], but draws factoring work from `budget` and leaves the
+/// unspent remainder in it, so a caller decoding multiple sketches can share
+/// one budget across all of them instead of each call getting its own
+/// implicit ceiling.
+pub(crate) fn decode_with_budget(
+    odd_syndromes: &[u64],
+    max_elements: usize,
+    budget: &mut usize,
+) -> Result<Vec<u64>, AlgebraicError> {
+    let all = reconstruct_syndromes(odd_syndromes);
+    let mut locator = berlekamp_massey(&all, max_elements).ok_or(AlgebraicError::DecodeFailure)?;
+    if locator.len() == 1 {
+        return Ok(Vec::new());
+    }
+    locator.reverse();
+    let expected = locator
+        .len()
+        .checked_sub(1)
+        .ok_or(AlgebraicError::DecodeFailure)?;
+    let mut roots = Vec::with_capacity(expected);
+    find_roots_with_budget(locator, &mut roots, budget)?;
     if roots.len() != expected || roots.contains(&0) {
         return Err(AlgebraicError::DecodeFailure);
     }
@@ -137,30 +193,56 @@ fn poly_mod(modulus: &[u64], value: &mut Polynomial) -> Option<()> {
     if modulus.last() != Some(&1) {
         return None;
     }
+    // Dispatch on the evaluator backend once, outside the reduction loop,
+    // and let each arm monomorphize its own copy of the loop via the
+    // generic `poly_mod_reduce`, instead of matching on the backend once
+    // per row inside a single shared loop. The match cost was already
+    // trivial (branch-predicted, hoisted out of the loop in the prior
+    // pass), but this removes it from the loop body entirely so the
+    // compiler can optimize each backend's reduction independently.
+    match crate::reconcile::gf64_simd::get_evaluator() {
+        #[cfg(all(target_arch = "x86_64", has_avx512_support))]
+        crate::reconcile::gf64_simd::EvaluatorBackend::Avx512 => {
+            poly_mod_reduce::<crate::reconcile::gf64_simd::Avx512Evaluator>(
+                modulus_degree,
+                modulus,
+                value,
+            )?;
+        }
+        #[cfg(target_arch = "x86_64")]
+        crate::reconcile::gf64_simd::EvaluatorBackend::Sse => {
+            poly_mod_reduce::<crate::reconcile::gf64_simd::SseEvaluator>(
+                modulus_degree,
+                modulus,
+                value,
+            )?;
+        }
+        crate::reconcile::gf64_simd::EvaluatorBackend::Scalar => {
+            poly_mod_reduce::<crate::reconcile::gf64_simd::ScalarEvaluator>(
+                modulus_degree,
+                modulus,
+                value,
+            )?;
+        }
+    }
+    trim(value);
+    Some(())
+}
+
+fn poly_mod_reduce<E: Gf64Evaluator>(
+    modulus_degree: usize,
+    modulus: &[u64],
+    value: &mut Polynomial,
+) -> Option<()> {
     while value.len() >= modulus.len() {
         let term = value.pop()?;
         if term != 0 {
             let offset = value.len().checked_sub(modulus_degree)?;
             let target = &mut value[offset..offset.checked_add(modulus_degree)?];
             let source = &modulus[..modulus_degree];
-            let evaluator = crate::reconcile::gf64_simd::get_evaluator();
-
-            match evaluator {
-                #[cfg(all(target_arch = "x86_64", has_avx512_support))]
-                crate::reconcile::gf64_simd::EvaluatorBackend::Avx512 => {
-                    crate::reconcile::gf64_simd::Avx512Evaluator::poly_mac(term, source, target);
-                }
-                #[cfg(target_arch = "x86_64")]
-                crate::reconcile::gf64_simd::EvaluatorBackend::Sse => {
-                    crate::reconcile::gf64_simd::SseEvaluator::poly_mac(term, source, target);
-                }
-                crate::reconcile::gf64_simd::EvaluatorBackend::Scalar => {
-                    crate::reconcile::gf64_simd::ScalarEvaluator::poly_mac(term, source, target);
-                }
-            }
+            E::poly_mac(term, source, target);
         }
     }
-    trim(value);
     Some(())
 }
 
@@ -170,6 +252,46 @@ fn poly_div(mut dividend: Polynomial, divisor: &[u64]) -> Option<Polynomial> {
     }
     let mut quotient = vec![0; dividend.len().checked_sub(divisor.len())?.checked_add(1)?];
     let divisor_degree = divisor.len().checked_sub(1)?;
+    // See `poly_mod` for why the backend dispatch happens once here rather
+    // than once per reduction row inside a shared loop.
+    match crate::reconcile::gf64_simd::get_evaluator() {
+        #[cfg(all(target_arch = "x86_64", has_avx512_support))]
+        crate::reconcile::gf64_simd::EvaluatorBackend::Avx512 => {
+            poly_div_reduce::<crate::reconcile::gf64_simd::Avx512Evaluator>(
+                divisor_degree,
+                divisor,
+                &mut dividend,
+                &mut quotient,
+            )?;
+        }
+        #[cfg(target_arch = "x86_64")]
+        crate::reconcile::gf64_simd::EvaluatorBackend::Sse => {
+            poly_div_reduce::<crate::reconcile::gf64_simd::SseEvaluator>(
+                divisor_degree,
+                divisor,
+                &mut dividend,
+                &mut quotient,
+            )?;
+        }
+        crate::reconcile::gf64_simd::EvaluatorBackend::Scalar => {
+            poly_div_reduce::<crate::reconcile::gf64_simd::ScalarEvaluator>(
+                divisor_degree,
+                divisor,
+                &mut dividend,
+                &mut quotient,
+            )?;
+        }
+    }
+    trim(&mut quotient);
+    Some(quotient)
+}
+
+fn poly_div_reduce<E: Gf64Evaluator>(
+    divisor_degree: usize,
+    divisor: &[u64],
+    dividend: &mut Polynomial,
+    quotient: &mut Polynomial,
+) -> Option<()> {
     while dividend.len() >= divisor.len() {
         let term = dividend.pop()?;
         let position = dividend.len().checked_sub(divisor_degree)?;
@@ -177,25 +299,10 @@ fn poly_div(mut dividend: Polynomial, divisor: &[u64]) -> Option<Polynomial> {
         if term != 0 {
             let target = &mut dividend[position..position.checked_add(divisor_degree)?];
             let source = &divisor[..divisor_degree];
-            let evaluator = crate::reconcile::gf64_simd::get_evaluator();
-
-            match evaluator {
-                #[cfg(all(target_arch = "x86_64", has_avx512_support))]
-                crate::reconcile::gf64_simd::EvaluatorBackend::Avx512 => {
-                    crate::reconcile::gf64_simd::Avx512Evaluator::poly_mac(term, source, target);
-                }
-                #[cfg(target_arch = "x86_64")]
-                crate::reconcile::gf64_simd::EvaluatorBackend::Sse => {
-                    crate::reconcile::gf64_simd::SseEvaluator::poly_mac(term, source, target);
-                }
-                crate::reconcile::gf64_simd::EvaluatorBackend::Scalar => {
-                    crate::reconcile::gf64_simd::ScalarEvaluator::poly_mac(term, source, target);
-                }
-            }
+            E::poly_mac(term, source, target);
         }
     }
-    trim(&mut quotient);
-    Some(quotient)
+    Some(())
 }
 
 fn poly_gcd(mut left: Polynomial, mut right: Polynomial) -> Option<Polynomial> {
@@ -224,6 +331,15 @@ fn poly_square(poly: &mut Polynomial) -> Option<()> {
     Some(())
 }
 
+/// Naive reference implementation of `Tr(parameter * X) mod modulus`,
+/// re-deriving the full squaring recurrence from scratch for every
+/// `parameter`. Cost is `O(TRACE_SQUARES * degree^2)` *per call*. Superseded
+/// in the production path by `build_frobenius_basis` +
+/// `trace_from_basis`, which amortize the squaring recurrence across every
+/// trial for a given `modulus` instead of repeating it per trial (see that
+/// pair's doc comments). Kept as a test-only cross-check that the
+/// precomputed path computes the same trace.
+#[cfg(test)]
 fn trace_mod(modulus: &[u64], parameter: u64) -> Option<Polynomial> {
     let mut trace = vec![0, parameter];
     for _ in 0..TRACE_SQUARES {
@@ -235,6 +351,51 @@ fn trace_mod(modulus: &[u64], parameter: u64) -> Option<Polynomial> {
         poly_mod(modulus, &mut trace)?;
     }
     Some(trace)
+}
+
+/// One-time-per-polynomial precomputation consumed by `trace_from_basis`:
+/// the images `X^(2^0), X^(2^1), ..., X^(2^63) mod modulus`.
+///
+/// Squaring is GF(2)-linear in characteristic 2 (`(a+b)^2 = a^2+b^2`), so
+/// `(parameter*X)^(2^i) = parameter^(2^i) * X^(2^i)` -- the trace
+/// `sum_i (parameter*X)^(2^i) mod modulus` decomposes into
+/// `sum_i parameter^(2^i) * B_i`, where `B_i = X^(2^i) mod modulus` does not
+/// depend on `parameter` at all. Building this basis once per polynomial and
+/// reusing it across every trial in `find_roots_with_budget`'s ladder turns
+/// each trial's dominant cost from `O(TRACE_SQUARES * degree^2)` (the naive
+/// `trace_mod`, repeating the squaring-and-reduce recurrence per trial) into
+/// `O(FIELD_BITS * degree)` for the linear combination, leaving only the
+/// unavoidable `O(degree^2)` GCD/division per trial. See
+/// `frobenius_basis_cost` and `factor_trial_cost_with_basis`.
+fn build_frobenius_basis(modulus: &[u64]) -> Option<Vec<Polynomial>> {
+    let mut basis = Vec::with_capacity(FIELD_BITS);
+    let mut current = vec![0, 1]; // X
+    poly_mod(modulus, &mut current)?;
+    basis.push(current.clone());
+    for _ in 1..FIELD_BITS {
+        poly_square(&mut current)?;
+        poly_mod(modulus, &mut current)?;
+        basis.push(current.clone());
+    }
+    Some(basis)
+}
+
+/// Computes `Tr(parameter * X) mod modulus` from a basis built by
+/// `build_frobenius_basis` for the same `modulus`.
+fn trace_from_basis(basis: &[Polynomial], parameter: u64) -> Polynomial {
+    let width = basis.iter().map(Vec::len).max().unwrap_or(0);
+    let mut trace = vec![0_u64; width];
+    let mut power = parameter;
+    for basis_term in basis {
+        if power != 0 {
+            for (coefficient, term) in trace.iter_mut().zip(basis_term.iter()) {
+                *coefficient ^= gf64_mul(power, *term);
+            }
+        }
+        power = gf64_mul(power, power);
+    }
+    trim(&mut trace);
+    trace
 }
 
 const fn next_factor_parameter(mut state: u64) -> u64 {
@@ -305,8 +466,80 @@ fn find_roots(poly: Polynomial, roots: &mut Vec<u64>) -> Result<(), AlgebraicErr
     find_roots_with_budget(poly, roots, &mut work)
 }
 
-fn factor_trial_cost(degree: usize) -> Option<usize> {
-    degree.checked_mul(degree)?.checked_mul(TRACE_SQUARES)
+/// One-time cost of `build_frobenius_basis` for a degree-`degree`
+/// polynomial: `FIELD_BITS - 1` squaring+reduce rounds, each `O(degree^2)`
+/// -- the same per-round cost the naive `trace_mod` paid per trial, now
+/// paid once per recursion node instead.
+const fn frobenius_basis_cost(degree: usize) -> Option<usize> {
+    let Some(squared) = degree.checked_mul(degree) else {
+        return None;
+    };
+    let Some(rounds) = FIELD_BITS.checked_sub(1) else {
+        return None;
+    };
+    squared.checked_mul(rounds)
+}
+
+/// Per-trial cost once the node's Frobenius basis is already built:
+/// `O(FIELD_BITS * degree)` for `trace_from_basis`'s linear combination,
+/// plus `O(degree^2)` for `poly_gcd` (which runs a `poly_mod` internally).
+/// This is charged on every trial, whether or not it finds a split --
+/// `poly_div` is charged separately, only on the trial that actually
+/// splits, via `split_cost`. (An earlier version folded `poly_div`'s cost
+/// in here unconditionally on the theory that it kept this a safe upper
+/// bound; it didn't just pad the bound, it overcharged every non-splitting
+/// trial for work that never happened -- an average split takes ~3.7
+/// trials, so that wasted roughly 2.7x this term's cost of budget per
+/// node.)
+const fn factor_trial_cost_with_basis(degree: usize) -> Option<usize> {
+    let Some(trace_cost) = FIELD_BITS.checked_mul(degree) else {
+        return None;
+    };
+    let Some(gcd_cost) = degree.checked_mul(degree) else {
+        return None;
+    };
+    trace_cost.checked_add(gcd_cost)
+}
+
+/// Cost of `poly_div` on a successful split: `O(degree^2)`. Charged once,
+/// only on the trial that actually splits -- see `factor_trial_cost_with_basis`.
+const fn split_cost(degree: usize) -> Option<usize> {
+    degree.checked_mul(degree)
+}
+
+/// Upper bound on the work one `find_roots_with_budget` call can need for a
+/// locator of degree `degree`, covering the basis build plus a full
+/// `FACTOR_TRIALS`-trial ladder at that degree alone.
+///
+/// This deliberately does **not** try to bound the cost of the recursive
+/// splits below the root -- that recursion has no proven worst-case bound
+/// (see `MAX_FACTOR_WORK`'s comment). It exists so a caller decoding many
+/// sketches under one shared budget (`triage::decode_bucket_sketches`) can
+/// clamp how much of that shared budget any single sketch's decode is
+/// allowed to draw, so one pathological sketch can't starve the rest of a
+/// batch by exhausting the shared pool before later, cheaper sketches are
+/// even attempted. A sketch whose own recursion exceeds this ceiling will
+/// simply hit `BudgetExhausted` for its own allotment -- which is the
+/// intended outcome here, not a bug in this bound.
+pub(crate) const fn single_call_work_ceiling(degree: usize) -> Option<usize> {
+    let Some(basis) = frobenius_basis_cost(degree) else {
+        return None;
+    };
+    let Some(per_trial) = factor_trial_cost_with_basis(degree) else {
+        return None;
+    };
+    let Some(ladder) = per_trial.checked_mul(FACTOR_TRIALS) else {
+        return None;
+    };
+    // `split_cost` is charged at most once per node -- on the one trial
+    // (if any) that actually splits -- not per trial in the ladder.
+    let Some(split) = split_cost(degree) else {
+        return None;
+    };
+    let Some(subtotal) = basis.checked_add(ladder) else {
+        return None;
+    };
+    subtotal.checked_add(split)
 }
 
 fn find_roots_with_budget(
@@ -343,6 +576,12 @@ fn find_roots_with_budget(
             continue;
         }
 
+        let basis_cost = frobenius_basis_cost(degree).ok_or(AlgebraicError::DecodeFailure)?;
+        *work = work
+            .checked_sub(basis_cost)
+            .ok_or(AlgebraicError::BudgetExhausted)?;
+        let basis = build_frobenius_basis(&poly).ok_or(AlgebraicError::DecodeFailure)?;
+
         let mut split = None;
         let mut parameter = FACTOR_PARAMETER_SEED;
         for trial in 0..FACTOR_TRIALS {
@@ -356,13 +595,21 @@ fn find_roots_with_budget(
                     .checked_shl(basis_bit)
                     .ok_or(AlgebraicError::DecodeFailure)?;
             }
-            let cost = factor_trial_cost(degree).ok_or(AlgebraicError::DecodeFailure)?;
+            let cost = factor_trial_cost_with_basis(degree).ok_or(AlgebraicError::DecodeFailure)?;
             *work = work
                 .checked_sub(cost)
                 .ok_or(AlgebraicError::BudgetExhausted)?;
-            let trace = trace_mod(&poly, parameter).ok_or(AlgebraicError::DecodeFailure)?;
+            let trace = trace_from_basis(&basis, parameter);
             let factor = poly_gcd(poly.clone(), trace).ok_or(AlgebraicError::DecodeFailure)?;
             if factor.len() > 1 && factor.len() < poly.len() {
+                // poly_div only runs on this, the one trial that actually
+                // splits -- charged separately from the per-trial cost
+                // above so trials that don't split aren't overcharged for
+                // division work they never performed.
+                let div_cost = split_cost(degree).ok_or(AlgebraicError::DecodeFailure)?;
+                *work = work
+                    .checked_sub(div_cost)
+                    .ok_or(AlgebraicError::BudgetExhausted)?;
                 let quotient = poly_div(poly, &factor).ok_or(AlgebraicError::DecodeFailure)?;
                 split = Some((factor, quotient));
                 break;
@@ -441,6 +688,56 @@ mod tests {
         }
     }
 
+    /// `MAX_FACTOR_WORK`'s own comment documents an unproven gap: no proof
+    /// bounds the recursive-splitting cost, only measurements against
+    /// random and adversarial-consecutive-value degree-256 inputs, plus a
+    /// from-first-principles computation of one specific pathological shape
+    /// (a chain of (1, d-1) splits) that would exceed the budget ~57x over
+    /// if it occurred. This test does not close that gap -- constructing an
+    /// input that actually forces that exact recursive shape is a separate,
+    /// nontrivial exercise in choosing a locator polynomial with a
+    /// specific factorization structure over GF(2^64), not attempted here.
+    ///
+    /// What this *does* verify, on a real degree-256 decode: the
+    /// documented "fails safe" claim. `decode_with_budget` with a budget
+    /// far too small to complete any real decode must return
+    /// `BudgetExhausted` cleanly -- not panic, not loop unboundedly, not
+    /// return a wrong/partial root set -- for a large, real (not
+    /// specially-crafted) input, not just the small inputs the other tests
+    /// in this module use.
+    #[test]
+    fn budget_exhaustion_on_a_large_decode_fails_safe() {
+        let mut state = 0x243f_6a88_85a3_08d3_u64;
+        let size = 256;
+        let mut expected = Vec::new();
+        while expected.len() < size {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            if state != 0 && !expected.contains(&state) {
+                expected.push(state);
+            }
+        }
+        let mut odd = vec![0; size];
+        for value in &expected {
+            let squared = gf64_mul(*value, *value);
+            let mut power = *value;
+            for syndrome in &mut odd {
+                *syndrome ^= power;
+                power = gf64_mul(power, squared);
+            }
+        }
+
+        // Nowhere near enough to complete a degree-256 decode (measured at
+        // ~9-10M for a full decode/non-splitting ladder per this file's own
+        // comment) -- budget exhaustion must trigger, and trigger cleanly.
+        let mut budget = 1_000;
+        assert_eq!(
+            decode_with_budget(&odd, size, &mut budget),
+            Err(AlgebraicError::BudgetExhausted)
+        );
+    }
+
     #[test]
     fn decodes_a_triple_unsplit_by_the_mixed_parameter_prefix() {
         let expected = vec![1, 0xcd2, 0x1_d71a];
@@ -474,7 +771,7 @@ mod tests {
 
         let mut empty = Vec::new();
         poly_square(&mut empty).unwrap();
-        assert!(empty.is_empty());
+        assert_eq!(empty, [] as [u64; 0]);
     }
 
     #[test]
@@ -491,7 +788,7 @@ mod tests {
     fn root_finding_handles_constant_and_inseparable_polynomials() {
         let mut roots = Vec::new();
         find_roots(vec![1], &mut roots).unwrap();
-        assert!(roots.is_empty());
+        assert_eq!(roots, [] as [u64; 0]);
         assert_eq!(
             find_roots(vec![1, 0, 1], &mut roots),
             Err(AlgebraicError::DecodeFailure)
@@ -511,12 +808,51 @@ mod tests {
             find_roots_with_budget(polynomial, &mut roots, &mut 0),
             Err(AlgebraicError::BudgetExhausted)
         );
-        assert!(roots.is_empty());
+        assert_eq!(roots, [] as [u64; 0]);
     }
 
     #[test]
     fn maximum_degree_trace_exceeds_the_absolute_work_budget() {
-        assert!(factor_trial_cost(1_000).unwrap() > MAX_FACTOR_WORK);
+        // The one-time basis build alone already exceeds the budget at
+        // this degree (per-trial cost is deliberately small -- that's the
+        // whole point of the precompute -- so it wouldn't on its own).
+        assert!(frobenius_basis_cost(1_000).unwrap() > MAX_FACTOR_WORK);
+        // The combined single-call ceiling (basis + full trial ladder +
+        // one split) pins both halves of the cost model together.
+        assert!(single_call_work_ceiling(1_000).unwrap() > MAX_FACTOR_WORK);
+    }
+
+    #[test]
+    fn factor_trial_and_split_costs_are_pinned_independently() {
+        // The combined ceiling above can pass even if one of its two
+        // components silently drifts, as long as the other compensates.
+        // Pin each component's exact value at a fixed degree so a
+        // regression in either (e.g. factor_trial_cost_with_basis
+        // accidentally including a term it shouldn't, or split_cost
+        // losing one) shows up here even if single_call_work_ceiling's
+        // sum still happens to clear MAX_FACTOR_WORK. Values are well
+        // under MAX_FACTOR_WORK individually and are not meant to be --
+        // see the doc comment on factor_trial_cost_with_basis for why
+        // the per-trial cost is deliberately small.
+        assert_eq!(factor_trial_cost_with_basis(1_000), Some(1_064_000));
+        assert_eq!(split_cost(1_000), Some(1_000_000));
+    }
+
+    #[test]
+    fn frobenius_basis_matches_naive_trace_for_every_parameter() {
+        // A degree-4 modulus (x^4 + x + 1, i.e. coefficients low-to-high
+        // [1, 1, 0, 0, 1]) is enough to exercise every basis position for a
+        // handful of parameters, checked against the O(d^2)-per-call
+        // reference implementation.
+        let modulus = vec![1, 1, 0, 0, 1];
+        let basis = build_frobenius_basis(&modulus).unwrap();
+        for parameter in [0, 1, 2, 3, 0xdead_beef, u64::MAX] {
+            assert_eq!(
+                trace_from_basis(&basis, parameter),
+                trace_mod(&modulus, parameter).unwrap(),
+                "mismatch at parameter={parameter}"
+            );
+        }
     }
 
     #[test]

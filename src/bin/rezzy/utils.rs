@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::error::{AppError, ErrorCode};
 use crate::network::fetch_room_state;
 use crate::Args;
 use rezzy::basespec::event_types::{
@@ -29,16 +30,20 @@ use std::time::Instant;
 pub type SharedStateMap = std::sync::Arc<ResolvedState>;
 
 /// Parse a room version string.
-pub fn parse_room_version(ver: &str) -> anyhow::Result<StateResVersion> {
-    StateResVersion::from_room_version(ver)
-        .ok_or_else(|| anyhow::anyhow!("Unsupported room version: {ver}"))
+pub fn parse_room_version(ver: &str) -> Result<StateResVersion, AppError> {
+    StateResVersion::from_room_version(ver).ok_or_else(|| {
+        err!(
+            ErrorCode::UnsupportedVersion,
+            "Unsupported room version: {ver}"
+        )
+    })
 }
 
 /// Detect the room version from a state map.
 pub fn detect_version(
     events: &[serde_json::Value],
     debug: bool,
-) -> anyhow::Result<StateResVersion> {
+) -> Result<StateResVersion, AppError> {
     for ev in events {
         if ev.get(FIELD_TYPE).and_then(|t| t.as_str()) == Some(M_ROOM_CREATE) {
             if let Some(ver) = ev
@@ -54,10 +59,64 @@ pub fn detect_version(
         }
     }
 
-    anyhow::bail!(
+    bail_code!(
+        ErrorCode::NoCreateEvent,
         "No m.room.create event found — cannot detect room version. \
          Use --state-res to specify the algorithm manually."
     )
+}
+
+/// Detect the literal `content.room_version` string from `m.room.create`.
+///
+/// Distinct from [`detect_version`]: that returns the coarser
+/// [`StateResVersion`] (which state-resolution algorithm to run), while
+/// [`LeanEvent::validate_syntactic`](rezzy::LeanEvent::validate_syntactic)
+/// needs the exact version string for its version-string-sensitive checks
+/// (e.g. the pre-v11 255-byte field limit). Returns `None` if no
+/// `m.room.create` event is present or its `content.room_version` is absent
+/// -- callers should apply the spec's "missing `room_version` defaults to 1"
+/// rule themselves.
+pub fn detect_room_version_string(events: &[serde_json::Value]) -> Option<String> {
+    events.iter().find_map(|ev| {
+        if ev.get(FIELD_TYPE).and_then(|t| t.as_str()) != Some(M_ROOM_CREATE) {
+            return None;
+        }
+        ev.get(FIELD_CONTENT)
+            .and_then(|c| c.get(FIELD_ROOM_VERSION))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    })
+}
+
+/// Detect `prev_events` and `auth_events` references that point to events
+/// absent from `events_map` and not known to the `exists` oracle.
+///
+/// This is the "warn surface" for DAG gaps. A reference to an unknown event is
+/// *not* necessarily a resolution failure — a missing `prev_event` is a backward
+/// extremity (incomplete timeline / backfill needed), while a missing
+/// `auth_event` means the event's authorization cannot be verified (potentially
+/// unsafe state). The two cases are reported separately so callers can treat
+/// them differently.
+///
+/// `exists` is the seam where a caller can plug in a richer notion of "known":
+/// e.g. a query against a homeserver's event store, a fetch attempt, or a
+/// compact accumulator (Bloom filter / 128-bit digest) of the known event set.
+/// A `|_| false` oracle means "known iff present in `events_map`".
+///
+/// Returns `(backward_extremities, missing_auth_events)`.
+pub fn report_gaps<F>(
+    events_map: &HashMap<String, LeanEvent>,
+    exists: F,
+) -> (
+    Vec<rezzy::state::BackwardExtremity<String>>,
+    Vec<rezzy::state::MissingAuthEvent<String>>,
+)
+where
+    F: Fn(&String) -> bool,
+{
+    let backward = rezzy::find_backward_extremities(events_map, &exists);
+    let missing_auth = rezzy::find_missing_auth_events(events_map, &exists);
+    (backward, missing_auth)
 }
 
 /// Computes an FNV-1a hash of `StateEntries`.
@@ -87,7 +146,7 @@ pub fn compute_state_hash(state: &imbl::OrdMap<(EventType, String), String>) -> 
 }
 
 /// Load a JSON file.
-pub fn load_file(input_path: &PathBuf) -> anyhow::Result<Vec<serde_json::Value>> {
+pub fn load_file(input_path: &PathBuf) -> Result<Vec<serde_json::Value>, AppError> {
     let input_reader: Box<dyn Read> = if input_path.to_str() == Some("-") {
         Box::new(io::stdin())
     } else {
@@ -111,7 +170,10 @@ pub fn load_file(input_path: &PathBuf) -> anyhow::Result<Vec<serde_json::Value>>
             values.push(val);
         }
         if values.is_empty() {
-            anyhow::bail!("No input data provided in JSONL file.");
+            bail_code!(
+                ErrorCode::EmptyInput,
+                "No input data provided in JSONL file."
+            );
         }
         Ok(values)
     } else {
@@ -128,7 +190,10 @@ pub fn load_file(input_path: &PathBuf) -> anyhow::Result<Vec<serde_json::Value>>
             input_data.extend_from_slice(line.as_bytes());
         }
         if input_data.is_empty() {
-            anyhow::bail!("No input data provided before empty line or EOF.");
+            bail_code!(
+                ErrorCode::EmptyInput,
+                "No input data provided before empty line or EOF."
+            );
         }
         let val: serde_json::Value = serde_json::from_slice(&input_data)?;
         match val {
@@ -139,12 +204,14 @@ pub fn load_file(input_path: &PathBuf) -> anyhow::Result<Vec<serde_json::Value>>
 }
 
 /// Load or fetch the input value from args.
-pub fn load_or_fetch_input_value(args: &Args) -> anyhow::Result<serde_json::Value> {
+pub fn load_or_fetch_input_value(args: &Args) -> Result<serde_json::Value, AppError> {
     if let Some(room_id) = &args.room {
-        let homeserver = args
-            .homeserver
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("--homeserver is required when using --room"))?;
+        let homeserver = args.homeserver.as_deref().ok_or_else(|| {
+            err!(
+                ErrorCode::MissingHomeserver,
+                "--homeserver is required when using --room"
+            )
+        })?;
 
         let token = args.token.clone().or_else(|| {
             let env_key = format!(
@@ -158,6 +225,7 @@ pub fn load_or_fetch_input_value(args: &Args) -> anyhow::Result<serde_json::Valu
             std::env::var(&env_key).ok()
         });
         fetch_room_state(homeserver, room_id, token.as_deref())
+            .map_err(|e| err!(ErrorCode::NetworkError, "{e}"))
     } else if !args.input.is_empty() {
         if args.input.len() == 1 {
             let input_path = &args.input[0];
@@ -179,53 +247,100 @@ pub fn load_or_fetch_input_value(args: &Args) -> anyhow::Result<serde_json::Valu
                     || path.display().to_string(),
                     |n| n.to_string_lossy().to_string(),
                 );
+                let t = Instant::now();
                 let events = load_file(path)?;
+                if args.debug {
+                    eprintln!(
+                        "[DEBUG] loaded {label}: {} events in {:.2?}",
+                        events.len(),
+                        t.elapsed()
+                    );
+                }
                 file_sets.push((label, events));
             }
             let merged = crate::jsonl_merge::merge_event_sets(&file_sets, args.debug, args.quiet)?;
-            Ok(serde_json::Value::Array(merged))
+            if args.debug {
+                eprintln!(
+                    "[DEBUG] packaging {} merged events into input value...",
+                    merged.len()
+                );
+            }
+            let t = Instant::now();
+            let out = serde_json::Value::Array(merged);
+            if args.debug {
+                eprintln!("[DEBUG] packaged merged events in {:.2?}", t.elapsed());
+            }
+            Ok(out)
         }
     } else {
-        anyhow::bail!("Either --input or --room must be provided.");
+        bail_code!(
+            ErrorCode::MissingInputFlag,
+            "Either --input or --room must be provided. Use -h or --help for more info."
+        );
     }
 }
 
 /// Parse input and extract the state heads.
 pub fn parse_and_extract_heads(
     input_val: &serde_json::Value,
-) -> anyhow::Result<(Vec<serde_json::Value>, Vec<String>)> {
-    let (raw_events, heads) = if let Some(obj) = input_val.as_object() {
+    debug: bool,
+) -> Result<(Vec<serde_json::Value>, Vec<String>), AppError> {
+    if let Some(obj) = input_val.as_object() {
         if obj.contains_key("events") {
-            let evs = obj
-                .get("events")
-                .unwrap()
-                .as_array()
-                .ok_or_else(|| anyhow::anyhow!("'events' field must be a JSON array"))?
-                .clone();
+            let arr = obj.get("events").unwrap().as_array().ok_or_else(|| {
+                err!(
+                    ErrorCode::EventsNotArray,
+                    "'events' field must be a JSON array"
+                )
+            })?;
+            if debug {
+                eprintln!(
+                    "[DEBUG] cloning {} events out of 'events' field...",
+                    arr.len()
+                );
+            }
+            let t = Instant::now();
+            let evs = arr.clone();
+            if debug {
+                eprintln!("[DEBUG] cloned events in {:.2?}", t.elapsed());
+            }
             let mut hds = Vec::new();
             if let Some(hds_arr) = obj.get("heads").and_then(|h| h.as_array()) {
                 for v in hds_arr {
                     hds.push(
                         v.as_str()
-                            .ok_or_else(|| anyhow::anyhow!("each 'head' must be a string"))?
+                            .ok_or_else(|| {
+                                err!(ErrorCode::InvalidHeadType, "each 'head' must be a string")
+                            })?
                             .to_string(),
                     );
                 }
             }
-            (evs, hds)
+            return Ok((evs, hds));
         } else if obj.contains_key(FIELD_EVENT_ID) || obj.contains_key(FIELD_TYPE) {
-            (vec![input_val.clone()], Vec::new())
+            return Ok((vec![input_val.clone()], Vec::new()));
         } else {
-            anyhow::bail!(
+            bail_code!(
+                ErrorCode::UnrecognisedStructure,
                 "Unrecognized JSON object structure. Top-level object must either contain 'events' or represent a single event with 'event_id' or 'type'."
             );
         }
     } else if let Some(arr) = input_val.as_array() {
-        (arr.clone(), Vec::new())
+        if debug {
+            eprintln!("[DEBUG] cloning {} top-level events...", arr.len());
+        }
+        let t = Instant::now();
+        let evs = arr.clone();
+        if debug {
+            eprintln!("[DEBUG] cloned events in {:.2?}", t.elapsed());
+        }
+        return Ok((evs, Vec::new()));
     } else {
-        anyhow::bail!("Unexpected JSON format: expected object or array");
-    };
-    Ok((raw_events, heads))
+        bail_code!(
+            ErrorCode::UnexpectedFormat,
+            "Unexpected JSON format: expected object or array"
+        );
+    }
 }
 
 fn collect_reachable_events<'a>(
@@ -273,6 +388,7 @@ pub fn compute_state_maps(
     heads: &[String],
     events_map: &HashMap<String, LeanEvent>,
     raw_map: &HashMap<String, serde_json::Value>,
+    debug: bool,
 ) -> Vec<HashMap<(EventType, String), String>> {
     if heads.len() <= 1 {
         let reachable_set: std::collections::HashSet<String> = if heads.len() == 1 {
@@ -292,11 +408,28 @@ pub fn compute_state_maps(
 
         vec![build_state_map(sorted_events, raw_map)]
     } else {
+        if debug {
+            eprintln!(
+                "[DEBUG] computing state maps for {} heads over {} events...",
+                heads.len(),
+                events_map.len()
+            );
+        }
         let mut maps = Vec::new();
-        for head_id in heads {
+        for (i, head_id) in heads.iter().enumerate() {
+            let t = Instant::now();
             let mut reachable = collect_reachable_events(head_id, events_map);
+            let reachable_count = reachable.len();
             reachable.sort_by(|a, b| a.cmp_by_depth(b));
             maps.push(build_state_map(reachable, raw_map));
+            if debug {
+                eprintln!(
+                    "[DEBUG] head {}/{} ({head_id}): {reachable_count} reachable events in {:.2?}",
+                    i.saturating_add(1),
+                    heads.len(),
+                    t.elapsed()
+                );
+            }
         }
         maps
     }
@@ -309,6 +442,7 @@ pub fn resolve_parent_states(
     parent_states: &[SharedStateMap],
     events_map: &HashMap<String, LeanEvent>,
     version: StateResVersion,
+    auth_graph: &rezzy::auth::roaring::AuthGraph,
 ) -> SharedStateMap {
     // Fast path: all parent states are identical (Arc::ptr_eq or value equality).
     // Common in linear DAGs where every parent shares the same resolved state.
@@ -322,12 +456,40 @@ pub fn resolve_parent_states(
         }
     }
 
+    // Restrict the event context passed to the library to the auth-chain
+    // closure of the events actually referenced by these parent states,
+    // rather than the full room's event map. `resolve_state_maps`
+    // (specifically the V2.1+ MSC4297 subgraph step) walks/clones its
+    // entire `event_context` argument on every call; passing the full
+    // map here is fine when called once (the final-heads resolve in
+    // `partition_and_resolve_state`) but is O(room size) *per fork* when
+    // called from a full-history incremental walk (e.g. `--format
+    // deltas`), which visits every fork point in the DAG, not just the
+    // final heads. Using the precomputed `AuthGraph` bitmaps turns this
+    // into O(auth-chain size) per call instead.
+    let mut relevant = roaring::RoaringBitmap::new();
+    for state in parent_states {
+        for id in state.values() {
+            if let Some(idx) = auth_graph.index.index_of(id) {
+                relevant.insert(idx);
+                relevant |= &auth_graph.auth_bitmaps[idx as usize];
+            }
+        }
+    }
+    let filtered_context: HashMap<String, LeanEvent> = relevant
+        .into_iter()
+        .filter_map(|idx| {
+            let id = auth_graph.index.item_at(idx as usize)?;
+            events_map.get(id).map(|ev| (id.clone(), ev.clone()))
+        })
+        .collect();
+
     // Unwrap Arc<OrdMap> → &OrdMap for the library call
     let bare_maps: Vec<ResolvedState> = parent_states
         .iter()
         .map(|arc| arc.as_ref().clone())
         .collect();
-    let resolved = rezzy::resolve_state_maps(&bare_maps, events_map, version);
+    let resolved = rezzy::resolve_state_maps(&bare_maps, &filtered_context, version);
     std::sync::Arc::new(resolved)
 }
 
@@ -350,7 +512,7 @@ pub fn partition_and_resolve_state(
         let mut first = true;
 
         for head_id in heads {
-            if let Some(&idx) = auth_graph.id_to_index.get(head_id) {
+            if let Some(idx) = auth_graph.index.index_of(head_id) {
                 let chain_bitmap = &auth_graph.auth_bitmaps[idx as usize];
                 if first {
                     union.clone_from(chain_bitmap);
@@ -368,7 +530,13 @@ pub fn partition_and_resolve_state(
             &intersection,
         );
         for idx in diff {
-            auth_difference.insert(auth_graph.index_to_id[idx as usize].clone());
+            auth_difference.insert(
+                auth_graph
+                    .index
+                    .item_at(idx as usize)
+                    .cloned()
+                    .expect("auth-chain index came from this graph"),
+            );
         }
     }
 
@@ -394,11 +562,12 @@ pub fn partition_and_resolve_state(
 
     let mut pl_cache = HashMap::new();
     let final_state_map = rezzy::resolve_iterative_sort(
-        unconflicted_state,
-        conflicted_events,
+        &unconflicted_state,
+        &conflicted_events,
         events_map,
         version,
         &mut pl_cache,
+        &String::new(),
     );
 
     let duration = start.elapsed();
@@ -506,4 +675,90 @@ pub fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
     .unwrap();
     let y = if m <= 2 { y.wrapping_add(1) } else { y };
     (y, m, d)
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use rezzy::LeanEvent;
+
+    fn map_from_jsonl(jsonl: &str) -> HashMap<String, LeanEvent> {
+        jsonl
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let e: LeanEvent = serde_json::from_str(l).unwrap_or_else(|err| {
+                    panic!("failed to parse JSONL fixture line: {err}\nline: {l}")
+                });
+                (e.event_id.clone(), e)
+            })
+            .collect()
+    }
+
+    /// A gap in `auth_events` must be reported distinctly from a `prev_events`
+    /// gap, and both must be absent when no oracle gap exists.
+    #[test]
+    fn test_report_gaps_distinguishes_prev_vs_auth() {
+        let events = map_from_jsonl(
+            r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.member","state_key":"@x:x","sender":"@x:x","depth":2,"content":{"membership":"join"},"prev_events":["A"],"auth_events":["A"]}
+{"event_id":"C","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B","MISSING_PREV"],"auth_events":["A","B"]}
+{"event_id":"D","type":"m.room.message","sender":"@x:x","depth":4,"prev_events":["C"],"auth_events":["A","MISSING_AUTH"]}
+            "#,
+        );
+
+        let (backward, missing_auth) = report_gaps(&events, |_| false);
+
+        assert_eq!(backward.len(), 1);
+        assert_eq!(backward[0].event_id, "C");
+        assert_eq!(backward[0].missing_prev_events, vec!["MISSING_PREV"]);
+
+        assert_eq!(missing_auth.len(), 1);
+        assert_eq!(missing_auth[0].event_id, "D");
+        assert_eq!(missing_auth[0].missing_auth_events, vec!["MISSING_AUTH"]);
+    }
+
+    /// The `exists` oracle suppresses gaps for events the caller knows about
+    /// outside the map (the seam for a fetch check / 128-bit accumulator).
+    #[test]
+    fn test_report_gaps_uses_exists_oracle() {
+        let events = map_from_jsonl(
+            r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.message","sender":"@x:x","depth":2,"prev_events":["A"],"auth_events":["A"]}
+{"event_id":"C","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B","KNOWN_ELSEWHERE"],"auth_events":["A"]}
+            "#,
+        );
+
+        // No oracle: the reference to KNOWN_ELSEWHERE is a backward extremity.
+        let (backward, _) = report_gaps(&events, |_| false);
+        assert_eq!(backward.len(), 1);
+
+        // Oracle that knows KNOWN_ELSEWHERE: gap suppressed.
+        let (backward, _) = report_gaps(&events, |id| id == "KNOWN_ELSEWHERE");
+        assert!(backward.is_empty(), "oracle-known prev must not be a gap");
+    }
+
+    /// A fully-connected DAG reports no gaps.
+    #[test]
+    fn test_report_gaps_clean() {
+        let events = map_from_jsonl(
+            r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.member","state_key":"@x:x","sender":"@x:x","depth":2,"content":{"membership":"join"},"prev_events":["A"],"auth_events":["A"]}
+{"event_id":"C","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B"],"auth_events":["A","B"]}
+            "#,
+        );
+        let (backward, missing_auth) = report_gaps(&events, |_| false);
+        assert_eq!(
+            backward,
+            [] as [rezzy::BackwardExtremity<std::string::String>; 0]
+        );
+        assert_eq!(
+            missing_auth,
+            [] as [rezzy::MissingAuthEvent<std::string::String>; 0]
+        );
+    }
 }

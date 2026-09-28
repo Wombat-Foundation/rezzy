@@ -117,6 +117,12 @@ pub fn compute_state_diff_generic<Id: EventId, K: Ord + Clone>(
     old: &SharedState<Id, K>,
     new: &SharedState<Id, K>,
 ) -> StateDiff<Id, K> {
+    if old.ptr_eq(new) {
+        return StateDiff {
+            entries: Vec::new(),
+        };
+    }
+
     let mut entries = Vec::new();
 
     for diff_item in old.diff(new) {
@@ -159,6 +165,16 @@ mod tests {
         let mut state: SharedState<String> = SharedState::new();
         state.insert(("m.room.create".into(), String::new()), "$c".into());
         let diff = compute_state_diff(&state, &state);
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn test_ptr_eq_cloned_states_produce_empty_diff() {
+        let mut state: SharedState<String> = SharedState::new();
+        state.insert(("m.room.create".into(), String::new()), "$c".into());
+        let cloned = state.clone();
+        assert!(state.ptr_eq(&cloned));
+        let diff = compute_state_diff(&state, &cloned);
         assert!(diff.is_empty());
     }
 

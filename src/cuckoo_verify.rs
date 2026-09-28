@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Cuckoo Cycle proof-of-work verification and key minting primitives.
+
 extern crate alloc;
 
 use alloc::string::String;

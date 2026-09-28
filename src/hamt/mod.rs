@@ -5,7 +5,20 @@
 //! - `codec`: dense on-disk encoding for persisted internal nodes
 //! - `delta`: subtree differencing for set isolation
 //! - `audit`: multi-root reachability audit for storage GC
+//! - `gc`: experimental incremental refcount bookkeeping for integrations
+//!   with a strictly linear root history (behind `unstable-refcount-gc`)
 //! - `tests`: regression coverage for the generic HAMT core
+//!
+//! # Release notes
+//!
+//! - **0.6.0**: the HAMT storage-GC reachability-audit API was renamed to
+//!   disambiguate it from `resolve::reachability`'s unrelated event-DAG
+//!   concept. `ReachabilityAudit` → [`NodeReachabilityAudit`],
+//!   `reachability_audit` → [`node_reachability_audit`],
+//!   `BitmapReachabilityAudit` → [`BitmapNodeReachabilityAudit`], and
+//!   `bitmap_reachability_audit` → [`bitmap_node_reachability_audit`]. The old
+//!   names were removed (no aliases remain), so downstream code must use the
+//!   new names; at the time of the rename neither had any caller.
 
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
@@ -17,26 +30,85 @@ use core::{
 pub mod audit;
 pub mod codec;
 pub mod delta;
+#[cfg(any(test, feature = "unstable-refcount-gc"))]
+pub mod gc;
 pub mod hash;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;
 
-#[cfg(feature = "std")]
-pub use audit::{bitmap_reachability_audit, BitmapAuditError, BitmapReachabilityAudit};
+pub use audit::{bitmap_node_reachability_audit, BitmapAuditError, BitmapNodeReachabilityAudit};
 pub use audit::{
-    reachability_audit, unreachable_node_hashes, IndexedUniverse, ReachabilityAudit,
+    node_reachability_audit, unreachable_node_hashes, IndexedUniverse, NodeReachabilityAudit,
     UniverseTooLarge,
 };
-pub use codec::PersistedInternalNode;
+pub use codec::{
+    HamtCodec, PersistedInternalNode, HAMT_NODE_MAGIC, HAMT_ROOT_MAGIC, HAMT_WIRE_VERSION,
+};
 pub use delta::{
     diff_hamt_nodes, diff_node_hashes, isolate_delta, reachable_node_hashes,
     walk_reachable_node_hashes, Delta, DeltaResult, HamtTraversalError, NodeHashDelta,
 };
-pub use hash::{state_group_id_from_lthash, RootHandle, StateGroupId, StructuralHash};
+#[cfg(feature = "unstable-refcount-gc")]
+pub use gc::{LinearRootChain, RefcountTable, RefcountUnderflow};
+pub use hash::{
+    state_group_id_from_lthash, RootHandle, StateGroupId, StructuralHash, HAMT_CODEC_VERSION,
+    HAMT_ROUTING_VERSION,
+};
+
+/// 256-bit routing path hash for a key in the HAMT.
+pub type KeyPathHash = StructuralHash;
+
+/// The outcome of descending one level of a HAMT with a batch of requested keys.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DescendResult<V> {
+    /// Keys found at this level with their associated value.
+    pub found: Vec<(KeyPathHash, V)>,
+    /// Keys proven to be absent at this level (the corresponding slot bit was clear).
+    pub absent: Vec<KeyPathHash>,
+    /// Keys that need to descend further (to `depth + 1`), grouped by the child node's `StructuralHash`.
+    pub pending: Vec<(StructuralHash, Vec<KeyPathHash>)>,
+}
+
+/// Errors that can occur during level-synchronous descent over persisted node bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DescendError {
+    /// Node decoding failed (invalid version or truncated buffer).
+    Decode(&'static str),
+    /// Invariant violation: bitmap indicated a leaf or child slot, but the array index was missing.
+    CorruptNode(&'static str),
+}
+
+impl fmt::Display for DescendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Decode(msg) => write!(f, "hamt descend decode error: {msg}"),
+            Self::CorruptNode(msg) => write!(f, "hamt descend corrupt node: {msg}"),
+        }
+    }
+}
+
+impl core::error::Error for DescendError {}
+
+/// A single step in a published state-group chain.
+#[derive(Clone, Debug)]
+pub struct ChainStep<K, V> {
+    /// The resolved root at this step.
+    pub root: Arc<HamtNode<K, V>>,
+    /// The structural hash of `root`.
+    pub root_hash: StructuralHash,
+    /// The value displaced by this mutation, if any (needed for lattice subtraction).
+    pub displaced: Option<V>,
+    /// Nodes created by this step relative to the IMMEDIATELY PRECEDING root.
+    ///
+    /// These nodes must be written to storage before this step's `state_group` is published.
+    pub created: Vec<(StructuralHash, Vec<u8>)>,
+}
 
 use hash::StructuralHashBuilder;
+
+const STRUCTURAL_HASH_DOMAIN_V1: &[u8] = b"rezzy:hamt:structural-hash:v1\0";
 
 const HAMT_BRANCH_BITS: usize = 5;
 const HAMT_BRANCH_FACTOR: usize = 1 << HAMT_BRANCH_BITS;
@@ -90,25 +162,19 @@ impl<K, V> HamtNode<K, V> {
         children: &[NodeRef<K, V>],
     ) -> StructuralHash
     where
-        K: Hash,
-        V: Hash,
+        K: HamtCodec,
+        V: HamtCodec,
     {
+        let child_hashes = children
+            .iter()
+            .map(NodeRef::structural_hash)
+            .collect::<Vec<_>>();
+        let canonical_bytes =
+            PersistedInternalNode::encode_v1_parts(datamap, nodemap, leaves, &child_hashes);
         let mut mac = StructuralHashBuilder::new(key);
-        mac.write(&datamap.to_le_bytes());
-        mac.write(&nodemap.to_le_bytes());
-        for (k, v) in leaves {
-            let mut leaf_mac = StructuralHashBuilder::new(key);
-            k.hash(&mut leaf_mac);
-            mac.write(&leaf_mac.finish());
-
-            let mut leaf_mac = StructuralHashBuilder::new(key);
-            v.hash(&mut leaf_mac);
-            mac.write(&leaf_mac.finish());
-        }
-        for child in children {
-            mac.write(&child.structural_hash());
-        }
-        mac.finish()
+        mac.write(STRUCTURAL_HASH_DOMAIN_V1);
+        mac.write(&canonical_bytes);
+        mac.finalize()
     }
 
     /// Looks up a key in a fully materialized HAMT.
@@ -425,7 +491,7 @@ impl<K, V> HamtNode<K, V> {
         if depth >= HAMT_MAX_DEPTH {
             return None;
         }
-        let next_depth = depth.wrapping_add(1);
+        let next_depth = depth.saturating_add(1);
 
         match self.slot_at(path_hash, depth) {
             Slot::Leaf((stored_key, value)) => (stored_key.borrow() == key).then_some(value),
@@ -452,7 +518,7 @@ impl<K, V> HamtNode<K, V> {
         if depth >= HAMT_MAX_DEPTH {
             return Ok(None);
         }
-        let next_depth = depth.wrapping_add(1);
+        let next_depth = depth.saturating_add(1);
 
         match self.slot_at(path_hash, depth) {
             Slot::Leaf((stored_key, value)) => {
@@ -496,13 +562,12 @@ impl fmt::Display for HamtBuildError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for HamtBuildError {}
+impl core::error::Error for HamtBuildError {}
 
 fn key_path_hash<K: Hash + ?Sized>(structural_key: &[u8], key: &K) -> StructuralHash {
     let mut hasher = StructuralHashBuilder::new(structural_key);
     key.hash(&mut hasher);
-    hasher.finish()
+    hasher.finalize()
 }
 
 fn map_index(bitmap: u32, slot: usize) -> usize {
@@ -557,17 +622,21 @@ fn bucket_index(hash: &StructuralHash, depth: usize) -> usize {
     let bit_offset = depth.saturating_mul(HAMT_BRANCH_BITS);
     let byte_index = bit_offset / 8;
     let bit_shift = bit_offset % 8;
+    let hash_len = hash.len();
     debug_assert!(
-        byte_index < hash.len(),
-        "byte_index out of bounds for StructuralHash ({byte_index} >= {})",
-        hash.len()
+        byte_index < hash_len,
+        "byte_index out of bounds for StructuralHash ({byte_index} >= {hash_len})",
     );
 
     let mut word = u16::from(hash[byte_index]);
-    if let Some(next_index) = byte_index.checked_add(1) {
-        if let Some(next) = hash.get(next_index) {
-            word |= u16::from(*next) << 8;
-        }
+    // No checked_add: byte_index < hash_len (32, asserted above) always, so
+    // byte_index + 1 <= 32 never overflows usize. A checked_add here can
+    // never observe None -- it's not a real safety margin, just an untestable
+    // dead branch (a coverage tool will flag its closing brace as unreached,
+    // correctly: reaching it would require byte_index near usize::MAX, which
+    // contradicts the precondition this function already asserts).
+    if let Some(next) = hash.get(byte_index.saturating_add(1)) {
+        word |= u16::from(*next) << 8;
     }
     usize::from((word >> bit_shift) & HAMT_BRANCH_MASK)
 }
@@ -584,8 +653,8 @@ fn build_node<K, V>(
     depth: usize,
 ) -> Result<Arc<HamtNode<K, V>>, HamtBuildError>
 where
-    K: Hash,
-    V: Hash,
+    K: Hash + HamtCodec,
+    V: HamtCodec,
 {
     if depth >= HAMT_MAX_DEPTH {
         return Err(HamtBuildError::HashCollision {
@@ -660,8 +729,8 @@ pub fn build_hamt<K, V, I>(
     entries: I,
 ) -> Result<Arc<HamtNode<K, V>>, HamtBuildError>
 where
-    K: Hash,
-    V: Hash,
+    K: Hash + HamtCodec,
+    V: HamtCodec,
     I: IntoIterator<Item = (K, V)>,
 {
     build_hamt_with_key_hash(structural_key, entries, |key| {
@@ -698,8 +767,8 @@ pub fn build_hamt_with_key_hash<K, V, I, F>(
     mut key_hash: F,
 ) -> Result<Arc<HamtNode<K, V>>, HamtBuildError>
 where
-    K: Hash,
-    V: Hash,
+    K: Hash + HamtCodec,
+    V: HamtCodec,
     I: IntoIterator<Item = (K, V)>,
     F: FnMut(&K) -> StructuralHash,
 {
@@ -729,8 +798,8 @@ pub fn build_hamt_root_handle<K, V, I>(
     entries: I,
 ) -> Result<(RootHandle, Arc<HamtNode<K, V>>), HamtBuildError>
 where
-    K: Hash,
-    V: Hash,
+    K: Hash + HamtCodec,
+    V: HamtCodec,
     I: IntoIterator<Item = (K, V)>,
 {
     let root = build_hamt(structural_key, entries)?;
@@ -745,6 +814,8 @@ pub enum HamtMutateError<E> {
     /// Too many entries collided into the same slot after exhausting the
     /// available hash depth.
     HashCollision { depth: usize, bucket_size: usize },
+    /// Traversal exceeded maximum allowable HAMT depth.
+    MaxDepthExceeded { depth: usize },
     /// The resolver failed to load a lazy child that the mutation needed to
     /// descend into.
     Resolve(E),
@@ -760,19 +831,21 @@ where
                 f,
                 "hamt mutation hash collision at depth {depth} with bucket size {bucket_size}"
             ),
+            Self::MaxDepthExceeded { depth } => {
+                write!(f, "hamt mutation max depth exceeded at depth {depth}")
+            }
             Self::Resolve(err) => write!(f, "hamt mutation resolver failed: {err}"),
         }
     }
 }
 
-#[cfg(feature = "std")]
-impl<E> std::error::Error for HamtMutateError<E>
+impl<E> core::error::Error for HamtMutateError<E>
 where
-    E: std::error::Error + 'static,
+    E: core::error::Error + 'static,
 {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
-            Self::HashCollision { .. } => None,
+            Self::HashCollision { .. } | Self::MaxDepthExceeded { .. } => None,
             Self::Resolve(err) => Some(err),
         }
     }
@@ -784,6 +857,15 @@ impl<E> From<HamtBuildError> for HamtMutateError<E> {
             HamtBuildError::HashCollision { depth, bucket_size } => {
                 Self::HashCollision { depth, bucket_size }
             }
+        }
+    }
+}
+
+impl<E> From<HamtTraversalError<E>> for HamtMutateError<E> {
+    fn from(err: HamtTraversalError<E>) -> Self {
+        match err {
+            HamtTraversalError::Resolve(e) => Self::Resolve(e),
+            HamtTraversalError::MaxDepthExceeded { depth } => Self::MaxDepthExceeded { depth },
         }
     }
 }
@@ -804,8 +886,8 @@ fn rebuild_node<K, V>(
     children: Vec<NodeRef<K, V>>,
 ) -> Arc<HamtNode<K, V>>
 where
-    K: Hash,
-    V: Hash,
+    K: Hash + HamtCodec,
+    V: HamtCodec,
 {
     let structural_hash =
         HamtNode::compute_structural_hash(structural_key, datamap, nodemap, &leaves, &children);
@@ -818,6 +900,21 @@ where
     })
 }
 
+type MutationSink<'a, K, V> = dyn FnMut(&Arc<HamtNode<K, V>>) + 'a;
+
+fn emit_node_to_sink<K, V>(node: &Arc<HamtNode<K, V>>, sink: &mut MutationSink<'_, K, V>) {
+    sink(node);
+}
+
+fn emit_split_nodes_to_sink<K, V>(node: &Arc<HamtNode<K, V>>, sink: &mut MutationSink<'_, K, V>) {
+    sink(node);
+    for child in &node.children {
+        if let NodeRef::Resolved(child_node) = child {
+            emit_split_nodes_to_sink(child_node, sink);
+        }
+    }
+}
+
 fn insert_node<K, V, F, E>(
     node: &Arc<HamtNode<K, V>>,
     structural_key: &[u8],
@@ -828,23 +925,26 @@ fn insert_node<K, V, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
-    let mut key_hash = |key: &K| key_path_hash(structural_key, key);
+    let mut key_hash = |k: &K| key_path_hash(structural_key, k);
+    let mut sink = |_: &Arc<HamtNode<K, V>>| {};
     let mut ctx = InsertCtx {
         structural_key,
         key_hash: &mut key_hash,
         resolver,
+        sink: &mut sink,
     };
     insert_node_with_ctx(node, key, value, *path_hash, depth, &mut ctx)
 }
 
-struct InsertCtx<'a, KeyHash, F> {
+struct InsertCtx<'a, K, V, KeyHash, F> {
     structural_key: &'a [u8],
     key_hash: &'a mut KeyHash,
     resolver: &'a mut F,
+    sink: &'a mut MutationSink<'a, K, V>,
 }
 
 struct InsertStep<K, V> {
@@ -861,11 +961,11 @@ fn insert_node_with_ctx<K, V, KeyHash, F, E>(
     value: V,
     path_hash: StructuralHash,
     depth: usize,
-    ctx: &mut InsertCtx<'_, KeyHash, F>,
+    ctx: &mut InsertCtx<'_, K, V, KeyHash, F>,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -877,7 +977,6 @@ where
     }
 
     let structural_key = ctx.structural_key;
-    let key_hash = &mut *ctx.key_hash;
     let slot = bucket_index(&path_hash, depth);
     let bit = 1_u32 << slot;
     let step = InsertStep {
@@ -900,16 +999,11 @@ where
                 leaves,
                 node.children.clone(),
             );
+            emit_node_to_sink(&new_node, ctx.sink);
             return Ok((new_node, Some(old_value)));
         }
 
-        return insert_into_leaf_slot(
-            node,
-            structural_key,
-            step,
-            depth.saturating_add(1),
-            key_hash,
-        );
+        return insert_into_leaf_slot(node, structural_key, step, depth.saturating_add(1), ctx);
     }
 
     if (node.nodemap & bit) != 0 {
@@ -928,20 +1022,22 @@ where
         leaves,
         node.children.clone(),
     );
+    emit_node_to_sink(&new_node, ctx.sink);
     Ok((new_node, None))
 }
 
-fn insert_into_leaf_slot<K, V, KeyHash, E>(
+fn insert_into_leaf_slot<K, V, KeyHash, F, E>(
     node: &Arc<HamtNode<K, V>>,
     structural_key: &[u8],
     step: InsertStep<K, V>,
     next_depth: usize,
-    key_hash: &mut KeyHash,
+    ctx: &mut InsertCtx<'_, K, V, KeyHash, F>,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     let InsertStep {
         key,
@@ -953,7 +1049,7 @@ where
     let idx = map_index(node.datamap, slot);
 
     let (existing_key, existing_value) = node.leaves[idx].clone();
-    let existing_path_hash = key_hash(&existing_key);
+    let existing_path_hash = (ctx.key_hash)(&existing_key);
     let split_entries = vec![
         BuildEntry {
             key: existing_key,
@@ -967,6 +1063,7 @@ where
         },
     ];
     let child = build_node(structural_key, split_entries, next_depth)?;
+    emit_split_nodes_to_sink(&child, ctx.sink);
 
     let mut leaves = node.leaves.clone();
     leaves.remove(idx);
@@ -976,6 +1073,7 @@ where
     let mut children = node.children.clone();
     children.insert(child_idx, NodeRef::Resolved(child));
     let new_node = rebuild_node(structural_key, new_datamap, new_nodemap, leaves, children);
+    emit_node_to_sink(&new_node, ctx.sink);
     Ok((new_node, None))
 }
 
@@ -984,11 +1082,11 @@ fn insert_into_child_slot<K, V, KeyHash, F, E>(
     structural_key: &[u8],
     step: InsertStep<K, V>,
     next_depth: usize,
-    ctx: &mut InsertCtx<'_, KeyHash, F>,
+    ctx: &mut InsertCtx<'_, K, V, KeyHash, F>,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
@@ -1015,6 +1113,7 @@ where
         node.leaves.clone(),
         children,
     );
+    emit_node_to_sink(&new_node, ctx.sink);
     Ok((new_node, old_value))
 }
 
@@ -1042,8 +1141,8 @@ pub fn insert<K, V, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     let path_hash = key_path_hash(structural_key, &key);
@@ -1074,21 +1173,24 @@ pub fn insert_with_key_hash<K, V, KeyHash, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     let path_hash = key_hash(&key);
+    let mut sink = |_: &Arc<HamtNode<K, V>>| {};
     let mut ctx = InsertCtx {
         structural_key,
         key_hash: &mut key_hash,
         resolver,
+        sink: &mut sink,
     };
     insert_node_with_ctx(node, key, value, path_hash, 0, &mut ctx)
 }
 
 /// What remains of a subtree after a leaf was removed from it.
+#[derive(Debug)]
 enum RemoveOutcome<K, V> {
     /// The subtree has no entries left.
     Empty,
@@ -1112,8 +1214,8 @@ fn finalize_after_removal<K, V>(
     children: Vec<NodeRef<K, V>>,
 ) -> RemoveOutcome<K, V>
 where
-    K: Hash,
-    V: Hash,
+    K: Hash + HamtCodec,
+    V: HamtCodec,
 {
     if nodemap == 0 {
         if leaves.is_empty() {
@@ -1134,6 +1236,12 @@ where
         leaves,
         children,
     ))
+}
+
+struct RemoveCtx<'a, K, V, F> {
+    structural_key: &'a [u8],
+    resolver: &'a mut F,
+    sink: &'a mut MutationSink<'a, K, V>,
 }
 
 /// Removes a key from a HAMT via `O(log S)` path-copying, without
@@ -1160,40 +1268,50 @@ pub fn remove<K, V, Q, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Borrow<Q> + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Borrow<Q> + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     Q: Hash + Eq + ?Sized,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     let path_hash = key_path_hash(structural_key, key);
-    let (outcome, old_value) =
-        remove_node_with_ctx(node, structural_key, key, &path_hash, 0, resolver)?;
-    let new_root = finalize_remove_root(structural_key, outcome, |leaf_key| {
-        bucket_index(&key_path_hash(structural_key, leaf_key), 0)
-    });
+    let mut sink = |_: &Arc<HamtNode<K, V>>| {};
+    let (outcome, old_value) = {
+        let mut ctx = RemoveCtx {
+            structural_key,
+            resolver,
+            sink: &mut sink,
+        };
+        remove_node_with_ctx(node, key, &path_hash, 0, &mut ctx)?
+    };
+    let new_root = finalize_remove_root(
+        structural_key,
+        outcome,
+        |leaf_key| bucket_index(&key_path_hash(structural_key, leaf_key), 0),
+        &mut sink,
+    );
     Ok((new_root, old_value))
 }
 
 fn remove_node_with_ctx<K, V, Q, F, E>(
     node: &Arc<HamtNode<K, V>>,
-    structural_key: &[u8],
     key: &Q,
     path_hash: &StructuralHash,
     depth: usize,
-    resolver: &mut F,
+    ctx: &mut RemoveCtx<'_, K, V, F>,
 ) -> RemoveStepResult<K, V, E>
 where
-    K: Hash + Eq + Borrow<Q> + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Borrow<Q> + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     Q: Eq + ?Sized,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     if depth >= HAMT_MAX_DEPTH {
-        return Ok((RemoveOutcome::Node(node.clone()), None));
+        return Err(HamtMutateError::MaxDepthExceeded { depth });
     }
 
     let slot = bucket_index(path_hash, depth);
     let bit = 1_u32 << slot;
+    let structural_key = ctx.structural_key;
 
     if (node.datamap & bit) != 0 {
         let idx = map_index(node.datamap, slot);
@@ -1212,6 +1330,9 @@ where
             leaves,
             node.children.clone(),
         );
+        if let RemoveOutcome::Node(ref new_node) = outcome {
+            emit_node_to_sink(new_node, ctx.sink);
+        }
         return Ok((outcome, Some(old_value)));
     }
 
@@ -1222,16 +1343,14 @@ where
     let idx = map_index(node.nodemap, slot);
     let child = match &node.children[idx] {
         NodeRef::Resolved(child) => child.clone(),
-        NodeRef::Lazy(hash) => resolver(hash).map_err(HamtMutateError::Resolve)?,
+        NodeRef::Lazy(hash) => (ctx.resolver)(hash).map_err(HamtMutateError::Resolve)?,
     };
-    let Some(next_depth) = depth.checked_add(1) else {
-        return Ok((RemoveOutcome::Node(node.clone()), None));
-    };
+
+    let next_depth = depth.saturating_add(1);
     if next_depth >= HAMT_MAX_DEPTH {
-        return Ok((RemoveOutcome::Node(node.clone()), None));
+        return Err(HamtMutateError::MaxDepthExceeded { depth: next_depth });
     }
-    let (child_outcome, old_value) =
-        remove_node_with_ctx(&child, structural_key, key, path_hash, next_depth, resolver)?;
+    let (child_outcome, old_value) = remove_node_with_ctx(&child, key, path_hash, next_depth, ctx)?;
     if old_value.is_none() {
         return Ok((RemoveOutcome::Node(node.clone()), None));
     }
@@ -1248,6 +1367,9 @@ where
                 node.leaves.clone(),
                 children,
             );
+            if let RemoveOutcome::Node(ref new_node) = outcome {
+                emit_node_to_sink(new_node, ctx.sink);
+            }
             Ok((outcome, old_value))
         }
         RemoveOutcome::Leaf(leaf_key, leaf_value) => {
@@ -1260,6 +1382,9 @@ where
             leaves.insert(leaf_idx, (leaf_key, leaf_value));
             let outcome =
                 finalize_after_removal(structural_key, new_datamap, new_nodemap, leaves, children);
+            if let RemoveOutcome::Node(ref new_node) = outcome {
+                emit_node_to_sink(new_node, ctx.sink);
+            }
             Ok((outcome, old_value))
         }
         RemoveOutcome::Node(new_child) => {
@@ -1272,6 +1397,7 @@ where
                 node.leaves.clone(),
                 children,
             );
+            emit_node_to_sink(&new_node, ctx.sink);
             Ok((RemoveOutcome::Node(new_node), old_value))
         }
     }
@@ -1281,18 +1407,25 @@ fn finalize_remove_root<K, V, F>(
     structural_key: &[u8],
     outcome: RemoveOutcome<K, V>,
     mut root_slot_for_leaf: F,
+    sink: &mut MutationSink<'_, K, V>,
 ) -> Arc<HamtNode<K, V>>
 where
-    K: Hash + Clone,
-    V: Hash + Clone,
+    K: Hash + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     F: FnMut(&K) -> usize,
 {
     match outcome {
-        RemoveOutcome::Empty => rebuild_node(structural_key, 0, 0, Vec::new(), Vec::new()),
+        RemoveOutcome::Empty => {
+            let root = rebuild_node(structural_key, 0, 0, Vec::new(), Vec::new());
+            emit_node_to_sink(&root, sink);
+            root
+        }
         RemoveOutcome::Leaf(leaf_key, leaf_value) => {
             let root_slot = root_slot_for_leaf(&leaf_key);
             let leaves = vec![(leaf_key, leaf_value)];
-            rebuild_node(structural_key, 1_u32 << root_slot, 0, leaves, Vec::new())
+            let root = rebuild_node(structural_key, 1_u32 << root_slot, 0, leaves, Vec::new());
+            emit_node_to_sink(&root, sink);
+            root
         }
         RemoveOutcome::Node(new_root) => new_root,
     }
@@ -1323,16 +1456,545 @@ pub fn remove_with_key_hash<K, V, KeyHash, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone,
-    V: Hash + Clone,
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     let path_hash = key_hash(key);
-    let (outcome, old_value) =
-        remove_node_with_ctx(node, structural_key, key, &path_hash, 0, resolver)?;
-    let new_root = finalize_remove_root(structural_key, outcome, |leaf_key| {
-        bucket_index(&key_hash(leaf_key), 0)
-    });
+    let mut sink = |_: &Arc<HamtNode<K, V>>| {};
+    let (outcome, old_value) = {
+        let mut ctx = RemoveCtx {
+            structural_key,
+            resolver,
+            sink: &mut sink,
+        };
+        remove_node_with_ctx(node, key, &path_hash, 0, &mut ctx)?
+    };
+    let new_root = finalize_remove_root(
+        structural_key,
+        outcome,
+        |leaf_key| bucket_index(&key_hash(leaf_key), 0),
+        &mut sink,
+    );
     Ok((new_root, old_value))
+}
+
+/// Result of a [`persist_mutation`] operation: the new root, displaced value, and encoded new nodes.
+pub type PersistMutationResult<K, V, E> = Result<
+    (
+        Arc<HamtNode<K, V>>,
+        Option<V>,
+        Vec<(StructuralHash, Vec<u8>)>,
+    ),
+    HamtMutateError<E>,
+>;
+
+/// Result of a [`persist_mutations`] batch operation: the new root, displaced values, and encoded new nodes.
+pub type PersistMutationsResult<K, V, E> = Result<
+    (
+        Arc<HamtNode<K, V>>,
+        Vec<Option<V>>,
+        Vec<(StructuralHash, Vec<u8>)>,
+    ),
+    HamtMutateError<E>,
+>;
+
+/// Persists a single mutation (insert if `Some`, remove if `None`) on top of `prev_root`.
+///
+/// Emits all created spine nodes inline during the mutation descent without a second
+/// post-hoc tree traversal or redundant lazy-child resolutions.
+///
+/// Returns:
+/// - The new root `Arc<HamtNode<K, V>>`
+/// - The displaced / removed value, if any (needed for lattice subtraction)
+/// - The encoded binary bytes of the newly created spine nodes (`Vec<(StructuralHash, Vec<u8>)>`)
+///
+/// # Publication Contract
+/// This is for a single published state group. The returned `created` nodes must be written to
+/// storage before publishing the state group root pointer.
+///
+/// # Custom-hash roots
+/// This always routes with the default keyed structural hash, the same one
+/// [`build_hamt`] uses. It is only correct for trees built by [`build_hamt`]
+/// (or `prev_root`s produced by a prior call to this function). Do not call
+/// this on a `prev_root` built by [`build_hamt_with_key_hash`] — it will
+/// route with the wrong hash, silently missing existing entries and leaving
+/// the tree inconsistent. Use [`persist_mutation_with_key_hash`] (or
+/// [`insert_with_key_hash`]/[`remove_with_key_hash`] directly) for those
+/// trees instead.
+///
+/// # Errors
+/// Returns [`HamtMutateError`] if `resolver` fails to load a lazy child or depth is exhausted.
+pub fn persist_mutation<K, V, F, E>(
+    prev_root: &Arc<HamtNode<K, V>>,
+    structural_key: &[u8],
+    key: K,
+    value: Option<V>,
+    resolver: &mut F,
+) -> PersistMutationResult<K, V, E>
+where
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Hash + Clone + HamtCodec,
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    let mut created = Vec::new();
+    let (new_root, displaced) = {
+        let mut sink = |node: &Arc<HamtNode<K, V>>| {
+            created.push((
+                node.structural_hash,
+                PersistedInternalNode::from(node.as_ref()).encode_v1(),
+            ));
+        };
+        if let Some(val) = value {
+            let path_hash = key_path_hash(structural_key, &key);
+            let mut key_hash = |k: &K| key_path_hash(structural_key, k);
+            let mut ctx = InsertCtx {
+                structural_key,
+                key_hash: &mut key_hash,
+                resolver,
+                sink: &mut sink,
+            };
+            insert_node_with_ctx(prev_root, key, val, path_hash, 0, &mut ctx)?
+        } else {
+            let path_hash = key_path_hash(structural_key, &key);
+            let (outcome, old_value) = {
+                let mut ctx = RemoveCtx {
+                    structural_key,
+                    resolver,
+                    sink: &mut sink,
+                };
+                remove_node_with_ctx(prev_root, &key, &path_hash, 0, &mut ctx)?
+            };
+            let new_root = finalize_remove_root(
+                structural_key,
+                outcome,
+                |leaf_key| bucket_index(&key_path_hash(structural_key, leaf_key), 0),
+                &mut sink,
+            );
+            (new_root, old_value)
+        }
+    };
+
+    if new_root.structural_hash == prev_root.structural_hash {
+        created.clear();
+    }
+
+    Ok((new_root, displaced, created))
+}
+
+/// [`persist_mutation`] equivalent for trees built with
+/// [`build_hamt_with_key_hash`]: routes with the caller-supplied `key_hash`
+/// instead of the default keyed structural hash, so it is correct for trees
+/// whose routing hash differs from [`build_hamt`]'s.
+///
+/// See [`persist_mutation`] for the return value and publication contract.
+///
+/// # Errors
+/// Returns [`HamtMutateError`] if `resolver` fails to load a lazy child or depth is exhausted.
+pub fn persist_mutation_with_key_hash<K, V, KeyHash, F, E>(
+    prev_root: &Arc<HamtNode<K, V>>,
+    structural_key: &[u8],
+    key: K,
+    value: Option<V>,
+    mut key_hash: KeyHash,
+    resolver: &mut F,
+) -> PersistMutationResult<K, V, E>
+where
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Hash + Clone + HamtCodec,
+    KeyHash: FnMut(&K) -> StructuralHash,
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    let mut created = Vec::new();
+    let (new_root, displaced) = {
+        let mut sink = |node: &Arc<HamtNode<K, V>>| {
+            created.push((
+                node.structural_hash,
+                PersistedInternalNode::from(node.as_ref()).encode_v1(),
+            ));
+        };
+        if let Some(val) = value {
+            let path_hash = key_hash(&key);
+            let mut ctx = InsertCtx {
+                structural_key,
+                key_hash: &mut key_hash,
+                resolver,
+                sink: &mut sink,
+            };
+            insert_node_with_ctx(prev_root, key, val, path_hash, 0, &mut ctx)?
+        } else {
+            let path_hash = key_hash(&key);
+            let (outcome, old_value) = {
+                let mut ctx = RemoveCtx {
+                    structural_key,
+                    resolver,
+                    sink: &mut sink,
+                };
+                remove_node_with_ctx(prev_root, &key, &path_hash, 0, &mut ctx)?
+            };
+            let new_root = finalize_remove_root(
+                structural_key,
+                outcome,
+                |leaf_key| bucket_index(&key_hash(leaf_key), 0),
+                &mut sink,
+            );
+            (new_root, old_value)
+        }
+    };
+
+    if new_root.structural_hash == prev_root.structural_hash {
+        created.clear();
+    }
+
+    Ok((new_root, displaced, created))
+}
+
+/// Persists a batch of mutations producing a SINGLE published final root.
+///
+/// # Publication Contract — READ BEFORE USE
+/// This function is ONLY correct when **no intermediate roots are published** (e.g.
+/// bulk initial state build or a single coalesced update). If any intermediate state group
+/// is published or referenced elsewhere, you MUST use [`persist_chain`] instead; otherwise,
+/// intermediate state groups will point to nodes that were never persisted.
+///
+/// Returns the final root, all displaced values per mutation (for lattice arithmetic),
+/// and the encoded new nodes.
+///
+/// # Performance Note
+/// Callers using lazy resolvers should pass a memoizing resolver (or use [`persist_chain`])
+/// to avoid repeated backend fetches during the end-of-batch diff pass.
+///
+/// # Custom-hash roots
+/// Same default-hash-only routing as [`persist_mutation`]; see its
+/// "Custom-hash roots" section — do not call this on a
+/// [`build_hamt_with_key_hash`] tree. Use
+/// [`persist_mutations_with_key_hash`] instead.
+///
+/// # Errors
+/// Returns [`HamtMutateError`] if `resolver` fails to load a lazy child or depth is exhausted.
+pub fn persist_mutations<K, V, I, F, E>(
+    prev_root: &Arc<HamtNode<K, V>>,
+    structural_key: &[u8],
+    mutations: I,
+    resolver: &mut F,
+) -> PersistMutationsResult<K, V, E>
+where
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Hash + Clone + HamtCodec,
+    I: IntoIterator<Item = (K, Option<V>)>,
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    let mut current_root = prev_root.clone();
+    let mut displaced_vec = Vec::new();
+
+    for (key, opt_val) in mutations {
+        let (next_root, displaced) = if let Some(val) = opt_val {
+            insert(&current_root, structural_key, key, val, resolver)?
+        } else {
+            remove(&current_root, structural_key, &key, resolver)?
+        };
+        displaced_vec.push(displaced);
+        current_root = next_root;
+    }
+
+    if current_root.structural_hash == prev_root.structural_hash {
+        return Ok((current_root, displaced_vec, Vec::new()));
+    }
+
+    let delta = diff_node_hashes(prev_root, &current_root, resolver)?;
+    let new_set: crate::HashSet<StructuralHash> = delta.new_node_hashes.into_iter().collect();
+
+    let mut created = Vec::with_capacity(new_set.len());
+    let mut stack = vec![current_root.clone()];
+    while let Some(node) = stack.pop() {
+        if new_set.contains(&node.structural_hash) {
+            let bytes = PersistedInternalNode::from(node.as_ref()).encode_v1();
+            created.push((node.structural_hash, bytes));
+            for child in &node.children {
+                if let NodeRef::Resolved(child_node) = child {
+                    if new_set.contains(&child_node.structural_hash) {
+                        stack.push(child_node.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok((current_root, displaced_vec, created))
+}
+
+/// [`persist_mutations`] equivalent for trees built with
+/// [`build_hamt_with_key_hash`]: routes every mutation with the
+/// caller-supplied `key_hash` instead of the default keyed structural hash.
+///
+/// Same single-published-final-root contract as [`persist_mutations`] —
+/// see its "Publication Contract" section.
+///
+/// # Errors
+/// Returns [`HamtMutateError`] if `resolver` fails to load a lazy child or depth is exhausted.
+pub fn persist_mutations_with_key_hash<K, V, I, KeyHash, F, E>(
+    prev_root: &Arc<HamtNode<K, V>>,
+    structural_key: &[u8],
+    mutations: I,
+    mut key_hash: KeyHash,
+    resolver: &mut F,
+) -> PersistMutationsResult<K, V, E>
+where
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Hash + Clone + HamtCodec,
+    I: IntoIterator<Item = (K, Option<V>)>,
+    KeyHash: FnMut(&K) -> StructuralHash,
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    let mut current_root = prev_root.clone();
+    let mut displaced_vec = Vec::new();
+
+    for (key, opt_val) in mutations {
+        let (next_root, displaced) = if let Some(val) = opt_val {
+            insert_with_key_hash(
+                &current_root,
+                structural_key,
+                key,
+                val,
+                &mut key_hash,
+                resolver,
+            )?
+        } else {
+            remove_with_key_hash(&current_root, structural_key, &key, &mut key_hash, resolver)?
+        };
+        displaced_vec.push(displaced);
+        current_root = next_root;
+    }
+
+    if current_root.structural_hash == prev_root.structural_hash {
+        return Ok((current_root, displaced_vec, Vec::new()));
+    }
+
+    let delta = diff_node_hashes(prev_root, &current_root, resolver)?;
+    let new_set: crate::HashSet<StructuralHash> = delta.new_node_hashes.into_iter().collect();
+
+    let mut created = Vec::with_capacity(new_set.len());
+    let mut stack = vec![current_root.clone()];
+    while let Some(node) = stack.pop() {
+        if new_set.contains(&node.structural_hash) {
+            let bytes = PersistedInternalNode::from(node.as_ref()).encode_v1();
+            created.push((node.structural_hash, bytes));
+            for child in &node.children {
+                if let NodeRef::Resolved(child_node) = child {
+                    if new_set.contains(&child_node.structural_hash) {
+                        stack.push(child_node.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok((current_root, displaced_vec, created))
+}
+
+/// Persists a sequence of mutations where EVERY intermediate step publishes a distinct root.
+///
+/// This is the entry point used by homeserver batch-persistence paths (e.g. Synapse's
+/// `store_state_deltas_for_batched`). It emits [`ChainStep`]s containing the exact set of
+/// new nodes created at each step relative to its immediate predecessor.
+///
+/// # Publication Contract
+/// For each step $i$, the `step.created` nodes must be written to storage before publishing
+/// the corresponding state group root.
+///
+/// # Custom-hash roots
+/// Same default-hash-only routing as [`persist_mutation`]; see its
+/// "Custom-hash roots" section — do not call this on a
+/// [`build_hamt_with_key_hash`] tree. Use [`persist_chain_with_key_hash`]
+/// instead.
+///
+/// # Errors
+/// Returns [`HamtMutateError`] if `resolver` fails to load a lazy child or depth is exhausted.
+pub fn persist_chain<K, V, I, F, E>(
+    prev_root: &Arc<HamtNode<K, V>>,
+    structural_key: &[u8],
+    mutations: I,
+    resolver: &mut F,
+) -> Result<Vec<ChainStep<K, V>>, HamtMutateError<E>>
+where
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Hash + Clone + HamtCodec,
+    I: IntoIterator<Item = (K, Option<V>)>,
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    let mut steps = Vec::new();
+    let mut current_root = prev_root.clone();
+
+    for (key, opt_val) in mutations {
+        let (next_root, displaced, created) =
+            persist_mutation(&current_root, structural_key, key, opt_val, resolver)?;
+        steps.push(ChainStep {
+            root_hash: next_root.structural_hash,
+            root: next_root.clone(),
+            displaced,
+            created,
+        });
+        current_root = next_root;
+    }
+
+    Ok(steps)
+}
+
+/// [`persist_chain`] equivalent for trees built with
+/// [`build_hamt_with_key_hash`]: routes every step with the caller-supplied
+/// `key_hash` instead of the default keyed structural hash.
+///
+/// Same per-step publication contract as [`persist_chain`] — see its
+/// "Publication Contract" section.
+///
+/// # Errors
+/// Returns [`HamtMutateError`] if `resolver` fails to load a lazy child or depth is exhausted.
+pub fn persist_chain_with_key_hash<K, V, I, KeyHash, F, E>(
+    prev_root: &Arc<HamtNode<K, V>>,
+    structural_key: &[u8],
+    mutations: I,
+    mut key_hash: KeyHash,
+    resolver: &mut F,
+) -> Result<Vec<ChainStep<K, V>>, HamtMutateError<E>>
+where
+    K: Hash + Eq + Clone + HamtCodec,
+    V: Hash + Clone + HamtCodec,
+    I: IntoIterator<Item = (K, Option<V>)>,
+    KeyHash: FnMut(&K) -> StructuralHash,
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    let mut steps = Vec::new();
+    let mut current_root = prev_root.clone();
+
+    for (key, opt_val) in mutations {
+        let (next_root, displaced, created) = persist_mutation_with_key_hash(
+            &current_root,
+            structural_key,
+            key,
+            opt_val,
+            &mut key_hash,
+            resolver,
+        )?;
+        steps.push(ChainStep {
+            root_hash: next_root.structural_hash,
+            root: next_root.clone(),
+            displaced,
+            created,
+        });
+        current_root = next_root;
+    }
+
+    Ok(steps)
+}
+
+/// Descends into a batch of persisted node byte slices for their targeted keys.
+///
+/// `nodes_and_keys` contains the expected node hash, encoded bytes, depth, and
+/// target key hashes for each fetched node. All entries in a single `nodes_and_keys`
+/// call must share the same `depth` (the current level of breadth-first descent).
+/// Each node is evaluated only against the keys that routed to it at that depth.
+/// `key_hash_fn` computes the `KeyPathHash` of a decoded leaf key to verify exact matches.
+///
+/// # Depth Contract
+/// All tuples in `nodes_and_keys` must specify the same `depth` level. Successful
+/// descent produces [`DescendResult::pending`] entries representing child nodes at `depth + 1`.
+///
+/// # Absence Invariant
+/// A key is reported in `absent` ONLY when:
+/// 1. Its routed slot bit is clear in both `datamap` and `nodemap`.
+/// 2. Its routed slot bit is set in `datamap`, but the decoded leaf key at that slot has a
+///    different path hash. (Note: this is sound because this HAMT rejects multi-leaf bucket
+///    overflow with [`HamtMutateError::HashCollision`] rather than storing collision lists).
+///
+/// # Errors
+/// Returns [`DescendError::Decode`] if any node byte slice fails v1 parsing, or
+/// [`DescendError::CorruptNode`] if internal bitmap invariants are violated.
+pub fn descend_level<K, V, KeyHash>(
+    structural_key: &[u8],
+    nodes_and_keys: &[(StructuralHash, &[u8], usize, &[KeyPathHash])],
+    mut key_hash_fn: KeyHash,
+) -> Result<DescendResult<V>, DescendError>
+where
+    K: HamtCodec + Eq + Hash,
+    V: HamtCodec + Clone + Hash,
+    KeyHash: FnMut(&K) -> KeyPathHash,
+{
+    if let Some(&(_, _, first_depth, _)) = nodes_and_keys.first() {
+        // Runtime check: mixed-depth entries would merge requests from different
+        // levels into one frontier, misrouting subsequent lookups. The
+        // debug_assert! was previously only checked in debug builds.
+        if !nodes_and_keys.iter().all(|&(_, _, d, _)| d == first_depth) {
+            return Err(DescendError::CorruptNode(
+                "mixed-depth entries in a single descend_level call",
+            ));
+        }
+    }
+
+    let mut found = Vec::new();
+    let mut absent = Vec::new();
+    let mut pending_map: crate::HashMap<StructuralHash, Vec<KeyPathHash>> =
+        crate::HashMap::default();
+
+    for &(expected_hash, node_bytes, depth, target_keys) in nodes_and_keys {
+        let node = PersistedInternalNode::<K, V>::decode_v1_unverified(node_bytes)
+            .map_err(DescendError::Decode)?
+            .into_hamt_node_verified(structural_key, expected_hash)
+            .map_err(|_| {
+                DescendError::CorruptNode("decoded node contents do not match requested node hash")
+            })?;
+
+        for &req_hash in target_keys {
+            if depth >= HAMT_MAX_DEPTH {
+                return Err(DescendError::CorruptNode(
+                    "HAMT depth exceeds routing limit",
+                ));
+            }
+            let slot = bucket_index(&req_hash, depth);
+            let bit = 1_u32 << slot;
+
+            if (node.datamap & bit) != 0 {
+                let leaf_idx = map_index(node.datamap, slot);
+                let (leaf_key, val) = node
+                    .leaves
+                    .get(leaf_idx)
+                    .ok_or(DescendError::CorruptNode("leaf index out of bounds"))?;
+                // Lazy slot validation: only check the leaf being read, not
+                // the entire datamap. In a correct CHAMP HAMT, a leaf at
+                // slot `s` must satisfy bucket_index(key_hash(leaf_key), depth) == s.
+                if depth < HAMT_MAX_DEPTH {
+                    let expected_slot = bucket_index(&key_hash_fn(leaf_key), depth);
+                    if expected_slot != slot {
+                        return Err(DescendError::CorruptNode("leaf routed to wrong slot"));
+                    }
+                }
+                if key_hash_fn(leaf_key) == req_hash {
+                    found.push((req_hash, val.clone()));
+                } else {
+                    // Different leaf occupies this exact slot: key is proven absent
+                    // (Sound because this HAMT rejects bucket overflow with HashCollision)
+                    absent.push(req_hash);
+                }
+            } else if (node.nodemap & bit) != 0 {
+                let child_idx = map_index(node.nodemap, slot);
+                let child_hash = node
+                    .children
+                    .get(child_idx)
+                    .ok_or(DescendError::CorruptNode("child index out of bounds"))?
+                    .structural_hash();
+                pending_map.entry(child_hash).or_default().push(req_hash);
+            } else {
+                // Bitmap slot is clear: proven, terminal absence
+                absent.push(req_hash);
+            }
+        }
+    }
+
+    let pending = pending_map.into_iter().collect();
+
+    Ok(DescendResult {
+        found,
+        absent,
+        pending,
+    })
 }

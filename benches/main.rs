@@ -1,0 +1,233 @@
+//! Merged benchmark runner for rezzy.
+//!
+//! Organized by domain:
+//!   - `state`: Matrix state resolution & DAG traversal
+//!   - `db`: HAMT persistent state & delta storage
+//!   - `math`: Homomorphic hashing & set reconciliation
+//!
+//! Run all benchmarks:
+//!   cargo bench --bench rezzy
+//!
+//! Run a domain group:
+//!   cargo bench --bench rezzy -- state
+//!   cargo bench --bench rezzy -- db
+//!   cargo bench --bench rezzy -- math
+//!
+//! Run a specific benchmark:
+//!   cargo bench --bench rezzy -- lthash
+//!   cargo bench --bench rezzy -- resolve
+//!
+//! List available benchmarks:
+//!   cargo bench --bench rezzy -- --list
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::items_after_statements,
+    clippy::doc_markdown,
+    clippy::redundant_closure_for_method_calls
+)]
+
+mod common;
+mod db;
+mod math;
+mod state;
+
+struct BenchmarkEntry {
+    domain: &'static str,
+    name: &'static str,
+    description: &'static str,
+    run_fn: fn(),
+}
+
+const BENCHMARKS: &[BenchmarkEntry] = &[
+    // --- state (Matrix State Resolution & Traversal) ---
+    BenchmarkEntry {
+        domain: "state",
+        name: "resolve",
+        description: "State resolution v1, v2, v2.1 benchmark matrix",
+        run_fn: state::resolve::run,
+    },
+    BenchmarkEntry {
+        domain: "state",
+        name: "mainline_cache",
+        description: "Mainline power-level search and ordering cache performance",
+        run_fn: state::mainline_cache::run,
+    },
+    BenchmarkEntry {
+        domain: "state",
+        name: "interned_key",
+        description: "State resolution with interned string keys vs String keys",
+        run_fn: state::interned_key::run,
+    },
+    BenchmarkEntry {
+        domain: "state",
+        name: "state/interned_lookup",
+        description: "Micro-bench of event state lookups across multiple event types",
+        run_fn: state::interned_lookup::run,
+    },
+    // --- db (HAMT Storage & Persistence) ---
+    BenchmarkEntry {
+        domain: "db",
+        name: "state_backend",
+        description: "Persistent HAMT state backend vs im::OrdMap operations",
+        run_fn: db::state_backend::run,
+    },
+    BenchmarkEntry {
+        domain: "db",
+        name: "state_groups",
+        description: "HAMT content-addressed state groups vs delta-chain storage",
+        run_fn: db::state_groups::run,
+    },
+    BenchmarkEntry {
+        domain: "db",
+        name: "persistence",
+        description: "HAMT path-copying persistence vs full snapshot serialization",
+        run_fn: db::persistence::run,
+    },
+    BenchmarkEntry {
+        domain: "db",
+        name: "cumulative_rebuild",
+        description: "Step-by-step state rebuild simulation (HAMT vs sorted vs XOR-fold)",
+        run_fn: db::cumulative_rebuild::run,
+    },
+    BenchmarkEntry {
+        domain: "db",
+        name: "hamt_audit_bitmap",
+        description: "HAMT node reachability audit bitmap operations",
+        run_fn: db::hamt_audit_bitmap::run,
+    },
+    // --- math (Algebraic Structures & Set Reconciliation) ---
+    BenchmarkEntry {
+        domain: "math",
+        name: "lthash",
+        description: "MSC4500 LtHash incremental state hash vs non-homomorphic baselines",
+        run_fn: math::lthash::run,
+    },
+    BenchmarkEntry {
+        domain: "math",
+        name: "reconcile",
+        description: "Set reconciliation (PinSketch/Minisketch) encoding & decoding",
+        run_fn: math::reconcile::run,
+    },
+    BenchmarkEntry {
+        domain: "math",
+        name: "adaptive_sketch",
+        description: "Adaptive overflow sketches versus splitting and exact transfer",
+        run_fn: math::adaptive_sketch::run,
+    },
+    BenchmarkEntry {
+        domain: "math",
+        name: "filter_spillover",
+        description:
+            "Filter spillover vs sketch splitting for bucket overflow under network latency",
+        run_fn: math::filter_spillover::run,
+    },
+    BenchmarkEntry {
+        domain: "math",
+        name: "invertible_filter",
+        description: "Invertible Golomb-coded set vs PinSketch for set reconciliation",
+        run_fn: math::invertible_filter::run,
+    },
+];
+
+/// Prints the available benchmarks grouped by domain.
+fn print_list() {
+    println!("Available benchmarks in rezzy:\n");
+    let domains = ["state", "db", "math"];
+    for domain in domains {
+        let title = match domain {
+            "state" => "State Resolution & Traversal (`state`)",
+            "db" => "HAMT Storage & Persistence (`db`)",
+            "math" => "Algebraic Data Structures & Reconciliation (`math`)",
+            _ => domain,
+        };
+        println!("  [{domain}] {title}:");
+        for b in BENCHMARKS.iter().filter(|b| b.domain == domain) {
+            println!("    {:<20} - {}", b.name, b.description);
+        }
+        println!();
+    }
+}
+
+/// Prints command-line usage and the benchmark list.
+fn print_help() {
+    println!("rezzy benchmark suite\n");
+    println!("Usage:");
+    println!("  cargo bench --bench rezzy                 Run all benchmarks");
+    println!(
+        "  cargo bench --bench rezzy -- <DOMAIN>     Run benchmarks in domain (state, db, math)"
+    );
+    println!("  cargo bench --bench rezzy -- <NAME>       Run specific benchmark by name");
+    println!("  cargo bench --bench rezzy -- --list       List available benchmarks\n");
+    print_list();
+}
+
+/// Returns whether an argument belongs to Cargo's benchmark harness.
+fn is_cargo_harness_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--bench"
+            | "--test"
+            | "--nocapture"
+            | "--exact"
+            | "--quiet"
+            | "-q"
+            | "--profile"
+            | "release"
+    ) || arg.starts_with("--color")
+        || arg.starts_with("--format")
+}
+
+/// Dispatches the requested benchmark suite or command-line action.
+fn main() {
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+
+    for arg in &raw_args {
+        if arg == "--list" || arg == "-l" {
+            print_list();
+            return;
+        }
+        if arg == "--help" || arg == "-h" {
+            print_help();
+            return;
+        }
+    }
+
+    let filters: Vec<&str> = raw_args
+        .iter()
+        .map(String::as_str)
+        .filter(|arg| !is_cargo_harness_flag(arg))
+        .collect();
+
+    let is_all = filters.is_empty() || filters.contains(&"all");
+
+    let mut matched_any = false;
+    for b in BENCHMARKS {
+        let should_run = is_all
+            || filters.iter().any(|&f| {
+                b.domain.eq_ignore_ascii_case(f)
+                    || b.name.eq_ignore_ascii_case(f)
+                    || b.name
+                        .get(..f.len())
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(f))
+                        && b.name.as_bytes().get(f.len()) == Some(&b'/')
+            });
+
+        if should_run {
+            matched_any = true;
+            println!("============================================================");
+            println!(" [{}] BENCHMARK: {}", b.domain, b.name);
+            println!("============================================================");
+            (b.run_fn)();
+            println!();
+        }
+    }
+
+    if !matched_any {
+        eprintln!("No benchmarks matched filter: {filters:?}");
+        eprintln!();
+        print_list();
+        std::process::exit(1);
+    }
+}

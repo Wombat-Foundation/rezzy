@@ -18,11 +18,30 @@ use alloc::collections::VecDeque;
 /// Paired with [`MAX_BUCKETED_SKETCH_CAPACITY`], the default 20-round limit yields a
 /// default operating point of ~82,000 differing elements before falling back to
 /// extremity-based frame diffing under default client policy.
+// TODO(prefix-grinding): this round budget is also the thing an attacker
+// who can get ground events into the symmetric difference (see
+// `ElementHash::from_digest32`'s doc comment in algebraic.rs for the
+// precondition and the placement-key fix under consideration for
+// 4511-C) could otherwise exhaust on a crafted bucket, forcing
+// `ClientAction::ExtremityDiff` for that region every time two servers
+// reconcile it -- bounded (falls back rather than hanging), but not free,
+// and the cost recurs across sessions, not just the one under attack.
+//
+// `BucketExchange::advance`'s no-progress detection (see its doc comment,
+// `MAX_NO_PROGRESS_ROUNDS`) now closes the round-budget half of this: it
+// caps the damage from riding out all 20 rounds down to ~3, purely
+// client-side, no wire change, no MSC. It does not fix the exposure
+// itself -- the underlying bucket can still be found and re-targeted on
+// the next reconciliation, since placement is still predictable -- only
+// the placement-key redesign above (still open, tracked against 4511-C)
+// closes that.
 pub const MAX_RECONCILIATION_ROUNDS: usize = 20;
 /// Maximum number of bucket requests emitted in one reconciliation round.
 pub const MAX_BUCKETS_PER_ROUND: usize = 128;
 /// Maximum split depth implied by `MAX_BUCKETS_PER_ROUND`.
 pub const MAX_BUCKET_ROUND_DEPTH: u8 = bucket_round_depth(MAX_BUCKETS_PER_ROUND);
+
+const MIN_BUCKET_SKETCH_CAPACITY: usize = 4;
 
 const fn bucket_round_depth(bucket_count: usize) -> u8 {
     let mut count = bucket_count;
@@ -44,6 +63,13 @@ fn provision_capacity(delta: u64, headroom: u64) -> Option<u64> {
         .and_then(|capacity| capacity.checked_add(delta % 2))
         .and_then(|capacity| capacity.checked_add(4))
         .and_then(|capacity| capacity.checked_add(headroom))
+}
+
+fn derive_gate_threshold(max_rounds: usize) -> Option<u64> {
+    // Widen to u64 before multiplying: on 32-bit targets, saturating_mul in
+    // usize would silently cap at usize::MAX well below the real threshold
+    // for large max_rounds, weakening the configured reconciliation limit.
+    (max_rounds as u64).checked_mul(MAX_BUCKETED_SKETCH_CAPACITY as u64)
 }
 
 /// Requester policy for one MSC0501 reconciliation exchange.
@@ -83,6 +109,14 @@ pub enum ClientAction {
     ResolveRoots { roots: alloc::vec::Vec<u64> },
 }
 
+/// Consecutive no-progress rounds (see `BucketExchange::advance`'s doc
+/// comment) tolerated before bailing to `ClientAction::ExtremityDiff`
+/// early, instead of riding out the full `max_rounds` budget. Small and
+/// fixed rather than configurable: this is a cheap circuit breaker, not a
+/// policy knob, and a caller that wants a different threshold can still
+/// reach it via `max_rounds` itself.
+const MAX_NO_PROGRESS_ROUNDS: usize = 3;
+
 /// Stateful bucket exchange planner that carries deferred frontier nodes across rounds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BucketExchange {
@@ -93,6 +127,11 @@ pub struct BucketExchange {
     max_buckets_per_round: usize,
     max_aggregate_capacity: usize,
     max_pending_requests: usize,
+    /// Consecutive rounds in which every split-child failure came back
+    /// with its sibling either also failing or resolving zero roots --
+    /// i.e. splitting moved nothing. Reset to 0 whenever any bucket
+    /// resolves a nonzero root. See `advance`'s doc comment.
+    no_progress_rounds: usize,
 }
 
 impl BucketExchange {
@@ -112,6 +151,7 @@ impl BucketExchange {
             max_buckets_per_round,
             max_aggregate_capacity: max_aggregate_capacity.min(MAX_BUCKETED_SKETCH_CAPACITY),
             max_pending_requests: max_rounds.saturating_mul(max_buckets_per_round),
+            no_progress_rounds: 0,
         }
     }
 
@@ -167,6 +207,23 @@ impl BucketExchange {
     ///
     /// The planner keeps deferred children in a pending frontier rather than aborting when a
     /// single round hits the per-round bucket cap.
+    ///
+    /// Detects lack of progress and bails to [`ClientAction::ExtremityDiff`]
+    /// after a few consecutive rounds of it (an internal, unexported
+    /// constant), rather than
+    /// always riding out the full `max_rounds` budget. `retry_or_split_bucket`
+    /// always emits a failed bucket's two split children together (same
+    /// depth, prefixes `p<<1` and `(p<<1)|1`), so a failed bucket whose
+    /// sibling (found via `previous_requests`, this round's submission) also
+    /// failed or resolved zero roots means the split moved nothing -- the
+    /// whole difference is still on one side, and further splits are very
+    /// unlikely to help either. This is a global signal, not per split-chain:
+    /// coarser than tracking each lineage individually, but enough to cap the
+    /// cost of an adversary who can keep a crafted difference on one side of
+    /// every split (see `ElementHash::from_digest32`'s doc comment in
+    /// algebraic.rs, and the TODO on `MAX_RECONCILIATION_ROUNDS` above, for
+    /// that scenario). Any bucket resolving a nonzero root resets the
+    /// counter.
     #[must_use]
     pub fn advance(
         &mut self,
@@ -180,6 +237,35 @@ impl BucketExchange {
         } = batch;
 
         let had_failures = !failed_buckets.is_empty();
+
+        let any_nonempty_success = successful_buckets.iter().any(|s| !s.roots.is_empty());
+        let is_split_sibling_of = |depth: u8, prefix: u64| {
+            previous_requests
+                .iter()
+                .any(|r| r.depth == depth && r.prefix == (prefix ^ 1))
+        };
+        let mut saw_split_failure = false;
+        let all_split_failures_stalled = failed_buckets.iter().all(|&(depth, prefix)| {
+            if !is_split_sibling_of(depth, prefix) {
+                // Not a split child this round (a solo capacity retry, or a
+                // first-round request) -- has no sibling to compare against,
+                // so it neither confirms nor denies stall.
+                return true;
+            }
+            saw_split_failure = true;
+            let sibling_prefix = prefix ^ 1;
+            !successful_buckets
+                .iter()
+                .any(|s| s.depth == depth && s.prefix == sibling_prefix && !s.roots.is_empty())
+        });
+        if saw_split_failure && all_split_failures_stalled && !any_nonempty_success {
+            self.no_progress_rounds = self.no_progress_rounds.saturating_add(1);
+        } else {
+            self.no_progress_rounds = 0;
+        }
+        if self.no_progress_rounds >= MAX_NO_PROGRESS_ROUNDS {
+            return ClientAction::ExtremityDiff;
+        }
 
         for success in successful_buckets {
             self.accumulated_roots.extend(success.roots);
@@ -259,19 +345,19 @@ fn retry_or_split_bucket(
         let Some(capacity) = capacity else {
             return Err(ClientAction::ExtremityDiff);
         };
-        requests.push_back(BucketRequest {
-            depth: previous.depth,
-            prefix: previous.prefix,
+        requests.push_back(BucketRequest::new(
+            previous.depth,
+            previous.prefix,
             capacity,
-        });
+        ));
         return Ok(requests);
     }
 
-    if previous.depth >= 31 {
+    if previous.depth >= super::MAX_DEPTH {
         return Err(ClientAction::ExtremityDiff);
     }
 
-    let floor = 4_usize;
+    let floor = MIN_BUCKET_SKETCH_CAPACITY;
     let Ok(floor_u64) = u64::try_from(floor) else {
         return Err(ClientAction::ExtremityDiff);
     };
@@ -291,16 +377,16 @@ fn retry_or_split_bucket(
         return Err(ClientAction::ExtremityDiff);
     };
 
-    requests.push_back(BucketRequest {
-        depth: next_depth,
-        prefix: previous.prefix << 1,
+    requests.push_back(BucketRequest::new(
+        next_depth,
+        previous.prefix << 1,
         capacity,
-    });
-    requests.push_back(BucketRequest {
-        depth: next_depth,
-        prefix: (previous.prefix << 1) | 1,
+    ));
+    requests.push_back(BucketRequest::new(
+        next_depth,
+        (previous.prefix << 1) | 1,
         capacity,
-    });
+    ));
 
     Ok(requests)
 }
@@ -309,10 +395,7 @@ impl Default for ReconciliationClient {
         Self {
             max_sketch_capacity: MAX_LOCAL_SKETCH_DECODE_CAPACITY,
             max_rounds: MAX_RECONCILIATION_ROUNDS,
-            gate_threshold: u64::try_from(
-                MAX_RECONCILIATION_ROUNDS.saturating_mul(MAX_BUCKETED_SKETCH_CAPACITY),
-            )
-            .ok(),
+            gate_threshold: derive_gate_threshold(MAX_RECONCILIATION_ROUNDS),
         }
     }
 }
@@ -330,20 +413,18 @@ impl ReconciliationClient {
         Ok(Self {
             max_sketch_capacity,
             max_rounds: MAX_RECONCILIATION_ROUNDS,
-            gate_threshold: u64::try_from(
-                MAX_RECONCILIATION_ROUNDS.saturating_mul(MAX_BUCKETED_SKETCH_CAPACITY),
-            )
-            .ok(),
+            gate_threshold: derive_gate_threshold(MAX_RECONCILIATION_ROUNDS),
         })
     }
 
-    /// Sets a custom maximum round count for the reconciliation client,
-    /// adjusting the gate threshold accordingly.
+    /// Sets a custom maximum round count and recalculates the gate threshold.
+    ///
+    /// This overwrites a threshold configured earlier with
+    /// [`Self::with_gate_threshold`], so builder call order is significant.
     #[must_use]
     pub fn with_max_rounds(mut self, max_rounds: usize) -> Self {
         self.max_rounds = max_rounds;
-        self.gate_threshold =
-            u64::try_from(max_rounds.saturating_mul(MAX_BUCKETED_SKETCH_CAPACITY)).ok();
+        self.gate_threshold = derive_gate_threshold(max_rounds);
         self
     }
 
@@ -402,11 +483,14 @@ impl ReconciliationClient {
             .accumulator()
             .known_event_count()
             .abs_diff(remote.known_event_count);
-        let estimated_delta =
-            match crate::reconcile::triage::estimate_strata(local.strata(), &remote.strata) {
-                Ok(estimate) => estimate.delta.max(count_delta),
-                Err(_) => return ClientAction::ExtremityDiff,
-            };
+        let estimated_delta = match crate::reconcile::triage::estimate_strata(
+            local.strata(),
+            &remote.strata,
+            crate::reconcile::triage::MAX_STRATA_FACTOR_WORK,
+        ) {
+            Ok(estimate) => estimate.delta.max(count_delta),
+            Err(_) => return ClientAction::ExtremityDiff,
+        };
 
         if estimated_delta >= SATURATED_DELTA_ESTIMATE {
             return ClientAction::ExtremityDiff;
@@ -421,10 +505,15 @@ impl ReconciliationClient {
         let provisioned = u64::try_from(concurrency_headroom)
             .ok()
             .and_then(|headroom| provision_capacity(estimated_delta, headroom));
-        let target_capacity = provisioned
-            .and_then(|value| usize::try_from(value).ok())
-            .unwrap_or(crate::reconcile::triage::MAX_BUCKETED_SKETCH_CAPACITY)
-            .min(crate::reconcile::triage::MAX_BUCKETED_SKETCH_CAPACITY);
+        // Clamp before the `usize` conversion: on 32-bit targets a large
+        // provisioned `u64` can exceed `usize::MAX` even though it's far
+        // above `MAX_BUCKETED_SKETCH_CAPACITY`, which the value is capped to
+        // right below anyway. Converting first would reject those cases as
+        // `ExtremityDiff` instead of just clamping.
+        let capped = provisioned.map(|value| value.min(MAX_BUCKETED_SKETCH_CAPACITY as u64));
+        let Some(target_capacity) = capped.and_then(|value| usize::try_from(value).ok()) else {
+            return ClientAction::ExtremityDiff;
+        };
 
         let mut depth = 0_u8;
         let mut buckets = 1_usize;
@@ -438,7 +527,7 @@ impl ReconciliationClient {
 
         let per_bucket = target_capacity
             .div_ceil(buckets)
-            .clamp(4, MAX_BUCKET_SKETCH_CAPACITY);
+            .clamp(MIN_BUCKET_SKETCH_CAPACITY, MAX_BUCKET_SKETCH_CAPACITY);
         let total_capacity = buckets.saturating_mul(per_bucket);
 
         if buckets > MAX_BUCKETS_PER_ROUND
@@ -448,13 +537,11 @@ impl ReconciliationClient {
         }
 
         let mut requests = alloc::vec::Vec::with_capacity(buckets);
-        let max_prefix = u32::try_from(buckets).unwrap_or(0);
+        let Ok(max_prefix) = u64::try_from(buckets) else {
+            return ClientAction::ExtremityDiff;
+        };
         for prefix in 0..max_prefix {
-            requests.push(BucketRequest {
-                depth,
-                prefix,
-                capacity: per_bucket,
-            });
+            requests.push(BucketRequest::new(depth, prefix, per_bucket));
         }
 
         ClientAction::BucketSketches {
@@ -645,11 +732,7 @@ mod tests {
                 2,
             ),
             ClientAction::BucketSketches {
-                requests: vec![BucketRequest {
-                    depth: 0,
-                    prefix: 0,
-                    capacity: 12,
-                }],
+                requests: vec![BucketRequest::new(0, 0, 12)],
                 accumulated_roots: vec![],
             }
         );
@@ -666,11 +749,7 @@ mod tests {
         let client = ReconciliationClient::new(16).unwrap();
         let local = accumulator(&[hash(1, 1)]);
         let expected_requests = (0..64)
-            .map(|prefix| BucketRequest {
-                depth: 6,
-                prefix,
-                capacity: 24,
-            })
+            .map(|prefix| BucketRequest::new(6, prefix, 24))
             .collect();
         assert_eq!(
             client.select_action(
@@ -702,11 +781,7 @@ mod tests {
                 0,
             ),
             ClientAction::BucketSketches {
-                requests: vec![BucketRequest {
-                    depth: 0,
-                    prefix: 0,
-                    capacity: 4,
-                }],
+                requests: vec![BucketRequest::new(0, 0, 4)],
                 accumulated_roots: vec![],
             }
         );
@@ -758,11 +833,7 @@ mod tests {
                 0,
             ),
             ClientAction::BucketSketches {
-                requests: vec![BucketRequest {
-                    depth: 0,
-                    prefix: 0,
-                    capacity: 31,
-                }],
+                requests: vec![BucketRequest::new(0, 0, 31)],
                 accumulated_roots: vec![],
             }
         );
@@ -795,11 +866,7 @@ mod tests {
                 0,
             ),
             ClientAction::BucketSketches {
-                requests: vec![BucketRequest {
-                    depth: 0,
-                    prefix: 0,
-                    capacity: 31,
-                }],
+                requests: vec![BucketRequest::new(0, 0, 31)],
                 accumulated_roots: vec![],
             }
         );
@@ -878,19 +945,11 @@ mod tests {
             }],
             failed_buckets: vec![(8, 2)],
         };
-        let previous = [BucketRequest {
-            depth: 8,
-            prefix: 2,
-            capacity: 8,
-        }];
+        let previous = [BucketRequest::new(8, 2, 8)];
         assert_eq!(
             ReconciliationClient::transition_bucket_batch(batch, &previous, vec![99], None, 4096,),
             ClientAction::BucketSketches {
-                requests: vec![BucketRequest {
-                    depth: 8,
-                    prefix: 2,
-                    capacity: 18,
-                }],
+                requests: vec![BucketRequest::new(8, 2, 18)],
                 accumulated_roots: vec![99, 42],
             }
         );
@@ -898,37 +957,19 @@ mod tests {
 
     #[test]
     fn retry_or_split_bucket_retries_small_capacity_buckets() {
-        let next_requests = retry_or_split_bucket(
-            &BucketRequest {
-                depth: 8,
-                prefix: 2,
-                capacity: 8,
-            },
-            10,
-        )
-        .expect("small-capacity buckets should retry");
+        let next_requests = retry_or_split_bucket(&BucketRequest::new(8, 2, 8), 10)
+            .expect("small-capacity buckets should retry");
 
         assert_eq!(
             next_requests.into_iter().collect::<alloc::vec::Vec<_>>(),
-            vec![BucketRequest {
-                depth: 8,
-                prefix: 2,
-                capacity: 19,
-            }]
+            vec![BucketRequest::new(8, 2, 19)]
         );
     }
 
     #[test]
     fn retry_or_split_bucket_falls_back_on_small_capacity_overflow() {
         assert_eq!(
-            retry_or_split_bucket(
-                &BucketRequest {
-                    depth: 8,
-                    prefix: 2,
-                    capacity: 8,
-                },
-                u64::MAX,
-            ),
+            retry_or_split_bucket(&BucketRequest::new(8, 2, 8), u64::MAX,),
             Err(ClientAction::ExtremityDiff)
         );
     }
@@ -942,39 +983,20 @@ mod tests {
         assert_eq!(
             ReconciliationClient::transition_bucket_batch(
                 batch.clone(),
-                &[BucketRequest {
-                    depth: 8,
-                    prefix: 3,
-                    capacity: MAX_BUCKET_SKETCH_CAPACITY,
-                }],
+                &[BucketRequest::new(8, 3, MAX_BUCKET_SKETCH_CAPACITY)],
                 vec![],
                 None,
                 4096,
             ),
             ClientAction::BucketSketches {
-                requests: vec![
-                    BucketRequest {
-                        depth: 9,
-                        prefix: 6,
-                        capacity: 10,
-                    },
-                    BucketRequest {
-                        depth: 9,
-                        prefix: 7,
-                        capacity: 10,
-                    },
-                ],
+                requests: vec![BucketRequest::new(9, 6, 10), BucketRequest::new(9, 7, 10),],
                 accumulated_roots: vec![],
             }
         );
         assert_eq!(
             ReconciliationClient::transition_bucket_batch(
                 batch,
-                &[BucketRequest {
-                    depth: 8,
-                    prefix: 1,
-                    capacity: 8,
-                }],
+                &[BucketRequest::new(8, 1, 8)],
                 vec![],
                 None,
                 4096,
@@ -987,13 +1009,9 @@ mod tests {
     fn bucket_transition_falls_back_when_retry_fanout_exceeds_round_cap() {
         let mut failed_buckets = alloc::vec::Vec::with_capacity(65);
         let mut previous_requests = alloc::vec::Vec::with_capacity(65);
-        for prefix in 0..65_u32 {
+        for prefix in 0..65_u64 {
             failed_buckets.push((7, prefix));
-            previous_requests.push(BucketRequest {
-                depth: 7,
-                prefix,
-                capacity: MAX_BUCKET_SKETCH_CAPACITY,
-            });
+            previous_requests.push(BucketRequest::new(7, prefix, MAX_BUCKET_SKETCH_CAPACITY));
         }
 
         let batch = BucketDecodeBatch {
@@ -1025,13 +1043,9 @@ mod tests {
 
         let mut previous_requests = alloc::vec::Vec::with_capacity(65);
         let mut failed_buckets = alloc::vec::Vec::with_capacity(65);
-        for prefix in 0..65_u32 {
+        for prefix in 0..65_u64 {
             failed_buckets.push((7, prefix));
-            previous_requests.push(BucketRequest {
-                depth: 7,
-                prefix,
-                capacity: MAX_BUCKET_SKETCH_CAPACITY,
-            });
+            previous_requests.push(BucketRequest::new(7, prefix, MAX_BUCKET_SKETCH_CAPACITY));
         }
 
         let first = exchange.advance(
@@ -1094,23 +1108,86 @@ mod tests {
         );
     }
 
+    /// Coverage: `BucketExchange::advance`'s no-progress detection. A
+    /// bucket that keeps splitting with the entire failing population
+    /// staying on one side (the sibling always resolves zero roots) must
+    /// bail to `ExtremityDiff` after `MAX_NO_PROGRESS_ROUNDS`, well before
+    /// `max_rounds` -- the scenario an attacker who can predict h64
+    /// placement (see `ElementHash::from_digest32`'s doc comment in
+    /// algebraic.rs) can otherwise force.
+    #[test]
+    fn bucket_exchange_bails_after_consecutive_no_progress_splits() {
+        let mut exchange = BucketExchange::new(
+            vec![],
+            MAX_RECONCILIATION_ROUNDS,
+            MAX_BUCKETS_PER_ROUND,
+            MAX_BUCKETED_SKETCH_CAPACITY,
+        );
+
+        // Round 1: a single bucket at max capacity fails outright, forcing
+        // an immediate depth split (no sibling exists yet this round).
+        let mut previous_requests = vec![BucketRequest::new(7, 0, MAX_BUCKET_SKETCH_CAPACITY)];
+        let mut action = exchange.advance(
+            BucketDecodeBatch {
+                successful_buckets: vec![],
+                failed_buckets: vec![(7, 0)],
+            },
+            &previous_requests,
+            Some(u64::MAX / 2),
+        );
+
+        // Rounds 2..: every split's "left" child keeps failing, and its
+        // sibling "right" child keeps succeeding with zero roots -- the
+        // whole population stays put, nothing separates out.
+        let mut rounds = 1;
+        while let ClientAction::BucketSketches { requests, .. } = &action {
+            assert_eq!(
+                requests.len(),
+                2,
+                "each stalled split should re-emit exactly two children"
+            );
+            let left = requests[0];
+            let right = requests[1];
+            previous_requests = requests.clone();
+            action = exchange.advance(
+                BucketDecodeBatch {
+                    successful_buckets: vec![super::super::triage::BucketDecodeSuccess {
+                        depth: right.depth,
+                        prefix: right.prefix,
+                        roots: vec![],
+                    }],
+                    failed_buckets: vec![(left.depth, left.prefix)],
+                },
+                &previous_requests,
+                Some(u64::MAX / 2),
+            );
+            rounds += 1;
+            assert!(
+                rounds < MAX_RECONCILIATION_ROUNDS,
+                "no-progress detection should bail well before max_rounds \
+                 ({MAX_RECONCILIATION_ROUNDS}); still going at round {rounds}: {action:?}"
+            );
+        }
+
+        assert_eq!(
+            action,
+            ClientAction::ExtremityDiff,
+            "a persistently stalled split must bail to ExtremityDiff, not keep splitting: \
+             stopped after {rounds} rounds"
+        );
+        assert!(
+            rounds <= MAX_NO_PROGRESS_ROUNDS.saturating_add(2),
+            "should bail within a couple rounds of the {MAX_NO_PROGRESS_ROUNDS}-round \
+             threshold, not ride out most of max_rounds; took {rounds} rounds"
+        );
+    }
+
     #[test]
     fn bucket_exchange_stops_round_when_aggregate_cap_would_be_exceeded() {
         let mut exchange =
             BucketExchange::new(vec![], MAX_RECONCILIATION_ROUNDS, MAX_BUCKETS_PER_ROUND, 25);
 
-        let previous_requests = [
-            BucketRequest {
-                depth: 0,
-                prefix: 0,
-                capacity: 8,
-            },
-            BucketRequest {
-                depth: 0,
-                prefix: 1,
-                capacity: 8,
-            },
-        ];
+        let previous_requests = [BucketRequest::new(0, 0, 8), BucketRequest::new(0, 1, 8)];
 
         let action = exchange.advance(
             BucketDecodeBatch {
@@ -1129,15 +1206,8 @@ mod tests {
             panic!("expected a partially drained request round");
         };
 
-        assert!(accumulated_roots.is_empty());
-        assert_eq!(
-            requests,
-            vec![BucketRequest {
-                depth: 0,
-                prefix: 0,
-                capacity: 18,
-            }]
-        );
+        assert_eq!(accumulated_roots, [] as [u64; 0]);
+        assert_eq!(requests, vec![BucketRequest::new(0, 0, 18)]);
         assert_eq!(exchange.pending_len(), 1);
         assert_eq!(exchange.rounds_emitted(), 1);
     }

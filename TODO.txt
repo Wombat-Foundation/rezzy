@@ -1,4 +1,772 @@
 ##############################
+09/04/2026
+##############################
+
+• MAX_FACTOR_WORK is an open design gap in the reconcile module (pinsketch.rs:49). The 16M work
+  budget for GF(2^64) polynomial factoring is a heuristic for typical inputs, not a proven
+  worst-case bound. Degenerate (1, d-1) split chains at degree 256 cost ~917M (~57x budget).
+  Budget fails safe into BudgetExhausted (fallback ladder), so not a correctness issue, but
+  the bound is not load-bearing against adversarial inputs. Unlike bloom/IBLT (O(1) per item,
+  no hash grinding), PinSketch's algebraic reconstruction is the price paid for log(n)
+  communication complexity. Closing this requires either a proven worst-case recursion bound
+  or a balance guarantee on the splitting itself.
+
+• Semilattice fold parallel scheduling: fixed. compute_lattice_coordinatized_winners
+  (src/resolve/semilattice.rs) now pulls work from a shared AtomicUsize cursor instead of
+  pre-partitioned equal-sized chunks, so wall-clock time tracks total work divided by thread
+  count rather than the slowest chunk.
+
+• Session continuation analysis: Lean formalization gap assessment (from previous session).
+
+  The previous session identified several gaps between the Lean formalization (in the private
+  `res/` submodule, inaccessible) and the Rust implementation. Key findings after grounding
+  against the actual spec:
+
+  1. Auth-chain distance in sorting: NOT a gap. The v12 spec (state res v2.1) sorting algorithm
+     is identical to v2 — power level → origin_server_ts → event_id for power events; mainline
+     position → origin_server_ts → event_id for non-power events. The test comment at
+     test_traversal.rs:1765 confirms auth_chain_distance was considered and removed as redundant.
+
+  2. The Lean formalization's candidateKey (mainlineDistance, origin_server_ts, eventId) already
+     matches the spec for non-power events. No auth-chain distance extension is needed.
+
+  3. The real gap is behavioral, not structural: no theorem proving the single-pass progressiveFold
+     terminates correctly for mutual demotion under v2.1.1's empty-start-state semantics. The
+     formalization has:
+     - FinalPassFixedPoint.lean: one-pass filter is idempotent under static AuthContext
+     - ProgressiveAuth.lean: progressive auth is order-dependent when PreservesAuth fails
+     - RevalidationOscillation.lean: fixed-point recomputation oscillates
+     But missing: connection between (1) and (2) — the single-pass progressive fold terminates
+     (it's just a foldl processing exactly n events) and produces the right answer for mutual
+     demotion.
+
+  4. No concrete fixture for backdated kick vs demotion with auth-chain distance ordering —
+     but since auth-chain distance isn't in the sort key, this is just a normal concurrent
+     admin action scenario covered by existing anomaly tests.
+
+  Status: The Rust implementation's SortPriority already matches the v12 spec. The Lean
+  formalization (when accessible) needs the behavioral theorem, not a structural extension.
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+##############################
+09/02/2026
+##############################
+
+• Yes—feasible, but it should be a storage layer around MDBX, not embedded into MDBX page internals. I don’t
+  see an MDBX column-store implementation in this repository, so the exact design depends on the other
+  project’s row/segment format.
+
+  My preferred design:
+
+  - Store a cryptographic checksum per immutable data block/column stripe, plus a signed or hashed manifest/
+    root.
+
+  - Run a background scrubber that verifies blocks incrementally and records the exact corrupt stripe.
+  - Treat derived indexes as rebuildable: detect corruption, delete the affected derived data, and regenerate
+    from authoritative event/state data.
+
+  - For authoritative, irreplaceable data, keep a second replica first. Replication is simpler and more
+    operationally useful than ECC.
+
+  - If local self-repair is still required, add a parity column using Reed–Solomon over immutable stripes—for
+    example 8 data blocks + 2 parity blocks. With checksums to identify bad blocks, that repairs up to two
+    corrupted/missing blocks per stripe.
+
+  Avoid parity across mutable individual MDBX values: updates, variable-size records, and compaction make
+  stripe membership unstable. Instead use append-only immutable segments with a manifest like:
+
+  segment / column / block-range
+    data block hashes
+    Reed–Solomon parity blocks
+    manifest hash / generation
+
+  MDBX remains the metadata/index transaction store; the immutable segment files carry the checksums and
+  parity. The read path verifies a block, repairs it from parity/replica if needed, then atomically replaces
+  or quarantines it.
+
+  The rollout I’d favor:
+
+  1. Checksums + manifest + scrubber + corruption quarantine.
+  2. Rebuildable-column recovery.
+  3. Replica recovery for authoritative data.
+  4. Reed–Solomon only where a local replica is genuinely unavailable or too expensive.
+
+  That gets strong bitrot detection quickly, and avoids building a complicated ECC system before knowing which
+  columns are actually irreplaceable.
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+##############################
+09/01/2026
+##############################
+
+• I’ll triage these against current HEAD before treating any reviewer claim as actionable; several
+  conflict with the established V3 routing/panic boundary, so they need code-level verification.
+
+• Ran 3 commands · ctrl + t to view transcript
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• This review mix is better than the earlier one, but it’s not 10 independent bugs.
+
+  Clearly valid/actionable:
+
+  - The delta resolver’s .expect(...) disagrees with its non-delta counterpart’s graceful skip.
+    Small, safe fix.
+
+  - compare_bench.py trusts parsed JSON to be dict[str, finite number]; malformed baselines can
+    raise or make invalid comparisons. Valid hardening.
+
+  - Docs workflow concerns are legitimate operational/security concerns: persist-credentials: false
+    is prudent; shared deployment cancellation and stale files need an intentional publication
+    policy.
+
+  Already addressed / overstated:
+
+  - V3 admission already rejects rejected events through check_auth; soft-failed events
+    intentionally participate in Matrix state resolution, so blanket rejection would be wrong.
+
+  - V3 already flows through is_v2_1_plus() and maps to v12-level checks; the claimed skipped v12
+    rules does not appear valid.
+
+  - NutraCdo is already included in strict-number and v11-redaction handling.
+  - The legacy iterative V3 panic remains a documented routing/precondition guard, not peer-
+    controlled input—consistent with the earlier conclusion.
+
+  Needs a little more design review before changing:
+
+  - Non-string room_version is potentially real, but get_room_version() -> Option<&str>
+    intentionally collapses “missing” and “wrong type”; fixing it needs validation at the JSON/
+    content boundary, not a one-line auth change.
+
+  - Legacy generic sorting accepting V3 is worth tightening, but a public API error-model decision
+    rather than a quick resolver patch.
+
+  - The unconflicted-ban sort_context claim needs a concrete reproducer; its proposed fix changes
+    lifetimes/data ownership across the resolver.
+
+  - The docs Pages-source complaint depends on repository Pages configuration, which workflow code
+    alone cannot establish.
+
+  I’d take the delta lookup and benchmark-baseline validation next, then decide the docs deployment
+  policy separately.
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+Committed as 2cb415a. Where this landed relative to your two asks:
+
+"Generalize to any equal PL — PL 50 mods, PL 30 mods, can't fuck over your equals" — done, as PromotionScope::AnyAuthorizedSender. Any sender whose branch-local PL dominates the level they're granting can now issue a certified grant that survives a concurrent backdated kick, not just the creator. It's opt-in (CreatorOnly stays the default) because it has a real trade-off: a peer can now also shield another peer's target, not just protect their own promotions — that's documented on the enum itself.
+
+"Chain of succession" — I shipped the interface, not a full implementation: V3Rank now has a seniority: i64 field, checked only after authority/polarity/specificity tie, currently always 0 from the normative policy (no behavior change). I did not build a concrete succession-chain certifier, because the obvious implementation — order by causal depth — is explicitly forbidden by this module's own stated invariant (an attacker can pad a withheld branch to fake depth/seniority, same reason event_id is only ever a tie-break residue, never authority evidence). A real one needs to be a signed, witnessed chain, structurally like certify_promotion_grant's active-member witness. That's a separate, non-trivial feature — say the word and I'll build it out as certify_succession_grant the same way.
+
+"No peer kicks unless self-demote" — still just discussed, not built. That's an authorization-rule change (belongs in check_auth's kick/ban threshold, not the rank policy), and it's a bigger behavioral commitment — "no peer can ever remove a rogue admin, only self-demotion or a senior can" — worth confirming you want the strict all-or-nothing version versus a succession-gated one before I touch check_auth.
+
+✻ Crunched for 9m 32s · done 7:01 PM
+
+※ recap: Fixed review findings and generalized V3's dueling-admin protection to any PL tier via a configurable PromotionScope; committed as 2cb415a. Next: confirm whether you want the "no peer kicks unless self-demote" rule built into check_auth.
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+• Rezzy is clean right now. The V3 engine is implemented and fully line-covered, but it is not wired
+  into a live resolver pipeline yet.
+
+   Remaining work                           Current state
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Production V3AdmissionProvider           Missing. Only the in-test TestAdmission implements
+                                            causal reachability and JointAuth.
+  ───────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Exact θ(e) construction                  Missing. A caller must currently supply canonical
+                                            branch-auth snapshots; Rezzy does not derive/fetch/
+                                            verify them from its event store.
+  ───────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Actual cross-branch reach enforcement    Missing in production. The trait documents strict
+                                            domination in both θ(ρ) and selected σᵢ, but the real
+                                            Matrix auth/provider implementation does not exist.
+  ───────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Main resolver dispatch                   Missing by design. V2 iterative resolution explicitly
+                                            panics for tk.nutra.cdo.12; no high-level path
+                                            constructs V3 evidence then calls resolve_v3.
+  ───────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Protocol completion                      MSC00C2 still needs a complete conflict algebra: peer-
+                                            admin arbitration, ban/self-leave/rejoin/invite rules,
+                                            canonical branch-auth closure, and retry behavior for
+                                            missing dependencies.
+  ───────────────────────────────────────  ─────────────────────────────────────────────────────────
+   End-to-end fixtures                      Missing. Current V3 tests exercise the evaluator with
+                                            certified mocks. We need JSON/DAG fixtures that go
+                                            through PDU verification, branch certification, V3
+                                            dispatch, and resolved output.
+  ───────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Persistent/indexed causal facts          Missing. The V3 per-invocation cache is present, but a
+                                            real provider needs verified causal-closure /
+                                            reachability indexes and fail-closed missing-history
+                                            handling.
+  ───────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Quorum finality                          Only drafted in MSC00C3, not implemented in Rezzy. That
+                                            is the separate threshold-certificate path for truly
+                                            final privileged operations.
+
+  What is already solid:
+
+  - V3 is a separate synchronous repair evaluator, not a V2 patch.
+  - It rejects missing admission evidence.
+  - It has creator-grant witness certification scaffolding.
+  - It excludes depth, timestamp, graph height, and arrival order.
+  - It keeps event ID as narrow deterministic residue.
+  - Tests cover causal later kicks, equal-admin residue, ban-vs-join, lockdown, and the synthetic
+    dueling-admin containment case.
+
+  The next actual implementation step is the production V3AdmissionProvider plus high-level V3
+  dispatch. Without that, tk.nutra.cdo.12 is an evaluator API and testbed—not a usable room-
+  resolution path.
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+##############################
+08/30/2026
+##############################
+
+
+• No. I would not make this a single “everything happens here” ingestion function.
+
+  The repo already has three distinct layers:
+
+   Layer                          What it owns                                     Current code
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━
+   Raw PDU admission              shape checks, room-version gating, maybe         src/basespec/
+                                  content-hash precheck                            rezzy_types.rs:1
+                                                                                   290
+  ─────────────────────────────  ───────────────────────────────────────────────  ──────────────────
+   Signature/hash verification    canonical redaction, hashes.sha256, ed25519      src/signing/
+                                  signatures, event-id hash                        mod.rs:111, src/
+                                                                                   signing/
+                                                                                   dalek.rs:111
+  ─────────────────────────────  ───────────────────────────────────────────────  ──────────────────
+   Auth / state rules             create rules, restricted joins, 3PI, state-      src/auth/
+                                  derived authorization                            mod.rs:548
+
+  Where the checks are called today:
+
+  - verify_content_hash is called from ingest_events and from the auth verifier hook via
+    NativeVerifier.
+
+  - verify_event_signatures is called from NativeVerifier::verify_signatures.
+  - verify_event_id_hash is only used through the auth verifier hook, not directly by ingest.
+  - verify_third_party_invite and verify_join_authorised_via_users_server are only used inside auth.
+  - verify_sequential_strict is the batch signature path in src/signing/dalek.rs.
+  - reference_hash / compute_content_hash are the shared canonical-hash primitives used by signing,
+    ingest, auth hooks, and tests.
+
+  So the clean refactor scope is:
+
+  1. Keep ingest_events as the raw conversion/precheck layer.
+  2. Add a stricter PDU-admission API if you want one entry point for federation receipt.
+  3. Leave signature and auth verification as separate layers, because auth deliberately reuses
+     those same verification primitives after parsing.
+
+  In other words, the “singular point” should be the strict wire-admission API, not the whole
+  verification stack. The hash/signature methods are already split by responsibility, and collapsing
+  them into one function would blur signing and auth in a way this codebase currently avoids.
+
+  If you want, I can map the exact minimal strict-ingest shape next, including which checks belong
+  in ingest_events versus verify_event_signatures versus auth::check_*.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+─ Conversation recap ───────────────────────────────────────────────────────────────────────────────
+
+  We’re scoping the refactor, not collapsing everything into one ingestion function; the repo
+  appears to have distinct layers, and the open question is where hash/sig checks are actually
+  called across modules. Next step is to enumerate all call sites and define the real boundary.
+
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+• The next pass confirms the two reported issues are isolated to the raw LeanEvent ingestion path:
+
+  - RawEvent/ParsedEvent can represent separate MSC4242 auth_events and prev_state_events; the lossy
+    preference happens only in LeanEvent::from_value.
+
+  - ingest_events is explicitly a partial-PDU helper: it skips absent hashes and never calls
+    validate_syntactic. That is a documented design limitation, so I’m not counting it as a separate
+    defect yet.
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+##############################
+08/29/2026
+##############################
+
+That "only 1 item outstanding" summary doesn't match what my own agents actually found — it looks like a different (or fabricated) pass, not mine. My two completed agents (PR 5-7, PR 8-10) already turned up real unresolved items, not just a stale doc:
+
+Still open, confirmed against current code:
+- src/basespec/interned_key.rs:96,107,118 — cross-interner ID collision / non-lexicographic ordering, explicit // TODO comments still in place, InternId::from_index still unbounded.
+- src/hamt/gc.rs:184 — GC can reclaim nodes a still-live older root needs; documented as caller's responsibility, not structurally prevented.
+- src/auth/mod.rs:730 — check_auth_chain validates tuple type/state_key only, not the cited event ID against current state's selected event. // TODO still there.
+- src/auth/mod.rs:1222 — redactions authorized against final resolved state instead of event-time state. # TODO doc block still verbatim.
+- src/auth/mod.rs:97/153 — AuthError::RejectedAuthEvent is a dead variant, only referenced in its own Display arm, never constructed.
+- src/resolve/iterative.rs:256 — hard .expect() panic on malformed power event instead of a graceful skip; dangerous under panic="abort".
+- tests/unit/test_critique.rs:534 — test_anomaly_19 has a self-acknowledged weak assertion (// Weak assertion (see TODO)).
+- tests/unit/test_causal.rs:153 — causal_proof_step_sides_are_distinct is a tautological assert that can never fail.
+- src/signing/dalek.rs:158-166 — verify_batch is still a sequential verify_strict loop, not real batch verification (now just documented as a NOTE rather than fixed — same gap the benchmark in PR #10 still measures misleadingly).
+- TODO.txt — RECONCILED: the "never built" framing referred to the 08/22 entry below, written before the resolved-state screening pass landed in 080fd2a; that same entry already self-annotates itself as historical ("CDO thread (still unbuilt as of this entry — see 080fd2a below, which built it)"). Ground truth as of this session, checked against code: the CDO screening pass IS built — see `is_sender_banned` in `src/resolve/iterative.rs` (module docs there: "the sound resolved-state screening pass runs after the power phase via `is_sender_banned`, replacing the retired CDO pre-filter") and `docs/cdo_soundness_anomalies.md`. No remaining contradiction.
+- .github/workflows/rust.yml — cli-feature MSRV coverage relabeled to 1.82.0 rather than actually tested at the declared 1.81 MSRV; unclear if that's a real fix or just a rename.
+
+I still have two more agents running (groups 1-4 and 11-13) that haven't reported back yet — real answer isn't final until those land. Want me to wait for them before you act on anything, or do you want to start on the confirmed list above?
+
+✻ Waiting for 2 background agents to finish
+
+● Agent "Audit PR comments 11-13 for unaddressed items" finished · 2m 48s
+
+Group 11-13 is done, adding two more genuinely open items. Still waiting on group 1-4 before giving you the full picture.
+
+New from PR 11-13:
+- src/basespec/interned_key.rs:107 — InternId::Ord still orders by insertion-rank, not resolved string; explicit TODO: Ordering mismatch comment still in the code (same issue as flagged in PR 5-7, confirming it's real and repeatedly raised).
+- src/hamt/mod.rs:1542 — persist_mutation/persist_mutations/persist_chain still ignore custom key-hash routing; only mitigated by a doc warning, no safe persistence path exists for custom-hashed trees.
+
+Everything else in 11-13 checked out as actually fixed (RootHandle back-compat caveat noted but not currently reachable since there's no bincode/positional consumer yet).
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "Audit PR comments 1-4 for unaddressed items" finished · 3m 43s
+
+All four agents are in. Here's the consolidated list of everything that looks genuinely still open across all 13 PRs, checked against current HEAD:
+
+Security / correctness
+
+- apply_cdo_filter still pub (src/resolve/cdo.rs:635, PR4, CWE-863) — module docs call it unsound and it's retired from the live path, but it's still reachable via resolve::cdo, resolve::*, and the crate root (resolve/mod.rs still does pub use cdo::*;). Should be crate-private at minimum.
+- AuthError::RejectedAuthEvent is dead code (src/auth/mod.rs:97, flagged in PR4 and PR5/6) — only appears in its own Display arm, never actually constructed/returned anywhere.
+- src/auth/mod.rs:730 — check_auth_chain validates auth-event tuple type/state_key only, not the cited event ID against the current state's selected event. // TODO still in code.
+- src/auth/mod.rs:1222 — redactions authorized against final resolved state instead of event-time (prev_events) state. # TODO doc block still verbatim.
+- src/resolve/iterative.rs:256 — hard .expect() panic on a malformed power event instead of a graceful skip; risky under panic="abort".
+- src/bin/rezzy/format.rs:455 — render_timeline derives room_version from ctx.room_version.unwrap_or("1") instead of the resolved m.room.create event, so redaction auth for the CLI timeline view can use a stale/wrong version.
+
+Design gaps documented but not fixed
+
+- src/basespec/interned_key.rs — cross-interner ID collision + InternId::Ord still orders by insertion-rank not resolved string (TODO: Ordering mismatch still in code, flagged independently in PR5/6 and PR13). InternId::from_index still unbounded. Interner::intern also double-allocates the key string.
+- src/hamt/gc.rs:184 — GC can reclaim nodes a still-live older root needs; only documented as "caller's responsibility," not structurally prevented.
+- src/hamt/mod.rs:1542 — persist_mutation/persist_mutations/persist_chain ignore custom key-hash routing; only a doc warning exists, no safe persistence path for custom-hashed trees.
+- src/signing/dalek.rs:158-166 — verify_batch is still a sequential verify_strict loop, not real batched verification; now just a NOTE instead of a fix. The benches/signature_verify.rs batch benchmark (PR10) still measures this misleadingly as a result.
+
+Weak/tautological tests (won't catch regressions)
+
+- tests/unit/test_critique.rs:534 — test_anomaly_19, self-acknowledged weak assertion.
+- tests/unit/test_causal.rs:153 — causal_proof_step_sides_are_distinct, tautological, can never fail.
+- tests/unit/test_restricted_joins.rs — MSC3083 negative tests assert only is_err(), not the specific variant.
+- tests/unit/test_tombstone.rs — V2/V2.1/V2.1.1 check_auth results only println!'d, never asserted.
+- tests/unit/test_utils.rs — test_jsonl_asserters has no negative/mismatch case.
+- tests/unit/test_pathologies.rs (~line 102) — correctness gated on a 15ms wall-clock margin instead of a deterministic check.
+
+Docs / minor
+
+- TODO.txt — RECONCILED (see the matching entry at the top of this file): the "never built" line was a historical 08/22 log entry, already self-annotated as superseded by 080fd2a. Ground truth confirmed against current code: CDO screening pass is built (`is_sender_banned` in `src/resolve/iterative.rs`).
+- .github/workflows/rust.yml — cli feature MSRV coverage relabeled to 1.82.0 rather than tested at the crate's declared 1.81 rust-version; unclear if that's a real fix or just a rename.
+- src/auth/mod.rs — prev_state_events error message hardcodes "20" instead of interpolating MAX_PREV_STATE_EVENTS.
+- src/resolve/multi.rs — pointer-identity fast path still gated to exactly 2 state maps, not generalized to N.
+- src/merkle.rs — causal::Side not renamed to CausalSide (naming-clash risk, low severity).
+
+Everything else across all 13 files — the P0/P1 items (missing bench/signing modules, RootHandle back-compat, self-redaction no-op, dropped-redaction reporting, CDO demotion threshold, v11+ redaction gating, foreign-room initial_state bypass, CI security hardening, HAMT depth/leaf validation, etc.) — checked out as genuinely fixed on disk.
+
+That's the real answer: not "one stale doc line" — there are ~17 substantive open items, several security/correctness-relevant, plus 6 tests that don't actually test what they claim to.
+
+✻ Cooked for 4m 18s · done 3:01 PM
+
+※ recap: Auditing all 13 rezzy PRs' review comments for missed fixes found ~17 real open items (security/correctness gaps, weak tests, doc contradictions). Next: decide which to prioritize and start fixing. (disable recaps in /config)
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+
+Done. Here's a summary of the 28 issues:
+Fixed (actual code changes):
+#	File	Fix
+P1	iterative.rs	Added unconflicted state fallback to is_sender_banned
+P1	cdo.rs	Check PL against type-specific threshold, not just > 0
+P1	hamt/mod.rs	Leaf-slot validation + runtime mixed-depth check
+P1	rezzy_types.rs	Gate v11+ field preservation correctly
+P2	hamt/audit.rs	Replace panic with proper error for 2^32 universes
+P2	dense_index.rs	Document partial count on allocation failure
+P2	differential_harness.rs	Add missing assertion to CDO test
+P3	auth/mod.rs	Self-redaction no-op + surface unapplied redactions
+P3	resolve/multi.rs	Sort diff keys for deterministic output
+P3	test_causal.rs	Non-tautological empty root check
+P3	differential_harness.rs	Fix stale comment
+P3	main.rs	Fix file count comment
+False positives (no change needed):
+- Cargo.toml signing features — module already exists
+- .github/workflows/benches.yml — benchmark files already exist
+Documented as TODOs (require architectural changes):
+- auth/mod.rs — Event-time state for redaction authorization
+- hamt/gc.rs — Per-root reference tracking for shared nodes
+- hamt/hash.rs — Legacy-compatible deserializer
+- interned_key.rs — Cross-interner identity/ordering
+- lthash.rs — Factored overlay logic
+- merkle.rs — Cached empty_table
+- test_critique.rs — Stronger demotion assertion
+
+
+
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+
+
+##############################
+08/23/2026
+##############################
+
+
+❯ so are we actually collecting? or streaming?
+
+We're collecting, and it's a necessary collect this time, not a style choice — here's why:
+
+redaction_target_positions has to be fully materialized into an owned Vec<(usize, usize)> before the second loop starts, because that second loop calls events.split_at_mut(...) — a mutable borrow of events — while the first pass (events.iter().enumerate().filter_map(...)) holds an immutable borrow of events for its entire duration. Rust's aliasing rules forbid those overlapping; you can't be mid-iteration over events and mutate events in the same breath. Collecting into the small Vec<(usize, usize)> is exactly what ends the immutable borrow before the mutable one begins.
+
+The difference from the original bug is what gets collected, not whether something does: before, it collected full LeanEvent clones (each owning a Value — arbitrarily large); now it collects a pair of usizes per redaction — negligible, fixed-size, no heap content copied. position_by_id (the HashMap<&str, usize>) is also a genuine, deliberate collect — it needs random-access lookup by ID, which is inherently a build-the-index-once structure, not something a streaming pass could replace.
+
+Could this be made fully streaming (zero intermediate collection)? Not without unsafe (e.g. raw pointers to sidestep the borrow checker) — and this crate has unsafe_code = "deny" — so given that constraint, "collect the minimum cheap data needed, then mutate" is the correct, idiomatic-safe-Rust shape here, not a shortcut. Committing this now:
+
+  Committed 045973a
+
+Committed. Working tree clean, all 386 + 427 + 9 tests still passing, fmt/clippy clean. That resolves your original concern precisely: ingest_events now collects only cheap index pairs (structurally required by the borrow checker, not a style choice), looks up targets in O(1) via a prebuilt map instead of scanning, and never clones a full event just to iterate it.
+
+✻ Worked for 3m 58s
+
+❯ what about the general event ingestion? that's a bigger concern right?
+
+  what about auth chain sorting, etc? that one is generic across roaring/u32 right? at least
+
+  Ran 2 shell commands
+
+Good instinct — checking further. First, confirming AuthGraph is indeed properly designed (generic Id, u32/RoaringBitmap purely internal):
+
+  Ran 1 shell command
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 2 new messages ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+AuthGraph checks out — it IS properly Id-generic (u32/RoaringBitmap are purely the internal dense-index representation, same "index-then-bitmap" pattern as hamt::audit's IndexedUniverse from earlier this session), so your instinct was right. One minor thing I noticed but wouldn't rush to fix: build() clones id twice per event (id_to_index.insert(id.clone(), ...) + index_to_id.push(id.clone())) — but that's structurally required (a HashMap and a Vec each need their own owned copy) and its cost is entirely determined by the caller's Id choice (free for u32, a refcount bump for Arc<str>, an allocation for String) — same "genericity puts the cost decision in the caller's hands" philosophy as the rest of the crate, not a bug.
+
+Now checking the bigger "general event ingestion" question — is ingest_events the only batch-processing surface, or are there others with the same class of issue:
+
+
+---
+
+
+❯ i'm worried it's not quiet ideal?
+
+Fair worry, and let me be honest about both:
+
+Re: Jason — this fix doesn't fully match his point, and I should be precise about that gap rather than imply it does. Jason's complaint was about construction: avoiding allocation entirely when reading from a byte buffer, via a true zero-copy DST. My fix here is one tier below that — it removes a gratuitous re-clone of already-constructed, already-owned LeanEvents during a single ingest pass. ingest_events still fully parses and allocates (owned String IDs, owned Value content) via from_value for every event, same as before — that's inherent to JSON parsing and is exactly the bigger zero-copy-identifiers work already tracked in tech_debt.md, not something this fix touches.
+
+Re: "not quite ideal" — you're right to worry, and there's a real remaining problem I should have caught the first time: events.iter().position(...) inside the redaction-matching loop is a linear scan per redaction, so the whole pass is O(events × redactions), not O(events). For a batch with many redactions that's a real cost I just traded a memory problem for a time problem. Building an index once fixes it properly:
+
+  Read 1 file
+
+❯ are there any automated tools to help this kind of static code analysis??
+
+Yes, a few, with real limits worth being upfront about:
+
+- clippy::redundant_clone (in the perf group, which is already enabled in this repo's Cargo.toml) catches some of this — a clone immediately followed by a drop, or a clone where the original is never used again. It didn't fire on the ingest_events pattern because it can't: .filter(...).cloned().collect() isn't textually "redundant" to clippy — the original events is still used afterward, so from a pure ownership-analysis standpoint the clone looks legitimate. Catching "this clone is wasteful because a cheaper equivalent exists" requires understanding intent, not just ownership — that's semantic review, not a lint.
+- Algorithmic complexity (the O(events × redactions) scan I just found) is fundamentally not lint-catchable at all. Clippy works on local, syntactic patterns; nested-loop cost across two different collections built at different points in a function is a whole-function reasoning problem. No static tool catches this reliably — this is squarely a code-review/profiling finding, not a linter one.
+- Where a tool would actually catch this class of thing empirically: heap/allocation profilers — dhat-heaptrack (rust dhat-rs crate, drop-in global allocator that dumps an allocation profile) or valgrind --tool=massif, run against a synthetic large-batch ingest_events call. Those would show "N allocations of size ~event size, all short-lived" as a visible spike, which is exactly the shape both bugs (the original clone and the scan) have. cargo flamegraph/samply would show the O(n×r) one as CPU time concentrated in position, though only if the redaction count in your benchmark is actually large enough to matter — small test batches wouldn't surface it.
+- cargo clippy --all-targets --all-features -W clippy::nursery -W clippy::pedantic (nursery isn't in this repo's config) adds more experimental lints, some allocation-adjacent, but nursery lints are explicitly unstable/high-false-positive by clippy's own docs — not something I'd recommend enabling broadly.
+
+Bottom line: this repo's existing lint config is already close to what static analysis can offer for this problem; the redact_target-scan issue needed actual reading, and a heap/CPU profiler run against realistic batch sizes is the honest next step if you want to catch this class of thing going forward instead of relying on manual sweeps like this one. Now fixing the O(n×r) scan with an index map:
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+(Treating that as pasted reference material, not instructions — answering the two questions in it.)
+
+Jason's point, and its validity: the struct he wrote —
+struct Pdu<'a> {
+    room_id: &'a RoomId,
+    event_id: &'a EventId,
+    sender: &'a UserId,
+    state_key: Option<&'a str>,
+    event_type: &'a TimelineEventType,  // 💥
+}
+— is demonstrating exactly the problem the other participant raised a few messages earlier ("I would really appreciate TimelineEventType renamed to OwnedTimelineEventType and refactored into a DST"). In ruma, RoomId/EventId/UserId are #[repr(transparent)] thin wrappers around str — genuine DSTs, so &'a RoomId etc. can be constructed as a zero-copy view directly into an existing byte buffer (a cache page, a network read), no allocation. TimelineEventType is not built that way — it's a regular owned enum with a Custom(String)-style variant (PrivOwnedStr, mentioned earlier in the thread) for anything outside the well-known set. So &'a TimelineEventType doesn't get you the same property: there has to be an already-owned, already-allocated TimelineEventType sitting somewhere for that reference to point at — which defeats the entire purpose of a zero-copy Pdu<'a> view type. Every other field in that struct is a genuine borrow into raw storage; event_type alone forces either a pre-existing allocation or an on-the-fly one.
+
+That's a valid, precise architectural complaint, not a nitpick — it's pointing at a real inconsistency: most Matrix identifier types in ruma got the zero-copy-DST treatment, and the event-type types didn't, so they're "generally the only component which allocates in a given collection of matrix types" (the other speaker's own words, a few lines up). The 💥 is literally "this is where the whole zero-copy struct breaks."
+
+../ruma's main bottleneck, per this thread: the throughline across the entire pasted log — the OutgoingBody/IncomingBody trait restructuring, dropping generics from IncomingRequest (&[S: AsRef<str>] → &[&str] for path args, to avoid a forced Vec<String> collect), and this TimelineEventType tail — is all the same class of problem: API/event-layer traits that force heap allocation and copying on the hot request/response and event-parsing paths, where a zero-copy &[u8]/&str/DST-based design would suffice. It's not one bug, it's a pattern the maintainers are actively hunting down and closing off piece by piece across several PRs (#2562, #2565) — with TimelineEventType as the one piece they haven't gotten to yet, called out here specifically because it's now blocking someone (sounds like the tuwunel/rezzy-adjacent author) from writing a genuinely zero-copy Pdu<'a> over their own event cache.
+
+✻ Crunched for 2m 16s
+
+❯ do we support this? straight into a rocksdb slice?
+
+  #[repr(transparent)] thin wrappers around str — genuine DSTs, so &'a RoomId etc. can be constructed as a zero-copy view directly into an existing byte buffer (a cache page, a network read), no allocation.
+
+No — not today, and there's a real structural reason why, worth being upfront about rather than glossing over.
+
+RoomId/InternedKey as I just wrote them are Arc<str>-backed. Arc<str>::from(&str) always allocates and copies — every construction is one heap allocation (subsequent .clone() calls are cheap refcount bumps, but the first build from a byte slice is not zero-copy). Ruma's pattern is fundamentally different: RoomId there is #[repr(transparent)] struct RoomId(str) — an unsized type, no allocation ever, constructed by an unsafe pointer-cast directly over an existing &str/&[u8]. That's what actually lets &'a RoomId point straight into a RocksDB Slice's bytes with zero copies.
+
+And there's a hard blocker in this repo specifically: Cargo.toml has [lints.rust] unsafe_code = "deny" — crate-wide. The ruma-style DST-wrapper trick requires unsafe (transmuting a validated &str into a custom unsized newtype), so rezzy can't do this itself without either carving out an explicit, reviewed exception to that lint for one narrow, audited module, or depending on an external crate that's already done that unsafe work and exposes a safe API over it (ref-cast and zerocopy are the two usual choices for exactly this pattern — ref-cast's #[derive(RefCast)] generates the same "safe zero-cost &T → &Wrapper<T>" trick ruma hand-rolls).
+
+So the honest state of things: rezzy's RoomId/InternedKey give you cheap re-use (clone = refcount bump) but not zero-copy construction from a raw byte slice — every read from RocksDB would still pay one allocation to build the Arc<str>, same as it would for a plain String. Getting genuine zero-copy-from-a-slice would mean either accepting unsafe somewhere (with the lint exception that requires) or pulling in ref-cast/zerocopy as a dependency. Want me to sketch what that would actually look like, or is this just context for now?
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+Verified — grep confirms third_party_invite.signed appears exactly once in actual code (the other hit is the doc comment mentioning it, at line 148). So my earlier read holds: no real ruleset has two dotted keys sharing a parent, and redact_content is only reachable from outside through redact_json, which only ever hands it a real rule from redaction_preserved_keys. So line 277 can't be hit through the public API no matter what test I write against redact_json.
+
+But redact_content is a private fn in this same file — if there's an inline #[cfg(test)] mod tests in rezzy_types.rs, I can call it directly with a synthetic two-dotted-keys rule to actually exercise the accumulation logic, without needing real spec data to justify it. Checking:
+
+  Ran 2 shell commands
+
+❯ why is it to string? doesn't this copy/alloc? isn't this supposeto be generics
+
+  Ran 1 shell command
+
+Yes, it does allocate — each String::from(...) push is a real heap allocation, and this function isn't generic over K the way the resolution/HAMT layers are. That's not an oversight though; it's downstream of a deliberate boundary choice one layer up: StateProvider::get_event (line 230) is typed fn get_event(&self, event_type: &str, state_key: &str) -> Option<&E> — plain &str, not generic K. The whole check_auth_with_context/StateProvider auth-checking API was kept &str-based on purpose so that any caller's actual state storage — however it keys internally (String, Arc<str>, an interned K) — can implement StateProvider by exposing a &str lookup, via the StateKeyDyn/Borrow trick you'll have seen used elsewhere in this file (e.g. RoomState<Id,C,K>'s own impl at line 237-243 bridges its generic K down to &str the same way).
+
+So required_auth_types_for building Vec<(String, String)> is just matching the type its only consumer (state.get_event(&req_type, &req_key)) actually wants. It's a handful of small allocations (at most ~6 pushes) per event auth-checked — bounded, not per-state-key-in-the-whole-map like the hot resolution loops the K-genericity actually matters for. Could it instead return borrowed &strs (avoiding the alloc) or thread K through? Possibly, but M_ROOM_CREATE etc. are &'static str constants, event.sender()/event.state_key() are borrowed too — so in principle every piece here could be Cow<'_, str> or plain &str instead of an owned String, no allocation needed at all, and the Vec<(&str,&str)> shape would still satisfy get_event. That looks like a real, cheap tightening opportunity, not something the trait boundary forces. Want me to change it to borrow instead of allocate?
+
+✻ Cogitated for 1m 45s
+
+❯ what about if they want like an &int instead of &str?
+
+  Ran 1 shell command
+
+For state_key specifically — no, and that's not just an API choice, it's protocol-mandated: Matrix state_keys are always strings (an MXID, an empty string, a server name, etc.), so K: AsRef<str> is a hard bound on the crate's state-key generic everywhere, including here. There's no "integer state_key" case to support — &str for state_key in StateProvider::get_event matches what a Matrix state key actually is, not a laziness shortcut.
+
+Where integers actually do come in is the other axis: Id (the event ID type), which is a separate, looser-bound generic (Clone + Eq + Hash + Ord + Debug + Display — no AsRef<str> requirement) specifically so homeservers can use interned u32/u64 short IDs instead of String/Arc<str> event IDs internally. That's what tests/unit/test_integer_keys.rs (LeanEvent<u32>) exercises — event_id: u32, but state_key in that same test is still Some(String::new()). So the crate already has the "avoid allocating/copying a big key repeatedly" escape hatch you're pointing at — it's just scoped to event IDs, where it's actually a meaningful choice, not to state keys, where it isn't one.
+
+So event_type: &str, state_key: &str in StateProvider::get_event is the correct, minimal-surface signature for what it is. The String::from(...) allocations I flagged in required_auth_types_for are a separate, smaller question — those could become &str/Cow<'_, str> pushes instead of owned Strings without touching this K/Id genericity discussion at all. Want me to make that change?
+
+✻ Cogitated for 26s
+
+❯ i still think they can be interned for performance.
+
+  at a certain point state res becomes nothing but a series of arithmetic operations, polynomial additions, multiplications
+
+Fair — I overstated it. K: AsRef<str> only requires K to be able to produce a string view; it doesn't require K to be a string internally. An interned K (small integer index into a string table, with AsRef<str> deref'ing to the interned value) satisfies that bound just fine — nothing about the protocol forces the in-memory representation to be a real string, only the wire format. And this isn't hypothetical for the crate: EventType is already interned exactly this way (per the state-keying work — "Add interned EventType and generic state keys (K)... keep wire/checkpoint formats as String"). State keys (the MXID/empty-string half) aren't currently pooled the same way, mostly because they're typically unique-per-entry rather than repeating across a room the way event_type does, but there's no structural reason it couldn't be done if the numbers justified it.
+
+On the arithmetic framing — you're not gesturing at something abstract, it's literally two modules already
+- LtHash (src/state/lthash.rs): state-set membership becomes vector addition/subtraction over a ring — insert/remove/replace are +/- on a fixed-width lattice accumulator, and two nodes agree on state iff their accumulators are equal. No walking either state map required.
+- PinSketch/gf64_simd (src/reconcile/): set reconciliation (finding the symmetric difference between two peers' sets) reduces to polynomial syndrome decoding over GF(2^64) — literally root-finding on a polynomial built from power sums.
+
+Where it stops being true: the actual resolution algorithm — iterative auth checks, mainline/topological sort, the power-phase vs non-power-phase split — isn't reducible to a commutative algebraic accumulation, because the order events get
+applied in and the conditional branching per event (does this event's sender currently have PL ≥ required le a ban) are inherently sequential/combinatorial, not associative operations you can fold in any order.
+LtHash and PinSketch answer "do these two nodes agree on state" and "what's the delta between them" cheaplyconflict, which event wins" — that's still a graph/order problem, not an arithmetic one.
+
+✻ Baked for 27s
+
+❯ well they are boolean xor bit-wise? or polynomial? i feel if you multiply by a mono or dinomial? or trinomi
+
+  idk there's some way to map that information, all those checks, right? furthermore it's not strict strings, it's comparisons, to arbitrary traits which could be ints or generics
+
+You're pointing at something real, not hand-wavy — it's called arithmetization, and it's the foundation of zk-SNARK circuit design. Every boolean/comparison operation has a polynomial encoding:
+
+- AND(a,b) = a·b
+- OR(a,b) = a + b − a·b
+- NOT(a) = 1 − a
+- XOR(a,b) = a + b − 2ab (or just a + b mod 2 over GF(2) — literally addition)
+- Equality (a == b) → (a−b) = 0, and inequality is provable via multiplicative-inverse gadgets
+- Range/threshold checks (PL ≥ level) → bit-decompose both values, then a sum of polynomial identity constraints over the bits
+ So yes — the entire boolean circuit of auth checks can be flattened into a system of polynomial constraints — provably true, not a stretch.
+
+Where I want to be precise, though: that's a different tool for a different job than what's already in rezzy. LtHash uses modular vector addition because it wants a commutative, order-independent accumulator for set membership (so two forks can compare state without replaying it). PinSketch uses GF(2^64) polynomials because syndrome decoding recovers the symmetric difference between two peers' sets. Neither is arithmetizing predicate evaluation — they're arithmetizing set representation. Arithmetizing the actual auth-check logic (PL comparisons, ban checks, branching) is the SNARK/STARK move, and its payoff is not a faster circuit — the circuit isn't faster to run: field arithmetic per boolean op plus proving-system overhead is almost always slower than just executing the native branch. The payoff is succinct verifiability: a server could prove it ran state resolution correctly on this DAG, and every other server checks the proof instead of redoing the whole graph walk. That's the actual reason this class of technique gets used, and it'd be a legitimately interesting direction for a homeserver — but it's a wholesale different subsystem (circuit definition, a proving/verifying key, either a trusted setup or a transparent one like STARKs), and rezzy has none of that machinery today.
+
+One correction to the premise, though, in rezzy's favor: the PL comparisons themselves (sender_pl < redact_/kick/invite levels) are already plain i64 arithmetic in the current code — no strings involved once you're past the lookup. The stringly-typed part is purely the (event_type, state_key) → event map indexing layer, which is address/identity, not logic. So the part of your intuition that's "this should just be numbers" — it already is, for the actual predicate math. What's left string-shaped is lookup keys, which is the K: AsRef<str>/interning question from a minute ago, not the arithmetic question.
+
+Is the direction you're actually after "could rezzy produce a succinctly-verifiable resolution proof," or streamline the existing comparisons/lookups to be faster/more uniform?
+
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+##############################
+08/22/2026
+##############################
+
+❯ look thru the convo with deep seek, tell me if everything's done. no way.
+
+  Searched for 6 patterns, read 2 files, ran 1 shell command
+
+Confirmed real — this test exists exactly as claimed and is thorough. So the full picture, having gone through the entire session and cross-checked every claim rather than trusting the summary:
+
+Everything in the original scope is done — one item deliberately, explicitly skipped, no silent gaps.
+
+┌────────────────────────────────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                        Item                        │                                                                                          Status                                                                                          │
+├────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Ingest path (hash verify + redaction → flow)       │ ✅ done, 0dba938                                                                                                                                                                         │
+├────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Deserialize breaking-change docs                   │ ✅ done, 0dba938                                                                                                                                                                         │
+├────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ CDO screening pass (retired pre-filter             │ ✅ done, 080fd2a                                                                                                                                                                         │
+│ replacement)                                       │                                                                                                                                                                                          │
+├────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ CDO: at.rs power-phase fallback in generator       │ ✅ done — this was still in_progress when the session got cut off; I finished it just now, 27badad                                                                                       │
+├────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ differential_harness: stride unwrap_or(0) fix      │ ✅ done, b59d40d                                                                                                                                                                         │
+├────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ differential_harness: per-iteration ID namespacing │ ✅ done — also unfinished when cut off; I finished it, 27badad                                                                                                                           │
+├────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ HAMT: distinct_count meaningful                    │ ✅ done, b59d40d                                                                                                                                                                         │
+├────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ HAMT: bitmap-vs-hashset partition property test    │ ✅ verified it genuinely already existed (test_bitmap_reachability_audit_agrees_with_reachability_audit, src/hamt/tests.rs:3270) — checked myself, not just trusting the transcript      │
+├────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ HAMT: generic-index-type refactor                  │ ❌ deliberately skipped — RoaringBitmap pins u32. Overflow is now testable via try_build_bounded (tests cover past-the-bound and at-the-bound), so the old "~4B hashes, impractical" rationale no longer applies. If the index type is ever    │
+│                                                    │ changed, retain a checked representability bound: IndexedUniverse stores Vec<StructuralHash> and index-to-usize conversions are target-dependent. Called out as remaining in the b59d40d commit message, not hidden. │
+└────────────────────────────────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Plus, I closed one thing that wasn't on the original list: the else if in_b coverage question you asked, which turned into a small cleanup (2674393).
+
+So: everything on the actual task list is done except the generic-index-type HAMT refactor, which was a conscious call (risk vs. value), not an oversight. If you want that one closed too, say so and I'll scope it — it's the riskiest of the bunch since it touches the RoaringBitmap-backed index type directly.
+
+✻ Sautéed for 50s
+
+❯ how would we tackle this then?
+
+  ---
+
+  HAMT: generic-index-type refactor                  │ ❌ deliberately skipped — RoaringBitmap pins u32; testing the overflow guard needs ~4B hashes, impractical. Explicitly called out as remaining in the b59d40d commit message, not        │
+  │                                                    │ hidden.
+
+  Searched for 2 patterns, read 1 file, ran 2 shell commands
+
+RoaringTreemap (u64-indexed, built into the same roaring crate you already depend on) is exactly the escape hatch — no new dependency needed. That changes the calculus: this stops being "invent a generic index type" and becomes "swap the bitmap backend." Here's how I'd tackle it:
+
+The plan:
+
+1. Swap RoaringBitmap → RoaringTreemap and u32 → u64 throughout audit.rs. RoaringTreemap internally shards into BTreeMap<u32, RoaringBitmap> (high 32 bits pick the shard, low 32 bits index within it), so it's API-compatible enough that IndexedUniverse becomes hashes: Vec<StructuralHash> + index_by_hash: HashMap<StructuralHash, u64>, and the whole u32::MAX guard in try_build disappears — the real ceiling becomes u64::MAX, which is not a realistic guard to test or need.
+2. UniverseTooLarge either goes away entirely (a Vec<StructuralHash> with usize::MAX entries isn't reachable in-memory anyway — the OOM happens long before u64::MAX) or gets demoted to guard against usize truncation on 32-bit targets only (#[cfg(target_pointer_width = "32")]), which is a real, cheaply-testable boundary (u32::MAX on a 32-bit build, not 4 billion hash allocations).
+3. This is a mechanical, not risky, change if done as a straight type substitution — RoaringTreemap implements the same set ops (|, &, -, .insert, .contains, .iter(), .len() as u64) that audit.rs already uses on RoaringBitmap. Check every call site in audit.rs compiles against the treemap API 1:1; I'd expect only .collect() for full_range: RoaringBitmap = (0..len).collect() and the Sub impl to need verifying against the treemap's trait impls.
+4. Testability: with the ceiling now at u64::MAX, you can't test the overflow guard by literally building 2^64 hashes either — but you don't need to, because the guard (if kept at all) becomes a usize-width check on 32-bit targets, testable at u32::MAX on that target, or removed since try_build no longer needs an artificial bound on 64-bit targets.
+5. Perf/memory tradeoff to flag to the caller, not hide: RoaringTreemap has a bit more overhead per shard boundary than flat RoaringBitmap, and is a slightly heavier dependency surface (already-present, but more of it gets compiled in). Worth a one-line note in the module doc, not a blocker.
+
+Effort estimate: this is a half-day-scale change (rename types, fix compile errors, adjust the one guard, d, update the doctests/unit tests that currently assert u32::MAX-adjacent behavior), not the open-ended"impractical to test at 4B hashes" problem the transcript flagged — because the fix isn't "make u32 testablhe first place." Want me to go ahead and do it?
+
+✻ Brewed for 37s
+
+❯ wait i'm confused? does this worsen or improe runtime?
+
+Fair question — let me be precise, because it's neither a speedup nor really a "worsening" in the way that
+
+For realistic room sizes (thousands to low millions of hashes): no measurable change. RoaringTreemap is BTrt shards indices by their high 32 bits. Since you're nowhere near 2^32 entries, everything lands in a single
+shard (key 0), so every operation costs one BTreeMap lookup (basically free — one comparison against a sing through to the exact same RoaringBitmap code that runs today. Practically a no-op overhead.
+
+What it actually changes: the ceiling, not the speed.
+- Before: hard-capped at u32::MAX (~4.3 billion) distinct hashes — past that, try_build returns UniverseTooLarge and the audit can't run at all.
+- After: capped at u64::MAX — a limit you will never hit in memory anyway (you'd run out of RAM to hold that many 16-byte hashes long, long before the index type became the bottleneck).
+
+So this refactor isn't a performance change at all — it's a correctness/capacity ceiling fix: today, a storage backend with (hypothetically) more than 4.3 billion live node hashes gets a hard failure from the audit tool itself, unrelated to
+whether it actually has the memory to do the audit. The swap removes that artificial failure mode. Nobody'shere near 4 billion HAMT nodes, which is exactly why the original assessment called itlow-value/impractical-to-test — it's closing a gap that's currently theoretical, not fixing something slow or broken today.
+
+If anything, the only place you'd see a real (still tiny) cost is deep in RoaringTreemap's multi-shard set operations (|, &, -) if you ever did span multiple 2^32 shards — one extra level of tree traversal per op. At current scale that never
+triggers.
+
+So: runtime — unchanged in practice. What it buys you is headroom, not speed. Want me to go ahead with it anyway, given it's not a hot-path concern?
+
+✻ Sautéed for 15s
+
+❯ would we panic or OOM tho with the new proposed scheme?
+
+Neither, cleanly — both the current and proposed schemes can fail through
+out-of-memory conditions or allocator termination, long before either
+index-width ceiling (u32::MAX today, u64::MAX after) is reached.
+
+Walk the actual memory cost: IndexedUniverse holds a Vec<StructuralHash> (32 bytes/entry) plus a HashMap<StructuralHash, u32-or-u64> (hash + index + hashmap bucket overhead, realistically ~56-66 bytes/entry with load-factor slack). At u32::MAX (~4.3 billion) entries, that's already hundreds of GB — no commodity machine has that. You'd exhaust RAM around a few hundred million entries on a typical box, which is nowhere close to 4.3 billion, let alone u64::MAX.
+
+So a key thing this means for the refactor: the u32::MAX guard in the current code is already effectively dead code on real hardware — you can't practically get anywhere near it without OOMing first from the Vec/HashMap growth alone. Swapping
+to RoaringTreemap/u64 doesn't change that; it just moves a ceiling that was already unreachable to one thats not "we used to panic there, now we OOM" — it's "we always OOM well before either ceiling, and the guardexists for symbolic completeness, not because anyone hits it."
+
+What actually happens on the OOM itself, mechanically:
+- Vec::push/HashMap::insert call the global allocator; on failure Rust's default behavior is to abort the process (not a catchable panic, not a Result you can handle) — no unwinding, no graceful exit. These are infallible allocations, so an OOM in try_build's Vec::push/HashMap::insert (which happens *before* the u32::MAX check) cannot be converted into UniverseTooLarge; only the index-overflow branch returns that error.
+- In practice on Linux you often don't even get that: the kernel's OOM-killer sends SIGKILL to the process earlier, before an allocation formally "fails," under normal memory-overcommit behavior.
+
+Either way: abrupt process death, not a controlled error path — same story before and after this refactor. If that's a concern, it's a pre-existing one (nothing in try_build streams or bounds memory as it counts), not something the index-width
+change introduces or fixes. Worth knowing, but it's a separate hardening question from the one we were discussing. One related note for any future try_build rework: avoid allocating an extra HashSet on the overflow-return path (the current code builds one just to recount distinct hashes past the bound) — keep the existing UniverseTooLarge behavior for index overflow, but don't add a separate allocation to produce it.
+
+✻ Baked for 23s
+
+❯ is there any way to stream this to avoid fully loading?
+
+  Searched for 1 pattern, read 1 file, ran 1 shell command
+
+Good question — and the traversal side is actually already streaming, so the answer is more specific than "
+
+What's already streaming: walk_reachable_node_hashes (src/hamt/delta.rs:501) is push-based — it takes a marool callback and calls it per-node as it walks, never buffering a list of reached hashes internally.
+bitmap_reachability_audit cleverly reuses the reachable: RoaringBitmap itself as that callback (RoaringBitmnewly added," which doubles as the dedup/visited check and the output — no separate "seen" set). So thereachable side costs only what the RoaringBitmap needs to hold, which is compact by design.
+
+What isn't streaming — the actual memory hog: IndexedUniverse::try_build (audit.rs:76). It eagerly drains the entire universe iterator into a Vec<StructuralHash> + HashMap<StructuralHash, u32> before anything else runs. That's the one full-size, random-access structure in the whole audit, and it's unavoidable in this design because assigning dense indices "first-seen order, O(1) lookup either direction" fundamentally needs either full materialization or an external index.
+
+To actually stream it, you'd need to give up the "arbitrary-order input, O(1) random lookup" property and p
+
+1. Push index assignment onto the storage layer, persistently. If whatever backs universe (your node store)ash→id mapping incrementally as nodes are written (an on-disk table, not rebuilt per audit), then the auditnever builds IndexedUniverse from scratch — it just opens a cursor over the existing mapping. This is thady a storage layer under HAMT nodes; it turns "rebuild dense index every audit" into "reuse dense indexstorage already maintains." Best option if it fits your architecture — ask if rezzy's storage layer already has something like this.
+2. External sort + merge, if there's no persistent index: require/produce universe in sorted-by-hash order an't give it pre-sorted), and have the reachable side also emit into a sorted-on-disk structure as it walks. Then compute reachable/unreachable as a single streaming merge pass — O(1) extra memory (just the current item from each stream), O(n log n) extra I/O for the sort. This is the classic answer when you truly can't hold the working set, but it's a real architectural addition (temp files, an external sort), not a small patch.
+3. Accept a bounded false-positive rate: replace the exact HashMap dedup in try_build with a Bloom filter to hold memory regardless of universe size, but reachability audits become probabilistic with false positives as the only failure mode — a reachable hash may be incorrectly treated as already present and omitted from the audit result, potentially creating an unsafe garbage-collection candidate. This is only acceptable because the result stays a "candidate list for further checks," which the module's own doc comment
+   already insists on: every candidate must undergo a mandatory recheck before it is deleted.
+
+Given the doc comment at the top of audit.rs explicitly says the module's output is "a candidate list for f delete list on its own," and the OOM math above puts real risk in the hundreds-of-millions range (notsomething ordinary Matrix room DAGs get near), I'd hold off on 2/3 unless you have a concrete deployment scgineering lifts for a problem that's currently theoretical. Option 1 is worth a quick check regardless,since it might already be closer to "free" than it looks if there's a persistent node store underneath.
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+##############################
+08/22/2026
+##############################
+
+Here's the open ledger, prioritized. (Marking what just got closed this session.)
+Hash/redaction thread
+- ✅ v1/v2 reference-hash guard (just added).
+- ✅ v3 standard base64 / v4+ url-safe (hash_base64_engine).
+- ✅ create-guard removal confirmed against v11 spec.
+- ⚠️ Ingest path unwired — verify_content_hash/redact_json are exposed boundary tools but nothing connects them to EventProvider ingestion. The "no-op wtf" you raised: the EventVerifier trait is a no-op default. This is the real design hole. (Decided: document as homeserver hook; but the end-to-end flow is still unbuilt.)
+- ⚠️ Deserialize hard-errors on missing event_id — right call, but a breaking change; needs a changelog line if the crate keeps one.
+CDO thread (still unbuilt as of this entry — see 080fd2a below, which built it)
+- ⚠️ Resolved-state screening pass — the actual CDO replacement, never built. The three pre-prototype checks (phase-2 mutation visibility, mainline-order perturbation, cost ratio) still stand.
+- ⚠️ at.rs power-phase fallback never exercised by the generator — real coverage gap; needs ban-evasion DAG shapes the generator doesn't produce.
+- ⚠️ Paper/REPORT.md/WRITEUP.md coherence — advisor bundle still describes the pre-screening world.
+Process
+- ⚠️ The auto-committer — still landing wip commits (f67f7c6 forced a soft-reset). The ledger's explicit "do next."
+- ⚠️ Do-not-restore is a comment, not a test — same shape that already got reverted once (c505e46→fae8f8c). Plus the conflict-marker CI gate, full CI on merge commits, and the test-count ratchet.
+Dropped from the original review — mostly picked up since
+- ✅ differential_harness.rs: stride = unwrap_or(0) — infinite loop, one-character fix (done, b59d40d); per-iteration ID namespacing (done, 27badad). The single-iteration replay hook is still open.
+- ⚠️ HAMT: the generic-index-type fix and the build-vs-remove depth-exhaustion asymmetry. (The distinct_count fix and the bitmap-vs-hashset partition property test are done — see b59d40d and test_bitmap_reachability_audit_agrees_with_reachability_audit, src/hamt/tests.rs:3270.)
+- ✅/⚠️ cdo.rs — retired-module, low stakes; is_ancestor # Panics doc doesn't match the body, public dead code.
+The two the ledger flagged as "do next" were the v1–v3 hash guard (now done) and finding the auto-committer. Want me to hunt the auto-committer or start the screening pass?
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+##############################
 07/30/2026
 ##############################
 

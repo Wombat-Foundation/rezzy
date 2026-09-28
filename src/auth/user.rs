@@ -30,7 +30,10 @@ pub fn get_sender_power_level<Id, C: EventContent, E: EventLike<Id = Id, Content
     // immutable and not representable in the PL event.
     if matches!(
         version,
-        StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
+        StateResVersion::V2_1
+            | StateResVersion::V2_1_1
+            | StateResVersion::V2_2
+            | StateResVersion::V3
     ) {
         if let Some(create_event) = state.get_event(M_ROOM_CREATE, "") {
             let is_creator =

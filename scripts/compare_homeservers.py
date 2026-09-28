@@ -1,3 +1,12 @@
+#!/usr/bin/env python3
+"""Compare resolved state across three homeservers using rezzy.
+
+Fetches room state from dev/nightly/unredacted servers and measures each
+server's state resolution accuracy against a merged set of resolved state
+events. Note: the `/state` endpoint returns Client-Server API state events,
+which strip `auth_events`/`prev_events` — this is not a full canonical DAG.
+"""
+
 import json
 import os
 import subprocess
@@ -19,6 +28,7 @@ SERVERS = {
 
 
 def fetch_state(server_url, room_id, token):
+    """Fetch the current resolved state for a room from a homeserver."""
     print(f"Fetching state from {server_url}...")
     headers = {"Authorization": f"Bearer {token}"}
     try:
@@ -29,14 +39,14 @@ def fetch_state(server_url, room_id, token):
         )
         if res.status_code == 200:
             return res.json()
-        else:
-            print(f"Error from {server_url}: {res.status_code} {res.text}")
-    except Exception as e:
+        print(f"Error from {server_url}: {res.status_code} {res.text}")
+    except requests.RequestException as e:
         print(f"Failed to connect to {server_url}: {e}")
     return None
 
 
 def run_ruma_lean(file_path):
+    """Run rezzy on a state file and return the parsed summary."""
     cmd = [
         "cargo",
         "run",
@@ -49,22 +59,24 @@ def run_ruma_lean(file_path):
         "--format",
         "default",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode == 0:
         try:
             return json.loads(result.stdout)
-        except:
+        except json.JSONDecodeError:
             print(f"Failed to parse JSON output from rezzy for {file_path}")
             return None
-    else:
-        print(f"Error running rezzy on {file_path}: {result.stderr}")
-        return None
+    print(f"Error running rezzy on {file_path}: {result.stderr}")
+    return None
 
 
 def main():
+    """Drive the three-way fork accuracy analysis."""
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
     if not TOKEN_DEV or not TOKEN_NIGHTLY or not TOKEN_UNREDACTED:
         print(
-            "Error: Required environment variables (MATRIX_TOKEN, MATRIX_TOKEN_NIGHTLY, and MATRIX_TOKEN_UNREDACTED) are not set."
+            "Error: Required environment variables (MATRIX_TOKEN, "
+            "MATRIX_TOKEN_NIGHTLY, and MATRIX_TOKEN_UNREDACTED) are not set."
         )
         sys.exit(1)
 
@@ -79,7 +91,7 @@ def main():
         state = fetch_state(url, ROOM_ID, tokens[name])
         if state:
             file_path = f"res/state_{name}.json"
-            with open(file_path, "w") as f:
+            with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(state, f)
             states[name] = file_path
 
@@ -99,37 +111,38 @@ def main():
     print("      MATRIX 3-WAY FORK ACCURACY ANALYSIS")
     print("=" * 50)
 
-    # Calculate unified canonical state
-    print("\nMerging all DAGs to find the mathematically canonical state...")
+    # `/state` snapshots omit DAG edges, so this is a useful merged reference,
+    # not a mathematically canonical state.
+    print("\nMerging state snapshots to build a reference set (not a canonical DAG)...")
     unified_map = {}
     for name, path in states.items():
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             events = json.load(f)
             for ev in events:
                 unified_map[ev["event_id"]] = ev
 
     unified_path = "res/state_unified_3way.json"
-    with open(unified_path, "w") as f:
+    with open(unified_path, "w", encoding="utf-8") as f:
         json.dump(list(unified_map.values()), f)
 
-    canonical_res = run_ruma_lean(unified_path)
-    if not canonical_res:
+    reference_res = run_ruma_lean(unified_path)
+    if not reference_res:
         return
 
-    canonical_ids = set(canonical_res.get("state_event_ids", []))
-    print(f"Canonical State Size: {len(canonical_ids)}")
+    reference_ids = set(reference_res.get("state_event_ids", []))
+    print(f"Merged Reference State Size: {len(reference_ids)}")
 
     accuracies = {}
     for name, res in results.items():
         server_ids = set(res.get("state_event_ids", []))
-        accuracy = len(server_ids & canonical_ids) / len(canonical_ids) * 100
+        accuracy = len(server_ids & reference_ids) / len(reference_ids) * 100
         accuracies[name] = accuracy
         print(f"{name.capitalize()} State Size: {res.get('resolved_state_size')}")
-        print(f"{name.capitalize()} Accuracy:   {accuracy:.2f}%")
+        print(f"{name.capitalize()} Reference overlap: {accuracy:.2f}%")
 
     print("\n" + "-" * 50)
     winner = max(accuracies, key=accuracies.get)
-    print(f"VERDICT: {winner.capitalize()} is the Global Canonical Leader.")
+    print(f"REFERENCE RESULT: {winner.capitalize()} has the highest overlap.")
     print("-" * 50)
 
     # Check for the specific Forestpunk discrepancy
@@ -137,7 +150,7 @@ def main():
     target_user = "@sukidusk6125:matrix.org"
     print(f"\nTarget Analysis: {target_user}")
     for name, path in states.items():
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             events = json.load(f)
             member_ev = next(
                 (
@@ -150,18 +163,20 @@ def main():
             )
             if member_ev:
                 print(
-                    f" - {name.capitalize()}: {member_ev['content'].get('membership')} (ID: {member_ev['event_id'][:12]}...)"
+                    f" - {name.capitalize()}: "
+                    f"{member_ev['content'].get('membership')} "
+                    f"(ID: {member_ev['event_id'][:12]}...)"
                 )
             else:
                 print(f" - {name.capitalize()}: MISSING")
 
-    # Canonical view
-    with open(unified_path, "r") as f:
+    # Merged reference view (not canonical)
+    with open(unified_path, "r", encoding="utf-8") as f:
         all_events = json.load(f)
         canonical_event_id = next(
             (
                 eid
-                for eid in canonical_ids
+                for eid in reference_ids
                 if any(
                     ev["event_id"] == eid
                     and ev.get("type") == "m.room.member"
@@ -176,10 +191,11 @@ def main():
                 ev for ev in all_events if ev["event_id"] == canonical_event_id
             )
             print(
-                f" - CANONICAL: {canon_ev['content'].get('membership')} (ID: {canon_ev['event_id'][:12]}...)"
+                f" - MERGED REFERENCE: {canon_ev['content'].get('membership')} "
+                f"(ID: {canon_ev['event_id'][:12]}...)"
             )
         else:
-            print(" - CANONICAL: MISSING")
+            print(" - MERGED REFERENCE: MISSING")
 
 
 if __name__ == "__main__":

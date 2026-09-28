@@ -27,6 +27,16 @@ pub use super::gf64::mul as gf64_mul;
 pub const MAX_SKETCH_CAPACITY: usize = 32;
 /// Default local extraction limit for CPU-bounded sketch decoding.
 pub const MAX_LOCAL_SKETCH_DECODE_CAPACITY: usize = MAX_SKETCH_CAPACITY;
+/// Hard-capped overflow capacity for adaptive reconciliation.
+/// Separate from `MAX_SKETCH_CAPACITY`; only reachable after overflow request
+/// validation passes.
+// A full degree-256 decode is only affordable within `MAX_FACTOR_WORK`
+// because `pinsketch::build_frobenius_basis` amortizes the root-finding
+// ladder's dominant cost across all trials for a node instead of repeating
+// it per trial -- see `MAX_FACTOR_WORK`'s comment for the measurement this
+// capacity relies on, including the caveat that it covers observed
+// balanced-split behavior, not a proven worst case.
+pub const MAX_OVERFLOW_SKETCH_CAPACITY: usize = 256;
 const EVENT_HASH_ENCODED_LEN: usize = 43;
 
 /// An invalid event identifier, wire digest, or sketch.
@@ -67,6 +77,66 @@ pub struct ElementHash {
 }
 
 impl ElementHash {
+    // TODO(prefix-grinding): `h64` is derived unkeyed from the element
+    // digest below. For V3/V4+ Matrix event IDs the digest *is* a content
+    // hash the event's author controls (message body, custom content keys,
+    // timestamp within clock-skew tolerance all give grinding room), so an
+    // attacker with grinding room can search offline for events whose h64
+    // shares a long common prefix -- roughly 2^k SHA-256/BLAKE-family
+    // hashes for k bits, i.e. seconds of commodity CPU for k in the
+    // mid-20s. Note this needs more than "can post events": an event that
+    // replicated normally is present in both sides' sets and cancels out
+    // of the symmetric difference, so it never reaches the bucket splitter
+    // at all. The attacker needs the ground events to actually be *in* the
+    // difference at reconciliation time -- e.g. selective federation, or
+    // an attacker-operated homeserver that delivers them to some peers and
+    // withholds them from others. A materially lower bar than compromising
+    // a server, but a different (and narrower) threat model than "any room
+    // member," and worth stating precisely before this goes into 4511-C.
+    //
+    // Given that precondition, `client.rs`'s bucket splitter descends one
+    // h64 bit per round (`bucket_range_start`/the depth-increment in
+    // `select_action`) over `MAX_RECONCILIATION_ROUNDS` (20) rounds before
+    // giving up to `ClientAction::ExtremityDiff`, so a ~20+ bit shared
+    // prefix reliably exhausts every round on that bucket before any real
+    // split happens. This isn't a one-off cost either: h64 is fixed
+    // forever once an event exists, so a single grinding pass taxes
+    // *every future* pairwise reconciliation of the room that touches
+    // those events (subject to the withholding precondition above), on
+    // any pair of servers, indefinitely -- not just the session the
+    // attacker ran it against.
+    //
+    // The fix from the literature (Yang et al., "Practical Rateless Set
+    // Reconciliation" §4.3) is a keyed hash (e.g. SipHash) negotiated
+    // per-session so placement isn't predictable offline. That is NOT a
+    // drop-in here: `ResidentKernel` (resident.rs) is deliberately a
+    // server-local structure built once and incrementally maintained
+    // across the room's lifetime, then reused to serve *any* peer that
+    // reconciles against it -- the whole point is amortizing the
+    // build cost across many peers/sessions rather than rebuilding
+    // per-session. Keying `h64` per-session breaks that: the bucket
+    // geometry (and therefore the resident trie's shape) would become
+    // session-specific, so the server would need either a separate
+    // resident structure per active peer (defeats the amortization this
+    // module exists for) or a coarser shared secret.
+    //
+    // A *static* room-scoped key doesn't solve it: the realistic
+    // adversary is a room member grinding their own event content, and a
+    // static room-scoped key is known to every room member by
+    // construction. But what defeats grinding isn't secrecy of the key --
+    // it's unpredictability at authoring time. Event IDs (and therefore
+    // h64) are fixed when the event is created; if the placement key
+    // didn't exist yet, no amount of offline grinding could have targeted
+    // it. A room-scoped key that *rotates on an epoch* is still public to
+    // every member and still defeats precomputation, because a
+    // pre-ground event lands in an unpredictable bucket after the next
+    // rotation. That preserves `ResidentKernel`'s amortization within an
+    // epoch (one rebuild per rotation, not per session) -- a materially
+    // different, more promising tradeoff than per-session keying. Needs
+    // an MSC-level design decision (epoch-rotated placement key vs.
+    // accepting the bounded liveness cost and documenting it, informed by
+    // the client-side mitigation noted on `MAX_RECONCILIATION_ROUNDS` in
+    // client.rs), not a code-level patch -- see 4511-C.
     /// Derives the MSC4521 profile truncations from a canonical 32-byte element digest.
     #[must_use]
     pub fn from_digest32(digest: [u8; 32]) -> Self {
@@ -335,6 +405,51 @@ impl SyndromeSketch {
         self.validate_decoded_elements(decoded)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AlgebraicError::DecodeFailure`] when the residual exceeds the
+    /// bound, is malformed, or does not factor into distinct field elements.
+    /// Returns [`AlgebraicError::InvalidSketchCapacity`] when `max_elements`
+    /// exceeds the sketch capacity or the local decode policy, and
+    /// [`AlgebraicError::BudgetExhausted`] when root finding reaches its work limit.
+    pub fn decode_elements_with_budget(
+        &self,
+        max_elements: usize,
+        budget: usize,
+    ) -> Result<Vec<u64>, AlgebraicError> {
+        let mut remaining = budget;
+        self.decode_elements_with_shared_budget(max_elements, &mut remaining)
+    }
+
+    /// Like [`decode_elements_with_budget`](Self::decode_elements_with_budget),
+    /// but draws from and updates a caller-owned `budget` in place, so a
+    /// caller decoding many sketches in a batch (e.g.
+    /// [`super::triage::decode_bucket_sketches`]) can enforce one shared
+    /// work ceiling across the whole batch instead of each sketch getting
+    /// its own independent allowance.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`decode_elements_with_budget`](Self::decode_elements_with_budget).
+    pub(crate) fn decode_elements_with_shared_budget(
+        &self,
+        max_elements: usize,
+        budget: &mut usize,
+    ) -> Result<Vec<u64>, AlgebraicError> {
+        if max_elements == 0
+            || max_elements > self.capacity()
+            || max_elements > MAX_LOCAL_SKETCH_DECODE_CAPACITY
+        {
+            return Err(AlgebraicError::InvalidSketchCapacity);
+        }
+        let decoded = super::pinsketch::decode_with_budget(
+            &self.coordinates[..max_elements],
+            max_elements,
+            budget,
+        )?;
+        self.validate_decoded_elements(decoded)
+    }
+
     fn validate_decoded_elements(&self, decoded: Vec<u64>) -> Result<Vec<u64>, AlgebraicError> {
         if decoded.contains(&0) {
             return Err(AlgebraicError::DecodeFailure);
@@ -416,6 +531,94 @@ impl SyndromeSketch {
             })
             .collect();
         Ok(Self { coordinates })
+    }
+
+    /// Allocates an empty sketch with overflow extraction capacity.
+    ///
+    /// Overflow sketches are used when a standard 32-element sketch fails to
+    /// decode and a larger sketch is requested under the local overflow policy.
+    /// The capacity is validated against [`MAX_OVERFLOW_SKETCH_CAPACITY`].
+    ///
+    /// # Errors
+    /// Returns an error for zero capacity or capacity above the overflow maximum.
+    pub fn new_overflow(capacity: usize) -> Result<Self, AlgebraicError> {
+        if capacity == 0 || capacity > MAX_OVERFLOW_SKETCH_CAPACITY {
+            return Err(AlgebraicError::InvalidSketchCapacity);
+        }
+        Ok(Self {
+            coordinates: vec![0; capacity],
+        })
+    }
+
+    /// Decodes a sketch with overflow capacity from wire encoding.
+    ///
+    /// Like [`decode`](Self::decode) but validates against
+    /// [`MAX_OVERFLOW_SKETCH_CAPACITY`].
+    ///
+    /// # Errors
+    /// Returns an error for invalid capacity, base64, or encoded byte length.
+    pub fn decode_overflow(capacity: usize, encoded: &str) -> Result<Self, AlgebraicError> {
+        if capacity == 0 || capacity > MAX_OVERFLOW_SKETCH_CAPACITY {
+            return Err(AlgebraicError::InvalidSketchCapacity);
+        }
+        let expected_len = capacity
+            .checked_mul(8)
+            .ok_or(AlgebraicError::InvalidSketchLength)?;
+        let expected_encoded_len =
+            base64::encoded_len(expected_len, false).ok_or(AlgebraicError::InvalidSketchLength)?;
+        if encoded.len() != expected_encoded_len {
+            return Err(AlgebraicError::InvalidSketchLength);
+        }
+        let bytes = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|_| AlgebraicError::InvalidBase64)?;
+        Self::from_encoded_bytes(capacity, &bytes)
+    }
+
+    /// Decodes up to `max_elements` with overflow capacity support.
+    ///
+    /// Like [`decode_elements_with_budget`](Self::decode_elements_with_budget)
+    /// but validates against [`MAX_OVERFLOW_SKETCH_CAPACITY`] instead of
+    /// [`MAX_LOCAL_SKETCH_DECODE_CAPACITY`].
+    ///
+    /// # Errors
+    /// Returns [`AlgebraicError::InvalidSketchCapacity`] when `max_elements`
+    /// exceeds the sketch capacity or the overflow capacity limit, and
+    /// [`AlgebraicError::BudgetExhausted`] when root finding reaches its work
+    /// limit.
+    pub fn decode_elements_overflow_budget(
+        &self,
+        max_elements: usize,
+        budget: usize,
+    ) -> Result<Vec<u64>, AlgebraicError> {
+        if max_elements == 0
+            || max_elements > self.capacity()
+            || max_elements > MAX_OVERFLOW_SKETCH_CAPACITY
+        {
+            return Err(AlgebraicError::InvalidSketchCapacity);
+        }
+        let mut remaining = budget;
+        let decoded = super::pinsketch::decode_with_budget(
+            &self.coordinates[..max_elements],
+            max_elements,
+            &mut remaining,
+        )?;
+        self.validate_decoded_overflow(decoded)
+    }
+
+    fn validate_decoded_overflow(&self, decoded: Vec<u64>) -> Result<Vec<u64>, AlgebraicError> {
+        if decoded.contains(&0) {
+            return Err(AlgebraicError::DecodeFailure);
+        }
+        let mut check = Self::new_overflow(self.capacity())?;
+        for element in &decoded {
+            check
+                .toggle(*element)
+                .expect("decoded elements are validated to be nonzero");
+        }
+        (check == *self)
+            .then_some(decoded)
+            .ok_or(AlgebraicError::DecodeFailure)
     }
 }
 
@@ -562,5 +765,93 @@ mod tests {
             SyndromeSketch::from_encoded_bytes(1, &bytes),
             Err(AlgebraicError::InvalidSketchLength)
         );
+    }
+
+    #[test]
+    fn overflow_capacity_rejects_above_limit() {
+        assert_eq!(
+            SyndromeSketch::new_overflow(MAX_OVERFLOW_SKETCH_CAPACITY + 1),
+            Err(AlgebraicError::InvalidSketchCapacity)
+        );
+        assert_eq!(
+            SyndromeSketch::new_overflow(0),
+            Err(AlgebraicError::InvalidSketchCapacity)
+        );
+        assert!(SyndromeSketch::new_overflow(MAX_OVERFLOW_SKETCH_CAPACITY).is_ok());
+        assert!(SyndromeSketch::new_overflow(64).is_ok());
+    }
+
+    #[test]
+    fn overflow_decode_rejects_oversized_capacity_before_allocation() {
+        assert_eq!(
+            SyndromeSketch::decode_overflow(300, "AAAAAAAAAAAAAAAA"),
+            Err(AlgebraicError::InvalidSketchCapacity)
+        );
+        assert_eq!(
+            SyndromeSketch::decode_overflow(0, ""),
+            Err(AlgebraicError::InvalidSketchCapacity)
+        );
+    }
+
+    #[test]
+    fn overflow_decode_budget_exhaustion() {
+        let mut sketch = SyndromeSketch::new_overflow(64).unwrap();
+        for i in 1..=64u64 {
+            sketch.toggle(i * 2 + 1).unwrap();
+        }
+        let res = sketch.decode_elements_overflow_budget(64, 100);
+        assert_eq!(res, Err(AlgebraicError::BudgetExhausted));
+    }
+
+    #[test]
+    fn overflow_257_vs_256_capacity() {
+        // Budget must be large enough to reach the actual capacity-mismatch
+        // detection, not just exhaust on the factoring ladder -- otherwise
+        // this test can pass vacuously on `BudgetExhausted` without ever
+        // exercising the over-capacity check it claims to test. Measured
+        // cost of a full degree-256 decode is ~9.2-9.4M (see
+        // `MAX_FACTOR_WORK`'s comment); `MAX_FACTOR_WORK` itself is now
+        // comfortably above that, so it doubles as this test's budget.
+        let mut sketch = SyndromeSketch::new_overflow(256).unwrap();
+        for i in 1..=257u64 {
+            sketch.toggle(i * 2 + 1).unwrap();
+        }
+        let res = sketch.decode_elements_overflow_budget(256, 16_000_000);
+        assert_eq!(
+            res,
+            Err(AlgebraicError::DecodeFailure),
+            "257 differences at capacity 256 must fail with DecodeFailure, not budget exhaustion"
+        );
+    }
+
+    #[test]
+    fn overflow_decode_recovers_symmetric_difference() {
+        let mut local = SyndromeSketch::new_overflow(128).unwrap();
+        let mut remote = SyndromeSketch::new_overflow(128).unwrap();
+        for i in 1..=64u64 {
+            local.toggle(i * 2 + 1).unwrap();
+            remote.toggle(i * 2 + 1).unwrap();
+        }
+        for i in 65..=80u64 {
+            remote.toggle(i * 2 + 1).unwrap();
+        }
+        for i in 81..=96u64 {
+            local.toggle(i * 2 + 1).unwrap();
+        }
+        let residual = remote.subtract(&local).unwrap();
+        let mut decoded = residual
+            .decode_elements_overflow_budget(32, 8_000_000)
+            .unwrap();
+        decoded.sort_unstable();
+        let mut expected: Vec<u64> = (65..=96).map(|i| i * 2 + 1).collect();
+        expected.sort_unstable();
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn overflow_decode_rejects_truncated_coordinates() {
+        let sketch = SyndromeSketch::new_overflow(128).unwrap();
+        let result = sketch.decode_elements_overflow_budget(129, 8_000_000);
+        assert_eq!(result, Err(AlgebraicError::InvalidSketchCapacity));
     }
 }
