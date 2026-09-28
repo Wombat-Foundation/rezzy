@@ -61,9 +61,10 @@ cargo run --release --bin rezzy -- aggregate --input-dir unmerged
 
 With neither `--room` nor `-i`, the command scans `--input-dir` and aggregates
 each room it finds. Scan mode requires a `-v<number>` token in the filename;
-files without one are skipped with a warning on stderr and listed in the
-report's `skipped` array (even under `--quiet`). One output file is written per
-room, named from the derived slug.
+files without one are skipped and listed in the report's `skipped` array
+(even under `--quiet`), with a warning also printed to stderr unless
+`--quiet` is given. One output file is written per room, named from the
+derived slug.
 
 ## Room slugs
 
@@ -105,6 +106,25 @@ Unlike `--room`, a failing room does not discard the others: the report still
 contains every successful room, `failed` counts the errors, the top-level
 `status` becomes `partial`, and the process exits `1`. In `-i` mode `skipped` is
 always empty, because unslugged explicit inputs abort instead of being skipped.
+
+The per-room fields differ by status: `current` carries only `unique_events`;
+`written` adds `output`, `input_files`, and `duplicate_event_copies`; `error`
+carries `code` and `error` instead. A caller scripting against `rooms[]`
+should branch on `status` rather than assuming a fixed set of fields.
+
+With `--check` and no failures, the top-level `status` is also `current`
+rather than `written`, since nothing was written:
+
+```json
+{
+  "status": "current",
+  "failed": 0,
+  "skipped": [],
+  "rooms": [
+    { "status": "current", "unique_events": 42, "room": "room-v12" }
+  ]
+}
+```
 
 ## Checking
 
