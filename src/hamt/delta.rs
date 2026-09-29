@@ -555,12 +555,29 @@ fn append_reachable_node_hashes<K, V, F, E>(
 where
     F: NodeResolver<K, V, E>,
 {
-    collection.push(node.structural_hash);
+    walk_subtree(node, resolver, depth, &mut |node| {
+        collection.push(node.structural_hash);
+    })
+}
+
+/// Traverses a subtree in pre-order, resolving every child through the shared
+/// resolver and applying the HAMT depth guard at each node. Collection-specific
+/// callers provide only the item they want from each node.
+fn walk_subtree<K, V, F, E>(
+    node: &NodePtr<K, V>,
+    resolver: &mut F,
+    depth: usize,
+    visit: &mut impl FnMut(&NodePtr<K, V>),
+) -> Result<(), HamtTraversalError<E>>
+where
+    F: NodeResolver<K, V, E>,
+{
     check_depth(depth)?;
+    visit(node);
     let next_depth = depth.saturating_add(1);
     for child in &node.children {
         let child_node = resolve_node_checked(child, resolver)?;
-        append_reachable_node_hashes(&child_node, collection, resolver, next_depth)?;
+        walk_subtree(&child_node, resolver, next_depth, visit)?;
     }
     Ok(())
 }
@@ -576,14 +593,7 @@ where
     V: DeltaElem,
     F: NodeResolver<K, V, E>,
 {
-    check_depth(depth)?;
-    let next_depth = depth.saturating_add(1);
-    for (k, v) in &node.leaves {
-        collection.push((k.clone(), v.clone()));
-    }
-    for child in &node.children {
-        let child_node = resolve_node_checked(child, resolver)?;
-        collect_all_leaves(&child_node, collection, resolver, next_depth)?;
-    }
-    Ok(())
+    walk_subtree(node, resolver, depth, &mut |node| {
+        collection.extend(node.leaves.iter().cloned());
+    })
 }

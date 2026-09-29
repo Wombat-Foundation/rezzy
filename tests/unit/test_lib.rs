@@ -6559,6 +6559,40 @@ fn test_restricts_sender_false_for_non_admin_event() {
 
 // ── Coverage: local_auth_cache version invalidation ─────────────────
 
+/// Builds V2.1 iterative inputs over a fixture, reusing caller-owned
+/// `pl_cache`/`empty_key` so both cache-invalidation checks share setup.
+fn v2_1_inputs<'a>(
+    fixture: &'a CacheInvalidationFixture,
+    pl_cache: &'a mut HashMap<String, i64>,
+    empty_key: &'a String,
+) -> rezzy::IterativeInputs<
+    'a,
+    String,
+    rezzy::JsonValue,
+    String,
+    std::collections::hash_map::RandomState,
+    std::collections::hash_map::RandomState,
+    std::collections::hash_map::RandomState,
+> {
+    rezzy::IterativeInputs::new(
+        &fixture.unconflicted,
+        &fixture.conflicted,
+        &fixture.auth_context,
+        StateResVersion::V2_1,
+        pl_cache,
+        empty_key,
+    )
+}
+
+type CacheInvalidationEventMap = HashMap<String, LeanEvent<String>>;
+type CacheInvalidationState = rezzy::state::at::SharedState<String, String>;
+
+struct CacheInvalidationFixture {
+    unconflicted: CacheInvalidationState,
+    conflicted: CacheInvalidationEventMap,
+    auth_context: CacheInvalidationEventMap,
+}
+
 /// Exercises iterative.rs:424-425 — when an external cache has a stale
 /// version, it must be cleared before use.
 #[test]
@@ -6566,12 +6600,7 @@ fn test_local_auth_cache_version_invalidation() {
     use rezzy::state::at::LocalAuthCache;
 
     /// Build a minimal conflicted-state fixture for cache invalidation tests.
-    #[allow(clippy::type_complexity)]
-    fn make_fixture() -> (
-        imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
-        HashMap<String, LeanEvent<String>>,
-        HashMap<String, LeanEvent<String>>,
-    ) {
+    fn make_fixture() -> CacheInvalidationFixture {
         let all = utils::parse_jsonl_events(
             r#"
 {"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:x","depth":1,"origin_server_ts":0,"prev_events":[],"auth_events":[],"content":{"room_version":"10","creator":"@alice:x"}}
@@ -6616,11 +6645,17 @@ fn test_local_auth_cache_version_invalidation() {
         .into_iter()
         .collect();
 
-        (unconflicted, conflicted, auth_context)
+        CacheInvalidationFixture {
+            unconflicted,
+            conflicted,
+            auth_context,
+        }
     }
 
     // ── resolve_iterative_sort_with_cache (iterative.rs:419-426) ──
-    let (unconflicted, conflicted, auth_context) = make_fixture();
+    let fixture = make_fixture();
+    let mut pl_cache = std::collections::HashMap::new();
+    let empty_key = String::new();
     let mut cache = LocalAuthCache::new(StateResVersion::V2);
     cache
         .map
@@ -6629,14 +6664,7 @@ fn test_local_auth_cache_version_invalidation() {
     assert!(!cache.map.is_empty(), "cache should have stale entry");
 
     let _result = rezzy::resolve_iterative_sort_with_cache(
-        rezzy::IterativeInputs::new(
-            &unconflicted,
-            &conflicted,
-            &auth_context,
-            StateResVersion::V2_1,
-            &mut std::collections::HashMap::new(),
-            &String::new(),
-        ),
+        v2_1_inputs(&fixture, &mut pl_cache, &empty_key),
         rezzy::ResolveOptions::new(Some(&mut cache), None),
     );
     assert_eq!(cache.version, StateResVersion::V2_1);
@@ -6649,14 +6677,7 @@ fn test_local_auth_cache_version_invalidation() {
         .insert("stale2".into(), std::collections::BTreeMap::new());
 
     let (_result2, _deltas) = rezzy::resolve_iterative_sort_with_cache_and_deltas(
-        rezzy::IterativeInputs::new(
-            &unconflicted,
-            &conflicted,
-            &auth_context,
-            StateResVersion::V2_1,
-            &mut std::collections::HashMap::new(),
-            &String::new(),
-        ),
+        v2_1_inputs(&fixture, &mut pl_cache, &empty_key),
         rezzy::ResolveOptions::new(Some(&mut cache2), None),
     );
     assert_eq!(cache2.version, StateResVersion::V2_1);
