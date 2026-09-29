@@ -1972,19 +1972,7 @@ where
 /// # Complexity
 ///
 /// Identical to [`compute_topo_positions`]: `O(V log V + E)`.
-#[must_use]
-pub fn resolve_gap_fill_order<Id, C, S, F, K>(
-    events_map: &EventMap<Id, C, K, S>,
-    tiebreak: F,
-) -> Vec<Id>
-where
-    Id: EventId,
-    S: BuildHasher,
-    C: Clone,
-    F: Fn(&Id, &Id) -> core::cmp::Ordering,
-{
-    compute_topo_positions(events_map, tiebreak)
-}
+pub use compute_topo_positions as resolve_gap_fill_order;
 
 /// Returns events reachable from `tip` in **reverse topological order**
 /// (newest first). This is the spec-correct ordering for
