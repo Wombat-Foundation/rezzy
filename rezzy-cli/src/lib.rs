@@ -264,10 +264,17 @@ pub fn run_cli(args: &Args) -> Result<rezzy::JsonValue, error::AppError> {
                     }
                     Err(reason) => {
                         syntactically_rejected = syntactically_rejected.saturating_add(1);
-                        eprintln!(
-                            "[REJECTED] event {} failed syntactic validation, excluded from resolution: {reason}",
-                            ev.event_id
-                        );
+                        if reason.starts_with("sender must be a valid MXID") {
+                            eprintln!(
+                                "[REJECTED] event {} sender {} not a valid MXID: '@', ':', domain, and localpart a-z, 0-9, '.', '_', '=', '-', '/', '+'",
+                                ev.event_id, ev.sender
+                            );
+                        } else {
+                            eprintln!(
+                                "[REJECTED] event {} failed syntactic validation, excluded from resolution: {reason}",
+                                ev.event_id
+                            );
+                        }
                         continue;
                     }
                 }
