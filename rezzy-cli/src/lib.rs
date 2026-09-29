@@ -17,6 +17,7 @@
 #[macro_use]
 pub mod error;
 pub mod aggregate;
+#[cfg(feature = "tls")]
 pub mod federation;
 pub mod format;
 pub mod inspect;
@@ -26,6 +27,9 @@ pub mod provenance;
 pub mod repair;
 pub mod timeline_order;
 pub mod utils;
+
+/// HTTP client identity sent by Rezzy's outbound requests.
+pub const USER_AGENT: &str = concat!("rezzy/", env!("CARGO_PKG_VERSION"));
 
 use crate::timeline_order::{OrderKey, TimelineOrder};
 use format::{format_cli_output, FormattingContext};
@@ -142,7 +146,7 @@ impl Args {
 /// Build the top-level CLI parser, including subcommands.
 #[must_use]
 pub fn cli_command() -> clap::Command {
-    clap::Command::new("rezzy")
+    let command = clap::Command::new("rezzy")
         .version(env!("CARGO_PKG_VERSION"))
         .about(env!("CARGO_PKG_DESCRIPTION"))
         .arg(
@@ -225,8 +229,10 @@ pub fn cli_command() -> clap::Command {
                 .value_parser(clap::value_parser!(PathBuf))
                 .help("Explicit provenance sidecar for stream-order lookups"),
         )
-        .subcommand(aggregate::command())
-        .subcommand(federation::command())
+        .subcommand(aggregate::command());
+    #[cfg(feature = "tls")]
+    let command = command.subcommand(federation::command());
+    command
         .subcommand(inspect::command())
         .subcommand(repair::command())
         .subcommand(
@@ -622,6 +628,7 @@ pub fn main_entry() {
         }
         return;
     }
+    #[cfg(feature = "tls")]
     if let Some(("federation", federation_matches)) = matches.subcommand() {
         print_json_command_result(federation::run_from_matches(federation_matches));
     }

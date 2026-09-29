@@ -200,7 +200,7 @@ room's event DAG:
 
 ```sh
 MATRIX_ORIGIN=example.org \
-MATRIX_SERVER_SIGNING_KEY=/path/to/ed25519.key \
+MATRIX_SERVER_SIGNING_KEY_KEYRING=example.org \
 rezzy federation request --destination remote.example --path /_matrix/federation/v1/version
 
 rezzy federation get-remote-dag --origin example.org \
@@ -208,10 +208,10 @@ rezzy federation get-remote-dag --origin example.org \
   --from '$event:example.org' --limit -1 --output remote.jsonl
 ```
 
-The key file accepts the usual `ed25519:<id> <unpadded-base64-private-key>`
-format. For multiple origins, use
-`MATRIX_SERVER_SIGNING_KEY_<DOMAIN_WITH_DOTS_AND_HYPHENS_AS_UNDERSCORES>`;
-that variable takes precedence and the file is reread for every request.
+Federation signing keys must be stored in the OS keyring. Plaintext key files,
+including `MATRIX_SERVER_SIGNING_KEY=/path/to/...`, are rejected. For multiple
+origins, use the per-origin keyring account variable
+`MATRIX_SERVER_SIGNING_KEY_KEYRING_<DOMAIN_WITH_DOTS_AND_HYPHENS_AS_UNDERSCORES>`.
 
 For legacy v3+ JSONL exports that omitted `event_id`, repair them using the
 room-version reference hash before aggregating:
@@ -226,8 +226,14 @@ The `-v6` token is inferred from the filename. The command only fills missing
 IDs; it does not overwrite the source file. `aggregate --repair-missing-ids`
 uses the same inference for every input file.
 
-The key can also live directly in the OS keyring instead of a file. Store the
-complete `ed25519:<id> <seed>` line under service `rezzy` and account name
+Build the CLI with the `tls` feature; federation/keyring support is intentionally
+not present in the default CLI build:
+
+```sh
+cargo build -p rezzy-cli --features tls
+```
+
+Store the complete `ed25519:<id> <seed>` line under service `rezzy` and account name
 `your.server` (for example, with Python's `keyring` package):
 
 ```sh
