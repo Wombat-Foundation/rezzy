@@ -51,8 +51,8 @@ extern crate std;
 
 extern crate alloc;
 
-pub use rz_json as json;
-pub use rz_json::json;
+pub use rezzy_json as json;
+pub use rezzy_json::json;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -69,7 +69,7 @@ pub mod signing;
 pub mod state;
 pub mod warnings;
 
-pub use rz_reconcile as reconcile;
+pub use rezzy_recon as reconcile;
 
 pub use basespec::event_types::EventType;
 pub use basespec::rezzy_types::*;
@@ -89,7 +89,7 @@ pub use reconcile::{
     SyndromeSketch,
 };
 pub use resolve::*;
-pub use rz_json::{
+pub use rezzy_json::{
     Error as JsonError, Number as JsonNumber, Object as JsonObject, Value as JsonValue,
 };
 pub use state::*;

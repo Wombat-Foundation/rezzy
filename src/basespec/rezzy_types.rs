@@ -4066,7 +4066,7 @@ mod canonical_parity_tests {
         ] {
             let value = crate::json::Value::parse(number).unwrap();
             let ours = crate::json::write_string_value(&value).unwrap();
-            // `rz-json` preserves JSON negative zero as `-0.0`; simd-json's
+            // `rezzy-json` preserves JSON negative zero as `-0.0`; simd-json's
             // numeric DOM normalizes it to `0`, so keep the protocol spelling
             // expected by our canonical writer for this one edge case.
             let oracle = if number == "-0" {
@@ -4074,7 +4074,7 @@ mod canonical_parity_tests {
             } else if number == "18446744073709551616" {
                 // simd-json 0.14 rejects integers wider than u64; the
                 // reference JSON numeric normalization is the finite f64
-                // spelling used by rz-json for this relaxed-mode case.
+                // spelling used by rezzy-json for this relaxed-mode case.
                 "1.8446744073709552e+19".to_string()
             } else {
                 let mut input = number.as_bytes().to_vec();

@@ -3,7 +3,7 @@
 #
 # The root package IS the `rezzy` library (core: auth, state, resolve,
 # HAMT, Merkle). The `rezzy-cli` package produces the `rezzy` binary,
-# and `rz-json` / `rz-reconcile` are the primitive sub-crates.
+# and `rezzy-json` / `rezzy-recon` are the primitive sub-crates.
 # ──────────────────────────────────────────────────────────────────
 
 [package]
@@ -63,7 +63,7 @@ ignored = ["idna_adapter", "zeroize"]
 
 [workspace]
 resolver = "2"
-members = ["rezzy-cli", "rz-json", "rz-reconcile"]
+members = ["rezzy-cli", "rezzy-json", "rezzy-recon"]
 
 [workspace.package]
 version = "0.6.0-rc.0"
@@ -76,8 +76,8 @@ repository = "https://github.com/gamesguru/rezzy"
 [workspace.dependencies]
 rezzy = { path = "." }
 rezzy-cli = { path = "rezzy-cli" }
-rz-json = { path = "rz-json" }
-rz-reconcile = { path = "rz-reconcile" }
+rezzy-json = { path = "rezzy-json" }
+rezzy-recon = { path = "rezzy-recon" }
 
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 blake2 = { version = "0.10", default-features = false }
@@ -151,8 +151,8 @@ hashing = []
 unstable-refcount-gc = []
 
 [dependencies]
-rz-json.workspace = true
-rz-reconcile.workspace = true
+rezzy-json.workspace = true
+rezzy-recon.workspace = true
 
 base64.workspace = true
 blake2.workspace = true
