@@ -41,12 +41,11 @@ use std::collections::BTreeSet;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use rezzy::{
-    build_bucket_sketches, estimate_strata, reconcile::triage::MAX_BUCKET_SKETCH_CAPACITY,
-    BucketDecodeBatch, BucketDecodeSuccess, BucketExchange, ClientAction, ElementHash, H64Index,
-    ReconciliationClient, RemoteDigest, ResidentKernel, SyndromeSketch,
-    MAX_BUCKETED_SKETCH_CAPACITY, MAX_BUCKETS_PER_ROUND, MAX_SKETCH_CAPACITY,
-    MAX_STRATA_FACTOR_WORK,
+use rezzy_recon::{
+    build_bucket_sketches, estimate_strata, triage::MAX_BUCKET_SKETCH_CAPACITY, BucketDecodeBatch,
+    BucketDecodeSuccess, BucketExchange, ClientAction, ElementHash, H64Index, ReconciliationClient,
+    RemoteDigest, ResidentKernel, SyndromeSketch, MAX_BUCKETED_SKETCH_CAPACITY,
+    MAX_BUCKETS_PER_ROUND, MAX_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK,
 };
 
 use super::filters::{
@@ -131,8 +130,7 @@ struct PreparedInput {
 }
 
 fn prepare_input(local_hashes: &[ElementHash], remote_hashes: &[ElementHash]) -> PreparedInput {
-    let (local, remote, local_h64, remote_h64) =
-        build_sorted_kernels(local_hashes, remote_hashes);
+    let (local, remote, local_h64, remote_h64) = build_sorted_kernels(local_hashes, remote_hashes);
 
     let remote_digest = build_remote_digest(&remote);
     let estimated_delta = estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK)
@@ -341,7 +339,7 @@ fn simulate_filter_rounds(
     remote_h64: &[u64],
     local_index: &H64Index<'_>,
     remote_index: &H64Index<'_>,
-    overflow_requests: &[rezzy::BucketRequest],
+    overflow_requests: &[rezzy_recon::BucketRequest],
     decode_budget: usize,
     filter_fpr: f64,
     filter_type: &str,
@@ -457,9 +455,9 @@ fn simulate_filter_rounds(
 fn decode_sketch_round(
     remote_sketches: Vec<SyndromeSketch>,
     local_sketches: Vec<SyndromeSketch>,
-    current_requests: &[rezzy::BucketRequest],
+    current_requests: &[rezzy_recon::BucketRequest],
     decode_budget: usize,
-) -> (BucketDecodeBatch, Vec<rezzy::BucketRequest>, usize) {
+) -> (BucketDecodeBatch, Vec<rezzy_recon::BucketRequest>, usize) {
     let mut total_wire = 0_usize;
     let mut overflow_requests = Vec::new();
     let mut batch = empty_decode_batch(current_requests.len());
@@ -512,7 +510,7 @@ fn simulate_strategy(
 
     let mut exchange = BucketExchange::new(
         accumulated_roots,
-        rezzy::MAX_RECONCILIATION_ROUNDS,
+        rezzy_recon::MAX_RECONCILIATION_ROUNDS,
         MAX_BUCKETS_PER_ROUND,
         MAX_BUCKETED_SKETCH_CAPACITY,
     );

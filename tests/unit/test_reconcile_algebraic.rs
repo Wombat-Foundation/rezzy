@@ -2,7 +2,7 @@ use base64::{
     engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD},
     Engine as _,
 };
-use rezzy::reconcile::{
+use rezzy_recon::{
     verify_residual, AlgebraicError, ElementHash, EventIdFormat, RoomAccumulator, SyndromeSketch,
     MAX_LOCAL_SKETCH_DECODE_CAPACITY, MAX_SKETCH_CAPACITY,
 };
@@ -227,8 +227,8 @@ fn accumulator_residual_is_the_digest_xor() {
 
 #[test]
 fn multi_round_bucket_transition_flow() {
-    use rezzy::reconcile::triage::MAX_BUCKET_SKETCH_CAPACITY;
-    use rezzy::{
+    use rezzy_recon::triage::MAX_BUCKET_SKETCH_CAPACITY;
+    use rezzy_recon::{
         BucketDecodeBatch, BucketDecodeSuccess, BucketRequest, ClientAction, ReconciliationClient,
     };
 

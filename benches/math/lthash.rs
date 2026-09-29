@@ -38,9 +38,7 @@ use std::time::{Duration, Instant};
 
 use rezzy::state::LtHash;
 
-use crate::common::{
-    generate_unique_entries, sha256_sorted_hash, xor_fold_sha256, Xorshift128,
-};
+use crate::common::{generate_unique_entries, sha256_sorted_hash, xor_fold_sha256, Xorshift128};
 
 type StateKey = (String, String); // (event_type, state_key)
 
@@ -91,11 +89,9 @@ fn conduwuit_style_hash(state: &HashMap<StateKey, String>) -> [u8; 32] {
 /// mutation, not an incremental update against a running accumulator.
 fn synapse_style_hash(state: &HashMap<StateKey, String>) -> [u8; 32] {
     xor_fold_sha256(
-        state
-            .iter()
-            .map(|((event_type, state_key), event_id)| {
-                canonical_row(event_type, state_key, event_id)
-            }),
+        state.iter().map(|((event_type, state_key), event_id)| {
+            canonical_row(event_type, state_key, event_id)
+        }),
     )
 }
 

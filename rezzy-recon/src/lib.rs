@@ -3,8 +3,7 @@
 //! Minisketch reconciliation helpers (MSC4521).
 //!
 //! This crate is independent of the core state resolution engine and depends
-//! only on `base64`, `sha2`, and the local `EventId` trait alias it
-//! defines locally.
+//! only on `base64` and `sha2`.
 
 #[cfg(feature = "std")]
 extern crate std;
@@ -20,7 +19,14 @@ pub mod resident;
 pub mod server;
 pub mod triage;
 
-pub use rezzy_types::EventId;
+/// Identifier contract required by reconciliation graph traversal.
+///
+/// Reconciliation only needs owned queue entries, ordered membership, and a
+/// display representation for hashing. This is intentionally independent of
+/// the stronger `rezzy::EventId` contract.
+pub trait EventId: Clone + Ord + core::fmt::Display {}
+
+impl<T: Clone + Ord + core::fmt::Display> EventId for T {}
 
 /// Maximum depth of an `h64` bucket request.
 pub const MAX_DEPTH: u8 = 64;

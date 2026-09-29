@@ -1,7 +1,7 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use rezzy::{
+use rezzy_recon::{
     build_bucket_sketches, decode_bucket_sketches, estimate_strata, gf64_mul, BucketDecodeBatch,
     BucketDecodeSuccess, BucketExchange, BucketRequest, ClientAction, ElementHash,
     ReconciliationClient, ResidentKernel, SyndromeSketch, MAX_BATCH_FACTOR_WORK,
@@ -304,7 +304,7 @@ fn benchmark_bucket_exchange_from_pool(
 
     let exchange = BucketExchange::new(
         accumulated_roots,
-        rezzy::MAX_RECONCILIATION_ROUNDS,
+        rezzy_recon::MAX_RECONCILIATION_ROUNDS,
         MAX_BUCKETS_PER_ROUND,
         MAX_BUCKETED_SKETCH_CAPACITY,
     );
@@ -355,7 +355,7 @@ fn benchmark_presplit_antichain_exchange_from_pool(
 
     let exchange = BucketExchange::new(
         Vec::new(),
-        rezzy::MAX_RECONCILIATION_ROUNDS,
+        rezzy_recon::MAX_RECONCILIATION_ROUNDS,
         MAX_BUCKETS_PER_ROUND,
         MAX_BUCKETED_SKETCH_CAPACITY,
     );

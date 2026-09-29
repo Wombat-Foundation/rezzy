@@ -1102,8 +1102,6 @@ dependencies = [
  "hashbrown 0.15.5",
  "imbl",
  "rezzy-json",
- "rezzy-recon",
- "rezzy-types",
  "roaring",
  "sha2 0.10.9",
  "sha3",
@@ -1119,6 +1117,7 @@ dependencies = [
  "imbl",
  "rand 0.8.8",
  "rezzy",
+ "rezzy-recon",
  "roaring",
  "ruma-common",
  "ruma-events",
@@ -1142,13 +1141,8 @@ name = "rezzy-recon"
 version = "0.6.0-rc.0"
 dependencies = [
  "base64",
- "rezzy-types",
  "sha2 0.10.9",
 ]
-
-[[package]]
-name = "rezzy-types"
-version = "0.6.0-rc.0"
 
 [[package]]
 name = "roaring"

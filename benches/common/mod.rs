@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use rezzy::hamt::codec::HamtCodec;
 use rezzy::hamt::{self, HamtNode, PersistedInternalNode};
-use rezzy::{json, ElementHash, LeanEvent, ResidentKernel};
+use rezzy::{json, LeanEvent};
+use rezzy_recon::{ElementHash, ResidentKernel};
 use sha2::Digest;
 
 #[path = "../../support/reconciliation.rs"]

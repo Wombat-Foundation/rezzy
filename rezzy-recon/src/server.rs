@@ -8,11 +8,10 @@
 use alloc::{
     collections::{BTreeSet, VecDeque},
     string::ToString,
+    vec::Vec,
 };
 
 use crate::EventId;
-
-use alloc::vec::Vec;
 
 use super::{
     algebraic::SyndromeSketch, triage::BucketRequest, AlgebraicError, ElementHash, EventIdFormat,

@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use rezzy::{
+use rezzy_recon::{
     build_bucket_sketches, estimate_strata, validate_overflow_bucket_requests, BucketDecodeBatch,
     BucketDecodeSuccess, BucketExchange, BucketRequest, ClientAction, ElementHash, H64Index,
     ReconciliationClient, SyndromeSketch, MAX_BUCKETED_SKETCH_CAPACITY, MAX_BUCKETS_PER_ROUND,
@@ -111,8 +111,7 @@ fn simulate_strategy(
     decode_budget: usize,
 ) -> StrategyResult {
     let expected = expected_difference(local_hashes, remote_hashes);
-    let (local, remote, local_h64, remote_h64) =
-        build_sorted_kernels(local_hashes, remote_hashes);
+    let (local, remote, local_h64, remote_h64) = build_sorted_kernels(local_hashes, remote_hashes);
     let local_index = H64Index::new(&local_h64);
     let remote_index = H64Index::new(&remote_h64);
 

@@ -22,13 +22,11 @@
 //! exchanges at scale) than forced into an always-pass unit test. See
 //! `docs/tech_debt.md` for the follow-up.
 
-use rezzy::reconcile::client::{
+use rezzy_recon::client::{
     BucketExchange, ClientAction, ReconciliationClient, MAX_BUCKETS_PER_ROUND,
 };
-use rezzy::reconcile::resident::ResidentKernel;
-use rezzy::reconcile::triage::{
-    estimate_strata, MAX_BUCKETED_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK,
-};
+use rezzy_recon::resident::ResidentKernel;
+use rezzy_recon::triage::{estimate_strata, MAX_BUCKETED_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK};
 #[path = "../../support/reconciliation.rs"]
 mod reconciliation_support;
 use reconciliation_support::{
@@ -157,7 +155,7 @@ fn run_round_trip(
 
     let mut exchange = BucketExchange::new(
         accumulated_roots,
-        rezzy::reconcile::client::MAX_RECONCILIATION_ROUNDS,
+        rezzy_recon::client::MAX_RECONCILIATION_ROUNDS,
         MAX_BUCKETS_PER_ROUND,
         MAX_BUCKETED_SKETCH_CAPACITY,
     );

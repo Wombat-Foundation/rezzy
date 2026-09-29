@@ -1,4 +1,4 @@
-use rezzy::reconcile::{
+use rezzy_recon::{
     build_bucket_sketches, ElementHash, EventIdFormat, ReconciliationClient, RemoteDigest,
     ResidentKernel,
 };
@@ -51,7 +51,7 @@ fn main() {
     println!("Client triage completed in {triage_duration:?}");
 
     match action {
-        rezzy::reconcile::ClientAction::BucketSketches { requests, .. } => {
+        rezzy_recon::ClientAction::BucketSketches { requests, .. } => {
             println!("Requested {} buckets.", requests.len());
 
             // Step 2: Server builds the requested sketches

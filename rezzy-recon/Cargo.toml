@@ -17,7 +17,6 @@ std = []
 
 [dependencies]
 base64.workspace = true
-rezzy-types.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]

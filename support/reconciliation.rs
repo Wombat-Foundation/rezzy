@@ -1,6 +1,6 @@
 //! Shared reconciliation fixtures and deterministic helpers for tests/benches.
 
-use rezzy::{
+use rezzy_recon::{
     build_bucket_sketches, BucketDecodeBatch, BucketDecodeSuccess, BucketRequest, ElementHash,
     RemoteDigest, ResidentKernel, SyndromeSketch,
 };

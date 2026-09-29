@@ -18,7 +18,7 @@
 //   - V4+:   same as V3 but with `$` prefix only (no domain)
 // Authoritative: `RoomVersionFormat::uses_reference_hash_event_ids` (v1/v2
 // vs. v3+) in `rezzy_types.rs`; the v3-vs-v4+ base64 padding/charset split
-// is `reconcile::algebraic::EventIdFormat` (`Legacy`/`V3`/`V4Plus`).
+// is `rezzy_recon::EventIdFormat` (`Legacy`/`V3`/`V4Plus`).
 
 // Room ID format
 //   - V1-V11: server-assigned (`!localpart:domain`)

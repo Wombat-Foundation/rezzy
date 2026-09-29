@@ -20,10 +20,24 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use base64::Engine as _;
 use core::cmp::Ordering;
-pub use rezzy_types::EventId;
 use sha2::{Digest, Sha256};
 
 use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER, M_ROOM_REDACTION};
+
+/// Marker trait for types that can serve as event identifiers.
+///
+/// Any type that is `Clone + Eq + Hash + Ord + Debug + Display` automatically
+/// implements this trait via the blanket implementation. Common choices are
+/// `String` for human-readable event IDs and integer IDs for interned storage.
+/// The `Display` implementation must produce the stable canonical event ID;
+/// the core crate uses that representation when computing content-addressed
+/// state hashes.
+pub trait EventId:
+    Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display
+{
+}
+
+impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display> EventId for T {}
 
 /// Trait alias for types that can serve as the "key" half of a Matrix state
 /// tuple `(event_type, state_key)`.

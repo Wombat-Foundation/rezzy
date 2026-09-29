@@ -1,6 +1,6 @@
 use std::hint::black_box;
 
-use rezzy::{SyndromeSketch, MAX_SKETCH_CAPACITY};
+use rezzy_recon::{SyndromeSketch, MAX_SKETCH_CAPACITY};
 
 use super::filters::{
     quotient_remainder_bits_for_fpr, remainder_probe_bits_for_fpr, BloomFilter,

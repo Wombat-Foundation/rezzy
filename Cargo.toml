@@ -3,8 +3,7 @@
 #
 # The root package IS the `rezzy` library (core: auth, state, resolve,
 # HAMT, Merkle). The `rezzy-cli` package produces the `rezzy` binary,
-# and `rezzy-json`, `rezzy-types`, and `rezzy-recon` are the primitive
-# sub-crates.
+# and `rezzy-json` and `rezzy-recon` are the supporting sub-crates.
 # ──────────────────────────────────────────────────────────────────
 
 [package]
@@ -64,7 +63,7 @@ ignored = ["idna_adapter", "zeroize"]
 
 [workspace]
 resolver = "2"
-members = ["rezzy-cli", "rezzy-json", "rezzy-recon", "rezzy-types"]
+members = ["rezzy-cli", "rezzy-json", "rezzy-recon"]
 
 [workspace.package]
 version = "0.6.0-rc.0"
@@ -79,7 +78,6 @@ rezzy = { path = ".", version = "0.6.0-rc.0" }
 rezzy-cli = { path = "rezzy-cli", version = "0.6.0-rc.0" }
 rezzy-json = { path = "rezzy-json", version = "0.6.0-rc.0" }
 rezzy-recon = { path = "rezzy-recon", version = "0.6.0-rc.0" }
-rezzy-types = { path = "rezzy-types", version = "0.6.0-rc.0" }
 
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 blake2 = { version = "0.10", default-features = false }
@@ -154,8 +152,6 @@ unstable-refcount-gc = []
 
 [dependencies]
 rezzy-json.workspace = true
-rezzy-recon.workspace = true
-rezzy-types.workspace = true
 
 base64.workspace = true
 blake2.workspace = true
@@ -175,6 +171,7 @@ hashbrown.workspace = true
 imbl.workspace = true
 insta.workspace = true
 rand_08.workspace = true
+rezzy-recon.workspace = true
 roaring.workspace = true
 sha2.workspace = true
 simd-json.workspace = true
