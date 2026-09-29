@@ -8,7 +8,7 @@ use base64::{
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ed25519_dalek::{Signer, SigningKey};
 use rezzy::JsonValue;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -128,6 +128,15 @@ fn signing_key_args() -> [Arg; 2] {
 }
 
 pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
+    if let Some(("request" | "get-remote-dag" | "gap-fill", m)) = matches.subcommand() {
+        let origin = m.get_one::<String>("origin").expect("default");
+        load_signing_key(
+            origin,
+            m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
+            m.get_one::<String>("signing-key-keyring")
+                .map(String::as_str),
+        )?;
+    }
     match matches.subcommand() {
         Some(("request", m)) => {
             let body = if let Some(path) = m.get_one::<PathBuf>("body") {
@@ -213,8 +222,10 @@ fn domain_env_suffix(domain: &str) -> String {
     domain.to_ascii_uppercase().replace(['.', '-'], "_")
 }
 
-/// Resolve and parse a Matrix server signing key. The domain-specific variable
-/// (`MATRIX_SERVER_SIGNING_KEY_<DOMAIN>`) wins over the generic variable.
+/// Resolve and parse a Matrix server signing key from the OS keyring.
+///
+/// Private key files and `MATRIX_SERVER_SIGNING_KEY` are intentionally not
+/// accepted: federation credentials must be stored through the OS keyring.
 pub fn load_signing_key(
     origin: &str,
     explicit: Option<&Path>,
@@ -230,59 +241,46 @@ pub fn load_signing_key(
             .ok()
         })
         .or_else(|| std::env::var("MATRIX_SERVER_SIGNING_KEY_KEYRING").ok());
-    if explicit.is_none() {
-        if let Some(account) = keyring_account {
-            let entry = keyring::Entry::new("rezzy", &account).map_err(|e| {
-                AppError::new(
-                    ErrorCode::SigningKey,
-                    format!("failed to open OS keyring entry rezzy/{account}: {e}"),
-                )
-            })?;
-            let text = entry.get_password().map_err(|e| {
-                AppError::new(
-                    ErrorCode::SigningKey,
-                    format!("failed to read OS keyring entry rezzy/{account}: {e}"),
-                )
-            })?;
-            return parse_signing_key(&text).map_err(|message| {
-                AppError::new(
-                    ErrorCode::SigningKey,
-                    format!("OS keyring entry rezzy/{account}: {message}"),
-                )
-            });
-        }
-    }
-    let path = explicit
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var(format!(
-                "MATRIX_SERVER_SIGNING_KEY_{}",
-                domain_env_suffix(origin)
-            ))
-            .ok()
-            .or_else(|| std::env::var("MATRIX_SERVER_SIGNING_KEY").ok())
-            .map(PathBuf::from)
-        })
-        .ok_or_else(|| {
+    if let Some(account) = keyring_account {
+        let entry = keyring::Entry::new("rezzy", &account).map_err(|e| {
             AppError::new(
                 ErrorCode::SigningKey,
-                format!(
-        "no signing key configured; set MATRIX_SERVER_SIGNING_KEY or MATRIX_SERVER_SIGNING_KEY_{}",
-        domain_env_suffix(origin)),
+                format!("failed to open OS keyring entry rezzy/{account}: {e}"),
             )
         })?;
-    let text = fs::read_to_string(&path).map_err(|e| {
-        AppError::new(
-            ErrorCode::SigningKey,
-            format!("failed to read signing key {}: {e}", path.display()),
-        )
-    })?;
-    parse_signing_key(&text).map_err(|message| {
-        AppError::new(
-            ErrorCode::SigningKey,
-            format!("{}: {}", path.display(), message),
-        )
-    })
+        let text = entry.get_password().map_err(|e| {
+            AppError::new(
+                ErrorCode::SigningKey,
+                format!("failed to read OS keyring entry rezzy/{account}: {e}"),
+            )
+        })?;
+        return parse_signing_key(&text).map_err(|message| {
+            AppError::new(
+                ErrorCode::SigningKey,
+                format!("OS keyring entry rezzy/{account}: {message}"),
+            )
+        });
+    }
+
+    let legacy_file_configured = explicit.is_some()
+        || std::env::var(format!(
+            "MATRIX_SERVER_SIGNING_KEY_{}",
+            domain_env_suffix(origin)
+        ))
+        .is_ok()
+        || std::env::var("MATRIX_SERVER_SIGNING_KEY").is_ok();
+    let detail = if legacy_file_configured {
+        "plaintext signing-key files and MATRIX_SERVER_SIGNING_KEY are not accepted"
+    } else {
+        "no OS keyring account configured"
+    };
+    Err(AppError::new(
+        ErrorCode::SigningKey,
+        format!(
+            "{detail}; set MATRIX_SERVER_SIGNING_KEY_KEYRING_{} or MATRIX_SERVER_SIGNING_KEY_KEYRING",
+            domain_env_suffix(origin)
+        ),
+    ))
 }
 
 fn parse_signing_key(text: &str) -> Result<SigningKeySpec, String> {
@@ -375,6 +373,7 @@ pub fn request(
     };
     req = req
         .set("Authorization", &auth)
+        .set("User-Agent", crate::USER_AGENT)
         .set("Content-Type", "application/json");
     let result = if method.eq_ignore_ascii_case("GET")
         && matches!(body, JsonValue::Object(o) if o.is_empty())
@@ -451,6 +450,7 @@ pub fn get_remote_dag(
     }
     let mut seen = HashSet::new();
     let mut lines = Vec::new();
+    let mut failures = FetchFailures::default();
     let max = if limit < 0 {
         usize::MAX
     } else {
@@ -484,7 +484,8 @@ pub fn get_remote_dag(
         );
         let mut value = match response {
             Ok(v) => v,
-            Err(_e) if !no_fallback => {
+            Err(e) if !no_fallback => {
+                failures.record(&e);
                 for id in &ids {
                     queue.push_front(id.clone());
                 }
@@ -505,7 +506,10 @@ pub fn get_remote_dag(
                         let pdu = v.get("pdu").cloned().unwrap_or(v);
                         rezzy::json!({"pdus":[pdu]})
                     }
-                    Err(_) => continue,
+                    Err(e) => {
+                        failures.record(&e);
+                        continue;
+                    }
                 }
             }
             Err(e) => return Err(e),
@@ -526,7 +530,7 @@ pub fn get_remote_dag(
             }
             if let Some(id) = queue.pop_front() {
                 let event_uri = format!("/_matrix/federation/v1/event/{}", quote(&id));
-                if let Ok(event) = request(
+                match request(
                     origin,
                     destination,
                     "GET",
@@ -535,10 +539,14 @@ pub fn get_remote_dag(
                     key_path,
                     keyring_account,
                 ) {
-                    let pdu = event.get("pdu").cloned().unwrap_or(event);
-                    value = rezzy::json!({"pdus":[pdu]});
-                } else {
-                    queue.push_front(id);
+                    Ok(event) => {
+                        let pdu = event.get("pdu").cloned().unwrap_or(event);
+                        value = rezzy::json!({"pdus":[pdu]});
+                    }
+                    Err(e) => {
+                        failures.record(&e);
+                        queue.push_front(id);
+                    }
                 }
             }
         }
@@ -586,6 +594,15 @@ pub fn get_remote_dag(
             }
         }
     }
+    if lines.is_empty() && !failures.is_empty() {
+        return Err(AppError::new(
+            ErrorCode::NetworkError,
+            format!(
+                "no events fetched from {destination} for {room_id}: {}",
+                failures.summary()
+            ),
+        ));
+    }
     let mut text = String::new();
     for line in &lines {
         text.push_str(
@@ -604,6 +621,13 @@ pub fn get_remote_dag(
         "output": output.display().to_string(),
         "remaining_frontier": remaining_frontier,
     });
+    if !failures.is_empty() {
+        let _ = result.insert(
+            String::from("failed_requests"),
+            rezzy::json!(failures.total() as u64),
+        );
+        let _ = result.insert(String::from("failures"), rezzy::json!(failures.summary()));
+    }
     if let Some(path) = emit_missing {
         let _ = result.insert(
             String::from("missing_output"),
@@ -636,6 +660,7 @@ fn gap_fill(
 
     let mut fetched = Vec::new();
     let mut completed_rounds = 0_u32;
+    let mut failed_requests = 0_usize;
     let mut closed = false;
     let mut round = 0_u32;
     loop {
@@ -654,7 +679,7 @@ fn gap_fill(
         if !report.missing_prev.is_empty() {
             let path = round_dir.join("backfill.jsonl");
             let starts = report.missing_prev.iter().cloned().collect::<Vec<_>>();
-            let _ = get_remote_dag(
+            let summary = get_remote_dag(
                 origin,
                 destination,
                 room_id,
@@ -667,14 +692,26 @@ fn gap_fill(
                 no_fallback,
                 None,
             )?;
-            fetched.push(path.clone());
-            events.extend(crate::repair::read_jsonl_events(&path)?);
+            if let Some(n) = summary.get("failed_requests").and_then(JsonValue::as_u64) {
+                failed_requests = failed_requests.saturating_add(n as usize);
+                if let Some(detail) = summary.get("failures").and_then(JsonValue::as_str) {
+                    eprintln!("[warn] round {round}: {n} backfill request(s) failed: {detail}");
+                }
+            }
+            let backfilled = summary
+                .get("count")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0);
+            if backfilled > 0 {
+                fetched.push(path.clone());
+                events.extend(crate::repair::read_jsonl_events(&path)?);
+            }
         }
 
         let report = crate::repair::scan_gaps(&events);
         if !report.missing_auth.is_empty() {
             let path = round_dir.join("auth.jsonl");
-            let count = fetch_auth_batches(
+            let (count, failures) = fetch_auth_batches(
                 origin,
                 destination,
                 room_id,
@@ -683,6 +720,14 @@ fn gap_fill(
                 key_path,
                 keyring_account,
             )?;
+            if !failures.is_empty() {
+                failed_requests = failed_requests.saturating_add(failures.total());
+                eprintln!(
+                    "[warn] round {round}: {} auth-chain request(s) failed: {}",
+                    failures.total(),
+                    failures.summary()
+                );
+            }
             if count > 0 {
                 fetched.push(path.clone());
                 events.extend(crate::repair::read_jsonl_events(&path)?);
@@ -706,8 +751,48 @@ fn gap_fill(
         "events": final_report.present.len(),
         "missing_prev_events": final_report.missing_prev.iter().cloned().collect::<Vec<_>>(),
         "missing_auth_events": final_report.missing_auth.iter().cloned().collect::<Vec<_>>(),
+        "failed_requests": failed_requests,
         "fetched": fetched.iter().map(|path| path.to_string_lossy().to_string()).collect::<Vec<_>>(),
     }))
+}
+
+/// Aggregated federation request failures, grouped by stable error code.
+///
+/// One round can fail many requests for the same reason (for example an
+/// untrusted origin), so failures are folded into a single summary instead of
+/// one warning per request. The first full message is retained as context.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct FetchFailures {
+    by_code: BTreeMap<&'static str, usize>,
+    first: Option<String>,
+}
+
+impl FetchFailures {
+    fn record(&mut self, error: &AppError) {
+        *self.by_code.entry(error.code().code()).or_default() += 1;
+        if self.first.is_none() {
+            self.first = Some(error.to_string());
+        }
+    }
+
+    fn total(&self) -> usize {
+        self.by_code.values().sum()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.by_code.is_empty()
+    }
+
+    fn summary(&self) -> String {
+        let mut parts = self
+            .by_code
+            .iter()
+            .map(|(code, count)| format!("{count} x {code}"))
+            .collect::<Vec<_>>();
+        parts.sort();
+        let detail = self.first.as_deref().unwrap_or("unknown error");
+        format!("{} (first: {detail})", parts.join(", "))
+    }
 }
 
 fn fetch_auth_batches(
@@ -718,7 +803,7 @@ fn fetch_auth_batches(
     output: &Path,
     key_path: Option<&Path>,
     keyring_account: Option<&str>,
-) -> Result<usize, AppError> {
+) -> Result<(usize, FetchFailures), AppError> {
     let mut referencing = std::collections::BTreeSet::new();
     for reference in &report.references {
         if reference.kind == crate::repair::ReferenceKind::AuthEvents {
@@ -727,6 +812,7 @@ fn fetch_auth_batches(
     }
     let mut lines = Vec::new();
     let mut seen = HashSet::new();
+    let mut failures = FetchFailures::default();
     for event_id in referencing {
         let uri = format!(
             "/_matrix/federation/v1/event_auth/{}/{}",
@@ -744,9 +830,7 @@ fn fetch_auth_batches(
         ) {
             Ok(value) => value,
             Err(error) => {
-                eprintln!(
-                    "[warn] auth-chain request for {event_id} from {destination} failed: {error}"
-                );
+                failures.record(&error);
                 continue;
             }
         };
@@ -765,7 +849,7 @@ fn fetch_auth_batches(
         }
     }
     write_jsonl(output, &lines)?;
-    Ok(lines.len())
+    Ok((lines.len(), failures))
 }
 
 fn write_jsonl(path: &Path, events: &[JsonValue]) -> Result<(), AppError> {
@@ -783,7 +867,7 @@ fn write_jsonl(path: &Path, events: &[JsonValue]) -> Result<(), AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{domain_env_suffix, parse_signing_key};
+    use super::{domain_env_suffix, parse_signing_key, AppError, ErrorCode, FetchFailures};
 
     #[test]
     fn domain_environment_names_match_token_convention() {
@@ -799,5 +883,30 @@ mod tests {
         let key =
             parse_signing_key("ed25519:7 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
         assert_eq!(key.key_id, "ed25519:7");
+    }
+
+    #[test]
+    fn fetch_failures_collapse_repeated_errors_into_one_summary() {
+        let mut failures = FetchFailures::default();
+        for _ in 0..5 {
+            failures.record(&AppError::new(ErrorCode::NetworkError, "HTTP 401"));
+        }
+        failures.record(&AppError::new(ErrorCode::SigningKey, "no key"));
+
+        assert_eq!(failures.total(), 6);
+        assert!(!failures.is_empty());
+        let summary = failures.summary();
+        assert!(summary.contains("5 x E014_NETWORK_ERROR"), "{summary}");
+        assert!(summary.contains("1 x E017_SIGNING_KEY"), "{summary}");
+        assert!(
+            summary.contains("first: [E014_NETWORK_ERROR] HTTP 401"),
+            "{summary}"
+        );
+    }
+
+    #[test]
+    fn fetch_failures_default_is_empty() {
+        assert!(FetchFailures::default().is_empty());
+        assert_eq!(FetchFailures::default().total(), 0);
     }
 }

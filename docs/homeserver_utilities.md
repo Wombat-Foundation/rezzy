@@ -233,8 +233,8 @@ not present in the default CLI build:
 cargo build -p rezzy-cli --features tls
 ```
 
-Store the complete `ed25519:<id> <seed>` line under service `rezzy` and account name
-`your.server` (for example, with Python's `keyring` package):
+Store the complete `ed25519:<id> <seed>` line under service `rezzy` and account
+name `your.server` (for example, with Python's `keyring` package):
 
 ```sh
 python3 -m keyring set rezzy your.server

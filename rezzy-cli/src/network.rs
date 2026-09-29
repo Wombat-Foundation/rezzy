@@ -37,7 +37,7 @@ pub fn fetch_room_state(
         );
     }
     eprintln!("Fetching {url}");
-    let mut request = ureq::get(&url);
+    let mut request = ureq::get(&url).set("User-Agent", crate::USER_AGENT);
     if let Some(t) = token {
         request = request.set("Authorization", &format!("Bearer {t}"));
     }
