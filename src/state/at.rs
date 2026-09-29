@@ -768,7 +768,7 @@ pub fn compute_merge_bases<'a, Id, Q, S, Node>(
 ) -> Vec<MergeBase<&'a Id>>
 where
     Id: EventId + Borrow<Q>,
-    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    Q: ?Sized + core::hash::Hash + Ord,
     S: BuildHasher,
     Node: DagNode<Id = Id>,
 {
@@ -931,7 +931,7 @@ pub fn compute_merge_base<'a, Id, Q, S, Node>(
 ) -> Option<&'a Id>
 where
     Id: EventId + Borrow<Q>,
-    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    Q: ?Sized + core::hash::Hash + Ord,
     S: BuildHasher,
     Node: DagNode<Id = Id>,
 {
