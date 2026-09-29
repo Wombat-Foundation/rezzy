@@ -157,40 +157,29 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
         let shared_member = format!("@member{g}:example.org");
         let pl_auth_root = format!("$pl_auth_root_{}", pl_chain_len - 1);
 
+        // Both fork branches are the same self-join member event, differing
+        // only in id and whether they also cite the shared power-level root.
+        let mut make_branch = |event_id: String, auth_root: String| {
+            member_event(
+                event_id,
+                shared_member.clone(),
+                shared_member.clone(),
+                "join",
+                0,
+                {
+                    ts += 1;
+                    ts
+                },
+                vec![top_pl.clone()],
+                vec![top_pl.clone(), auth_root],
+                depth,
+            )
+        };
         events.insert(
             a_id.clone(),
-            member_event(
-                a_id.clone(),
-                shared_member.clone(),
-                shared_member.clone(),
-                "join",
-                0,
-                {
-                    ts += 1;
-                    ts
-                },
-                vec![top_pl.clone()],
-                vec![top_pl.clone(), pl_auth_root.clone()],
-                depth,
-            ),
+            make_branch(a_id.clone(), pl_auth_root.clone()),
         );
-        events.insert(
-            b_id.clone(),
-            member_event(
-                b_id.clone(),
-                shared_member.clone(),
-                shared_member.clone(),
-                "join",
-                0,
-                {
-                    ts += 1;
-                    ts
-                },
-                vec![top_pl.clone()],
-                vec![top_pl.clone(), pl_auth_root],
-                depth,
-            ),
-        );
+        events.insert(b_id.clone(), make_branch(b_id.clone(), pl_auth_root));
         events.insert(
             merge_id.clone(),
             LeanEvent {

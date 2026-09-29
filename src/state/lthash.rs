@@ -466,14 +466,23 @@ mod tests {
 
     type StateMap = imbl::OrdMap<(crate::basespec::event_types::EventType, String), String>;
 
+    /// Builds a `StateMap` from `(event_type, state_key) -> event_id` rows.
+    fn state_map(
+        rows: impl IntoIterator<Item = ((&'static str, &'static str), &'static str)>,
+    ) -> StateMap {
+        rows.into_iter()
+            .map(|((event_type, state_key), id)| {
+                ((event_type.into(), state_key.into()), String::from(id))
+            })
+            .collect()
+    }
+
     #[test]
     fn test_state_hash_determinism() {
-        let mut state = StateMap::new();
-        state.insert(("m.room.create".into(), String::new()), "$1".into());
-        state.insert(
-            ("m.room.member".into(), "@alice:example.com".into()),
-            "$2".into(),
-        );
+        let state = state_map([
+            (("m.room.create", ""), "$1"),
+            (("m.room.member", "@alice:example.com"), "$2"),
+        ]);
 
         let h1 = compute_state_hash(&state);
         let h2 = compute_state_hash(&state);
@@ -483,11 +492,8 @@ mod tests {
 
     #[test]
     fn test_state_hash_sensitivity() {
-        let mut state_a = StateMap::new();
-        state_a.insert(("m.room.create".into(), String::new()), "$1".into());
-
-        let mut state_b = StateMap::new();
-        state_b.insert(("m.room.create".into(), String::new()), "$2".into());
+        let state_a = state_map([(("m.room.create", ""), "$1")]);
+        let state_b = state_map([(("m.room.create", ""), "$2")]);
 
         assert_ne!(
             compute_state_hash(&state_a),
@@ -498,9 +504,10 @@ mod tests {
 
     #[test]
     fn test_lthash_determinism() {
-        let mut state = StateMap::new();
-        state.insert(("m.room.create".into(), String::new()), "$1".into());
-        state.insert(("m.room.member".into(), "@a:x".into()), "$2".into());
+        let state = state_map([
+            (("m.room.create", ""), "$1"),
+            (("m.room.member", "@a:x"), "$2"),
+        ]);
         let h1 = LtHash::from_state(&state);
         let h2 = LtHash::from_state(&state);
         assert_eq!(h1, h2);
@@ -510,10 +517,8 @@ mod tests {
 
     #[test]
     fn test_lthash_sensitivity() {
-        let mut a = StateMap::new();
-        a.insert(("m.room.create".into(), String::new()), "$1".into());
-        let mut b = StateMap::new();
-        b.insert(("m.room.create".into(), String::new()), "$2".into());
+        let a = state_map([(("m.room.create", ""), "$1")]);
+        let b = state_map([(("m.room.create", ""), "$2")]);
         assert_ne!(LtHash::from_state(&a), LtHash::from_state(&b),);
     }
 

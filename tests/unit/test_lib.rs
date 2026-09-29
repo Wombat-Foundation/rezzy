@@ -432,34 +432,8 @@ mod tests {
     #[test]
     fn test_unhappy_path_cycle_detection() {
         let mut events: HashMap<String, LeanEvent> = HashMap::new();
-        events.insert(
-            "A".into(),
-            LeanEvent {
-                event_id: "A".into(),
-                event_type: "m.room.member".into(),
-                state_key: Some("@alice:example.com".into()),
-                power_level: 100,
-                origin_server_ts: 100,
-                prev_events: vec!["B".into()],
-                auth_events: vec!["B".into()],
-                depth: 1,
-                ..Default::default()
-            },
-        );
-        events.insert(
-            "B".into(),
-            LeanEvent {
-                event_id: "B".into(),
-                event_type: "m.room.member".into(),
-                state_key: Some("@alice:example.com".into()),
-                power_level: 100,
-                origin_server_ts: 100,
-                prev_events: vec!["A".into()],
-                auth_events: vec!["A".into()],
-                depth: 1,
-                ..Default::default()
-            },
-        );
+        events.insert("A".into(), super::cycle_member_with_prev("A", "B"));
+        events.insert("B".into(), super::cycle_member_with_prev("B", "A"));
         let sorted = super::kahn_sort(&events, rezzy::StateResVersion::V2);
         assert_ne!(sorted, [] as [std::string::String; 0]);
         assert_eq!(sorted, vec!["A", "B"]);
@@ -1322,13 +1296,7 @@ mod tests {
         let mut graph: HashMap<String, LeanEvent> = HashMap::new();
         graph.insert(
             "X".to_string(),
-            LeanEvent {
-                event_id: "X".into(),
-                event_type: "m.room.member".into(),
-                state_key: Some("@alice:example.com".into()),
-                auth_events: vec!["MISSING_1".into(), "MISSING_2".into()],
-                ..Default::default()
-            },
+            super::subgraph_source_event(vec!["MISSING_1".into(), "MISSING_2".into()]),
         );
         let result = compute_v2_1_conflicted_subgraph_bounded(&graph, &["X".to_string()], None);
         let mut missing = result.missing_auth_events.clone();
@@ -1341,13 +1309,7 @@ mod tests {
         let mut graph: HashMap<String, LeanEvent> = HashMap::new();
         graph.insert(
             "X".to_string(),
-            LeanEvent {
-                event_id: "X".into(),
-                event_type: "m.room.member".into(),
-                state_key: Some("@alice:example.com".into()),
-                auth_events: vec!["MISSING_1".into()],
-                ..Default::default()
-            },
+            super::subgraph_source_event(vec!["MISSING_1".into()]),
         );
         // By including "MISSING_1" in the conflicted_set, it enters `forwards_reachable`.
         // Because "X" references it, it also enters `backwards_reachable`.
@@ -1537,11 +1499,7 @@ mod tests {
     fn test_cdo_causal_domination_filter() {
         use rezzy::json;
 
-        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
-        let mut auth: HashMap<String, LeanEvent> = HashMap::new();
-
-        let root: LeanEvent = super::cdo_root(1000);
-        auth.insert(root.event_id.clone(), root.clone());
+        let (mut conflicted, mut auth, _root) = super::cdo_maps_with_root(1000);
 
         let alice_join: LeanEvent = LeanEvent {
             event_id: "$alice_join".into(),
@@ -1704,10 +1662,7 @@ mod tests {
     fn test_cdo_cycle_leftover_not_dominated() {
         use rezzy::json;
 
-        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
-        let auth: HashMap<String, LeanEvent> = HashMap::new();
-
-        let alice_ban_bob: LeanEvent = super::alice_ban_bob();
+        let (mut conflicted, auth, alice_ban_bob) = super::cdo_maps_with_alice_ban();
         // $A and $B form a mutual prev/auth cycle; $B is a ban of Dave by
         // Bob (structurally matched by alice_ban_bob). Both are unordered.
         let a: LeanEvent = LeanEvent {
@@ -1761,27 +1716,9 @@ mod tests {
         use rezzy::json;
 
         let mut ts = 1000u64;
-        let create: LeanEvent = LeanEvent {
-            event_id: "$create".into(),
-            event_type: "m.room.create".into(),
-            state_key: Some(String::new()),
-            sender: "@admin:x".into(),
-            origin_server_ts: ts,
-            content: json!({ "room_version": "12.1", "creator": "@admin:x" }),
-            ..Default::default()
-        };
+        let create: LeanEvent = super::admin_create_12_1(ts);
         ts += 1;
-        let admin_join: LeanEvent = LeanEvent {
-            event_id: "$admin_join".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@admin:x".into()),
-            sender: "@admin:x".into(),
-            origin_server_ts: ts,
-            prev_events: vec!["$create".into()],
-            auth_events: vec!["$create".into()],
-            depth: 2,
-            ..Default::default()
-        };
+        let admin_join: LeanEvent = super::admin_join(ts);
         ts += 1;
         let pl: LeanEvent = LeanEvent {
             event_id: "$pl".into(),
@@ -1827,37 +1764,35 @@ mod tests {
             );
         }
 
-        let evil_ban: LeanEvent = LeanEvent {
-            event_id: "$evil_ban".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@bob:x".into()),
-            sender: "@mallory:x".into(),
-            origin_server_ts: 2000,
-            power_level: 100,
-            content: json!({ "membership": "ban" }),
-            auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
-            prev_events: vec!["$jr".into()],
-            depth: 5,
-            ..Default::default()
-        };
-        let victim_join: LeanEvent = LeanEvent {
-            event_id: "$victim_join".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@bob:x".into()),
-            sender: "@bob:x".into(),
-            origin_server_ts: 2100,
-            power_level: 0,
-            content: json!({ "membership": "join" }),
-            auth_events: vec![
-                "$create".into(),
-                "$admin_join".into(),
-                "$pl".into(),
-                "$jr".into(),
-            ],
-            prev_events: vec!["$jr".into()],
-            depth: 5,
-            ..Default::default()
-        };
+        let mut evil_ban = super::make_event(
+            "$evil_ban",
+            "m.room.member",
+            Some("@bob:x"),
+            "@mallory:x",
+            json!({ "membership": "ban" }),
+        );
+        evil_ban.origin_server_ts = 2000;
+        evil_ban.power_level = 100;
+        evil_ban.auth_events = vec!["$create".into(), "$admin_join".into(), "$pl".into()];
+        evil_ban.prev_events = vec!["$jr".into()];
+        evil_ban.depth = 5;
+
+        let mut victim_join = super::make_event(
+            "$victim_join",
+            "m.room.member",
+            Some("@bob:x"),
+            "@bob:x",
+            json!({ "membership": "join" }),
+        );
+        victim_join.origin_server_ts = 2100;
+        victim_join.auth_events = vec![
+            "$create".into(),
+            "$admin_join".into(),
+            "$pl".into(),
+            "$jr".into(),
+        ];
+        victim_join.prev_events = vec!["$jr".into()];
+        victim_join.depth = 5;
 
         let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
         conflicted.insert(evil_ban.event_id.clone(), evil_ban);
@@ -1899,10 +1834,7 @@ mod tests {
     fn test_cdo_multichunk_revisits_dropped_event() {
         use rezzy::json;
 
-        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
-        let auth: HashMap<String, LeanEvent> = HashMap::new();
-
-        let alice_ban_bob: LeanEvent = super::alice_ban_bob();
+        let (mut conflicted, auth, alice_ban_bob) = super::cdo_maps_with_alice_ban();
         conflicted.insert(alice_ban_bob.event_id.clone(), alice_ban_bob);
 
         for i in 0..513u64 {
@@ -2124,14 +2056,13 @@ mod tests {
         );
 
         // A banned user cannot join or send events
-        let join_ev: LeanEvent = LeanEvent {
-            event_id: "$join".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@bob:example.com".into()),
-            sender: "@bob:example.com".into(),
-            content: json!({ "membership": "join" }),
-            ..Default::default()
-        };
+        let join_ev: LeanEvent = super::make_event(
+            "$join",
+            "m.room.member",
+            Some("@bob:example.com"),
+            "@bob:example.com",
+            json!({ "membership": "join" }),
+        );
         assert_eq!(
             check_auth(
                 &join_ev,
@@ -2198,14 +2129,13 @@ mod tests {
             ("m.room.create".to_string(), String::new()),
             create_ev.clone(),
         );
-        let bob_joined: LeanEvent = LeanEvent {
-            event_id: "$bob_joined".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@bob:example.com".into()),
-            sender: "@bob:example.com".into(),
-            content: json!({ "membership": "join" }),
-            ..Default::default()
-        };
+        let bob_joined: LeanEvent = super::make_event(
+            "$bob_joined",
+            "m.room.member",
+            Some("@bob:example.com"),
+            "@bob:example.com",
+            json!({ "membership": "join" }),
+        );
         state3.insert(
             ("m.room.member".to_string(), "@bob:example.com".into()),
             bob_joined.clone(),
@@ -2357,11 +2287,7 @@ mod tests {
     fn test_cdo_unbounded_stride_overflow() {
         use rezzy::json;
 
-        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
-        let mut auth: HashMap<String, LeanEvent> = HashMap::new();
-
-        let root: LeanEvent = super::cdo_root(0);
-        auth.insert(root.event_id.clone(), root.clone());
+        let (mut conflicted, auth, _root) = super::cdo_maps_with_root(0);
 
         // We create 65 admin actions (e.g. bans/demotions/lockdowns)
         for i in 0..65 {
@@ -2506,14 +2432,7 @@ mod tests {
         assert!(!self_leave.is_ban_or_kick());
 
         // Kick (sender != state_key): is a kick/ban
-        let kick: LeanEvent = LeanEvent {
-            event_id: "2".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@bob:example.com".into()),
-            sender: "@alice:example.com".into(),
-            content: rezzy::json!({ "membership": "leave" }),
-            ..Default::default()
-        };
+        let kick: LeanEvent = super::kick_member("2");
         assert!(kick.is_ban_or_kick());
 
         // Ban (sender != state_key): is a kick/ban
@@ -2690,6 +2609,164 @@ fn rich_message_event(power_level: i64, soft_fail: bool) -> LeanEvent<String> {
         soft_fail,
         room_id: None,
     }
+}
+
+/// Shared first two JSONL events of the CDO apply-filter fixtures.
+const CDO_CREATE_ALICE_JOIN_JSONL: &str = r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@alice:a","room_version":"12"},"prev_events":[],"auth_events":[]}
+{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:a","sender":"@alice:a","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
+"#;
+
+/// Shared `$pl_init` + `$bob_join` JSONL lines of the demotion fixtures.
+const CDO_PL_INIT_BOB_JOIN_JSONL: &str = r#"
+{"event_id":"$pl_init","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:a":100},"ban":50,"kick":50},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
+{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":3,"origin_server_ts":1003,"content":{"membership":"join"},"prev_events":["$pl_init"],"auth_events":["$create","$alice_join","$pl_init"]}
+"#;
+
+/// Empty conflicted map + auth map already seeded with a root create event.
+fn cdo_maps_with_root(
+    origin_server_ts: u64,
+) -> (
+    HashMap<String, LeanEvent>,
+    HashMap<String, LeanEvent>,
+    LeanEvent,
+) {
+    let conflicted = HashMap::new();
+    let mut auth: HashMap<String, LeanEvent> = HashMap::new();
+    let root = cdo_root(origin_server_ts);
+    auth.insert(root.event_id.clone(), root.clone());
+    (conflicted, auth, root)
+}
+
+/// Empty conflicted/auth maps plus the shared `alice_ban_bob` fixture.
+fn cdo_maps_with_alice_ban() -> (
+    HashMap<String, LeanEvent>,
+    HashMap<String, LeanEvent>,
+    LeanEvent,
+) {
+    (HashMap::new(), HashMap::new(), alice_ban_bob())
+}
+
+/// The `X` source event used by the subgraph-coverage tests.
+fn subgraph_source_event(auth_events: Vec<String>) -> LeanEvent {
+    LeanEvent {
+        event_id: "X".into(),
+        event_type: "m.room.member".into(),
+        state_key: Some("@alice:example.com".into()),
+        auth_events,
+        ..Default::default()
+    }
+}
+
+/// `@alice` member event keyed solely by its auth edges (cycle fixtures).
+fn cycle_member_auth(id: &str, auth_events: Vec<String>) -> LeanEvent {
+    LeanEvent {
+        event_id: id.into(),
+        event_type: "m.room.member".into(),
+        state_key: Some("@alice:example.com".into()),
+        auth_events,
+        ..Default::default()
+    }
+}
+
+/// Cycle member event whose `prev_events` mirror its `auth_events`.
+fn cycle_member_with_prev(id: &str, other: &str) -> LeanEvent {
+    LeanEvent {
+        event_id: id.into(),
+        event_type: "m.room.member".into(),
+        state_key: Some("@alice:example.com".into()),
+        power_level: 100,
+        origin_server_ts: 100,
+        prev_events: vec![other.into()],
+        auth_events: vec![other.into()],
+        depth: 1,
+        ..Default::default()
+    }
+}
+
+/// A message plus a redaction targeting it, for a generic event-id type.
+fn redaction_pair_events<K: Default>(
+    target: K,
+    redaction: K,
+) -> Vec<LeanEvent<K, rezzy::JsonValue, String>> {
+    vec![
+        LeanEvent {
+            event_id: target,
+            event_type: "m.room.message".into(),
+            sender: "@alice:example.com".into(),
+            content: rezzy::json!({ "body": "hello" }),
+            ..Default::default()
+        },
+        LeanEvent {
+            event_id: redaction,
+            event_type: "m.room.redaction".into(),
+            sender: "@alice:example.com".into(),
+            content: rezzy::json!({ "redacts": "$target" }),
+            ..Default::default()
+        },
+    ]
+}
+
+fn find_event<'a>(events: &'a [LeanEvent], id: &str) -> &'a LeanEvent {
+    events.iter().find(|e| e.event_id == id).unwrap()
+}
+
+/// The shared prologue of the redaction-ordering tests: state + msg + R1 + R2.
+fn redaction_order_fixture() -> (rezzy::auth::RoomState, LeanEvent, LeanEvent, LeanEvent) {
+    let (state, msg) = admin_bob_redaction_fixture();
+    let r1 = redaction(
+        "$r1:example.com",
+        "@bob:example.com",
+        11,
+        "$msg:example.com",
+    );
+    let r2 = redaction("$r2:example.com", "@bob:example.com", 12, "$r1:example.com");
+    (state, msg, r1, r2)
+}
+
+/// Runs `apply_authorized_redactions` and returns the mutated events plus the
+/// report.
+fn authorize_redactions(
+    events: Vec<LeanEvent>,
+    state: &rezzy::auth::RoomState,
+) -> (Vec<LeanEvent>, rezzy::auth::RedactionReport<String>) {
+    let mut events = events;
+    let report =
+        rezzy::auth::apply_authorized_redactions(&mut events, state, StateResVersion::V2, "11");
+    (events, report)
+}
+
+fn assert_redaction_applied(report: &rezzy::auth::RedactionReport<String>, from: &str, to: &str) {
+    assert!(
+        report.applied.contains(&(from.into(), to.into())),
+        "expected redaction {from} -> {to} to be applied"
+    );
+}
+
+/// Collects the ids present in `conflicted_ids` from an events map.
+fn conflicted_events_from_ids(
+    conflicted_ids: &[String],
+    events_map: &HashMap<String, LeanEvent>,
+) -> HashMap<String, LeanEvent> {
+    conflicted_ids
+        .iter()
+        .filter_map(|id| events_map.get(id).map(|ev| (id.clone(), ev.clone())))
+        .collect()
+}
+
+/// Splits parsed events into a conflicted set (by id) and the auth context,
+/// then runs `apply_cdo_filter`.
+fn apply_cdo_split(events: &[LeanEvent], conflicted_ids: &[&str]) -> HashMap<String, LeanEvent> {
+    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
+    for ev in events {
+        if conflicted_ids.contains(&ev.event_id.as_str()) {
+            conflicted.insert(ev.event_id.clone(), ev.clone());
+        } else {
+            auth_context.insert(ev.event_id.clone(), ev.clone());
+        }
+    }
+    rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context)
 }
 
 /// Builds the `create` + `pl` auth context and the two `A`/`B` member events
@@ -2875,61 +2952,19 @@ fn alice_ban_bob() -> LeanEvent {
 
 fn cycle_events_ab() -> HashMap<String, LeanEvent> {
     let mut events = HashMap::new();
-    events.insert(
-        "A".into(),
-        LeanEvent {
-            event_id: "A".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@alice:example.com".into()),
-            auth_events: vec!["B".into()],
-            ..Default::default()
-        },
-    );
-    events.insert(
-        "B".into(),
-        LeanEvent {
-            event_id: "B".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@alice:example.com".into()),
-            auth_events: vec!["A".into()],
-            ..Default::default()
-        },
-    );
+    events.insert("A".into(), cycle_member_auth("A", vec!["B".into()]));
+    events.insert("B".into(), cycle_member_auth("B", vec!["A".into()]));
     events
 }
 
 fn cycle_events_cab() -> HashMap<String, LeanEvent> {
     let mut events = HashMap::new();
-    events.insert(
-        "C".into(),
-        LeanEvent {
-            event_id: "C".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@alice:example.com".into()),
-            auth_events: vec![],
-            ..Default::default()
-        },
-    );
+    events.insert("C".into(), cycle_member_auth("C", vec![]));
     events.insert(
         "A".into(),
-        LeanEvent {
-            event_id: "A".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@alice:example.com".into()),
-            auth_events: vec!["B".into(), "C".into()],
-            ..Default::default()
-        },
+        cycle_member_auth("A", vec!["B".into(), "C".into()]),
     );
-    events.insert(
-        "B".into(),
-        LeanEvent {
-            event_id: "B".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@alice:example.com".into()),
-            auth_events: vec!["A".into()],
-            ..Default::default()
-        },
-    );
+    events.insert("B".into(), cycle_member_auth("B", vec!["A".into()]));
     events
 }
 
@@ -3636,19 +3671,16 @@ fn test_redaction_application_strips_content() {
     );
 
     // m.room.power_levels preserves `users` (v12) — the anti-PL-wipeout invariant.
-    let pl: LeanEvent = LeanEvent {
-        event_id: "$pl:example.com".into(),
-        event_type: "m.room.power_levels".into(),
-        state_key: Some(String::new()),
-        sender: "@alice:example.com".into(),
-        content: rezzy::json!({
+    let pl: LeanEvent = alice_pl(
+        "$pl:example.com",
+        rezzy::json!({
             "users": { "@alice:example.com": 100 },
             "users_default": 0,
             "state_default": 50,
             "something_unrelated": true
         }),
-        ..Default::default()
-    };
+        vec![],
+    );
     let redact_pl: LeanEvent = LeanEvent {
         event_id: "$rp:example.com".into(),
         event_type: "m.room.redaction".into(),
@@ -3671,14 +3703,13 @@ fn test_redaction_application_strips_content() {
     // (redaction_preserved_keys; see also test_redaction_application_guards,
     // which shows a create is redactable and its content is preserved).
     // Exercise the rule directly via `redacted()`.
-    let create: LeanEvent = LeanEvent {
-        event_id: "$create:example.com".into(),
-        event_type: "m.room.create".into(),
-        state_key: Some(String::new()),
-        sender: "@alice:example.com".into(),
-        content: rezzy::json!({ "room_version": "12", "creator": "@alice:example.com", "m.federate": true }),
-        ..Default::default()
-    };
+    let create: LeanEvent = make_event(
+        "$create:example.com",
+        "m.room.create",
+        Some(""),
+        "@alice:example.com",
+        rezzy::json!({ "room_version": "12", "creator": "@alice:example.com", "m.federate": true }),
+    );
     let redacted_create = create.redacted("12");
     assert_eq!(
         redacted_create.content,
@@ -3710,14 +3741,13 @@ fn test_redaction_application_guards() {
 
     // Redacting m.room.create is NOT forbidden. In v11+ all of its content is
     // preserved; before v11 only `creator` survives.
-    let create: LeanEvent = LeanEvent {
-        event_id: "$create:example.com".into(),
-        event_type: "m.room.create".into(),
-        state_key: Some(String::new()),
-        sender: "@alice:example.com".into(),
-        content: rezzy::json!({ "room_version": "12", "creator": "@alice:example.com" }),
-        ..Default::default()
-    };
+    let create: LeanEvent = make_event(
+        "$create:example.com",
+        "m.room.create",
+        Some(""),
+        "@alice:example.com",
+        rezzy::json!({ "room_version": "12", "creator": "@alice:example.com" }),
+    );
     let redact_create: LeanEvent = LeanEvent {
         event_id: "$rc:example.com".into(),
         event_type: "m.room.redaction".into(),
@@ -3983,12 +4013,7 @@ fn test_apply_authorized_redactions_only_strips_authorized_targets() {
     // Authorized: Bob redacts his own message -> content is stripped.
     let mut events = vec![msg.clone(), self_redact.clone()];
     let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
-    assert!(
-        report
-            .applied
-            .contains(&("$self_redact:example.com".into(), "$msg:example.com".into())),
-        "authorized self-redaction must be reported as applied"
-    );
+    assert_redaction_applied(&report, "$self_redact:example.com", "$msg:example.com");
     let target = events
         .iter()
         .find(|e| e.event_id == "$msg:example.com")
@@ -4020,52 +4045,25 @@ fn test_apply_authorized_redactions_only_strips_authorized_targets() {
 /// None, and M is silently left unredacted.
 #[test]
 fn test_apply_authorized_redactions_redaction_of_redaction_order() {
-    use rezzy::auth::apply_authorized_redactions;
-    use rezzy::StateResVersion;
-
-    let (state, msg) = admin_bob_redaction_fixture();
-    let r1 = redaction(
-        "$r1:example.com",
-        "@bob:example.com",
-        11,
-        "$msg:example.com",
-    );
-    let r2 = redaction("$r2:example.com", "@bob:example.com", 12, "$r1:example.com");
+    let (state, msg, r1, r2) = redaction_order_fixture();
 
     // Batch order puts R2 before R1, which would break the naive in-place order.
-    let mut events = vec![msg.clone(), r2.clone(), r1.clone()];
-    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    let (events, report) = authorize_redactions(vec![msg.clone(), r2.clone(), r1.clone()], &state);
 
-    let m = events
-        .iter()
-        .find(|e| e.event_id == "$msg:example.com")
-        .unwrap();
+    let m = find_event(&events, "$msg:example.com");
     assert_eq!(
         m.content,
         rezzy::json!({}),
         "M must be redacted by R1 (R1 spent as redactor before R2 replaces it)"
     );
-    let r1_ev = events
-        .iter()
-        .find(|e| e.event_id == "$r1:example.com")
-        .unwrap();
+    let r1_ev = find_event(&events, "$r1:example.com");
     assert_eq!(
         r1_ev.content,
         rezzy::json!({ "redacts": "$msg:example.com" }),
         "R1's redacted form preserves its `redacts` key (it must still be usable)"
     );
-    assert!(
-        report
-            .applied
-            .contains(&("$r1:example.com".into(), "$msg:example.com".into())),
-        "R1's redaction of M must be reported as applied"
-    );
-    assert!(
-        report
-            .applied
-            .contains(&("$r2:example.com".into(), "$r1:example.com".into())),
-        "R2's redaction of R1 must be reported as applied"
-    );
+    assert_redaction_applied(&report, "$r1:example.com", "$msg:example.com");
+    assert_redaction_applied(&report, "$r2:example.com", "$r1:example.com");
 }
 
 /// A longer redaction-of-redaction-of-redaction chain (R3 redacts R2 redacts
@@ -4074,36 +4072,22 @@ fn test_apply_authorized_redactions_redaction_of_redaction_order() {
 /// case above).
 #[test]
 fn test_apply_authorized_redactions_long_chain_reverse_order() {
-    use rezzy::auth::apply_authorized_redactions;
-    use rezzy::StateResVersion;
-
-    let (state, msg) = admin_bob_redaction_fixture();
-    let r1 = redaction(
-        "$r1:example.com",
-        "@bob:example.com",
-        11,
-        "$msg:example.com",
-    );
-    let r2 = redaction("$r2:example.com", "@bob:example.com", 12, "$r1:example.com");
+    let (state, msg, r1, r2) = redaction_order_fixture();
     let r3 = redaction("$r3:example.com", "@bob:example.com", 13, "$r2:example.com");
 
     // Fully reversed batch order: R3, R2, R1, M.
-    let mut events = vec![r3.clone(), r2.clone(), r1.clone(), msg.clone()];
-    let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
+    let (events, report) = authorize_redactions(
+        vec![r3.clone(), r2.clone(), r1.clone(), msg.clone()],
+        &state,
+    );
 
-    let m = events
-        .iter()
-        .find(|e| e.event_id == "$msg:example.com")
-        .unwrap();
+    let m = find_event(&events, "$msg:example.com");
     assert_eq!(
         m.content,
         rezzy::json!({}),
         "M must be redacted by R1 despite the fully reversed batch order"
     );
-    let r1_ev = events
-        .iter()
-        .find(|e| e.event_id == "$r1:example.com")
-        .unwrap();
+    let r1_ev = find_event(&events, "$r1:example.com");
     assert_eq!(
         r1_ev.content,
         rezzy::json!({ "redacts": "$msg:example.com" }),
@@ -4148,10 +4132,7 @@ fn test_apply_authorized_redactions_redactor_with_power_level() {
         )),
         "a non-sender redactor with PL >= redact must be authorized: {report:?}"
     );
-    let m = events
-        .iter()
-        .find(|e| e.event_id == "$msg:example.com")
-        .unwrap();
+    let m = find_event(&events, "$msg:example.com");
     assert_eq!(m.content, rezzy::json!({}));
 }
 
@@ -4171,12 +4152,10 @@ fn test_apply_authorized_redactions_event_time_vs_final_state_diverge() {
     use rezzy::StateResVersion;
 
     // Event-time state: mallory (different domain from bob) holds redact-level PL.
-    let pl_event_time: LeanEvent = LeanEvent {
-        event_id: "$pl1:example.com".into(),
-        event_type: "m.room.power_levels".into(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".into(),
-        content: rezzy::json!({
+    let pl_event_time: LeanEvent = power_levels(
+        "$pl1:example.com",
+        "@admin:example.com",
+        rezzy::json!({
             "users": {
                 "@admin:example.com": 100,
                 "@mallory:other.example": 50,
@@ -4184,8 +4163,8 @@ fn test_apply_authorized_redactions_event_time_vs_final_state_diverge() {
             },
             "redact": 50
         }),
-        ..Default::default()
-    };
+        vec![],
+    );
     let mut state_at_redaction = RoomState::new();
     state_at_redaction.insert(
         ("m.room.power_levels".to_string(), String::new()),
@@ -4193,12 +4172,10 @@ fn test_apply_authorized_redactions_event_time_vs_final_state_diverge() {
     );
 
     // Final state: mallory has since been demoted below the redact level.
-    let pl_final: LeanEvent = LeanEvent {
-        event_id: "$pl2:example.com".into(),
-        event_type: "m.room.power_levels".into(),
-        state_key: Some(String::new()),
-        sender: "@admin:example.com".into(),
-        content: rezzy::json!({
+    let pl_final: LeanEvent = power_levels(
+        "$pl2:example.com",
+        "@admin:example.com",
+        rezzy::json!({
             "users": {
                 "@admin:example.com": 100,
                 "@mallory:other.example": 0,
@@ -4206,8 +4183,8 @@ fn test_apply_authorized_redactions_event_time_vs_final_state_diverge() {
             },
             "redact": 50
         }),
-        ..Default::default()
-    };
+        vec![],
+    );
     let mut final_state = RoomState::new();
     final_state.insert(("m.room.power_levels".to_string(), String::new()), pl_final);
 
@@ -4391,10 +4368,7 @@ fn test_apply_authorized_redactions_ignores_redaction_without_redacts() {
             && report.target_not_in_batch.is_empty(),
         "a redaction without redacts must be silently skipped: {report:?}"
     );
-    let m = events
-        .iter()
-        .find(|e| e.event_id == "$msg:example.com")
-        .unwrap();
+    let m = find_event(&events, "$msg:example.com");
     assert_eq!(m.content, rezzy::json!({ "body": "secret" }));
 }
 
@@ -4443,12 +4417,7 @@ fn test_apply_authorized_redactions_report() {
     ];
     let report = apply_authorized_redactions(&mut events, &state, StateResVersion::V2, "11");
 
-    assert!(
-        report
-            .applied
-            .contains(&("$self_redact:example.com".into(), "$msg:example.com".into())),
-        "authorized self-redaction must be reported as applied"
-    );
+    assert_redaction_applied(&report, "$self_redact:example.com", "$msg:example.com");
     assert!(
         report.skipped_unauthorized.contains(&(
             "$mallory_redact:example.com".into(),
@@ -4498,22 +4467,7 @@ fn test_apply_authorized_redactions_different_id_types() {
     use std::sync::Arc;
 
     // Test with Arc<str>
-    let mut arc_events = vec![
-        LeanEvent::<Arc<str>, rezzy::JsonValue, String> {
-            event_id: Arc::from("$target"),
-            event_type: "m.room.message".into(),
-            sender: "@alice:example.com".into(),
-            content: rezzy::json!({ "body": "hello" }),
-            ..Default::default()
-        },
-        LeanEvent::<Arc<str>, rezzy::JsonValue, String> {
-            event_id: Arc::from("$redaction"),
-            event_type: "m.room.redaction".into(),
-            sender: "@alice:example.com".into(),
-            content: rezzy::json!({ "redacts": "$target" }),
-            ..Default::default()
-        },
-    ];
+    let mut arc_events = redaction_pair_events(Arc::from("$target"), Arc::from("$redaction"));
     let arc_state = RoomState::<Arc<str>, rezzy::JsonValue, String>::new();
     let report =
         apply_authorized_redactions(&mut arc_events, &arc_state, StateResVersion::V2, "11");
@@ -4523,22 +4477,7 @@ fn test_apply_authorized_redactions_different_id_types() {
     );
 
     // Test with Box<str>
-    let mut box_events = vec![
-        LeanEvent::<Box<str>, rezzy::JsonValue, String> {
-            event_id: Box::from("$target"),
-            event_type: "m.room.message".into(),
-            sender: "@alice:example.com".into(),
-            content: rezzy::json!({ "body": "hello" }),
-            ..Default::default()
-        },
-        LeanEvent::<Box<str>, rezzy::JsonValue, String> {
-            event_id: Box::from("$redaction"),
-            event_type: "m.room.redaction".into(),
-            sender: "@alice:example.com".into(),
-            content: rezzy::json!({ "redacts": "$target" }),
-            ..Default::default()
-        },
-    ];
+    let mut box_events = redaction_pair_events(Box::from("$target"), Box::from("$redaction"));
     let box_state = RoomState::<Box<str>, rezzy::JsonValue, String>::new();
     let report =
         apply_authorized_redactions(&mut box_events, &box_state, StateResVersion::V2, "11");
@@ -4952,32 +4891,16 @@ fn test_cdo_is_ancestor_disconnected_branch() {
 /// encounter it in `dropped_ids` and skip it immediately.
 #[test]
 fn test_cdo_apply_filter_cascading_drops() {
-    let events = utils::parse_jsonl_events(
-        r#"
-{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@alice:a","room_version":"12"},"prev_events":[],"auth_events":[]}
-{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:a","sender":"@alice:a","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
-{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:a":100},"ban":50,"kick":50},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
+    let events = utils::parse_jsonl_events(&format!(
+        "{CDO_CREATE_ALICE_JOIN_JSONL}{}",
+        r#"{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:a":100},"ban":50,"kick":50},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
 {"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":3,"origin_server_ts":1003,"content":{"membership":"join"},"prev_events":["$pl"],"auth_events":["$create","$pl"]}
 {"event_id":"$ban_bob","type":"m.room.member","state_key":"@bob:b","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"membership":"ban"},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl"],"power_level":100}
 {"event_id":"$bob_leave","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":4,"origin_server_ts":2001,"content":{"membership":"leave"},"prev_events":["$bob_join"],"auth_events":["$create","$bob_join","$pl"],"power_level":0}
 {"event_id":"$bob_topic","type":"m.room.topic","state_key":"","sender":"@bob:b","depth":4,"origin_server_ts":2002,"content":{"topic":"bad topic"},"prev_events":["$bob_join"],"auth_events":["$create","$bob_join","$pl"],"power_level":0}
-"#,
-    );
-    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
-    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
-
-    for ev in &events {
-        match ev.event_id.as_str() {
-            "$ban_bob" | "$bob_leave" | "$bob_topic" => {
-                conflicted.insert(ev.event_id.clone(), ev.clone());
-            }
-            _ => {
-                auth_context.insert(ev.event_id.clone(), ev.clone());
-            }
-        }
-    }
-
-    let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
+"#
+    ));
+    let safe = apply_cdo_split(&events, &["$ban_bob", "$bob_leave", "$bob_topic"]);
 
     // Alice's ban (PL 100) must survive — it's the highest-priority admin action.
     assert!(safe.contains_key("$ban_bob"), "admin ban must survive CDO");
@@ -5014,32 +4937,17 @@ fn test_cdo_apply_filter_cascading_drops() {
 /// `is_demotion()` domination path via `sender_has_pre_demotion_pl()`.
 #[test]
 fn test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action() {
-    let events = utils::parse_jsonl_events(
-        r#"
-{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@alice:a","room_version":"12"},"prev_events":[],"auth_events":[]}
-{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:a","sender":"@alice:a","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
-{"event_id":"$pl_init","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:a":100},"ban":50,"kick":50},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
-{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":3,"origin_server_ts":1003,"content":{"membership":"join"},"prev_events":["$pl_init"],"auth_events":["$create","$alice_join","$pl_init"]}
-{"event_id":"$pl_demote_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100,"@bob:b":0},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl_init"]}
+    let events = utils::parse_jsonl_events(&format!(
+        "{CDO_CREATE_ALICE_JOIN_JSONL}{CDO_PL_INIT_BOB_JOIN_JSONL}{}",
+        r#"{"event_id":"$pl_demote_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100,"@bob:b":0},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl_init"]}
 {"event_id":"$pl_grant_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100,"@bob:b":50},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$bob_join","$pl_init"]}
 {"event_id":"$bob_bans_charlie","type":"m.room.member","state_key":"@charlie:c","sender":"@bob:b","depth":5,"origin_server_ts":2001,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$alice_join","$bob_join","$pl_grant_bob"]}
-"#,
+"#
+    ));
+    let safe = apply_cdo_split(
+        &events,
+        &["$pl_demote_bob", "$pl_grant_bob", "$bob_bans_charlie"],
     );
-    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
-    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
-
-    for ev in &events {
-        match ev.event_id.as_str() {
-            "$pl_demote_bob" | "$pl_grant_bob" | "$bob_bans_charlie" => {
-                conflicted.insert(ev.event_id.clone(), ev.clone());
-            }
-            _ => {
-                auth_context.insert(ev.event_id.clone(), ev.clone());
-            }
-        }
-    }
-
-    let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
 
     assert!(
         safe.contains_key("$pl_demote_bob"),
@@ -5069,32 +4977,17 @@ fn test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action() {
 /// so Bob's effective pre-demotion PL is 0 rather than 50.
 #[test]
 fn test_cdo_demotion_dominates_absent_sender() {
-    let events = utils::parse_jsonl_events(
-        r#"
-{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:a","depth":0,"origin_server_ts":1000,"content":{"creator":"@alice:a","room_version":"12"},"prev_events":[],"auth_events":[]}
-{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:a","sender":"@alice:a","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
-{"event_id":"$pl_init","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:a":100},"ban":50,"kick":50},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
-{"event_id":"$bob_join","type":"m.room.member","state_key":"@bob:b","sender":"@bob:b","depth":3,"origin_server_ts":1003,"content":{"membership":"join"},"prev_events":["$pl_init"],"auth_events":["$create","$alice_join","$pl_init"]}
-{"event_id":"$pl_demote_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100,"@bob:b":0},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl_init"]}
+    let events = utils::parse_jsonl_events(&format!(
+        "{CDO_CREATE_ALICE_JOIN_JSONL}{CDO_PL_INIT_BOB_JOIN_JSONL}{}",
+        r#"{"event_id":"$pl_demote_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100,"@bob:b":0},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$pl_init"]}
 {"event_id":"$pl_grant_bob","type":"m.room.power_levels","state_key":"","sender":"@alice:a","depth":4,"origin_server_ts":2000,"content":{"users":{"@alice:a":100},"ban":50,"kick":50},"prev_events":["$bob_join"],"auth_events":["$create","$alice_join","$bob_join","$pl_init"]}
 {"event_id":"$bob_bans_charlie","type":"m.room.member","state_key":"@charlie:c","sender":"@bob:b","depth":5,"origin_server_ts":2001,"content":{"membership":"ban"},"prev_events":["$pl_grant_bob"],"auth_events":["$create","$bob_join","$pl_grant_bob"]}
-"#,
+"#
+    ));
+    let safe = apply_cdo_split(
+        &events,
+        &["$pl_demote_bob", "$pl_grant_bob", "$bob_bans_charlie"],
     );
-    let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
-    let mut auth_context: HashMap<String, LeanEvent> = HashMap::new();
-
-    for ev in &events {
-        match ev.event_id.as_str() {
-            "$pl_demote_bob" | "$pl_grant_bob" | "$bob_bans_charlie" => {
-                conflicted.insert(ev.event_id.clone(), ev.clone());
-            }
-            _ => {
-                auth_context.insert(ev.event_id.clone(), ev.clone());
-            }
-        }
-    }
-
-    let safe = rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context);
 
     // Bob is absent from $pl_grant_bob.users (no users_default), so his
     // effective pre-demotion PL is 0 -- the demotion legitimately dominates
@@ -6568,28 +6461,7 @@ fn test_event_like_default_rejection_flags() {
         }
     }
 
-    impl EventLike for MinimalEventLike {
-        type Content = rezzy::JsonValue;
-
-        fn event_type(&self) -> std::borrow::Cow<'_, str> {
-            std::borrow::Cow::Borrowed("m.room.message")
-        }
-        fn sender(&self) -> &'static str {
-            "@alice:x"
-        }
-        fn state_key(&self) -> Option<&str> {
-            None
-        }
-        fn power_level(&self) -> i64 {
-            0
-        }
-        fn origin_server_ts(&self) -> u64 {
-            0
-        }
-        fn content(&self) -> &rezzy::JsonValue {
-            &self.content
-        }
-    }
+    impl_event_like_stub!(MinimalEventLike, "@alice:x", rezzy::JsonValue);
 
     let event = MinimalEventLike {
         id: "$default-flags".into(),
@@ -7161,13 +7033,7 @@ fn test_msc4297_problem_b_resolve_state_maps_parity() {
     // Path B: manual partition + subgraph + resolve_iterative_sort (old binary path)
     let (unconflicted, conflicted_ids) =
         rezzy::partition_state_maps(state_maps.iter().map(|m| m.iter()), state_maps.len());
-    let mut conflicted_events: std::collections::HashMap<String, rezzy::LeanEvent> =
-        std::collections::HashMap::new();
-    for id in &conflicted_ids {
-        if let Some(ev) = events_map.get(id) {
-            conflicted_events.insert(id.clone(), ev.clone());
-        }
-    }
+    let mut conflicted_events = conflicted_events_from_ids(&conflicted_ids, &events_map);
     // Explicitly add subgraph events (what the old binary path did)
     let subgraph = rezzy::compute_v2_1_conflicted_subgraph(&events_map, &conflicted_ids);
     for (id, ev) in subgraph {
@@ -7513,13 +7379,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
         fork_state_maps.iter().map(|m| m.iter()),
         fork_state_maps.len(),
     );
-    let mut conflicted_events: std::collections::HashMap<String, rezzy::LeanEvent> =
-        std::collections::HashMap::new();
-    for id in &conflicted_ids {
-        if let Some(ev) = events_map.get(id) {
-            conflicted_events.insert(id.clone(), ev.clone());
-        }
-    }
+    let mut conflicted_events = conflicted_events_from_ids(&conflicted_ids, &events_map);
     let subgraph = rezzy::compute_v2_1_conflicted_subgraph(&events_map, &conflicted_ids);
     let subgraph_size = subgraph.len();
     for (id, ev) in subgraph {

@@ -104,6 +104,75 @@ fn time_index_query<T>(iterations: u32, mut query: impl FnMut() -> T) -> (Durati
     (start.elapsed(), out)
 }
 
+/// Builds a branchy DAG, its reachability index (via `build_index`), and the
+/// prebuilt BFS adjacency, timing the fixture and index builds.
+#[allow(clippy::type_complexity)]
+fn build_branchy_reachability<I>(
+    node_count: usize,
+    seed_count: usize,
+    build_index: impl FnOnce(&HashMap<String, LeanEvent<String>>) -> I,
+) -> (
+    Duration,
+    BranchyDag,
+    Duration,
+    I,
+    Duration,
+    HashMap<String, Vec<String>>,
+    u32,
+) {
+    let (fixture_elapsed, branchy) = timed(|| BranchyDag::new(node_count, seed_count));
+    let (index_build_elapsed, index) = timed(|| build_index(&branchy.graph));
+    let (bfs_build_elapsed, children) = timed(|| branchy.children_by_parent());
+    let iterations = if node_count <= 50_000 { 10 } else { 3 };
+    (
+        fixture_elapsed,
+        branchy,
+        index_build_elapsed,
+        index,
+        bfs_build_elapsed,
+        children,
+        iterations,
+    )
+}
+
+/// Times the BFS baseline query `iterations` times.
+fn timed_bfs_query(
+    children: &HashMap<String, Vec<String>>,
+    seeds: &[String],
+    candidates: &[String],
+    iterations: u32,
+) -> (Duration, Vec<usize>) {
+    time_index_query(iterations, || {
+        branchy_forward_reachable_bfs(children, seeds, candidates)
+    })
+}
+
+/// Asserts the index and BFS query paths agree and packs the phase timings
+/// into the tuple shape the reachability suites report.
+#[allow(clippy::too_many_arguments)]
+fn pack_reachability_stats(
+    fixture_elapsed: Duration,
+    index_build_elapsed: Duration,
+    bfs_build_elapsed: Duration,
+    index_query_elapsed: Duration,
+    bfs_query_elapsed: Duration,
+    iterations: u32,
+    index_hits: &[usize],
+    bfs_hits: &[usize],
+) -> (Duration, Duration, Duration, Duration, Duration, u32, usize) {
+    assert_eq!(index_hits, bfs_hits);
+    black_box((index_hits, bfs_hits));
+    (
+        fixture_elapsed,
+        index_build_elapsed,
+        bfs_build_elapsed,
+        index_query_elapsed,
+        bfs_query_elapsed,
+        iterations,
+        index_hits.len(),
+    )
+}
+
 fn pick_branch_offset(generator: &mut Xorshift128) -> usize {
     usize::from(u8::try_from(generator.next() & 127).expect("benchmark offset fits u8"))
 }
@@ -216,7 +285,13 @@ impl DagFixture {
                     auth_events.push(parent);
                 }
 
-                insert_graph_event(&mut graph, &mut ordered_ids, event_id.clone(), auth_events, idx);
+                insert_graph_event(
+                    &mut graph,
+                    &mut ordered_ids,
+                    event_id.clone(),
+                    auth_events,
+                    idx,
+                );
                 chains[chain_idx].push(idx);
                 tails[chain_idx] = Some(event_id);
             }
@@ -257,7 +332,13 @@ impl DagFixture {
                     }
                 }
 
-                insert_graph_event(&mut graph, &mut ordered_ids, event_id.clone(), auth_events, idx);
+                insert_graph_event(
+                    &mut graph,
+                    &mut ordered_ids,
+                    event_id.clone(),
+                    auth_events,
+                    idx,
+                );
                 current_layer.push(idx);
             }
             previous_layer_ids = current_layer
@@ -388,11 +469,7 @@ fn benchmark_low_memory_case(
 }
 
 /// Seeds a BFS frontier from `seeds`, visiting each id once.
-fn seed_reachable(
-    seeds: &[String],
-    reachable: &mut HashSet<String>,
-    queue: &mut VecDeque<String>,
-) {
+fn seed_reachable(seeds: &[String], reachable: &mut HashSet<String>, queue: &mut VecDeque<String>) {
     for seed in seeds {
         if reachable.insert(seed.clone()) {
             queue.push_back(seed.clone());
@@ -592,31 +669,34 @@ fn benchmark_branchy_forward_reachability(
     node_count: usize,
     seed_count: usize,
 ) -> (Duration, Duration, Duration, Duration, Duration, u32, usize) {
-    let (fixture_elapsed, branchy) = timed(|| BranchyDag::new(node_count, seed_count));
+    let (
+        fixture_elapsed,
+        branchy,
+        index_build_elapsed,
+        index,
+        bfs_build_elapsed,
+        children,
+        iterations,
+    ) = build_branchy_reachability(node_count, seed_count, |graph| {
+        ForwardReachabilityIndex::build(graph)
+    });
 
-    let (index_build_elapsed, index) = timed(|| ForwardReachabilityIndex::build(&branchy.graph));
-
-    let (bfs_build_elapsed, children) = timed(|| branchy.children_by_parent());
-
-    let iterations = if node_count <= 50_000 { 10 } else { 3 };
     let (index_query_elapsed, index_hits) = time_index_query(iterations, || {
         index.filter_reachable(branchy.seeds.iter(), branchy.candidates.iter())
     });
 
-    let (bfs_query_elapsed, bfs_hits) = time_index_query(iterations, || {
-        branchy_forward_reachable_bfs(&children, &branchy.seeds, &branchy.candidates)
-    });
+    let (bfs_query_elapsed, bfs_hits) =
+        timed_bfs_query(&children, &branchy.seeds, &branchy.candidates, iterations);
 
-    assert_eq!(index_hits, bfs_hits);
-    black_box((&index_hits, &bfs_hits));
-    (
+    pack_reachability_stats(
         fixture_elapsed,
         index_build_elapsed,
         bfs_build_elapsed,
         index_query_elapsed,
         bfs_query_elapsed,
         iterations,
-        index_hits.len(),
+        &index_hits,
+        &bfs_hits,
     )
 }
 
@@ -633,22 +713,43 @@ fn benchmark_branchy_range_prefilter_reachability(
     usize,
     TraversalMode,
 ) {
-    let (fixture_elapsed, branchy) = timed(|| BranchyDag::new(node_count, seed_count));
+    let (
+        fixture_elapsed,
+        branchy,
+        index_build_elapsed,
+        index,
+        bfs_build_elapsed,
+        children,
+        iterations,
+    ) = build_branchy_reachability(node_count, seed_count, |graph| {
+        RangePrefilterReachability::build(graph)
+    });
 
-    let (index_build_elapsed, index) = timed(|| RangePrefilterReachability::build(&branchy.graph));
-    let (bfs_build_elapsed, children) = timed(|| branchy.children_by_parent());
-
-    let iterations = if node_count <= 50_000 { 10 } else { 3 };
     let (index_query_elapsed, (index_hits, mode)) = time_index_query(iterations, || {
         index.filter_reachable_with_mode(branchy.seeds.iter(), branchy.candidates.iter())
     });
 
-    let (bfs_query_elapsed, bfs_hits) = time_index_query(iterations, || {
-        branchy_forward_reachable_bfs(&children, &branchy.seeds, &branchy.candidates)
-    });
+    let (bfs_query_elapsed, bfs_hits) =
+        timed_bfs_query(&children, &branchy.seeds, &branchy.candidates, iterations);
 
-    assert_eq!(index_hits, bfs_hits);
-    black_box((&index_hits, &bfs_hits));
+    let (
+        fixture_elapsed,
+        index_build_elapsed,
+        bfs_build_elapsed,
+        index_query_elapsed,
+        bfs_query_elapsed,
+        iterations,
+        hits,
+    ) = pack_reachability_stats(
+        fixture_elapsed,
+        index_build_elapsed,
+        bfs_build_elapsed,
+        index_query_elapsed,
+        bfs_query_elapsed,
+        iterations,
+        &index_hits,
+        &bfs_hits,
+    );
     (
         fixture_elapsed,
         index_build_elapsed,
@@ -656,7 +757,7 @@ fn benchmark_branchy_range_prefilter_reachability(
         index_query_elapsed,
         bfs_query_elapsed,
         iterations,
-        index_hits.len(),
+        hits,
         mode,
     )
 }
@@ -743,8 +844,9 @@ fn benchmark_branchy_forward_reachable_ids(
             .len()
     });
 
-    let (direct_elapsed, direct_hits) =
-        time_index_query(iterations, || index.forward_reachable_ids(branchy.seeds.iter()).count());
+    let (direct_elapsed, direct_hits) = time_index_query(iterations, || {
+        index.forward_reachable_ids(branchy.seeds.iter()).count()
+    });
 
     assert_eq!(filter_hits, direct_hits);
     black_box((filter_hits, direct_hits));
@@ -794,7 +896,13 @@ fn run_topology_query_matrix() {
             let (setup_elapsed, index_elapsed, bfs_elapsed, hits, mode) =
                 benchmark_low_memory_case(&interleaved, &case);
             report_low_memory_case(
-                node_count, &case, setup_elapsed, index_elapsed, bfs_elapsed, hits, mode,
+                node_count,
+                &case,
+                setup_elapsed,
+                index_elapsed,
+                bfs_elapsed,
+                hits,
+                mode,
             );
         }
 
@@ -831,7 +939,13 @@ fn run_topology_query_matrix() {
             let (setup_elapsed, index_elapsed, bfs_elapsed, hits, mode) =
                 benchmark_low_memory_case(&layered, &case);
             report_low_memory_case(
-                node_count, &case, setup_elapsed, index_elapsed, bfs_elapsed, hits, mode,
+                node_count,
+                &case,
+                setup_elapsed,
+                index_elapsed,
+                bfs_elapsed,
+                hits,
+                mode,
             );
         }
     }

@@ -13,6 +13,21 @@ use crate::common::{
     build_remote_digest, empty_decode_batch, measure, Xorshift128Hash as Xorshift128,
 };
 
+/// `(setup, algo, rounds, requests_emitted, resolved_roots)` timing tuple
+/// shared by the bucket-exchange benchmarks.
+type ExchangeStats = (Duration, Duration, usize, usize, usize);
+
+/// Builds a `h64`-populated pool fixture and times the setup, the full
+/// `build_pool::<true>` shape the bucket-exchange benchmarks both start from.
+fn build_full_pool(
+    pool: &HashPool,
+    base_count: usize,
+    local_extra_count: usize,
+    remote_extra_count: usize,
+) -> (ResidentKernel, ResidentKernel, Vec<u64>, Vec<u64>, Duration) {
+    build_pool::<true>(pool, base_count, local_extra_count, remote_extra_count)
+}
+
 fn hash(index: u64) -> ElementHash {
     let h64 = index.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(17) | 1;
     ElementHash {
@@ -198,6 +213,34 @@ fn build_pool<const FILL_H64: bool>(
     (local, remote, local_h64, remote_h64, setup_elapsed)
 }
 
+/// Decodes one round's remote/local sketch pairs into a [`BucketDecodeBatch`],
+/// recording over-budget buckets as failures.
+fn decode_round_batch(
+    remote_sketches: Vec<SyndromeSketch>,
+    local_sketches: Vec<SyndromeSketch>,
+    current_requests: &[BucketRequest],
+) -> BucketDecodeBatch {
+    let mut batch = empty_decode_batch(current_requests.len());
+    for ((mut remote_sketch, local_sketch), request) in remote_sketches
+        .into_iter()
+        .zip(local_sketches)
+        .zip(current_requests.iter())
+    {
+        remote_sketch.xor(&local_sketch).unwrap();
+        match remote_sketch.decode_elements(request.capacity) {
+            Ok(roots) => {
+                batch.successful_buckets.push(BucketDecodeSuccess {
+                    depth: request.depth,
+                    prefix: request.prefix,
+                    roots,
+                });
+            }
+            Err(_) => batch.failed_buckets.push((request.depth, request.prefix)),
+        }
+    }
+    batch
+}
+
 /// Drives a [`BucketExchange`] to completion, returning the elapsed time and
 /// the round/request/root counters.
 fn run_exchange_loop(
@@ -216,25 +259,7 @@ fn run_exchange_loop(
         rounds = rounds.saturating_add(1);
         let remote_sketches = build_bucket_sketches(remote_h64, &current_requests).unwrap();
         let local_sketches = build_bucket_sketches(local_h64, &current_requests).unwrap();
-        let mut batch = empty_decode_batch(current_requests.len());
-
-        for ((mut remote_sketch, local_sketch), request) in remote_sketches
-            .into_iter()
-            .zip(local_sketches)
-            .zip(current_requests.iter())
-        {
-            remote_sketch.xor(&local_sketch).unwrap();
-            match remote_sketch.decode_elements(request.capacity) {
-                Ok(roots) => {
-                    batch.successful_buckets.push(BucketDecodeSuccess {
-                        depth: request.depth,
-                        prefix: request.prefix,
-                        roots,
-                    });
-                }
-                Err(_) => batch.failed_buckets.push((request.depth, request.prefix)),
-            }
-        }
+        let batch = decode_round_batch(remote_sketches, local_sketches, &current_requests);
 
         match exchange.advance(batch, &current_requests, estimated_delta) {
             ClientAction::BucketSketches {
@@ -284,9 +309,9 @@ fn benchmark_bucket_exchange_from_pool(
     base_count: usize,
     local_extra_count: usize,
     remote_extra_count: usize,
-) -> (Duration, Duration, usize, usize, usize) {
+) -> ExchangeStats {
     let (local, remote, local_h64, remote_h64, setup_elapsed) =
-        build_pool::<true>(pool, base_count, local_extra_count, remote_extra_count);
+        build_full_pool(pool, base_count, local_extra_count, remote_extra_count);
     let remote_digest = build_remote_digest(&remote);
     let estimated_delta = Some(
         estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK)
@@ -335,9 +360,9 @@ fn benchmark_presplit_antichain_exchange_from_pool(
     base_count: usize,
     local_extra_count: usize,
     remote_extra_count: usize,
-) -> (Duration, Duration, usize, usize, usize) {
+) -> ExchangeStats {
     let (local, remote, local_h64, remote_h64, setup_elapsed) =
-        build_pool::<true>(pool, base_count, local_extra_count, remote_extra_count);
+        build_full_pool(pool, base_count, local_extra_count, remote_extra_count);
     let estimated_delta = usize::try_from(
         estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK)
             .map_or(500, |est| est.delta.max(1)),

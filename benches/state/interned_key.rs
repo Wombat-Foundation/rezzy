@@ -367,6 +367,21 @@ fn measure(label: &str, reps: usize, f: impl Fn()) -> Duration {
 // answering the same question. Run `cargo bench --bench rezzy -- interned_lookup`
 // for that comparison.
 
+/// Re-keys a resolved state map by `(event_type, state_key)` strings, so maps
+/// with different key representations can be compared.
+fn to_string_keyed<T, K>(
+    state: impl IntoIterator<Item = ((T, K), String)>,
+) -> std::collections::BTreeMap<(String, String), String>
+where
+    T: ToString,
+    K: AsRef<str>,
+{
+    state
+        .into_iter()
+        .map(|((et, k), id)| ((et.to_string(), k.as_ref().to_string()), id))
+        .collect()
+}
+
 /// Asserts the interned-`u32` path resolves to the same state as the
 /// `String`-keyed path, keyed back to strings.
 fn assert_u32_matches_string(
@@ -389,14 +404,8 @@ fn assert_u32_matches_string(
         &InternId::default(),
     )
     .unwrap_or_else(|| panic!("{context} (u32)"));
-    let str_keyed: std::collections::BTreeMap<(String, String), String> = str_state
-        .into_iter()
-        .map(|((et, k), id)| ((et.to_string(), k), id))
-        .collect();
-    let u32_keyed: std::collections::BTreeMap<(String, String), String> = u32_state
-        .into_iter()
-        .map(|((et, k), id)| ((et.to_string(), k.as_ref().to_string()), id))
-        .collect();
+    let str_keyed = to_string_keyed(str_state);
+    let u32_keyed = to_string_keyed(u32_state);
     assert_eq!(
         u32_keyed, str_keyed,
         "u32-interned resolution must match String resolution"

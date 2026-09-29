@@ -239,13 +239,55 @@ fn v10_admin_joined_state() -> RoomState {
     state
 }
 
-/// Parses a single-event JSONL fixture and auth-checks it.
-fn check_event_jsonl(
-    jsonl: &str,
-    state: &RoomState,
-    version: rezzy::StateResVersion,
-) -> Result<(), AuthError> {
-    let events = utils::parse_jsonl_events(jsonl);
+/// `@admin:x.com` create + two joins (alice/admin) + a PL event whose
+/// `content` is supplied by the caller.
+fn alice_pl_jsonl_state(pl_content: &str) -> RoomState {
+    utils_extra::parse_jsonl_state(&format!(
+        r#"
+{{"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@admin:x.com", "content": {{"creator": "@admin:x.com"}}}}
+{{"event_id": "$j1", "type": "m.room.member", "state_key": "@alice:x.com", "sender": "@alice:x.com", "content": {{"membership": "join"}}}}
+{{"event_id": "$j2", "type": "m.room.member", "state_key": "@admin:x.com", "sender": "@admin:x.com", "content": {{"membership": "join"}}}}
+{{"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x.com", "content": {pl_content}}}
+"#,
+    ))
+}
+
+/// Asserts the V10+ (`V2`/`V2_1`) `m.room.power_levels` `users`-shape
+/// rejection for the supplied raw `users` value.
+fn assert_pl_users_rejected(users: &rezzy::JsonValue) {
+    for (version_str, state_res) in [("10", StateResVersion::V2), ("12", StateResVersion::V2_1)] {
+        let mut state = RoomState::new();
+        insert_create(
+            &mut state,
+            "$c",
+            "@admin:x.com",
+            json!({"room_version": version_str}),
+        );
+        let pl = make_event(
+            "$pl",
+            rezzy::basespec::event_types::M_ROOM_POWER_LEVELS,
+            Some(""),
+            "@admin:x.com",
+            json!({ "users": users.clone() }),
+        );
+        assert!(
+            matches!(
+                check_auth(&pl, &state, state_res, None),
+                Err(AuthError::InvalidSyntax(_))
+            ),
+            "V10+ (version {version_str}) power levels with invalid users must be rejected"
+        );
+    }
+}
+
+/// Auth-checks a `$pl0` event whose `ban` is a boolean (Rule 10.1 non-integer
+/// scalar).
+fn check_ban_true_pl(state: &RoomState, version: StateResVersion) -> Result<(), AuthError> {
+    let events = utils::parse_jsonl_events(
+        r#"
+{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"ban": true}}
+"#,
+    );
     check_auth(&events[0], state, version, None)
 }
 
@@ -275,7 +317,7 @@ fn rule_2_2_base() -> (RoomState, rezzy::HashMap<String, LeanEvent>) {
 }
 
 /// Asserts the Rule 2.2 `IncompleteAuthEvents` rejection for `@bob:example.com`.
-fn assert_incomplete_bob_member(res: Result<(), AuthError>) {
+fn assert_incomplete_bob_member(res: &Result<(), AuthError>) {
     assert!(
         matches!(
             res,
@@ -790,11 +832,7 @@ fn test_iterative_auth_chain() {
     // Rule 2.2: auth_events must cite the sender's own current membership
     // once it exists in state (added by $join).
     msg.auth_events = vec!["$join".into()];
-    let (accepted, rejected) = check_auth_chain(
-        &[create, join, msg],
-        &RoomState::new(),
-        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
-    );
+    let (accepted, rejected) = check_chain(&[create, join, msg]);
     assert_eq!(accepted, vec!["$create", "$join", "$msg"]);
     assert_eq!(
         rejected,
@@ -850,17 +888,7 @@ fn test_iterative_auth_chain_rejects_foreign_room_auth_event() {
         vec!["$create", "$foreign_create"],
         "both independent create events pass their own auth check"
     );
-    assert_eq!(rejected.len(), 1);
-    assert_eq!(rejected[0].0, "$msg");
-    assert!(
-        matches!(
-            &rejected[0].1,
-            rezzy::auth::AuthError::ForeignRoomEvent { event_id, auth_event_id, .. }
-                if event_id == "$msg" && auth_event_id == "$foreign_create"
-        ),
-        "expected ForeignRoomEvent citing $foreign_create, got {:?}",
-        rejected[0].1
-    );
+    assert_foreign_room_rejected(&rejected, "$foreign_create", false);
 }
 
 /// Once the citing event opts in (`Some(room_id)`), an `auth_events` entry
@@ -896,28 +924,14 @@ fn test_iterative_auth_chain_rejects_untagged_auth_event_once_citing_side_popula
     msg.room_id = Some(room_a);
     msg.auth_events = vec!["$join".into()];
 
-    let (accepted, rejected) = check_auth_chain(
-        &[create, join, msg],
-        &RoomState::new(),
-        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
-    );
+    let (accepted, rejected) = check_chain(&[create, join, msg]);
 
     assert_eq!(
         accepted,
         vec!["$create", "$join"],
         "the untagged $join event still passes its own (unrelated) auth check"
     );
-    assert_eq!(rejected.len(), 1);
-    assert_eq!(rejected[0].0, "$msg");
-    assert!(
-        matches!(
-            &rejected[0].1,
-            rezzy::auth::AuthError::ForeignRoomEvent { event_id, auth_event_id, actual: None, .. }
-                if event_id == "$msg" && auth_event_id == "$join"
-        ),
-        "expected ForeignRoomEvent{{actual: None}} citing $join, got {:?}",
-        rejected[0].1
-    );
+    assert_foreign_room_rejected(&rejected, "$join", true);
 }
 
 /// `room_id` being `None` on the *citing* event's own side is never treated
@@ -1061,13 +1075,8 @@ fn test_auth_error_display() {
 /// above the sender's PL.
 #[test]
 fn test_notifications_change_above_sender_pl_rejected() {
-    let state = utils_extra::parse_jsonl_state(
-        r#"
-{"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@admin:x.com", "content": {"creator": "@admin:x.com"}}
-{"event_id": "$j1", "type": "m.room.member", "state_key": "@alice:x.com", "sender": "@alice:x.com", "content": {"membership": "join"}}
-{"event_id": "$j2", "type": "m.room.member", "state_key": "@admin:x.com", "sender": "@admin:x.com", "content": {"membership": "join"}}
-{"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x.com", "content": {"users": {"@admin:x.com": 100, "@alice:x.com": 50}, "notifications": {"room": 50}}}
-"#,
+    let state = alice_pl_jsonl_state(
+        r#"{"users": {"@admin:x.com": 100, "@alice:x.com": 50}, "notifications": {"room": 50}}"#,
     );
     // Alice (PL 50) raises notifications.room from 50 -> 80 (above her PL):
     // the key exists in both old and new, so the `|&ov| ov != new_val` closure
@@ -1088,13 +1097,8 @@ fn test_notifications_change_above_sender_pl_rejected() {
 /// when the PL event has an `events` map with an override for the event type.
 #[test]
 fn test_event_type_power_level_override() {
-    let state = utils_extra::parse_jsonl_state(
-        r#"
-{"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@admin:x.com", "content": {"creator": "@admin:x.com"}}
-{"event_id": "$j1", "type": "m.room.member", "state_key": "@alice:x.com", "sender": "@alice:x.com", "content": {"membership": "join"}}
-{"event_id": "$j2", "type": "m.room.member", "state_key": "@admin:x.com", "sender": "@admin:x.com", "content": {"membership": "join"}}
-{"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:x.com", "content": {"users": {"@admin:x.com": 100, "@alice:x.com": 50}, "events": {"m.room.topic": 80}}}
-"#,
+    let state = alice_pl_jsonl_state(
+        r#"{"users": {"@admin:x.com": 100, "@alice:x.com": 50}, "events": {"m.room.topic": 80}}"#,
     );
     // Alice (PL 50) tries to send m.room.topic (requires 80 via events override) → rejected
     let events = utils::parse_jsonl_events(
@@ -1146,23 +1150,7 @@ fn test_invited_user_self_join_allowed() {
 
 #[test]
 fn test_moderator_can_override_admin_ban() {
-    let mut state = RoomState::new();
-
-    // Create event
-    insert_create(&mut state, "$create", "@creator:example.com", json!({}));
-
-    // Power levels event (admin = 100, mod = 50)
-    insert_power_levels(
-        &mut state,
-        "$pl",
-        "@admin:example.com",
-        json!({
-            "users": {
-                "@admin:example.com": 100,
-                "@mod:example.com": 50
-            }
-        }),
-    );
+    let mut state = admin_and_mod_state();
 
     // Admin join
     insert_join(&mut state, "$join_admin", "@admin:example.com");
@@ -1203,23 +1191,7 @@ fn test_moderator_can_override_admin_ban() {
 
 #[test]
 fn test_moderator_can_unban_self_ban() {
-    let mut state = RoomState::new();
-
-    // Create event
-    insert_create(&mut state, "$create", "@creator:example.com", json!({}));
-
-    // Power levels event (admin = 100, mod = 50)
-    insert_power_levels(
-        &mut state,
-        "$pl",
-        "@admin:example.com",
-        json!({
-            "users": {
-                "@admin:example.com": 100,
-                "@mod:example.com": 50
-            }
-        }),
-    );
+    let mut state = admin_and_mod_state();
 
     // Mod join
     insert_join(&mut state, "$join_mod", "@mod:example.com");
@@ -1978,14 +1950,7 @@ fn test_membership_rules_fallback() {
 #[test]
 fn test_invite_already_joined_user_rejected() {
     // Per spec: inviting a user who is already joined must be rejected.
-    let mut state = RoomState::new();
-    insert_create(&mut state, "$c", "@admin:x.com", json!({}));
-    insert_power_levels(
-        &mut state,
-        "$pl",
-        "@admin:x.com",
-        json!({"users": {"@admin:x.com": 100}}),
-    );
+    let mut state = admin_state_x();
     // Admin is joined
     insert_join(&mut state, "$admin_join", "@admin:x.com");
     // Bob is already joined
@@ -2004,14 +1969,7 @@ fn test_invite_already_joined_user_rejected() {
 fn test_unstable_msc3757_owned_state_key_rejected_when_sender_mismatch() {
     // Spec auth rule 9 (all versions): For non-member state events with @-prefixed state_key,
     // the sender must match the state_key.
-    let mut state = RoomState::new();
-    insert_create(&mut state, "$c", "@admin:x.com", json!({}));
-    insert_power_levels(
-        &mut state,
-        "$pl",
-        "@admin:x.com",
-        json!({"users": {"@admin:x.com": 100}}),
-    );
+    let mut state = admin_state_x();
     insert_join(&mut state, "$admin_join", "@admin:x.com");
 
     // Admin tries to set a state event with state_key=@bob (not themselves)
@@ -2137,13 +2095,7 @@ fn test_third_party_invite_rejected_when_target_banned() {
             "membership": "invite",
             "third_party_invite": {
                 "display_name": "charlie",
-                "signed": {
-                    "token": "abc_token",
-                    "mxid": "@charlie:matrix.org",
-                    "signatures": {
-                        "example.com": { "ed25519:1": "dummy" }
-                    }
-                }
+                "signed": tpi_signed("abc_token", "@charlie:matrix.org")
             }
         }),
     );
@@ -2238,16 +2190,7 @@ fn test_third_party_invite_rejected_when_sender_mismatch() {
         M_ROOM_MEMBER,
         Some("@charlie:matrix.org"),
         "@bob:matrix.org",
-        json!({
-            "membership": "invite",
-            "third_party_invite": {
-                "signed": {
-                    "token": "abc_token",
-                    "mxid": "@charlie:matrix.org",
-                    "signatures": { "example.com": { "ed25519:1": "dummy" } }
-                }
-            }
-        }),
+        invite_with_signed("abc_token", "@charlie:matrix.org"),
     );
 
     let result = check_auth(&bob_invite, &state, StateResVersion::V2, None);
@@ -2276,16 +2219,7 @@ fn test_third_party_invite_rejected_when_mxid_mismatch() {
         M_ROOM_MEMBER,
         Some("@charlie:matrix.org"),
         "@alice:matrix.org",
-        json!({
-            "membership": "invite",
-            "third_party_invite": {
-                "signed": {
-                    "token": "abc_token",
-                    "mxid": "@wrong_user:matrix.org",
-                    "signatures": { "example.com": { "ed25519:1": "dummy" } }
-                }
-            }
-        }),
+        invite_with_signed("abc_token", "@wrong_user:matrix.org"),
     );
 
     let result = check_auth(&alice_invite, &state, StateResVersion::V2, None);
@@ -2345,16 +2279,7 @@ fn test_third_party_invite_rejected_when_token_missing() {
         M_ROOM_MEMBER,
         Some("@charlie:matrix.org"),
         "@alice:matrix.org",
-        json!({
-            "membership": "invite",
-            "third_party_invite": {
-                "signed": {
-                    "token": "missing_token",
-                    "mxid": "@charlie:matrix.org",
-                    "signatures": { "example.com": { "ed25519:1": "dummy" } }
-                }
-            }
-        }),
+        invite_with_signed("missing_token", "@charlie:matrix.org"),
     );
 
     let result = check_auth(&alice_invite, &state, StateResVersion::V2, None);
@@ -2386,16 +2311,7 @@ fn test_third_party_invite_rejected_when_issuer_lacks_power() {
         M_ROOM_MEMBER,
         Some("@charlie:matrix.org"),
         "@bob:matrix.org",
-        json!({
-            "membership": "invite",
-            "third_party_invite": {
-                "signed": {
-                    "token": "abc_token",
-                    "mxid": "@charlie:matrix.org",
-                    "signatures": { "example.com": { "ed25519:1": "dummy" } }
-                }
-            }
-        }),
+        invite_with_signed("abc_token", "@charlie:matrix.org"),
     );
 
     let result = check_auth(&invite, &state, StateResVersion::V2, None);
@@ -2572,15 +2488,7 @@ impl rezzy::EventVerifier<String> for RejectThirdPartyInvite {
 
 /// Helper: build minimal valid state + member event for verifier tests.
 fn make_verifier_test_state() -> (RoomState, LeanEvent) {
-    let mut state = RoomState::new();
-    insert_create(&mut state, "$create", "@alice:x.com", json!({}));
-    insert_join(&mut state, "$join", "@alice:x.com");
-    insert_power_levels(
-        &mut state,
-        "$pl",
-        "@alice:x.com",
-        json!({"users": {"@alice:x.com": 100}}),
-    );
+    let state = verifier_state();
     let msg = make_event(
         "$msg",
         "m.room.message",
@@ -2653,15 +2561,7 @@ fn test_event_verifier_reject_content_hash() {
 
 #[test]
 fn test_event_verifier_reject_third_party_invite() {
-    let mut state = RoomState::new();
-    insert_create(&mut state, "$create", "@alice:x.com", json!({}));
-    insert_join(&mut state, "$join", "@alice:x.com");
-    insert_power_levels(
-        &mut state,
-        "$pl",
-        "@alice:x.com",
-        json!({"users": {"@alice:x.com": 100}}),
-    );
+    let mut state = verifier_state();
     insert_third_party_invite(
         &mut state,
         "$tpi",
@@ -2791,20 +2691,10 @@ fn test_member_event_missing_membership_rejected() {
 /// Events with >20 `prev_events` must be rejected.
 #[test]
 fn test_prev_events_exceeds_max_rejected() {
-    let mut state: RoomState = RoomState::new();
-    insert_create(&mut state, "$c", "@a:x", json!({"creator": "@a:x"}));
-    insert_join(&mut state, "$j", "@a:x");
+    let state = a_x_state();
 
     let too_many: Vec<String> = (0..21).map(|i| format!("$prev{i}")).collect();
-    let event = LeanEvent {
-        event_id: "$bad".into(),
-        event_type: "m.room.message".into(),
-        state_key: None,
-        sender: "@a:x".into(),
-        content: json!({"body": "hi"}),
-        prev_events: too_many,
-        ..Default::default()
-    };
+    let event = message_event(too_many, vec![]);
 
     let result = rezzy::auth::check_auth(&event, &state, rezzy::StateResVersion::V2, None);
     assert!(result.is_err(), "Should reject >20 prev_events: {result:?}");
@@ -2818,20 +2708,10 @@ fn test_prev_events_exceeds_max_rejected() {
 /// Events with >10 `auth_events` must be rejected.
 #[test]
 fn test_auth_events_exceeds_max_rejected() {
-    let mut state: RoomState = RoomState::new();
-    insert_create(&mut state, "$c", "@a:x", json!({"creator": "@a:x"}));
-    insert_join(&mut state, "$j", "@a:x");
+    let state = a_x_state();
 
     let too_many: Vec<String> = (0..11).map(|i| format!("$auth{i}")).collect();
-    let event = LeanEvent {
-        event_id: "$bad".into(),
-        event_type: "m.room.message".into(),
-        state_key: None,
-        sender: "@a:x".into(),
-        content: json!({"body": "hi"}),
-        auth_events: too_many,
-        ..Default::default()
-    };
+    let event = message_event(vec![], too_many);
 
     let result = rezzy::auth::check_auth(&event, &state, rezzy::StateResVersion::V2, None);
     assert!(result.is_err(), "Should reject >10 auth_events: {result:?}");
@@ -2883,13 +2763,7 @@ fn test_empty_event_type_rejected() {
 /// Rule 10.3: `users` map with a non-user-ID key should be rejected.
 #[test]
 fn test_pl_validation_users_invalid_key_rejected() {
-    let state = utils_extra::parse_jsonl_state(
-        r#"
-{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
-{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
-{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100}}}
-"#,
-    );
+    let state = v10_admin_joined_state();
     let events = utils::parse_jsonl_events(
         r#"
 {"event_id": "$pl1", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100, "not_a_user_id": 50}}}
@@ -3038,13 +2912,7 @@ fn test_pl_validation_users_demote_lower_allowed() {
 /// Rule 10.9 exemption: sender lowers their own PL → allow (self-entry exempt).
 #[test]
 fn test_pl_validation_users_self_demote_allowed() {
-    let state = utils_extra::parse_jsonl_state(
-        r#"
-{"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@admin:example.com", "content": {"creator": "@admin:example.com", "room_version": "10"}}
-{"event_id": "$join", "type": "m.room.member", "state_key": "@admin:example.com", "sender": "@admin:example.com", "content": {"membership": "join"}}
-{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"users": {"@admin:example.com": 100}}}
-"#,
-    );
+    let state = v10_admin_joined_state();
     // Admin demotes themselves from 100 to 50
     let events = utils::parse_jsonl_events(
         r#"
@@ -3102,12 +2970,7 @@ fn test_pl_validation_scalar_old_value_too_high_rejected() {
 fn test_pl_v12_scalar_not_integer_rejected() {
     let state = admin_joined_state("12");
     // First PL event with ban as a boolean instead of integer
-    let events = utils::parse_jsonl_events(
-        r#"
-{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"ban": true}}
-"#,
-    );
-    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2_1, None);
+    let res = check_ban_true_pl(&state, rezzy::StateResVersion::V2_1);
     assert!(
         res.is_err(),
         "Non-integer scalar PL should be rejected in V12: {res:?}"
@@ -3119,12 +2982,7 @@ fn test_pl_v12_scalar_not_integer_rejected() {
 #[test]
 fn test_pl_v2_scalar_not_integer_allowed() {
     let state = admin_joined_state("9");
-    let events = utils::parse_jsonl_events(
-        r#"
-{"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"ban": true}}
-"#,
-    );
-    let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
+    let res = check_ban_true_pl(&state, rezzy::StateResVersion::V2);
     assert!(
         res.is_ok(),
         "Non-integer scalar PL should be allowed in room V9: {res:?}"
@@ -3443,37 +3301,8 @@ fn test_warn_unexpected_auth_events_valid() {
 
 #[test]
 fn test_pl_v10_plus_users_contains_non_integer_rejected() {
-    let cases = vec![
-        ("10", rezzy::StateResVersion::V2),
-        ("12", rezzy::StateResVersion::V2_1),
-    ];
-    for (version_str, state_res) in cases {
-        let mut state = RoomState::new();
-        insert_create(
-            &mut state,
-            "$c",
-            "@admin:x.com",
-            json!({"room_version": version_str}),
-        );
-        let pl = make_event(
-            "$pl",
-            rezzy::basespec::event_types::M_ROOM_POWER_LEVELS,
-            Some(""),
-            "@admin:x.com",
-            json!({
-                "users": {
-                    "@alice:x.com": "50" // string instead of integer
-                }
-            }),
-        );
-        assert!(
-            matches!(
-                check_auth(&pl, &state, state_res, None),
-                Err(AuthError::InvalidSyntax(_))
-            ),
-            "V10+ (version {version_str}) power levels with non-integer users value must be rejected"
-        );
-    }
+    // string instead of integer
+    assert_pl_users_rejected(&json!({"@alice:x.com": "50"}));
 }
 
 /// Parameterized across room versions.
@@ -3539,35 +3368,8 @@ fn test_pl_users_non_integer_across_versions() {
 
 #[test]
 fn test_pl_v10_plus_users_not_an_object_rejected() {
-    let cases = vec![
-        ("10", rezzy::StateResVersion::V2),
-        ("12", rezzy::StateResVersion::V2_1),
-    ];
-    for (version_str, state_res) in cases {
-        let mut state = RoomState::new();
-        insert_create(
-            &mut state,
-            "$c",
-            "@admin:x.com",
-            json!({"room_version": version_str}),
-        );
-        let pl = make_event(
-            "$pl",
-            rezzy::basespec::event_types::M_ROOM_POWER_LEVELS,
-            Some(""),
-            "@admin:x.com",
-            json!({
-                "users": ["@alice:x.com"] // array instead of object
-            }),
-        );
-        assert!(
-            matches!(
-                check_auth(&pl, &state, state_res, None),
-                Err(AuthError::InvalidSyntax(_))
-            ),
-            "V10+ (version {version_str}) power levels with non-object users must be rejected"
-        );
-    }
+    // array instead of object
+    assert_pl_users_rejected(&json!(["@alice:x.com"]));
 }
 
 #[test]
@@ -3692,14 +3494,7 @@ fn test_rule_4_aliases_enforced_v2_through_v5_not_v6_plus() {
     // still be enforced for each of them individually (it's only removed
     // starting real room version 6, per v6.txt).
     for room_version in ["2", "3", "4", "5"] {
-        let mut state = RoomState::new();
-        let create_ev = make_create(
-            "$c",
-            "@admin:example.com",
-            json!({"room_version": room_version}),
-        );
-        insert_event(&mut state, M_ROOM_CREATE, "", create_ev);
-        insert_join(&mut state, "$m", "@admin:example.com");
+        let state = admin_joined_state(room_version);
 
         let bad_alias = make_event(
             "$alias",
@@ -3718,14 +3513,7 @@ fn test_rule_4_aliases_enforced_v2_through_v5_not_v6_plus() {
     // Room version 6+ removes Rule 4 entirely; a domain mismatch must no
     // longer be rejected by this check.
     for room_version in ["6", "7", "10"] {
-        let mut state = RoomState::new();
-        let create_ev = make_create(
-            "$c",
-            "@admin:example.com",
-            json!({"room_version": room_version}),
-        );
-        insert_event(&mut state, M_ROOM_CREATE, "", create_ev);
-        insert_join(&mut state, "$m", "@admin:example.com");
+        let state = admin_joined_state(room_version);
 
         let mismatched_alias = make_event(
             "$alias",
@@ -3893,22 +3681,7 @@ fn test_rule_2_1_duplicate_auth_event_pair_rejected() {
 /// only cited entries were validated, never the completeness of the set.
 #[test]
 fn test_rule_2_2_omitted_target_member_rejected() {
-    let mut state = RoomState::new();
-    let create_ev = make_create("$c", "@admin:example.com", json!({}));
-    insert_event(&mut state, M_ROOM_CREATE, "", create_ev.clone());
-
-    let admin_join = make_member(
-        "$admin_join",
-        "@admin:example.com",
-        "@admin:example.com",
-        "join",
-    );
-    insert_event(
-        &mut state,
-        M_ROOM_MEMBER,
-        "@admin:example.com",
-        admin_join.clone(),
-    );
+    let (mut state, mut provider) = rule_2_2_base();
 
     let bob_join = make_member("$bob_join", "@bob:example.com", "@bob:example.com", "join");
     insert_event(
@@ -3917,10 +3690,6 @@ fn test_rule_2_2_omitted_target_member_rejected() {
         "@bob:example.com",
         bob_join.clone(),
     );
-
-    let mut provider = rezzy::HashMap::new();
-    provider.insert("$c".to_string(), create_ev);
-    provider.insert("$admin_join".to_string(), admin_join);
     provider.insert("$bob_join".to_string(), bob_join);
 
     let mut ban_bob = make_member("$ban_bob", "@bob:example.com", "@admin:example.com", "ban");
@@ -3929,14 +3698,7 @@ fn test_rule_2_2_omitted_target_member_rejected() {
     ban_bob.auth_events = vec!["$c".into(), "$admin_join".into()];
 
     let res = check_auth_with_context(&ban_bob, &state, StateResVersion::V2, None, Some(&provider));
-    assert!(
-        matches!(
-            res,
-            Err(AuthError::IncompleteAuthEvents { ref event_type, ref state_key })
-                if event_type == "m.room.member" && state_key == "@bob:example.com"
-        ),
-        "Omitting the target member citation must be a hard rejection, got {res:?}"
-    );
+    assert_incomplete_bob_member(&res);
 
     // Citing it fixes the rejection (other rules -- PL sufficiency etc. --
     // are irrelevant here since state has no power_levels event at all, so
@@ -3956,22 +3718,7 @@ fn test_rule_2_2_omitted_target_member_rejected() {
 /// the citation were omitted entirely.
 #[test]
 fn test_rule_2_2_stale_auth_event_citation_rejected() {
-    let mut state = RoomState::new();
-    let create_ev = make_create("$c", "@admin:example.com", json!({}));
-    insert_event(&mut state, M_ROOM_CREATE, "", create_ev.clone());
-
-    let admin_join = make_member(
-        "$admin_join",
-        "@admin:example.com",
-        "@admin:example.com",
-        "join",
-    );
-    insert_event(
-        &mut state,
-        M_ROOM_MEMBER,
-        "@admin:example.com",
-        admin_join.clone(),
-    );
+    let (mut state, mut provider) = rule_2_2_base();
 
     // Bob joins, leaves, then re-joins. The room's *current* state for
     // (m.room.member, @bob:example.com) is `$bob_rejoin`, not the original
@@ -3990,9 +3737,6 @@ fn test_rule_2_2_stale_auth_event_citation_rejected() {
         bob_rejoin.clone(),
     );
 
-    let mut provider = rezzy::HashMap::new();
-    provider.insert("$c".to_string(), create_ev);
-    provider.insert("$admin_join".to_string(), admin_join);
     provider.insert("$bob_join".to_string(), bob_join);
     provider.insert("$bob_rejoin".to_string(), bob_rejoin);
 
@@ -4002,14 +3746,7 @@ fn test_rule_2_2_stale_auth_event_citation_rejected() {
     ban_bob.auth_events = vec!["$c".into(), "$admin_join".into(), "$bob_join".into()];
 
     let res = check_auth_with_context(&ban_bob, &state, StateResVersion::V2, None, Some(&provider));
-    assert!(
-        matches!(
-            res,
-            Err(AuthError::IncompleteAuthEvents { ref event_type, ref state_key })
-                if event_type == "m.room.member" && state_key == "@bob:example.com"
-        ),
-        "Citing a stale event ID for a required tuple must be rejected like an omission, got {res:?}"
-    );
+    assert_incomplete_bob_member(&res);
 
     // Citing the current event fixes the rejection.
     ban_bob.auth_events = vec!["$c".into(), "$admin_join".into(), "$bob_rejoin".into()];
@@ -4210,55 +3947,7 @@ fn test_event_content_default_get_m_federate() {
     struct DummyContent;
 
     impl EventContent for DummyContent {
-        fn get_membership(&self) -> Option<&str> {
-            None
-        }
-        fn get_third_party_invite_token(&self) -> Option<&str> {
-            None
-        }
-        fn get_join_rule(&self) -> Option<&str> {
-            None
-        }
-        fn get_user_power_level(&self, _user: &str) -> Option<i64> {
-            None
-        }
-        fn get_event_power_level(&self, _event_type: &str) -> Option<i64> {
-            None
-        }
-        fn get_users_default(&self) -> Option<i64> {
-            None
-        }
-        fn get_events_default(&self) -> Option<i64> {
-            None
-        }
-        fn get_state_default(&self) -> Option<i64> {
-            None
-        }
-        fn get_ban(&self) -> Option<i64> {
-            None
-        }
-        fn get_kick(&self) -> Option<i64> {
-            None
-        }
-        fn get_invite(&self) -> Option<i64> {
-            None
-        }
-        fn get_redact(&self) -> Option<i64> {
-            None
-        }
-        fn get_creator(&self) -> Option<&str> {
-            None
-        }
-        fn has_additional_creator(&self, _sender: &str) -> bool {
-            false
-        }
-        fn get_join_authorised_via_users_server(&self) -> Option<&str> {
-            None
-        }
-        fn visit_event_power_levels<'a>(&'a self, _: &mut dyn FnMut(&'a str, i64)) {}
-        fn visit_user_power_levels<'a>(&'a self, _: &mut dyn FnMut(&'a str, i64)) {}
-        fn visit_notification_power_levels<'a>(&'a self, _: &mut dyn FnMut(&'a str, i64)) {}
-        fn visit_user_keys<'a>(&'a self, _: &mut dyn FnMut(&'a str)) {}
+        crate::all_default_content_methods!();
     }
 
     let dummy = DummyContent;
@@ -4359,33 +4048,11 @@ fn test_msc4242_prev_state_events_limit_in_check_auth() {
         }
     }
 
-    impl EventLike for EventWithSeparateStateEdges {
-        type Content = rezzy::JsonValue;
-
-        fn event_type(&self) -> std::borrow::Cow<'_, str> {
-            std::borrow::Cow::Borrowed("m.room.message")
-        }
-
-        fn sender(&self) -> &'static str {
-            "@alice:example.com"
-        }
-
-        fn state_key(&self) -> Option<&str> {
-            None
-        }
-
-        fn power_level(&self) -> i64 {
-            0
-        }
-
-        fn origin_server_ts(&self) -> u64 {
-            0
-        }
-
-        fn content(&self) -> &Self::Content {
-            &self.content
-        }
-    }
+    crate::impl_event_like_stub!(
+        EventWithSeparateStateEdges,
+        "@alice:example.com",
+        rezzy::JsonValue
+    );
 
     struct EmptyState;
 
