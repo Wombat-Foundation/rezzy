@@ -1365,15 +1365,15 @@ mod tests {
     /// Runs the delta-tracking resolver with the standard test defaults and
     /// returns only the resulting deltas.
     fn deltas_for(
-        unconflicted: SharedState<String, String>,
-        conflicted: HashMap<String, LeanEvent>,
+        unconflicted: &SharedState<String, String>,
+        conflicted: &HashMap<String, LeanEvent>,
         auth_context: &HashMap<String, LeanEvent>,
         version: StateResVersion,
     ) -> Vec<ResolutionDelta<String, String>> {
         resolve_iterative_sort_with_cache_and_deltas(
             IterativeInputs::new(
-                &unconflicted,
-                &conflicted,
+                unconflicted,
+                conflicted,
                 auth_context,
                 version,
                 &mut HashMap::new(),
@@ -1459,8 +1459,8 @@ mod tests {
         // per-event delta (the screening pass is part of the delta contract),
         // while carol's unbanned message survives.
         let deltas = deltas_for(
-            unconflicted.clone(),
-            mk_conflicted(),
+            &unconflicted,
+            &mk_conflicted(),
             &ac,
             StateResVersion::V2_1_1,
         );
@@ -1478,7 +1478,7 @@ mod tests {
         );
 
         // V2.1 predates the hardening: bob's message is processed, not screened.
-        let deltas = deltas_for(unconflicted, mk_conflicted(), &ac, StateResVersion::V2_1);
+        let deltas = deltas_for(&unconflicted, &mk_conflicted(), &ac, StateResVersion::V2_1);
         assert!(
             deltas.iter().any(|d| d.event_id == "$bob_msg"),
             "V2.1 must not apply the ban-evasion screening filter"
@@ -1519,7 +1519,7 @@ mod tests {
         conflicted.insert("$alice_join".to_string(), alice_join);
         conflicted.insert("$stateless".to_string(), stateless);
 
-        let deltas = deltas_for(unconflicted, conflicted, &ac, StateResVersion::V2_1);
+        let deltas = deltas_for(&unconflicted, &conflicted, &ac, StateResVersion::V2_1);
         assert!(
             deltas.iter().any(|d| d.event_id == "$alice_join"),
             "the stateful non-power event should still be processed"
