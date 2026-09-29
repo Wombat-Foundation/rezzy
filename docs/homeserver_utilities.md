@@ -219,11 +219,12 @@ room-version reference hash before aggregating:
 ```sh
 rezzy repair-ids \
   --input remote-dag-room-v6-old.jsonl \
-  --output remote-dag-room-v6-old-repaired.jsonl \
-  --room-version 6
+  --output remote-dag-room-v6-old-repaired.jsonl
 ```
 
-The command only fills missing IDs; it does not overwrite the source file.
+The `-v6` token is inferred from the filename. The command only fills missing
+IDs; it does not overwrite the source file. `aggregate --repair-missing-ids`
+uses the same inference for every input file.
 
 The key can also live directly in the OS keyring instead of a file. Store the
 complete `ed25519:<id> <seed>` line under service `rezzy` and account name

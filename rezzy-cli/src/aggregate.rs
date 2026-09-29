@@ -28,6 +28,7 @@ struct Options {
     output: PathBuf,
     check: bool,
     quiet: bool,
+    repair_missing_ids: bool,
 }
 
 #[must_use]
@@ -75,6 +76,12 @@ pub fn command() -> Command {
                 .short('q')
                 .action(ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("repair-missing-ids")
+                .long("repair-missing-ids")
+                .action(ArgAction::SetTrue)
+                .help("Derive missing v3+ event IDs before merging"),
+        )
 }
 
 fn options_from_matches(matches: &ArgMatches) -> Options {
@@ -101,6 +108,7 @@ fn options_from_matches(matches: &ArgMatches) -> Options {
         output,
         check: matches.get_flag("check"),
         quiet: matches.get_flag("quiet"),
+        repair_missing_ids: matches.get_flag("repair-missing-ids"),
     }
 }
 
@@ -384,7 +392,11 @@ struct RawInput {
     events: Vec<rezzy::JsonValue>,
 }
 
-fn read_raw_input(path: &Path, input_dir: &Path) -> Result<RawInput, AppError> {
+fn read_raw_input_with_repair(
+    path: &Path,
+    input_dir: &Path,
+    repair_missing_ids: bool,
+) -> Result<RawInput, AppError> {
     let bytes = fs::read(path)?;
     let label = path
         .strip_prefix(input_dir)
@@ -405,6 +417,24 @@ fn read_raw_input(path: &Path, input_dir: &Path) -> Result<RawInput, AppError> {
             ErrorCode::EmptyInput,
             format!("No input data provided in {label}"),
         ));
+    }
+    if repair_missing_ids {
+        let room_version = filename_version(path)
+            .ok_or_else(|| {
+                AppError::new(
+                    ErrorCode::UnsupportedVersion,
+                    format!("{label}: cannot infer room version from filename"),
+                )
+            })?
+            .trim_start_matches("-v")
+            .to_owned();
+        for (index, event) in events.iter_mut().enumerate() {
+            crate::repair::fill_missing_event_id(
+                event,
+                &room_version,
+                &format!("{label}:{}", index + 1),
+            )?;
+        }
     }
     validate_event_ids(&events, &label)?;
     validate_sort_metadata(&events, &label)?;
@@ -509,7 +539,7 @@ fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
     };
     let inputs: Vec<RawInput> = files
         .iter()
-        .map(|path| read_raw_input(path, label_base))
+        .map(|path| read_raw_input_with_repair(path, label_base, options.repair_missing_ids))
         .collect::<Result<_, _>>()?;
     let sets: Vec<(String, &[rezzy::JsonValue])> = inputs
         .iter()
@@ -642,6 +672,7 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<AggregateOutcome, AppErr
             output,
             check: base.check,
             quiet: base.quiet,
+            repair_missing_ids: base.repair_missing_ids,
         };
         match aggregate(&options) {
             Ok(mut result) => {
@@ -718,6 +749,7 @@ mod tests {
             output: root.join("merged/room.jsonl"),
             check,
             quiet: true,
+            repair_missing_ids: false,
         }
     }
     fn event_line(event: &rezzy::JsonValue) -> String {
@@ -915,6 +947,7 @@ mod tests {
             output: PathBuf::from("out.jsonl"),
             check: false,
             quiet: true,
+            repair_missing_ids: false,
         };
         let error = reject_input_output_overlap(&options)
             .expect_err("a bare output name belongs to the current directory");
@@ -1006,7 +1039,7 @@ mod tests {
         fs::create_dir_all(&raw_dir).unwrap();
         let path = raw_dir.join("remote-room-v12.jsonl");
         write_event(&path, &event("$a", 1, 100, &[]));
-        let input = read_raw_input(&path, Path::new("")).unwrap();
+        let input = read_raw_input_with_repair(&path, Path::new(""), false).unwrap();
         assert_eq!(input.label, path.to_string_lossy());
         fs::remove_dir_all(root).unwrap();
     }
