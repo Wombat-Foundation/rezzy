@@ -212,3 +212,21 @@ The key file accepts the usual `ed25519:<id> <unpadded-base64-private-key>`
 format. For multiple origins, use
 `MATRIX_SERVER_SIGNING_KEY_<DOMAIN_WITH_DOTS_AND_HYPHENS_AS_UNDERSCORES>`;
 that variable takes precedence and the file is reread for every request.
+
+The key can also live directly in the OS keyring instead of a file. Store the
+complete `ed25519:<id> <seed>` line under service `rezzy` and account name
+`your.server` (for example, with Python's `keyring` package):
+
+```sh
+python3 -m keyring set rezzy your.server
+# paste: ed25519:7 <unpadded-base64-private-seed>
+
+MATRIX_SERVER_SIGNING_KEY_KEYRING=your.server \
+rezzy federation request --origin your.server \
+  --destination remote.example \
+  --path /_matrix/federation/v1/version
+```
+
+Use `MATRIX_SERVER_SIGNING_KEY_KEYRING_<DOMAIN>` for per-origin accounts, or
+pass `--signing-key-keyring <account>` on either federation subcommand. The
+keyring value is read on every request; no plaintext key file is created.

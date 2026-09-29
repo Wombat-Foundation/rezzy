@@ -27,11 +27,7 @@ pub fn command() -> Command {
                         .long("body")
                         .value_parser(clap::value_parser!(PathBuf)),
                 )
-                .arg(
-                    Arg::new("signing-key")
-                        .long("signing-key")
-                        .value_parser(clap::value_parser!(PathBuf)),
-                ),
+                .args(signing_key_args()),
         )
         .subcommand(
             Command::new("get-remote-dag")
@@ -57,11 +53,7 @@ pub fn command() -> Command {
                         .default_value("remote-dag.jsonl")
                         .value_parser(clap::value_parser!(PathBuf)),
                 )
-                .arg(
-                    Arg::new("signing-key")
-                        .long("signing-key")
-                        .value_parser(clap::value_parser!(PathBuf)),
-                )
+                .args(signing_key_args())
                 .arg(
                     Arg::new("no-fallback")
                         .long("no-fallback")
@@ -75,6 +67,15 @@ fn origin_arg() -> Arg {
         .long("origin")
         .env("MATRIX_ORIGIN")
         .default_value("matrix.org")
+}
+
+fn signing_key_args() -> [Arg; 2] {
+    [
+        Arg::new("signing-key")
+            .long("signing-key")
+            .value_parser(clap::value_parser!(PathBuf)),
+        Arg::new("signing-key-keyring").long("signing-key-keyring"),
+    ]
 }
 
 pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
@@ -92,6 +93,8 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                 m.get_one::<String>("path").expect("required"),
                 &body,
                 m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
+                m.get_one::<String>("signing-key-keyring")
+                    .map(String::as_str),
             )
         }
         Some(("get-remote-dag", m)) => get_remote_dag(
@@ -103,6 +106,8 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
             *m.get_one::<i64>("limit").expect("default"),
             m.get_one::<PathBuf>("output").expect("default"),
             m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
+            m.get_one::<String>("signing-key-keyring")
+                .map(String::as_str),
             m.get_flag("no-fallback"),
         ),
         _ => Err(AppError::new(
@@ -133,7 +138,43 @@ fn domain_env_suffix(domain: &str) -> String {
 
 /// Resolve and parse a Matrix server signing key. The domain-specific variable
 /// (`MATRIX_SERVER_SIGNING_KEY_<DOMAIN>`) wins over the generic variable.
-pub fn load_signing_key(origin: &str, explicit: Option<&Path>) -> Result<SigningKeySpec, AppError> {
+pub fn load_signing_key(
+    origin: &str,
+    explicit: Option<&Path>,
+    keyring_account: Option<&str>,
+) -> Result<SigningKeySpec, AppError> {
+    let keyring_account = keyring_account
+        .map(str::to_owned)
+        .or_else(|| {
+            std::env::var(format!(
+                "MATRIX_SERVER_SIGNING_KEY_KEYRING_{}",
+                domain_env_suffix(origin)
+            ))
+            .ok()
+        })
+        .or_else(|| std::env::var("MATRIX_SERVER_SIGNING_KEY_KEYRING").ok());
+    if explicit.is_none() {
+        if let Some(account) = keyring_account {
+            let entry = keyring::Entry::new("rezzy", &account).map_err(|e| {
+                AppError::new(
+                    ErrorCode::SigningKey,
+                    format!("failed to open OS keyring entry rezzy/{account}: {e}"),
+                )
+            })?;
+            let text = entry.get_password().map_err(|e| {
+                AppError::new(
+                    ErrorCode::SigningKey,
+                    format!("failed to read OS keyring entry rezzy/{account}: {e}"),
+                )
+            })?;
+            return parse_signing_key(&text).map_err(|message| {
+                AppError::new(
+                    ErrorCode::SigningKey,
+                    format!("OS keyring entry rezzy/{account}: {message}"),
+                )
+            });
+        }
+    }
     let path = explicit
         .map(PathBuf::from)
         .or_else(|| {
@@ -226,8 +267,9 @@ pub fn request(
     uri: &str,
     body: &JsonValue,
     key_path: Option<&Path>,
+    keyring_account: Option<&str>,
 ) -> Result<JsonValue, AppError> {
-    let key = load_signing_key(origin, key_path)?;
+    let key = load_signing_key(origin, key_path, keyring_account)?;
     let canonical = canonical_request(method, uri, origin, destination, body)?;
     let sig = STANDARD_NO_PAD.encode(key.key.sign(&canonical).to_bytes());
     let auth = format!(
@@ -303,6 +345,7 @@ pub fn get_remote_dag(
     limit: i64,
     output: &Path,
     key_path: Option<&Path>,
+    keyring_account: Option<&str>,
     no_fallback: bool,
 ) -> Result<JsonValue, AppError> {
     let mut queue = VecDeque::new();
@@ -343,6 +386,7 @@ pub fn get_remote_dag(
             &uri,
             &rezzy::json!({}),
             key_path,
+            keyring_account,
         );
         let mut value = match response {
             Ok(v) => v,
@@ -361,6 +405,7 @@ pub fn get_remote_dag(
                     &event_uri,
                     &rezzy::json!({}),
                     key_path,
+                    keyring_account,
                 ) {
                     Ok(v) => {
                         let pdu = v.get("pdu").cloned().unwrap_or(v);
@@ -394,6 +439,7 @@ pub fn get_remote_dag(
                     &event_uri,
                     &rezzy::json!({}),
                     key_path,
+                    keyring_account,
                 ) {
                     let pdu = event.get("pdu").cloned().unwrap_or(event);
                     value = rezzy::json!({"pdus":[pdu]});

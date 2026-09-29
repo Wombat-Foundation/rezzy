@@ -99,6 +99,7 @@ ureq = { version = "2.9", default-features = false }
 
 # Signing
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "batch"] }
+keyring = { version = "3.6.3", default-features = false, features = ["linux-native-sync-persistent", "apple-native", "windows-native"] }
 
 # Dev dependencies
 insta = "1.47.2"

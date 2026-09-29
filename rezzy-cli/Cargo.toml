@@ -33,6 +33,7 @@ ed25519-dalek.workspace = true
 # chain: idna_adapter >= 1.2 requires rustc 1.86, above our MSRV.
 idna_adapter = { version = ">=1.0, <1.2", default-features = false }
 imbl.workspace = true
+keyring.workspace = true
 mimalloc = { workspace = true, optional = true }
 rezzy = { workspace = true, features = ["cli"] }
 roaring.workspace = true
