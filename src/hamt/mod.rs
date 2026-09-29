@@ -337,11 +337,12 @@ impl<K, V> HamtNode<K, V> {
         Q: Eq + ?Sized,
         F: NodeResolver<K, V, E>,
     {
-        // Iterative descent, keeping resolved children alive in `arena` so the
-        // borrow checker accepts stepping through lazy nodes.
-        let mut arena: Vec<NodePtr<K, V>> = Vec::new();
+        // Iterative descent with a single owned cursor for resolved children:
+        // each child is an `Arc`, so replacing the cursor drops the previous
+        // node without retaining the ancestor chain.
+        let mut cursor: Option<NodePtr<K, V>> = None;
         for depth in 0..HAMT_MAX_DEPTH {
-            let node: &HamtNode<K, V> = match arena.last() {
+            let node: &HamtNode<K, V> = match &cursor {
                 Some(child) => child,
                 None => self,
             };
@@ -349,8 +350,8 @@ impl<K, V> HamtNode<K, V> {
                 Slot::Leaf((stored_key, value)) => {
                     return Ok((stored_key.borrow() == key).then(|| value.clone()));
                 }
-                Slot::Child(NodeRef::Resolved(child)) => arena.push(child.clone()),
-                Slot::Child(NodeRef::Lazy(hash)) => arena.push(resolver(hash)?),
+                Slot::Child(NodeRef::Resolved(child)) => cursor = Some(child.clone()),
+                Slot::Child(NodeRef::Lazy(hash)) => cursor = Some(resolver(hash)?),
                 Slot::Empty => return Ok(None),
             }
         }

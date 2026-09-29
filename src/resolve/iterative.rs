@@ -746,6 +746,44 @@ where
     )
 }
 
+/// Resolves with a fresh `pl_cache`, threading the optional external/mainline
+/// caches and a caller-supplied conflicted-key set. Shared by the non-lazy
+/// multi-state resolver and the State-DAG fork merge.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_iterative_sort_with_fresh_cache<Id, C, S1, S2, K>(
+    unconflicted_state: &SharedState<Id, K>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    version: StateResVersion,
+    empty_key: &K,
+    external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
+    mainline_cache: &mut FastMap<Id, Option<Id>>,
+    conflicted_keys: &crate::FastSet<(EventType, K)>,
+) -> SharedState<Id, K>
+where
+    Id: EventId,
+    C: EventContent + Clone,
+    S1: BuildHasher,
+    S2: BuildHasher,
+    K: StateKey,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+{
+    let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
+    resolve_iterative_sort_with_all_caches::<Id, C, S1, S2, hashbrown::DefaultHashBuilder, K>(
+        IterativeInputs::new(
+            unconflicted_state,
+            conflicted_events,
+            auth_context,
+            version,
+            &mut pl_cache,
+            empty_key,
+        ),
+        external_auth_cache,
+        mainline_cache,
+        conflicted_keys,
+    )
+}
+
 /// Borrowed inputs for resolving with a caller-supplied set of genuinely
 /// conflicted keys, shared by the iterative and semilattice resolver
 /// strategies so their entry points stay comparable.

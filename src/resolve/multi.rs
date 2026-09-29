@@ -616,16 +616,12 @@ where
         auth_context.entry(id.clone()).or_insert_with(|| ev.clone());
     }
 
-    let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
-    crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
-        crate::resolve::iterative::IterativeInputs::new(
-            &unconflicted_state,
-            &conflicted_events,
-            &auth_context,
-            version,
-            &mut pl_cache,
-            &empty_key,
-        ),
+    crate::resolve::iterative::resolve_iterative_sort_with_fresh_cache(
+        &unconflicted_state,
+        &conflicted_events,
+        &auth_context,
+        version,
+        &empty_key,
         None,
         &mut crate::FastMap::default(),
         &conflicted_keys,

@@ -6643,7 +6643,6 @@ fn test_local_auth_cache_version_invalidation() {
     assert!(!cache.map.contains_key("stale_key"));
 
     // ── resolve_iterative_sort_with_cache_and_deltas (iterative.rs:551-559) ──
-    let (unconflicted, conflicted, auth_context) = make_fixture();
     let mut cache2 = LocalAuthCache::new(StateResVersion::V2);
     cache2
         .map
