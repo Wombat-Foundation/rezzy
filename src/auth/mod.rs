@@ -513,12 +513,12 @@ pub fn validate_forward_extremity<
 /// # Errors
 ///
 /// Returns an `AuthError` if the event fails authorization validation.
-pub fn check_auth<Id: EventId, C: EventContent, E: EventLike<Id = Id, Content = C>>(
+pub fn check_auth<E: EventLike>(
     event: &E,
-    state: &impl StateProvider<Id, C, E>,
+    state: &impl StateProvider<E::Id, E::Content, E>,
     version: StateResVersion,
-    verifier: Option<&dyn EventVerifier<Id>>,
-) -> Result<(), AuthError<Id>> {
+    verifier: Option<&dyn EventVerifier<E::Id>>,
+) -> Result<(), AuthError<E::Id>> {
     check_auth_with_context(event, state, version, verifier, None)
 }
 
@@ -966,7 +966,54 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
 
     // Rule 5: m.room.member state_key validation
     if event_type == M_ROOM_MEMBER {
-        check_membership_rules(event, state, version, verifier)?;
+        let Some(target_user) = event.state_key() else {
+            return Err(AuthError::InvalidSyntax(
+                "m.room.member event missing state_key".into(),
+            ));
+        };
+        let Some(new_membership) = event.get_membership() else {
+            return Err(AuthError::InvalidSyntax(
+                "m.room.member event missing membership field".into(),
+            ));
+        };
+
+        let current_membership = state
+            .get_event(M_ROOM_MEMBER, target_user)
+            .and_then(EventLike::get_membership)
+            .unwrap_or("");
+
+        // Self-bans are nonsensical and forbidden by the spec.
+        if new_membership == MEM_BAN && target_user == event.sender() {
+            return Err(AuthError::InvalidStateKey {
+                expected: alloc::format!("!= {}", event.sender()),
+                actual: target_user.into(),
+            });
+        }
+
+        match new_membership {
+            MEM_JOIN => check_join_rules(event, state, target_user, version, verifier)?,
+            MEM_LEAVE => {
+                check_leave_rules(event, state, target_user, current_membership, version)?;
+            }
+            MEM_BAN => check_ban_rules(event, state, version)?,
+            MEM_INVITE => check_invite_rules(
+                event,
+                state,
+                target_user,
+                current_membership,
+                version,
+                verifier,
+            )?,
+            MEM_KNOCK => check_knock_rules(event, state, target_user)?,
+            // Rule 5.8: Unknown membership — reject
+            _ => {
+                return Err(AuthError::InvalidSyntax(alloc::format!(
+                    "unknown membership: {new_membership}"
+                )));
+            }
+        }
+
+        check_membership_pl_hierarchies(event, state, target_user, new_membership, version)?;
     }
 
     Ok(())
@@ -1553,13 +1600,13 @@ pub(crate) fn pl_threshold_for_event<
 }
 
 /// Validate leave/kick transition rules.
-fn check_leave_rules<Id: EventId, C: EventContent, E: EventLike<Id = Id, Content = C>>(
+fn check_leave_rules<E: EventLike>(
     event: &E,
-    state: &impl StateProvider<Id, C, E>,
+    state: &impl StateProvider<E::Id, E::Content, E>,
     target_user: &str,
     current_membership: &str,
     version: StateResVersion,
-) -> Result<(), AuthError<Id>> {
+) -> Result<(), AuthError<E::Id>> {
     // Rule 5.5.1: self-leave is allowed only from invite, join, or knock.
     if target_user == event.sender() {
         return match current_membership {
@@ -1610,14 +1657,14 @@ fn check_ban_rules<Id: EventId, C: EventContent, E: EventLike<Id = Id, Content =
 }
 
 /// Validate invite transition rules.
-fn check_invite_rules<Id: EventId, C: EventContent, E: EventLike<Id = Id, Content = C>>(
+fn check_invite_rules<E: EventLike>(
     event: &E,
-    state: &impl StateProvider<Id, C, E>,
+    state: &impl StateProvider<E::Id, E::Content, E>,
     target_user: &str,
     current_membership: &str,
     version: StateResVersion,
-    verifier: Option<&dyn EventVerifier<Id>>,
-) -> Result<(), AuthError<Id>> {
+    verifier: Option<&dyn EventVerifier<E::Id>>,
+) -> Result<(), AuthError<E::Id>> {
     // Inviting requires invite power level, and sender != target
     if target_user == event.sender() {
         return Err(AuthError::InvalidStateKey {
@@ -1747,63 +1794,6 @@ fn check_membership_pl_hierarchies<
     // A moderator (PL 50) can unban or re-ban a user previously banned by an admin (PL 100),
     // as long as the moderator meets the standard ban/kick PL requirements and has PL > target PL.
     // See Matrix spec room v12 §5.5 (leave) and §5.6 (ban).
-
-    Ok(())
-}
-
-/// Validate membership transition rules for `m.room.member` events.
-fn check_membership_rules<Id: EventId, C: EventContent, E: EventLike<Id = Id, Content = C>>(
-    event: &E,
-    state: &impl StateProvider<Id, C, E>,
-    version: StateResVersion,
-    verifier: Option<&dyn EventVerifier<Id>>,
-) -> Result<(), AuthError<Id>> {
-    let Some(target_user) = event.state_key() else {
-        return Err(AuthError::InvalidSyntax(
-            "m.room.member event missing state_key".into(),
-        ));
-    };
-    let Some(new_membership) = event.get_membership() else {
-        return Err(AuthError::InvalidSyntax(
-            "m.room.member event missing membership field".into(),
-        ));
-    };
-
-    let current_membership = state
-        .get_event(M_ROOM_MEMBER, target_user)
-        .and_then(EventLike::get_membership)
-        .unwrap_or("");
-
-    // Self-bans are nonsensical and forbidden by the spec.
-    if new_membership == MEM_BAN && target_user == event.sender() {
-        return Err(AuthError::InvalidStateKey {
-            expected: alloc::format!("!= {}", event.sender()),
-            actual: target_user.into(),
-        });
-    }
-
-    match new_membership {
-        MEM_JOIN => check_join_rules(event, state, target_user, version, verifier)?,
-        MEM_LEAVE => check_leave_rules(event, state, target_user, current_membership, version)?,
-        MEM_BAN => check_ban_rules(event, state, version)?,
-        MEM_INVITE => check_invite_rules(
-            event,
-            state,
-            target_user,
-            current_membership,
-            version,
-            verifier,
-        )?,
-        MEM_KNOCK => check_knock_rules(event, state, target_user)?,
-        // Rule 5.8: Unknown membership — reject
-        _ => {
-            return Err(AuthError::InvalidSyntax(alloc::format!(
-                "unknown membership: {new_membership}"
-            )));
-        }
-    }
-
-    check_membership_pl_hierarchies(event, state, target_user, new_membership, version)?;
 
     Ok(())
 }

@@ -576,7 +576,12 @@ mod state_dag_branch_coverage_tests {
         create.auth_events.push("$parent".into());
         let events = crate::HashMap::<String, LeanEvent<String, Value, String>>::default();
         assert!(matches!(
-            compute_state_before_from_dag(&create, &events, StateResVersion::V2_2, &empty_key),
+            compute_state_before_from_dag(&DagInputs::new(
+                &create,
+                &events,
+                StateResVersion::V2_2,
+                &empty_key
+            )),
             Err(StateDagError::Validation(
                 StateDagValidationError::CreateWithPrevStateEvents
             ))
@@ -587,12 +592,12 @@ mod state_dag_branch_coverage_tests {
         valid_create.event_type = M_ROOM_CREATE.into();
         valid_create.state_key = Some(String::new());
         assert_eq!(
-            compute_state_before_from_dag(
+            compute_state_before_from_dag(&DagInputs::new(
                 &valid_create,
                 &events,
                 StateResVersion::V2_2,
                 &empty_key
-            )
+            ))
             .unwrap(),
             SharedState::new()
         );
@@ -602,12 +607,12 @@ mod state_dag_branch_coverage_tests {
         no_state_key.event_type = M_ROOM_CREATE.into();
         no_state_key.state_key = None;
         assert!(matches!(
-            compute_state_before_from_dag(
+            compute_state_before_from_dag(&DagInputs::new(
                 &no_state_key,
                 &events,
                 StateResVersion::V2_2,
                 &empty_key
-            ),
+            )),
             Err(StateDagError::Validation(
                 StateDagValidationError::CreateWithMissingStateKey
             ))
@@ -617,12 +622,12 @@ mod state_dag_branch_coverage_tests {
         let mut non_empty_sk = event("$non-empty-sk", Some("not-empty"));
         non_empty_sk.event_type = M_ROOM_CREATE.into();
         assert!(matches!(
-            compute_state_before_from_dag(
+            compute_state_before_from_dag(&DagInputs::new(
                 &non_empty_sk,
                 &events,
                 StateResVersion::V2_2,
                 &empty_key
-            ),
+            )),
             Err(StateDagError::Validation(
                 StateDagValidationError::CreateWithNonEmptyStateKey { .. }
             ))
@@ -630,7 +635,12 @@ mod state_dag_branch_coverage_tests {
 
         let non_create = event("$event", Some(""));
         assert!(matches!(
-            compute_state_before_from_dag(&non_create, &events, StateResVersion::V2_2, &empty_key),
+            compute_state_before_from_dag(&DagInputs::new(
+                &non_create,
+                &events,
+                StateResVersion::V2_2,
+                &empty_key
+            )),
             Err(StateDagError::Validation(
                 StateDagValidationError::NonCreateWithoutPrevStateEvents { .. }
             ))
@@ -639,12 +649,12 @@ mod state_dag_branch_coverage_tests {
         let mut missing_parent = event("$event", Some(""));
         missing_parent.auth_events.push("$missing".into());
         assert!(matches!(
-            compute_state_before_from_dag(
+            compute_state_before_from_dag(&DagInputs::new(
                 &missing_parent,
                 &events,
                 StateResVersion::V2_2,
                 &empty_key
-            ),
+            )),
             Err(StateDagError::Validation(
                 StateDagValidationError::MissingReferencedEvent { .. }
             ))
@@ -671,14 +681,20 @@ mod state_dag_branch_coverage_tests {
         for value in [create, left, right, target.clone()] {
             events.insert(value.event_id.clone(), value);
         }
-        assert!(
-            compute_state_before_from_dag(&target, &events, StateResVersion::V2_2, &empty_key)
-                .is_ok()
-        );
-        assert!(
-            compute_state_after_from_dag(&target, &events, StateResVersion::V2_2, &empty_key)
-                .is_ok()
-        );
+        assert!(compute_state_before_from_dag(&DagInputs::new(
+            &target,
+            &events,
+            StateResVersion::V2_2,
+            &empty_key
+        ))
+        .is_ok());
+        assert!(compute_state_after_from_dag(&DagInputs::new(
+            &target,
+            &events,
+            StateResVersion::V2_2,
+            &empty_key
+        ))
+        .is_ok());
 
         let mut merge_create = event("$merge-create", Some(""));
         merge_create.event_type = M_ROOM_CREATE.into();
@@ -702,12 +718,12 @@ mod state_dag_branch_coverage_tests {
         ] {
             merge_events.insert(value.event_id.clone(), value);
         }
-        assert!(compute_state_before_from_dag(
+        assert!(compute_state_before_from_dag(&DagInputs::new(
             &merge_target,
             &merge_events,
             StateResVersion::V2_2,
-            &empty_key,
-        )
+            &empty_key
+        ))
         .is_ok());
 
         let mut cycle = event("$cycle", Some("@cycle:example.org"));
@@ -715,7 +731,12 @@ mod state_dag_branch_coverage_tests {
         let mut cyclic: TestMap = crate::HashMap::default();
         cyclic.insert(cycle.event_id.clone(), cycle.clone());
         assert!(matches!(
-            compute_state_before_from_dag(&cycle, &cyclic, StateResVersion::V2_2, &empty_key),
+            compute_state_before_from_dag(&DagInputs::new(
+                &cycle,
+                &cyclic,
+                StateResVersion::V2_2,
+                &empty_key
+            )),
             Err(StateDagError::CycleDetected)
         ));
     }
@@ -734,9 +755,13 @@ mod state_dag_branch_coverage_tests {
             events.insert(value.event_id.clone(), value);
         }
 
-        let state =
-            compute_state_after_from_dag(&target, &events, StateResVersion::V2_2, &empty_key)
-                .unwrap();
+        let state = compute_state_after_from_dag(&DagInputs::new(
+            &target,
+            &events,
+            StateResVersion::V2_2,
+            &empty_key,
+        ))
+        .unwrap();
         assert!(state.contains_key(&(EventType::from("m.room.message"), "target".to_string())));
     }
 
@@ -1221,6 +1246,36 @@ where
     (sorted, out_degree)
 }
 
+/// Borrowed inputs shared by the State-DAG resolution entry points.
+pub struct DagInputs<'a, Id, C, S, K> {
+    /// Event whose before/after state is being resolved.
+    pub event: &'a LeanEvent<Id, C, K>,
+    /// Event map containing the reachable state DAG.
+    pub events_map: &'a HashMap<Id, LeanEvent<Id, C, K>, S>,
+    /// State resolution version; only V2.2 is supported.
+    pub version: StateResVersion,
+    /// Empty-key sentinel used for `(EventType, K)` lookups.
+    pub empty_key: &'a K,
+}
+
+impl<'a, Id, C, S, K> DagInputs<'a, Id, C, S, K> {
+    /// Bundles the inputs accepted by the State-DAG entry points.
+    #[must_use]
+    pub fn new(
+        event: &'a LeanEvent<Id, C, K>,
+        events_map: &'a HashMap<Id, LeanEvent<Id, C, K>, S>,
+        version: StateResVersion,
+        empty_key: &'a K,
+    ) -> Self {
+        Self {
+            event,
+            events_map,
+            version,
+            empty_key,
+        }
+    }
+}
+
 /// Computes the resolved room state before an event using its `prev_state_events` State DAG.
 ///
 /// - For `m.room.create`: returns an empty state map.
@@ -1231,10 +1286,7 @@ where
 /// Returns [`StateDagError`] if validation fails, ancestor events are missing, or a cycle is detected.
 #[allow(clippy::too_many_lines, clippy::missing_panics_doc)]
 pub fn compute_state_before_from_dag<Id, C, S, K>(
-    event: &LeanEvent<Id, C, K>,
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
-    version: StateResVersion,
-    empty_key: &K,
+    inputs: &DagInputs<'_, Id, C, S, K>,
 ) -> Result<SharedState<Id, K>, StateDagError<Id>>
 where
     Id: EventId,
@@ -1243,6 +1295,11 @@ where
     S: BuildHasher,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
+    let event = inputs.event;
+    let events_map = inputs.events_map;
+    let version = inputs.version;
+    let empty_key = inputs.empty_key;
+
     // State-DAG traversal (prev_state_events edges) is only defined for
     // room versions that use MSC4242 (V2.2). Earlier versions use auth-
     // chain state resolution and must not call this function.
@@ -1458,10 +1515,7 @@ where
 /// Panics only if the event's `state_key` changes between the presence check
 /// and insertion, which cannot occur through this shared-reference API.
 pub fn compute_state_after_from_dag<Id, C, S, K>(
-    event: &LeanEvent<Id, C, K>,
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
-    version: StateResVersion,
-    empty_key: &K,
+    inputs: &DagInputs<'_, Id, C, S, K>,
 ) -> Result<SharedState<Id, K>, StateDagError<Id>>
 where
     Id: EventId,
@@ -1470,7 +1524,8 @@ where
     S: BuildHasher,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    let mut state = compute_state_before_from_dag(event, events_map, version, empty_key)?;
+    let mut state = compute_state_before_from_dag(inputs)?;
+    let event = inputs.event;
 
     if event.state_key.is_some() && !event.rejected {
         state.insert(
@@ -1587,9 +1642,13 @@ mod targeted_coverage_tests {
         let create = event("$create", M_ROOM_CREATE, Some(""));
         let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
         events.insert(create.event_id.clone(), create.clone());
-        let state =
-            compute_state_after_from_dag(&create, &events, StateResVersion::V2_2, &String::new())
-                .expect("create state is valid");
+        let state = compute_state_after_from_dag(&DagInputs::new(
+            &create,
+            &events,
+            StateResVersion::V2_2,
+            &String::new(),
+        ))
+        .expect("create state is valid");
 
         assert_eq!(
             state.get(&(EventType::from(M_ROOM_CREATE), String::new())),

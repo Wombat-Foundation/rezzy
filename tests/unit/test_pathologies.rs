@@ -39,8 +39,7 @@ fn resolve_v_with_cache(
             &mut pl_cache,
             &String::new(),
         ),
-        Some(cache),
-        None,
+        rezzy::ResolveOptions::new(Some(cache), None),
     )
 }
 

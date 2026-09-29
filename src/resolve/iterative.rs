@@ -676,15 +676,41 @@ where
     Spl: BuildHasher,
     for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    resolve_iterative_sort_with_cache::<Id, C, S1, S2, Spl, K>(inputs, None, None)
+    resolve_iterative_sort_with_cache::<Id, C, S1, S2, Spl, K>(
+        inputs,
+        ResolveOptions::new(None, None),
+    )
 }
 
-/// Like [`resolve_iterative_sort`], but allows passing an external local auth cache to amortize
-/// allocation costs across multiple invocations.
+/// Optional caches and conflicted-key override threaded through the iterative
+/// resolver entry points.
+pub struct ResolveOptions<'a, Id, C, K> {
+    /// Caller-supplied auth cache reused across invocations, if any.
+    pub external_auth_cache: Option<&'a mut LocalAuthCache<Id, C, K>>,
+    /// Caller-supplied conflicted-key set that overrides the derived one, if any.
+    pub conflicted_keys_override: Option<&'a crate::FastSet<(EventType, K)>>,
+}
+
+impl<'a, Id, C, K> ResolveOptions<'a, Id, C, K> {
+    /// Bundles the optional caches accepted by the iterative entry points.
+    #[must_use]
+    pub fn new(
+        external_auth_cache: Option<&'a mut LocalAuthCache<Id, C, K>>,
+        conflicted_keys_override: Option<&'a crate::FastSet<(EventType, K)>>,
+    ) -> Self {
+        Self {
+            external_auth_cache,
+            conflicted_keys_override,
+        }
+    }
+}
+
+/// Like [`resolve_iterative_sort`], but allows passing an external local auth
+/// cache to amortize allocation costs across multiple invocations.
 ///
-/// When `conflicted_keys_override` is `Some`, the caller-supplied set is used
-/// instead of deriving `conflicted_keys` from `conflicted_events`.  This lets
-/// a pipeline that has already computed a *narrow* (pre-widening) key set
+/// When `options.conflicted_keys_override` is `Some`, the caller-supplied set
+/// is used instead of deriving `conflicted_keys` from `conflicted_events`. This
+/// lets a pipeline that has already computed a *narrow* (pre-widening) key set
 /// prevent supplemental events from deciding their own state keys.
 #[must_use]
 #[allow(clippy::implicit_hasher, clippy::too_many_arguments)]
@@ -697,8 +723,7 @@ pub fn resolve_iterative_sort_with_cache<
     K,
 >(
     inputs: IterativeInputs<'_, Id, C, K, S1, S2, Spl>,
-    external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
-    conflicted_keys_override: Option<&crate::FastSet<(EventType, K)>>,
+    options: ResolveOptions<'_, Id, C, K>,
 ) -> SharedState<Id, K>
 where
     K: StateKey,
@@ -706,7 +731,7 @@ where
     for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let derived_conflicted_keys;
-    let conflicted_keys = if let Some(ck) = conflicted_keys_override {
+    let conflicted_keys = if let Some(ck) = options.conflicted_keys_override {
         ck
     } else {
         derived_conflicted_keys =
@@ -715,7 +740,7 @@ where
     };
     resolve_iterative_sort_with_all_caches::<Id, C, S1, S2, Spl, K>(
         inputs,
-        external_auth_cache,
+        options.external_auth_cache,
         &mut FastMap::default(),
         conflicted_keys,
     )
@@ -795,8 +820,7 @@ where
             &mut pl_cache,
             &empty_key,
         ),
-        None,
-        Some(inputs.conflicted_keys),
+        ResolveOptions::new(None, Some(inputs.conflicted_keys)),
     )
 }
 
@@ -1015,7 +1039,10 @@ where
     Spl: BuildHasher,
     for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    resolve_iterative_sort_with_cache_and_deltas::<Id, C, S1, S2, Spl, K>(inputs, None, None)
+    resolve_iterative_sort_with_cache_and_deltas::<Id, C, S1, S2, Spl, K>(
+        inputs,
+        ResolveOptions::new(None, None),
+    )
 }
 
 /// Internal helper combining the functionality of [`resolve_iterative_sort_with_deltas`] and
@@ -1048,8 +1075,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
     K,
 >(
     inputs: IterativeInputs<'_, Id, C, K, S1, S2, Spl>,
-    external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
-    conflicted_keys_override: Option<&crate::FastSet<(EventType, K)>>,
+    options: ResolveOptions<'_, Id, C, K>,
 ) -> (
     SharedState<Id, K>,
     alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
@@ -1069,7 +1095,7 @@ where
     } = inputs;
     require_legacy_iterative_version(version);
     let derived_conflicted_keys;
-    let conflicted_keys = if let Some(ck) = conflicted_keys_override {
+    let conflicted_keys = if let Some(ck) = options.conflicted_keys_override {
         ck
     } else {
         derived_conflicted_keys = derive_all_conflicted_keys(conflicted_events, empty_key);
@@ -1094,7 +1120,7 @@ where
 
     let mut fallback_cache = LocalAuthCache::new(version);
     let local_auth_cache =
-        select_local_auth_cache(external_auth_cache, &mut fallback_cache, version);
+        select_local_auth_cache(options.external_auth_cache, &mut fallback_cache, version);
 
     let sort_set = &conflicted_events;
 
@@ -1422,8 +1448,7 @@ mod tests {
                 &mut HashMap::new(),
                 &String::new(),
             ),
-            None,
-            None,
+            ResolveOptions::new(None, None),
         )
         .1
     }

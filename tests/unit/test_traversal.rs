@@ -1332,8 +1332,7 @@ fn test_missing_auth_diff_mainline_distortion() {
             &mut std::collections::HashMap::new(),
             &String::new(),
         ),
-        None,
-        None,
+        rezzy::ResolveOptions::new(None, None),
     );
 
     // Test the "correct auth diff" scenario (FIXED)
@@ -1353,8 +1352,7 @@ fn test_missing_auth_diff_mainline_distortion() {
             &mut std::collections::HashMap::new(),
             &String::new(),
         ),
-        None,
-        None,
+        rezzy::ResolveOptions::new(None, None),
     );
 
     // Both scenarios resolve to the same winner because the mainline ordering is

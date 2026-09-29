@@ -723,15 +723,10 @@ fn test_hamt_mutation_with_custom_key_hash() {
     })
     .expect("build with custom hash should work");
 
-    let (root, displaced) = crate::hamt::insert_with_key_hash(
-        &root,
-        key,
-        2_u64,
-        20_u64,
-        |key| custom_routing_hash(*key),
-        &mut resolver,
-    )
-    .expect("custom insert should work");
+    let (root, displaced) =
+        crate::hamt::HamtMutator::new(|key: &u64| custom_routing_hash(*key), &mut resolver)
+            .insert(&root, key, 2_u64, 20_u64)
+            .expect("custom insert should work");
     assert_eq!(displaced, None);
     assert_eq!(
         root.get_with_key_hash(&1_u64, |key| custom_routing_hash(*key)),
@@ -886,14 +881,10 @@ fn test_persist_mutations_and_chain_with_key_hash() {
 
     let batch: Vec<(u64, Option<u64>)> = alloc::vec![(100, Some(1)), (5, None), (101, Some(2)),];
 
-    let (batched_root, displaced_vec, created) = crate::hamt::persist_mutations_with_key_hash(
-        &root,
-        key,
-        batch.clone(),
-        linear_key_hash,
-        &mut resolver,
-    )
-    .expect("persist_mutations_with_key_hash should work");
+    let (batched_root, displaced_vec, created) =
+        crate::hamt::HamtMutator::new(linear_key_hash, &mut resolver)
+            .persist_mutations(&root, key, batch.clone())
+            .expect("persist_mutations should work");
     assert_eq!(displaced_vec, alloc::vec![None, Some(50_u64), None]);
     assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
     assert_eq!(
@@ -909,9 +900,9 @@ fn test_persist_mutations_and_chain_with_key_hash() {
         None
     );
 
-    let chain_steps =
-        crate::hamt::persist_chain_with_key_hash(&root, key, batch, linear_key_hash, &mut resolver)
-            .expect("persist_chain_with_key_hash should work");
+    let chain_steps = crate::hamt::HamtMutator::new(linear_key_hash, &mut resolver)
+        .persist_chain(&root, key, batch)
+        .expect("persist_chain should work");
     let chained_root = &chain_steps.last().expect("batch is non-empty").root;
 
     // Both batch styles must converge to the same final structural hash as
@@ -972,14 +963,10 @@ fn test_persist_mutations_with_key_hash_noop_batch_short_circuits() {
     // Net effect is identity: insert a new key, then remove it again.
     let batch: Vec<(u64, Option<u64>)> = alloc::vec![(1000, Some(1)), (1000, None)];
 
-    let (final_root, displaced_vec, created) = crate::hamt::persist_mutations_with_key_hash(
-        &root,
-        key,
-        batch,
-        linear_key_hash,
-        &mut resolver,
-    )
-    .expect("net-identity batch should still succeed");
+    let (final_root, displaced_vec, created) =
+        crate::hamt::HamtMutator::new(linear_key_hash, &mut resolver)
+            .persist_mutations(&root, key, batch)
+            .expect("net-identity batch should still succeed");
 
     assert_eq!(displaced_vec, alloc::vec![None, Some(1_u64)]);
     assert_eq!(final_root.structural_hash, root.structural_hash);
@@ -1522,7 +1509,7 @@ fn test_insert_node_with_ctx_guards_max_depth_reentry() {
         sink: &mut sink,
     };
 
-    let result = insert_node_with_ctx(&node, 2_u64, 20_u64, [0u8; 32], HAMT_MAX_DEPTH, &mut ctx);
+    let result = ctx.insert_node(&node, 2_u64, 20_u64, [0u8; 32], HAMT_MAX_DEPTH);
 
     assert_eq!(
         result.unwrap_err(),
@@ -2818,14 +2805,9 @@ fn remove_custom(
     id: u64,
     resolver: &mut impl FnMut(&StructuralHash) -> Result<NodePtr<u64, u64>, ()>,
 ) -> (NodePtr<u64, u64>, Option<u64>) {
-    crate::hamt::remove_with_key_hash(
-        root,
-        key,
-        &id,
-        |key: &u64| custom_routing_hash(*key),
-        resolver,
-    )
-    .expect("custom remove should work")
+    crate::hamt::HamtMutator::new(|key: &u64| custom_routing_hash(*key), resolver)
+        .remove(root, key, &id)
+        .expect("custom remove should work")
 }
 
 fn internal_root<K, V>(key: &[u8], slot: usize, child: NodeRef<K, V>) -> Arc<HamtNode<K, V>>

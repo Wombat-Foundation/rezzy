@@ -23,7 +23,7 @@ use rezzy::json;
 use rezzy::state::dag::{
     compute_state_after_from_dag, compute_state_before_from_dag, derive_auth_events_from_state_dag,
     order_missing_state_events_deterministic, validate_msc4242_prev_state_events, walk_state_dag,
-    StateDagCompleteness, StateDagValidationError, StateDagWalkOptions,
+    DagInputs, StateDagCompleteness, StateDagValidationError, StateDagWalkOptions,
 };
 use rezzy::HashMap;
 
@@ -666,9 +666,13 @@ fn test_compute_state_from_dag_linear_chain() {
     events.insert("$pl".to_string(), pl.clone());
     events.insert("$join_alice".to_string(), join_alice.clone());
 
-    let state_before =
-        compute_state_before_from_dag(&join_alice, &events, StateResVersion::V2_2, &empty_key)
-            .expect("compute state before");
+    let state_before = compute_state_before_from_dag(&DagInputs::new(
+        &join_alice,
+        &events,
+        StateResVersion::V2_2,
+        &empty_key,
+    ))
+    .expect("compute state before");
 
     assert_eq!(
         state_before.get(&(EventType::from(M_ROOM_CREATE), empty_key.clone())),
@@ -683,9 +687,13 @@ fn test_compute_state_from_dag_linear_chain() {
         None
     );
 
-    let state_after =
-        compute_state_after_from_dag(&join_alice, &events, StateResVersion::V2_2, &empty_key)
-            .expect("compute state after");
+    let state_after = compute_state_after_from_dag(&DagInputs::new(
+        &join_alice,
+        &events,
+        StateResVersion::V2_2,
+        &empty_key,
+    ))
+    .expect("compute state after");
 
     assert_eq!(
         state_after.get(&(
@@ -771,9 +779,13 @@ fn test_compute_state_from_dag_fork_resolution() {
     events.insert("$member_bob".to_string(), member_bob);
     events.insert("$merge".to_string(), merge.clone());
 
-    let state_before_merge =
-        compute_state_before_from_dag(&merge, &events, StateResVersion::V2_2, &empty_key)
-            .expect("state before merge");
+    let state_before_merge = compute_state_before_from_dag(&DagInputs::new(
+        &merge,
+        &events,
+        StateResVersion::V2_2,
+        &empty_key,
+    ))
+    .expect("state before merge");
 
     // Both topic A and Bob's membership should be present in the resolved state!
     assert_eq!(
@@ -838,12 +850,20 @@ fn test_compute_state_from_dag_is_deterministic_across_storage_order() {
         reverse.insert(event.event_id.clone(), event.clone());
     }
 
-    let state_forward =
-        compute_state_before_from_dag(&merge, &forward, StateResVersion::V2_2, &empty_key)
-            .expect("complete State DAG must resolve");
-    let state_reverse =
-        compute_state_before_from_dag(&merge, &reverse, StateResVersion::V2_2, &empty_key)
-            .expect("complete State DAG must resolve regardless of storage order");
+    let state_forward = compute_state_before_from_dag(&DagInputs::new(
+        &merge,
+        &forward,
+        StateResVersion::V2_2,
+        &empty_key,
+    ))
+    .expect("complete State DAG must resolve");
+    let state_reverse = compute_state_before_from_dag(&DagInputs::new(
+        &merge,
+        &reverse,
+        StateResVersion::V2_2,
+        &empty_key,
+    ))
+    .expect("complete State DAG must resolve regardless of storage order");
 
     assert_eq!(state_forward, state_reverse);
     assert_eq!(
@@ -896,9 +916,13 @@ fn test_derive_auth_events_for_membership() {
     events.insert("$jr".to_string(), join_rules);
     events.insert("$creator_join".to_string(), creator_join.clone());
 
-    let state_at_tip =
-        compute_state_after_from_dag(&creator_join, &events, StateResVersion::V2_2, &empty_key)
-            .expect("state after creator join");
+    let state_at_tip = compute_state_after_from_dag(&DagInputs::new(
+        &creator_join,
+        &events,
+        StateResVersion::V2_2,
+        &empty_key,
+    ))
+    .expect("state after creator join");
 
     // A new user (@bob) joins the room
     let bob_join = make_state_event(
@@ -1038,9 +1062,13 @@ fn test_v2_2_derives_auth_from_single_state_parent_citation() {
         None,
     );
 
-    let state_before =
-        compute_state_before_from_dag(&bob_join, &events, StateResVersion::V2_2, &empty_key)
-            .expect("state before bob's join");
+    let state_before = compute_state_before_from_dag(&DagInputs::new(
+        &bob_join,
+        &events,
+        StateResVersion::V2_2,
+        &empty_key,
+    ))
+    .expect("state before bob's join");
 
     // Both power_levels and join_rules are reachable via the validated
     // prev_state_events DAG, even though Bob cited neither directly.

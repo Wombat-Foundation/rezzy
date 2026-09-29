@@ -6637,8 +6637,7 @@ fn test_local_auth_cache_version_invalidation() {
             &mut std::collections::HashMap::new(),
             &String::new(),
         ),
-        Some(&mut cache),
-        None,
+        rezzy::ResolveOptions::new(Some(&mut cache), None),
     );
     assert_eq!(cache.version, StateResVersion::V2_1);
     assert!(!cache.map.contains_key("stale_key"));
@@ -6659,8 +6658,7 @@ fn test_local_auth_cache_version_invalidation() {
             &mut std::collections::HashMap::new(),
             &String::new(),
         ),
-        Some(&mut cache2),
-        None,
+        rezzy::ResolveOptions::new(Some(&mut cache2), None),
     );
     assert_eq!(cache2.version, StateResVersion::V2_1);
     assert!(!cache2.map.contains_key("stale2"));
