@@ -21,10 +21,12 @@ pub mod federation;
 pub mod format;
 pub mod jsonl_merge;
 pub mod network;
+pub mod provenance;
 pub mod repair;
 pub mod timeline_order;
 pub mod utils;
 
+use crate::timeline_order::{OrderKey, TimelineOrder};
 use format::{format_cli_output, FormattingContext};
 use rezzy::OutputFormat;
 use rezzy::{LeanEvent, StateResVersion};
@@ -38,6 +40,7 @@ use utils::{
     parse_and_extract_heads, partition_and_resolve_state,
 };
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub struct Args {
     pub input: Vec<PathBuf>,
@@ -63,6 +66,18 @@ pub struct Args {
     pub check: bool,
 
     pub origin: String,
+
+    /// Ordering for `-f timeline`.
+    pub timeline_order: TimelineOrder,
+
+    /// Ready-queue key order for `-f timeline --timeline-order causal`.
+    pub tie_break: Vec<OrderKey>,
+
+    /// Whether `--timeline-order` was passed on the command line.
+    pub timeline_order_explicit: bool,
+
+    /// Explicit provenance sidecar for stream-order lookups.
+    pub metadata: Option<PathBuf>,
 }
 
 impl Args {
@@ -109,6 +124,16 @@ impl Args {
                 .get_one::<String>("origin")
                 .cloned()
                 .unwrap_or_else(|| String::from("matrix.org")),
+            timeline_order: *matches
+                .get_one::<TimelineOrder>("timeline-order")
+                .expect("timeline-order has a default"),
+            tie_break: matches
+                .get_many::<OrderKey>("tie-break")
+                .map(|values| values.copied().collect())
+                .unwrap_or_default(),
+            timeline_order_explicit: matches.value_source("timeline-order")
+                == Some(clap::parser::ValueSource::CommandLine),
+            metadata: matches.get_one::<PathBuf>("metadata").cloned(),
         }
     }
 }
@@ -179,6 +204,26 @@ pub fn cli_command() -> clap::Command {
                 .long("origin")
                 .default_value("matrix.org"),
         )
+        .arg(
+            clap::Arg::new("timeline-order")
+                .long("timeline-order")
+                .value_parser(clap::builder::EnumValueParser::<TimelineOrder>::new())
+                .default_value("causal")
+                .help("Ordering for -f timeline: causal (Kahn) or synapse (depth + sidecar stream order)"),
+        )
+        .arg(
+            clap::Arg::new("tie-break")
+                .long("tie-break")
+                .value_delimiter(',')
+                .value_parser(clap::builder::EnumValueParser::<OrderKey>::new())
+                .help("Tie-break order for simultaneously eligible events in causal mode. Parent-before-child ordering always wins."),
+        )
+        .arg(
+            clap::Arg::new("metadata")
+                .long("metadata")
+                .value_parser(clap::value_parser!(PathBuf))
+                .help("Explicit provenance sidecar for stream-order lookups"),
+        )
         .subcommand(aggregate::command())
         .subcommand(federation::command())
         .subcommand(repair::command())
@@ -201,6 +246,57 @@ fn misplaced_top_level_argument(matches: &clap::ArgMatches) -> Option<String> {
     })
 }
 
+/// Reject ordering flags used with a format they do not apply to.
+///
+/// # Errors
+/// Returns [`error::ErrorCode::UnexpectedFormat`] for an incompatible
+/// combination of `-f` and the timeline ordering flags.
+fn validate_timeline_args(args: &Args) -> Result<(), error::AppError> {
+    let timeline = matches!(args.format, OutputFormat::Timeline);
+    let used_ordering_flags =
+        args.timeline_order_explicit || !args.tie_break.is_empty() || args.metadata.is_some();
+    if !timeline {
+        if used_ordering_flags {
+            return Err(error::AppError::new(
+                error::ErrorCode::UnexpectedFormat,
+                format!(
+                    "timeline ordering flags (--timeline-order/--tie-break/--metadata) require -f timeline, not -f {}",
+                    format_name(args.format)
+                ),
+            ));
+        }
+        return Ok(());
+    }
+    if args.timeline_order != TimelineOrder::Causal && !args.tie_break.is_empty() {
+        return Err(error::AppError::new(
+            error::ErrorCode::UnexpectedFormat,
+            String::from("--tie-break only applies to --timeline-order causal"),
+        ));
+    }
+    if args.metadata.is_some() && !format::needs_stream_order(args) {
+        return Err(error::AppError::new(
+            error::ErrorCode::UnexpectedFormat,
+            String::from(
+                "--metadata requires --timeline-order synapse or a stream_ordering/pdu_count tie-break key",
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn format_name(format: OutputFormat) -> &'static str {
+    match format {
+        OutputFormat::Events => "events",
+        OutputFormat::Default => "default",
+        OutputFormat::Deltas => "deltas",
+        OutputFormat::Federation => "federation",
+        OutputFormat::Summary => "summary",
+        OutputFormat::Timeline => "timeline",
+        OutputFormat::TimelineChronological => "timeline-chronological",
+        OutputFormat::ResolveState => "resolve-state",
+    }
+}
+
 /// Run the CLI application.
 ///
 /// # Errors
@@ -213,6 +309,7 @@ fn misplaced_top_level_argument(matches: &clap::ArgMatches) -> Option<String> {
 /// that same graph's index.
 #[allow(clippy::too_many_lines)]
 pub fn run_cli(args: &Args) -> Result<rezzy::JsonValue, error::AppError> {
+    validate_timeline_args(args)?;
     let input_val = load_or_fetch_input_value(args)?;
     let (raw_events, heads) = parse_and_extract_heads(&input_val, args.debug)?;
 
@@ -450,6 +547,12 @@ pub fn run_cli(args: &Args) -> Result<rezzy::JsonValue, error::AppError> {
         })
         .collect();
 
+    let stream_order = if format::needs_stream_order(args) {
+        format::load_stream_order(args, &events_map, &raw_map, room_version.as_deref())?
+    } else {
+        None
+    };
+
     let ctx = FormattingContext {
         args,
         events_map: &events_map,
@@ -463,6 +566,7 @@ pub fn run_cli(args: &Args) -> Result<rezzy::JsonValue, error::AppError> {
         room_version: room_version.as_deref(),
         duration,
         event_count,
+        stream_order: stream_order.as_ref(),
     };
 
     Ok(format_cli_output(&ctx))
@@ -607,6 +711,10 @@ mod tests {
             quiet: true,
             check: true,
             origin: String::from("matrix.org"),
+            timeline_order: crate::timeline_order::TimelineOrder::default(),
+            tie_break: Vec::new(),
+            timeline_order_explicit: false,
+            metadata: None,
         }
     }
 
@@ -668,6 +776,8 @@ mod tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod cli_tests {
     use super::*;
+    use crate::error::ErrorCode;
+    use crate::timeline_order::{OrderKey, TimelineOrder};
 
     #[test]
     fn aggregate_rejects_top_level_command_line_flags() {
@@ -728,5 +838,65 @@ mod cli_tests {
             ])
             .expect_err("--output and --output-dir should conflict");
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    fn timeline_args(extra: &[&str]) -> Args {
+        let mut args = vec!["rezzy", "-i", "room.jsonl", "-f", "timeline"];
+        args.extend_from_slice(extra);
+        let matches = cli_command()
+            .try_get_matches_from(args)
+            .expect("timeline args should parse");
+        Args::from_matches(&matches)
+    }
+
+    #[test]
+    fn timeline_tie_break_parses_the_key_list() {
+        let args = timeline_args(&[
+            "--timeline-order",
+            "causal",
+            "--tie-break",
+            "origin_server_ts,matrix_depth,event_id",
+        ]);
+        assert_eq!(args.timeline_order, TimelineOrder::Causal);
+        assert!(args.timeline_order_explicit);
+        assert_eq!(
+            args.tie_break,
+            vec![
+                OrderKey::OriginServerTs,
+                OrderKey::MatrixDepth,
+                OrderKey::EventId
+            ]
+        );
+        validate_timeline_args(&args).expect("causal tie-break is valid");
+    }
+
+    #[test]
+    fn timeline_ordering_flags_reject_incompatible_formats() {
+        let args = timeline_args(&["--timeline-order", "synapse"]);
+        let mut chronological = args;
+        chronological.format = OutputFormat::TimelineChronological;
+        let error =
+            validate_timeline_args(&chronological).expect_err("chronological is not timeline");
+        assert_eq!(error.code(), ErrorCode::UnexpectedFormat);
+        assert!(error.to_string().contains("require -f timeline"));
+    }
+
+    #[test]
+    fn synapse_rejects_a_tie_break() {
+        let args = timeline_args(&[
+            "--timeline-order",
+            "synapse",
+            "--tie-break",
+            "origin_server_ts",
+        ]);
+        let error = validate_timeline_args(&args).expect_err("synapse has no tie-break");
+        assert_eq!(error.code(), ErrorCode::UnexpectedFormat);
+    }
+
+    #[test]
+    fn metadata_requires_stream_order() {
+        let args = timeline_args(&["--metadata", "other.rezzy-meta.jsonl"]);
+        let error = validate_timeline_args(&args).expect_err("metadata without stream order");
+        assert_eq!(error.code(), ErrorCode::UnexpectedFormat);
     }
 }

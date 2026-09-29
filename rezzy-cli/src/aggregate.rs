@@ -2,6 +2,7 @@
 
 use crate::error::{AppError, ErrorCode};
 use crate::jsonl_merge::merge_event_slices;
+use crate::provenance::{self, RawObservation, SourceInfo};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -21,6 +22,7 @@ enum Source {
     Files(Vec<PathBuf>),
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 struct Options {
     input_dir: PathBuf,
@@ -29,6 +31,7 @@ struct Options {
     check: bool,
     quiet: bool,
     repair_missing_ids: bool,
+    provenance: bool,
 }
 
 #[must_use]
@@ -82,6 +85,12 @@ pub fn command() -> Command {
                 .action(ArgAction::SetTrue)
                 .help("Derive missing v3+ event IDs before merging"),
         )
+        .arg(
+            Arg::new("no-provenance")
+                .long("no-provenance")
+                .action(ArgAction::SetTrue)
+                .help("Skip the per-room .rezzy-meta.jsonl provenance sidecar"),
+        )
 }
 
 fn options_from_matches(matches: &ArgMatches) -> Options {
@@ -109,6 +118,7 @@ fn options_from_matches(matches: &ArgMatches) -> Options {
         check: matches.get_flag("check"),
         quiet: matches.get_flag("quiet"),
         repair_missing_ids: matches.get_flag("repair-missing-ids"),
+        provenance: !matches.get_flag("no-provenance"),
     }
 }
 
@@ -414,6 +424,8 @@ fn output_bytes(events: &[rezzy::JsonValue]) -> Result<Vec<u8>, AppError> {
 struct RawInput {
     label: String,
     events: Vec<rezzy::JsonValue>,
+    source: SourceInfo,
+    observations: Vec<RawObservation>,
 }
 
 fn read_raw_input_with_repair(
@@ -428,13 +440,19 @@ fn read_raw_input_with_repair(
         .unwrap_or(path)
         .to_string_lossy()
         .into_owned();
+    let file_sha256 = provenance::sha256_hex(&bytes);
+
     let mut events = Vec::new();
-    for line in bytes.split(|byte| *byte == b'\n') {
-        let line = std::str::from_utf8(line)
+    let mut line_numbers: Vec<usize> = Vec::new();
+    let mut line_hashes: Vec<String> = Vec::new();
+    for (index, segment) in bytes.split(|byte| *byte == b'\n').enumerate() {
+        let line = std::str::from_utf8(segment)
             .map_err(|e| AppError::new(ErrorCode::MalformedJson, format!("{label}: {e}")))?
             .trim();
         if !line.is_empty() {
             events.push(rezzy::JsonValue::parse(line)?);
+            line_numbers.push(index.saturating_add(1));
+            line_hashes.push(provenance::sha256_hex(line.as_bytes()));
         }
     }
     if events.is_empty() {
@@ -458,73 +476,83 @@ fn read_raw_input_with_repair(
             crate::repair::fill_missing_event_id(
                 event,
                 &room_version,
-                &format!("{label}:{}", index + 1),
+                &format!("{label}:{}", index.saturating_add(1)),
             )?;
         }
     }
-    if let Some(room_version) = filename_version(path) {
-        let room_version = room_version.trim_start_matches("-v");
-        let mut canonicalized = 0_usize;
-        for (index, event) in events.iter_mut().enumerate() {
-            canonicalized = canonicalized.saturating_add(usize::from(canonicalize_event(
-                event,
-                room_version,
-                &format!("{label}:{}", index + 1),
-            )?));
+
+    let mut observations = Vec::with_capacity(events.len());
+    let mut stripped_events = 0_usize;
+    for (event, (line, line_hash)) in events
+        .iter_mut()
+        .zip(line_numbers.into_iter().zip(line_hashes))
+    {
+        let raw = event.clone();
+        let observation =
+            provenance::observe_raw_event(&raw, event_id(event).to_owned(), line, line_hash);
+        if !observation.stripped.is_empty() {
+            stripped_events = stripped_events.saturating_add(1);
         }
-        if !quiet && canonicalized > 0 {
-            eprintln!(
-                "[info] canonicalized {canonicalized} events in {label} for room version {room_version}"
-            );
-        }
+        provenance::strip_non_envelope_fields(event);
+        observations.push(observation);
     }
+    if !quiet && stripped_events > 0 {
+        eprintln!(
+            "[info] recorded provenance for {stripped_events} event(s) in {label}; stripped non-envelope metadata"
+        );
+    }
+
     validate_event_ids(&events, &label)?;
     validate_sort_metadata(&events, &label)?;
-    Ok(RawInput { label, events })
+    let (source_kind, server_hint) = describe_source(&label);
+    let source = SourceInfo {
+        sha256: file_sha256,
+        filename: label.clone(),
+        source_kind,
+        server_hint,
+        event_count: events.len(),
+    };
+    Ok(RawInput {
+        label,
+        events,
+        source,
+        observations,
+    })
 }
 
-fn canonicalize_event(
-    event: &mut rezzy::JsonValue,
-    room_version: &str,
-    label: &str,
-) -> Result<bool, AppError> {
-    let original = event.clone();
-    let canonical = rezzy::try_canonical_redacted_json(event, room_version).map_err(|error| {
-        AppError::new(
-            ErrorCode::UnsupportedVersion,
-            format!("{label}: cannot canonicalize event: {error}"),
-        )
-    })?;
-    *event = rezzy::JsonValue::parse(&canonical).map_err(|error| {
-        AppError::new(
-            ErrorCode::MalformedJson,
-            format!("{label}: canonical event is invalid JSON: {error}"),
-        )
-    })?;
-    preserve_create_room_version(&original, event);
-    let changed = *event != original;
-    Ok(changed)
-}
-
-fn preserve_create_room_version(original: &rezzy::JsonValue, canonical: &mut rezzy::JsonValue) {
-    if original.get("type").and_then(|value| value.as_str()) != Some("m.room.create") {
-        return;
+/// Derives best-effort provenance from a raw filename. This is a hint only;
+/// the event's own `room_id`, `origin`, and signatures stay authoritative.
+fn describe_source(label: &str) -> (String, Option<String>) {
+    let stem = Path::new(label).file_stem().map_or_else(
+        || label.to_owned(),
+        |stem| stem.to_string_lossy().into_owned(),
+    );
+    let mut kind = String::from("unknown");
+    let mut rest = stem.as_str();
+    if let Some(stripped) = rest.strip_prefix("local-") {
+        kind = String::from("local");
+        rest = stripped;
+    } else if let Some(stripped) = rest.strip_prefix("remote-") {
+        kind = String::from("remote");
+        rest = stripped;
     }
-    let Some(room_version) = original
-        .get("content")
-        .and_then(|content| content.get("room_version"))
-        .cloned()
-    else {
-        return;
-    };
-    let Some(content) = canonical
-        .as_object_mut()
-        .and_then(|object| object.get_mut("content"))
-        .and_then(|content| content.as_object_mut())
-    else {
-        return;
-    };
-    content.insert("room_version".to_owned(), room_version);
+    if let Some(stripped) = rest.strip_prefix("dag-") {
+        kind = if kind == "unknown" {
+            String::from("dag")
+        } else {
+            format!("{kind}-dag")
+        };
+        rest = stripped;
+    }
+    let server_hint = version_token_at(rest).and_then(|(start, digits)| {
+        let after = rest.get(start.saturating_add(2).saturating_add(digits.len())..)?;
+        let after = after.strip_prefix('-').unwrap_or(after);
+        after
+            .split('-')
+            .find(|token| token.contains('.'))
+            .map(str::to_owned)
+    });
+    (kind, server_hint)
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
@@ -629,14 +657,24 @@ fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
             read_raw_input_with_repair(path, label_base, options.repair_missing_ids, options.quiet)
         })
         .collect::<Result<_, _>>()?;
+    let room_version = files
+        .first()
+        .and_then(|path| filename_version(path))
+        .map(|version| version.trim_start_matches("-v").to_owned());
     let sets: Vec<(String, &[rezzy::JsonValue])> = inputs
         .iter()
         .map(|input| (input.label.clone(), input.events.as_slice()))
         .collect();
-    let merge = merge_event_slices(&sets, false, options.quiet)?;
+    let merge = merge_event_slices(&sets, room_version.as_deref(), false, options.quiet)?;
     let mut events = merge.events;
     sort_events(&mut events)?;
     let output = output_bytes(&events)?;
+    let sidecar = if options.provenance {
+        Some(build_sidecar(&inputs, &events, room_version.as_deref())?)
+    } else {
+        None
+    };
+    let sidecar_path = provenance::sidecar_path(&options.output);
     if options.check {
         let existing_output = fs::read(&options.output).map_err(|e| {
             AppError::new(
@@ -645,13 +683,18 @@ fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
             )
         })?;
         if existing_output != output {
-            return Err(AppError::new(
-                ErrorCode::AggregateStale,
-                format!(
-                    "{} is stale; rerun without --check to regenerate it",
-                    options.output.display()
-                ),
-            ));
+            return Err(stale_error(&options.output));
+        }
+        if let Some(sidecar) = &sidecar {
+            let existing_sidecar = fs::read(&sidecar_path).map_err(|error| {
+                AppError::new(
+                    ErrorCode::AggregateStale,
+                    format!("provenance sidecar is unavailable: {error}"),
+                )
+            })?;
+            if existing_sidecar != *sidecar {
+                return Err(stale_error(&sidecar_path));
+            }
         }
         return Ok(rezzy::json!({"status": "current", "unique_events": events.len()}));
     }
@@ -659,8 +702,55 @@ fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
         fs::create_dir_all(parent)?;
     }
     write_atomic(&options.output, &output)?;
-    Ok(
-        rezzy::json!({"status": "written", "output": options.output.to_string_lossy().to_string(), "unique_events": events.len(), "input_files": files.len(), "duplicate_event_copies": merge.duplicate_copies}),
+    let mut result = rezzy::json!({
+        "status": "written",
+        "output": options.output.to_string_lossy().to_string(),
+        "unique_events": events.len(),
+        "input_files": files.len(),
+        "duplicate_event_copies": merge.duplicate_copies,
+    });
+    if let Some(sidecar) = &sidecar {
+        write_atomic(&sidecar_path, sidecar)?;
+        let _ = result.insert(
+            String::from("metadata_output"),
+            rezzy::json!(sidecar_path.to_string_lossy().to_string()),
+        );
+    }
+    Ok(result)
+}
+
+fn stale_error(path: &Path) -> AppError {
+    AppError::new(
+        ErrorCode::AggregateStale,
+        format!(
+            "{} is stale; rerun without --check to regenerate it",
+            path.display()
+        ),
+    )
+}
+
+fn build_sidecar(
+    inputs: &[RawInput],
+    events: &[rezzy::JsonValue],
+    room_version: Option<&str>,
+) -> Result<Vec<u8>, AppError> {
+    let sources: Vec<SourceInfo> = inputs.iter().map(|input| input.source.clone()).collect();
+    let mut observations = Vec::new();
+    for (index, input) in inputs.iter().enumerate() {
+        for observation in &input.observations {
+            observations.push((index, observation.clone()));
+        }
+    }
+    let room_id = events
+        .iter()
+        .find_map(|event| event.get("room_id").and_then(rezzy::JsonValue::as_str))
+        .map(str::to_owned);
+    provenance::build_sidecar(
+        &sources,
+        &observations,
+        events,
+        room_id.as_deref(),
+        room_version,
     )
 }
 
@@ -761,6 +851,7 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<AggregateOutcome, AppErr
             check: base.check,
             quiet: base.quiet,
             repair_missing_ids: base.repair_missing_ids,
+            provenance: base.provenance,
         };
         match aggregate(&options) {
             Ok(mut result) => {
@@ -838,6 +929,7 @@ mod tests {
             check,
             quiet: true,
             repair_missing_ids: false,
+            provenance: true,
         }
     }
     fn event_line(event: &rezzy::JsonValue) -> String {
@@ -1036,6 +1128,7 @@ mod tests {
             check: false,
             quiet: true,
             repair_missing_ids: false,
+            provenance: true,
         };
         let error = reject_input_output_overlap(&options)
             .expect_err("a bare output name belongs to the current directory");
@@ -1496,6 +1589,64 @@ mod tests {
         let scan = scan_matches(&raw_dir, &[]);
         let error = run_from_matches(&scan).expect_err("scan skips unversioned inputs");
         assert_eq!(error.code(), ErrorCode::EmptyInput);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn signed_event() -> rezzy::JsonValue {
+        rezzy::json!({
+            "event_id": "$a",
+            "room_id": "!r:example.org",
+            "type": "m.room.message",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 100,
+            "depth": 1,
+            "prev_events": [],
+            "auth_events": [],
+            "content": {"body": "hi", "custom": {"x": 1}},
+            "signatures": {"example.org": {"ed25519:1": "sig"}},
+            "unsigned": {"age": 5},
+            "__rejected": true,
+            "unknown_field": 7
+        })
+    }
+
+    #[test]
+    fn aggregate_preserves_envelope_and_writes_sidecar() {
+        let root = unique_test_dir();
+        let raw_dir = root.join("unmerged");
+        fs::create_dir_all(&raw_dir).unwrap();
+        write_event(&raw_dir.join("remote-room-v12.jsonl"), &signed_event());
+        aggregate(&options(&root, false)).unwrap();
+
+        let merged = fs::read_to_string(root.join("merged/room.jsonl")).unwrap();
+        assert!(merged.contains("\"signatures\""), "signatures retained");
+        assert!(merged.contains("\"unsigned\""), "unsigned retained");
+        assert!(merged.contains("\"custom\""), "content untouched");
+        assert!(!merged.contains("__rejected"), "dunder field stripped");
+        assert!(!merged.contains("unknown_field"), "unknown field stripped");
+
+        let sidecar = fs::read_to_string(root.join("merged/room.rezzy-meta.jsonl")).unwrap();
+        let lines: Vec<&str> = sidecar.lines().collect();
+        assert_eq!(lines.len(), 2, "manifest plus one event");
+        assert!(lines[0].contains("\"record_type\":\"manifest\""));
+        assert!(lines[1].contains("\"rejected\":true"));
+        assert!(lines[1].contains("\"signatures\""));
+        assert!(lines[1].contains("__rejected"));
+        assert!(lines[1].contains("unknown_field"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn no_provenance_flag_skips_the_sidecar() {
+        let root = unique_test_dir();
+        let raw_dir = root.join("unmerged");
+        fs::create_dir_all(&raw_dir).unwrap();
+        write_event(&raw_dir.join("remote-room-v12.jsonl"), &signed_event());
+        let mut opts = options(&root, false);
+        opts.provenance = false;
+        aggregate(&opts).unwrap();
+        assert!(root.join("merged/room.jsonl").exists());
+        assert!(!root.join("merged/room.rezzy-meta.jsonl").exists());
         fs::remove_dir_all(root).unwrap();
     }
 }

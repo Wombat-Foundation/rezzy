@@ -12,12 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::error::AppError;
+use crate::provenance::{self, StreamOrderIndex};
+use crate::timeline_order::{
+    build_key, kahn_order_by, KeyValue, OrderKey, TimelineOrder, DEFAULT_TIE_BREAK,
+};
 use crate::utils::{compute_state_hash, epoch_days_to_ymd, resolve_parent_states, SharedStateMap};
 use crate::{Args, OutputFormat};
 use rezzy::auth::{apply_authorized_redactions, RedactionReport, RoomState};
 use rezzy::basespec::event_types::EventType;
 use rezzy::{resolved_state_entries, LeanEvent, StateResVersion};
+use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 pub struct FormattingContext<'a> {
     pub args: &'a Args,
@@ -32,6 +39,7 @@ pub struct FormattingContext<'a> {
     pub room_version: Option<&'a str>,
     pub duration: std::time::Duration,
     pub event_count: usize,
+    pub stream_order: Option<&'a StreamOrderIndex>,
 }
 
 /// Format the output for deltas.
@@ -514,9 +522,162 @@ fn log_redaction_report<Id: std::fmt::Display>(redaction_report: &RedactionRepor
     }
 }
 
+/// Whether `args` selects an ordering that needs sidecar stream order.
+#[must_use]
+pub fn needs_stream_order(args: &Args) -> bool {
+    matches!(args.format, OutputFormat::Timeline)
+        && (args.timeline_order == TimelineOrder::Synapse
+            || args
+                .tie_break
+                .iter()
+                .copied()
+                .any(OrderKey::needs_stream_order))
+}
+
+/// Load and validate the stream-order index for `--timeline-order synapse`.
+///
+/// An explicit `--metadata` path is fatal on error. Auto-discovered sibling
+/// sidecars are best-effort: missing, mismatched, or conflicting entries are
+/// counted and reported in one summary warning, and the caller falls back.
+///
+/// # Errors
+/// Returns an error only when an explicit `--metadata` sidecar cannot be read.
+pub fn load_stream_order(
+    args: &Args,
+    events_map: &HashMap<String, LeanEvent>,
+    raw_map: &HashMap<String, rezzy::JsonValue>,
+    room_version: Option<&str>,
+) -> Result<Option<StreamOrderIndex>, AppError> {
+    let explicit = args.metadata.clone();
+    let paths: Vec<PathBuf> = match &explicit {
+        Some(path) => vec![path.clone()],
+        None => args
+            .input
+            .iter()
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+            })
+            .map(|path| provenance::sidecar_path(path))
+            .filter(|path| path.is_file())
+            .collect(),
+    };
+    if paths.is_empty() {
+        warn_once(
+            args.quiet,
+            "no provenance sidecar found; falling back to origin_server_ts for stream ordering",
+        );
+        return Ok(None);
+    }
+
+    let expected_room_id = raw_map
+        .values()
+        .find_map(|value| value.get("room_id").and_then(rezzy::JsonValue::as_str));
+    let mut index = StreamOrderIndex::default();
+    let mut missing = 0_usize;
+    let mut mismatched = 0_usize;
+    let mut room_mismatch = 0_usize;
+    for path in &paths {
+        let sidecar = if explicit.is_some() {
+            provenance::load_sidecar(path)?
+        } else {
+            match provenance::load_sidecar(path) {
+                Ok(sidecar) => sidecar,
+                Err(error) => {
+                    warn_once(
+                        args.quiet,
+                        &format!("ignoring provenance sidecar {}: {error}", path.display()),
+                    );
+                    continue;
+                }
+            }
+        };
+        if room_version.is_some()
+            && sidecar.room_version.is_some()
+            && room_version != sidecar.room_version.as_deref()
+        {
+            room_mismatch = room_mismatch.saturating_add(1);
+            continue;
+        }
+        if expected_room_id.is_some()
+            && sidecar
+                .room_id
+                .as_deref()
+                .is_some_and(|id| Some(id) != expected_room_id)
+        {
+            room_mismatch = room_mismatch.saturating_add(1);
+            continue;
+        }
+        for (event_id, _event) in events_map {
+            let Some(record) = sidecar.events.get(event_id) else {
+                missing = missing.saturating_add(1);
+                continue;
+            };
+            if let Some(raw) = raw_map.get(event_id) {
+                if let Ok(serialized) = rezzy::json::write_string_value(raw) {
+                    if provenance::sha256_id(serialized.as_bytes()) != record.payload_sha256 {
+                        mismatched = mismatched.saturating_add(1);
+                        continue;
+                    }
+                }
+            }
+            match record.stream_ordering {
+                Some(value) => {
+                    index.by_event.insert(event_id.clone(), value);
+                }
+                None => missing = missing.saturating_add(1),
+            }
+        }
+    }
+    if index.is_empty() {
+        warn_once(
+            args.quiet,
+            "provenance sidecar had no usable stream_ordering; falling back to origin_server_ts",
+        );
+        return Ok(None);
+    }
+    if missing > 0 || mismatched > 0 || room_mismatch > 0 {
+        warn_once(
+            args.quiet,
+            &format!(
+                "stream_ordering incomplete ({missing} missing/conflicting, {mismatched} payload mismatch, {room_mismatch} room/version mismatch); those events fall back to origin_server_ts"
+            ),
+        );
+    }
+    Ok(Some(index))
+}
+
+fn warn_once(quiet: bool, message: &str) {
+    if !quiet {
+        eprintln!("[WARN] {message}");
+    }
+}
+
 /// Format the timeline output.
 /// Render the timeline to a string, applying only authorized redactions.
-fn render_timeline(ctx: &FormattingContext, chronological: bool) -> String {
+fn render_timeline(ctx: &FormattingContext) -> String {
+    let mut sorted_events = prepare_timeline_events(ctx);
+    match ctx.args.timeline_order {
+        TimelineOrder::Causal => sort_timeline_causal(ctx, &mut sorted_events),
+        TimelineOrder::Synapse => sort_timeline_synapse(ctx, &mut sorted_events),
+    }
+    render_timeline_events(ctx, &sorted_events)
+}
+
+/// Render the timestamp-primary human view (`-f timeline-chronological`).
+fn render_timeline_chronological(ctx: &FormattingContext) -> String {
+    let mut sorted_events = prepare_timeline_events(ctx);
+    sorted_events.sort_by(|a, b| {
+        a.origin_server_ts
+            .cmp(&b.origin_server_ts)
+            .then(a.depth.cmp(&b.depth))
+            .then(a.event_id.cmp(&b.event_id))
+    });
+    render_timeline_events(ctx, &sorted_events)
+}
+
+/// Collect events and apply only authorized redactions.
+fn prepare_timeline_events(ctx: &FormattingContext) -> Vec<LeanEvent> {
     // Owned copy of the events so the authorized redaction pass can mutate the
     // in-set targets in place. The resolved room state below is what the
     // redaction pass needs to authorize each redaction.
@@ -564,36 +725,106 @@ fn render_timeline(ctx: &FormattingContext, chronological: bool) -> String {
         log_redaction_report(&redaction_report);
     }
 
-    if chronological {
-        sorted_events.sort_by(|a, b| {
-            a.origin_server_ts
-                .cmp(&b.origin_server_ts)
-                .then(a.depth.cmp(&b.depth))
-                .then(a.event_id.cmp(&b.event_id))
-        });
+    sorted_events
+}
+
+/// Kahn causal order; the ready queue uses `--tie-break` (default
+/// `origin_server_ts,matrix_depth,event_id`). Stream-order key components are
+/// dropped with a warning when no sidecar supplied them.
+fn sort_timeline_causal(ctx: &FormattingContext, events: &mut Vec<LeanEvent>) {
+    let requested: Vec<OrderKey> = if ctx.args.tie_break.is_empty() {
+        DEFAULT_TIE_BREAK.to_vec()
     } else {
-        let ids: Vec<String> = sorted_events
-            .iter()
-            .map(|event| event.event_id.clone())
-            .collect();
-        let parents: Vec<Vec<String>> = sorted_events
-            .iter()
-            .map(|event| event.prev_events.clone())
-            .collect();
-        let timestamps: Vec<u64> = sorted_events
-            .iter()
-            .map(|event| event.origin_server_ts)
-            .collect();
-        let depths: Vec<u64> = sorted_events.iter().map(|event| event.depth).collect();
-        let order = crate::timeline_order::kahn_order(&ids, &parents, &timestamps, &depths);
-        sorted_events = order
-            .into_iter()
-            .map(|index| sorted_events[index].clone())
-            .collect();
+        ctx.args.tie_break.clone()
+    };
+    let stream = ctx.stream_order;
+    let mut ready_keys: Vec<OrderKey> = Vec::with_capacity(requested.len());
+    let mut dropped_stream = false;
+    for key in requested {
+        if key.needs_stream_order() && stream.is_none() {
+            dropped_stream = true;
+            continue;
+        }
+        ready_keys.push(key);
+    }
+    if ready_keys.is_empty() {
+        ready_keys.push(OrderKey::EventId);
+    }
+    if dropped_stream {
+        warn_once(
+            ctx.args.quiet,
+            "stream_ordering unavailable; dropping it from --tie-break",
+        );
     }
 
+    let ids: Vec<String> = events.iter().map(|event| event.event_id.clone()).collect();
+    let parents: Vec<Vec<String>> = events
+        .iter()
+        .map(|event| event.prev_events.clone())
+        .collect();
+    let keys: Vec<Vec<KeyValue>> = events
+        .iter()
+        .enumerate()
+        .map(|(index, event)| {
+            let stream_value = stream
+                .and_then(|index| index.get(&event.event_id))
+                .unwrap_or(event.origin_server_ts);
+            build_key(
+                &ready_keys,
+                &ids[index],
+                event.depth,
+                event.origin_server_ts,
+                stream_value,
+            )
+        })
+        .collect();
+    let order = kahn_order_by(&ids, &parents, &keys);
+    let reordered: Vec<LeanEvent> = order
+        .into_iter()
+        .map(|index| events[index].clone())
+        .collect();
+    *events = reordered;
+}
+
+/// Synapse-like `matrix_depth, stream_ordering, event_id`. Events without a
+/// known stream order fall back to `origin_server_ts` and sort after those
+/// that have one.
+fn sort_timeline_synapse(ctx: &FormattingContext, events: &mut Vec<LeanEvent>) {
+    let stream = ctx.stream_order;
+    let fallbacks = events
+        .iter()
+        .filter(|event| {
+            stream
+                .and_then(|index| index.get(&event.event_id))
+                .is_none()
+        })
+        .count();
+    if fallbacks > 0 {
+        warn_once(
+            ctx.args.quiet,
+            &format!(
+                "{fallbacks} event(s) had no stream_ordering; fell back to matrix_depth, origin_server_ts, event_id"
+            ),
+        );
+    }
+    events.sort_by(|a, b| {
+        let a_stream = stream.and_then(|index| index.get(&a.event_id));
+        let b_stream = stream.and_then(|index| index.get(&b.event_id));
+        a.depth
+            .cmp(&b.depth)
+            .then_with(|| match (a_stream, b_stream) {
+                (Some(left), Some(right)) => left.cmp(&right),
+                (None, None) => a.origin_server_ts.cmp(&b.origin_server_ts),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+            })
+            .then(a.event_id.cmp(&b.event_id))
+    });
+}
+
+fn render_timeline_events(ctx: &FormattingContext, sorted_events: &[LeanEvent]) -> String {
     let mut displaynames: HashMap<String, String> = HashMap::new();
-    for ev in &sorted_events {
+    for ev in sorted_events {
         if ev.event_type == "m.room.member" {
             if let Some(dn) = ev.content.get("displayname").and_then(|v| v.as_str()) {
                 if !dn.is_empty() {
@@ -606,7 +837,7 @@ fn render_timeline(ctx: &FormattingContext, chronological: bool) -> String {
     let mut output = String::new();
     let mut last_date = String::new();
 
-    for ev in &sorted_events {
+    for ev in sorted_events {
         let sender = get_user_displayname(&ev.sender, &displaynames);
         let Some(desc) = format_event_description(ev, &sender, &displaynames) else {
             continue;
@@ -672,22 +903,30 @@ fn render_timeline(ctx: &FormattingContext, chronological: bool) -> String {
 /// Format the timeline output, printing the rendered timeline to stderr.
 #[must_use]
 pub fn format_timeline_output(ctx: &FormattingContext) -> rezzy::JsonValue {
-    eprint!("{}", render_timeline(ctx, false));
+    eprint!("{}", render_timeline(ctx));
     rezzy::json!({
         "status": "success",
         "format": "timeline",
+        "order": format_name(ctx.args.timeline_order),
         "events": ctx.event_count
     })
 }
 
 #[must_use]
 pub fn format_timeline_chronological_output(ctx: &FormattingContext) -> rezzy::JsonValue {
-    eprint!("{}", render_timeline(ctx, true));
+    eprint!("{}", render_timeline_chronological(ctx));
     rezzy::json!({
         "status": "success",
         "format": "timeline-chronological",
         "events": ctx.event_count
     })
+}
+
+fn format_name(order: TimelineOrder) -> &'static str {
+    match order {
+        TimelineOrder::Causal => "causal",
+        TimelineOrder::Synapse => "synapse",
+    }
 }
 
 /// Format the main CLI output.
@@ -766,6 +1005,26 @@ mod tests {
         rezzy::auth::roaring::AuthGraph::build(events_map)
     }
 
+    fn test_args(format: OutputFormat) -> Args {
+        Args {
+            input: Vec::new(),
+            room: None,
+            homeserver: None,
+            token: None,
+            output: None,
+            state_res: None,
+            format,
+            debug: false,
+            quiet: false,
+            check: false,
+            origin: String::from("matrix.org"),
+            timeline_order: TimelineOrder::default(),
+            tie_break: Vec::new(),
+            timeline_order_explicit: false,
+            metadata: None,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn formatting_context<'a>(
         room_version: Option<&'a str>,
@@ -793,6 +1052,7 @@ mod tests {
             room_version,
             duration,
             event_count,
+            stream_order: None,
         }
     }
 
@@ -807,19 +1067,7 @@ mod tests {
         let auth_graph = build_auth_graph(&events_map);
 
         let render = |format| {
-            let args = Args {
-                input: Vec::new(),
-                room: None,
-                homeserver: None,
-                token: None,
-                output: None,
-                state_res: None,
-                format,
-                debug: false,
-                quiet: false,
-                check: false,
-                origin: String::from("matrix.org"),
-            };
+            let args = test_args(format);
             let ctx = formatting_context(
                 None,
                 std::time::Duration::ZERO,
@@ -858,19 +1106,7 @@ mod tests {
 
     #[test]
     fn resolve_state_output_exposes_the_resolved_state_entries() {
-        let args = Args {
-            input: Vec::new(),
-            room: None,
-            homeserver: None,
-            token: None,
-            output: None,
-            state_res: None,
-            format: OutputFormat::ResolveState,
-            debug: false,
-            quiet: false,
-            check: false,
-            origin: "matrix.org".to_string(),
-        };
+        let args = test_args(OutputFormat::ResolveState);
 
         let events_map = HashMap::new();
         let raw_map = HashMap::new();
@@ -926,19 +1162,7 @@ mod tests {
             for ev in &events {
                 events_map.insert(ev.event_id.clone(), ev.clone());
             }
-            let args = Args {
-                input: Vec::new(),
-                room: None,
-                homeserver: None,
-                token: None,
-                output: None,
-                state_res: None,
-                format: OutputFormat::Timeline,
-                debug: false,
-                quiet: false,
-                check: false,
-                origin: "matrix.org".to_string(),
-            };
+            let args = test_args(OutputFormat::Timeline);
             let raw_map = HashMap::new();
             let heads = Vec::new();
             let mut final_state_map = imbl::OrdMap::new();
@@ -959,7 +1183,7 @@ mod tests {
                 &auth_chain_ids,
                 &auth_graph,
             );
-            render_timeline(&ctx, false)
+            render_timeline(&ctx)
         };
 
         let pl: LeanEvent = LeanEvent {

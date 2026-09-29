@@ -192,7 +192,7 @@ pub fn merge_event_sets(
     debug: bool,
     quiet: bool,
 ) -> Result<Vec<rezzy::JsonValue>, AppError> {
-    Ok(merge_event_sets_internal(file_sets, debug, quiet)?.events)
+    Ok(merge_event_sets_internal(file_sets, None, debug, quiet)?.events)
 }
 
 /// Details from merging borrowed event slices.
@@ -207,25 +207,55 @@ pub struct MergeResult {
 
 /// Merge borrowed event slices for aggregation and return duplicate statistics.
 ///
+/// When `room_version` is `Some`, duplicate detection compares each event's
+/// Matrix *redacted canonical* form (the reference-hash input), so sources that
+/// differ only in `unsigned` or `signatures` merge as one event. When it is
+/// `None`, the full serialized event is compared.
+///
 /// # Errors
 ///
-/// Returns an error for disjoint DAGs or conflicting duplicate event IDs.
+/// Returns an error for disjoint DAGs, conflicting duplicate event IDs, or an
+/// event that cannot be canonicalized/serialized.
 pub fn merge_event_slices(
     file_sets: &[(String, &[rezzy::JsonValue])],
+    room_version: Option<&str>,
     debug: bool,
     quiet: bool,
 ) -> Result<MergeResult, AppError> {
-    merge_event_sets_internal(file_sets, debug, quiet)
+    merge_event_sets_internal(file_sets, room_version, debug, quiet)
+}
+
+fn comparison_key(
+    value: &rezzy::JsonValue,
+    room_version: Option<&str>,
+) -> Result<String, AppError> {
+    if let Some(room_version) = room_version {
+        rezzy::try_canonical_redacted_json(value, room_version).map_err(|error| {
+            AppError::new(
+                ErrorCode::MalformedJson,
+                format!("cannot canonicalize event: {error}"),
+            )
+        })
+    } else {
+        rezzy::json::write_string_value(value).map_err(|error| {
+            AppError::new(
+                ErrorCode::MalformedJson,
+                format!("cannot serialize event: {error}"),
+            )
+        })
+    }
 }
 
 fn merge_event_sets_internal<I: AsRef<[rezzy::JsonValue]>>(
     file_sets: &[(String, I)],
+    room_version: Option<&str>,
     debug: bool,
     quiet: bool,
 ) -> Result<MergeResult, AppError> {
     let num_files = file_sets.len();
     let mut seen_ids: HashMap<String, usize> = HashMap::new();
     let mut merged: Vec<rezzy::JsonValue> = Vec::new();
+    let mut merged_keys: Vec<String> = Vec::new();
     let mut duplicate_copies = 0usize;
     let mut per_file_refs: Vec<FileRefs> = Vec::with_capacity(num_files);
 
@@ -248,9 +278,10 @@ fn merge_event_sets_internal<I: AsRef<[rezzy::JsonValue]>>(
 
             collect_refs(val, &mut refs, &event_id);
 
+            let key = comparison_key(val, room_version)?;
             if let Some(&first_index) = seen_ids.get(&event_id) {
                 duplicate_copies = duplicate_copies.saturating_add(1);
-                if merged[first_index] != *val {
+                if merged_keys[first_index] != key {
                     if !quiet {
                         eprintln!("[warn] canonical conflict for {event_id} in input file {label}");
                     }
@@ -265,6 +296,7 @@ fn merge_event_sets_internal<I: AsRef<[rezzy::JsonValue]>>(
             } else {
                 seen_ids.insert(event_id, merged.len());
                 merged.push(val.clone());
+                merged_keys.push(key);
                 added = added.saturating_add(1);
             }
         }

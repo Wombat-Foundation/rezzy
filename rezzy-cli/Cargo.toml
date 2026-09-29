@@ -37,6 +37,7 @@ keyring.workspace = true
 mimalloc = { workspace = true, optional = true }
 rezzy = { workspace = true, features = ["cli"] }
 roaring.workspace = true
+sha2.workspace = true
 ureq.workspace = true
 
 [lints]

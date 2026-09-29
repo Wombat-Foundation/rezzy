@@ -962,6 +962,7 @@ dependencies = [
  "mimalloc",
  "rezzy",
  "roaring",
+ "sha2",
  "ureq",
 ]
 
