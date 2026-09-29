@@ -194,7 +194,6 @@ where
 ///
 /// Will panic if graph invariants are violated (specifically, if an event returned
 /// in the cycle-breaking list of stuck nodes is missing from the input `events` map).
-// jscpd:ignore-start
 #[must_use]
 #[allow(clippy::implicit_hasher)]
 pub fn lean_kahn_sort<Id, C, E, S1, Spl>(
@@ -211,7 +210,6 @@ where
     C: Clone + EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
-    // jscpd:ignore-end
     match lean_kahn_sort_with_cycle_diagnostics(events, sort_context, create_ev, version, pl_cache)
     {
         KahnSortResult::Ok(sorted) => sorted,

@@ -480,7 +480,7 @@ impl<E: core::fmt::Display> core::fmt::Display for StateComputationError<E> {
 impl<E: core::fmt::Debug + core::fmt::Display> core::error::Error for StateComputationError<E> {}
 
 /// Borrowed inputs shared by the fallible streaming state-reconstruction entry
-/// points ([`try_compute_state_at_streaming`] and its optimized sibling).
+/// points ([`StreamingInputs::try_compute`] and its optimized sibling).
 pub struct StreamingInputs<'a, Id, C, Q: ?Sized, S, K> {
     /// Target event ids whose resolved states should be reported.
     pub target_event_ids: &'a [&'a Q],
@@ -550,13 +550,11 @@ pub fn compute_state_at_streaming<Id, C, Q, S, K>(
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    let result = try_compute_state_at_streaming(
-        &StreamingInputs::new(target_event_ids, events_map, version, empty_key),
-        |id, state| -> Result<(), core::convert::Infallible> {
+    let result = StreamingInputs::new(target_event_ids, events_map, version, empty_key)
+        .try_compute(|id, state| -> Result<(), core::convert::Infallible> {
             on_target_resolved(id, state);
             Ok(())
-        },
-    );
+        });
 
     match result {
         Ok(()) => {}
@@ -612,91 +610,62 @@ where
     Some(f(&index, &is_target))
 }
 
-/// Builds the indexed traversal context once, then runs a plain or optimized
-/// state pipeline against it. Missing targets are a successful no-op.
-fn with_pipeline_run<Id, C, Q, S, K, E>(
-    inputs: &StreamingInputs<'_, Id, C, Q, S, K>,
-    run: impl FnOnce(PipelineRun<'_, Id, C, S, K>) -> Result<(), StateComputationError<E>>,
-) -> Result<(), StateComputationError<E>>
+impl<Id, C, Q: ?Sized, S, K> StreamingInputs<'_, Id, C, Q, S, K>
 where
     Id: EventId + Borrow<Q>,
-    Q: ?Sized + Eq + core::hash::Hash + Ord,
-    S: BuildHasher,
-    C: EventContent,
-    K: StateKey,
-{
-    with_target_index(
-        inputs.target_event_ids,
-        inputs.events_map,
-        |index, is_target| run(PipelineRun::new(inputs, index, is_target)),
-    )
-    .unwrap_or(Ok(()))
-}
-
-/// A fallible variant of [`compute_state_at_streaming`].
-///
-/// Functions identically to `compute_state_at_streaming`, but threads a `Result` through
-/// the callback so that callers can abort early (e.g. on I/O errors during storage).
-///
-/// # Errors
-/// Returns `StateComputationError::CycleDetected` if a cycle is found in the reachable graph.
-/// Returns `StateComputationError::Callback(e)` if the callback yields an error.
-pub fn try_compute_state_at_streaming<Id, C, Q, S, E, K>(
-    inputs: &StreamingInputs<'_, Id, C, Q, S, K>,
-    mut on_target_resolved: impl FnMut(Id, SharedState<Id, K>) -> Result<(), E>,
-) -> Result<(), StateComputationError<E>>
-where
-    Id: EventId + Borrow<Q>,
-    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    Q: Eq + core::hash::Hash + Ord,
     S: BuildHasher,
     C: EventContent,
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    with_pipeline_run(inputs, |run| {
-        let index = run.index;
-        run_state_pipeline_streaming(run, |idx, shared_state| {
-            on_target_resolved(index.items()[idx].clone(), shared_state)
-        })
-    })
-}
-
-/// Core topological graph traversal loop for batch state reconstruction.
-///
-/// Topologically sorts all reachable ancestors, incrementally merges state at forks,
-/// and yields the target states as they are completed.
-fn run_state_pipeline_streaming<Id, C, S, E, K>(
-    run: PipelineRun<'_, Id, C, S, K>,
-    mut on_target: impl FnMut(usize, SharedState<Id, K>) -> Result<(), E>,
-) -> Result<(), StateComputationError<E>>
-where
-    Id: EventId,
-    S: BuildHasher,
-    C: EventContent,
-    K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
-{
-    let mut exec = prepare_execution::<Id, C, S, K, SharedState<Id, K>, E>(run)?;
-
-    for idx in core::mem::take(&mut exec.sorted_ancestors) {
-        let (ev, prev_states) = exec.finalized_parents(idx);
-        let mut state_before: SharedState<Id, K> =
-            resolve_merged_parent_states(&prev_states, &mut exec.merge_ctx());
-        record_own_state(&mut state_before, ev);
-
-        if exec.is_target[idx] {
-            on_target(idx, state_before.clone()).map_err(StateComputationError::Callback)?;
-        }
-
-        retain_state_for_children(
-            &mut exec.state_after_map,
-            &exec.out_degree,
-            idx,
-            state_before,
-        );
+    /// Builds the indexed traversal context once, then runs a plain or
+    /// optimized state pipeline against it. Missing targets are a successful
+    /// no-op.
+    fn with_pipeline_run<E>(
+        &self,
+        run: impl FnOnce(PipelineRun<'_, Id, C, S, K>) -> Result<(), StateComputationError<E>>,
+    ) -> Result<(), StateComputationError<E>> {
+        with_target_index(
+            self.target_event_ids,
+            self.events_map,
+            |index, is_target| run(PipelineRun::new(self, index, is_target)),
+        )
+        .unwrap_or(Ok(()))
     }
 
-    Ok(())
+    /// A fallible variant of [`compute_state_at_streaming`].
+    ///
+    /// Functions identically to `compute_state_at_streaming`, but threads a
+    /// `Result` through the callback so that callers can abort early (e.g. on
+    /// I/O errors during storage).
+    ///
+    /// # Errors
+    /// Returns `StateComputationError::CycleDetected` if a cycle is found in the
+    /// reachable graph. Returns `StateComputationError::Callback(e)` if the
+    /// callback yields an error.
+    pub fn try_compute<E>(
+        &self,
+        on_target_resolved: impl FnMut(Id, SharedState<Id, K>) -> Result<(), E>,
+    ) -> Result<(), StateComputationError<E>> {
+        self.with_pipeline_run(|run| run.run_plain(on_target_resolved))
+    }
+
+    /// The optimized sibling of [`StreamingInputs::try_compute`].
+    ///
+    /// Yields [`StateUpdate`] values instead of materialized states, supporting
+    /// zero-clone streaming when a target's state is unchanged from its parent.
+    ///
+    /// # Errors
+    /// Returns `StateComputationError::CycleDetected` if a cycle is found in the
+    /// reachable graph. Returns `StateComputationError::Callback(e)` if the
+    /// callback yields an error.
+    pub fn try_compute_optimized<E>(
+        &self,
+        on_target_resolved: impl for<'b> FnMut(Id, StateUpdate<'b, Id, K>) -> Result<(), E>,
+    ) -> Result<(), StateComputationError<E>> {
+        self.with_pipeline_run(|run| run.run_optimized(on_target_resolved))
+    }
 }
 
 /// A point in the DAG where a subset of forward extremities converge.
@@ -1237,6 +1206,126 @@ impl<Id, C, S, K> Copy for PipelineRun<'_, Id, C, S, K> {}
 impl<Id, C, S, K> Clone for PipelineRun<'_, Id, C, S, K> {
     fn clone(&self) -> Self {
         *self
+    }
+}
+
+impl<Id, C, S, K> PipelineRun<'_, Id, C, S, K>
+where
+    Id: EventId,
+    S: BuildHasher,
+    C: EventContent,
+    K: StateKey,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
+{
+    /// Core topological graph traversal loop for batch state reconstruction.
+    ///
+    /// Topologically sorts all reachable ancestors, incrementally merges state at forks,
+    /// and yields the target states as they are completed.
+    fn run_plain<E>(
+        self,
+        mut on_target: impl FnMut(Id, SharedState<Id, K>) -> Result<(), E>,
+    ) -> Result<(), StateComputationError<E>> {
+        let mut exec = prepare_execution::<Id, C, S, K, SharedState<Id, K>, E>(self)?;
+
+        for idx in core::mem::take(&mut exec.sorted_ancestors) {
+            let (ev, prev_states) = exec.finalized_parents(idx);
+            let mut state_before: SharedState<Id, K> =
+                resolve_merged_parent_states(&prev_states, &mut exec.merge_ctx());
+            record_own_state(&mut state_before, ev);
+
+            if exec.is_target[idx] {
+                let id = exec.index.items()[idx].clone();
+                on_target(id, state_before.clone()).map_err(StateComputationError::Callback)?;
+            }
+
+            retain_state_for_children(
+                &mut exec.state_after_map,
+                &exec.out_degree,
+                idx,
+                state_before,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Optimized state-streaming pipeline for fork-heavy DAGs.
+    ///
+    /// This variant reuses the persistent `mainline_cache` across the whole
+    /// traversal and yields `StateUpdate` values for target events, avoiding the
+    /// extra cloning performed by the plain streaming path.
+    fn run_optimized<E>(
+        self,
+        mut on_target: impl for<'b> FnMut(Id, StateUpdate<'b, Id, K>) -> Result<(), E>,
+    ) -> Result<(), StateComputationError<E>> {
+        let mut exec = prepare_execution::<Id, C, S, K, HashedState<Id, K>, E>(self)?;
+
+        for idx in core::mem::take(&mut exec.sorted_ancestors) {
+            let (ev, prev_states): (_, Vec<HashedState<Id, K>>) = exec.finalized_parents(idx);
+
+            let is_state = ev.state_key.is_some();
+            let has_single_parent = prev_states.len() == 1;
+
+            let mut state_before: HashedState<Id, K> = if prev_states.is_empty() {
+                HashedState::new()
+            } else if has_single_parent && !is_state {
+                let parent_state = prev_states.into_iter().next().unwrap();
+                if exec.is_target[idx] {
+                    let id = exec.index.items()[idx].clone();
+                    on_target(
+                        id,
+                        StateUpdate::Unchanged {
+                            parent_event_id: ev
+                                .prev_events
+                                .iter()
+                                .find(|pe| exec.index.index_of(pe).is_some())
+                                .expect(
+                                    "has_single_parent implies at least one prev_event is in the index",
+                                ),
+                            hash: &parent_state.hash,
+                        },
+                    )
+                    .map_err(StateComputationError::Callback)?;
+                }
+                retain_state_for_children(
+                    &mut exec.state_after_map,
+                    &exec.out_degree,
+                    idx,
+                    parent_state,
+                );
+                continue;
+            } else if has_single_parent {
+                prev_states.into_iter().next().unwrap()
+            } else {
+                resolve_merge_fast_path_hashed_with_cache(&prev_states, &mut exec.merge_ctx())
+            };
+
+            if let Some(state_key) = ev.accepted_state_key() {
+                let key = (EventType::from(ev.event_type.as_str()), state_key.clone());
+                state_before.insert(key, ev.event_id.clone());
+            }
+
+            if exec.is_target[idx] {
+                let id = exec.index.items()[idx].clone();
+                on_target(
+                    id,
+                    StateUpdate::New {
+                        state: state_before.state.clone(),
+                        hash: &state_before.hash,
+                    },
+                )
+                .map_err(StateComputationError::Callback)?;
+            }
+
+            retain_state_for_children(
+                &mut exec.state_after_map,
+                &exec.out_degree,
+                idx,
+                state_before,
+            );
+        }
+
+        Ok(())
     }
 }
 
@@ -2549,7 +2638,7 @@ where
 
 /// Like [`resolve_merge_fast_path_hashed`], but additionally accepts a
 /// `mainline_cache` that callers invoking this repeatedly against the same DAG
-/// (e.g. [`run_state_pipeline_streaming_optimized`]'s fork-merge loop) can
+/// (e.g. [`PipelineRun::run_optimized`]'s fork-merge loop) can
 /// thread across calls, so `build_mainline`'s BFS-per-call turns into an
 /// `O(M)` cache-hit walk instead of restarting from scratch every time.
 fn resolve_merge_fast_path_hashed_with_cache<Id, C, S, K>(
@@ -2608,124 +2697,6 @@ where
     }
 }
 
-/// Optimized state-streaming pipeline for fork-heavy DAGs.
-///
-/// This variant reuses the persistent `mainline_cache` across the whole
-/// traversal and yields `StateUpdate` values for target events, avoiding the
-/// extra cloning performed by the plain streaming path.
-fn run_state_pipeline_streaming_optimized<Id, C, S, E, K>(
-    run: PipelineRun<'_, Id, C, S, K>,
-    mut on_target: impl for<'b> FnMut(usize, StateUpdate<'b, Id, K>) -> Result<(), E>,
-) -> Result<(), StateComputationError<E>>
-where
-    Id: EventId,
-    S: BuildHasher,
-    C: EventContent,
-    K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
-{
-    let mut exec = prepare_execution::<Id, C, S, K, HashedState<Id, K>, E>(run)?;
-
-    for idx in core::mem::take(&mut exec.sorted_ancestors) {
-        let (ev, prev_states): (_, Vec<HashedState<Id, K>>) = exec.finalized_parents(idx);
-
-        let is_state = ev.state_key.is_some();
-        let has_single_parent = prev_states.len() == 1;
-
-        let mut state_before: HashedState<Id, K> = if prev_states.is_empty() {
-            HashedState::new()
-        } else if has_single_parent && !is_state {
-            let parent_state = prev_states.into_iter().next().unwrap();
-            if exec.is_target[idx] {
-                on_target(
-                    idx,
-                    StateUpdate::Unchanged {
-                        parent_event_id: ev
-                            .prev_events
-                            .iter()
-                            .find(|pe| exec.index.index_of(pe).is_some())
-                            .expect(
-                                "has_single_parent implies at least one prev_event is in the index",
-                            ),
-                        hash: &parent_state.hash,
-                    },
-                )
-                .map_err(StateComputationError::Callback)?;
-            }
-            retain_state_for_children(
-                &mut exec.state_after_map,
-                &exec.out_degree,
-                idx,
-                parent_state,
-            );
-            continue;
-        } else if has_single_parent {
-            prev_states.into_iter().next().unwrap()
-        } else {
-            resolve_merge_fast_path_hashed_with_cache(&prev_states, &mut exec.merge_ctx())
-        };
-
-        if let Some(state_key) = ev.accepted_state_key() {
-            let key = (EventType::from(ev.event_type.as_str()), state_key.clone());
-            state_before.insert(key, ev.event_id.clone());
-        }
-
-        if exec.is_target[idx] {
-            on_target(
-                idx,
-                StateUpdate::New {
-                    state: state_before.state.clone(),
-                    hash: &state_before.hash,
-                },
-            )
-            .map_err(StateComputationError::Callback)?;
-        }
-
-        retain_state_for_children(
-            &mut exec.state_after_map,
-            &exec.out_degree,
-            idx,
-            state_before,
-        );
-    }
-
-    Ok(())
-}
-
-/// A high-performance, fallible variant of [`compute_state_at_streaming`] designed for
-/// massive rebuild pipelines.
-///
-/// Rather than cloning full `SharedState` maps for every target, this function yields
-/// `StateUpdate` events that support zero-clone streaming when states are unchanged
-/// from their parent, and $O(1)$ LtHash-based matching.
-///
-/// # Errors
-/// Returns `StateComputationError::CycleDetected` if a cycle is found in the reachable graph.
-/// Returns `StateComputationError::Callback(e)` if the callback yields an error.
-///
-/// # Behavior
-/// Duplicate target IDs are silently deduplicated, and targets absent from `events_map`
-/// are dropped. The callback count may therefore be less than the input count.
-pub fn try_compute_state_at_streaming_optimized<Id, C, Q, S, E, K>(
-    inputs: &StreamingInputs<'_, Id, C, Q, S, K>,
-    mut on_target_resolved: impl for<'b> FnMut(Id, StateUpdate<'b, Id, K>) -> Result<(), E>,
-) -> Result<(), StateComputationError<E>>
-where
-    Id: EventId + Borrow<Q>,
-    Q: ?Sized + Eq + core::hash::Hash + Ord,
-    S: BuildHasher,
-    C: EventContent,
-    K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
-{
-    with_pipeline_run(inputs, |run| {
-        let index = run.index;
-        run_state_pipeline_streaming_optimized(run, |idx, update| {
-            on_target_resolved(index.items()[idx].clone(), update)
-        })
-    })
-}
-
 /// A high-performance, non-fallible variant of [`compute_state_at_streaming`] designed for
 /// massive rebuild pipelines.
 ///
@@ -2747,13 +2718,11 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    let result = try_compute_state_at_streaming_optimized(
-        &StreamingInputs::new(target_event_ids, events_map, version, empty_key),
-        |id, update| -> Result<(), core::convert::Infallible> {
+    let result = StreamingInputs::new(target_event_ids, events_map, version, empty_key)
+        .try_compute_optimized(|id, update| -> Result<(), core::convert::Infallible> {
             on_target_resolved(id, update);
             Ok(())
-        },
-    );
+        });
 
     match result {
         Ok(()) => true,
@@ -3835,15 +3804,13 @@ mod tests {
         );
 
         let target = ["A"];
-        let plain_error = try_compute_state_at_streaming(
-            &StreamingInputs::new(
-                &target,
-                &events_map,
-                StateResVersion::V2_1_1,
-                &String::new(),
-            ),
-            |_, _| Ok::<_, ()>(()),
+        let plain_error = StreamingInputs::new(
+            &target,
+            &events_map,
+            StateResVersion::V2_1_1,
+            &String::new(),
         )
+        .try_compute(|_, _| Ok::<_, ()>(()))
         .expect_err("the plain pipeline must reject a cycle");
         assert_eq!(plain_error, StateComputationError::CycleDetected);
 
@@ -4007,16 +3974,13 @@ mod tests {
         let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
         events_map.insert("A".into(), a);
 
-        let result: Result<(), StateComputationError<&'static str>> =
-            try_compute_state_at_streaming(
-                &StreamingInputs::new(
-                    &["A"],
-                    &events_map,
-                    crate::StateResVersion::V2,
-                    &String::new(),
-                ),
-                |_, _| Err("callback aborted"),
-            );
+        let result: Result<(), StateComputationError<&'static str>> = StreamingInputs::new(
+            &["A"],
+            &events_map,
+            crate::StateResVersion::V2,
+            &String::new(),
+        )
+        .try_compute(|_, _| Err("callback aborted"));
 
         assert_eq!(
             result,
@@ -4031,18 +3995,16 @@ mod tests {
         let events_map: HashMap<String, LeanEvent> = HashMap::new();
         let mut callback_called = false;
 
-        let result = try_compute_state_at_streaming(
-            &StreamingInputs::new(
-                &["ghost"],
-                &events_map,
-                crate::StateResVersion::V2,
-                &String::new(),
-            ),
-            |_, _| {
-                callback_called = true;
-                Ok::<(), &'static str>(())
-            },
-        );
+        let result = StreamingInputs::new(
+            &["ghost"],
+            &events_map,
+            crate::StateResVersion::V2,
+            &String::new(),
+        )
+        .try_compute(|_, _| {
+            callback_called = true;
+            Ok::<(), &'static str>(())
+        });
 
         assert_eq!(result, Ok(()));
         assert!(
@@ -4448,19 +4410,16 @@ mod tests {
         let events_map: HashMap<String, LeanEvent> = HashMap::new();
         let mut callback_called = false;
 
-        let result: Result<(), StateComputationError<&'static str>> =
-            try_compute_state_at_streaming_optimized(
-                &StreamingInputs::new(
-                    &["ghost"],
-                    &events_map,
-                    crate::StateResVersion::V2,
-                    &String::new(),
-                ),
-                |_, _| {
-                    callback_called = true;
-                    Ok(())
-                },
-            );
+        let result: Result<(), StateComputationError<&'static str>> = StreamingInputs::new(
+            &["ghost"],
+            &events_map,
+            crate::StateResVersion::V2,
+            &String::new(),
+        )
+        .try_compute_optimized(|_, _| {
+            callback_called = true;
+            Ok(())
+        });
 
         assert_eq!(result, Ok(()));
         assert!(

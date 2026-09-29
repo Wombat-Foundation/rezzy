@@ -328,7 +328,6 @@ pub fn route_power_events<
 ///
 /// Panics if the resolved mainline does not begin with the resolved
 /// `m.room.power_levels` event.
-// jscpd:ignore-start
 #[must_use]
 pub fn resolve_semilattice_fold<
     Id,
@@ -345,7 +344,6 @@ where
     Id: EventId + Sync + Send,
     C: EventContent + Sync + Send + Clone,
 {
-    // jscpd:ignore-end
     let empty_key = alloc::string::String::new();
     let conflicted_keys =
         crate::resolve::iterative::derive_all_conflicted_keys(conflicted_events, &empty_key);

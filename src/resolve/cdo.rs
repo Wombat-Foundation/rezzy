@@ -661,7 +661,6 @@ where
 ///    and sort all events by priority.
 /// 3. **Chunk-process** — compute ancestor/descendant bitmasks in SWAR chunks
 ///    and mark dominated events.
-// jscpd:ignore-start
 #[must_use]
 pub fn apply_cdo_filter<Id, C: EventContent + Clone, S1: BuildHasher, S2: BuildHasher, K>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
@@ -671,7 +670,6 @@ where
     Id: EventId,
     K: AsRef<str> + Clone,
 {
-    // jscpd:ignore-end
     let adj = build_adjacency_structures(conflicted_events, auth_context);
     let prioritized = prioritize_events(conflicted_events);
     let dropped_ids =
