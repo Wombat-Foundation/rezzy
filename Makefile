@@ -228,7 +228,7 @@ clean:   rust/clean	##H Remove all build artifacts
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Help
+# Help / extras
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 # [ENUM] Styling / Colors
@@ -236,6 +236,10 @@ STYLE_CYAN := $(shell tput setaf 6 2>/dev/null || echo '\033[36m')
 STYLE_GREEN := $(shell tput setaf 2 2>/dev/null || echo '\033[32m')
 STYLE_RESET := $(shell tput sgr0 2>/dev/null || echo '\033[0m')
 export STYLE_CYAN STYLE_GREEN STYLE_RESET
+
+.PHONY: extras/cloc
+extras/cloc:
+	cloc HEAD --fmt=2
 
 .PHONY: help
 help:
