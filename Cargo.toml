@@ -75,11 +75,11 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/gamesguru/rezzy"
 
 [workspace.dependencies]
-rezzy = { path = "." }
-rezzy-cli = { path = "rezzy-cli" }
-rezzy-json = { path = "rezzy-json" }
-rezzy-recon = { path = "rezzy-recon" }
-rezzy-types = { path = "rezzy-types" }
+rezzy = { path = ".", version = "0.6.0-rc.0" }
+rezzy-cli = { path = "rezzy-cli", version = "0.6.0-rc.0" }
+rezzy-json = { path = "rezzy-json", version = "0.6.0-rc.0" }
+rezzy-recon = { path = "rezzy-recon", version = "0.6.0-rc.0" }
+rezzy-types = { path = "rezzy-types", version = "0.6.0-rc.0" }
 
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 blake2 = { version = "0.10", default-features = false }
