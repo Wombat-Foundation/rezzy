@@ -440,13 +440,18 @@ fn read_raw_input_with_repair(
     }
     if let Some(room_version) = filename_version(path) {
         let room_version = room_version.trim_start_matches("-v");
+        let mut canonicalized = 0_usize;
         for (index, event) in events.iter_mut().enumerate() {
-            canonicalize_event(
+            canonicalized = canonicalized.saturating_add(usize::from(canonicalize_event(
                 event,
                 room_version,
                 &format!("{label}:{}", index + 1),
-                quiet,
-            )?;
+            )?));
+        }
+        if !quiet && canonicalized > 0 {
+            eprintln!(
+                "[info] canonicalized {canonicalized} events in {label} for room version {room_version}"
+            );
         }
     }
     validate_event_ids(&events, &label)?;
@@ -458,8 +463,7 @@ fn canonicalize_event(
     event: &mut rezzy::JsonValue,
     room_version: &str,
     label: &str,
-    quiet: bool,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let original = event.clone();
     let canonical = rezzy::try_canonical_redacted_json(event, room_version).map_err(|error| {
         AppError::new(
@@ -473,10 +477,8 @@ fn canonicalize_event(
             format!("{label}: canonical event is invalid JSON: {error}"),
         )
     })?;
-    if !quiet && *event != original {
-        eprintln!("[info] canonicalized {label} for room version {room_version}");
-    }
-    Ok(())
+    let changed = *event != original;
+    Ok(changed)
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
