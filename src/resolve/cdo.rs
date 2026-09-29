@@ -71,11 +71,13 @@
 use crate::basespec::event_types::{
     MEM_INVITE, MEM_JOIN, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
 };
-use crate::basespec::rezzy_types::LeanEvent;
+use crate::basespec::rezzy_types::{EventContent, EventId, LeanEvent};
 use crate::HashMap;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
+use core::borrow::Borrow;
 use core::cmp::Ordering;
+use core::hash::BuildHasher;
 
 /// Returns `true` if `possible_ancestor_id` is an ancestor of `child_id`.
 ///
@@ -83,13 +85,13 @@ use core::cmp::Ordering;
 /// `child_id == possible_ancestor_id`, which is `true` regardless of
 /// context membership.
 #[must_use]
-pub fn is_ancestor<Id, C: Clone, Q, S: core::hash::BuildHasher, K>(
+pub fn is_ancestor<Id, C: Clone, Q, S: BuildHasher, K>(
     child_id: &Q,
     possible_ancestor_id: &Q,
     context: &HashMap<Id, LeanEvent<Id, C, K>, S>,
 ) -> bool
 where
-    Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
+    Id: EventId + Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
 {
     if child_id == possible_ancestor_id {
@@ -135,7 +137,7 @@ const WORDS_PER_CHUNK: usize = 8;
 #[cfg(not(target_feature = "avx512f"))]
 const WORDS_PER_CHUNK: usize = 4;
 
-fn compute_cdo_bit_masks_chunk<Id, C, S: core::hash::BuildHasher, K>(
+fn compute_cdo_bit_masks_chunk<Id, C, S: BuildHasher, K>(
     admin_chunk: &[Id],
     id_to_idx: &HashMap<Id, usize, S>,
     sorted_events: &[(usize, &LeanEvent<Id, C, K>)],
@@ -144,7 +146,7 @@ fn compute_cdo_bit_masks_chunk<Id, C, S: core::hash::BuildHasher, K>(
     and_masks: &mut [u64],
     desc_masks: &mut [u64],
 ) where
-    Id: crate::basespec::rezzy_types::EventId,
+    Id: EventId,
 {
     and_masks.fill(0);
     desc_masks.fill(0);
@@ -239,9 +241,9 @@ fn build_adjacency_structures<'a, Id, C: Clone, S1, S2, K>(
     auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
 ) -> AdjacencyStructures<'a, Id, C, K>
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
+    Id: EventId,
+    S1: BuildHasher,
+    S2: BuildHasher,
 {
     let mut relevant_ids = crate::FastSet::default();
     let mut visited = crate::FastSet::default();
@@ -379,12 +381,12 @@ struct PrioritizedEvents<Id> {
     priority_pos: HashMap<Id, usize>,
 }
 
-fn prioritize_events<Id, C: crate::basespec::rezzy_types::EventContent + Clone, S1, K>(
+fn prioritize_events<Id, C: EventContent + Clone, S1, K>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
 ) -> PrioritizedEvents<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    S1: core::hash::BuildHasher,
+    Id: EventId,
+    S1: BuildHasher,
     K: AsRef<str>,
 {
     let admin_events_to_sort: Vec<&LeanEvent<Id, C, K>> = conflicted_events
@@ -440,8 +442,8 @@ fn cited_auth_events<'a, Id, C, K, S1, S2>(
 ) -> impl Iterator<Item = &'a LeanEvent<Id, C, K>> + 'a
 where
     Id: Eq + core::hash::Hash + 'a,
-    S1: core::hash::BuildHasher + 'a,
-    S2: core::hash::BuildHasher + 'a,
+    S1: BuildHasher + 'a,
+    S2: BuildHasher + 'a,
     C: 'a,
     K: 'a,
 {
@@ -456,11 +458,11 @@ fn join_has_prior_authorization<Id, C, K, S1, S2>(
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
 ) -> bool
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: EventContent,
     K: AsRef<str>,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
+    S1: BuildHasher,
+    S2: BuildHasher,
 {
     cited_auth_events(&join_ev.auth_events, conflicted_events, auth_context).any(|ev| {
         let cites_prior_membership = ev.event_type == M_ROOM_MEMBER
@@ -491,11 +493,11 @@ fn sender_has_pre_demotion_pl<Id, C, K, S1, S2>(
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
 ) -> bool
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: EventContent,
     K: AsRef<str>,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
+    S1: BuildHasher,
+    S2: BuildHasher,
 {
     cited_auth_events(&target_ev.auth_events, conflicted_events, auth_context).any(|ev| {
         if ev.event_type != M_ROOM_POWER_LEVELS {
@@ -523,9 +525,9 @@ where
 
 fn process_direct_domination_chunks<
     Id,
-    C: crate::basespec::rezzy_types::EventContent + Clone,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
+    C: EventContent + Clone,
+    S1: BuildHasher,
+    S2: BuildHasher,
     K,
 >(
     adj: &AdjacencyStructures<'_, Id, C, K>,
@@ -534,7 +536,7 @@ fn process_direct_domination_chunks<
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
 ) -> BTreeSet<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId,
+    Id: EventId,
     K: AsRef<str>,
 {
     let n = adj.sorted_events.len();
@@ -642,18 +644,12 @@ where
 ///    and mark dominated events.
 // jscpd:ignore-start
 #[must_use]
-pub fn apply_cdo_filter<
-    Id,
-    C: crate::basespec::rezzy_types::EventContent + Clone,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
-    K,
->(
+pub fn apply_cdo_filter<Id, C: EventContent + Clone, S1: BuildHasher, S2: BuildHasher, K>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
 ) -> HashMap<Id, LeanEvent<Id, C, K>>
 where
-    Id: crate::basespec::rezzy_types::EventId,
+    Id: EventId,
     K: AsRef<str> + Clone,
 {
     // jscpd:ignore-end

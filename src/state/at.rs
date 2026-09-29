@@ -35,6 +35,8 @@ use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::borrow::Borrow;
+use core::hash::BuildHasher;
 
 /// An entry in the local auth cache, pairing an event with its discovery depth.
 ///
@@ -88,11 +90,11 @@ pub(crate) struct OverlayState<'a, Id, C, S1, S2, K = String> {
     pub(crate) candidate_event_type: &'a str,
 }
 
-impl<Id: EventId, C: EventContent, S1: core::hash::BuildHasher, S2: core::hash::BuildHasher, K>
+impl<Id: EventId, C: EventContent, S1: BuildHasher, S2: BuildHasher, K>
     crate::auth::StateProvider<Id, C, LeanEvent<Id, C, K>> for OverlayState<'_, Id, C, S1, S2, K>
 where
     K: Ord + Clone + AsRef<str>,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     /// Returns the resolved event or a limited local-auth fallback for the query.
     fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C, K>> {
@@ -184,11 +186,11 @@ pub(crate) fn iterative_auth_ok<Id, C, S1, S2, K>(
 ) -> bool
 where
     Id: EventId,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
+    S1: BuildHasher,
+    S2: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     // Rejected events must never be admitted into state (spec rooms/v9). Soft-failed
     // events, however, participate in state resolution as normal (spec server-server-api
@@ -253,8 +255,8 @@ pub(crate) fn compute_local_auth<Id, C, S1, S2, K>(
 where
     Id: EventId,
     C: Clone,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
+    S1: BuildHasher,
+    S2: BuildHasher,
     K: Clone + Ord,
 {
     if let Some(cached) = cache.map.get(&event.event_id) {
@@ -372,12 +374,12 @@ pub fn compute_state_at<Id, C, Q, S, K>(
     empty_key: &K,
 ) -> Option<BTreeMap<(EventType, K), Id>>
 where
-    Id: EventId + core::borrow::Borrow<Q>,
+    Id: EventId + Borrow<Q>,
     Q: ?Sized + Eq + Ord + core::hash::Hash,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     if !events_map.contains_key(target_event_id) {
         return None;
@@ -429,12 +431,12 @@ pub fn compute_state_at_batch<Id, C, Q, S, K>(
     empty_key: &K,
 ) -> HashMap<Id, BTreeMap<(EventType, K), Id>>
 where
-    Id: EventId + core::borrow::Borrow<Q>,
+    Id: EventId + Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let mut results = HashMap::with_capacity(target_event_ids.len());
 
@@ -498,13 +500,13 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F, K>(
     mut on_target_resolved: F,
     empty_key: &K,
 ) where
-    Id: EventId + core::borrow::Borrow<Q>,
+    Id: EventId + Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: EventContent,
     F: FnMut(Id, SharedState<Id, K>),
     K: StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let result = try_compute_state_at_streaming(
         target_event_ids,
@@ -538,9 +540,9 @@ fn with_target_index<Id, C, Q, S, K, R>(
     f: impl FnOnce(&DenseIndex<&Id, usize>, &[bool]) -> R,
 ) -> Option<R>
 where
-    Id: EventId + core::borrow::Borrow<Q>,
+    Id: EventId + Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: EventContent,
     K: StateKey,
 {
@@ -587,13 +589,13 @@ pub fn try_compute_state_at_streaming<Id, C, Q, S, F, E, K>(
     empty_key: &K,
 ) -> Result<(), StateComputationError<E>>
 where
-    Id: EventId + core::borrow::Borrow<Q>,
+    Id: EventId + Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: EventContent,
     F: FnMut(Id, SharedState<Id, K>) -> Result<(), E>,
     K: StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     with_target_index(target_event_ids, events_map, |index, is_target| {
         run_state_pipeline_streaming(
@@ -625,11 +627,11 @@ fn run_state_pipeline_streaming<Id, C, S, F, E, K>(
 ) -> Result<(), StateComputationError<E>>
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: EventContent,
     F: FnMut(usize, SharedState<Id, K>) -> Result<(), E>,
     K: StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let (sorted_ancestors, mut out_degree) = topological_sort_short_ids(index, events_map);
 
@@ -765,9 +767,9 @@ pub fn compute_merge_bases<'a, Id, Q, S, Node>(
     max_steps: usize,
 ) -> Vec<MergeBase<&'a Id>>
 where
-    Id: EventId + core::borrow::Borrow<Q>,
+    Id: EventId + Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     Node: DagNode<Id = Id>,
 {
     use alloc::collections::BinaryHeap;
@@ -928,9 +930,9 @@ pub fn compute_merge_base<'a, Id, Q, S, Node>(
     events_map: &'a HashMap<Id, Node, S>,
 ) -> Option<&'a Id>
 where
-    Id: EventId + core::borrow::Borrow<Q>,
+    Id: EventId + Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     Node: DagNode<Id = Id>,
 {
     use alloc::collections::BinaryHeap;
@@ -1005,7 +1007,7 @@ fn collect_ancestor_short_ids_batch<'a, Id, C, S, K>(
 ) -> DenseIndex<&'a Id, usize>
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: Clone,
 {
     let mut index_to_id: Vec<&'a Id> = Vec::new();
@@ -1048,7 +1050,7 @@ fn topological_sort_short_ids<Id, C, S, K>(
 ) -> (Vec<usize>, Vec<usize>)
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: Clone,
 {
     let num_reachable = index.len();
@@ -1113,10 +1115,10 @@ pub(crate) fn resolve_merge_fast_path<Id, C, S, K>(
 ) -> SharedState<Id, K>
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let first = &prev_states[0];
     let all_match = prev_states[1..].iter().all(|state| first == state);
@@ -1175,10 +1177,10 @@ pub(crate) fn collapse_resolved_parents<Id, C, S, K>(
 ) -> SharedState<Id, K>
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     if prev_states.is_empty() {
         SharedState::new()
@@ -1209,10 +1211,10 @@ fn resolve_multiple_prev_states<Id, C, S, K>(
 ) -> SharedState<Id, K>
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let mut conflicted_keys = crate::FastSet::default();
     let mut conflicted_state_set = crate::HashSet::new();
@@ -1315,8 +1317,8 @@ pub fn compute_auth_chain_diff<Id, C, S1, S2, K>(
 ) -> crate::HashSet<Id>
 where
     Id: EventId,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
+    S1: BuildHasher,
+    S2: BuildHasher,
     C: EventContent,
     K: Ord + Clone,
 {
@@ -1459,7 +1461,7 @@ pub fn find_backward_extremities<Id, Node, S, F>(
 where
     Id: EventId,
     Node: DagNode<Id = Id>,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     F: Fn(&Id) -> bool,
 {
     let mut result = Vec::new();
@@ -1525,7 +1527,7 @@ pub fn find_missing_auth_events<Id, Node, S, F>(
 where
     Id: EventId,
     Node: DagNode<Id = Id>,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     F: Fn(&Id) -> bool,
 {
     let mut result = Vec::new();
@@ -1594,7 +1596,7 @@ pub fn compute_topo_positions<Id, C, S, F, K>(
 ) -> Vec<Id>
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: Clone,
     F: Fn(&Id, &Id) -> core::cmp::Ordering,
 {
@@ -1671,7 +1673,7 @@ pub fn compute_depths<Id, C, S, K>(
 ) -> HashMap<Id, u64>
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: Clone,
 {
     if events_map.is_empty() {
@@ -1760,7 +1762,7 @@ pub fn find_depth_divergences<Id, C, S, K>(
 ) -> Vec<DepthDivergence<Id>>
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: Clone,
 {
     let mut divergences = Vec::new();
@@ -1826,7 +1828,7 @@ pub fn resolve_gap_fill_order<Id, C, S, F, K>(
 ) -> Vec<Id>
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: Clone,
     F: Fn(&Id, &Id) -> core::cmp::Ordering,
 {
@@ -1853,9 +1855,9 @@ pub fn reverse_topological_order<Id, C, Q, S, F, K>(
     tiebreak: F,
 ) -> Vec<Id>
 where
-    Id: EventId + core::borrow::Borrow<Q>,
+    Id: EventId + Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: Clone,
     F: Fn(&Id, &Id) -> core::cmp::Ordering,
 {
@@ -1945,7 +1947,7 @@ pub fn verify_pagination<Id, C, S, K>(
 ) -> Vec<PaginationViolation<Id>>
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: Clone,
 {
     let mut violations = Vec::new();
@@ -2234,10 +2236,10 @@ pub fn resolve_merge_fast_path_hashed<Id, C, S, K>(
 ) -> HashedState<Id, K>
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     resolve_merge_fast_path_hashed_with_cache(
         prev_states,
@@ -2264,10 +2266,10 @@ fn resolve_merge_fast_path_hashed_with_cache<Id, C, S, K>(
 ) -> HashedState<Id, K>
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let first = &prev_states[0];
 
@@ -2336,11 +2338,11 @@ fn run_state_pipeline_streaming_optimized<'a, Id, C, S, F, E, K>(
 ) -> Result<(), StateComputationError<E>>
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: EventContent,
     F: for<'b> FnMut(usize, StateUpdate<'b, Id, K>) -> Result<(), E>,
     K: StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let (sorted_ancestors, mut out_degree) = topological_sort_short_ids(index, events_map);
 
@@ -2466,13 +2468,13 @@ pub fn try_compute_state_at_streaming_optimized<Id, C, Q, S, F, E, K>(
     empty_key: &K,
 ) -> Result<(), StateComputationError<E>>
 where
-    Id: EventId + core::borrow::Borrow<Q>,
+    Id: EventId + Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: EventContent,
     F: for<'b> FnMut(Id, StateUpdate<'b, Id, K>) -> Result<(), E>,
     K: StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     with_target_index(target_event_ids, events_map, |index, is_target| {
         run_state_pipeline_streaming_optimized(
@@ -2504,13 +2506,13 @@ pub fn compute_state_at_streaming_optimized<Id, C, Q, S, F, K>(
     empty_key: &K,
 ) -> bool
 where
-    Id: EventId + core::borrow::Borrow<Q>,
+    Id: EventId + Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
     C: EventContent,
     F: for<'b> FnMut(Id, StateUpdate<'b, Id, K>),
     K: StateKey,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     let result = try_compute_state_at_streaming_optimized(
         target_event_ids,

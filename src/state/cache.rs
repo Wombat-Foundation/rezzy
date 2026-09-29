@@ -24,7 +24,7 @@
 //! events are converted hundreds of times.
 //!
 //! `LeanEventCache` amortizes this cost to once-per-event by caching
-//! `Arc<LeanEvent>` with LRU eviction. It implements [`EventProvider`](crate::basespec::rezzy_types::EventProvider) so
+//! `Arc<LeanEvent>` with LRU eviction. It implements [`EventProvider`](EventProvider) so
 //! it plugs directly into [`resolve_state_maps_lazy_with_diff`](crate::resolve::multi::resolve_state_maps_lazy_with_diff).
 //!
 //! # Example
@@ -51,10 +51,11 @@
 //! assert_eq!(cached.sender, "@alice:x");
 //! ```
 
-use crate::basespec::rezzy_types::{EventContent, EventId, LeanEvent};
+use crate::basespec::rezzy_types::{EventContent, EventId, EventProvider, LeanEvent};
 use crate::HashMap;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use core::borrow::Borrow;
 use core::cell::{Cell, RefCell};
 
 /// A fixed-capacity LRU cache for pre-constructed [`LeanEvent`]s.
@@ -77,7 +78,7 @@ use core::cell::{Cell, RefCell};
 ///
 /// The `BTreeMap` side-index is wrapped in [`RefCell`] and per-entry
 /// `last_access` fields use [`Cell<u64>`] so that the
-/// [`EventProvider`](crate::basespec::rezzy_types::EventProvider)
+/// [`EventProvider`](EventProvider)
 /// implementation (which takes `&self`) can update LRU state. This ensures
 /// events accessed through the lazy resolver path are properly marked as
 /// recently used and not prematurely evicted.
@@ -166,7 +167,7 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
     /// works from both `&self` and `&mut self` contexts.
     fn touch<Q>(&self, id: &Q) -> Option<Arc<LeanEvent<Id, C>>>
     where
-        Id: core::borrow::Borrow<Q>,
+        Id: Borrow<Q>,
         Q: ?Sized + Eq + core::hash::Hash,
     {
         if let Some(entry) = self.map.get(id) {
@@ -183,7 +184,7 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
     /// the LRU generation.
     pub fn get<Q>(&mut self, id: &Q) -> Option<Arc<LeanEvent<Id, C>>>
     where
-        Id: core::borrow::Borrow<Q>,
+        Id: Borrow<Q>,
         Q: ?Sized + Eq + core::hash::Hash,
     {
         self.touch(id)
@@ -261,7 +262,7 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
         f: impl FnOnce() -> LeanEvent<Id, C>,
     ) -> Arc<LeanEvent<Id, C>>
     where
-        Id: core::borrow::Borrow<Q>,
+        Id: Borrow<Q>,
         Q: ?Sized + Eq + core::hash::Hash,
     {
         if let Some(arc) = self.get(id) {
@@ -312,16 +313,14 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
     }
 }
 
-/// `LeanEventCache` implements [`EventProvider`](crate::basespec::rezzy_types::EventProvider) so it can be passed directly
+/// `LeanEventCache` implements [`EventProvider`](EventProvider) so it can be passed directly
 /// to [`resolve_state_maps_lazy_with_diff`](crate::resolve::multi::resolve_state_maps_lazy_with_diff).
 ///
 /// Unlike a plain `HashMap` provider, this implementation updates the LRU
 /// generation for every access through interior mutability (`Cell` + `RefCell`),
 /// ensuring that events heavily used during lazy resolution are not prematurely
 /// evicted.
-impl<Id: EventId, C: EventContent> crate::basespec::rezzy_types::EventProvider<Id, C>
-    for LeanEventCache<Id, C>
-{
+impl<Id: EventId, C: EventContent> EventProvider<Id, C> for LeanEventCache<Id, C> {
     fn get_event(&self, id: &Id) -> Option<&LeanEvent<Id, C>> {
         if let Some(entry) = self.map.get(id) {
             self.bump_entry(entry);

@@ -69,9 +69,11 @@ use crate::basespec::event_types::{
     EventType, MEM_BAN, MEM_INVITE, MEM_JOIN, MEM_KNOCK, MEM_LEAVE, M_ROOM_CREATE,
     M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS, RULE_PUBLIC,
 };
-use crate::basespec::rezzy_types::{EventId, EventVerifier, StateKey};
+use crate::basespec::rezzy_types::{EventContent, EventId, EventVerifier, StateKey};
 use crate::{HashMap, LeanEvent, SharedState};
 use alloc::{string::ToString, vec::Vec};
+use core::borrow::Borrow;
+use core::hash::BuildHasher;
 
 /// The non-grindable portion of the V3 concurrent-writer ordering.
 ///
@@ -133,7 +135,7 @@ pub enum V3Specificity {
 #[must_use]
 pub fn classify_v3_event<C, K>(event: &LeanEvent<impl EventId, C, K>) -> (V3Polarity, V3Specificity)
 where
-    C: crate::basespec::rezzy_types::EventContent,
+    C: EventContent,
     K: StateKey,
 {
     match event.event_type.as_str() {
@@ -280,9 +282,9 @@ pub struct TkNutraCdo12RankPolicy;
 impl<Id, C, K> V3RankPolicy<Id, C, K> for TkNutraCdo12RankPolicy
 where
     Id: EventId,
-    C: crate::basespec::rezzy_types::EventContent,
+    C: EventContent,
     K: StateKey,
-    for<'a> (alloc::string::String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'a>,
+    for<'a> (alloc::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'a>,
 {
     fn rank(
         &self,
@@ -347,9 +349,9 @@ pub fn certify_tk_nutra_cdo12_admission<Id, C, K>(
 ) -> Result<V3Admission<Id, K>, crate::auth::AuthError<Id>>
 where
     Id: EventId,
-    C: crate::basespec::rezzy_types::EventContent,
+    C: EventContent,
     K: StateKey,
-    for<'a> (alloc::string::String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'a>,
+    for<'a> (alloc::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'a>,
 {
     certify_v3_admission(
         event,
@@ -381,9 +383,9 @@ pub fn certify_v3_admission<Id, C, K>(
 ) -> Result<V3Admission<Id, K>, crate::auth::AuthError<Id>>
 where
     Id: EventId,
-    C: crate::basespec::rezzy_types::EventContent,
+    C: EventContent,
     K: StateKey,
-    for<'a> (alloc::string::String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'a>,
+    for<'a> (alloc::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'a>,
 {
     crate::auth::check_auth(
         event,
@@ -423,9 +425,9 @@ fn certify_promotion_grant<Id, C, K>(
 ) -> Option<CertifiedPromotionGrant<Id, K>>
 where
     Id: EventId,
-    C: crate::basespec::rezzy_types::EventContent,
+    C: EventContent,
     K: StateKey,
-    for<'a> (alloc::string::String, K): core::borrow::Borrow<dyn crate::auth::StateKeyDyn + 'a>,
+    for<'a> (alloc::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'a>,
 {
     if grant.event_type != M_ROOM_POWER_LEVELS {
         return None;
@@ -582,8 +584,8 @@ pub fn resolve_v3<Id, C, S, K>(
 ) -> Result<SharedState<Id, K>, V3ResolveError<Id>>
 where
     Id: EventId,
-    C: crate::basespec::rezzy_types::EventContent,
-    S: core::hash::BuildHasher,
+    C: EventContent,
+    S: BuildHasher,
     K: StateKey,
 {
     let mut admitted = Vec::new();
@@ -623,8 +625,8 @@ fn evaluate_round<Id, C, S, K>(
 ) -> Result<RepairRound<Id, K>, V3ResolveError<Id>>
 where
     Id: EventId,
-    C: crate::basespec::rezzy_types::EventContent,
-    S: core::hash::BuildHasher,
+    C: EventContent,
+    S: BuildHasher,
     K: StateKey,
 {
     let mut rejected = Vec::new();
@@ -659,8 +661,8 @@ impl<Id: EventId, K: StateKey> AdmittedWriterIndex<Id, K> {
         conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     ) -> Result<Self, V3ResolveError<Id>>
     where
-        C: crate::basespec::rezzy_types::EventContent,
-        S: core::hash::BuildHasher,
+        C: EventContent,
+        S: BuildHasher,
     {
         let mut writers = alloc::collections::BTreeMap::<(EventType, K), Vec<Id>>::new();
         for event_id in admitted {
@@ -736,7 +738,7 @@ fn select_round<Id, C, K>(
 ) -> Result<Vec<RoundSelection<Id, K>>, V3ResolveError<Id>>
 where
     Id: EventId,
-    C: crate::basespec::rezzy_types::EventContent,
+    C: EventContent,
     K: StateKey,
 {
     let mut selections = Vec::with_capacity(index.writers.len());

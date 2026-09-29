@@ -24,11 +24,12 @@
 //! policy. It defines only the query result type and the minimal trait that a
 //! drop-in accelerator must satisfy.
 
-use crate::basespec::rezzy_types::LeanEvent;
+use crate::basespec::rezzy_types::{EventId, LeanEvent};
 use crate::{DenseIndex, FastMap, HashMap};
 use alloc::collections::{BTreeSet, VecDeque};
 use alloc::vec;
 use alloc::vec::Vec;
+use core::hash::BuildHasher;
 use roaring::RoaringBitmap;
 
 /// Tri-state reachability answer.
@@ -136,7 +137,7 @@ pub struct ForwardReachabilityIndex<Id> {
 
 impl<Id> ForwardReachabilityIndex<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId + Ord,
+    Id: EventId + Ord,
 {
     /// Builds the forward reachability index from a DAG snapshot.
     ///
@@ -147,9 +148,7 @@ where
     /// Panics if the input graph is internally inconsistent or contains a
     /// cycle that prevents the topological build from completing.
     #[must_use]
-    pub fn build<C: Clone, S: core::hash::BuildHasher>(
-        graph: &HashMap<Id, LeanEvent<Id, C>, S>,
-    ) -> Self {
+    pub fn build<C: Clone, S: BuildHasher>(graph: &HashMap<Id, LeanEvent<Id, C>, S>) -> Self {
         let (topo, children, leftover_nodes) = collect_topology(graph);
         let index = DenseIndex::try_build(topo.iter().map(|&id| id.clone()))
             .expect("graph too large for roaring bitmap index");
@@ -414,9 +413,9 @@ fn collect_topology<Id, C, S>(
     graph: &HashMap<Id, LeanEvent<Id, C>, S>,
 ) -> (Vec<&Id>, FastMap<&Id, Vec<&Id>>, Vec<&Id>)
 where
-    Id: crate::basespec::rezzy_types::EventId + Ord,
+    Id: EventId + Ord,
     C: Clone,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
 {
     let mut in_degree: FastMap<&Id, usize> = FastMap::default();
     let mut children: FastMap<&Id, Vec<&Id>> = FastMap::default();
@@ -465,7 +464,7 @@ where
     (topo, children, leftover_nodes)
 }
 
-fn build_indexed_children<'a, Id: crate::basespec::rezzy_types::EventId + Ord>(
+fn build_indexed_children<'a, Id: EventId + Ord>(
     topo_len: usize,
     children: FastMap<&'a Id, Vec<&'a Id>>,
     index: &DenseIndex<Id>,
@@ -567,7 +566,7 @@ fn build_segments(
 
 impl<Id> RangePrefilterReachability<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId + Ord,
+    Id: EventId + Ord,
 {
     /// Builds the low-memory reachability index from a DAG snapshot.
     ///
@@ -578,9 +577,7 @@ where
     /// Panics if the input graph is internally inconsistent or contains a
     /// cycle that prevents the topological build from completing.
     #[must_use]
-    pub fn build<C: Clone, S: core::hash::BuildHasher>(
-        graph: &HashMap<Id, LeanEvent<Id, C>, S>,
-    ) -> Self {
+    pub fn build<C: Clone, S: BuildHasher>(graph: &HashMap<Id, LeanEvent<Id, C>, S>) -> Self {
         let (topo, children, leftover_nodes) = collect_topology(graph);
         let index = DenseIndex::try_build(topo.iter().map(|&id| id.clone()))
             .expect("graph too large for index space");
@@ -1057,7 +1054,7 @@ where
 
 impl<Id> Reachability for RangePrefilterReachability<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId + Ord,
+    Id: EventId + Ord,
 {
     type Id = Id;
 
@@ -1081,7 +1078,7 @@ where
 
 impl<Id> Reachability for ForwardReachabilityIndex<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId + Ord,
+    Id: EventId + Ord,
 {
     type Id = Id;
 

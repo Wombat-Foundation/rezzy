@@ -18,20 +18,24 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use crate::basespec::event_types::{MAX_POWER_LEVEL_RUST, M_ROOM_POWER_LEVELS};
-use crate::basespec::rezzy_types::{EventLike, KahnSortResult, SortPriority, StateResVersion};
+use crate::basespec::rezzy_types::{
+    EventContent, EventId, EventLike, EventProvider, KahnSortResult, SortPriority, StateResVersion,
+};
+use crate::state::at::SharedState;
 use crate::{FastMap, HashMap};
+use core::hash::BuildHasher;
 
 /// Dynamically fetches the sender's power level by inspecting the event's immediate `auth_events`.
 /// Recursive traversal of the auth chain is avoided to prevent bypassing immediate restrictions.
 pub(crate) fn get_power_level_from_auth_chain<Id, C, E>(
     event: &E,
-    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    auth_context: &impl EventProvider<Id, C, E>,
     create_ev: Option<&E>,
     version: StateResVersion,
 ) -> i64
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
     let mut pl_event = None;
@@ -89,16 +93,16 @@ where
 #[allow(clippy::implicit_hasher)]
 pub fn lean_kahn_sort_with_cycle_diagnostics<Id, C, E, S1, Spl>(
     events: &HashMap<Id, E, S1>,
-    sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    sort_context: &impl EventProvider<Id, C, E>,
     create_ev: Option<&E>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64, Spl>,
 ) -> KahnSortResult<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    S1: core::hash::BuildHasher,
-    Spl: core::hash::BuildHasher,
-    C: Clone + crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    S1: BuildHasher,
+    Spl: BuildHasher,
+    C: Clone + EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
     pl_cache.clear();
@@ -195,16 +199,16 @@ where
 #[allow(clippy::implicit_hasher)]
 pub fn lean_kahn_sort<Id, C, E, S1, Spl>(
     events: &HashMap<Id, E, S1>,
-    sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    sort_context: &impl EventProvider<Id, C, E>,
     create_ev: Option<&E>,
     version: StateResVersion,
     pl_cache: &mut HashMap<Id, i64, Spl>,
 ) -> Vec<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    S1: core::hash::BuildHasher,
-    Spl: core::hash::BuildHasher,
-    C: Clone + crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    S1: BuildHasher,
+    Spl: BuildHasher,
+    C: Clone + EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
     // jscpd:ignore-end
@@ -232,14 +236,14 @@ where
 }
 
 pub(crate) fn build_mainline<Id, C, E, K>(
-    resolved: &crate::state::at::SharedState<Id, K>,
-    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    resolved: &SharedState<Id, K>,
+    auth_context: &impl EventProvider<Id, C, E>,
     empty_key: &K,
     version: StateResVersion,
 ) -> Vec<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: Clone + crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: Clone + EventContent,
     E: EventLike<Id = Id, Content = C>,
     K: Ord + Clone,
 {
@@ -263,15 +267,15 @@ where
 /// already resolved, turning the mainline walk from `O(M × B)` (M = mainline
 /// length, B = auth chain breadth) to `O(M)` on cache hits.
 pub(crate) fn build_mainline_with_cache<Id, C, E, K>(
-    resolved: &crate::state::at::SharedState<Id, K>,
-    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    resolved: &SharedState<Id, K>,
+    auth_context: &impl EventProvider<Id, C, E>,
     pl_parent_cache: &mut FastMap<Id, Option<Id>>,
     empty_key: &K,
     version: StateResVersion,
 ) -> Vec<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: Clone + crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: Clone + EventContent,
     E: EventLike<Id = Id, Content = C>,
     K: Ord + Clone,
 {
@@ -334,12 +338,12 @@ where
 pub(crate) fn compute_closest_mainline_positions<Id, C, E>(
     events: &mut [&E],
     mainline: &[Id],
-    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    auth_context: &impl EventProvider<Id, C, E>,
     version: StateResVersion,
 ) -> HashMap<Id, usize>
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: Clone + crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: Clone + EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
     let mut memo = HashMap::new();
@@ -412,11 +416,11 @@ where
 pub fn mainline_sort<Id, C, E>(
     events: &mut [&E],
     mainline: &[Id],
-    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    auth_context: &impl EventProvider<Id, C, E>,
     version: StateResVersion,
 ) where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: Clone + crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: Clone + EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
     // O(V+E) iterative DFS to find the closest mainline index for all non-power events

@@ -51,13 +51,14 @@
 //!    the fold-then-merge pipeline.
 
 use crate::basespec::event_types::EventType;
-use crate::basespec::rezzy_types::{LeanEvent, StateResVersion};
+use crate::basespec::rezzy_types::{EventContent, EventId, LeanEvent, StateResVersion};
 use crate::{
     resolve::sorting::{build_mainline, compute_closest_mainline_positions},
-    state::at::{compute_local_auth, iterative_auth_ok},
+    state::at::{compute_local_auth, iterative_auth_ok, LocalAuthCache, SharedState},
     HashMap,
 };
 use alloc::string::String;
+use core::hash::BuildHasher;
 
 /// Determines whether `ev` beats `current_winner` under the Least Upper Bound (LUB)
 /// tie-breaking rules.
@@ -70,15 +71,15 @@ use alloc::string::String;
 /// This operator is **commutative** and **associative**, which is what allows
 /// the fold to be parallelized without affecting the result.
 #[must_use]
-pub fn is_semilattice_winner_better<Id, C, S: core::hash::BuildHasher>(
+pub fn is_semilattice_winner_better<Id, C, S: BuildHasher>(
     ev: &LeanEvent<Id, C>,
     current_winner: &LeanEvent<Id, C>,
     mainline_distances: &HashMap<Id, usize, S>,
     mainline_len: usize,
 ) -> bool
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: EventContent,
 {
     let ev_pos = mainline_distances
         .get(&ev.event_id)
@@ -111,8 +112,8 @@ fn update_winner_if_better<'a, Id, C>(
     mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
 ) where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: EventContent,
 {
     let is_better = if let Some(current_winner) = winners.get(&key) {
         is_semilattice_winner_better(ev, current_winner, mainline_distances, mainline_len)
@@ -131,21 +132,21 @@ fn update_winner_if_better<'a, Id, C>(
 /// [`compute_lattice_coordinatized_winners`]'s std fan-out -- the two must
 /// stay in lockstep on authentication and conflicted-key admission.
 #[allow(clippy::too_many_arguments)]
-fn process_lattice_event<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash::BuildHasher>(
+fn process_lattice_event<'a, Id, C, S2: BuildHasher, S3: BuildHasher>(
     ev: &'a LeanEvent<Id, C>,
     mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
-    terminal_power_state: &crate::state::at::SharedState<Id>,
+    terminal_power_state: &SharedState<Id>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     sort_set: &HashMap<Id, LeanEvent<Id, C>, S3>,
     version: StateResVersion,
     create_ev: Option<&LeanEvent<Id, C>>,
     conflicted_keys: &crate::FastSet<(EventType, String)>,
-    local_auth_cache: &mut crate::state::at::LocalAuthCache<Id, C>,
+    local_auth_cache: &mut LocalAuthCache<Id, C>,
     winners: &mut HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
 ) where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent + Clone,
+    Id: EventId,
+    C: EventContent + Clone,
 {
     // VALIDATE FIRST (filters out Byzantine garbage/supremum deletion attacks)
     let local_auth = compute_local_auth(ev, auth_context, sort_set, local_auth_cache, version);
@@ -184,11 +185,11 @@ fn process_lattice_event<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash:
 
 #[allow(clippy::too_many_arguments)]
 #[cfg_attr(feature = "std", allow(dead_code))]
-fn fold_lattice_chunk<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash::BuildHasher>(
+fn fold_lattice_chunk<'a, Id, C, S2: BuildHasher, S3: BuildHasher>(
     chunk: &[&'a LeanEvent<Id, C>],
     mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
-    terminal_power_state: &crate::state::at::SharedState<Id>,
+    terminal_power_state: &SharedState<Id>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     sort_set: &HashMap<Id, LeanEvent<Id, C>, S3>,
     version: StateResVersion,
@@ -196,11 +197,11 @@ fn fold_lattice_chunk<'a, Id, C, S2: core::hash::BuildHasher, S3: core::hash::Bu
     conflicted_keys: &crate::FastSet<(EventType, String)>,
 ) -> HashMap<(EventType, String), &'a LeanEvent<Id, C>>
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent + Clone,
+    Id: EventId,
+    C: EventContent + Clone,
 {
     let mut thread_res: HashMap<(EventType, String), &'a LeanEvent<Id, C>> = HashMap::new();
-    let mut local_auth_cache = crate::state::at::LocalAuthCache::<Id, C>::new(version);
+    let mut local_auth_cache = LocalAuthCache::<Id, C>::new(version);
 
     for &ev in chunk {
         process_lattice_event(
@@ -225,14 +226,14 @@ fn compute_lattice_coordinatized_winners<
     'a,
     Id,
     C,
-    S2: core::hash::BuildHasher + Sync + Send,
-    S3: core::hash::BuildHasher + Sync + Send,
+    S2: BuildHasher + Sync + Send,
+    S3: BuildHasher + Sync + Send,
 >(
     // jscpd:ignore-start
     events: &[&'a LeanEvent<Id, C>],
     mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
-    terminal_power_state: &crate::state::at::SharedState<Id>,
+    terminal_power_state: &SharedState<Id>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     sort_set: &HashMap<Id, LeanEvent<Id, C>, S3>,
     version: StateResVersion,
@@ -241,8 +242,8 @@ fn compute_lattice_coordinatized_winners<
     conflicted_keys: &crate::FastSet<(EventType, String)>,
     key_winners: &mut HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
 ) where
-    Id: crate::basespec::rezzy_types::EventId + Sync + Send,
-    C: crate::basespec::rezzy_types::EventContent + Clone + Sync + Send,
+    Id: EventId + Sync + Send,
+    C: EventContent + Clone + Sync + Send,
 {
     #[cfg(feature = "std")]
     {
@@ -260,8 +261,7 @@ fn compute_lattice_coordinatized_winners<
             for _ in 0..num_threads {
                 s.spawn(|| {
                     let mut local = HashMap::new();
-                    let mut local_auth_cache =
-                        crate::state::at::LocalAuthCache::<Id, C>::new(version);
+                    let mut local_auth_cache = LocalAuthCache::<Id, C>::new(version);
                     loop {
                         let idx = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         if idx >= len {
@@ -324,11 +324,11 @@ fn compute_lattice_coordinatized_winners<
 ///
 /// Non-power events are everything else (messages, topics, `m.room.third_party_invite`, etc.).
 pub fn route_power_events<
-    Id: crate::basespec::rezzy_types::EventId,
-    C: Clone + crate::basespec::rezzy_types::EventContent,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
-    S3: core::hash::BuildHasher,
+    Id: EventId,
+    C: Clone + EventContent,
+    S1: BuildHasher,
+    S2: BuildHasher,
+    S3: BuildHasher,
     K: Clone + AsRef<str>,
 >(
     sort_set: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
@@ -372,17 +372,17 @@ pub fn route_power_events<
 pub fn resolve_semilattice_fold<
     Id,
     C,
-    S1: core::hash::BuildHasher + Sync + Send,
-    S2: core::hash::BuildHasher + Sync + Send,
+    S1: BuildHasher + Sync + Send,
+    S2: BuildHasher + Sync + Send,
 >(
-    unconflicted_state: &crate::state::at::SharedState<Id>,
+    unconflicted_state: &SharedState<Id>,
     conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     version: StateResVersion,
-) -> crate::state::at::SharedState<Id>
+) -> SharedState<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId + Sync + Send,
-    C: crate::basespec::rezzy_types::EventContent + Sync + Send + Clone,
+    Id: EventId + Sync + Send,
+    C: EventContent + Sync + Send + Clone,
 {
     // jscpd:ignore-end
     let empty_key = alloc::string::String::new();
@@ -411,18 +411,18 @@ where
 pub fn resolve_semilattice_fold_with_conflicted_keys<
     Id,
     C,
-    S1: core::hash::BuildHasher + Sync + Send,
-    S2: core::hash::BuildHasher + Sync + Send,
+    S1: BuildHasher + Sync + Send,
+    S2: BuildHasher + Sync + Send,
 >(
-    unconflicted_state: &crate::state::at::SharedState<Id>,
+    unconflicted_state: &SharedState<Id>,
     conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
     version: StateResVersion,
     conflicted_keys: &crate::FastSet<(EventType, String)>,
-) -> crate::state::at::SharedState<Id>
+) -> SharedState<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId + Sync + Send,
-    C: crate::basespec::rezzy_types::EventContent + Sync + Send + Clone,
+    Id: EventId + Sync + Send,
+    C: EventContent + Sync + Send + Clone,
 {
     let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
 
@@ -461,7 +461,7 @@ where
         );
 
     // Initialize local auth cache for power-phase checks
-    let mut local_auth_cache = crate::state::at::LocalAuthCache::<Id, C>::new(version);
+    let mut local_auth_cache = LocalAuthCache::<Id, C>::new(version);
 
     crate::resolve::iterative::run_power_phase_iterative_checks(
         &mut resolved,

@@ -42,7 +42,9 @@ use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
+use core::borrow::Borrow;
 use core::fmt;
+use core::hash::BuildHasher;
 
 /// Status of a State DAG traversal starting from one or more events.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +61,7 @@ pub enum StateDagCompleteness<Id> {
         /// Event IDs that are referenced in the selected state-predecessor
         /// relation (`prev_state_events` for MSC4242 rooms, `prev_events`
         /// as a fallback for earlier room versions -- see
-        /// [`state_predecessors`](crate::basespec::rezzy_types::LeanEvent::state_predecessors))
+        /// [`state_predecessors`](LeanEvent::state_predecessors))
         /// but missing from the local store/map.
         missing_event_ids: Vec<Id>,
         /// Non-create event IDs present in the store that have an empty
@@ -827,7 +829,7 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
 {
     if event.event_type == M_ROOM_CREATE {
         if !event.prev_state_events().is_empty() {
@@ -928,7 +930,7 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
 {
     let mut visited: FastSet<Id> = FastSet::default();
     let mut reachable: Vec<Id> = Vec::new();
@@ -1069,7 +1071,7 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
 {
     if latest_events.is_empty() || limit == 0 {
         return Vec::new();
@@ -1128,7 +1130,7 @@ fn collect_state_dag_ancestor_short_ids_batch<'a, Id, C, S, K>(
 ) -> Result<DenseIndex<&'a Id, usize>, AncestorCollectError<Id>>
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
 {
     let mut index_to_id: Vec<&'a Id> = Vec::new();
     let mut seen: FastSet<&'a Id> = FastSet::default();
@@ -1179,7 +1181,7 @@ fn topological_sort_state_dag_short_ids<'a, Id, C, S, K>(
 ) -> (Vec<usize>, Vec<usize>)
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
 {
     let n = index.len();
     let mut in_degree = vec![0_usize; n];
@@ -1238,8 +1240,8 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn StateKeyDyn + 'q>,
+    S: BuildHasher,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     // State-DAG traversal (prev_state_events edges) is only defined for
     // room versions that use MSC4242 (V2.2). Earlier versions use auth-
@@ -1380,7 +1382,7 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
 {
     // Validate the complete reachable graph, not only the target's immediate
     // parents. Otherwise a malformed indirect ancestor can influence state.
@@ -1419,8 +1421,8 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn StateKeyDyn + 'q>,
+    S: BuildHasher,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     let mut parent_states = Vec::with_capacity(event.prev_state_events().len());
     for pe in event.prev_state_events() {
@@ -1465,8 +1467,8 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn StateKeyDyn + 'q>,
+    S: BuildHasher,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     let mut state = compute_state_before_from_dag(event, events_map, version, empty_key)?;
 
@@ -1502,8 +1504,8 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn StateKeyDyn + 'q>,
+    S: BuildHasher,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     if event.event_type == M_ROOM_CREATE {
         return Ok(Vec::new());
