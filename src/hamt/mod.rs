@@ -337,7 +337,24 @@ impl<K, V> HamtNode<K, V> {
         Q: Eq + ?Sized,
         F: NodeResolver<K, V, E>,
     {
-        self.search_by_path_hash_inner(key, path_hash, 0, resolver)
+        // Iterative descent, keeping resolved children alive in `arena` so the
+        // borrow checker accepts stepping through lazy nodes.
+        let mut arena: Vec<NodePtr<K, V>> = Vec::new();
+        for depth in 0..HAMT_MAX_DEPTH {
+            let node: &HamtNode<K, V> = match arena.last() {
+                Some(child) => child,
+                None => self,
+            };
+            match node.slot_at(path_hash, depth) {
+                Slot::Leaf((stored_key, value)) => {
+                    return Ok((stored_key.borrow() == key).then(|| value.clone()));
+                }
+                Slot::Child(NodeRef::Resolved(child)) => arena.push(child.clone()),
+                Slot::Child(NodeRef::Lazy(hash)) => arena.push(resolver(hash)?),
+                Slot::Empty => return Ok(None),
+            }
+        }
+        Ok(None)
     }
 
     /// Visits every key/value pair in the HAMT, resolving lazy children as
@@ -533,39 +550,6 @@ impl<K, V> HamtNode<K, V> {
                 child.get_by_path_hash_inner(key, path_hash, next_depth)
             }
             Slot::Child(NodeRef::Lazy(_)) | Slot::Empty => None,
-        }
-    }
-
-    fn search_by_path_hash_inner<Q, F, E>(
-        &self,
-        key: &Q,
-        path_hash: &StructuralHash,
-        depth: usize,
-        resolver: &mut F,
-    ) -> Result<Option<V>, E>
-    where
-        K: Eq + Borrow<Q>,
-        V: Clone,
-        Q: Eq + ?Sized,
-        F: NodeResolver<K, V, E>,
-    {
-        if depth >= HAMT_MAX_DEPTH {
-            return Ok(None);
-        }
-        let next_depth = depth.saturating_add(1);
-
-        match self.slot_at(path_hash, depth) {
-            Slot::Leaf((stored_key, value)) => {
-                Ok((stored_key.borrow() == key).then(|| value.clone()))
-            }
-            Slot::Child(NodeRef::Resolved(child)) => {
-                child.search_by_path_hash_inner(key, path_hash, next_depth, resolver)
-            }
-            Slot::Child(NodeRef::Lazy(hash)) => {
-                let child = resolver(hash)?;
-                child.search_by_path_hash_inner(key, path_hash, next_depth, resolver)
-            }
-            Slot::Empty => Ok(None),
         }
     }
 }
