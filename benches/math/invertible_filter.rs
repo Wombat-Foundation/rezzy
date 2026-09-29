@@ -1,5 +1,4 @@
 use std::hint::black_box;
-use std::time::{Duration, Instant};
 
 use rezzy::{SyndromeSketch, MAX_SKETCH_CAPACITY};
 
@@ -8,34 +7,39 @@ use super::filters::{
     CountingQuotientFilter, CuckooFilter, RemainderProbeFilter,
 };
 
-struct Xorshift128 {
-    state: [u64; 2],
+use crate::common::{measure, Xorshift128Hash as Xorshift128};
+
+/// Deterministically generates the shared base set plus local-only and
+/// remote-only deltas used by every reconciliation comparison.
+fn generate_sets(set_size: usize, delta: usize) -> (Vec<u64>, Vec<u64>) {
+    let mut gen = Xorshift128::new(0x7f4a_7c15_9e37_79b9);
+
+    let base: Vec<u64> = (0..set_size).map(|_| gen.next() | 1).collect();
+    let local_only: Vec<u64> = (0..delta).map(|_| gen.next() | 1).collect();
+    let remote_only: Vec<u64> = (0..delta).map(|_| gen.next() | 1).collect();
+
+    let mut local_set: Vec<u64> = base.iter().chain(local_only.iter()).copied().collect();
+    let mut remote_set: Vec<u64> = base.iter().chain(remote_only.iter()).copied().collect();
+    local_set.sort_unstable();
+    remote_set.sort_unstable();
+    (local_set, remote_set)
 }
 
-impl Xorshift128 {
-    fn new(seed: u64) -> Self {
-        Self {
-            state: [seed, seed ^ 0x9e37_79b9_7f4a_7c15],
-        }
+/// Toggles every element of both sets into fresh PinSketches of `capacity`.
+fn build_pinsketch_pair(
+    local_set: &[u64],
+    remote_set: &[u64],
+    capacity: usize,
+) -> (SyndromeSketch, SyndromeSketch) {
+    let mut local_sk = SyndromeSketch::new(capacity).unwrap();
+    for &v in local_set {
+        local_sk.toggle(v).unwrap();
     }
-
-    fn next(&mut self) -> u64 {
-        let mut value = self.state[0];
-        let other = self.state[1];
-        value ^= value << 23;
-        value ^= value >> 17;
-        value ^= other ^ (other >> 26);
-        self.state = [other, value];
-        value
+    let mut remote_sk = SyndromeSketch::new(capacity).unwrap();
+    for &v in remote_set {
+        remote_sk.toggle(v).unwrap();
     }
-}
-
-fn measure(iterations: u32, mut operation: impl FnMut()) -> Duration {
-    let start = Instant::now();
-    for _ in 0..iterations {
-        operation();
-    }
-    start.elapsed()
+    (local_sk, remote_sk)
 }
 
 // ---------------------------------------------------------------------------
@@ -137,44 +141,20 @@ mod gcs {
 // ---------------------------------------------------------------------------
 
 fn benchmark_pinsketch_reconciliation(set_size: usize, delta: usize) {
-    let mut gen = Xorshift128::new(0x7f4a_7c15_9e37_79b9);
-
-    // Generate base set + local-only + remote-only elements.
-    let base: Vec<u64> = (0..set_size).map(|_| gen.next() | 1).collect();
-    let local_only: Vec<u64> = (0..delta).map(|_| gen.next() | 1).collect();
-    let remote_only: Vec<u64> = (0..delta).map(|_| gen.next() | 1).collect();
-
-    let mut local_set: Vec<u64> = base.iter().chain(local_only.iter()).copied().collect();
-    let mut remote_set: Vec<u64> = base.iter().chain(remote_only.iter()).copied().collect();
-    local_set.sort_unstable();
-    remote_set.sort_unstable();
+    let (local_set, remote_set) = generate_sets(set_size, delta);
 
     // PinSketch capacity: must hold the symmetric difference (2 * delta).
     let capacity = (2 * delta).clamp(1, MAX_SKETCH_CAPACITY);
 
     // Build sketches and measure.
     let setup = measure(10, || {
-        let mut local_sk = SyndromeSketch::new(capacity).unwrap();
-        for &v in &local_set {
-            local_sk.toggle(v).unwrap();
-        }
-        let mut remote_sk = SyndromeSketch::new(capacity).unwrap();
-        for &v in &remote_set {
-            remote_sk.toggle(v).unwrap();
-        }
+        let (local_sk, remote_sk) = build_pinsketch_pair(&local_set, &remote_set, capacity);
         black_box((&local_sk, &remote_sk));
     });
 
     // XOR + decode.
     let algo = measure(10, || {
-        let mut local_sk = SyndromeSketch::new(capacity).unwrap();
-        for &v in &local_set {
-            local_sk.toggle(v).unwrap();
-        }
-        let mut remote_sk = SyndromeSketch::new(capacity).unwrap();
-        for &v in &remote_set {
-            remote_sk.toggle(v).unwrap();
-        }
+        let (mut local_sk, remote_sk) = build_pinsketch_pair(&local_set, &remote_set, capacity);
         local_sk.xor(&remote_sk).unwrap();
         let decoded = local_sk.decode_elements(capacity);
         let _ = black_box(decoded);
@@ -191,16 +171,7 @@ fn benchmark_pinsketch_reconciliation(set_size: usize, delta: usize) {
 }
 
 fn benchmark_gcs_reconciliation(set_size: usize, delta: usize) {
-    let mut gen = Xorshift128::new(0x7f4a_7c15_9e37_79b9);
-
-    let base: Vec<u64> = (0..set_size).map(|_| gen.next() | 1).collect();
-    let local_only: Vec<u64> = (0..delta).map(|_| gen.next() | 1).collect();
-    let remote_only: Vec<u64> = (0..delta).map(|_| gen.next() | 1).collect();
-
-    let mut local_set: Vec<u64> = base.iter().chain(local_only.iter()).copied().collect();
-    let mut remote_set: Vec<u64> = base.iter().chain(remote_only.iter()).copied().collect();
-    local_set.sort_unstable();
-    remote_set.sort_unstable();
+    let (local_set, remote_set) = generate_sets(set_size, delta);
 
     // BIP 158 default P=20 gives ~1.2 bits/elem false-positive rate.
     // For reconciliation, we need low FPR so probing is accurate.
@@ -255,16 +226,7 @@ fn benchmark_gcs_reconciliation(set_size: usize, delta: usize) {
 // ---------------------------------------------------------------------------
 
 fn benchmark_filter_reconciliation(set_size: usize, delta: usize, fpr: f64) {
-    let mut gen = Xorshift128::new(0x7f4a_7c15_9e37_79b9);
-
-    let base: Vec<u64> = (0..set_size).map(|_| gen.next() | 1).collect();
-    let local_only: Vec<u64> = (0..delta).map(|_| gen.next() | 1).collect();
-    let remote_only: Vec<u64> = (0..delta).map(|_| gen.next() | 1).collect();
-
-    let mut local_set: Vec<u64> = base.iter().chain(local_only.iter()).copied().collect();
-    let mut remote_set: Vec<u64> = base.iter().chain(remote_only.iter()).copied().collect();
-    local_set.sort_unstable();
-    remote_set.sort_unstable();
+    let (local_set, remote_set) = generate_sets(set_size, delta);
 
     let filter_types = ["bloom", "cuckoo", "cqf", "remainder_probe"];
 

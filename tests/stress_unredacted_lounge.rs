@@ -13,25 +13,44 @@ mod utils;
 use rezzy::basespec::event_types::EventType;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-/// Parse a JSONL file into a list of `LeanEvent`s.
-fn parse_jsonl_dag<P: AsRef<Path>>(path: P) -> Vec<LeanEvent> {
-    let file = File::open(path).expect("Failed to open JSONL file");
-    let reader = BufReader::new(file);
-    let mut events = Vec::new();
-
-    for line in reader.lines() {
-        let line = line.unwrap();
-        if line.trim().is_empty() {
-            continue;
-        }
-        let ev = utils::parse_event_json(&line).expect("Failed to parse event JSON line");
-        events.push(ev);
+/// Load a subgraph fixture, returning `None` (with a skip message) if the file
+/// is unavailable.
+fn load_lounge_subgraph(path: &str) -> Option<Vec<LeanEvent>> {
+    if !Path::new(path).exists() {
+        println!("Skipping: {path} not found");
+        return None;
     }
-    events
+    let events = utils::parse_jsonl_dag(path);
+    println!("Loaded {} events from subgraph", events.len());
+    Some(events)
+}
+
+/// Groups `m.room.member` event ids by their `state_key`.
+fn member_events_by_state_key(events: &[LeanEvent]) -> HashMap<String, Vec<String>> {
+    let mut by_state_key: HashMap<String, Vec<String>> = HashMap::new();
+    for ev in events {
+        if ev.event_type == "m.room.member" {
+            if let Some(ref sk) = ev.state_key {
+                by_state_key
+                    .entry(sk.clone())
+                    .or_default()
+                    .push(ev.event_id.clone());
+            }
+        }
+    }
+    by_state_key
+}
+
+/// The member event ids that have more than one competing candidate per
+/// `state_key` (i.e. the directly conflicted member events).
+fn conflicted_member_ids(events: &[LeanEvent]) -> Vec<String> {
+    member_events_by_state_key(events)
+        .values()
+        .filter(|ids| ids.len() > 1)
+        .flat_map(|ids| ids.iter().cloned())
+        .collect()
 }
 
 /// Mimics continuwuity's `resolve_fork_with_states` for V2.1+ rooms.
@@ -86,32 +105,12 @@ fn find_member_events_for_user<'a>(events: &'a [LeanEvent], state_key: &str) -> 
 #[allow(clippy::too_many_lines)]
 fn test_unredacted_lounge_mismatch_subgraph() {
     let path = "res/pathology_data/unredacted_lounge_mismatch.jsonl";
-    if !Path::new(path).exists() {
-        println!("Skipping: {path} not found");
+    let Some(events) = load_lounge_subgraph(path) else {
         return;
-    }
-    let events = parse_jsonl_dag(path);
-    println!("Loaded {} events from subgraph", events.len());
-
-    // Identify all state_keys that have competing m.room.member events
-    let mut member_events_by_sk: HashMap<String, Vec<String>> = HashMap::new();
-    for ev in &events {
-        if ev.event_type == "m.room.member" {
-            if let Some(ref sk) = ev.state_key {
-                member_events_by_sk
-                    .entry(sk.clone())
-                    .or_default()
-                    .push(ev.event_id.clone());
-            }
-        }
-    }
+    };
 
     // All member events with >1 competing event for the same state_key are conflicted
-    let conflicted_eids: Vec<String> = member_events_by_sk
-        .values()
-        .filter(|ids| ids.len() > 1)
-        .flat_map(|ids| ids.iter().cloned())
-        .collect();
+    let conflicted_eids = conflicted_member_ids(&events);
 
     println!("Conflicted member event IDs ({}):", conflicted_eids.len());
     for id in &conflicted_eids {
@@ -228,7 +227,7 @@ fn test_unredacted_lounge_diagnostic_dump() {
         println!("Skipping: {path} not found");
         return;
     }
-    let events = parse_jsonl_dag(path);
+    let events = utils::parse_jsonl_dag(path);
 
     let mismatch_users = ["@tobydave503:matrix.org"];
 
@@ -282,30 +281,12 @@ fn test_unredacted_lounge_diagnostic_dump() {
 #[allow(clippy::too_many_lines)]
 fn test_checkpoint_partial_join_resolution() {
     let path = "res/pathology_data/unredacted_lounge_mismatch.jsonl";
-    if !Path::new(path).exists() {
-        println!("Skipping: {path} not found");
+    let Some(events) = load_lounge_subgraph(path) else {
         return;
-    }
-    let events = parse_jsonl_dag(path);
-    println!("Loaded {} events from subgraph", events.len());
+    };
 
     // --- Full resolution (ground truth) ---
-    let mut member_events_by_sk: HashMap<String, Vec<String>> = HashMap::new();
-    for ev in &events {
-        if ev.event_type == "m.room.member" {
-            if let Some(ref sk) = ev.state_key {
-                member_events_by_sk
-                    .entry(sk.clone())
-                    .or_default()
-                    .push(ev.event_id.clone());
-            }
-        }
-    }
-    let conflicted_eids: Vec<String> = member_events_by_sk
-        .values()
-        .filter(|ids| ids.len() > 1)
-        .flat_map(|ids| ids.iter().cloned())
-        .collect();
+    let conflicted_eids = conflicted_member_ids(&events);
 
     let full_resolved = resolve_v2_1_from_subgraph(&events, &conflicted_eids);
     println!("Full resolution: {} entries", full_resolved.len());

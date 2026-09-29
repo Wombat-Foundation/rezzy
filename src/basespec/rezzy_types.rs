@@ -18,7 +18,9 @@ use crate::json::Value;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
+use base64::Engine as _;
 use core::cmp::Ordering;
+use sha2::{Digest, Sha256};
 
 use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER, M_ROOM_REDACTION};
 
@@ -832,6 +834,11 @@ pub fn redact_json(value: &Value, room_version: &str) -> Value {
     Value::Object(out)
 }
 
+/// Returns whether `room_version` is a recognised room version.
+fn is_supported_room_version(room_version: &str) -> bool {
+    RoomVersionFormat::parse(room_version).is_some()
+}
+
 /// Computes the Matrix **reference hash** of a PDU `Value` — the event ID for
 /// room versions 4+: SHA-256 of the canonical JSON of the *redacted* event
 /// (with `signatures`/`unsigned`/legacy `age_ts` removed; `hashes` is
@@ -852,9 +859,6 @@ pub fn reference_hash(
     value: &Value,
     room_version: &str,
 ) -> Result<alloc::string::String, alloc::string::String> {
-    use base64::Engine as _;
-    use sha2::{Digest, Sha256};
-
     let major = room_version
         .split('.')
         .next()
@@ -893,10 +897,7 @@ pub fn compute_content_hash(
     value: &Value,
     room_version: &str,
 ) -> Result<alloc::string::String, alloc::string::String> {
-    use base64::Engine as _;
-    use sha2::{Digest, Sha256};
-
-    if RoomVersionFormat::parse(room_version).is_none() {
+    if !is_supported_room_version(room_version) {
         return Err(alloc::format!(
             "no content hash for unsupported room version {room_version}: its canonical JSON rules are undefined"
         ));
@@ -978,7 +979,7 @@ pub fn try_canonical_redacted_json(
     value: &Value,
     room_version: &str,
 ) -> Result<alloc::string::String, alloc::string::String> {
-    if RoomVersionFormat::parse(room_version).is_none() {
+    if !is_supported_room_version(room_version) {
         return Err(alloc::format!(
             "no canonical redacted JSON for unsupported room version {room_version}"
         ));
@@ -2541,6 +2542,22 @@ pub trait EventVerifier<Id> {
     }
 }
 
+/// Applies `visitor` to each entry of a power-level JSON object, clamping
+/// every value into the JSON-safe PL range. Shared by the three
+/// `visit_*_power_levels` methods on [`Value`].
+fn visit_power_level_object<'a>(
+    obj: Option<&'a crate::json::Object>,
+    visitor: &mut dyn FnMut(&'a str, i64),
+) {
+    if let Some(obj) = obj {
+        for (k, v) in obj {
+            if let Some(pl) = coerce_json_to_i64(v) {
+                visitor(k.as_str(), pl.min(MAX_POWER_LEVEL_JSON));
+            }
+        }
+    }
+}
+
 impl EventContent for Value {
     fn get_membership(&self) -> Option<&str> {
         self.get(crate::basespec::event_types::FIELD_MEMBERSHIP)?
@@ -2677,42 +2694,27 @@ impl EventContent for Value {
     }
 
     fn visit_event_power_levels<'a>(&'a self, visitor: &mut dyn FnMut(&'a str, i64)) {
-        if let Some(obj) = self
-            .get(crate::basespec::event_types::FIELD_EVENTS)
-            .and_then(|v| v.as_object())
-        {
-            for (k, v) in obj {
-                if let Some(pl) = coerce_json_to_i64(v) {
-                    visitor(k.as_str(), pl.min(MAX_POWER_LEVEL_JSON));
-                }
-            }
-        }
+        visit_power_level_object(
+            self.get(crate::basespec::event_types::FIELD_EVENTS)
+                .and_then(|v| v.as_object()),
+            visitor,
+        );
     }
 
     fn visit_user_power_levels<'a>(&'a self, visitor: &mut dyn FnMut(&'a str, i64)) {
-        if let Some(obj) = self
-            .get(crate::basespec::event_types::FIELD_USERS)
-            .and_then(|v| v.as_object())
-        {
-            for (k, v) in obj {
-                if let Some(pl) = coerce_json_to_i64(v) {
-                    visitor(k.as_str(), pl.min(MAX_POWER_LEVEL_JSON));
-                }
-            }
-        }
+        visit_power_level_object(
+            self.get(crate::basespec::event_types::FIELD_USERS)
+                .and_then(|v| v.as_object()),
+            visitor,
+        );
     }
 
     fn visit_notification_power_levels<'a>(&'a self, visitor: &mut dyn FnMut(&'a str, i64)) {
-        if let Some(obj) = self
-            .get(crate::basespec::event_types::FIELD_NOTIFICATIONS)
-            .and_then(|v| v.as_object())
-        {
-            for (k, v) in obj {
-                if let Some(pl) = coerce_json_to_i64(v) {
-                    visitor(k.as_str(), pl.min(MAX_POWER_LEVEL_JSON));
-                }
-            }
-        }
+        visit_power_level_object(
+            self.get(crate::basespec::event_types::FIELD_NOTIFICATIONS)
+                .and_then(|v| v.as_object()),
+            visitor,
+        );
     }
 
     fn find_non_integer_scalar_pl(&self) -> Option<&'static str> {
@@ -3825,24 +3827,18 @@ mod redact_top_level_tests {
 mod index_by_event_id_tests {
     use super::*;
 
+    fn ev(id: &str) -> LeanEvent {
+        LeanEvent {
+            event_id: id.into(),
+            ..Default::default()
+        }
+    }
+
     /// `index_by_event_id` assigns indices in iteration order, keyed by each
     /// event's `event_id`.
     #[test]
     fn test_index_by_event_id_assigns_indices_in_iteration_order() {
-        let events = [
-            LeanEvent {
-                event_id: "$c:example".into(),
-                ..Default::default()
-            },
-            LeanEvent {
-                event_id: "$a:example".into(),
-                ..Default::default()
-            },
-            LeanEvent {
-                event_id: "$b:example".into(),
-                ..Default::default()
-            },
-        ];
+        let events = [ev("$c:example"), ev("$a:example"), ev("$b:example")];
         let index = index_by_event_id(events.iter());
         assert_eq!(index.len(), 3);
         assert_eq!(index.get("$c:example"), Some(&0));
@@ -3854,20 +3850,7 @@ mod index_by_event_id_tests {
     /// the insert-based build the formatter and stress test rely on.
     #[test]
     fn test_index_by_event_id_keeps_last_duplicate_index() {
-        let events = [
-            LeanEvent {
-                event_id: "$a:example".into(),
-                ..Default::default()
-            },
-            LeanEvent {
-                event_id: "$a:example".into(),
-                ..Default::default()
-            },
-            LeanEvent {
-                event_id: "$b:example".into(),
-                ..Default::default()
-            },
-        ];
+        let events = [ev("$a:example"), ev("$a:example"), ev("$b:example")];
         let index = index_by_event_id(events.iter());
         assert_eq!(index.len(), 2);
         assert_eq!(index.get("$a:example"), Some(&1));

@@ -11,21 +11,19 @@ mod utils;
 use rezzy::{json, resolve_iterative_sort, JsonValue, LeanEvent, StateResVersion};
 use std::collections::HashMap;
 
-fn load_fixture(path: &str) -> Vec<LeanEvent> {
+fn read_fixture(path: &str) -> Vec<LeanEvent> {
     let content = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("Missing {path}"));
     let val = JsonValue::parse(&content).unwrap();
-    if val.is_array() {
-        utils::parse_events_value(&val).unwrap()
-    } else {
-        utils::parse_events_value(&val["events"]).unwrap()
-    }
+    let events_value = if val.is_array() { &val } else { &val["events"] };
+    utils::parse_events_value(events_value).unwrap()
 }
 
-fn to_event_map(events: &[LeanEvent]) -> HashMap<String, LeanEvent> {
-    events
-        .iter()
-        .map(|e| (e.event_id.clone(), e.clone()))
-        .collect()
+fn event_map(events: &[LeanEvent]) -> HashMap<String, LeanEvent> {
+    let mut map = HashMap::with_capacity(events.len());
+    for event in events {
+        map.insert(event.event_id.clone(), event.clone());
+    }
+    map
 }
 
 fn write_oracle(fixture_path: &str, oracle_path: &str, version: StateResVersion) {
@@ -40,15 +38,18 @@ fn write_oracle(fixture_path: &str, oracle_path: &str, version: StateResVersion)
     );
 
     eprintln!("Resolving {fixture_path}...");
-    let events = load_fixture(fixture_path);
-    let map = to_event_map(&events);
+    let events = read_fixture(fixture_path);
+    let map = event_map(&events);
+    let unconflicted = utils::build_unconflicted_state_test_helper(&map);
+    let mut pl_cache = HashMap::new();
+    let empty_key = String::new();
     let resolved = resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&map),
+        &unconflicted,
         &map,
         &map,
         version,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
+        &mut pl_cache,
+        &empty_key,
     );
 
     let mut entries: Vec<JsonValue> = resolved

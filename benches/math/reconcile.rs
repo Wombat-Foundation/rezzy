@@ -4,9 +4,13 @@ use std::time::{Duration, Instant};
 use rezzy::{
     build_bucket_sketches, decode_bucket_sketches, estimate_strata, gf64_mul, BucketDecodeBatch,
     BucketDecodeSuccess, BucketExchange, BucketRequest, ClientAction, ElementHash,
-    ReconciliationClient, RemoteDigest, ResidentKernel, SyndromeSketch, MAX_BATCH_FACTOR_WORK,
+    ReconciliationClient, ResidentKernel, SyndromeSketch, MAX_BATCH_FACTOR_WORK,
     MAX_BUCKETED_SKETCH_CAPACITY, MAX_BUCKETS_PER_ROUND, MAX_SKETCH_CAPACITY,
     MAX_STRATA_FACTOR_WORK,
+};
+
+use crate::common::{
+    build_remote_digest, empty_decode_batch, measure, Xorshift128Hash as Xorshift128,
 };
 
 fn hash(index: u64) -> ElementHash {
@@ -17,44 +21,13 @@ fn hash(index: u64) -> ElementHash {
     }
 }
 
-struct Xorshift128 {
-    state: [u64; 2],
-}
-
-impl Xorshift128 {
-    fn new(seed: u64) -> Self {
-        Self {
-            state: [seed, seed ^ 0x9e37_79b9_7f4a_7c15],
-        }
-    }
-
-    fn next(&mut self) -> u64 {
-        let mut value = self.state[0];
-        let other = self.state[1];
-        value ^= value << 23;
-        value ^= value >> 17;
-        value ^= other ^ (other >> 26);
-        self.state = [other, value];
-        value
-    }
-
-    fn hash(&mut self) -> ElementHash {
-        let high = self.next();
-        let low = self.next();
-        let h64 = self.next() | 1;
-        ElementHash {
-            h128: u128::from(high) << 64 | u128::from(low),
-            h64,
-        }
-    }
-}
-
-fn measure(iterations: u32, mut operation: impl FnMut()) -> Duration {
-    let start = Instant::now();
-    for _ in 0..iterations {
-        operation();
-    }
-    start.elapsed()
+/// Returns `n_buckets` consecutive depth-24 prefixes starting at `base_prefix`.
+fn consecutive_prefixes(n_buckets: usize, base_prefix: u64) -> Vec<u64> {
+    (0..n_buckets)
+        .map(|i| {
+            base_prefix.saturating_add(u64::try_from(i).expect("benchmark bucket index fits u64"))
+        })
+        .collect()
 }
 
 fn report(name: &str, iterations: u32, elapsed: Duration) {
@@ -171,12 +144,14 @@ impl HashPool {
     }
 }
 
-fn benchmark_scale_from_pool(
+/// Builds the local/remote kernels (and, when `FILL_H64`, their sorted
+/// `h64` indices) shared by every pool-backed reconciliation bench.
+fn build_pool<const FILL_H64: bool>(
     pool: &HashPool,
     base_count: usize,
     local_extra_count: usize,
     remote_extra_count: usize,
-) -> (Duration, Duration) {
+) -> (ResidentKernel, ResidentKernel, Vec<u64>, Vec<u64>, Duration) {
     let setup_start = Instant::now();
     let base_slice = &pool.base[..base_count];
     let local_extra_slice = &pool.local_extra[..local_extra_count];
@@ -184,116 +159,64 @@ fn benchmark_scale_from_pool(
 
     let mut local = ResidentKernel::new();
     let mut remote = ResidentKernel::new();
+    let mut local_h64 = if FILL_H64 {
+        Vec::with_capacity(base_count.saturating_add(local_extra_count))
+    } else {
+        Vec::new()
+    };
+    let mut remote_h64 = if FILL_H64 {
+        Vec::with_capacity(base_count.saturating_add(remote_extra_count))
+    } else {
+        Vec::new()
+    };
     for event in base_slice {
         local.insert(*event).expect("benchmark hashes are valid");
         remote.insert(*event).expect("benchmark hashes are valid");
+        if FILL_H64 {
+            local_h64.push(event.h64);
+            remote_h64.push(event.h64);
+        }
     }
     for event in local_extra_slice {
         local.insert(*event).expect("benchmark hashes are valid");
+        if FILL_H64 {
+            local_h64.push(event.h64);
+        }
     }
     for event in remote_extra_slice {
         remote.insert(*event).expect("benchmark hashes are valid");
+        if FILL_H64 {
+            remote_h64.push(event.h64);
+        }
+    }
+    if FILL_H64 {
+        local_h64.sort_unstable();
+        remote_h64.sort_unstable();
     }
 
     let setup_elapsed = setup_start.elapsed();
-
-    let client = ReconciliationClient::default().allow_unlimited_delta();
-    let remote_digest = RemoteDigest {
-        digest: remote.accumulator().digest(),
-        known_event_count: remote.accumulator().known_event_count(),
-        strata: *remote.strata(),
-        frame_matches: true,
-        has_unknown_extremity: false,
-    };
-
-    let algo_start = Instant::now();
-    let action = client.select_action(&local, remote_digest, 0);
-    black_box(action);
-    let algo_elapsed = algo_start.elapsed();
-
-    (setup_elapsed, algo_elapsed)
+    (local, remote, local_h64, remote_h64, setup_elapsed)
 }
 
-#[allow(clippy::too_many_lines)]
-fn benchmark_bucket_exchange_from_pool(
-    pool: &HashPool,
-    base_count: usize,
-    local_extra_count: usize,
-    remote_extra_count: usize,
-) -> (Duration, Duration, usize, usize, usize) {
-    let setup_start = Instant::now();
-    let base_slice = &pool.base[..base_count];
-    let local_extra_slice = &pool.local_extra[..local_extra_count];
-    let remote_extra_slice = &pool.remote_extra[..remote_extra_count];
-
-    let mut local = ResidentKernel::new();
-    let mut remote = ResidentKernel::new();
-    let local_h64_capacity = base_count.saturating_add(local_extra_count);
-    let remote_h64_capacity = base_count.saturating_add(remote_extra_count);
-    let mut local_h64 = Vec::with_capacity(local_h64_capacity);
-    let mut remote_h64 = Vec::with_capacity(remote_h64_capacity);
-    for event in base_slice {
-        local.insert(*event).expect("benchmark hashes are valid");
-        remote.insert(*event).expect("benchmark hashes are valid");
-        local_h64.push(event.h64);
-        remote_h64.push(event.h64);
-    }
-    for event in local_extra_slice {
-        local.insert(*event).expect("benchmark hashes are valid");
-        local_h64.push(event.h64);
-    }
-    for event in remote_extra_slice {
-        remote.insert(*event).expect("benchmark hashes are valid");
-        remote_h64.push(event.h64);
-    }
-    local_h64.sort_unstable();
-    remote_h64.sort_unstable();
-
-    let setup_elapsed = setup_start.elapsed();
-    let remote_digest = RemoteDigest {
-        digest: remote.accumulator().digest(),
-        known_event_count: remote.accumulator().known_event_count(),
-        strata: *remote.strata(),
-        frame_matches: true,
-        has_unknown_extremity: false,
-    };
-    let estimated_delta = Some(
-        estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK)
-            .unwrap()
-            .delta,
-    );
-    let client = ReconciliationClient::default().allow_unlimited_delta();
-    let initial_action = client.select_action(&local, remote_digest, 0);
-
-    let algo_start = Instant::now();
-    let ClientAction::BucketSketches {
-        requests: mut current_requests,
-        accumulated_roots,
-    } = initial_action
-    else {
-        black_box(initial_action);
-        let algo_elapsed = algo_start.elapsed();
-        return (setup_elapsed, algo_elapsed, 0, 0, 0);
-    };
-
-    let mut exchange = BucketExchange::new(
-        accumulated_roots,
-        rezzy::MAX_RECONCILIATION_ROUNDS,
-        MAX_BUCKETS_PER_ROUND,
-        MAX_BUCKETED_SKETCH_CAPACITY,
-    );
+/// Drives a [`BucketExchange`] to completion, returning the elapsed time and
+/// the round/request/root counters.
+fn run_exchange_loop(
+    mut exchange: BucketExchange,
+    mut current_requests: Vec<BucketRequest>,
+    estimated_delta: Option<u64>,
+    local_h64: &[u64],
+    remote_h64: &[u64],
+    algo_start: Instant,
+) -> (Duration, usize, usize, usize) {
     let mut rounds = 0_usize;
     let mut requests_emitted = current_requests.len();
     let mut resolved_roots = 0_usize;
 
     loop {
         rounds = rounds.saturating_add(1);
-        let remote_sketches = build_bucket_sketches(&remote_h64, &current_requests).unwrap();
-        let local_sketches = build_bucket_sketches(&local_h64, &current_requests).unwrap();
-        let mut batch = BucketDecodeBatch {
-            successful_buckets: Vec::with_capacity(current_requests.len()),
-            failed_buckets: Vec::new(),
-        };
+        let remote_sketches = build_bucket_sketches(remote_h64, &current_requests).unwrap();
+        let local_sketches = build_bucket_sketches(local_h64, &current_requests).unwrap();
+        let mut batch = empty_decode_batch(current_requests.len());
 
         for ((mut remote_sketch, local_sketch), request) in remote_sketches
             .into_iter()
@@ -333,6 +256,71 @@ fn benchmark_bucket_exchange_from_pool(
 
     let algo_elapsed = algo_start.elapsed();
     black_box((rounds, requests_emitted, resolved_roots));
+    (algo_elapsed, rounds, requests_emitted, resolved_roots)
+}
+
+fn benchmark_scale_from_pool(
+    pool: &HashPool,
+    base_count: usize,
+    local_extra_count: usize,
+    remote_extra_count: usize,
+) -> (Duration, Duration) {
+    let (local, remote, _, _, setup_elapsed) =
+        build_pool::<false>(pool, base_count, local_extra_count, remote_extra_count);
+
+    let client = ReconciliationClient::default().allow_unlimited_delta();
+    let remote_digest = build_remote_digest(&remote);
+
+    let algo_start = Instant::now();
+    let action = client.select_action(&local, remote_digest, 0);
+    black_box(action);
+    let algo_elapsed = algo_start.elapsed();
+
+    (setup_elapsed, algo_elapsed)
+}
+
+fn benchmark_bucket_exchange_from_pool(
+    pool: &HashPool,
+    base_count: usize,
+    local_extra_count: usize,
+    remote_extra_count: usize,
+) -> (Duration, Duration, usize, usize, usize) {
+    let (local, remote, local_h64, remote_h64, setup_elapsed) =
+        build_pool::<true>(pool, base_count, local_extra_count, remote_extra_count);
+    let remote_digest = build_remote_digest(&remote);
+    let estimated_delta = Some(
+        estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK)
+            .unwrap()
+            .delta,
+    );
+    let client = ReconciliationClient::default().allow_unlimited_delta();
+    let initial_action = client.select_action(&local, remote_digest, 0);
+
+    let algo_start = Instant::now();
+    let ClientAction::BucketSketches {
+        requests: current_requests,
+        accumulated_roots,
+    } = initial_action
+    else {
+        black_box(initial_action);
+        let algo_elapsed = algo_start.elapsed();
+        return (setup_elapsed, algo_elapsed, 0, 0, 0);
+    };
+
+    let exchange = BucketExchange::new(
+        accumulated_roots,
+        rezzy::MAX_RECONCILIATION_ROUNDS,
+        MAX_BUCKETS_PER_ROUND,
+        MAX_BUCKETED_SKETCH_CAPACITY,
+    );
+    let (algo_elapsed, rounds, requests_emitted, resolved_roots) = run_exchange_loop(
+        exchange,
+        current_requests,
+        estimated_delta,
+        &local_h64,
+        &remote_h64,
+        algo_start,
+    );
     (
         setup_elapsed,
         algo_elapsed,
@@ -342,42 +330,14 @@ fn benchmark_bucket_exchange_from_pool(
     )
 }
 
-#[allow(clippy::too_many_lines)]
 fn benchmark_presplit_antichain_exchange_from_pool(
     pool: &HashPool,
     base_count: usize,
     local_extra_count: usize,
     remote_extra_count: usize,
 ) -> (Duration, Duration, usize, usize, usize) {
-    let setup_start = Instant::now();
-    let base_slice = &pool.base[..base_count];
-    let local_extra_slice = &pool.local_extra[..local_extra_count];
-    let remote_extra_slice = &pool.remote_extra[..remote_extra_count];
-
-    let mut local = ResidentKernel::new();
-    let mut remote = ResidentKernel::new();
-    let local_h64_capacity = base_count.saturating_add(local_extra_count);
-    let remote_h64_capacity = base_count.saturating_add(remote_extra_count);
-    let mut local_h64 = Vec::with_capacity(local_h64_capacity);
-    let mut remote_h64 = Vec::with_capacity(remote_h64_capacity);
-    for event in base_slice {
-        local.insert(*event).expect("benchmark hashes are valid");
-        remote.insert(*event).expect("benchmark hashes are valid");
-        local_h64.push(event.h64);
-        remote_h64.push(event.h64);
-    }
-    for event in local_extra_slice {
-        local.insert(*event).expect("benchmark hashes are valid");
-        local_h64.push(event.h64);
-    }
-    for event in remote_extra_slice {
-        remote.insert(*event).expect("benchmark hashes are valid");
-        remote_h64.push(event.h64);
-    }
-    local_h64.sort_unstable();
-    remote_h64.sort_unstable();
-
-    let setup_elapsed = setup_start.elapsed();
+    let (local, remote, local_h64, remote_h64, setup_elapsed) =
+        build_pool::<true>(pool, base_count, local_extra_count, remote_extra_count);
     let estimated_delta = usize::try_from(
         estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK)
             .map_or(500, |est| est.delta.max(1)),
@@ -388,7 +348,7 @@ fn benchmark_presplit_antichain_exchange_from_pool(
     let target_depth: u8 = 4;
     let num_buckets: usize = 16;
 
-    let mut current_requests: Vec<BucketRequest> = (0..num_buckets)
+    let current_requests: Vec<BucketRequest> = (0..num_buckets)
         .map(|prefix| {
             BucketRequest::new(
                 target_depth,
@@ -398,7 +358,7 @@ fn benchmark_presplit_antichain_exchange_from_pool(
         })
         .collect();
 
-    let mut exchange = BucketExchange::new(
+    let exchange = BucketExchange::new(
         Vec::new(),
         rezzy::MAX_RECONCILIATION_ROUNDS,
         MAX_BUCKETS_PER_ROUND,
@@ -406,61 +366,14 @@ fn benchmark_presplit_antichain_exchange_from_pool(
     );
 
     let algo_start = Instant::now();
-    let mut rounds = 0_usize;
-    let mut requests_emitted = current_requests.len();
-    let mut resolved_roots = 0_usize;
-
-    loop {
-        rounds = rounds.saturating_add(1);
-        let remote_sketches = build_bucket_sketches(&remote_h64, &current_requests).unwrap();
-        let local_sketches = build_bucket_sketches(&local_h64, &current_requests).unwrap();
-        let mut batch = BucketDecodeBatch {
-            successful_buckets: Vec::with_capacity(current_requests.len()),
-            failed_buckets: Vec::new(),
-        };
-
-        for ((mut remote_sketch, local_sketch), request) in remote_sketches
-            .into_iter()
-            .zip(local_sketches)
-            .zip(current_requests.iter())
-        {
-            remote_sketch.xor(&local_sketch).unwrap();
-            match remote_sketch.decode_elements(request.capacity) {
-                Ok(roots) => {
-                    batch.successful_buckets.push(BucketDecodeSuccess {
-                        depth: request.depth,
-                        prefix: request.prefix,
-                        roots,
-                    });
-                }
-                Err(_) => batch.failed_buckets.push((request.depth, request.prefix)),
-            }
-        }
-
-        match exchange.advance(
-            batch,
-            &current_requests,
-            u64::try_from(estimated_delta).ok(),
-        ) {
-            ClientAction::BucketSketches {
-                requests,
-                accumulated_roots,
-            } => {
-                requests_emitted = requests_emitted.saturating_add(requests.len());
-                resolved_roots = accumulated_roots.len();
-                current_requests = requests;
-            }
-            ClientAction::ResolveRoots { roots } => {
-                resolved_roots = roots.len();
-                black_box(roots);
-                break;
-            }
-            ClientAction::ExtremityDiff | ClientAction::Synchronized => break,
-        }
-    }
-
-    let algo_elapsed = algo_start.elapsed();
-    black_box((rounds, requests_emitted, resolved_roots));
+    let (algo_elapsed, rounds, requests_emitted, resolved_roots) = run_exchange_loop(
+        exchange,
+        current_requests,
+        u64::try_from(estimated_delta).ok(),
+        &local_h64,
+        &remote_h64,
+        algo_start,
+    );
     (
         setup_elapsed,
         algo_elapsed,
@@ -699,12 +612,7 @@ pub fn run() {
         for n_buckets in [2_usize, 16, 128] {
             let delta = n_buckets.saturating_mul(BUCKET_CAP);
             // Consecutive depth-24 prefixes: each covers a disjoint h64 range.
-            let prefixes: Vec<u64> = (0..n_buckets)
-                .map(|i| {
-                    BASE_PREFIX
-                        .saturating_add(u64::try_from(i).expect("benchmark bucket index fits u64"))
-                })
-                .collect();
+            let prefixes = consecutive_prefixes(n_buckets, BASE_PREFIX);
 
             let mut h64_index: Vec<u64> = Vec::with_capacity(n);
 
@@ -760,12 +668,7 @@ pub fn run() {
             let delta_u64 = u64::try_from(delta).expect("benchmark delta fits u64");
             let mut gen = Xorshift128::new(0x1234_5678_abcd_ef00 ^ delta_u64);
 
-            let prefixes: Vec<u64> = (0..n_buckets)
-                .map(|i| {
-                    BASE_PREFIX
-                        .saturating_add(u64::try_from(i).expect("benchmark bucket index fits u64"))
-                })
-                .collect();
+            let prefixes = consecutive_prefixes(n_buckets, BASE_PREFIX);
 
             let mut local_sorted: Vec<u64> = Vec::with_capacity(n);
             let mut remote_sorted: Vec<u64> = Vec::with_capacity(n.saturating_add(delta));

@@ -456,6 +456,26 @@ mod tests {
     use crate::basespec::rezzy_types::LeanEvent;
     use alloc::{string::String, vec::Vec};
 
+    fn pl_event(event_id: &str) -> LeanEvent<String> {
+        LeanEvent::<String> {
+            event_id: event_id.into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        }
+    }
+
+    /// Computes mainline positions for `ev` against `auth_ctx` with the
+    /// standard single-entry `pl0` mainline.
+    fn closest_position(
+        ev: &LeanEvent<String>,
+        auth_ctx: &HashMap<String, LeanEvent<String>>,
+    ) -> HashMap<String, usize> {
+        let mainline: Vec<String> = alloc::vec!["pl0".into()];
+        let mut events = alloc::vec![ev];
+        compute_closest_mainline_positions(&mut events, &mainline, auth_ctx, StateResVersion::V2)
+    }
+
     #[test]
     fn test_build_mainline_cycle_detection() {
         // A and B both claim to be m.room.power_levels, and auth against each other, forming a cycle.
@@ -514,14 +534,7 @@ mod tests {
             ..Default::default()
         };
         let auth_ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
-        let mainline: Vec<String> = alloc::vec!["pl0".into()];
-        let mut events = alloc::vec![&ev];
-        let dist = compute_closest_mainline_positions(
-            &mut events,
-            &mainline,
-            &auth_ctx,
-            StateResVersion::V2,
-        );
+        let dist = closest_position(&ev, &auth_ctx);
         // No path found → clamped to mainline.len() = 1, not usize::MAX
         assert_eq!(dist["orphan"], 1);
     }
@@ -529,12 +542,7 @@ mod tests {
     /// An event whose auth chain leads directly to a mainline event gets that position.
     #[test]
     fn test_closest_mainline_direct_hit() {
-        let pl = LeanEvent::<String> {
-            event_id: "pl0".into(),
-            event_type: "m.room.power_levels".into(),
-            auth_events: alloc::vec![],
-            ..Default::default()
-        };
+        let pl = pl_event("pl0");
         let ev = LeanEvent::<String> {
             event_id: "msg".into(),
             event_type: "m.room.message".into(),
@@ -545,26 +553,14 @@ mod tests {
         auth_ctx.insert("pl0".into(), pl);
         auth_ctx.insert("msg".into(), ev.clone());
 
-        let mainline = alloc::vec!["pl0".into()];
-        let mut events = alloc::vec![&ev];
-        let dist = compute_closest_mainline_positions(
-            &mut events,
-            &mainline,
-            &auth_ctx,
-            StateResVersion::V2,
-        );
+        let dist = closest_position(&ev, &auth_ctx);
         assert_eq!(dist["msg"], 0);
     }
 
     /// Deep auth chain: event → intermediate → mainline event.
     #[test]
     fn test_closest_mainline_deep_chain() {
-        let pl = LeanEvent::<String> {
-            event_id: "pl0".into(),
-            event_type: "m.room.power_levels".into(),
-            auth_events: alloc::vec![],
-            ..Default::default()
-        };
+        let pl = pl_event("pl0");
         let mid = LeanEvent::<String> {
             event_id: "mid".into(),
             event_type: "m.room.member".into(),
@@ -582,10 +578,7 @@ mod tests {
         ctx.insert("mid".into(), mid);
         ctx.insert("leaf".into(), leaf.clone());
 
-        let mainline = alloc::vec!["pl0".into()];
-        let mut events = alloc::vec![&leaf];
-        let dist =
-            compute_closest_mainline_positions(&mut events, &mainline, &ctx, StateResVersion::V2);
+        let dist = closest_position(&leaf, &ctx);
         assert_eq!(dist["leaf"], 0);
     }
 

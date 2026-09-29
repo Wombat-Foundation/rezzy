@@ -12,10 +12,11 @@ use std::time::{Duration, Instant};
 use rezzy::{
     build_bucket_sketches, estimate_strata, validate_overflow_bucket_requests, BucketDecodeBatch,
     BucketDecodeSuccess, BucketExchange, BucketRequest, ClientAction, ElementHash, H64Index,
-    ReconciliationClient, RemoteDigest, ResidentKernel, SyndromeSketch,
-    MAX_BUCKETED_SKETCH_CAPACITY, MAX_BUCKETS_PER_ROUND, MAX_RECONCILIATION_ROUNDS,
-    MAX_STRATA_FACTOR_WORK,
+    ReconciliationClient, SyndromeSketch, MAX_BUCKETED_SKETCH_CAPACITY, MAX_BUCKETS_PER_ROUND,
+    MAX_RECONCILIATION_ROUNDS, MAX_STRATA_FACTOR_WORK,
 };
+
+use crate::common::{build_remote_digest, build_sorted_kernels, Xorshift128Hash as Xorshift128};
 
 const EXACT_ELEM_BYTES: usize = std::mem::size_of::<u64>();
 const EXACT_LIST_OVERHEAD: usize = std::mem::size_of::<u64>();
@@ -37,37 +38,6 @@ struct StrategyResult {
 }
 
 type InputGenerator = fn(&[ElementHash], usize) -> (Vec<ElementHash>, Vec<ElementHash>);
-
-struct Xorshift128 {
-    state: [u64; 2],
-}
-
-impl Xorshift128 {
-    fn new(seed: u64) -> Self {
-        Self {
-            state: [seed, seed ^ 0x9e37_79b9_7f4a_7c15],
-        }
-    }
-
-    fn next(&mut self) -> u64 {
-        let mut value = self.state[0];
-        let other = self.state[1];
-        value ^= value << 23;
-        value ^= value >> 17;
-        value ^= other ^ (other >> 26);
-        self.state = [other, value];
-        value
-    }
-
-    fn hash(&mut self) -> ElementHash {
-        let high = self.next();
-        let low = self.next();
-        ElementHash {
-            h128: u128::from(high) << 64 | u128::from(low),
-            h64: self.next() | 1,
-        }
-    }
-}
 
 fn symmetric_difference(left: &[u64], right: &[u64]) -> Vec<u64> {
     let mut result = Vec::new();
@@ -141,30 +111,12 @@ fn simulate_strategy(
     decode_budget: usize,
 ) -> StrategyResult {
     let expected = expected_difference(local_hashes, remote_hashes);
-    let mut local = ResidentKernel::new();
-    let mut remote = ResidentKernel::new();
-    let mut local_h64 = Vec::with_capacity(local_hashes.len());
-    let mut remote_h64 = Vec::with_capacity(remote_hashes.len());
-    for hash in local_hashes {
-        local.insert(*hash).expect("unique benchmark hash");
-        local_h64.push(hash.h64);
-    }
-    for hash in remote_hashes {
-        remote.insert(*hash).expect("unique benchmark hash");
-        remote_h64.push(hash.h64);
-    }
-    local_h64.sort_unstable();
-    remote_h64.sort_unstable();
+    let (local, remote, local_h64, remote_h64) =
+        build_sorted_kernels(local_hashes, remote_hashes);
     let local_index = H64Index::new(&local_h64);
     let remote_index = H64Index::new(&remote_h64);
 
-    let remote_digest = RemoteDigest {
-        digest: remote.accumulator().digest(),
-        known_event_count: remote.accumulator().known_event_count(),
-        strata: *remote.strata(),
-        frame_matches: true,
-        has_unknown_extremity: false,
-    };
+    let remote_digest = build_remote_digest(&remote);
     let client = ReconciliationClient::default().allow_unlimited_delta();
     let initial = client.select_action(&local, remote_digest, 0);
     let ClientAction::BucketSketches {

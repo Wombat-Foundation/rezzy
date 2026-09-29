@@ -117,11 +117,12 @@ impl EventType {
             Self::Custom(s) => s,
         }
     }
-}
 
-impl From<&str> for EventType {
-    fn from(s: &str) -> Self {
-        match s {
+    /// Maps a known wire event type to its interned variant, or `None` for a
+    /// custom/vendor type. Shared by the `From<&str>`/`From<String>` impls so
+    /// the known-type table lives in exactly one place.
+    fn from_known_str(s: &str) -> Option<Self> {
+        Some(match s {
             M_ROOM_CREATE => Self::RoomCreate,
             M_ROOM_MEMBER => Self::RoomMember,
             M_ROOM_POWER_LEVELS => Self::RoomPowerLevels,
@@ -142,35 +143,22 @@ impl From<&str> for EventType {
             M_ROOM_ALIASES => Self::RoomAliases,
             M_SPACE_CHILD => Self::SpaceChild,
             M_SPACE_PARENT => Self::SpaceParent,
-            other => Self::Custom(Arc::from(other)),
-        }
+            _ => return None,
+        })
+    }
+}
+
+impl From<&str> for EventType {
+    fn from(s: &str) -> Self {
+        Self::from_known_str(s).unwrap_or_else(|| Self::Custom(Arc::from(s)))
     }
 }
 
 impl From<String> for EventType {
     fn from(s: String) -> Self {
-        match s.as_str() {
-            M_ROOM_CREATE => Self::RoomCreate,
-            M_ROOM_MEMBER => Self::RoomMember,
-            M_ROOM_POWER_LEVELS => Self::RoomPowerLevels,
-            M_ROOM_JOIN_RULES => Self::RoomJoinRules,
-            M_ROOM_THIRD_PARTY_INVITE => Self::RoomThirdPartyInvite,
-            M_ROOM_NAME => Self::RoomName,
-            M_ROOM_TOPIC => Self::RoomTopic,
-            M_ROOM_AVATAR => Self::RoomAvatar,
-            M_ROOM_CANONICAL_ALIAS => Self::RoomCanonicalAlias,
-            M_ROOM_HISTORY_VISIBILITY => Self::RoomHistoryVisibility,
-            M_ROOM_GUEST_ACCESS => Self::RoomGuestAccess,
-            M_ROOM_SERVER_ACL => Self::RoomServerAcl,
-            M_ROOM_TOMBSTONE => Self::RoomTombstone,
-            M_ROOM_ENCRYPTION => Self::RoomEncryption,
-            M_ROOM_PINNED_EVENTS => Self::RoomPinnedEvents,
-            M_ROOM_MESSAGE => Self::RoomMessage,
-            M_ROOM_REDACTION => Self::RoomRedaction,
-            M_ROOM_ALIASES => Self::RoomAliases,
-            M_SPACE_CHILD => Self::SpaceChild,
-            M_SPACE_PARENT => Self::SpaceParent,
-            _ => Self::Custom(Arc::from(s)),
+        match Self::from_known_str(&s) {
+            Some(known) => known,
+            None => Self::Custom(Arc::from(s)),
         }
     }
 }

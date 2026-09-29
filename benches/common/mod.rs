@@ -6,9 +6,21 @@
 //! means a change to the HAMT child layout or to `PersistedInternalNode` is
 //! fixed once instead of silently drifting across three copies.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use rezzy::hamt::codec::HamtCodec;
 use rezzy::hamt::{self, HamtNode, PersistedInternalNode};
+use rezzy::{json, BucketDecodeBatch, ElementHash, LeanEvent, RemoteDigest, ResidentKernel};
+use sha2::Digest;
+
+/// Standard-library imports every benchmark module shares, so their preambles
+/// stay identical instead of drifting apart copy by copy.
+pub mod prelude {
+    pub use std::collections::HashMap;
+    pub use std::hint::black_box;
+}
 
 /// Deterministic PRNG (`xorshift128+`) so bench inputs are reproducible
 /// without adding a `rand` dependency.
@@ -105,5 +117,321 @@ pub fn to_persisted<K: Clone, V: Clone>(node: &HamtNode<K, V>) -> PersistedInter
             .iter()
             .map(hamt::NodeRef::structural_hash)
             .collect(),
+    }
+}
+
+/// Deterministic PRNG variant used by the reconciliation benches: seeded
+/// `[seed, seed ^ CONST]` (matching the values those benches originally
+/// hard-coded) with an [`ElementHash`] convenience.
+pub struct Xorshift128Hash {
+    state: [u64; 2],
+}
+
+impl Xorshift128Hash {
+    pub fn new(seed: u64) -> Self {
+        Self {
+            state: [seed, seed ^ 0x9e37_79b9_7f4a_7c15],
+        }
+    }
+
+    pub fn next(&mut self) -> u64 {
+        let mut value = self.state[0];
+        let other = self.state[1];
+        value ^= value << 23;
+        value ^= value >> 17;
+        value ^= other ^ (other >> 26);
+        self.state = [other, value];
+        value
+    }
+
+    pub fn hash(&mut self) -> ElementHash {
+        let high = self.next();
+        let low = self.next();
+        let h64 = self.next() | 1;
+        ElementHash {
+            h128: u128::from(high) << 64 | u128::from(low),
+            h64,
+        }
+    }
+}
+
+/// Runs `operation` `iterations` times and returns the elapsed wall time.
+pub fn measure(iterations: u32, mut operation: impl FnMut()) -> Duration {
+    let start = Instant::now();
+    for _ in 0..iterations {
+        operation();
+    }
+    start.elapsed()
+}
+
+/// Builds the remote-side [`RemoteDigest`] frame header every reconciliation
+/// bench sends as its first message.
+pub fn build_remote_digest(remote: &ResidentKernel) -> RemoteDigest {
+    RemoteDigest {
+        digest: remote.accumulator().digest(),
+        known_event_count: remote.accumulator().known_event_count(),
+        strata: *remote.strata(),
+        frame_matches: true,
+        has_unknown_extremity: false,
+    }
+}
+
+/// Inserts every hash into a local/remote [`ResidentKernel`] pair and
+/// returns the kernels plus their sorted `h64` indices.
+pub fn build_sorted_kernels(
+    local_hashes: &[ElementHash],
+    remote_hashes: &[ElementHash],
+) -> (ResidentKernel, ResidentKernel, Vec<u64>, Vec<u64>) {
+    let mut local = ResidentKernel::new();
+    let mut remote = ResidentKernel::new();
+    let mut local_h64 = Vec::with_capacity(local_hashes.len());
+    let mut remote_h64 = Vec::with_capacity(remote_hashes.len());
+    for hash in local_hashes {
+        local.insert(*hash).expect("benchmark hash is valid");
+        local_h64.push(hash.h64);
+    }
+    for hash in remote_hashes {
+        remote.insert(*hash).expect("benchmark hash is valid");
+        remote_h64.push(hash.h64);
+    }
+    local_h64.sort_unstable();
+    remote_h64.sort_unstable();
+    (local, remote, local_h64, remote_h64)
+}
+
+/// Fills a set of `n` unique keys, drawing each key (and, only when it is
+/// new, its value) from `make_key`/`make_value` over a shared PRNG, so the
+/// stream stays identical regardless of how many duplicate keys were drawn.
+pub fn generate_unique_entries<K, V>(
+    n: usize,
+    seed: u64,
+    mut make_key: impl FnMut(&mut Xorshift128) -> K,
+    mut make_value: impl FnMut(&mut Xorshift128) -> V,
+) -> Vec<(K, V)>
+where
+    K: Clone + Eq + std::hash::Hash,
+{
+    let mut rng = Xorshift128::new(seed);
+    let mut entries = Vec::with_capacity(n);
+    let mut used = std::collections::HashSet::new();
+    while entries.len() < n {
+        let key = make_key(&mut rng);
+        if used.insert(key.clone()) {
+            let value = make_value(&mut rng);
+            entries.push((key, value));
+        }
+    }
+    entries
+}
+
+/// Builds a deterministic fixture of distinct `String` state entries in the
+/// `"room_member|@userN:example.org" -> "$eventM:example.org"` shape.
+pub fn make_string_entries(n: usize, seed: u64) -> Vec<(String, String)> {
+    generate_unique_entries(
+        n,
+        seed,
+        |rng| {
+            let uid = rng.next_u64() % 1_000_000;
+            format!("room_member|@user{uid}:example.org")
+        },
+        |rng| format!("$event{}:example.org", rng.next_u64()),
+    )
+}
+
+/// Generates a deterministic mutation stream: two-in-three new keys, else an
+/// overwrite of a key drawn from `candidate_keys`.
+pub fn generate_string_mutations(
+    rng: &mut Xorshift128,
+    steps: usize,
+    candidate_keys: &[String],
+) -> Vec<(String, String)> {
+    let mut mutations = Vec::with_capacity(steps);
+    for _ in 0..steps {
+        let key = if rng.next_u64() % 3 == 0 && !candidate_keys.is_empty() {
+            candidate_keys[(rng.next_u64() as usize) % candidate_keys.len()].clone()
+        } else {
+            format!("room_member|@user{}:example.org", rng.next_u64())
+        };
+        let value = format!("$event{}:example.org", rng.next_u64());
+        mutations.push((key, value));
+    }
+    mutations
+}
+
+/// Resolver for fully materialized benchmark trees: any lazy lookup is a bug.
+pub fn unreachable_resolver<K, V>(
+) -> impl FnMut(&hamt::hash::StructuralHash) -> Result<Arc<HamtNode<K, V>>, ()> {
+    |_hash| unreachable!("bench trees are always fully resolved")
+}
+
+/// Hashes pre-encoded rows by sorting them and feeding the result through
+/// SHA-256 sequentially (the Conduwuit-style baseline shape).
+pub fn sha256_sorted_hash(mut rows: Vec<Vec<u8>>) -> [u8; 32] {
+    rows.sort_unstable();
+    let mut hasher = sha2::Sha256::new();
+    for row in &rows {
+        hasher.update(row);
+    }
+    hasher.finalize().into()
+}
+
+/// Hashes pre-encoded rows order-independently via an XOR-fold of per-row
+/// SHA-256 digests (the Synapse-style baseline shape).
+pub fn xor_fold_sha256(rows: impl IntoIterator<Item = Vec<u8>>) -> [u8; 32] {
+    let mut acc = [0u8; 32];
+    for row in rows {
+        let digest: [u8; 32] = sha2::Sha256::digest(&row).into();
+        for (a, d) in acc.iter_mut().zip(digest.iter()) {
+            *a ^= d;
+        }
+    }
+    acc
+}
+
+/// Returns the encoded size of a complete state map.
+pub fn encode_full_map<'a, K: HamtCodec + 'a, V: HamtCodec + 'a>(
+    entries: impl IntoIterator<Item = (&'a K, &'a V)>,
+) -> usize {
+    let mut buf = Vec::new();
+    for (k, v) in entries {
+        k.encode_hamt(&mut buf);
+        v.encode_hamt(&mut buf);
+    }
+    buf.len()
+}
+
+/// Inserts the boilerplate `m.room.create` genesis event and returns its id.
+pub fn insert_room_create(events: &mut HashMap<String, LeanEvent>, ts: &mut u64) -> String {
+    let create_id = "$create".to_string();
+    events.insert(
+        create_id.clone(),
+        LeanEvent {
+            event_id: create_id.clone(),
+            event_type: "m.room.create".to_string(),
+            state_key: Some(String::new()),
+            power_level: 100,
+            origin_server_ts: {
+                *ts += 1;
+                *ts
+            },
+            sender: "@creator:example.org".to_string(),
+            content: json!({ "creator": "@creator:example.org" }),
+            prev_events: Vec::new(),
+            auth_events: Vec::new(),
+            depth: 0,
+            rejected: false,
+            soft_fail: false,
+            room_id: None,
+        },
+    );
+    create_id
+}
+
+/// Inserts the boilerplate `m.room.power_levels` event (citing `create_id`)
+/// and returns its id.
+pub fn insert_room_power_levels(
+    events: &mut HashMap<String, LeanEvent>,
+    ts: &mut u64,
+    create_id: &str,
+) -> String {
+    let pl_id = "$power_levels".to_string();
+    events.insert(
+        pl_id.clone(),
+        LeanEvent {
+            event_id: pl_id.clone(),
+            event_type: "m.room.power_levels".to_string(),
+            state_key: Some(String::new()),
+            power_level: 100,
+            origin_server_ts: {
+                *ts += 1;
+                *ts
+            },
+            sender: "@creator:example.org".to_string(),
+            content: json!({ "users_default": 50 }),
+            prev_events: vec![create_id.to_string()],
+            auth_events: Vec::new(),
+            depth: 1,
+            rejected: false,
+            soft_fail: false,
+            room_id: None,
+        },
+    );
+    pl_id
+}
+
+/// Creates a room's genesis pair — `m.room.create` followed by
+/// `m.room.power_levels` — returning the event map, the timestamp counter,
+/// and both event ids.
+pub fn new_room_with_power_levels() -> (HashMap<String, LeanEvent>, u64, String, String) {
+    let mut events = HashMap::new();
+    let mut ts: u64 = 0;
+    let create_id = insert_room_create(&mut events, &mut ts);
+    let pl_id = insert_room_power_levels(&mut events, &mut ts, &create_id);
+    (events, ts, create_id, pl_id)
+}
+
+/// Builds a public `m.room.join_rules` event (the shape both the interned-key
+/// and mainline-cache fixtures need to make self-joins admissible).
+pub fn join_rules_event(
+    event_id: String,
+    origin_server_ts: u64,
+    prev_events: Vec<String>,
+    auth_events: Vec<String>,
+    depth: u64,
+) -> LeanEvent {
+    LeanEvent {
+        event_id,
+        event_type: "m.room.join_rules".to_string(),
+        state_key: Some(String::new()),
+        power_level: 100,
+        origin_server_ts,
+        sender: "@creator:example.org".to_string(),
+        content: json!({ "join_rule": "public" }),
+        prev_events,
+        auth_events,
+        depth,
+        rejected: false,
+        soft_fail: false,
+        room_id: None,
+    }
+}
+
+/// Builds an `m.room.member` event with the benchmark-default flags
+/// (`rejected`/`soft_fail` false, `room_id` none).
+#[allow(clippy::too_many_arguments)]
+pub fn member_event(
+    event_id: String,
+    state_key: String,
+    sender: String,
+    membership: &str,
+    power_level: i64,
+    origin_server_ts: u64,
+    prev_events: Vec<String>,
+    auth_events: Vec<String>,
+    depth: u64,
+) -> LeanEvent {
+    LeanEvent {
+        event_id,
+        event_type: "m.room.member".to_string(),
+        state_key: Some(state_key),
+        power_level,
+        origin_server_ts,
+        sender,
+        content: json!({ "membership": membership }),
+        prev_events,
+        auth_events,
+        depth,
+        rejected: false,
+        soft_fail: false,
+        room_id: None,
+    }
+}
+
+/// Creates an empty [`BucketDecodeBatch`] with room for `capacity` successful
+/// bucket decodes — the starting shape of every reconciliation round.
+pub fn empty_decode_batch(capacity: usize) -> BucketDecodeBatch {
+    BucketDecodeBatch {
+        successful_buckets: Vec::with_capacity(capacity),
+        failed_buckets: Vec::new(),
     }
 }

@@ -3,6 +3,7 @@
 //! Tests the LUB comparator, `route_power_events`, and `resolve_semilattice_fold`.
 
 use crate::utils;
+use crate::utils::to_event_map;
 
 use rezzy::resolve::semilattice::{
     is_semilattice_winner_better, resolve_semilattice_fold,
@@ -20,13 +21,6 @@ const FIXTURE: &str = r#"
 {"event_id":"$topic_a","type":"m.room.topic","state_key":"","sender":"@alice:a.com","depth":4,"origin_server_ts":2000,"content":{"topic":"Alice topic"},"prev_events":["$jr"],"auth_events":["$create","$alice_join","$pl"]}
 {"event_id":"$topic_b","type":"m.room.topic","state_key":"","sender":"@alice:a.com","depth":4,"origin_server_ts":3000,"content":{"topic":"Later topic"},"prev_events":["$jr"],"auth_events":["$create","$alice_join","$pl"]}
 "#;
-
-fn to_event_map(events: &[LeanEvent]) -> HashMap<String, LeanEvent> {
-    events
-        .iter()
-        .map(|e| (e.event_id.clone(), e.clone()))
-        .collect()
-}
 
 /// The conflicted pair of topic candidates used by most tests.
 fn conflicting_topics(map: &HashMap<String, LeanEvent>) -> HashMap<String, LeanEvent> {

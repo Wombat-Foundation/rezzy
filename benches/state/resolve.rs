@@ -8,6 +8,8 @@ use rezzy::{
     TraversalMode,
 };
 
+use crate::common::Xorshift128Hash as Xorshift128;
+
 fn report_phases(name: &str, phases: &[(&str, Duration)]) {
     let parts = phases
         .iter()
@@ -30,6 +32,34 @@ fn report_comparison(
     let speedup = bfs_avg / index_avg;
     println!(
         "{name}: index={index_avg:.6} ms/query ({index_iterations} iters, {index_ms:.6} ms total), bfs={bfs_avg:.6} ms/query ({bfs_iterations} iters, {bfs_ms:.6} ms total), speedup={speedup:.2}x"
+    );
+}
+
+/// Reports the phases and index-vs-bfs comparison for one low-memory
+/// reachability case, shared by the interleaved and layered suites.
+fn report_low_memory_case(
+    node_count: usize,
+    case: &ReachabilityCase,
+    setup_elapsed: Duration,
+    index_elapsed: Duration,
+    bfs_elapsed: Duration,
+    hits: usize,
+    mode: TraversalMode,
+) {
+    report_phases(
+        &format!(
+            "resolve/{}/{node_count} mode={}",
+            case.label,
+            traversal_mode_label(mode)
+        ),
+        &[("index_build", setup_elapsed)],
+    );
+    report_comparison(
+        &format!("resolve/{}/{node_count} hits={hits}", case.label),
+        case.iterations,
+        index_elapsed,
+        case.iterations,
+        bfs_elapsed,
     );
 }
 
@@ -56,30 +86,46 @@ fn traversal_mode_label(mode: TraversalMode) -> &'static str {
     }
 }
 
-struct Xorshift128 {
-    state: [u64; 2],
+/// Times `f`, returning the elapsed wall time and its value.
+fn timed<T>(f: impl FnOnce() -> T) -> (Duration, T) {
+    let start = Instant::now();
+    let value = f();
+    (start.elapsed(), value)
 }
 
-impl Xorshift128 {
-    fn new(seed: u64) -> Self {
-        Self {
-            state: [seed, seed ^ 0x9e37_79b9_7f4a_7c15],
-        }
+/// Runs `query` `iterations` times, returning the elapsed time and last result
+/// (the hand-rolled timing loop shared by the reachability benchmarks).
+fn time_index_query<T>(iterations: u32, mut query: impl FnMut() -> T) -> (Duration, T) {
+    let start = Instant::now();
+    let mut out = query();
+    for _ in 1..iterations {
+        out = query();
     }
-
-    fn next(&mut self) -> u64 {
-        let mut value = self.state[0];
-        let other = self.state[1];
-        value ^= value << 23;
-        value ^= value >> 17;
-        value ^= other ^ (other >> 26);
-        self.state = [other, value];
-        value
-    }
+    (start.elapsed(), out)
 }
 
 fn pick_branch_offset(generator: &mut Xorshift128) -> usize {
     usize::from(u8::try_from(generator.next() & 127).expect("benchmark offset fits u8"))
+}
+
+/// Inserts a fixture event and records its id in `ordered_ids`.
+fn insert_graph_event(
+    graph: &mut HashMap<String, LeanEvent<String>>,
+    ordered_ids: &mut Vec<String>,
+    event_id: String,
+    auth_events: Vec<String>,
+    idx: usize,
+) {
+    graph.insert(
+        event_id.clone(),
+        LeanEvent {
+            event_id: event_id.clone(),
+            auth_events,
+            depth: u64::try_from(idx).expect("benchmark graph fits u64"),
+            ..Default::default()
+        },
+    );
+    ordered_ids.push(event_id);
 }
 
 struct BranchyDag {
@@ -118,16 +164,7 @@ impl BranchyDag {
                 }
             }
 
-            graph.insert(
-                event_id.clone(),
-                LeanEvent {
-                    event_id: event_id.clone(),
-                    auth_events,
-                    depth: u64::try_from(idx).expect("benchmark graph fits u64"),
-                    ..Default::default()
-                },
-            );
-            ordered_ids.push(event_id);
+            insert_graph_event(&mut graph, &mut ordered_ids, event_id, auth_events, idx);
         }
 
         let seeds = ordered_ids[ordered_ids.len().saturating_sub(seed_count)..].to_vec();
@@ -179,16 +216,7 @@ impl DagFixture {
                     auth_events.push(parent);
                 }
 
-                graph.insert(
-                    event_id.clone(),
-                    LeanEvent {
-                        event_id: event_id.clone(),
-                        auth_events,
-                        depth: u64::try_from(idx).expect("benchmark graph fits u64"),
-                        ..Default::default()
-                    },
-                );
-                ordered_ids.push(event_id.clone());
+                insert_graph_event(&mut graph, &mut ordered_ids, event_id.clone(), auth_events, idx);
                 chains[chain_idx].push(idx);
                 tails[chain_idx] = Some(event_id);
             }
@@ -229,16 +257,7 @@ impl DagFixture {
                     }
                 }
 
-                graph.insert(
-                    event_id.clone(),
-                    LeanEvent {
-                        event_id: event_id.clone(),
-                        auth_events,
-                        depth: u64::try_from(idx).expect("benchmark graph fits u64"),
-                        ..Default::default()
-                    },
-                );
-                ordered_ids.push(event_id.clone());
+                insert_graph_event(&mut graph, &mut ordered_ids, event_id.clone(), auth_events, idx);
                 current_layer.push(idx);
             }
             previous_layer_ids = current_layer
@@ -325,6 +344,19 @@ fn prefix_indices(indices: &[usize], count: usize) -> Vec<usize> {
     indices.iter().copied().take(count).collect()
 }
 
+/// The first chain's prefix as event ids, used to seed the repeated-seed and
+/// candidate-sweep suites.
+fn first_chain_seeds(fixture: &DagFixture) -> Vec<String> {
+    fixture
+        .chains
+        .first()
+        .map(|chain| prefix_indices(chain, 8))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|idx| fixture.ordered_ids[idx].clone())
+        .collect()
+}
+
 fn slice_indices(indices: &[usize], start: usize, count: usize) -> Vec<usize> {
     indices.iter().copied().skip(start).take(count).collect()
 }
@@ -333,27 +365,15 @@ fn benchmark_low_memory_case(
     fixture: &DagFixture,
     case: &ReachabilityCase,
 ) -> (Duration, Duration, Duration, usize, TraversalMode) {
-    let index_build_start = Instant::now();
-    let index = RangePrefilterReachability::build(&fixture.graph);
-    let index_build_elapsed = index_build_start.elapsed();
+    let (index_build_elapsed, index) = timed(|| RangePrefilterReachability::build(&fixture.graph));
 
-    let index_query_start = Instant::now();
-    let mut index_hits = Vec::new();
-    let mut mode = TraversalMode::PlainIndexedBfs;
-    for _ in 0..case.iterations {
-        let (hits, query_mode) =
-            index.filter_reachable_with_mode(case.seeds.iter(), case.candidates.iter());
-        index_hits = hits;
-        mode = query_mode;
-    }
-    let index_query_elapsed = index_query_start.elapsed();
+    let (index_query_elapsed, (index_hits, mode)) = time_index_query(case.iterations, || {
+        index.filter_reachable_with_mode(case.seeds.iter(), case.candidates.iter())
+    });
 
-    let bfs_query_start = Instant::now();
-    let mut bfs_hits = Vec::new();
-    for _ in 0..case.iterations {
-        bfs_hits = branchy_forward_reachable_bfs(&fixture.children, &case.seeds, &case.candidates);
-    }
-    let bfs_query_elapsed = bfs_query_start.elapsed();
+    let (bfs_query_elapsed, bfs_hits) = time_index_query(case.iterations, || {
+        branchy_forward_reachable_bfs(&fixture.children, &case.seeds, &case.candidates)
+    });
 
     assert_eq!(index_hits, bfs_hits, "{} must match bfs", case.label);
     black_box((&index_hits, &bfs_hits));
@@ -367,19 +387,31 @@ fn benchmark_low_memory_case(
     )
 }
 
-fn cached_reachable_set(
-    children: &HashMap<String, Vec<String>>,
+/// Seeds a BFS frontier from `seeds`, visiting each id once.
+fn seed_reachable(
     seeds: &[String],
-) -> HashSet<String> {
-    let mut reachable = HashSet::with_capacity(children.len().saturating_add(seeds.len()));
-    let mut queue = VecDeque::with_capacity(seeds.len());
+    reachable: &mut HashSet<String>,
+    queue: &mut VecDeque<String>,
+) {
     for seed in seeds {
         if reachable.insert(seed.clone()) {
             queue.push_back(seed.clone());
         }
     }
+}
 
+/// Drains the BFS frontier, calling `on_node` before expanding each node;
+/// `on_node` returns `true` to stop early.
+fn drain_reachable(
+    children: &HashMap<String, Vec<String>>,
+    reachable: &mut HashSet<String>,
+    queue: &mut VecDeque<String>,
+    mut on_node: impl FnMut(&str) -> bool,
+) {
     while let Some(node) = queue.pop_front() {
+        if on_node(&node) {
+            return;
+        }
         if let Some(children) = children.get(&node) {
             for child in children {
                 if reachable.insert(child.clone()) {
@@ -388,7 +420,16 @@ fn cached_reachable_set(
             }
         }
     }
+}
 
+fn cached_reachable_set(
+    children: &HashMap<String, Vec<String>>,
+    seeds: &[String],
+) -> HashSet<String> {
+    let mut reachable = HashSet::with_capacity(children.len().saturating_add(seeds.len()));
+    let mut queue = VecDeque::with_capacity(seeds.len());
+    seed_reachable(seeds, &mut reachable, &mut queue);
+    drain_reachable(children, &mut reachable, &mut queue, |_| false);
     reachable
 }
 
@@ -501,21 +542,8 @@ fn branchy_forward_reachable_bfs(
 ) -> Vec<usize> {
     let mut reachable = HashSet::with_capacity(children.len().saturating_add(candidates.len()));
     let mut queue = VecDeque::with_capacity(seeds.len());
-    for seed in seeds {
-        if reachable.insert(seed.clone()) {
-            queue.push_back(seed.clone());
-        }
-    }
-
-    while let Some(node) = queue.pop_front() {
-        if let Some(children) = children.get(&node) {
-            for child in children {
-                if reachable.insert(child.clone()) {
-                    queue.push_back(child.clone());
-                }
-            }
-        }
-    }
+    seed_reachable(seeds, &mut reachable, &mut queue);
+    drain_reachable(children, &mut reachable, &mut queue, |_| false);
 
     candidates
         .iter()
@@ -538,31 +566,20 @@ fn branchy_forward_reachable_until_candidates(
     let mut remaining = candidates.len();
     let mut reachable = HashSet::with_capacity(children.len().saturating_add(seeds.len()));
     let mut queue = VecDeque::with_capacity(seeds.len());
-    for seed in seeds {
-        if reachable.insert(seed.clone()) {
-            queue.push_back(seed.clone());
-        }
-    }
+    seed_reachable(seeds, &mut reachable, &mut queue);
 
-    while let Some(node) = queue.pop_front() {
-        if let Some(&candidate_idx) = candidate_positions.get(node.as_str()) {
+    drain_reachable(children, &mut reachable, &mut queue, |node| {
+        if let Some(&candidate_idx) = candidate_positions.get(node) {
             if !found[candidate_idx] {
                 found[candidate_idx] = true;
                 remaining = remaining.saturating_sub(1);
                 if remaining == 0 {
-                    break;
+                    return true;
                 }
             }
         }
-
-        if let Some(children) = children.get(&node) {
-            for child in children {
-                if reachable.insert(child.clone()) {
-                    queue.push_back(child.clone());
-                }
-            }
-        }
-    }
+        false
+    });
 
     found
         .iter()
@@ -575,32 +592,20 @@ fn benchmark_branchy_forward_reachability(
     node_count: usize,
     seed_count: usize,
 ) -> (Duration, Duration, Duration, Duration, Duration, u32, usize) {
-    let fixture_start = Instant::now();
-    let branchy = BranchyDag::new(node_count, seed_count);
-    let fixture_elapsed = fixture_start.elapsed();
+    let (fixture_elapsed, branchy) = timed(|| BranchyDag::new(node_count, seed_count));
 
-    let index_build_start = Instant::now();
-    let index = ForwardReachabilityIndex::build(&branchy.graph);
-    let index_build_elapsed = index_build_start.elapsed();
+    let (index_build_elapsed, index) = timed(|| ForwardReachabilityIndex::build(&branchy.graph));
 
-    let bfs_build_start = Instant::now();
-    let children = branchy.children_by_parent();
-    let bfs_build_elapsed = bfs_build_start.elapsed();
+    let (bfs_build_elapsed, children) = timed(|| branchy.children_by_parent());
 
     let iterations = if node_count <= 50_000 { 10 } else { 3 };
-    let index_query_start = Instant::now();
-    let mut index_hits = Vec::new();
-    for _ in 0..iterations {
-        index_hits = index.filter_reachable(branchy.seeds.iter(), branchy.candidates.iter());
-    }
-    let index_query_elapsed = index_query_start.elapsed();
+    let (index_query_elapsed, index_hits) = time_index_query(iterations, || {
+        index.filter_reachable(branchy.seeds.iter(), branchy.candidates.iter())
+    });
 
-    let bfs_query_start = Instant::now();
-    let mut bfs_hits = Vec::new();
-    for _ in 0..iterations {
-        bfs_hits = branchy_forward_reachable_bfs(&children, &branchy.seeds, &branchy.candidates);
-    }
-    let bfs_query_elapsed = bfs_query_start.elapsed();
+    let (bfs_query_elapsed, bfs_hits) = time_index_query(iterations, || {
+        branchy_forward_reachable_bfs(&children, &branchy.seeds, &branchy.candidates)
+    });
 
     assert_eq!(index_hits, bfs_hits);
     black_box((&index_hits, &bfs_hits));
@@ -628,35 +633,19 @@ fn benchmark_branchy_range_prefilter_reachability(
     usize,
     TraversalMode,
 ) {
-    let fixture_start = Instant::now();
-    let branchy = BranchyDag::new(node_count, seed_count);
-    let fixture_elapsed = fixture_start.elapsed();
+    let (fixture_elapsed, branchy) = timed(|| BranchyDag::new(node_count, seed_count));
 
-    let index_build_start = Instant::now();
-    let index = RangePrefilterReachability::build(&branchy.graph);
-    let index_build_elapsed = index_build_start.elapsed();
-    let bfs_build_start = Instant::now();
-    let children = branchy.children_by_parent();
-    let bfs_build_elapsed = bfs_build_start.elapsed();
+    let (index_build_elapsed, index) = timed(|| RangePrefilterReachability::build(&branchy.graph));
+    let (bfs_build_elapsed, children) = timed(|| branchy.children_by_parent());
 
     let iterations = if node_count <= 50_000 { 10 } else { 3 };
-    let index_query_start = Instant::now();
-    let mut index_hits = Vec::new();
-    let mut mode = TraversalMode::PlainIndexedBfs;
-    for _ in 0..iterations {
-        let (hits, query_mode) =
-            index.filter_reachable_with_mode(branchy.seeds.iter(), branchy.candidates.iter());
-        index_hits = hits;
-        mode = query_mode;
-    }
-    let index_query_elapsed = index_query_start.elapsed();
+    let (index_query_elapsed, (index_hits, mode)) = time_index_query(iterations, || {
+        index.filter_reachable_with_mode(branchy.seeds.iter(), branchy.candidates.iter())
+    });
 
-    let bfs_query_start = Instant::now();
-    let mut bfs_hits = Vec::new();
-    for _ in 0..iterations {
-        bfs_hits = branchy_forward_reachable_bfs(&children, &branchy.seeds, &branchy.candidates);
-    }
-    let bfs_query_elapsed = bfs_query_start.elapsed();
+    let (bfs_query_elapsed, bfs_hits) = time_index_query(iterations, || {
+        branchy_forward_reachable_bfs(&children, &branchy.seeds, &branchy.candidates)
+    });
 
     assert_eq!(index_hits, bfs_hits);
     black_box((&index_hits, &bfs_hits));
@@ -748,21 +737,14 @@ fn benchmark_branchy_forward_reachable_ids(
 
     let iterations = if node_count <= 50_000 { 10 } else { 3 };
 
-    let filter_start = Instant::now();
-    let mut filter_hits = 0usize;
-    for _ in 0..iterations {
-        filter_hits = index
+    let (filter_elapsed, filter_hits) = time_index_query(iterations, || {
+        index
             .filter_reachable(branchy.seeds.iter(), branchy.candidates.iter())
-            .len();
-    }
-    let filter_elapsed = filter_start.elapsed();
+            .len()
+    });
 
-    let direct_start = Instant::now();
-    let mut direct_hits = 0usize;
-    for _ in 0..iterations {
-        direct_hits = index.forward_reachable_ids(branchy.seeds.iter()).count();
-    }
-    let direct_elapsed = direct_start.elapsed();
+    let (direct_elapsed, direct_hits) =
+        time_index_query(iterations, || index.forward_reachable_ids(branchy.seeds.iter()).count());
 
     assert_eq!(filter_hits, direct_hits);
     black_box((filter_hits, direct_hits));
@@ -811,20 +793,8 @@ fn run_topology_query_matrix() {
         for case in [no_hit, local_hit] {
             let (setup_elapsed, index_elapsed, bfs_elapsed, hits, mode) =
                 benchmark_low_memory_case(&interleaved, &case);
-            report_phases(
-                &format!(
-                    "resolve/{}/{node_count} mode={}",
-                    case.label,
-                    traversal_mode_label(mode)
-                ),
-                &[("index_build", setup_elapsed)],
-            );
-            report_comparison(
-                &format!("resolve/{}/{node_count} hits={hits}", case.label),
-                case.iterations,
-                index_elapsed,
-                case.iterations,
-                bfs_elapsed,
+            report_low_memory_case(
+                node_count, &case, setup_elapsed, index_elapsed, bfs_elapsed, hits, mode,
             );
         }
 
@@ -860,20 +830,8 @@ fn run_topology_query_matrix() {
         for case in [shallow_hit, deep_hit, scattered] {
             let (setup_elapsed, index_elapsed, bfs_elapsed, hits, mode) =
                 benchmark_low_memory_case(&layered, &case);
-            report_phases(
-                &format!(
-                    "resolve/{}/{node_count} mode={}",
-                    case.label,
-                    traversal_mode_label(mode)
-                ),
-                &[("index_build", setup_elapsed)],
-            );
-            report_comparison(
-                &format!("resolve/{}/{node_count} hits={hits}", case.label),
-                case.iterations,
-                index_elapsed,
-                case.iterations,
-                bfs_elapsed,
+            report_low_memory_case(
+                node_count, &case, setup_elapsed, index_elapsed, bfs_elapsed, hits, mode,
             );
         }
     }
@@ -897,14 +855,7 @@ fn run_topology_stats_suite() {
 fn run_repeated_seed_cache_suite() {
     println!("\n--- repeated-seed cache benchmark ---");
     let fixture = DagFixture::interleaved_chains(100_000, 8);
-    let seeds = fixture
-        .chains
-        .first()
-        .map(|chain| prefix_indices(chain, 8))
-        .unwrap_or_default()
-        .into_iter()
-        .map(|idx| fixture.ordered_ids[idx].clone())
-        .collect::<Vec<_>>();
+    let seeds = first_chain_seeds(&fixture);
     let candidate_batches = (0..100)
         .map(|offset| {
             fixture
@@ -949,14 +900,7 @@ fn run_candidate_sweep_suite() {
         "\n--- candidate-size sweep (reachable vs unreachable mixes; candidate-aware vs full bfs) ---"
     );
     let fixture = DagFixture::interleaved_chains(100_000, 8);
-    let seeds = fixture
-        .chains
-        .first()
-        .map(|chain| prefix_indices(chain, 8))
-        .unwrap_or_default()
-        .into_iter()
-        .map(|idx| fixture.ordered_ids[idx].clone())
-        .collect::<Vec<_>>();
+    let seeds = first_chain_seeds(&fixture);
     benchmark_candidate_sweep(&fixture, &seeds, &[1, 4, 16, 64, 256, 1024]);
 }
 

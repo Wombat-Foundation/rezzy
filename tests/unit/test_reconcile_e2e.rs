@@ -66,6 +66,25 @@ impl Xorshift128 {
     }
 }
 
+/// Inserts `count` elements shared by both sides, recording each hash on both
+/// sides so the identical base cancels out of reconciliation.
+fn insert_shared_base(
+    generator: &mut Xorshift128,
+    local: &mut ResidentKernel,
+    remote: &mut ResidentKernel,
+    local_h64: &mut Vec<u64>,
+    remote_h64: &mut Vec<u64>,
+    count: usize,
+) {
+    for _ in 0..count {
+        let hash = generator.hash();
+        local.insert(hash).unwrap();
+        remote.insert(hash).unwrap();
+        local_h64.push(hash.h64);
+        remote_h64.push(hash.h64);
+    }
+}
+
 /// Builds a local/remote pair sharing `base` elements, with `local_extra`
 /// only on the local side and `remote_extra` only on the remote side, so the
 /// true symmetric difference is `local_extra + remote_extra`.
@@ -81,13 +100,14 @@ fn build_pair(
     let mut local_h64 = Vec::with_capacity(base.saturating_add(local_extra));
     let mut remote_h64 = Vec::with_capacity(base.saturating_add(remote_extra));
 
-    for _ in 0..base {
-        let hash = generator.hash();
-        local.insert(hash).unwrap();
-        remote.insert(hash).unwrap();
-        local_h64.push(hash.h64);
-        remote_h64.push(hash.h64);
-    }
+    insert_shared_base(
+        &mut generator,
+        &mut local,
+        &mut remote,
+        &mut local_h64,
+        &mut remote_h64,
+        base,
+    );
     for _ in 0..local_extra {
         let hash = generator.hash();
         local.insert(hash).unwrap();
@@ -272,13 +292,14 @@ fn low_confidence_estimate_still_converges() {
     // the strata residual (they XOR to zero), so they neither saturate a
     // stratum nor distort the estimate -- the estimate sees only the genuine
     // differences injected below.
-    for _ in 0..200 {
-        let hash = generator.hash();
-        local.insert(hash).unwrap();
-        remote.insert(hash).unwrap();
-        local_h64.push(hash.h64);
-        remote_h64.push(hash.h64);
-    }
+    insert_shared_base(
+        &mut generator,
+        &mut local,
+        &mut remote,
+        &mut local_h64,
+        &mut remote_h64,
+        200,
+    );
 
     // Now inject a genuine, small, real difference on top.
     for _ in 0..8 {

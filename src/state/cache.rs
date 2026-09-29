@@ -377,6 +377,25 @@ mod tests {
         }
     }
 
+    /// A capacity-3 cache holding `$a`, `$b`, and `$c` in that access order.
+    fn cache_with_abc() -> LeanEventCache<String> {
+        let mut cache = LeanEventCache::new(3);
+        cache.insert(make_event("$a", 1));
+        cache.insert(make_event("$b", 2));
+        cache.insert(make_event("$c", 3));
+        cache
+    }
+
+    /// Asserts the LRU state after `$d` was inserted into a cache built from
+    /// [`cache_with_abc`] once `$a` had been touched: `$b` is evicted, the
+    /// rest survive.
+    fn assert_after_d_insert(cache: &mut LeanEventCache<String>) {
+        assert!(cache.get("$a").is_some(), "$a was touched, should survive");
+        assert!(cache.get("$b").is_none(), "$b was LRU, should be evicted");
+        assert!(cache.get("$c").is_some());
+        assert!(cache.get("$d").is_some());
+    }
+
     #[test]
     fn test_cache_insert_and_get() {
         let mut cache = LeanEventCache::new(10);
@@ -496,43 +515,28 @@ mod tests {
     fn test_cache_event_provider_updates_lru() {
         use crate::basespec::rezzy_types::EventProvider;
 
-        let mut cache = LeanEventCache::new(3);
-        cache.insert(make_event("$a", 1)); // gen 1
-        cache.insert(make_event("$b", 2)); // gen 2
-        cache.insert(make_event("$c", 3)); // gen 3
+        let mut cache = cache_with_abc();
 
         // Access $a via EventProvider (immutable borrow) — should update LRU
         let key_a: String = "$a".into();
-        let _ = EventProvider::get_event(&cache, &key_a); // gen 4
+        let _ = EventProvider::get_event(&cache, &key_a);
 
-        // Now $b is the LRU (gen 2). Insert $d → should evict $b, not $a.
+        // Now $b is the LRU. Insert $d → should evict $b, not $a.
         cache.insert(make_event("$d", 4));
 
-        assert!(
-            cache.get("$a").is_some(),
-            "$a was touched via EventProvider, should survive"
-        );
-        assert!(cache.get("$b").is_none(), "$b was LRU, should be evicted");
-        assert!(cache.get("$c").is_some());
-        assert!(cache.get("$d").is_some());
+        assert_after_d_insert(&mut cache);
     }
 
     #[test]
     fn test_cache_eviction_order_respects_access() {
-        let mut cache = LeanEventCache::new(3);
-        cache.insert(make_event("$a", 1)); // gen 1
-        cache.insert(make_event("$b", 2)); // gen 2
-        cache.insert(make_event("$c", 3)); // gen 3
+        let mut cache = cache_with_abc();
 
         // Touch $a → now $b is LRU
-        let _ = cache.get("$a"); // gen 4
+        let _ = cache.get("$a");
 
-        cache.insert(make_event("$d", 4)); // evicts $b (gen 2)
+        cache.insert(make_event("$d", 4)); // evicts $b
 
-        assert!(cache.get("$a").is_some(), "$a was touched, should survive");
-        assert!(cache.get("$b").is_none(), "$b was LRU, should be evicted");
-        assert!(cache.get("$c").is_some());
-        assert!(cache.get("$d").is_some());
+        assert_after_d_insert(&mut cache);
     }
 
     #[test]

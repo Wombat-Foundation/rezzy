@@ -54,53 +54,14 @@ use super::filters::{
     CountingQuotientFilter, CuckooFilter, RemainderProbeFilter,
 };
 
-// ---------------------------------------------------------------------------
-// Deterministic PRNG
-// ---------------------------------------------------------------------------
-
-struct Xorshift128 {
-    state: [u64; 2],
-}
-
-impl Xorshift128 {
-    fn new(seed: u64) -> Self {
-        Self {
-            state: [seed, seed ^ 0x9e37_79b9_7f4a_7c15],
-        }
-    }
-
-    fn next(&mut self) -> u64 {
-        let mut value = self.state[0];
-        let other = self.state[1];
-        value ^= value << 23;
-        value ^= value >> 17;
-        value ^= other ^ (other >> 26);
-        self.state = [other, value];
-        value
-    }
-
-    fn hash(&mut self) -> ElementHash {
-        let high = self.next();
-        let low = self.next();
-        let h64 = self.next() | 1;
-        ElementHash {
-            h128: u128::from(high) << 64 | u128::from(low),
-            h64,
-        }
-    }
-}
+use crate::common::{
+    build_remote_digest, build_sorted_kernels, empty_decode_batch, measure,
+    Xorshift128Hash as Xorshift128,
+};
 
 // ---------------------------------------------------------------------------
 // Timing helpers
 // ---------------------------------------------------------------------------
-
-fn measure(iterations: u32, mut operation: impl FnMut()) -> Duration {
-    let start = Instant::now();
-    for _ in 0..iterations {
-        operation();
-    }
-    start.elapsed()
-}
 
 fn report(name: &str, iterations: u32, elapsed: Duration) {
     let millis = millis_per_operation(elapsed, iterations);
@@ -113,6 +74,13 @@ fn report(name: &str, iterations: u32, elapsed: Duration) {
 
 fn sorted_contains(slice: &[u64], value: u64) -> bool {
     slice.binary_search(&value).is_ok()
+}
+
+/// Deterministic odd probe values for a filter microbenchmark of the given
+/// capacity, shared by every insert/probe pass so their inputs stay identical.
+fn seeded_probe_values(capacity: usize) -> Vec<u64> {
+    let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
+    (0..capacity).map(|_| gen.next() | 1).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -163,29 +131,10 @@ struct PreparedInput {
 }
 
 fn prepare_input(local_hashes: &[ElementHash], remote_hashes: &[ElementHash]) -> PreparedInput {
-    let mut local = ResidentKernel::new();
-    let mut remote = ResidentKernel::new();
-    let mut local_h64 = Vec::with_capacity(local_hashes.len());
-    let mut remote_h64 = Vec::with_capacity(remote_hashes.len());
+    let (local, remote, local_h64, remote_h64) =
+        build_sorted_kernels(local_hashes, remote_hashes);
 
-    for hash in local_hashes {
-        local.insert(*hash).expect("valid hash");
-        local_h64.push(hash.h64);
-    }
-    for hash in remote_hashes {
-        remote.insert(*hash).expect("valid hash");
-        remote_h64.push(hash.h64);
-    }
-    local_h64.sort_unstable();
-    remote_h64.sort_unstable();
-
-    let remote_digest = RemoteDigest {
-        digest: remote.accumulator().digest(),
-        known_event_count: remote.accumulator().known_event_count(),
-        strata: *remote.strata(),
-        frame_matches: true,
-        has_unknown_extremity: false,
-    };
+    let remote_digest = build_remote_digest(&remote);
     let estimated_delta = estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK)
         .map_or(500, |estimate| estimate.delta.max(1));
 
@@ -502,6 +451,41 @@ fn simulate_filter_rounds(
 // End-to-end reconciliation simulation (per-strategy)
 // ---------------------------------------------------------------------------
 
+/// Runs one round of sketch exchange/decoding: XORs each remote/local sketch
+/// pair, decodes within budget, and returns the partially filled batch, the
+/// requests that overflowed the budget, and the composed sketch wire bytes.
+fn decode_sketch_round(
+    remote_sketches: Vec<SyndromeSketch>,
+    local_sketches: Vec<SyndromeSketch>,
+    current_requests: &[rezzy::BucketRequest],
+    decode_budget: usize,
+) -> (BucketDecodeBatch, Vec<rezzy::BucketRequest>, usize) {
+    let mut total_wire = 0_usize;
+    let mut overflow_requests = Vec::new();
+    let mut batch = empty_decode_batch(current_requests.len());
+    for ((mut remote_sketch, local_sketch), request) in remote_sketches
+        .into_iter()
+        .zip(local_sketches)
+        .zip(current_requests.iter())
+    {
+        total_wire += request.capacity * 8 * 2;
+        remote_sketch.xor(&local_sketch).unwrap();
+        match remote_sketch.decode_elements_with_budget(request.capacity, decode_budget) {
+            Ok(roots) => {
+                batch.successful_buckets.push(BucketDecodeSuccess {
+                    depth: request.depth,
+                    prefix: request.prefix,
+                    roots,
+                });
+            }
+            Err(_) => {
+                overflow_requests.push(*request);
+            }
+        }
+    }
+    (batch, overflow_requests, total_wire)
+}
+
 fn simulate_strategy(
     input: &PreparedInput,
     strategy: &str,
@@ -549,60 +533,30 @@ fn simulate_strategy(
         let remote_sketches = build_bucket_sketches(&input.remote_h64, &current_requests).unwrap();
         let local_sketches = build_bucket_sketches(&input.local_h64, &current_requests).unwrap();
 
-        let mut batch = BucketDecodeBatch {
-            successful_buckets: Vec::with_capacity(current_requests.len()),
-            failed_buckets: Vec::new(),
-        };
-
-        match strategy {
+        let batch = match strategy {
             "sketch_split" => {
-                for ((mut remote_sketch, local_sketch), request) in remote_sketches
-                    .into_iter()
-                    .zip(local_sketches)
-                    .zip(current_requests.iter())
-                {
-                    total_wire += request.capacity * 8 * 2;
-                    remote_sketch.xor(&local_sketch).unwrap();
-                    match remote_sketch.decode_elements_with_budget(request.capacity, decode_budget)
-                    {
-                        Ok(roots) => {
-                            batch.successful_buckets.push(BucketDecodeSuccess {
-                                depth: request.depth,
-                                prefix: request.prefix,
-                                roots,
-                            });
-                        }
-                        Err(_) => {
-                            batch.failed_buckets.push((request.depth, request.prefix));
-                        }
-                    }
-                }
+                let (mut batch, failed, wire) = decode_sketch_round(
+                    remote_sketches,
+                    local_sketches,
+                    &current_requests,
+                    decode_budget,
+                );
+                total_wire += wire;
+                batch
+                    .failed_buckets
+                    .extend(failed.into_iter().map(|r| (r.depth, r.prefix)));
+                batch
             }
 
             "cuckoo" | "remainder_probe" | "cqf" | "bloom" => {
                 // 1. Try sketch decode first.
-                let mut overflow_requests = Vec::new();
-                for ((mut remote_sketch, local_sketch), request) in remote_sketches
-                    .into_iter()
-                    .zip(local_sketches)
-                    .zip(current_requests.iter())
-                {
-                    total_wire += request.capacity * 8 * 2;
-                    remote_sketch.xor(&local_sketch).unwrap();
-                    match remote_sketch.decode_elements_with_budget(request.capacity, decode_budget)
-                    {
-                        Ok(roots) => {
-                            batch.successful_buckets.push(BucketDecodeSuccess {
-                                depth: request.depth,
-                                prefix: request.prefix,
-                                roots,
-                            });
-                        }
-                        Err(_) => {
-                            overflow_requests.push(*request);
-                        }
-                    }
-                }
+                let (mut batch, overflow_requests, wire) = decode_sketch_round(
+                    remote_sketches,
+                    local_sketches,
+                    &current_requests,
+                    decode_budget,
+                );
+                total_wire += wire;
 
                 // 2. For overflow buckets, run 1-RTT filter protocol.
                 if !overflow_requests.is_empty() {
@@ -631,32 +585,18 @@ fn simulate_strategy(
                     batch.successful_buckets.extend(filter_decoded);
                     batch.failed_buckets.extend(filter_failed);
                 }
+                batch
             }
 
             "hybrid" => {
                 // 1. Try sketch decode first.
-                let mut overflow_requests = Vec::new();
-                for ((mut remote_sketch, local_sketch), request) in remote_sketches
-                    .into_iter()
-                    .zip(local_sketches)
-                    .zip(current_requests.iter())
-                {
-                    total_wire += request.capacity * 8 * 2;
-                    remote_sketch.xor(&local_sketch).unwrap();
-                    match remote_sketch.decode_elements_with_budget(request.capacity, decode_budget)
-                    {
-                        Ok(roots) => {
-                            batch.successful_buckets.push(BucketDecodeSuccess {
-                                depth: request.depth,
-                                prefix: request.prefix,
-                                roots,
-                            });
-                        }
-                        Err(_) => {
-                            overflow_requests.push(*request);
-                        }
-                    }
-                }
+                let (mut batch, overflow_requests, wire) = decode_sketch_round(
+                    remote_sketches,
+                    local_sketches,
+                    &current_requests,
+                    decode_budget,
+                );
+                total_wire += wire;
 
                 // 2. Small overflows: filter protocol. Large: sketch splitting.
                 let small_overflows: Vec<_> = overflow_requests
@@ -692,10 +632,11 @@ fn simulate_strategy(
                 for request in &large_overflows {
                     batch.failed_buckets.push((request.depth, request.prefix));
                 }
+                batch
             }
 
             _ => unreachable!("unknown strategy: {strategy}"),
-        }
+        };
 
         let round_cpu = round_cpu_start.elapsed();
         total_cpu += round_cpu;
@@ -1011,17 +952,15 @@ fn microbenchmarks() {
         // --- Cuckoo ---
         let cuckoo_insert = measure(10, || {
             let mut filter = CuckooFilter::with_fpr(capacity, 0.001);
-            let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
-            for _ in 0..capacity {
-                filter.insert(&(gen.next() | 1));
+            for value in seeded_probe_values(capacity) {
+                filter.insert(&value);
             }
             black_box(&filter);
         });
         report(&format!("cuckoo/insert/{capacity}"), 10, cuckoo_insert);
 
         let mut filter = CuckooFilter::with_fpr(capacity, 0.001);
-        let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
-        let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
+        let probe_values = seeded_probe_values(capacity);
         for val in &probe_values {
             filter.insert(val);
         }
@@ -1043,17 +982,15 @@ fn microbenchmarks() {
         // --- Naive linear-probe remainder table (not a quotient filter) ---
         let elapsed = measure(10, || {
             let mut filter = RemainderProbeFilter::with_remainder_bits(capacity, 10);
-            let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
-            for _ in 0..capacity {
-                filter.insert(&(gen.next() | 1));
+            for value in seeded_probe_values(capacity) {
+                filter.insert(&value);
             }
             black_box(&filter);
         });
         report(&format!("remainder_probe/insert/{capacity}"), 10, elapsed);
 
         let mut filter = RemainderProbeFilter::with_remainder_bits(capacity, 10);
-        let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
-        let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
+        let probe_values = seeded_probe_values(capacity);
         for val in &probe_values {
             filter.insert(val);
         }
@@ -1073,17 +1010,15 @@ fn microbenchmarks() {
         // --- Counting quotient filter ---
         let cqf_insert = measure(10, || {
             let mut filter = CountingQuotientFilter::with_remainder_bits(capacity, 10);
-            let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
-            for _ in 0..capacity {
-                assert!(filter.insert(&(gen.next() | 1)));
+            for value in seeded_probe_values(capacity) {
+                assert!(filter.insert(&value));
             }
             black_box(&filter);
         });
         report(&format!("cqf/insert/{capacity}"), 10, cqf_insert);
 
         let mut filter = CountingQuotientFilter::with_remainder_bits(capacity, 10);
-        let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
-        let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
+        let probe_values = seeded_probe_values(capacity);
         for value in &probe_values {
             assert!(filter.insert(value));
         }
@@ -1108,17 +1043,15 @@ fn microbenchmarks() {
         // --- Bloom ---
         let bloom_insert = measure(10, || {
             let mut filter = BloomFilter::with_fpr(capacity, 0.001);
-            let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
-            for _ in 0..capacity {
-                filter.insert(&(gen.next() | 1));
+            for value in seeded_probe_values(capacity) {
+                filter.insert(&value);
             }
             black_box(&filter);
         });
         report(&format!("bloom/insert/{capacity}"), 10, bloom_insert);
 
         let mut filter = BloomFilter::with_fpr(capacity, 0.001);
-        let mut gen = Xorshift128::new(0x00C0_FFEE + capacity as u64);
-        let probe_values: Vec<u64> = (0..capacity).map(|_| gen.next() | 1).collect();
+        let probe_values = seeded_probe_values(capacity);
         for val in &probe_values {
             filter.insert(val);
         }

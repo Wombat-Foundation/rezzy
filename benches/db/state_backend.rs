@@ -25,34 +25,12 @@ use std::time::{Duration, Instant};
 use rezzy::basespec::event_types::EventType;
 use rezzy::hamt::{self, HamtNode};
 
+use crate::common::{generate_unique_entries, unreachable_resolver, Xorshift128};
+
 type Key = (EventType, String);
 type Value = String;
 
 const STRUCTURAL_KEY: &[u8] = b"bench-state-backend";
-
-/// Small xorshift PRNG so entry generation is deterministic and dependency-free.
-struct Xorshift128 {
-    state: [u64; 2],
-}
-
-impl Xorshift128 {
-    fn new(seed: u64) -> Self {
-        Self {
-            state: [seed ^ 0x9E37_79B9_7F4A_7C15, seed.wrapping_add(1) | 1],
-        }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.state[0];
-        let y = self.state[1];
-        self.state[0] = y;
-        x ^= x << 23;
-        x ^= x >> 17;
-        x ^= y ^ (y >> 26);
-        self.state[1] = x;
-        x.wrapping_add(y)
-    }
-}
 
 const KNOWN_SINGLETON_TYPES: &[EventType] = &[
     EventType::RoomCreate,
@@ -78,42 +56,42 @@ const KNOWN_SINGLETON_TYPES: &[EventType] = &[
 /// `m.room.member` (one per state_key, i.e. per user) plus a handful of
 /// singleton config events and a sprinkling of custom event types.
 fn make_entries(n: usize, seed: u64) -> Vec<(Key, Value)> {
-    let mut rng = Xorshift128::new(seed);
-    let mut entries = Vec::with_capacity(n);
-    let mut used = std::collections::HashSet::new();
-
-    while entries.len() < n {
-        let roll = rng.next_u64();
-        let (event_type, state_key) = if roll % 10 < 7 {
-            // 70%: membership, one per synthetic user id.
-            let uid = rng.next_u64() % 1_000_000;
-            (EventType::RoomMember, format!("@user{uid}:example.org"))
-        } else if roll % 10 < 9 {
-            // 20%: one of the other well-known singleton event types.
-            let idx = (rng.next_u64() as usize) % KNOWN_SINGLETON_TYPES.len();
-            (KNOWN_SINGLETON_TYPES[idx].clone(), String::new())
-        } else {
-            // 10%: custom event type, e.g. a third-party MSC.
-            // Scale the key space with the fixture size so the custom tail
-            // stays stable even for the largest benchmarks.
-            let idx = rng.next_u64() % ((n.max(1) as u64) * 10);
-            (
-                EventType::from(format!("org.example.msc{idx}")),
-                format!("key{idx}"),
-            )
-        };
-        let key = (event_type, state_key);
-        if used.insert(key.clone()) {
-            let event_id = format!("$event{}:example.org", rng.next_u64());
-            entries.push((key, event_id));
-        }
-    }
-    entries
+    generate_unique_entries(
+        n,
+        seed,
+        |rng| {
+            let roll = rng.next_u64();
+            if roll % 10 < 7 {
+                // 70%: membership, one per synthetic user id.
+                let uid = rng.next_u64() % 1_000_000;
+                (EventType::RoomMember, format!("@user{uid}:example.org"))
+            } else if roll % 10 < 9 {
+                // 20%: one of the other well-known singleton event types.
+                let idx = (rng.next_u64() as usize) % KNOWN_SINGLETON_TYPES.len();
+                (KNOWN_SINGLETON_TYPES[idx].clone(), String::new())
+            } else {
+                // 10%: custom event type, e.g. a third-party MSC.
+                // Scale the key space with the fixture size so the custom tail
+                // stays stable even for the largest benchmarks.
+                let idx = rng.next_u64() % ((n.max(1) as u64) * 10);
+                (
+                    EventType::from(format!("org.example.msc{idx}")),
+                    format!("key{idx}"),
+                )
+            }
+        },
+        |rng| format!("$event{}:example.org", rng.next_u64()),
+    )
 }
 
-fn unreachable_resolver(
-) -> impl FnMut(&hamt::hash::StructuralHash) -> Result<Arc<HamtNode<Key, Value>>, ()> {
-    |_hash| unreachable!("bench trees are always fully resolved")
+/// Builds the `OrdMap` and HAMT representations of the same entry set.
+fn build_ordmap_and_hamt(
+    entries: &[(Key, Value)],
+) -> (imbl::OrdMap<Key, Value>, Arc<HamtNode<Key, Value>>) {
+    let ordmap: imbl::OrdMap<Key, Value> = entries.iter().cloned().collect();
+    let hamt_root = hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, entries.iter().cloned())
+        .expect("build should not collide");
+    (ordmap, hamt_root)
 }
 
 /// Runs `f` `reps` times back to back and reports the average time per
@@ -169,9 +147,7 @@ fn bench_bulk_build(n: usize, entries: &[(Key, Value)]) {
 /// Compares mixed hit and miss point lookups.
 fn bench_point_lookup(n: usize, entries: &[(Key, Value)]) {
     println!("point lookup (n={n}, 50% hit / 50% miss):");
-    let ordmap: imbl::OrdMap<Key, Value> = entries.iter().cloned().collect();
-    let hamt_root = hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, entries.iter().cloned())
-        .expect("build should not collide");
+    let (ordmap, hamt_root) = build_ordmap_and_hamt(entries);
 
     let mut rng = Xorshift128::new(0xF00D);
     let lookups: Vec<Key> = (0..5000)
@@ -205,9 +181,7 @@ fn bench_point_lookup(n: usize, entries: &[(Key, Value)]) {
 /// Compares path-copy inserts into an existing state map.
 fn bench_incremental_insert(n: usize, entries: &[(Key, Value)]) {
     println!("incremental insert on top of full map (n={n}):");
-    let ordmap: imbl::OrdMap<Key, Value> = entries.iter().cloned().collect();
-    let hamt_root = hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, entries.iter().cloned())
-        .expect("build should not collide");
+    let (ordmap, hamt_root) = build_ordmap_and_hamt(entries);
 
     let mut rng = Xorshift128::new(0x00C0_FFEE);
     let new_keys: Vec<Key> = (0..1000)
@@ -257,9 +231,7 @@ fn bench_incremental_insert(n: usize, entries: &[(Key, Value)]) {
 /// Compares path-copy removals from an existing state map.
 fn bench_incremental_remove(n: usize, entries: &[(Key, Value)]) {
     println!("incremental remove from full map (n={n}):");
-    let ordmap: imbl::OrdMap<Key, Value> = entries.iter().cloned().collect();
-    let hamt_root = hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, entries.iter().cloned())
-        .expect("build should not collide");
+    let (ordmap, hamt_root) = build_ordmap_and_hamt(entries);
 
     let victims: Vec<Key> = entries.iter().take(1000).map(|(k, _)| k.clone()).collect();
     let op_count = victims.len() as u32;
@@ -297,9 +269,7 @@ fn bench_incremental_remove(n: usize, entries: &[(Key, Value)]) {
 /// `resolve_state_maps`/conflict resolution actually exercises.
 fn bench_fork_and_diverge(n: usize, entries: &[(Key, Value)]) {
     println!("fork into 8 branches + 20 edits each (n={n}):");
-    let ordmap: imbl::OrdMap<Key, Value> = entries.iter().cloned().collect();
-    let hamt_root = hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, entries.iter().cloned())
-        .expect("build should not collide");
+    let (ordmap, hamt_root) = build_ordmap_and_hamt(entries);
 
     const BRANCHES: usize = 8;
     const EDITS_PER_BRANCH: usize = 20;

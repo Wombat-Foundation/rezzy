@@ -28,13 +28,16 @@
     clippy::doc_markdown
 )]
 
-use std::hint::black_box;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rezzy::hamt::{self, codec::HamtCodec, HamtNode};
+use rezzy::hamt::{self, HamtNode};
 
-use crate::common::{collect_new_nodes, to_persisted, Xorshift128};
+use crate::common::prelude::*;
+use crate::common::{
+    collect_new_nodes, encode_full_map, generate_string_mutations, make_string_entries,
+    to_persisted, unreachable_resolver, Xorshift128,
+};
 
 // String keys/values keep this bench decoupled from rezzy's real `Key`/`Value`
 // aliases (which don't implement `HamtCodec`) while still exercising the same
@@ -44,36 +47,35 @@ type Value = String;
 
 const STRUCTURAL_KEY: &[u8] = b"bench-persistence";
 
-/// Builds a deterministic fixture of distinct state entries.
-fn make_entries(n: usize, seed: u64) -> Vec<(Key, Value)> {
-    let mut rng = Xorshift128::new(seed);
-    let mut entries = Vec::with_capacity(n);
-    let mut used = std::collections::HashSet::new();
-    while entries.len() < n {
-        let uid = rng.next_u64() % 1_000_000;
-        let key = format!("room_member|@user{uid}:example.org");
-        if used.insert(key.clone()) {
-            let event_id = format!("$event{}:example.org", rng.next_u64());
-            entries.push((key, event_id));
-        }
-    }
-    entries
+/// Encodes the whole flat state map as the legacy (full re-serialize)
+/// strategy would, returning the byte count.
+fn legacy_snapshot_bytes(flat_state: &HashMap<Key, Value>) -> u64 {
+    let entries: Vec<(Key, Value)> = flat_state
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    encode_full_map(entries.iter().map(|(k, v)| (k, v))) as u64
 }
 
-/// Provides the resolver used by fully materialized benchmark trees.
-fn unreachable_resolver(
-) -> impl FnMut(&hamt::hash::StructuralHash) -> Result<Arc<HamtNode<Key, Value>>, ()> {
-    |_hash| unreachable!("bench trees are always fully resolved")
-}
-
-/// Returns the byte size of a full-map serialization.
-fn encode_full_map(entries: &[(Key, Value)]) -> usize {
-    let mut buf = Vec::new();
-    for (k, v) in entries {
-        k.encode_hamt(&mut buf);
-        v.encode_hamt(&mut buf);
-    }
-    buf.len()
+/// Builds the base HAMT/flat-state pair and the shared mutation stream (two
+/// new joins per overwrite of an existing key) used by both persistence
+/// variants.
+fn build_persist_fixture(
+    n: usize,
+    steps: usize,
+) -> (
+    Arc<HamtNode<Key, Value>>,
+    HashMap<Key, Value>,
+    Vec<(Key, Value)>,
+) {
+    let base_entries = make_string_entries(n, 0x5EED_0000 + n as u64);
+    let root = hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, base_entries.iter().cloned())
+        .expect("build should not collide");
+    let flat_state: HashMap<Key, Value> = base_entries.into_iter().collect();
+    let existing_keys: Vec<Key> = flat_state.keys().cloned().collect();
+    let mut rng = Xorshift128::new(0xBEEF);
+    let mutations = generate_string_mutations(&mut rng, steps, &existing_keys);
+    (root, flat_state, mutations)
 }
 
 /// Simulates `steps` sequential state-resolution mutations on top of an
@@ -83,35 +85,13 @@ fn encode_full_map(entries: &[(Key, Value)]) -> usize {
 fn bench_incremental_persist(n: usize, steps: usize) {
     println!("incremental persist after each mutation (n={n}, steps={steps}):");
 
-    let base_entries = make_entries(n, 0x5EED_0000 + n as u64);
-    let mut root = hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, base_entries.iter().cloned())
-        .expect("build should not collide");
-    let mut flat_state: std::collections::HashMap<Key, Value> = base_entries.into_iter().collect();
-
-    let mut rng = Xorshift128::new(0xBEEF);
-    let mut mutations: Vec<(Key, Value)> = Vec::with_capacity(steps);
-    let existing_keys: Vec<Key> = flat_state.keys().cloned().collect();
-    for _ in 0..steps {
-        let key = if rng.next_u64() % 3 == 0 && !existing_keys.is_empty() {
-            // Overwrite (e.g. profile update / membership transition).
-            existing_keys[(rng.next_u64() as usize) % existing_keys.len()].clone()
-        } else {
-            // New join.
-            format!("room_member|@user{}:example.org", rng.next_u64())
-        };
-        let value = format!("$event{}:example.org", rng.next_u64());
-        mutations.push((key, value));
-    }
+    let (mut root, mut flat_state, mutations) = build_persist_fixture(n, steps);
 
     let mut legacy_bytes: u64 = 0;
     let legacy_start = Instant::now();
     for (k, v) in &mutations {
         flat_state.insert(k.clone(), v.clone());
-        let entries: Vec<(Key, Value)> = flat_state
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        legacy_bytes += encode_full_map(&entries) as u64;
+        legacy_bytes += legacy_snapshot_bytes(&flat_state);
     }
     let legacy_elapsed = legacy_start.elapsed();
 
@@ -184,23 +164,7 @@ fn bench_batched_persist(n: usize, steps: usize, batch: usize) {
     println!("batched persist every {batch} hops (n={n}, steps={steps}):");
     assert!(steps % batch == 0, "steps must divide evenly by batch");
 
-    let base_entries = make_entries(n, 0x5EED_0000 + n as u64);
-    let mut root = hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, base_entries.iter().cloned())
-        .expect("build should not collide");
-    let mut flat_state: std::collections::HashMap<Key, Value> = base_entries.into_iter().collect();
-
-    let mut rng = Xorshift128::new(0xBEEF);
-    let existing_keys: Vec<Key> = flat_state.keys().cloned().collect();
-    let mut mutations: Vec<(Key, Value)> = Vec::with_capacity(steps);
-    for _ in 0..steps {
-        let key = if rng.next_u64() % 3 == 0 && !existing_keys.is_empty() {
-            existing_keys[(rng.next_u64() as usize) % existing_keys.len()].clone()
-        } else {
-            format!("room_member|@user{}:example.org", rng.next_u64())
-        };
-        let value = format!("$event{}:example.org", rng.next_u64());
-        mutations.push((key, value));
-    }
+    let (mut root, mut flat_state, mutations) = build_persist_fixture(n, steps);
 
     let mut legacy_bytes: u64 = 0;
     let legacy_start = Instant::now();
@@ -208,11 +172,7 @@ fn bench_batched_persist(n: usize, steps: usize, batch: usize) {
         for (k, v) in batch_muts {
             flat_state.insert(k.clone(), v.clone());
         }
-        let entries: Vec<(Key, Value)> = flat_state
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        legacy_bytes += encode_full_map(&entries) as u64;
+        legacy_bytes += legacy_snapshot_bytes(&flat_state);
     }
     let legacy_elapsed = legacy_start.elapsed();
 

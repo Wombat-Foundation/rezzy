@@ -4,32 +4,11 @@ use rezzy::{
     StateResVersion,
 };
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
-
-/// Helper to parse a JSONL file into a list of `LeanEvents`
-fn parse_jsonl_dag<P: AsRef<Path>>(path: P) -> Vec<LeanEvent> {
-    let file = File::open(path.as_ref())
-        .unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.as_ref().display()));
-    let reader = BufReader::new(file);
-    let mut events = Vec::new();
-
-    for line in reader.lines() {
-        let line = line.unwrap();
-        if line.trim().is_empty() {
-            continue;
-        }
-        let ev = utils::parse_event_json(&line).expect("Failed to parse event JSON line");
-        events.push(ev);
-    }
-    events
-}
 
 #[test]
 fn test_pathology_duplicate_auth_poisoning() {
     let path = "tests/fixtures/pathology_data/03-duplicate-auth-poisoning.jsonl";
-    let events = parse_jsonl_dag(path);
+    let events = utils::parse_jsonl_dag(path);
 
     let mut auth_context = HashMap::new();
     let mut conflicted_events = HashMap::new();
@@ -104,7 +83,7 @@ fn test_pathology_duplicate_auth_poisoning() {
 #[test]
 fn test_pathology_invite_lock() {
     let path = "tests/fixtures/pathology_data/02-invite-lock-regression.jsonl";
-    let events = parse_jsonl_dag(path);
+    let events = utils::parse_jsonl_dag(path);
 
     let mut auth_context = HashMap::new();
     let mut conflicted_events = HashMap::new();
@@ -220,7 +199,7 @@ fn simulate_federation_lag(
 fn test_pathology_fruitless_search_bounded() {
     // Note: The python script outputs hyphens, and we need to point to the python folder if we didn't move it properly
     let path = "tests/fixtures/pathology_data/pathology_06-fruitless-search-small.jsonl";
-    let events = parse_jsonl_dag(path);
+    let events = utils::parse_jsonl_dag(path);
 
     let mut full_graph = HashMap::new();
     let mut conflicted_event_ids = Vec::new();

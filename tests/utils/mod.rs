@@ -53,6 +53,60 @@ pub fn build_unconflicted_state_test_helper(
     unconflicted
 }
 
+/// Builds an `event_id`-keyed `HashMap` from a slice of events.
+#[allow(dead_code)] // Shared test helper; not every including test target uses it.
+pub fn to_event_map(events: &[LeanEvent]) -> HashMap<String, LeanEvent> {
+    events
+        .iter()
+        .map(|e| (e.event_id.clone(), e.clone()))
+        .collect()
+}
+
+/// Parses a fixture file's contents, accepting either a bare array of events or
+/// an object with an `"events"` array (the two shapes used across `res/`).
+#[allow(dead_code)] // Shared test helper; not every including test target uses it.
+pub fn parse_fixture_json(content: &str) -> Vec<LeanEvent> {
+    let value = rezzy::JsonValue::parse(content).expect("Failed to parse fixture JSON");
+    if value.is_array() {
+        parse_events_value(&value).unwrap()
+    } else {
+        parse_events_value(&value["events"]).unwrap()
+    }
+}
+
+/// Parses a JSONL file into a vector of [`LeanEvent`]s, skipping blank lines.
+#[allow(dead_code)] // Shared test helper; not every including test target uses it.
+pub fn parse_jsonl_dag<P: AsRef<std::path::Path>>(path: P) -> Vec<LeanEvent> {
+    use std::io::BufRead;
+
+    let file = std::fs::File::open(path.as_ref())
+        .unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.as_ref().display()));
+    let reader = std::io::BufReader::new(file);
+    let mut events = Vec::new();
+
+    for line in reader.lines() {
+        let line = line.unwrap();
+        if line.trim().is_empty() {
+            continue;
+        }
+        let ev = parse_event_json(&line).expect("Failed to parse event JSON line");
+        events.push(ev);
+    }
+    events
+}
+
+/// Collects the string elements of an optional JSON array field into a `Vec`.
+fn event_id_list(value: Option<&rezzy::JsonValue>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Parses a multiline JSONL string into a vector of [`LeanEvent`]s.
 /// Blank lines and lines starting with "//" are ignored.
 pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
@@ -112,24 +166,8 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
                 .unwrap_or(0),
             sender,
             content,
-            prev_events: value
-                .get("prev_events")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            auth_events: value
-                .get("auth_events")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            prev_events: event_id_list(value.get("prev_events")),
+            auth_events: event_id_list(value.get("auth_events")),
             depth: value
                 .get("depth")
                 .and_then(rezzy::JsonValue::as_u64)

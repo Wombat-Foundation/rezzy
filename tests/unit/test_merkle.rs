@@ -14,6 +14,19 @@ fn sample_fields() -> Vec<Field> {
     ]
 }
 
+fn sample_header() -> Header {
+    Header {
+        room_id: "!room:example.org".into(),
+        sender_localpart: "alice".into(),
+        sender_domain: "example.org".into(),
+        event_type: "m.room.message".into(),
+        state_key: None,
+        redacts: None,
+        depth: 42,
+        origin_server_ts: 123_456_789,
+    }
+}
+
 fn hex(hash: merkle::Hash) -> String {
     hash.iter().fold(String::new(), |mut out, byte| {
         write!(out, "{byte:02x}").expect("writing to String cannot fail");
@@ -148,17 +161,7 @@ fn root_stable_vector() {
 
 #[test]
 fn header_root_uses_null_for_missing_optional_fields() {
-    let root = merkle::header_root(&Header {
-        room_id: "!room:example.org".into(),
-        sender_localpart: "alice".into(),
-        sender_domain: "example.org".into(),
-        event_type: "m.room.message".into(),
-        state_key: None,
-        redacts: None,
-        depth: 42,
-        origin_server_ts: 123_456_789,
-    })
-    .unwrap();
+    let root = merkle::header_root(&sample_header()).unwrap();
 
     assert_eq!(
         hex(root.0),
@@ -170,17 +173,7 @@ fn header_root_uses_null_for_missing_optional_fields() {
 fn event_root_and_id_stable_vector() {
     let prev = merkle::component_hash("prev_events", &json!(["$a:example.org"])).unwrap();
     let auth = merkle::component_hash("auth_events", &json!(["$auth:example.org"])).unwrap();
-    let header = merkle::header_root(&Header {
-        room_id: "!room:example.org".into(),
-        sender_localpart: "alice".into(),
-        sender_domain: "example.org".into(),
-        event_type: "m.room.message".into(),
-        state_key: None,
-        redacts: None,
-        depth: 42,
-        origin_server_ts: 123_456_789,
-    })
-    .unwrap();
+    let header = merkle::header_root(&sample_header()).unwrap();
     let content =
         merkle::component_hash("content", &json!({"body": "hello", "msgtype": "m.text"})).unwrap();
     let other =

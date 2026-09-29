@@ -41,11 +41,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use rezzy::hamt::{self, codec::HamtCodec, HamtNode};
+use rezzy::hamt::{self, HamtNode};
 use rezzy::state::LtHash;
-use sha2::{Digest, Sha256};
 
-use crate::common::{collect_all_nodes, collect_new_nodes, to_persisted, Xorshift128};
+use crate::common::{
+    collect_all_nodes, collect_new_nodes, encode_full_map, sha256_sorted_hash, to_persisted,
+    unreachable_resolver, xor_fold_sha256, Xorshift128,
+};
 
 const S_MAX: usize = 4096;
 const STRUCTURAL_KEY: &[u8] = b"bench-cumulative-rebuild";
@@ -66,46 +68,17 @@ fn canonical_row(k: &str, v: &str) -> Vec<u8> {
 
 /// Computes the sorted-row hash used by the Conduwuit-style baseline.
 fn conduwuit_style_hash(state: &HashMap<Key, Value>) -> [u8; 32] {
-    let mut rows: Vec<Vec<u8>> = state.iter().map(|(k, v)| canonical_row(k, v)).collect();
-    rows.sort_unstable();
-    let mut hasher = Sha256::new();
-    for row in &rows {
-        hasher.update(row);
-    }
-    hasher.finalize().into()
+    sha256_sorted_hash(state.iter().map(|(k, v)| canonical_row(k, v)).collect())
 }
 
 /// Computes the XOR-accumulated hash used by the Synapse-style baseline.
 fn synapse_style_hash(state: &HashMap<Key, Value>) -> [u8; 32] {
-    let mut acc = [0u8; 32];
-    for (k, v) in state {
-        let digest: [u8; 32] = Sha256::digest(canonical_row(k, v)).into();
-        for (a, d) in acc.iter_mut().zip(digest.iter()) {
-            *a ^= d;
-        }
-    }
-    acc
-}
-
-/// Provides the resolver used by fully materialized benchmark trees.
-fn unreachable_resolver(
-) -> impl FnMut(&hamt::hash::StructuralHash) -> Result<Arc<HamtNode<Key, Value>>, ()> {
-    |_hash| unreachable!("bench trees are always fully resolved")
+    xor_fold_sha256(state.iter().map(|(k, v)| canonical_row(k, v)))
 }
 
 /// Returns the encoded size of a persisted HAMT node.
 fn node_bytes(node: &HamtNode<Key, Value>) -> usize {
     to_persisted(node).encode_v1().len()
-}
-
-/// Returns the byte size of a full-map serialization.
-fn encode_full_map(state: &HashMap<Key, Value>) -> usize {
-    let mut buf = Vec::new();
-    for (k, v) in state {
-        k.encode_hamt(&mut buf);
-        v.encode_hamt(&mut buf);
-    }
-    buf.len()
 }
 
 /// Runs the cumulative-rebuild benchmark suite.
@@ -195,7 +168,7 @@ pub fn run() {
 
         // --- legacy: re-encode the entire flat state every mutation ---
         let t0 = Instant::now();
-        cum_legacy_serialize_bytes += encode_full_map(&state) as u128;
+        cum_legacy_serialize_bytes += encode_full_map(state.iter()) as u128;
         cum_legacy_serialize_ns += t0.elapsed().as_nanos();
 
         if checkpoint_idx < CHECKPOINTS.len() && step == CHECKPOINTS[checkpoint_idx] {

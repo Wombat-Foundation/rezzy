@@ -325,10 +325,7 @@ impl<K, V> HamtNode<K, V> {
         }
 
         for child in &self.children {
-            let child_node = match child {
-                NodeRef::Resolved(node) => node.clone(),
-                NodeRef::Lazy(hash) => resolver(hash)?,
-            };
+            let child_node = delta::resolve_node(child, resolver)?;
             child_node.visit_entries(resolver, visitor)?;
         }
 
@@ -377,23 +374,33 @@ impl<K, V> HamtNode<K, V> {
         crate::hamt::delta::check_depth(depth)?;
         let next_depth = depth.saturating_add(1);
 
-        for (key, value) in &self.leaves {
-            if predicate(key, value).map_err(HamtTraversalError::Resolve)? {
-                return Ok(true);
-            }
+        if self.first_matching_leaf(predicate)?.is_some() {
+            return Ok(true);
         }
 
         for child in &self.children {
-            let child_node = match child {
-                NodeRef::Resolved(node) => node.clone(),
-                NodeRef::Lazy(hash) => resolver(hash).map_err(HamtTraversalError::Resolve)?,
-            };
+            let child_node = delta::resolve_node_checked(child, resolver)?;
             if child_node.any_entry_inner(resolver, predicate, next_depth)? {
                 return Ok(true);
             }
         }
 
         Ok(false)
+    }
+
+    /// Returns the first leaf (in slot order) for which `predicate` yields
+    /// `Ok(true)`, resolving the predicate's error into
+    /// [`HamtTraversalError`] the same way the recursive walkers do.
+    fn first_matching_leaf<E>(
+        &self,
+        predicate: &mut impl FnMut(&K, &V) -> Result<bool, E>,
+    ) -> Result<Option<&(K, V)>, HamtTraversalError<E>> {
+        for entry in &self.leaves {
+            if predicate(&entry.0, &entry.1).map_err(HamtTraversalError::Resolve)? {
+                return Ok(Some(entry));
+            }
+        }
+        Ok(None)
     }
 
     /// Finds the first key-value entry in the HAMT that satisfies a predicate.
@@ -434,17 +441,12 @@ impl<K, V> HamtNode<K, V> {
         crate::hamt::delta::check_depth(depth)?;
         let next_depth = depth.saturating_add(1);
 
-        for (key, value) in &self.leaves {
-            if predicate(key, value).map_err(HamtTraversalError::Resolve)? {
-                return Ok(Some((key.clone(), value.clone())));
-            }
+        if let Some((key, value)) = self.first_matching_leaf(predicate)? {
+            return Ok(Some((key.clone(), value.clone())));
         }
 
         for child in &self.children {
-            let child_node = match child {
-                NodeRef::Resolved(node) => node.clone(),
-                NodeRef::Lazy(hash) => resolver(hash).map_err(HamtTraversalError::Resolve)?,
-            };
+            let child_node = delta::resolve_node_checked(child, resolver)?;
             if let Some(entry) = child_node.find_entry_inner(resolver, predicate, next_depth)? {
                 return Ok(Some(entry));
             }

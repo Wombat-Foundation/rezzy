@@ -41,41 +41,21 @@
     clippy::doc_markdown
 )]
 
-use std::collections::HashMap;
-use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use rezzy::hamt::{self, codec::HamtCodec, HamtNode};
+use rezzy::hamt::{self, codec::HamtCodec};
 
-use crate::common::{collect_new_nodes, to_persisted, Xorshift128};
+use crate::common::prelude::*;
+use crate::common::{
+    collect_new_nodes, encode_full_map, generate_string_mutations, make_string_entries,
+    to_persisted, unreachable_resolver, Xorshift128,
+};
 
 type Key = String;
 type Value = String;
 
 const STRUCTURAL_KEY: &[u8] = b"bench-state-groups";
 const SNAPSHOT_EVERY: usize = 100;
-
-/// Builds a deterministic fixture of distinct state entries.
-fn make_entries(n: usize, seed: u64) -> Vec<(Key, Value)> {
-    let mut rng = Xorshift128::new(seed);
-    let mut entries = Vec::with_capacity(n);
-    let mut used = std::collections::HashSet::new();
-    while entries.len() < n {
-        let uid = rng.next_u64() % 1_000_000;
-        let key = format!("room_member|@user{uid}:example.org");
-        if used.insert(key.clone()) {
-            let event_id = format!("$event{}:example.org", rng.next_u64());
-            entries.push((key, event_id));
-        }
-    }
-    entries
-}
-
-/// Provides the resolver used by fully materialized benchmark trees.
-fn unreachable_resolver(
-) -> impl FnMut(&hamt::hash::StructuralHash) -> Result<std::sync::Arc<HamtNode<Key, Value>>, ()> {
-    |_hash| unreachable!("bench trees are always fully resolved")
-}
 
 /// One state group: either a full snapshot (genesis, or a periodic
 /// re-snapshot) or a one-row-ish delta against `parent`.
@@ -115,22 +95,12 @@ fn encode_row(k: &Key, v: &Value) -> usize {
     buf.len()
 }
 
-/// Returns the encoded size of a complete state map.
-fn encode_full_map(state: &HashMap<Key, Value>) -> usize {
-    let mut buf = Vec::new();
-    for (k, v) in state {
-        k.encode_hamt(&mut buf);
-        v.encode_hamt(&mut buf);
-    }
-    buf.len()
-}
-
 /// Compares state-group chain operations with persistent HAMT operations.
 #[allow(clippy::too_many_lines)]
 fn bench_state_groups(n: usize, steps: usize) {
     println!("state groups: hamt vs synapse-style delta chain (n={n}, steps={steps}):");
 
-    let base_entries = make_entries(n, 0x5EED_0000 + n as u64);
+    let base_entries = make_string_entries(n, 0x5EED_0000 + n as u64);
     let mut flat_state: HashMap<Key, Value> = base_entries.iter().cloned().collect();
     let mut hamt_root =
         hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, base_entries.iter().cloned())
@@ -141,22 +111,13 @@ fn bench_state_groups(n: usize, steps: usize) {
     // routine case for HAMT (every lookup is O(log32 N) regardless).
     let cold_key = base_entries[0].0.clone();
 
-    let mut rng = Xorshift128::new(0xBEEF);
     let mutable_keys: Vec<Key> = base_entries
         .iter()
         .skip(1)
         .map(|(k, _)| k.clone())
         .collect();
-    let mut mutations: Vec<(Key, Value)> = Vec::with_capacity(steps);
-    for _ in 0..steps {
-        let key = if rng.next_u64() % 3 == 0 && !mutable_keys.is_empty() {
-            mutable_keys[(rng.next_u64() as usize) % mutable_keys.len()].clone()
-        } else {
-            format!("room_member|@user{}:example.org", rng.next_u64())
-        };
-        let value = format!("$event{}:example.org", rng.next_u64());
-        mutations.push((key, value));
-    }
+    let mut rng = Xorshift128::new(0xBEEF);
+    let mutations = generate_string_mutations(&mut rng, steps, &mutable_keys);
 
     // --- unbounded chain (no periodic re-snapshotting) ---
     let mut chain_unbounded: Vec<Group> = vec![Group::Snapshot(flat_state.clone())];
@@ -207,7 +168,7 @@ fn bench_state_groups(n: usize, steps: usize) {
 
         let parent_b = chain_bounded.len() - 1;
         if (step + 1) % SNAPSHOT_EVERY == 0 {
-            chain_bounded_bytes += encode_full_map(&flat_state) as u64;
+            chain_bounded_bytes += encode_full_map(flat_state.iter()) as u64;
             chain_bounded.push(Group::Snapshot(flat_state.clone()));
         } else {
             chain_bounded_bytes += encode_row(k, v) as u64;

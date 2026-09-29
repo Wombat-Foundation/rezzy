@@ -1,3 +1,4 @@
+use crate::test_lib::make_event;
 use crate::utils;
 use crate::utils_extra;
 use rezzy::auth::*;
@@ -6,23 +7,6 @@ use rezzy::basespec::event_types::{
 };
 use rezzy::json;
 use rezzy::*;
-
-fn make_event(
-    id: &str,
-    event_type: &str,
-    state_key: Option<&str>,
-    sender: &str,
-    content: rezzy::JsonValue,
-) -> LeanEvent {
-    LeanEvent {
-        event_id: id.into(),
-        event_type: event_type.into(),
-        state_key: state_key.map(std::convert::Into::into),
-        sender: sender.into(),
-        content,
-        ..Default::default()
-    }
-}
 
 fn make_create(id: &str, sender: &str, content: rezzy::JsonValue) -> LeanEvent {
     make_event(id, M_ROOM_CREATE, Some(""), sender, content)
@@ -146,6 +130,190 @@ fn assert_join_not_member(state: &RoomState, message: &str) {
             Err(AuthError::NotMember { ref sender, .. }) if sender == "@newcomer:x.com"
         ),
         "{message}, got {result:?}"
+    );
+}
+
+/// `@admin:x.com` create + public join-rules.
+fn public_room_state() -> RoomState {
+    let mut state = RoomState::new();
+    insert_create(&mut state, "$c", "@admin:x.com", json!({}));
+    insert_join_rules(
+        &mut state,
+        "$jr",
+        "@admin:x.com",
+        json!({"join_rule": "public"}),
+    );
+    state
+}
+
+/// `@creator:example.com` create + a PL map with `@admin:example.com` at 100
+/// and `@mod:example.com` at 50.
+fn admin_and_mod_state() -> RoomState {
+    let mut state = RoomState::new();
+    insert_create(&mut state, "$create", "@creator:example.com", json!({}));
+    insert_power_levels(
+        &mut state,
+        "$pl",
+        "@admin:example.com",
+        json!({"users": {"@admin:example.com": 100, "@mod:example.com": 50}}),
+    );
+    state
+}
+
+/// `@admin:x.com` create + a PL map giving only `@admin:x.com` PL 100.
+fn admin_state_x() -> RoomState {
+    let mut state = RoomState::new();
+    insert_create(&mut state, "$c", "@admin:x.com", json!({}));
+    insert_power_levels(
+        &mut state,
+        "$pl",
+        "@admin:x.com",
+        json!({"users": {"@admin:x.com": 100}}),
+    );
+    state
+}
+
+/// The `third_party_invite.signed` block shared by the 3PI fixtures.
+fn tpi_signed(token: &str, mxid: &str) -> rezzy::JsonValue {
+    json!({
+        "token": token,
+        "mxid": mxid,
+        "signatures": { "example.com": { "ed25519:1": "dummy" } }
+    })
+}
+
+/// An `m.room.member` invite content carrying `tpi_signed(token, mxid)`.
+fn invite_with_signed(token: &str, mxid: &str) -> rezzy::JsonValue {
+    json!({
+        "membership": "invite",
+        "third_party_invite": { "signed": tpi_signed(token, mxid) }
+    })
+}
+
+/// Minimal valid state for verifier tests: `@alice:x.com` create + join + PL.
+fn verifier_state() -> RoomState {
+    let mut state = RoomState::new();
+    insert_create(&mut state, "$create", "@alice:x.com", json!({}));
+    insert_join(&mut state, "$join", "@alice:x.com");
+    insert_power_levels(
+        &mut state,
+        "$pl",
+        "@alice:x.com",
+        json!({"users": {"@alice:x.com": 100}}),
+    );
+    state
+}
+
+/// `@a:x` create + join, for the syntactic-limit tests.
+fn a_x_state() -> RoomState {
+    let mut state: RoomState = RoomState::new();
+    insert_create(&mut state, "$c", "@a:x", json!({"creator": "@a:x"}));
+    insert_join(&mut state, "$j", "@a:x");
+    state
+}
+
+/// `m.room.message` from `@a:x` with the supplied edge lists.
+fn message_event(prev_events: Vec<String>, auth_events: Vec<String>) -> LeanEvent {
+    LeanEvent {
+        event_id: "$bad".into(),
+        event_type: "m.room.message".into(),
+        state_key: None,
+        sender: "@a:x".into(),
+        content: json!({"body": "hi"}),
+        prev_events,
+        auth_events,
+        ..Default::default()
+    }
+}
+
+/// Room v10 with `@admin:example.com` joined and PL 100.
+fn v10_admin_joined_state() -> RoomState {
+    let mut state = create_state("10");
+    insert_join(&mut state, "$join", "@admin:example.com");
+    insert_power_levels(
+        &mut state,
+        "$pl0",
+        "@admin:example.com",
+        json!({"users": {"@admin:example.com": 100}}),
+    );
+    state
+}
+
+/// Parses a single-event JSONL fixture and auth-checks it.
+fn check_event_jsonl(
+    jsonl: &str,
+    state: &RoomState,
+    version: rezzy::StateResVersion,
+) -> Result<(), AuthError> {
+    let events = utils::parse_jsonl_events(jsonl);
+    check_auth(&events[0], state, version, None)
+}
+
+/// Shared Rule 2.2 fixture: create + admin join in state and a provider.
+fn rule_2_2_base() -> (RoomState, rezzy::HashMap<String, LeanEvent>) {
+    let mut state = RoomState::new();
+    let create_ev = make_create("$c", "@admin:example.com", json!({}));
+    insert_event(&mut state, M_ROOM_CREATE, "", create_ev.clone());
+
+    let admin_join = make_member(
+        "$admin_join",
+        "@admin:example.com",
+        "@admin:example.com",
+        "join",
+    );
+    insert_event(
+        &mut state,
+        M_ROOM_MEMBER,
+        "@admin:example.com",
+        admin_join.clone(),
+    );
+
+    let mut provider = rezzy::HashMap::new();
+    provider.insert("$c".to_string(), create_ev);
+    provider.insert("$admin_join".to_string(), admin_join);
+    (state, provider)
+}
+
+/// Asserts the Rule 2.2 `IncompleteAuthEvents` rejection for `@bob:example.com`.
+fn assert_incomplete_bob_member(res: Result<(), AuthError>) {
+    assert!(
+        matches!(
+            res,
+            Err(AuthError::IncompleteAuthEvents { ref event_type, ref state_key })
+                if event_type == "m.room.member" && state_key == "@bob:example.com"
+        ),
+        "expected IncompleteAuthEvents for @bob:example.com, got {res:?}"
+    );
+}
+
+/// Auth-checks a chain under `V2_1` against an empty initial state.
+fn check_chain(events: &[LeanEvent]) -> (Vec<String>, Vec<(String, AuthError)>) {
+    check_auth_chain(
+        events,
+        &RoomState::new(),
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    )
+}
+
+/// Asserts exactly one rejection: `$msg` citing `expected_auth_event_id` as a
+/// foreign-room event, with `actual` populated or absent as requested.
+fn assert_foreign_room_rejected(
+    rejected: &[(String, AuthError)],
+    expected_auth_event_id: &str,
+    expect_actual_none: bool,
+) {
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected[0].0, "$msg");
+    assert!(
+        matches!(
+            &rejected[0].1,
+            AuthError::ForeignRoomEvent { event_id, auth_event_id, actual, .. }
+                if event_id == "$msg"
+                    && auth_event_id == expected_auth_event_id
+                    && actual.is_none() == expect_actual_none
+        ),
+        "expected ForeignRoomEvent citing {expected_auth_event_id}, got {:?}",
+        rejected[0].1
     );
 }
 
@@ -339,14 +507,7 @@ fn test_self_invite_rejected() {
 
 #[test]
 fn test_join_banned_user_rejected() {
-    let mut state = RoomState::new();
-    insert_create(&mut state, "$c", "@admin:x.com", json!({}));
-    insert_join_rules(
-        &mut state,
-        "$jr",
-        "@admin:x.com",
-        json!({"join_rule": "public"}),
-    );
+    let mut state = public_room_state();
     insert_member(&mut state, "$ban", "@banned:x.com", "@admin:x.com", "ban");
     let join_attempt = make_member("$join", "@banned:x.com", "@banned:x.com", "join");
     assert!(
@@ -360,14 +521,7 @@ fn test_join_banned_user_rejected() {
 
 #[test]
 fn test_public_room_join_allowed() {
-    let mut state = RoomState::new();
-    insert_create(&mut state, "$c", "@admin:x.com", json!({}));
-    insert_join_rules(
-        &mut state,
-        "$jr",
-        "@admin:x.com",
-        json!({"join_rule": "public"}),
-    );
+    let state = public_room_state();
     let join = make_member("$join", "@newcomer:x.com", "@newcomer:x.com", "join");
     assert!(
         check_auth(

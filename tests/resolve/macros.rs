@@ -18,6 +18,22 @@ use similar::{udiff::unified_diff, Algorithm};
 
 const FIXTURES_PATH: &str = "tests/resolve/fixtures";
 
+/// Snapshot the resolved state with the shared settings used by every
+/// state-resolution snapshot test.
+macro_rules! snapshot_resolved_state {
+    ($resolved_state:expr $(,)?) => {
+        insta::with_settings!({
+            description => "Resolved state",
+            omit_expression => true,
+            snapshot_path => "resolve/snapshots",
+            prepend_module_to_snapshot => false,
+            snapshot_suffix => "resolved_state",
+        }, {
+            insta::assert_snapshot!($resolved_state);
+        });
+    };
+}
+
 /// Create a snapshot test attempting the state resolution of several batches of PDUs.
 ///
 /// State resolution is performed:
@@ -42,15 +58,7 @@ macro_rules! snapshot_test_batches {
         fn $name() {
             let resolved_state = self::macros::test_resolve_batches(&$pdus_paths);
 
-            insta::with_settings!({
-                description => "Resolved state",
-                omit_expression => true,
-                snapshot_path => "resolve/snapshots",
-                prepend_module_to_snapshot => false,
-                snapshot_suffix => "resolved_state",
-            }, {
-                insta::assert_snapshot!(resolved_state);
-            });
+            snapshot_resolved_state!(resolved_state);
         }
     };
 }
@@ -75,15 +83,7 @@ macro_rules! snapshot_test_state_maps {
         fn $name() {
             let resolved_state = self::macros::test_resolve_state_maps(&$state_maps_paths, &$pdus_paths);
 
-            insta::with_settings!({
-                description => "Resolved state",
-                omit_expression => true,
-                snapshot_path => "resolve/snapshots",
-                prepend_module_to_snapshot => false,
-                snapshot_suffix => "resolved_state",
-            }, {
-                insta::assert_snapshot!(resolved_state);
-            });
+            snapshot_resolved_state!(resolved_state);
         }
     };
 }

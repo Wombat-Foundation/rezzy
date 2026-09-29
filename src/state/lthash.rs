@@ -92,6 +92,96 @@ fn truncate_to_u16_limit(s: &str) -> (&str, u16) {
     }
 }
 
+/// Computes the 2048-byte SHAKE256 expansion for a single state entry under
+/// the given domain-separation tag.
+///
+/// Input encoding: `len(type) || type || len(state_key) || state_key || event_id`
+/// where each `len()` is an unsigned 16-bit little-endian byte count.
+#[must_use]
+fn seed_lattice(
+    dst: &[u8],
+    event_type: &str,
+    state_key: &str,
+    event_id: &dyn core::fmt::Display,
+) -> [u16; 1024] {
+    use core::fmt::Write;
+    use sha3::digest::{ExtendableOutput, Update};
+
+    let (event_type, type_len) = truncate_to_u16_limit(event_type);
+    let (state_key, sk_len) = truncate_to_u16_limit(state_key);
+
+    let mut xof = sha3::Shake256::default();
+    xof.update(dst);
+    xof.update(&type_len.to_le_bytes());
+    xof.update(event_type.as_bytes());
+    xof.update(&sk_len.to_le_bytes());
+    xof.update(state_key.as_bytes());
+
+    let mut writer = HashWriter { hasher: &mut xof };
+    write!(writer, "{event_id}").expect("failed to write event_id to hasher");
+
+    let mut buf = [0u8; 2048];
+    xof.finalize_xof_into(&mut buf);
+
+    let mut out = [0u16; 1024];
+    for (i, chunk) in buf.chunks_exact(2).enumerate() {
+        out[i] = u16::from_le_bytes([chunk[0], chunk[1]]);
+    }
+    out
+}
+
+/// Adds `src` into `dst` lane-wise with wrapping addition.
+///
+/// Processed in 8-lane chunks to assist SIMD auto-vectorization.
+#[inline]
+fn add_lattice(dst: &mut [u16; 1024], src: &[u16; 1024]) {
+    for (a, b) in dst.chunks_exact_mut(8).zip(src.chunks_exact(8)) {
+        a[0] = a[0].wrapping_add(b[0]);
+        a[1] = a[1].wrapping_add(b[1]);
+        a[2] = a[2].wrapping_add(b[2]);
+        a[3] = a[3].wrapping_add(b[3]);
+        a[4] = a[4].wrapping_add(b[4]);
+        a[5] = a[5].wrapping_add(b[5]);
+        a[6] = a[6].wrapping_add(b[6]);
+        a[7] = a[7].wrapping_add(b[7]);
+    }
+}
+
+/// Subtracts `src` from `dst` lane-wise with wrapping subtraction.
+///
+/// Processed in 8-lane chunks to assist SIMD auto-vectorization.
+#[inline]
+fn sub_lattice(dst: &mut [u16; 1024], src: &[u16; 1024]) {
+    for (a, b) in dst.chunks_exact_mut(8).zip(src.chunks_exact(8)) {
+        a[0] = a[0].wrapping_sub(b[0]);
+        a[1] = a[1].wrapping_sub(b[1]);
+        a[2] = a[2].wrapping_sub(b[2]);
+        a[3] = a[3].wrapping_sub(b[3]);
+        a[4] = a[4].wrapping_sub(b[4]);
+        a[5] = a[5].wrapping_sub(b[5]);
+        a[6] = a[6].wrapping_sub(b[6]);
+        a[7] = a[7].wrapping_sub(b[7]);
+    }
+}
+
+/// Collapses a 2048-byte lattice into its 32-byte wire digest per MSC4500 §6:
+/// `BLAKE2b-256(S)`.
+#[must_use]
+fn lattice_digest(lattice: &[u16; 1024]) -> [u8; 32] {
+    use blake2::digest::consts::U32;
+    use blake2::{Blake2b, Digest};
+    let mut hasher = Blake2b::<U32>::new();
+    let mut bytes = [0u8; 2048];
+    for (i, val) in lattice.iter().enumerate() {
+        let le = val.to_le_bytes();
+        let idx = i.wrapping_mul(2);
+        bytes[idx] = le[0];
+        bytes[idx.wrapping_add(1)] = le[1];
+    }
+    hasher.update(&bytes[..]);
+    hasher.finalize().into()
+}
+
 impl LtHash {
     /// The identity element (empty state).
     pub const ZERO: Self = Self([0u16; 1024]);
@@ -115,61 +205,35 @@ impl LtHash {
     /// event IDs must be enforced by the caller at the application ingestion boundary if desired.
     #[must_use]
     fn seed(event_type: &str, state_key: &str, event_id: &dyn core::fmt::Display) -> Self {
-        use core::fmt::Write;
-        use sha3::digest::{ExtendableOutput, Update};
-
-        let (event_type, type_len) = truncate_to_u16_limit(event_type);
-        let (state_key, sk_len) = truncate_to_u16_limit(state_key);
-
-        let mut xof = sha3::Shake256::default();
-        xof.update(Self::DST);
-        xof.update(&type_len.to_le_bytes());
-        xof.update(event_type.as_bytes());
-        xof.update(&sk_len.to_le_bytes());
-        xof.update(state_key.as_bytes());
-
-        let mut writer = HashWriter { hasher: &mut xof };
-        write!(writer, "{event_id}").expect("failed to write event_id to hasher");
-
-        let mut buf = [0u8; 2048];
-        xof.finalize_xof_into(&mut buf);
-
-        let mut out = [0u16; 1024];
-        for (i, chunk) in buf.chunks_exact(2).enumerate() {
-            out[i] = u16::from_le_bytes([chunk[0], chunk[1]]);
-        }
-        Self(out)
+        Self(seed_lattice(Self::DST, event_type, state_key, event_id))
     }
 
     /// Add a seed into the hash (insert).
     #[inline]
     fn add_seed(&mut self, seed: &Self) {
-        // Process in 8-lane chunks to assist SIMD auto-vectorization
-        for (a, b) in self.0.chunks_exact_mut(8).zip(seed.0.chunks_exact(8)) {
-            a[0] = a[0].wrapping_add(b[0]);
-            a[1] = a[1].wrapping_add(b[1]);
-            a[2] = a[2].wrapping_add(b[2]);
-            a[3] = a[3].wrapping_add(b[3]);
-            a[4] = a[4].wrapping_add(b[4]);
-            a[5] = a[5].wrapping_add(b[5]);
-            a[6] = a[6].wrapping_add(b[6]);
-            a[7] = a[7].wrapping_add(b[7]);
-        }
+        add_lattice(&mut self.0, &seed.0);
     }
 
     /// Subtract a seed from the hash (remove).
     #[inline]
     fn sub_seed(&mut self, seed: &Self) {
-        // Process in 8-lane chunks to assist SIMD auto-vectorization
-        for (a, b) in self.0.chunks_exact_mut(8).zip(seed.0.chunks_exact(8)) {
-            a[0] = a[0].wrapping_sub(b[0]);
-            a[1] = a[1].wrapping_sub(b[1]);
-            a[2] = a[2].wrapping_sub(b[2]);
-            a[3] = a[3].wrapping_sub(b[3]);
-            a[4] = a[4].wrapping_sub(b[4]);
-            a[5] = a[5].wrapping_sub(b[5]);
-            a[6] = a[6].wrapping_sub(b[6]);
-            a[7] = a[7].wrapping_sub(b[7]);
+        sub_lattice(&mut self.0, &seed.0);
+    }
+
+    /// Seeds `(event_type, state_key, event_id)` and adds it when `add` is
+    /// true, otherwise subtracts it.
+    fn accumulate(
+        &mut self,
+        event_type: &str,
+        state_key: &str,
+        event_id: &(impl core::fmt::Display + ?Sized),
+        add: bool,
+    ) {
+        let s = Self::seed(event_type, state_key, &event_id);
+        if add {
+            self.add_seed(&s);
+        } else {
+            self.sub_seed(&s);
         }
     }
 
@@ -180,8 +244,7 @@ impl LtHash {
         state_key: &str,
         event_id: &(impl core::fmt::Display + ?Sized),
     ) {
-        let s = Self::seed(event_type, state_key, &event_id);
-        self.add_seed(&s);
+        self.accumulate(event_type, state_key, event_id, true);
     }
 
     /// Record a state entry being removed.
@@ -191,8 +254,7 @@ impl LtHash {
         state_key: &str,
         event_id: &(impl core::fmt::Display + ?Sized),
     ) {
-        let s = Self::seed(event_type, state_key, &event_id);
-        self.sub_seed(&s);
+        self.accumulate(event_type, state_key, event_id, false);
     }
 
     /// Record a state entry being replaced (old → new).
@@ -253,18 +315,7 @@ impl LtHash {
     /// `BLAKE2b-256(S)`, where `S` is the 2048-byte lattice.
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
-        use blake2::digest::consts::U32;
-        use blake2::{Blake2b, Digest};
-        let mut hasher = Blake2b::<U32>::new();
-        let mut bytes = [0u8; 2048];
-        for (i, val) in self.0.iter().enumerate() {
-            let le = val.to_le_bytes();
-            let idx = i.wrapping_mul(2);
-            bytes[idx] = le[0];
-            bytes[idx.wrapping_add(1)] = le[1];
-        }
-        hasher.update(&bytes[..]);
-        hasher.finalize().into()
+        lattice_digest(&self.0)
     }
 }
 
@@ -292,39 +343,17 @@ impl RedactionOverlay {
 
     const DST: &'static [u8] = b"msc4500:redactions:v1";
 
-    // TODO: The overlay duplicates `LtHash`'s tuple encoding, lattice updates,
-    // and digest serialization instead of sharing them. Future changes to
-    // framing, truncation, or byte order can update one path and silently make
-    // the two digest implementations inconsistent; factor the common
-    // accumulator/encoding logic and inject the domain-separation tag.
+    // The overlay shares `LtHash`'s element encoding, lattice updates, and
+    // digest serialization (see the module-level helpers), injecting only its
+    // own domain-separation tag. The event ID is appended raw, matching the
+    // primary MSC4500 element encoding: it is self-delimiting under Matrix
+    // event-ID syntax and must not acquire a second length prefix.
     fn seed(
         event_type: &str,
         state_key: &str,
         event_id: &(impl core::fmt::Display + ?Sized),
     ) -> Self {
-        use core::fmt::Write;
-        use sha3::digest::{ExtendableOutput, Update};
-
-        let mut xof = sha3::Shake256::default();
-        xof.update(Self::DST);
-        for value in [event_type, state_key] {
-            let (value, len) = truncate_to_u16_limit(value);
-            xof.update(&len.to_le_bytes());
-            xof.update(value.as_bytes());
-        }
-        // The event ID is appended raw, matching the primary MSC4500 element
-        // encoding. It is already self-delimiting under Matrix event-ID
-        // syntax and must not acquire a second length prefix here.
-        let mut writer = HashWriter { hasher: &mut xof };
-        write!(writer, "{event_id}").expect("failed to write event_id to hasher");
-
-        let mut bytes = [0u8; 2048];
-        xof.finalize_xof_into(&mut bytes);
-        let mut out = [0u16; 1024];
-        for (i, chunk) in bytes.chunks_exact(2).enumerate() {
-            out[i] = u16::from_le_bytes([chunk[0], chunk[1]]);
-        }
-        Self(out)
+        Self(seed_lattice(Self::DST, event_type, state_key, &event_id))
     }
 
     /// Adds one effectively redacted selected state event to the overlay.
@@ -339,11 +368,7 @@ impl RedactionOverlay {
         event_id: &(impl core::fmt::Display + ?Sized),
     ) {
         let seed = Self::seed(event_type, state_key, event_id);
-        for (left, right) in self.0.chunks_exact_mut(8).zip(seed.0.chunks_exact(8)) {
-            for i in 0..8 {
-                left[i] = left[i].wrapping_add(right[i]);
-            }
-        }
+        add_lattice(&mut self.0, &seed.0);
     }
 
     /// Removes one overlay entry previously inserted with [`Self::insert`].
@@ -356,28 +381,13 @@ impl RedactionOverlay {
         event_id: &(impl core::fmt::Display + ?Sized),
     ) {
         let seed = Self::seed(event_type, state_key, event_id);
-        for (left, right) in self.0.chunks_exact_mut(8).zip(seed.0.chunks_exact(8)) {
-            for i in 0..8 {
-                left[i] = left[i].wrapping_sub(right[i]);
-            }
-        }
+        sub_lattice(&mut self.0, &seed.0);
     }
 
     /// Collapses the overlay lattice to its 32-byte MSC4500 wire digest.
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
-        use blake2::digest::consts::U32;
-        use blake2::{Blake2b, Digest};
-        let mut hasher = Blake2b::<U32>::new();
-        let mut bytes = [0u8; 2048];
-        for (i, value) in self.0.iter().enumerate() {
-            let pair = value.to_le_bytes();
-            let index = i.wrapping_mul(2);
-            bytes[index] = pair[0];
-            bytes[index.wrapping_add(1)] = pair[1];
-        }
-        hasher.update(bytes);
-        hasher.finalize().into()
+        lattice_digest(&self.0)
     }
 }
 

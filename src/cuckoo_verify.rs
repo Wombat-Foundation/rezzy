@@ -430,6 +430,14 @@ fn next_u64_le(chunks: &mut core::slice::ChunksExact<'_, u8>) -> u64 {
 mod tests {
     use super::*;
 
+    fn test_verifier() -> CuckooVerifier {
+        CuckooVerifier::new("", "example.com", 0)
+    }
+
+    fn sequential_edges() -> [u64; PROOF_SIZE] {
+        core::array::from_fn(|n| n as u64)
+    }
+
     #[test]
     fn verify_error_messages_cover_all_variants() {
         assert_eq!(VerifyError::WrongAlgorithm.message(), "wrong algorithm");
@@ -466,11 +474,8 @@ mod tests {
 
     #[test]
     fn rejects_unsorted_edges() {
-        let verifier = CuckooVerifier::new("", "example.com", 0);
-        let mut edges = [0_u64; PROOF_SIZE];
-        for (n, edge) in edges.iter_mut().enumerate() {
-            *edge = n as u64;
-        }
+        let verifier = test_verifier();
+        let mut edges = sequential_edges();
         edges[2] = edges[1];
 
         assert_eq!(verifier.verify(&edges), Err(VerifyError::EdgesNotAscending));
@@ -478,11 +483,8 @@ mod tests {
 
     #[test]
     fn rejects_out_of_range_edges() {
-        let verifier = CuckooVerifier::new("", "example.com", 0);
-        let mut edges = [0_u64; PROOF_SIZE];
-        for (n, edge) in edges.iter_mut().enumerate() {
-            *edge = n as u64;
-        }
+        let verifier = test_verifier();
+        let mut edges = sequential_edges();
         edges[PROOF_SIZE - 1] = NEDGES;
 
         assert_eq!(verifier.verify(&edges), Err(VerifyError::EdgeTooBig));

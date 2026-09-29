@@ -1,6 +1,12 @@
 use crate::utils;
 use crate::utils_extra;
 
+/// A minimal create + `power_levels` state used by the JSONL state asserter tests.
+const TWO_EVENT_STATE: &str = r#"
+        {"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@alice:matrix.org"}
+        {"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@alice:matrix.org"}
+    "#;
+
 #[test]
 fn test_jsonl_parser_utility() {
     let state = utils_extra::parse_jsonl_state(
@@ -42,12 +48,7 @@ fn test_jsonl_parser_preserves_rejection_flags() {
 
 #[test]
 fn test_jsonl_asserters() {
-    let state = utils_extra::parse_jsonl_state(
-        r#"
-        {"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@alice:matrix.org"}
-        {"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@alice:matrix.org"}
-    "#,
-    );
+    let state = utils_extra::parse_jsonl_state(TWO_EVENT_STATE);
 
     // This should pass
     utils_extra::assert_jsonl_state_eq(
@@ -78,12 +79,7 @@ fn test_jsonl_asserters() {
 #[test]
 #[should_panic(expected = "Event mismatch")]
 fn test_assert_jsonl_state_eq_detects_mismatch() {
-    let state = utils_extra::parse_jsonl_state(
-        r#"
-        {"event_id": "$c", "type": "m.room.create", "state_key": "", "sender": "@alice:matrix.org"}
-        {"event_id": "$pl", "type": "m.room.power_levels", "state_key": "", "sender": "@alice:matrix.org"}
-    "#,
-    );
+    let state = utils_extra::parse_jsonl_state(TWO_EVENT_STATE);
 
     // `LeanEvent`'s own `PartialEq` compares `event_id` only (see
     // `impl PartialEq for LeanEvent` in src/basespec/rezzy_types.rs -- this

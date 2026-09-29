@@ -181,38 +181,35 @@ where
         let in_b = (n_b & bit) != 0;
 
         if in_a && in_b {
-            let cidx_a = map_index(n_a, slot);
-            let cidx_b = map_index(n_b, slot);
-            let child_a = &node_a.children[cidx_a];
-            let child_b = &node_b.children[cidx_b];
-
-            if child_a.structural_hash() != child_b.structural_hash() {
-                let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
-                let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-                diff_nodes(&res_a, &res_b, added, removed, resolver, next_depth)?;
+            if let Some(children) = resolve_changed_pair(node_a, node_b, n_a, n_b, slot, resolver)?
+            {
+                diff_nodes(
+                    &children.left,
+                    &children.right,
+                    added,
+                    removed,
+                    resolver,
+                    next_depth,
+                )?;
             }
             continue;
         }
         if in_a {
-            let cidx_a = map_index(n_a, slot);
-            let child_a = &node_a.children[cidx_a];
-            let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
+            let res_a = resolve_only_child(node_a, n_a, slot, resolver)?;
             collect_all_leaves(&res_a, removed, resolver, next_depth)?;
             continue;
         }
         // `bit` is in `union`, and reaching here means it was neither the
         // `in_a && in_b` nor the `in_a`-only case above, so `in_b` is
         // guaranteed true -- no need to re-test it.
-        let cidx_b = map_index(n_b, slot);
-        let child_b = &node_b.children[cidx_b];
-        let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
+        let res_b = resolve_only_child(node_b, n_b, slot, resolver)?;
         collect_all_leaves(&res_b, added, resolver, next_depth)?;
     }
 
     Ok(())
 }
 
-fn resolve_node<K, V, F, E>(
+pub(super) fn resolve_node<K, V, F, E>(
     node_ref: &NodeRef<K, V>,
     resolver: &mut F,
 ) -> Result<Arc<HamtNode<K, V>>, E>
@@ -223,6 +220,64 @@ where
         NodeRef::Resolved(arc) => Ok(arc.clone()),
         NodeRef::Lazy(hash) => resolver(hash),
     }
+}
+
+/// [`resolve_node`] lifted into [`HamtTraversalError`], the error type every
+/// node-walking helper in this module (and `mod.rs`'s entry traversal) reports.
+pub(super) fn resolve_node_checked<K, V, F, E>(
+    node_ref: &NodeRef<K, V>,
+    resolver: &mut F,
+) -> Result<Arc<HamtNode<K, V>>, HamtTraversalError<E>>
+where
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    resolve_node(node_ref, resolver).map_err(HamtTraversalError::Resolve)
+}
+
+/// The resolved children on the two sides of a diff that need recursive
+/// comparison.
+struct ChangedChildPair<K, V> {
+    left: Arc<HamtNode<K, V>>,
+    right: Arc<HamtNode<K, V>>,
+}
+
+/// For a nodemap slot occupied on both sides of a diff, returns the resolved
+/// child pair when their structural hashes differ (so the caller must recurse),
+/// or `None` when they are identical (nothing changed below this slot).
+fn resolve_changed_pair<K, V, F, E>(
+    node_a: &Arc<HamtNode<K, V>>,
+    node_b: &Arc<HamtNode<K, V>>,
+    nodemap_a: u32,
+    nodemap_b: u32,
+    slot: usize,
+    resolver: &mut F,
+) -> Result<Option<ChangedChildPair<K, V>>, HamtTraversalError<E>>
+where
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    let child_a = &node_a.children[map_index(nodemap_a, slot)];
+    let child_b = &node_b.children[map_index(nodemap_b, slot)];
+    if child_a.structural_hash() == child_b.structural_hash() {
+        return Ok(None);
+    }
+    Ok(Some(ChangedChildPair {
+        left: resolve_node_checked(child_a, resolver)?,
+        right: resolve_node_checked(child_b, resolver)?,
+    }))
+}
+
+/// Resolves the single child occupying a nodemap `slot` on only one side of a
+/// diff.
+fn resolve_only_child<K, V, F, E>(
+    node: &Arc<HamtNode<K, V>>,
+    nodemap: u32,
+    slot: usize,
+    resolver: &mut F,
+) -> Result<Arc<HamtNode<K, V>>, HamtTraversalError<E>>
+where
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+{
+    resolve_node_checked(&node.children[map_index(nodemap, slot)], resolver)
 }
 
 /// Error returned by the node-hash traversal helpers
@@ -364,31 +419,28 @@ where
         let in_b = (n_b & bit) != 0;
 
         if in_a && in_b {
-            let cidx_a = map_index(n_a, slot);
-            let cidx_b = map_index(n_b, slot);
-            let child_a = &node_a.children[cidx_a];
-            let child_b = &node_b.children[cidx_b];
-
-            if child_a.structural_hash() != child_b.structural_hash() {
-                let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
-                let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-                diff_node_hashes_rec(&res_a, &res_b, superseded, new, resolver, next_depth)?;
+            if let Some(children) = resolve_changed_pair(node_a, node_b, n_a, n_b, slot, resolver)?
+            {
+                diff_node_hashes_rec(
+                    &children.left,
+                    &children.right,
+                    superseded,
+                    new,
+                    resolver,
+                    next_depth,
+                )?;
             }
             continue;
         }
         if in_a {
-            let cidx_a = map_index(n_a, slot);
-            let child_a = &node_a.children[cidx_a];
-            let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
+            let res_a = resolve_only_child(node_a, n_a, slot, resolver)?;
             append_reachable_node_hashes(&res_a, superseded, resolver, next_depth)?;
             continue;
         }
         // `bit` is in `union`, and reaching here means it was neither the
         // `in_a && in_b` nor the `in_a`-only case above, so `in_b` is
         // guaranteed true -- no need to re-test it.
-        let cidx_b = map_index(n_b, slot);
-        let child_b = &node_b.children[cidx_b];
-        let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
+        let res_b = resolve_only_child(node_b, n_b, slot, resolver)?;
         append_reachable_node_hashes(&res_b, new, resolver, next_depth)?;
     }
 
@@ -474,7 +526,7 @@ where
         if !mark(child.structural_hash()) {
             continue;
         }
-        let child_node = resolve_node(child, resolver).map_err(HamtTraversalError::Resolve)?;
+        let child_node = resolve_node_checked(child, resolver)?;
         walk_reachable_children(&child_node, resolver, mark, next_depth)?;
     }
     Ok(())
@@ -497,7 +549,7 @@ where
     check_depth(depth)?;
     let next_depth = depth.saturating_add(1);
     for child in &node.children {
-        let child_node = resolve_node(child, resolver).map_err(HamtTraversalError::Resolve)?;
+        let child_node = resolve_node_checked(child, resolver)?;
         append_reachable_node_hashes(&child_node, collection, resolver, next_depth)?;
     }
     Ok(())
@@ -520,7 +572,7 @@ where
         collection.push((k.clone(), v.clone()));
     }
     for child in &node.children {
-        let child_node = resolve_node(child, resolver).map_err(HamtTraversalError::Resolve)?;
+        let child_node = resolve_node_checked(child, resolver)?;
         collect_all_leaves(&child_node, collection, resolver, next_depth)?;
     }
     Ok(())

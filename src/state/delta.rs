@@ -107,6 +107,23 @@ pub fn compute_state_delta<Id: crate::basespec::rezzy_types::EventId>(
     deltas
 }
 
+/// Applies a single delta entry to `state`: inserts `event_id` when present,
+/// otherwise removes the addressed slot.
+fn apply_delta_to_state<Id: crate::basespec::rezzy_types::EventId>(
+    state: &mut crate::state::at::SharedState<Id>,
+    delta: &StateDelta<Id>,
+) {
+    let key = (
+        crate::basespec::event_types::EventType::from(delta.event_type.as_str()),
+        delta.state_key.clone(),
+    );
+    if let Some(ref event_id) = delta.event_id {
+        state.insert(key, event_id.clone());
+    } else {
+        state.remove(&key);
+    }
+}
+
 /// Applies a list of deltas to a base state, producing the reconstructed state.
 ///
 /// - Entries with `event_id = Some(id)` are inserted/overwritten.
@@ -118,15 +135,7 @@ pub fn apply_state_delta<Id: crate::basespec::rezzy_types::EventId>(
 ) -> crate::state::at::SharedState<Id> {
     let mut result = base.clone();
     for delta in deltas {
-        let key = (
-            crate::basespec::event_types::EventType::from(delta.event_type.as_str()),
-            delta.state_key.clone(),
-        );
-        if let Some(ref event_id) = delta.event_id {
-            result.insert(key, event_id.clone());
-        } else {
-            result.remove(&key);
-        }
+        apply_delta_to_state(&mut result, delta);
     }
     result
 }
@@ -290,15 +299,7 @@ pub fn reconstruct_state_at<Id: crate::basespec::rezzy_types::EventId>(
             let mut state = snapshot.clone();
             while let Some(deltas) = delta_stack.pop() {
                 for delta in deltas {
-                    let key = (
-                        crate::basespec::event_types::EventType::from(delta.event_type.as_str()),
-                        delta.state_key.clone(),
-                    );
-                    if let Some(ref event_id) = delta.event_id {
-                        state.insert(key, event_id.clone());
-                    } else {
-                        state.remove(&key);
-                    }
+                    apply_delta_to_state(&mut state, delta);
                 }
             }
             return Some(state);
@@ -441,14 +442,40 @@ mod tests {
     type StateMap = crate::state::at::SharedState<String>;
     type ResolvedStates = Vec<(String, StateMap)>;
 
-    #[test]
-    fn test_roundtrip_identity() {
+    /// A two-entry state shared by several round-trip fixtures.
+    fn base_state() -> StateMap {
         let mut state = StateMap::new();
         state.insert(("m.room.create".into(), String::new()), "$1".into());
         state.insert(
             ("m.room.member".into(), "@alice:example.com".into()),
             "$2".into(),
         );
+        state
+    }
+
+    /// Builds `n` cumulative pre-resolved states (event `$i` carries members
+    /// `@user_1` through `@user_i`).
+    fn build_states(n: usize) -> ResolvedStates {
+        (1..=n)
+            .map(|i| {
+                let mut state = StateMap::new();
+                for j in 1..=i {
+                    state.insert(
+                        (
+                            "m.room.member".into(),
+                            alloc::format!("@user_{j}:example.com"),
+                        ),
+                        alloc::format!("${j}"),
+                    );
+                }
+                (alloc::format!("${i}"), state)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_roundtrip_identity() {
+        let state = base_state();
 
         let delta = compute_state_delta(&state, &state);
         assert!(
@@ -459,12 +486,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_add_modify_delete() {
-        let mut parent = StateMap::new();
-        parent.insert(("m.room.create".into(), String::new()), "$1".into());
-        parent.insert(
-            ("m.room.member".into(), "@alice:example.com".into()),
-            "$2".into(),
-        );
+        let parent = base_state();
 
         let mut current = StateMap::new();
         current.insert(
@@ -489,12 +511,7 @@ mod tests {
 
     #[test]
     fn test_deletion_roundtrip() {
-        let mut parent = StateMap::new();
-        parent.insert(("m.room.create".into(), String::new()), "$1".into());
-        parent.insert(
-            ("m.room.member".into(), "@alice:example.com".into()),
-            "$2".into(),
-        );
+        let parent = base_state();
 
         // Current state has alice removed
         let mut current = StateMap::new();
@@ -514,21 +531,7 @@ mod tests {
         // `LtHash` computes a SHAKE256 XOF expansion per item, making large `N` values
         // extremely slow in debug builds. We keep `N=35` to ensure fast tests.
         // Build 35 pre-resolved states — should trigger snapshots at 0, 10, 20, 30
-        let states: ResolvedStates = (1..=35)
-            .map(|i| {
-                let mut state = StateMap::new();
-                for j in 1..=i {
-                    state.insert(
-                        (
-                            "m.room.member".into(),
-                            alloc::format!("@user_{j}:example.com"),
-                        ),
-                        alloc::format!("${j}"),
-                    );
-                }
-                (alloc::format!("${i}"), state)
-            })
-            .collect();
+        let states = build_states(35);
 
         let checkpoints = compute_compacted_delta_chain_from_resolved(states, Some(10));
         assert_eq!(checkpoints.len(), 35);
@@ -579,21 +582,7 @@ mod tests {
         // `LtHash` computes 64 SHA-256 iterations per item, making large `N` values
         // extremely slow in debug builds. We keep `N=45` to ensure fast tests.
         // Build 45 pre-resolved states — will have snapshots at 0, 10, 20, 30, 40
-        let states: ResolvedStates = (1..=45)
-            .map(|i| {
-                let mut state = StateMap::new();
-                for j in 1..=i {
-                    state.insert(
-                        (
-                            "m.room.member".into(),
-                            alloc::format!("@user_{j}:example.com"),
-                        ),
-                        alloc::format!("${j}"),
-                    );
-                }
-                (alloc::format!("${i}"), state)
-            })
-            .collect();
+        let states = build_states(45);
 
         let checkpoints = compute_compacted_delta_chain_from_resolved(states, Some(10));
 
@@ -634,29 +623,7 @@ mod tests {
         // `LtHash` computes 64 SHA-256 iterations per item, making large `N` values
         // extremely slow in debug builds. We keep `N=35` to ensure fast tests.
         // Create 35 sequential resolved states
-        let states: ResolvedStates = (1..=35)
-            .map(|i| {
-                let mut state = StateMap::new();
-                state.insert(
-                    (
-                        "m.room.member".into(),
-                        alloc::format!("@user_{i}:example.com"),
-                    ),
-                    alloc::format!("${i}"),
-                );
-                // Keep previous entries too
-                for j in 1..i {
-                    state.insert(
-                        (
-                            "m.room.member".into(),
-                            alloc::format!("@user_{j}:example.com"),
-                        ),
-                        alloc::format!("${j}"),
-                    );
-                }
-                (alloc::format!("${i}"), state)
-            })
-            .collect();
+        let states = build_states(35);
 
         let checkpoints = compute_compacted_delta_chain_from_resolved(states.clone(), Some(10));
 
@@ -697,21 +664,7 @@ mod tests {
 
     #[test]
     fn test_reconstruct_state_at_by_event_id_lookup() {
-        let states: ResolvedStates = (1..=10)
-            .map(|i| {
-                let mut state = StateMap::new();
-                for j in 1..=i {
-                    state.insert(
-                        (
-                            "m.room.member".into(),
-                            alloc::format!("@user_{j}:example.com"),
-                        ),
-                        alloc::format!("${j}"),
-                    );
-                }
-                (alloc::format!("${i}"), state)
-            })
-            .collect();
+        let states = build_states(10);
 
         let checkpoints = compute_compacted_delta_chain_from_resolved(states, Some(100));
 

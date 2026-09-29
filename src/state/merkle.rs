@@ -5,8 +5,8 @@
 //! whereas `LtHash` is the efficient homomorphic accumulator for a whole map.
 
 use alloc::{collections::BTreeMap, string::ToString, vec::Vec};
-use sha3::{Digest, Sha3_256};
 
+use crate::merkle::hash_parts;
 use crate::state::at::SharedState;
 
 /// A SHA3-256 digest used for state-map keys, leaves, and internal nodes.
@@ -19,14 +19,6 @@ const KEY_DST: &[u8] = b"msc4511:state-key:v1";
 const LEAF_DST: &[u8] = b"msc4511:state-leaf:v1";
 const NODE_DST: &[u8] = b"msc4511:state-node:v1";
 const EMPTY_DST: &[u8] = b"msc4511:state-empty:v1";
-
-fn hash_parts(parts: &[&[u8]]) -> Hash {
-    let mut hasher = Sha3_256::new();
-    for part in parts {
-        hasher.update(part);
-    }
-    hasher.finalize().into()
-}
 
 fn bit(key: &Hash, depth: usize) -> u8 {
     (key[depth / 8] >> 7_usize.saturating_sub(depth % 8)) & 1
@@ -123,9 +115,16 @@ impl StateMap {
     /// Returns the canonical root, including the canonical empty root.
     #[must_use]
     pub fn root(&self) -> Hash {
+        let (empty, entries) = self.proof_inputs();
+        subtree(&entries, 0, &empty)
+    }
+
+    /// Snapshots the leaf list and canonical empty table shared by every
+    /// root and proof computation.
+    fn proof_inputs(&self) -> ([Hash; STATE_DEPTH + 1], Vec<(Hash, Hash)>) {
         let empty = empty_table();
         let entries: Vec<(Hash, Hash)> = self.leaves.iter().map(|(k, v)| (*k, *v)).collect();
-        subtree(&entries, 0, &empty)
+        (empty, entries)
     }
 
     /// Like [`Self::root`], wrapped as an [`crate::merkle::UnsignedRoot`] --
@@ -152,8 +151,7 @@ impl StateMap {
         if self.leaves.get(&key) != Some(&state_leaf_hash(event_type, state_key, event_id)) {
             return None;
         }
-        let empty = empty_table();
-        let entries: Vec<(Hash, Hash)> = self.leaves.iter().map(|(k, v)| (*k, *v)).collect();
+        let (empty, entries) = self.proof_inputs();
         let (_, path) = descend(&entries, &key, 0, &empty);
         Some((path, self.root()))
     }
@@ -169,20 +167,17 @@ impl StateMap {
         if self.leaves.contains_key(&key) {
             return None;
         }
-        let empty = empty_table();
-        let entries: Vec<(Hash, Hash)> = self.leaves.iter().map(|(k, v)| (*k, *v)).collect();
+        let (empty, entries) = self.proof_inputs();
         let (depth, path) = descend(&entries, &key, 0, &empty);
         Some((path, depth, self.root()))
     }
 }
 
-fn subtree(entries: &[(Hash, Hash)], depth: usize, empty: &[Hash; STATE_DEPTH + 1]) -> Hash {
-    if entries.is_empty() {
-        return empty[depth];
-    }
-    if depth == STATE_DEPTH {
-        return entries[0].1;
-    }
+/// A `(left, right)` partition of state-map entries at one trie depth.
+type EntryPartition = (Vec<(Hash, Hash)>, Vec<(Hash, Hash)>);
+
+/// Splits `entries` into `(left, right)` by the bit of each key at `depth`.
+fn partition(entries: &[(Hash, Hash)], depth: usize) -> EntryPartition {
     let mut left = Vec::new();
     let mut right = Vec::new();
     for entry in entries {
@@ -192,6 +187,17 @@ fn subtree(entries: &[(Hash, Hash)], depth: usize, empty: &[Hash; STATE_DEPTH + 
             right.push(*entry);
         }
     }
+    (left, right)
+}
+
+fn subtree(entries: &[(Hash, Hash)], depth: usize, empty: &[Hash; STATE_DEPTH + 1]) -> Hash {
+    if entries.is_empty() {
+        return empty[depth];
+    }
+    if depth == STATE_DEPTH {
+        return entries[0].1;
+    }
+    let (left, right) = partition(entries, depth);
     node(
         depth,
         subtree(&left, depth.saturating_add(1), empty),
@@ -208,15 +214,7 @@ fn descend(
     if entries.is_empty() || depth == STATE_DEPTH {
         return (depth, Vec::new());
     }
-    let mut left = Vec::new();
-    let mut right = Vec::new();
-    for entry in entries {
-        if bit(&entry.0, depth) == 0 {
-            left.push(*entry);
-        } else {
-            right.push(*entry);
-        }
-    }
+    let (left, right) = partition(entries, depth);
     let (term, mut path) = if bit(key, depth) == 0 {
         descend(&left, key, depth.saturating_add(1), empty)
     } else {

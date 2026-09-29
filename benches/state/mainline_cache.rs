@@ -42,6 +42,8 @@ use rezzy::{
     compute_state_at, compute_state_at_batch, json, JsonValue, LeanEvent, StateResVersion,
 };
 
+use crate::common::{insert_room_create, join_rules_event, member_event};
+
 fn pl_content(level: i64) -> JsonValue {
     json!({ "users_default": level })
 }
@@ -57,24 +59,16 @@ fn insert_pl_auth_chain(
     let root_id = format!("$pl_auth_root_{pl_index}");
     events.insert(
         root_id.clone(),
-        LeanEvent {
-            event_id: root_id.clone(),
-            event_type: "m.room.join_rules".to_string(),
-            state_key: Some(String::new()),
-            power_level: 100,
-            origin_server_ts: {
+        join_rules_event(
+            root_id.clone(),
+            {
                 *ts += 1;
                 *ts
             },
-            sender: "@creator:example.org".to_string(),
-            content: json!({ "join_rule": "public" }),
-            prev_events: Vec::new(),
-            auth_events: Vec::new(),
+            Vec::new(),
+            Vec::new(),
             depth,
-            rejected: false,
-            soft_fail: false,
-            room_id: None,
-        },
+        ),
     );
 
     let mut prev_auth = root_id.clone();
@@ -84,28 +78,24 @@ fn insert_pl_auth_chain(
         let helper_user = format!("@pl_auth_{pl_index}_{hop}:example.org");
         events.insert(
             helper_id.clone(),
-            LeanEvent {
-                event_id: helper_id.clone(),
-                event_type: "m.room.member".to_string(),
-                state_key: Some(helper_user.clone()),
-                power_level: 100,
-                origin_server_ts: {
+            member_event(
+                helper_id.clone(),
+                helper_user.clone(),
+                helper_user,
+                "join",
+                100,
+                {
                     *ts += 1;
                     *ts
                 },
-                sender: helper_user,
-                content: json!({ "membership": "join" }),
-                prev_events: Vec::new(),
-                auth_events: if hop == 0 {
+                Vec::new(),
+                if hop == 0 {
                     vec![root_id.clone()]
                 } else {
                     vec![prev_auth.clone(), root_id.clone()]
                 },
-                depth: depth + hop as u64 + 1,
-                rejected: false,
-                soft_fail: false,
-                room_id: None,
-            },
+                depth + hop as u64 + 1,
+            ),
         );
         prev_auth.clone_from(&helper_id);
         last_id = helper_id;
@@ -121,28 +111,7 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
     let mut events = HashMap::new();
     let mut ts: u64 = 0;
 
-    let create_id = "$create".to_string();
-    events.insert(
-        create_id.clone(),
-        LeanEvent {
-            event_id: create_id.clone(),
-            event_type: "m.room.create".to_string(),
-            state_key: Some(String::new()),
-            power_level: 100,
-            origin_server_ts: {
-                ts += 1;
-                ts
-            },
-            sender: "@creator:example.org".to_string(),
-            content: json!({ "creator": "@creator:example.org" }),
-            prev_events: Vec::new(),
-            auth_events: Vec::new(),
-            depth: 0,
-            rejected: false,
-            soft_fail: false,
-            room_id: None,
-        },
-    );
+    let create_id = insert_room_create(&mut events, &mut ts);
 
     let mut prev_pl = create_id.clone();
     let mut depth: u64 = 1;
@@ -190,45 +159,37 @@ fn build_dag(pl_chain_len: usize, fork_count: usize) -> (HashMap<String, LeanEve
 
         events.insert(
             a_id.clone(),
-            LeanEvent {
-                event_id: a_id.clone(),
-                event_type: "m.room.member".to_string(),
-                state_key: Some(shared_member.clone()),
-                power_level: 0,
-                origin_server_ts: {
+            member_event(
+                a_id.clone(),
+                shared_member.clone(),
+                shared_member.clone(),
+                "join",
+                0,
+                {
                     ts += 1;
                     ts
                 },
-                sender: shared_member.clone(),
-                content: json!({ "membership": "join" }),
-                prev_events: vec![top_pl.clone()],
-                auth_events: vec![top_pl.clone(), pl_auth_root.clone()],
+                vec![top_pl.clone()],
+                vec![top_pl.clone(), pl_auth_root.clone()],
                 depth,
-                rejected: false,
-                soft_fail: false,
-                room_id: None,
-            },
+            ),
         );
         events.insert(
             b_id.clone(),
-            LeanEvent {
-                event_id: b_id.clone(),
-                event_type: "m.room.member".to_string(),
-                state_key: Some(shared_member.clone()),
-                power_level: 0,
-                origin_server_ts: {
+            member_event(
+                b_id.clone(),
+                shared_member.clone(),
+                shared_member.clone(),
+                "join",
+                0,
+                {
                     ts += 1;
                     ts
                 },
-                sender: shared_member.clone(),
-                content: json!({ "membership": "join" }),
-                prev_events: vec![top_pl.clone()],
-                auth_events: vec![top_pl.clone(), pl_auth_root],
+                vec![top_pl.clone()],
+                vec![top_pl.clone(), pl_auth_root],
                 depth,
-                rejected: false,
-                soft_fail: false,
-                room_id: None,
-            },
+            ),
         );
         events.insert(
             merge_id.clone(),

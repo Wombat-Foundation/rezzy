@@ -50,6 +50,24 @@ fn require_legacy_iterative_version(version: StateResVersion) {
     );
 }
 
+/// Picks the caller-supplied local auth cache, or `fallback_cache` when no
+/// external cache was provided, resetting it when the version does not match.
+fn select_local_auth_cache<'a, Id, C, K>(
+    external_auth_cache: Option<&'a mut LocalAuthCache<Id, C, K>>,
+    fallback_cache: &'a mut LocalAuthCache<Id, C, K>,
+    version: StateResVersion,
+) -> &'a mut LocalAuthCache<Id, C, K> {
+    let local_auth_cache = match external_auth_cache {
+        Some(cache) => cache,
+        None => fallback_cache,
+    };
+    if local_auth_cache.version != version {
+        local_auth_cache.map.clear();
+        local_auth_cache.version = version;
+    }
+    local_auth_cache
+}
+
 /// Collects the initial set of conflicted event IDs.
 ///
 /// (The historical CDO pre-filter that previously modified this set is retired;
@@ -718,14 +736,8 @@ where
     );
 
     let mut fallback_cache = crate::state::at::LocalAuthCache::<Id, C, K>::new(version);
-    let local_auth_cache = match external_auth_cache {
-        Some(cache) => cache,
-        None => &mut fallback_cache,
-    };
-    if local_auth_cache.version != version {
-        local_auth_cache.map.clear();
-        local_auth_cache.version = version;
-    }
+    let local_auth_cache =
+        select_local_auth_cache(external_auth_cache, &mut fallback_cache, version);
 
     run_power_phase_iterative_checks(
         &mut resolved,
@@ -818,8 +830,27 @@ where
     //   and federation convergence requires matching other MSC4297
     //   implementations here. So `resolved` must win.
 
+    merge_final_resolved(version, unconflicted_state.clone(), resolved)
+}
+
+/// Performs the version-gated final merge of `resolved` over
+/// `unconflicted_state`.
+///
+/// For V1/V2, `resolved` already contains a clone of `unconflicted_state`, so
+/// the unconflicted values are applied last and win. For V2.1+, `resolved`
+/// starts empty and must win over the unconflicted base (see the longer
+/// comment at the call site).
+fn merge_final_resolved<Id, K>(
+    version: StateResVersion,
+    unconflicted_state: crate::state::at::SharedState<Id, K>,
+    resolved: crate::state::at::SharedState<Id, K>,
+) -> crate::state::at::SharedState<Id, K>
+where
+    Id: Clone,
+    K: Clone + Ord,
+{
     if version.is_v2_1_plus() {
-        let mut f = unconflicted_state.clone();
+        let mut f = unconflicted_state;
         for (k, v) in resolved {
             f.insert(k, v);
         }
@@ -827,7 +858,7 @@ where
     } else {
         let mut f = resolved;
         for (k, v) in unconflicted_state {
-            f.insert(k.clone(), v.clone());
+            f.insert(k, v);
         }
         f
     }
@@ -958,14 +989,8 @@ where
     );
 
     let mut fallback_cache = LocalAuthCache::new(version);
-    let local_auth_cache = match external_auth_cache {
-        Some(cache) => cache,
-        None => &mut fallback_cache,
-    };
-    if local_auth_cache.version != version {
-        local_auth_cache.map.clear();
-        local_auth_cache.version = version;
-    }
+    let local_auth_cache =
+        select_local_auth_cache(external_auth_cache, &mut fallback_cache, version);
 
     let sort_set = &conflicted_events;
 
@@ -1083,19 +1108,7 @@ where
     // Same version-gated fix as resolve_iterative_sort_with_all_caches: see
     // the comment there for why V1/V2 and V2.1+ need opposite merge
     // directions for this final step.
-    let final_resolved = if version.is_v2_1_plus() {
-        let mut f = unconflicted_state;
-        for (k, v) in resolved {
-            f.insert(k, v);
-        }
-        f
-    } else {
-        let mut f = resolved;
-        for (k, v) in unconflicted_state {
-            f.insert(k, v);
-        }
-        f
-    };
+    let final_resolved = merge_final_resolved(version, unconflicted_state, resolved);
     drop(conflicted_events);
     (final_resolved, deltas)
 }
@@ -1288,6 +1301,53 @@ mod tests {
         (unconflicted, ac)
     }
 
+    /// Runs the delta-tracking resolver with the standard test defaults and
+    /// returns only the resulting deltas.
+    fn deltas_for(
+        unconflicted: SharedState<String, String>,
+        conflicted: HashMap<String, LeanEvent>,
+        auth_context: &HashMap<String, LeanEvent>,
+        version: StateResVersion,
+    ) -> Vec<ResolutionDelta<String, String>> {
+        resolve_iterative_sort_with_cache_and_deltas(
+            unconflicted,
+            conflicted,
+            auth_context,
+            None,
+            version,
+            &mut HashMap::new(),
+            None,
+            &String::new(),
+        )
+        .1
+    }
+
+    /// Builds the `$pl -> $member` auth-chain fixture used by the
+    /// `expand_v2_power_events_auth_chains` tests. When `member_in_non_power`
+    /// is set, `$member` is also placed in `non_power_events`.
+    fn expand_fixture(
+        member_in_non_power: bool,
+    ) -> (
+        HashMap<String, LeanEvent>,
+        HashMap<String, LeanEvent>,
+        HashMap<String, LeanEvent>,
+    ) {
+        let mut pl = member_ev("$pl", "@admin:example.com", "@admin:example.com", MEM_JOIN);
+        pl.auth_events = alloc::vec!["$member".to_string()];
+        let member = member_ev("$member", "@a:example.com", "@a:example.com", MEM_JOIN);
+
+        let mut power_events: HashMap<String, LeanEvent> = HashMap::new();
+        let mut non_power_events: HashMap<String, LeanEvent> = HashMap::new();
+        if member_in_non_power {
+            non_power_events.insert("$member".to_string(), member.clone());
+        }
+        let mut sort_set: HashMap<String, LeanEvent> = HashMap::new();
+        sort_set.insert("$pl".to_string(), pl.clone());
+        sort_set.insert("$member".to_string(), member);
+        power_events.insert("$pl".to_string(), pl);
+        (power_events, non_power_events, sort_set)
+    }
+
     /// Covers the V2.1.1+ resolved-state screening filter in the delta path
     /// (`resolve_iterative_sort_with_cache_and_deltas`): the
     /// `!is_sender_banned(...)` predicate must drop a non-power event whose
@@ -1335,15 +1395,11 @@ mod tests {
         // screened out of the resolved state but still surfaces as a rejected
         // per-event delta (the screening pass is part of the delta contract),
         // while carol's unbanned message survives.
-        let (_, deltas) = resolve_iterative_sort_with_cache_and_deltas(
+        let deltas = deltas_for(
             unconflicted.clone(),
             mk_conflicted(),
             &ac,
-            None,
             StateResVersion::V2_1_1,
-            &mut HashMap::new(),
-            None,
-            &String::new(),
         );
         let bob_delta = deltas
             .iter()
@@ -1359,16 +1415,7 @@ mod tests {
         );
 
         // V2.1 predates the hardening: bob's message is processed, not screened.
-        let (_, deltas) = resolve_iterative_sort_with_cache_and_deltas(
-            unconflicted,
-            mk_conflicted(),
-            &ac,
-            None,
-            StateResVersion::V2_1,
-            &mut HashMap::new(),
-            None,
-            &String::new(),
-        );
+        let deltas = deltas_for(unconflicted, mk_conflicted(), &ac, StateResVersion::V2_1);
         assert!(
             deltas.iter().any(|d| d.event_id == "$bob_msg"),
             "V2.1 must not apply the ban-evasion screening filter"
@@ -1409,16 +1456,7 @@ mod tests {
         conflicted.insert("$alice_join".to_string(), alice_join);
         conflicted.insert("$stateless".to_string(), stateless);
 
-        let (_, deltas) = resolve_iterative_sort_with_cache_and_deltas(
-            unconflicted,
-            conflicted,
-            &ac,
-            None,
-            StateResVersion::V2_1,
-            &mut HashMap::new(),
-            None,
-            &String::new(),
-        );
+        let deltas = deltas_for(unconflicted, conflicted, &ac, StateResVersion::V2_1);
         assert!(
             deltas.iter().any(|d| d.event_id == "$alice_join"),
             "the stateful non-power event should still be processed"
@@ -1509,17 +1547,7 @@ mod tests {
         // `$pl` (in sort_set) auth-cites `$member`, present in BOTH
         // non_power_events and sort_set: the owned copy must be moved into
         // power_events (and removed from non_power_events), not deep-cloned.
-        let mut pl = member_ev("$pl", "@admin:example.com", "@admin:example.com", MEM_JOIN);
-        pl.auth_events = alloc::vec!["$member".to_string()];
-        let member = member_ev("$member", "@a:example.com", "@a:example.com", MEM_JOIN);
-
-        let mut power_events: HashMap<String, LeanEvent> = HashMap::new();
-        let mut non_power_events: HashMap<String, LeanEvent> = HashMap::new();
-        non_power_events.insert("$member".to_string(), member.clone());
-        let mut sort_set: HashMap<String, LeanEvent> = HashMap::new();
-        sort_set.insert("$pl".to_string(), pl.clone());
-        sort_set.insert("$member".to_string(), member);
-        power_events.insert("$pl".to_string(), pl);
+        let (mut power_events, mut non_power_events, sort_set) = expand_fixture(true);
 
         expand_v2_power_events_auth_chains(&mut power_events, &mut non_power_events, &sort_set);
 
@@ -1537,16 +1565,7 @@ mod tests {
     fn expand_v2_promotes_auth_chain_events_from_sort_set_fallback() {
         // `$member` is present ONLY in sort_set (absent from non_power_events):
         // the fallback must clone it into power_events rather than dropping it.
-        let mut pl = member_ev("$pl", "@admin:example.com", "@admin:example.com", MEM_JOIN);
-        pl.auth_events = alloc::vec!["$member".to_string()];
-        let member = member_ev("$member", "@a:example.com", "@a:example.com", MEM_JOIN);
-
-        let mut power_events: HashMap<String, LeanEvent> = HashMap::new();
-        let mut non_power_events: HashMap<String, LeanEvent> = HashMap::new();
-        let mut sort_set: HashMap<String, LeanEvent> = HashMap::new();
-        sort_set.insert("$pl".to_string(), pl.clone());
-        sort_set.insert("$member".to_string(), member);
-        power_events.insert("$pl".to_string(), pl);
+        let (mut power_events, mut non_power_events, sort_set) = expand_fixture(false);
 
         expand_v2_power_events_auth_chains(&mut power_events, &mut non_power_events, &sort_set);
 

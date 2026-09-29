@@ -217,14 +217,21 @@ impl<Id, K: SignatureVerifier> NativeVerifier<Id, K> {
     }
 }
 
+impl<Id: core::hash::Hash + Eq + AsRef<str>, K> NativeVerifier<Id, K> {
+    /// Looks up the raw PDU for `event_id`, or the shared "unknown event"
+    /// error every `EventVerifier` method starts with.
+    fn event(&self, event_id: &Id) -> Result<&Value, String> {
+        self.events
+            .get(event_id)
+            .ok_or_else(|| alloc::format!("unknown event {}", event_id.as_ref()))
+    }
+}
+
 impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier<Id>
     for NativeVerifier<Id, K>
 {
     fn verify_event_id_hash(&self, event_id: &Id) -> Result<(), String> {
-        let value = self
-            .events
-            .get(event_id)
-            .ok_or_else(|| alloc::format!("unknown event {}", event_id.as_ref()))?;
+        let value = self.event(event_id)?;
         if matches!(self.room_version.as_str(), "1" | "2") {
             Ok(())
         } else {
@@ -244,10 +251,7 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
     }
 
     fn verify_signatures(&self, event_id: &Id) -> Result<(), String> {
-        let value = self
-            .events
-            .get(event_id)
-            .ok_or_else(|| alloc::format!("unknown event {}", event_id.as_ref()))?;
+        let value = self.event(event_id)?;
         verify_event_signatures(value, &self.room_version, &self.verifier)
     }
 
@@ -259,18 +263,12 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
         let server = crate::basespec::rezzy_types::extract_domain(authorising_user)
             .filter(|server| !server.is_empty())
             .ok_or_else(|| alloc::format!("invalid authorising user ID {authorising_user}"))?;
-        let value = self
-            .events
-            .get(event_id)
-            .ok_or_else(|| alloc::format!("unknown event {}", event_id.as_ref()))?;
+        let value = self.event(event_id)?;
         verify_event_signatures_from_server(value, &self.room_version, server, &self.verifier)
     }
 
     fn verify_content_hash(&self, event_id: &Id) -> Result<(), String> {
-        let value = self
-            .events
-            .get(event_id)
-            .ok_or_else(|| alloc::format!("unknown event {}", event_id.as_ref()))?;
+        let value = self.event(event_id)?;
         crate::basespec::rezzy_types::verify_content_hash(value, &self.room_version)
     }
 }
@@ -306,24 +304,24 @@ mod dalek_tests {
         value
     }
 
+    /// A minimal unsigned message PDU, the fixture shared by the tests that
+    /// only care about signature verification.
+    fn message_event(origin_server_ts: i64) -> Value {
+        json!({
+            "type": "m.room.message",
+            "room_id": "!r:example.com",
+            "sender": "@a:example.com",
+            "origin_server_ts": origin_server_ts,
+            "content": { "body": "hi" },
+        })
+    }
+
     #[test]
     fn dalek_verifies_round_trip() {
         let sk = SigningKey::from_bytes(&[7_u8; 32]);
         let vk = sk.verifying_key();
 
-        let raw = signed_event(
-            json!({
-                "type": "m.room.message",
-                "room_id": "!r:example.com",
-                "sender": "@a:example.com",
-                "origin_server_ts": 1,
-                "content": { "body": "hi" },
-            }),
-            "10",
-            "example.com",
-            "ed25519:0",
-            &sk,
-        );
+        let raw = signed_event(message_event(1), "10", "example.com", "ed25519:0", &sk);
 
         let mut keys = DalekVerifier::new();
         keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
@@ -336,19 +334,7 @@ mod dalek_tests {
         let sk = SigningKey::from_bytes(&[8_u8; 32]);
         let vk = sk.verifying_key();
 
-        let mut raw = signed_event(
-            json!({
-                "type": "m.room.message",
-                "room_id": "!r:example.com",
-                "sender": "@a:example.com",
-                "origin_server_ts": 1,
-                "content": { "body": "hi" },
-            }),
-            "10",
-            "example.com",
-            "ed25519:0",
-            &sk,
-        );
+        let mut raw = signed_event(message_event(1), "10", "example.com", "ed25519:0", &sk);
         raw["origin_server_ts"] = json!(999);
 
         let mut keys = DalekVerifier::new();
@@ -494,19 +480,7 @@ mod dalek_tests {
     fn native_verifier_rejects_unsupported_dotted_version() {
         let sk = SigningKey::from_bytes(&[11_u8; 32]);
         let vk = sk.verifying_key();
-        let raw = signed_event(
-            json!({
-                "type": "m.room.message",
-                "room_id": "!r:example.com",
-                "sender": "@a:example.com",
-                "origin_server_ts": 1,
-                "content": { "body": "hi" },
-            }),
-            "2.1",
-            "example.com",
-            "ed25519:0",
-            &sk,
-        );
+        let raw = signed_event(message_event(1), "2.1", "example.com", "ed25519:0", &sk);
         let mut map = crate::HashMap::new();
         map.insert("$opaque:example.com".to_string(), raw);
         let mut keys = DalekVerifier::new();

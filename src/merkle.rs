@@ -607,7 +607,7 @@ fn append_string(out: &mut Vec<u8>, string: &str) {
     out.push(b'"');
 }
 
-fn hash_parts(parts: &[&[u8]]) -> Hash {
+pub(crate) fn hash_parts(parts: &[&[u8]]) -> Hash {
     let mut hasher = Sha3_256::new();
     for part in parts {
         hasher.update(part);

@@ -38,6 +38,12 @@ struct TestEvent {
     auth_events: Vec<OwnedEventId>,
 }
 
+fn id_iter<'a>(
+    ids: &'a [OwnedEventId],
+) -> Box<dyn DoubleEndedIterator<Item = &'a OwnedEventId> + 'a> {
+    Box::new(ids.iter())
+}
+
 impl Event for TestEvent {
     type Id = OwnedEventId;
 
@@ -66,11 +72,11 @@ impl Event for TestEvent {
     }
 
     fn prev_events(&self) -> Box<dyn DoubleEndedIterator<Item = &Self::Id> + '_> {
-        Box::new(self.prev_events.iter())
+        id_iter(&self.prev_events)
     }
 
     fn auth_events(&self) -> Box<dyn DoubleEndedIterator<Item = &Self::Id> + '_> {
-        Box::new(self.auth_events.iter())
+        id_iter(&self.auth_events)
     }
 
     fn content(&self) -> &RawJsonValue {
@@ -116,29 +122,23 @@ fn make_event(init: EventInit<'_>) -> TestEvent {
         content: RawJsonValue::from_string(init.content_json.to_string())
             .unwrap()
             .into(),
-        prev_events: init
-            .prev_events
-            .iter()
-            .map(|s| {
-                if s.starts_with('$') {
-                    (*s).try_into().unwrap()
-                } else {
-                    format!("${s}:example.com").try_into().unwrap()
-                }
-            })
-            .collect(),
-        auth_events: init
-            .auth_events
-            .iter()
-            .map(|s| {
-                if s.starts_with('$') {
-                    (*s).try_into().unwrap()
-                } else {
-                    format!("${s}:example.com").try_into().unwrap()
-                }
-            })
-            .collect(),
+        prev_events: expand_ids(init.prev_events),
+        auth_events: expand_ids(init.auth_events),
     }
+}
+
+/// Expands bare fixture ids (`prev`/`auth`) into fully-qualified event ids,
+/// leaving ids that already start with `$` untouched.
+fn expand_ids(ids: &[&str]) -> Vec<OwnedEventId> {
+    ids.iter()
+        .map(|s| {
+            if s.starts_with('$') {
+                (*s).try_into().unwrap()
+            } else {
+                format!("${s}:example.com").try_into().unwrap()
+            }
+        })
+        .collect()
 }
 
 struct MultiForkDag {

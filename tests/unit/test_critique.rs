@@ -1,6 +1,6 @@
 use crate::utils;
+use crate::utils::to_event_map;
 use crate::utils_extra;
-use rezzy::JsonValue as Value;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use std::collections::{HashMap, HashSet};
 use test_case::test_case;
@@ -21,20 +21,8 @@ fn load_fixture(path: &std::path::Path) -> Vec<LeanEvent> {
             })
             .collect()
     } else {
-        let val: Value = Value::parse(&content).unwrap();
-        if val.is_array() {
-            utils::parse_events_value(&val).unwrap()
-        } else {
-            utils::parse_events_value(&val["events"]).unwrap()
-        }
+        utils::parse_fixture_json(&content)
     }
-}
-
-fn to_event_map(events: &[LeanEvent]) -> EventMap {
-    events
-        .iter()
-        .map(|e| (e.event_id.clone(), e.clone()))
-        .collect()
 }
 
 fn get_heads(events: &[LeanEvent]) -> Vec<String> {
@@ -268,6 +256,20 @@ fn assert_benign_convergence(jsonl_filename: &str) -> (ResolvedStateMap, EventMa
     (resolved_v2_1_1, map)
 }
 
+/// Runs [`assert_benign_convergence`] and additionally asserts the shared
+/// baseline that Alice and Bob both resolve to `join`. Returns the resolved
+/// state and event map so callers can layer fixture-specific assertions
+/// (e.g. power levels) on top.
+fn assert_benign_join_pair(jsonl_filename: &str) -> (ResolvedStateMap, EventMap) {
+    let (resolved, map) = assert_benign_convergence(jsonl_filename);
+    assert_eq!(
+        get_membership(&resolved, &map, "@alice:example.com"),
+        "join"
+    );
+    assert_eq!(get_membership(&resolved, &map, "@bob:example.com"), "join");
+    (resolved, map)
+}
+
 /// **Ordering hazard:** every legacy Matrix resolution version below accepts
 /// A's backdated kick while B is still low-power, discarding B's legitimate
 /// competing-branch actions. `tk.nutra.cdo.12` is intentionally tested through
@@ -343,23 +345,13 @@ fn test_dueling_admins_backdated_kick(version: StateResVersion) {
 
 #[test]
 fn test_anomaly_01_state_reset() {
-    let (resolved, map) = assert_benign_convergence("01_state_reset.jsonl");
-    assert_eq!(
-        get_membership(&resolved, &map, "@alice:example.com"),
-        "join"
-    );
-    assert_eq!(get_membership(&resolved, &map, "@bob:example.com"), "join");
+    let (resolved, map) = assert_benign_join_pair("01_state_reset.jsonl");
     assert_eq!(get_user_power_level(&resolved, &map, "@bob:example.com"), 0);
 }
 
 #[test]
 fn test_anomaly_02_admin_lockout() {
-    let (resolved, map) = assert_benign_convergence("02_admin_lockout.jsonl");
-    assert_eq!(
-        get_membership(&resolved, &map, "@alice:example.com"),
-        "join"
-    );
-    assert_eq!(get_membership(&resolved, &map, "@bob:example.com"), "join");
+    let (resolved, map) = assert_benign_join_pair("02_admin_lockout.jsonl");
     assert_eq!(get_user_power_level(&resolved, &map, "@bob:example.com"), 0);
 }
 
@@ -389,12 +381,7 @@ fn test_anomaly_04_ban_evasion() {
 
 #[test]
 fn test_anomaly_05_timestamp_spoofing() {
-    let (resolved, map) = assert_benign_convergence("05_timestamp_spoofing.jsonl");
-    assert_eq!(
-        get_membership(&resolved, &map, "@alice:example.com"),
-        "join"
-    );
-    assert_eq!(get_membership(&resolved, &map, "@bob:example.com"), "join");
+    let (resolved, map) = assert_benign_join_pair("05_timestamp_spoofing.jsonl");
     assert_eq!(
         get_user_power_level(&resolved, &map, "@bob:example.com"),
         50
@@ -403,12 +390,7 @@ fn test_anomaly_05_timestamp_spoofing() {
 
 #[test]
 fn test_anomaly_06_action_evaporation() {
-    let (resolved, map) = assert_benign_convergence("06_action_evaporation.jsonl");
-    assert_eq!(
-        get_membership(&resolved, &map, "@alice:example.com"),
-        "join"
-    );
-    assert_eq!(get_membership(&resolved, &map, "@bob:example.com"), "join");
+    let (resolved, map) = assert_benign_join_pair("06_action_evaporation.jsonl");
     assert_eq!(get_user_power_level(&resolved, &map, "@bob:example.com"), 0);
 }
 
@@ -535,12 +517,7 @@ fn test_anomaly_14_state_reset_via_redactions() {
 
 #[test]
 fn test_anomaly_15_dos_traversal_bfs() {
-    let (resolved, map) = assert_benign_convergence("15_dos_traversal_bfs.jsonl");
-    assert_eq!(
-        get_membership(&resolved, &map, "@alice:example.com"),
-        "join"
-    );
-    assert_eq!(get_membership(&resolved, &map, "@bob:example.com"), "join");
+    let (resolved, map) = assert_benign_join_pair("15_dos_traversal_bfs.jsonl");
     assert_eq!(
         get_user_power_level(&resolved, &map, "@bob:example.com"),
         50

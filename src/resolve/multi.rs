@@ -683,11 +683,109 @@ mod tests {
         map
     }
 
+    fn create_ev() -> LeanEvent {
+        make_event("$create", "m.room.create", "", "@alice:x", alloc::vec![], 0)
+    }
+
+    /// Builds an `m.room.member` join event whose sender and state key are
+    /// `member`, authorized by `$create`.
+    fn join_ev(event_id: &str, member: &str) -> LeanEvent {
+        let mut ev = make_event(
+            event_id,
+            "m.room.member",
+            member,
+            member,
+            alloc::vec!["$create".into()],
+            1,
+        );
+        ev.content = crate::json!({"membership": "join"});
+        ev
+    }
+
+    /// Builds a state map from `(event_type, state_key, event_id)` triples.
+    fn fork(entries: &[(&str, &str, &str)]) -> StateMap {
+        let mut map = StateMap::new();
+        for (event_type, state_key, event_id) in entries {
+            map.insert(
+                ((*event_type).into(), (*state_key).into()),
+                (*event_id).into(),
+            );
+        }
+        map
+    }
+
+    /// The canonical two-fork disagreement scenario shared by the concrete and
+    /// lazy resolver parity tests.
+    fn two_fork_scenario() -> (
+        HashMap<alloc::string::String, LeanEvent>,
+        StateMap,
+        StateMap,
+    ) {
+        let mut events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        events.insert("$create".into(), create_ev());
+        events.insert("$alice_join".into(), join_ev("$alice_join", "@alice:x"));
+        events.insert("$bob_join".into(), join_ev("$bob_join", "@bob:x"));
+        events.insert("$pl_a".into(), {
+            let mut ev = make_event(
+                "$pl_a",
+                "m.room.power_levels",
+                "",
+                "@alice:x",
+                alloc::vec!["$create".into(), "$alice_join".into()],
+                2,
+            );
+            ev.content = crate::json!({"users": {"@alice:x": 100}});
+            ev.power_level = 100;
+            ev
+        });
+        events.insert("$pl_b".into(), {
+            let mut ev = make_event(
+                "$pl_b",
+                "m.room.power_levels",
+                "",
+                "@bob:x",
+                alloc::vec!["$create".into(), "$bob_join".into()],
+                2,
+            );
+            ev.content = crate::json!({"users": {"@bob:x": 100}});
+            ev.power_level = 0;
+            ev
+        });
+
+        let fork_a = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$alice_join"),
+            ("m.room.power_levels", "", "$pl_a"),
+        ]);
+        let fork_b = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@bob:x", "$bob_join"),
+            ("m.room.power_levels", "", "$pl_b"),
+        ]);
+
+        (events, fork_a, fork_b)
+    }
+
+    /// Asserts the lazy resolver matches the concrete resolver for two forks.
+    fn assert_lazy_matches_concrete(
+        fork_a: StateMap,
+        fork_b: StateMap,
+        events: &HashMap<alloc::string::String, LeanEvent>,
+        version: StateResVersion,
+        auth_diff: Option<alloc::vec::Vec<alloc::string::String>>,
+        message: &str,
+    ) {
+        let concrete = resolve_state_maps(&[fork_a.clone(), fork_b.clone()], events, version);
+        let lazy = resolve_state_maps_lazy_with_diff(&[fork_a, fork_b], events, auth_diff, version);
+        assert_eq!(concrete, lazy, "{message}");
+    }
+
     #[test]
     fn test_partition_identical_maps() {
-        let mut map = StateMap::new();
-        map.insert(("m.room.create".into(), "".into()), "$create".into());
-        map.insert(("m.room.member".into(), "@alice:x".into()), "$join".into());
+        let map = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$join"),
+        ]);
 
         let (unconflicted, conflicted) =
             partition_state_maps([map.iter(), map.iter()].into_iter(), 2);
@@ -698,19 +796,14 @@ mod tests {
 
     #[test]
     fn test_partition_conflicting_maps() {
-        let mut map_a = StateMap::new();
-        map_a.insert(("m.room.create".into(), "".into()), "$create".into());
-        map_a.insert(
-            ("m.room.member".into(), "@alice:x".into()),
-            "$join_a".into(),
-        );
-
-        let mut map_b = StateMap::new();
-        map_b.insert(("m.room.create".into(), "".into()), "$create".into());
-        map_b.insert(
-            ("m.room.member".into(), "@alice:x".into()),
-            "$join_b".into(),
-        );
+        let map_a = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$join_a"),
+        ]);
+        let map_b = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$join_b"),
+        ]);
 
         let (unconflicted, conflicted) =
             partition_state_maps([map_a.iter(), map_b.iter()].into_iter(), 2);
@@ -727,10 +820,8 @@ mod tests {
         // maps, so nothing is unanimous. Each single-id slot must still be
         // reported as conflicted (it is absent from the other fork) — this is
         // the `count < num_maps` tail of the flattened Occurrence scan.
-        let mut map_a = StateMap::new();
-        map_a.insert(("m.room.member".into(), "@alice:x".into()), "$join".into());
-        let mut map_b = StateMap::new();
-        map_b.insert(("m.room.create".into(), "".into()), "$create".into());
+        let map_a = fork(&[("m.room.member", "@alice:x", "$join")]);
+        let map_b = fork(&[("m.room.create", "", "$create")]);
 
         let (unconflicted, conflicted) =
             partition_state_maps([map_a.iter(), map_b.iter()].into_iter(), 2);
@@ -743,8 +834,7 @@ mod tests {
 
     #[test]
     fn test_resolve_identical_maps_ptr_eq_fast_path() {
-        let mut map = StateMap::new();
-        map.insert(("m.room.create".into(), "".into()), "$create".into());
+        let map = fork(&[("m.room.create", "", "$create")]);
 
         // A clone of an imbl::OrdMap shares its root, so `ptr_eq` is true and
         // resolve_state_maps takes the O(1) identity fast path rather than a
@@ -760,8 +850,7 @@ mod tests {
 
     #[test]
     fn test_resolve_identical_maps() {
-        let mut map = StateMap::new();
-        map.insert(("m.room.create".into(), "".into()), "$create".into());
+        let map = fork(&[("m.room.create", "", "$create")]);
 
         let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
         let result = resolve_state_maps(&[map.clone(), map.clone()], &events, StateResVersion::V2);
@@ -843,86 +932,7 @@ mod tests {
         // Scenario: two forks disagree on who sent the latest PL event.
         // Fork A has PL from alice (creator), fork B has PL from bob (non-creator).
         // State res should pick alice's PL (creator wins in V2).
-        let mut events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
-
-        let create = make_event("$create", "m.room.create", "", "@alice:x", alloc::vec![], 0);
-        events.insert("$create".into(), create);
-
-        let alice_join = make_event(
-            "$alice_join",
-            "m.room.member",
-            "@alice:x",
-            "@alice:x",
-            alloc::vec!["$create".into()],
-            1,
-        );
-        events.insert("$alice_join".into(), {
-            let mut ev = alice_join;
-            ev.content = crate::json!({"membership": "join"});
-            ev
-        });
-
-        let bob_join = make_event(
-            "$bob_join",
-            "m.room.member",
-            "@bob:x",
-            "@bob:x",
-            alloc::vec!["$create".into()],
-            1,
-        );
-        events.insert("$bob_join".into(), {
-            let mut ev = bob_join;
-            ev.content = crate::json!({"membership": "join"});
-            ev
-        });
-
-        // Fork A: alice sets PL
-        let pl_a = make_event(
-            "$pl_a",
-            "m.room.power_levels",
-            "",
-            "@alice:x",
-            alloc::vec!["$create".into(), "$alice_join".into()],
-            2,
-        );
-        events.insert("$pl_a".into(), {
-            let mut ev = pl_a;
-            ev.content = crate::json!({"users": {"@alice:x": 100}});
-            ev.power_level = 100;
-            ev
-        });
-
-        // Fork B: bob sets PL (unauthorized in practice, but let's see who wins)
-        let pl_b = make_event(
-            "$pl_b",
-            "m.room.power_levels",
-            "",
-            "@bob:x",
-            alloc::vec!["$create".into(), "$bob_join".into()],
-            2,
-        );
-        events.insert("$pl_b".into(), {
-            let mut ev = pl_b;
-            ev.content = crate::json!({"users": {"@bob:x": 100}});
-            ev.power_level = 0;
-            ev
-        });
-
-        let mut fork_a = StateMap::new();
-        fork_a.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_a.insert(
-            ("m.room.member".into(), "@alice:x".into()),
-            "$alice_join".into(),
-        );
-        fork_a.insert(("m.room.power_levels".into(), "".into()), "$pl_a".into());
-
-        let mut fork_b = StateMap::new();
-        fork_b.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_b.insert(
-            ("m.room.member".into(), "@bob:x".into()),
-            "$bob_join".into(),
-        );
-        fork_b.insert(("m.room.power_levels".into(), "".into()), "$pl_b".into());
+        let (events, fork_a, fork_b) = two_fork_scenario();
 
         let resolved = resolve_state_maps(
             &[fork_a.clone(), fork_b.clone()],
@@ -978,38 +988,32 @@ mod tests {
     fn test_resolve_missing_conflicted_event_panics() {
         // Two forks disagree on a member slot. The conflicted event ID
         // is NOT in events_map, so the defensive panic should fire.
-        let mut fork_a = StateMap::new();
-        fork_a.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_a.insert(
-            ("m.room.member".into(), "@alice:x".into()),
-            "$join_a".into(),
-        );
-
-        let mut fork_b = StateMap::new();
-        fork_b.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_b.insert(
-            ("m.room.member".into(), "@alice:x".into()),
-            "$join_b".into(), // differs from fork_a → conflicted
-        );
+        let fork_a = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$join_a"),
+        ]);
+        // differs from fork_a → conflicted
+        let fork_b = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$join_b"),
+        ]);
 
         // events_map only has create — missing both join events
         let mut events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
-        events.insert(
-            "$create".into(),
-            make_event("$create", "m.room.create", "", "@alice:x", alloc::vec![], 0),
-        );
+        events.insert("$create".into(), create_ev());
 
         let _ = resolve_state_maps(&[fork_a, fork_b], &events, StateResVersion::V2);
     }
 
     #[test]
     fn test_resolve_single_map() {
-        let mut map = StateMap::new();
-        map.insert(("m.room.create".into(), "".into()), "$create".into());
-        map.insert(("m.room.member".into(), "@alice:x".into()), "$join".into());
+        let map = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$join"),
+        ]);
 
         let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
-        let result = resolve_state_maps(&[map.clone()], &events, StateResVersion::V2);
+        let result = resolve_state_maps(core::slice::from_ref(&map), &events, StateResVersion::V2);
         assert_eq!(result, map);
     }
 
@@ -1018,51 +1022,21 @@ mod tests {
         // Three forks: two agree on alice's join, one differs.
         // Partitioning requires unanimity, so this slot is conflicted and must be resolved.
         let mut events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        events.insert("$create".into(), create_ev());
+        events.insert("$alice_join".into(), join_ev("$alice_join", "@alice:x"));
+        events.insert("$bob_join".into(), join_ev("$bob_join", "@alice:x"));
 
-        events.insert(
-            "$create".into(),
-            make_event("$create", "m.room.create", "", "@alice:x", alloc::vec![], 0),
-        );
-        events.insert("$alice_join".into(), {
-            let mut ev = make_event(
-                "$alice_join",
-                "m.room.member",
-                "@alice:x",
-                "@alice:x",
-                alloc::vec!["$create".into()],
-                1,
-            );
-            ev.content = crate::json!({"membership": "join"});
-            ev
-        });
-        events.insert("$bob_join".into(), {
-            let mut ev = make_event(
-                "$bob_join",
-                "m.room.member",
-                "@alice:x",
-                "@alice:x",
-                alloc::vec!["$create".into()],
-                1,
-            );
-            ev.content = crate::json!({"membership": "join"});
-            ev
-        });
-
-        let mut fork_a = StateMap::new();
-        fork_a.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_a.insert(
-            ("m.room.member".into(), "@alice:x".into()),
-            "$alice_join".into(),
-        );
+        let fork_a = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$alice_join"),
+        ]);
 
         let fork_b = fork_a.clone();
 
-        let mut fork_c = StateMap::new();
-        fork_c.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_c.insert(
-            ("m.room.member".into(), "@alice:x".into()),
-            "$bob_join".into(),
-        );
+        let fork_c = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$bob_join"),
+        ]);
 
         let resolved = resolve_state_maps(&[fork_a, fork_b, fork_c], &events, StateResVersion::V2);
 
@@ -1078,8 +1052,7 @@ mod tests {
 
     #[test]
     fn test_resolve_lazy_identical_maps() {
-        let mut map = StateMap::new();
-        map.insert(("m.room.create".into(), "".into()), "$create".into());
+        let map = fork(&[("m.room.create", "", "$create")]);
 
         let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
         let result = resolve_state_maps_lazy_with_diff(
@@ -1095,94 +1068,14 @@ mod tests {
     fn test_resolve_lazy_matches_concrete() {
         // Same two-fork scenario as test_resolve_two_forks —
         // verify the lazy variant produces identical results.
-        let mut events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
-
-        events.insert(
-            "$create".into(),
-            make_event("$create", "m.room.create", "", "@alice:x", alloc::vec![], 0),
-        );
-        events.insert("$alice_join".into(), {
-            let mut ev = make_event(
-                "$alice_join",
-                "m.room.member",
-                "@alice:x",
-                "@alice:x",
-                alloc::vec!["$create".into()],
-                1,
-            );
-            ev.content = crate::json!({"membership": "join"});
-            ev
-        });
-        events.insert("$bob_join".into(), {
-            let mut ev = make_event(
-                "$bob_join",
-                "m.room.member",
-                "@bob:x",
-                "@bob:x",
-                alloc::vec!["$create".into()],
-                1,
-            );
-            ev.content = crate::json!({"membership": "join"});
-            ev
-        });
-        events.insert("$pl_a".into(), {
-            let mut ev = make_event(
-                "$pl_a",
-                "m.room.power_levels",
-                "",
-                "@alice:x",
-                alloc::vec!["$create".into(), "$alice_join".into()],
-                2,
-            );
-            ev.content = crate::json!({"users": {"@alice:x": 100}});
-            ev.power_level = 100;
-            ev
-        });
-        events.insert("$pl_b".into(), {
-            let mut ev = make_event(
-                "$pl_b",
-                "m.room.power_levels",
-                "",
-                "@bob:x",
-                alloc::vec!["$create".into(), "$bob_join".into()],
-                2,
-            );
-            ev.content = crate::json!({"users": {"@bob:x": 100}});
-            ev.power_level = 0;
-            ev
-        });
-
-        let mut fork_a = StateMap::new();
-        fork_a.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_a.insert(
-            ("m.room.member".into(), "@alice:x".into()),
-            "$alice_join".into(),
-        );
-        fork_a.insert(("m.room.power_levels".into(), "".into()), "$pl_a".into());
-
-        let mut fork_b = StateMap::new();
-        fork_b.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_b.insert(
-            ("m.room.member".into(), "@bob:x".into()),
-            "$bob_join".into(),
-        );
-        fork_b.insert(("m.room.power_levels".into(), "".into()), "$pl_b".into());
-
-        let concrete = resolve_state_maps(
-            &[fork_a.clone(), fork_b.clone()],
+        let (events, fork_a, fork_b) = two_fork_scenario();
+        assert_lazy_matches_concrete(
+            fork_a,
+            fork_b,
             &events,
             StateResVersion::V2,
-        );
-        let lazy = resolve_state_maps_lazy_with_diff(
-            &[fork_a, fork_b],
-            &events,
-            None::<alloc::vec::Vec<alloc::string::String>>,
-            StateResVersion::V2,
-        );
-
-        assert_eq!(
-            concrete, lazy,
-            "lazy resolver must produce identical results to concrete"
+            None,
+            "lazy resolver must produce identical results to concrete",
         );
     }
 
@@ -1213,40 +1106,27 @@ mod tests {
 "#,
         );
 
-        let mut fork_a = StateMap::new();
-        fork_a.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_a.insert(
-            ("m.room.member".into(), "@alice:x".into()),
-            "$alice_join".into(),
-        );
-        fork_a.insert(("m.room.power_levels".into(), "".into()), "$pl".into());
-        fork_a.insert(("m.room.topic".into(), "".into()), "$topic_a".into());
+        let fork_a = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$alice_join"),
+            ("m.room.power_levels", "", "$pl"),
+            ("m.room.topic", "", "$topic_a"),
+        ]);
+        let fork_b = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$alice_join"),
+            ("m.room.power_levels", "", "$pl"),
+            ("m.room.topic", "", "$topic_b"),
+        ]);
 
-        let mut fork_b = StateMap::new();
-        fork_b.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_b.insert(
-            ("m.room.member".into(), "@alice:x".into()),
-            "$alice_join".into(),
-        );
-        fork_b.insert(("m.room.power_levels".into(), "".into()), "$pl".into());
-        fork_b.insert(("m.room.topic".into(), "".into()), "$topic_b".into());
-
-        let concrete = resolve_state_maps(
-            &[fork_a.clone(), fork_b.clone()],
-            &events,
-            StateResVersion::V2_1,
-        );
         // None auth diff → exercises BFS slow path with transitive auth walk
-        let lazy = resolve_state_maps_lazy_with_diff(
-            &[fork_a, fork_b],
+        assert_lazy_matches_concrete(
+            fork_a,
+            fork_b,
             &events,
-            None::<alloc::vec::Vec<alloc::string::String>>,
             StateResVersion::V2_1,
-        );
-
-        assert_eq!(
-            concrete, lazy,
-            "lazy resolver must produce identical results to concrete for V2_1"
+            None,
+            "lazy resolver must produce identical results to concrete for V2_1",
         );
     }
 
@@ -1280,41 +1160,28 @@ mod tests {
 "#,
         );
 
-        let mut fork_a = StateMap::new();
-        fork_a.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_a.insert(
-            ("m.room.member".into(), "@alice:x".into()),
-            "$alice_join".into(),
-        );
-        fork_a.insert(("m.room.power_levels".into(), "".into()), "$pl_a".into());
-        fork_a.insert(("m.room.name".into(), "".into()), "$mid".into());
-        fork_a.insert(("m.room.topic".into(), "".into()), "$topic_a".into());
+        let fork_a = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$alice_join"),
+            ("m.room.power_levels", "", "$pl_a"),
+            ("m.room.name", "", "$mid"),
+            ("m.room.topic", "", "$topic_a"),
+        ]);
+        let fork_b = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$alice_join"),
+            ("m.room.power_levels", "", "$pl_b"),
+            ("m.room.name", "", "$mid"),
+            ("m.room.topic", "", "$topic_b"),
+        ]);
 
-        let mut fork_b = StateMap::new();
-        fork_b.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_b.insert(
-            ("m.room.member".into(), "@alice:x".into()),
-            "$alice_join".into(),
-        );
-        fork_b.insert(("m.room.power_levels".into(), "".into()), "$pl_b".into());
-        fork_b.insert(("m.room.name".into(), "".into()), "$mid".into());
-        fork_b.insert(("m.room.topic".into(), "".into()), "$topic_b".into());
-
-        let concrete = resolve_state_maps(
-            &[fork_a.clone(), fork_b.clone()],
+        assert_lazy_matches_concrete(
+            fork_a,
+            fork_b,
             &events,
             StateResVersion::V2_1,
-        );
-        let lazy = resolve_state_maps_lazy_with_diff(
-            &[fork_a, fork_b],
-            &events,
-            None::<alloc::vec::Vec<alloc::string::String>>,
-            StateResVersion::V2_1,
-        );
-
-        assert_eq!(
-            concrete, lazy,
-            "lazy resolver with subgraph insertion must match concrete"
+            None,
+            "lazy resolver with subgraph insertion must match concrete",
         );
     }
 
@@ -1351,19 +1218,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "provider missing conflicted event")]
     fn test_resolve_lazy_missing_conflicted_event_panics() {
-        let mut fork_a = StateMap::new();
-        fork_a.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_a.insert(
-            ("m.room.member".into(), "@alice:x".into()),
-            "$join_a".into(),
-        );
-
-        let mut fork_b = StateMap::new();
-        fork_b.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_b.insert(
-            ("m.room.member".into(), "@alice:x".into()),
-            "$join_b".into(),
-        );
+        let fork_a = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$join_a"),
+        ]);
+        let fork_b = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$join_b"),
+        ]);
 
         // Provider has $create but NOT the conflicted join events
         let events = parse_jsonl_map(
@@ -1391,40 +1253,26 @@ mod tests {
 "#,
         );
 
-        let mut fork_a = StateMap::new();
-        fork_a.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_a.insert(
-            ("m.room.member".into(), "@alice:x".into()),
-            "$alice_join".into(),
-        );
-
-        let mut fork_b = StateMap::new();
-        fork_b.insert(("m.room.create".into(), "".into()), "$create".into());
-        fork_b.insert(
-            ("m.room.member".into(), "@bob:x".into()),
-            "$bob_join".into(),
-        );
-
-        let concrete = resolve_state_maps(
-            &[fork_a.clone(), fork_b.clone()],
-            &events,
-            StateResVersion::V2,
-        );
+        let fork_a = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@alice:x", "$alice_join"),
+        ]);
+        let fork_b = fork(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.member", "@bob:x", "$bob_join"),
+        ]);
 
         // Include an auth event already present in conflicted_events. It must
         // be skipped by populate_auth_from_diff rather than reinserted.
         let auth_diff: alloc::vec::Vec<alloc::string::String> =
             alloc::vec!["$create".into(), "$alice_join".into()];
-        let lazy = resolve_state_maps_lazy_with_diff(
-            &[fork_a, fork_b],
+        assert_lazy_matches_concrete(
+            fork_a,
+            fork_b,
             &events,
-            Some(auth_diff),
             StateResVersion::V2,
-        );
-
-        assert_eq!(
-            concrete, lazy,
-            "lazy resolver with precomputed auth diff must match concrete"
+            Some(auth_diff),
+            "lazy resolver with precomputed auth diff must match concrete",
         );
     }
 }

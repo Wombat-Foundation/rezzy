@@ -154,18 +154,7 @@ where
         let index = DenseIndex::try_build(topo.iter().map(|&id| id.clone()))
             .expect("graph too large for roaring bitmap index");
 
-        let mut children_by_index = vec![Vec::<u32>::new(); topo.len()];
-        for (parent_id, child_ids) in children {
-            let Some(parent_idx) = index.index_of(parent_id) else {
-                continue;
-            };
-            let parent_slot = &mut children_by_index[parent_idx as usize];
-            for child_id in child_ids {
-                if let Some(child_idx) = index.index_of(child_id) {
-                    parent_slot.push(child_idx);
-                }
-            }
-        }
+        let (children_by_index, _) = build_indexed_children(topo.len(), children, &index);
 
         let mut descendant_bitmaps = vec![RoaringBitmap::new(); topo.len()];
         for idx in (0..topo.len()).rev() {
@@ -719,6 +708,59 @@ where
         queue
     }
 
+    /// Enqueues every not-yet-reachable child of `parent`.
+    fn enqueue_unvisited_children(
+        &self,
+        parent: u32,
+        queue: &mut VecDeque<u32>,
+        reachable: &mut [bool],
+    ) {
+        for &child in &self.children_by_index[parent as usize] {
+            if reachable[child as usize] {
+                continue;
+            }
+            reachable[child as usize] = true;
+            queue.push_back(child);
+        }
+    }
+
+    /// Enqueues children of `parent` whose descendant range still overlaps a
+    /// remaining candidate.
+    fn enqueue_range_pruned_children(
+        &self,
+        parent: u32,
+        queue: &mut VecDeque<u32>,
+        reachable: &mut [bool],
+        remaining_candidates: &BTreeSet<u32>,
+    ) {
+        for &child in &self.children_by_index[parent as usize] {
+            if reachable[child as usize] {
+                continue;
+            }
+
+            let (min_descendant, max_descendant) = self.descendant_ranges[child as usize];
+            if remaining_candidates
+                .range(min_descendant..=max_descendant)
+                .next()
+                .is_none()
+            {
+                continue;
+            }
+
+            reachable[child as usize] = true;
+            queue.push_back(child);
+        }
+    }
+
+    /// Collects the positions marked reachable, in ascending order.
+    fn collect_reachable_positions(results: &[bool]) -> Vec<usize> {
+        results
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, found)| found.then_some(idx))
+            .collect()
+    }
+
     fn filter_reachable_numeric_bfs_with_candidates<'a, S>(
         &self,
         seeds: S,
@@ -750,20 +792,10 @@ where
                 break;
             }
 
-            for &child in &self.children_by_index[curr as usize] {
-                if reachable[child as usize] {
-                    continue;
-                }
-                reachable[child as usize] = true;
-                queue.push_back(child);
-            }
+            self.enqueue_unvisited_children(curr, &mut queue, &mut reachable);
         }
 
-        results
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, found)| found.then_some(idx))
-            .collect()
+        Self::collect_reachable_positions(&results)
     }
 
     fn filter_reachable_range_pruned_with_candidates<'a, S>(
@@ -802,30 +834,15 @@ where
                 break;
             }
 
-            for &child in &self.children_by_index[curr as usize] {
-                if reachable[child as usize] {
-                    continue;
-                }
-
-                let (min_descendant, max_descendant) = self.descendant_ranges[child as usize];
-                if remaining_candidates
-                    .range(min_descendant..=max_descendant)
-                    .next()
-                    .is_none()
-                {
-                    continue;
-                }
-
-                reachable[child as usize] = true;
-                queue.push_back(child);
-            }
+            self.enqueue_range_pruned_children(
+                curr,
+                &mut queue,
+                &mut reachable,
+                &remaining_candidates,
+            );
         }
 
-        results
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, found)| found.then_some(idx))
-            .collect()
+        Self::collect_reachable_positions(&results)
     }
 
     fn filter_reachable_segment_jumps<'a, S>(
@@ -909,30 +926,15 @@ where
             segment_expanded[segment_id] = true;
 
             let tail_idx = self.segments[segment_id].tail;
-            for &child in &self.children_by_index[tail_idx as usize] {
-                if reachable[child as usize] {
-                    continue;
-                }
-
-                let (min_descendant, max_descendant) = self.descendant_ranges[child as usize];
-                if remaining_candidates
-                    .range(min_descendant..=max_descendant)
-                    .next()
-                    .is_none()
-                {
-                    continue;
-                }
-
-                reachable[child as usize] = true;
-                queue.push_back(child);
-            }
+            self.enqueue_range_pruned_children(
+                tail_idx,
+                &mut queue,
+                &mut reachable,
+                &remaining_candidates,
+            );
         }
 
-        results
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, found)| found.then_some(idx))
-            .collect()
+        Self::collect_reachable_positions(&results)
     }
 
     /// Check if a node reaches another by index.
@@ -996,13 +998,7 @@ where
         let mut visited_indices = Vec::new();
         while let Some(curr) = queue.pop_front() {
             visited_indices.push(curr);
-            for &child in &self.children_by_index[curr as usize] {
-                if reachable[child as usize] {
-                    continue;
-                }
-                reachable[child as usize] = true;
-                queue.push_back(child);
-            }
+            self.enqueue_unvisited_children(curr, &mut queue, &mut reachable);
         }
         visited_indices
             .into_iter()
@@ -1216,6 +1212,60 @@ mod tests {
         graph
     }
 
+    fn node(id: &str, auth_events: Vec<String>) -> LeanEvent<String> {
+        LeanEvent {
+            event_id: id.into(),
+            auth_events,
+            ..Default::default()
+        }
+    }
+
+    /// Builds the `A <- B <- C` chain plus a dangling `missing` id.
+    fn chain_graph_abc() -> (
+        HashMap<String, LeanEvent<String>>,
+        String,
+        String,
+        String,
+        String,
+    ) {
+        let mut graph: HashMap<String, LeanEvent<String>> = HashMap::new();
+        let a = String::from("A");
+        let b = String::from("B");
+        let c = String::from("C");
+        let missing = String::from("missing");
+        graph.insert(a.clone(), node(&a, vec![]));
+        graph.insert(b.clone(), node(&b, vec![a.clone()]));
+        graph.insert(c.clone(), node(&c, vec![b.clone()]));
+        (graph, a, b, c, missing)
+    }
+
+    /// Builds the `A <- B` chain plus a dangling `missing` id.
+    fn chain_graph_ab() -> (HashMap<String, LeanEvent<String>>, String, String, String) {
+        let mut graph: HashMap<String, LeanEvent<String>> = HashMap::new();
+        let a = String::from("A");
+        let b = String::from("B");
+        let missing = String::from("missing");
+        graph.insert(a.clone(), node(&a, vec![]));
+        graph.insert(b.clone(), node(&b, vec![a.clone()]));
+        (graph, a, b, missing)
+    }
+
+    /// Asserts the standard `A <- B <- C` reachability query results for any
+    /// index over the [`chain_graph_abc`] graph.
+    fn assert_chain_index<T>(index: &T, a: &String, b: &String, c: &String, missing: &String)
+    where
+        T: Reachability<Id = String>,
+    {
+        assert_eq!(index.reaches(a, c), Reach::Yes);
+        assert_eq!(index.reaches(c, a), Reach::No);
+        assert_eq!(index.reaches(a, a), Reach::Yes);
+        assert_eq!(index.reaches(a, missing), Reach::Unknown);
+
+        let seeds = [a];
+        let candidates = [a, b, c];
+        assert_eq!(index.filter_reachable(seeds, candidates), vec![0, 1, 2]);
+    }
+
     fn naive_reachable_positions(
         index: &RangePrefilterReachability<String>,
         seeds: &[String],
@@ -1302,114 +1352,23 @@ mod tests {
 
     #[test]
     fn forward_reachability_index_builds_and_queries_descendants() {
-        let mut graph: HashMap<String, LeanEvent<String>> = HashMap::new();
-        let a = String::from("A");
-        let b = String::from("B");
-        let c = String::from("C");
-        let missing = String::from("missing");
-        graph.insert(
-            a.clone(),
-            LeanEvent {
-                event_id: a.clone(),
-                auth_events: vec![],
-                ..Default::default()
-            },
-        );
-        graph.insert(
-            b.clone(),
-            LeanEvent {
-                event_id: b.clone(),
-                auth_events: vec![a.clone()],
-                ..Default::default()
-            },
-        );
-        graph.insert(
-            c.clone(),
-            LeanEvent {
-                event_id: c.clone(),
-                auth_events: vec![b.clone()],
-                ..Default::default()
-            },
-        );
+        let (graph, a, b, c, missing) = chain_graph_abc();
 
         let index = ForwardReachabilityIndex::build(&graph);
-
-        assert_eq!(index.reaches(&a, &c), Reach::Yes);
-        assert_eq!(index.reaches(&c, &a), Reach::No);
-        assert_eq!(index.reaches(&a, &a), Reach::Yes);
-        assert_eq!(index.reaches(&a, &missing), Reach::Unknown);
-
-        let seeds = [&a];
-        let candidates = [&a, &b, &c];
-        assert_eq!(index.filter_reachable(seeds, candidates), vec![0, 1, 2]);
+        assert_chain_index(&index, &a, &b, &c, &missing);
     }
 
     #[test]
     fn range_prefilter_reachability_matches_exact_descendants() {
-        let mut graph: HashMap<String, LeanEvent<String>> = HashMap::new();
-        let a = String::from("A");
-        let b = String::from("B");
-        let c = String::from("C");
-        let missing = String::from("missing");
-        graph.insert(
-            a.clone(),
-            LeanEvent {
-                event_id: a.clone(),
-                auth_events: vec![],
-                ..Default::default()
-            },
-        );
-        graph.insert(
-            b.clone(),
-            LeanEvent {
-                event_id: b.clone(),
-                auth_events: vec![a.clone()],
-                ..Default::default()
-            },
-        );
-        graph.insert(
-            c.clone(),
-            LeanEvent {
-                event_id: c.clone(),
-                auth_events: vec![b.clone()],
-                ..Default::default()
-            },
-        );
+        let (graph, a, b, c, missing) = chain_graph_abc();
 
         let index = RangePrefilterReachability::build(&graph);
-
-        assert_eq!(index.reaches(&a, &c), Reach::Yes);
-        assert_eq!(index.reaches(&c, &a), Reach::No);
-        assert_eq!(index.reaches(&a, &a), Reach::Yes);
-        assert_eq!(index.reaches(&a, &missing), Reach::Unknown);
-
-        let seeds = [&a];
-        let candidates = [&a, &b, &c];
-        assert_eq!(index.filter_reachable(seeds, candidates), vec![0, 1, 2]);
+        assert_chain_index(&index, &a, &b, &c, &missing);
     }
 
     #[test]
     fn range_prefilter_preserves_unknown_candidate_positions() {
-        let mut graph: HashMap<String, LeanEvent<String>> = HashMap::new();
-        let a = String::from("A");
-        let b = String::from("B");
-        let missing = String::from("missing");
-        graph.insert(
-            a.clone(),
-            LeanEvent {
-                event_id: a.clone(),
-                auth_events: vec![],
-                ..Default::default()
-            },
-        );
-        graph.insert(
-            b.clone(),
-            LeanEvent {
-                event_id: b.clone(),
-                auth_events: vec![a.clone()],
-                ..Default::default()
-            },
-        );
+        let (graph, a, b, missing) = chain_graph_ab();
 
         let index = RangePrefilterReachability::build(&graph);
         let seeds = [&a];

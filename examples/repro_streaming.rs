@@ -48,6 +48,19 @@ fn load_events(path: &str) -> Vec<rezzy::JsonValue> {
     raw_events
 }
 
+/// Reads an array-of-strings field (`prev_events`/`auth_events`), treating a
+/// missing or non-array value as empty.
+fn string_array(val: &rezzy::JsonValue, key: &str) -> Vec<String> {
+    val.get(key)
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn build_lean_events(
     raw_events: &[rezzy::JsonValue],
 ) -> (Vec<Meta>, HashMap<String, LeanEvent>, String) {
@@ -67,24 +80,8 @@ fn build_lean_events(
             .get("content")
             .cloned()
             .unwrap_or(rezzy::JsonValue::Null);
-        let prev: Vec<String> = val
-            .get("prev_events")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let auth: Vec<String> = val
-            .get("auth_events")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let prev = string_array(val, "prev_events");
+        let auth = string_array(val, "auth_events");
         let depth = val
             .get("depth")
             .and_then(rezzy::JsonValue::as_u64)

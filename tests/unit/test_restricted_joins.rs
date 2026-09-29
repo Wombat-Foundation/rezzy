@@ -4,26 +4,10 @@
 //! join rules. `restricted` (V8+) and `knock_restricted` (V10+) join rules were
 //! rejected with `NotMember` errors. These tests verify the fix.
 
+use crate::test_lib::make_event;
 use rezzy::auth::{check_auth, AuthError, RoomState};
 use rezzy::json;
-use rezzy::{LeanEvent, StateResVersion};
-
-fn make_event(
-    id: &str,
-    event_type: &str,
-    state_key: Option<&str>,
-    sender: &str,
-    content: rezzy::JsonValue,
-) -> LeanEvent {
-    LeanEvent {
-        event_id: id.into(),
-        event_type: event_type.into(),
-        state_key: state_key.map(Into::into),
-        sender: sender.into(),
-        content,
-        ..Default::default()
-    }
-}
+use rezzy::StateResVersion;
 
 /// Set up a standard room state with a create event, power levels, and
 /// join rules set to the given rule.

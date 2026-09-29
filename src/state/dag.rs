@@ -34,7 +34,9 @@ use crate::basespec::event_types::{EventType, MAX_PREV_STATE_EVENTS, M_ROOM_CREA
 use crate::basespec::rezzy_types::{
     DagNode, EventContent, EventId, LeanEvent, StateKey, StateResVersion,
 };
-use crate::state::at::{resolve_merge_fast_path, LocalAuthCache, SharedState};
+use crate::state::at::{
+    collapse_resolved_parents, take_finalized_parent, LocalAuthCache, SharedState,
+};
 use crate::{DenseIndex, FastMap, FastSet, HashMap};
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
@@ -1319,32 +1321,22 @@ where
                 .index_of(&pe)
                 .expect("state DAG ancestor index contains every referenced parent");
             debug_assert!(out_degree[pe_idx] > 0);
-            out_degree[pe_idx] = out_degree[pe_idx].saturating_sub(1);
-            if out_degree[pe_idx] == 0 {
-                if let Some(pe_state) = state_after_map[pe_idx].take() {
-                    prev_states.push(pe_state);
-                }
-            } else if let Some(ref pe_state) = state_after_map[pe_idx] {
-                prev_states.push(pe_state.clone());
-            }
+            take_finalized_parent(
+                pe_idx,
+                &mut out_degree,
+                &mut state_after_map,
+                &mut prev_states,
+            );
         }
 
-        let mut state_before: SharedState<Id, K> = if prev_states.is_empty() {
-            SharedState::new()
-        } else if prev_states.len() == 1 {
-            // `prev_states` only ever holds `Some` parent states, so the sole
-            // element is guaranteed present (index 0 is valid for len == 1).
-            prev_states.remove(0)
-        } else {
-            resolve_merge_fast_path(
-                &prev_states,
-                events_map,
-                &mut global_auth_cache,
-                &mut mainline_cache,
-                version,
-                empty_key,
-            )
-        };
+        let mut state_before: SharedState<Id, K> = collapse_resolved_parents(
+            prev_states,
+            events_map,
+            &mut global_auth_cache,
+            &mut mainline_cache,
+            version,
+            empty_key,
+        );
 
         if ev.state_key.is_some() && !ev.rejected {
             state_before.insert(
@@ -1442,22 +1434,14 @@ where
         }
     }
 
-    if parent_states.is_empty() {
-        Ok(SharedState::new())
-    } else if parent_states.len() == 1 {
-        // `parent_states` only ever holds `Some` states (see the loop above), so
-        // the sole element is guaranteed present (index 0 is valid for len == 1).
-        Ok(parent_states.remove(0))
-    } else {
-        Ok(resolve_merge_fast_path(
-            &parent_states,
-            events_map,
-            global_auth_cache,
-            mainline_cache,
-            version,
-            empty_key,
-        ))
-    }
+    Ok(collapse_resolved_parents(
+        parent_states,
+        events_map,
+        global_auth_cache,
+        mainline_cache,
+        version,
+        empty_key,
+    ))
 }
 
 /// Computes the resolved room state *after* an event using State DAG semantics.

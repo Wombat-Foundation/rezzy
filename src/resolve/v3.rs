@@ -922,17 +922,134 @@ mod tests {
         }
     }
 
-    #[test]
-    fn repair_round_removes_a_failed_winner_simultaneously() {
+    fn create_event() -> LeanEvent<String, Value, String> {
+        LeanEvent {
+            event_id: "$create".into(),
+            event_type: M_ROOM_CREATE.into(),
+            state_key: Some(String::new()),
+            sender: "@creator:example.com".into(),
+            content: crate::json!({ "creator": "@creator:example.com" }),
+            ..Default::default()
+        }
+    }
+
+    fn join_event(event_id: &str, member: &str) -> LeanEvent<String, Value, String> {
+        LeanEvent {
+            event_id: event_id.into(),
+            event_type: M_ROOM_MEMBER.into(),
+            state_key: Some(member.into()),
+            sender: member.into(),
+            content: crate::json!({ "membership": MEM_JOIN }),
+            ..Default::default()
+        }
+    }
+
+    fn power_event(
+        event_id: &str,
+        sender: &str,
+        content: Value,
+    ) -> LeanEvent<String, Value, String> {
+        LeanEvent {
+            event_id: event_id.into(),
+            event_type: M_ROOM_POWER_LEVELS.into(),
+            state_key: Some(String::new()),
+            sender: sender.into(),
+            content,
+            ..Default::default()
+        }
+    }
+
+    fn branch_auth_with(
+        member_id: &str,
+        member_ev: LeanEvent<String, Value, String>,
+        create: LeanEvent<String, Value, String>,
+        prior_power: LeanEvent<String, Value, String>,
+    ) -> crate::auth::RoomState<String, Value, String> {
+        let mut branch_auth = crate::auth::RoomState::new();
+        branch_auth.insert((M_ROOM_CREATE.into(), String::new()), create);
+        branch_auth.insert((M_ROOM_MEMBER.into(), member_id.into()), member_ev);
+        branch_auth.insert((M_ROOM_POWER_LEVELS.into(), String::new()), prior_power);
+        branch_auth
+    }
+
+    /// The two `m.room.topic` events `$a` and `$b` that conflict on the same
+    /// empty state key.
+    fn two_topic_events() -> HashMap<String, LeanEvent<String, Value, String>> {
         let a = topic("$a");
         let b = topic("$b");
         let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
         events.insert(a.event_id.clone(), a);
         events.insert(b.event_id.clone(), b);
+        events
+    }
+
+    /// An admission table granting `$join` and banning `$ban` at equal rank.
+    fn join_ban_admission() -> TestAdmission {
+        let mut admission = TestAdmission::default();
+        admission.admissions.insert(
+            "$join".into(),
+            certificate(rank(50, V3Polarity::Grant, V3Specificity::Membership)),
+        );
+        admission.admissions.insert(
+            "$ban".into(),
+            certificate(rank(50, V3Polarity::Ban, V3Specificity::Membership)),
+        );
+        admission
+    }
+
+    /// An admission table with default-rank certificates for `$a` and `$b`.
+    fn topic_admission() -> TestAdmission {
         let mut admission = TestAdmission::default();
         admission
             .admissions
             .insert("$a".into(), certificate(V3Rank::default()));
+        admission
+            .admissions
+            .insert("$b".into(), certificate(V3Rank::default()));
+        admission
+    }
+
+    /// Resolves `events` under `admission` from an empty starting state.
+    fn resolve_state(
+        events: &HashMap<String, LeanEvent<String, Value, String>>,
+        admission: &TestAdmission,
+    ) -> SharedState<String, String> {
+        resolve_v3(&SharedState::new(), events, admission).unwrap()
+    }
+
+    /// Resolves `events` under `admission` and asserts the topic slot winner.
+    fn assert_topic_winner(
+        events: &HashMap<String, LeanEvent<String, Value, String>>,
+        admission: &TestAdmission,
+        expected: &str,
+    ) {
+        let state = resolve_state(events, admission);
+        assert_eq!(
+            state.get(&(EventType::from(M_ROOM_TOPIC), String::new())),
+            Some(&String::from(expected))
+        );
+    }
+
+    /// Asserts the winning membership event for `@b:example.com`.
+    fn assert_b_member_winner(state: &SharedState<String, String>, expected: &str) {
+        assert_eq!(
+            state.get(&(EventType::from(M_ROOM_MEMBER), "@b:example.com".into())),
+            Some(&String::from(expected)),
+        );
+    }
+
+    /// Grants `$b_sets_name` a neutral generic-state certificate.
+    fn insert_name_action(admission: &mut TestAdmission) {
+        admission.admissions.insert(
+            "$b_sets_name".into(),
+            certificate(rank(100, V3Polarity::Neutral, V3Specificity::GenericState)),
+        );
+    }
+
+    #[test]
+    fn repair_round_removes_a_failed_winner_simultaneously() {
+        let events = two_topic_events();
+        let mut admission = topic_admission();
         admission.admissions.insert(
             "$b".into(),
             certificate(V3Rank {
@@ -942,11 +1059,7 @@ mod tests {
         );
         admission.reject.insert("$b".into());
 
-        let state = resolve_v3(&SharedState::new(), &events, &admission).unwrap();
-        assert_eq!(
-            state.get(&(EventType::from(M_ROOM_TOPIC), String::new())),
-            Some(&String::from("$a"))
-        );
+        assert_topic_winner(&events, &admission, "$a");
     }
 
     #[test]
@@ -955,18 +1068,8 @@ mod tests {
         // as causally preceding the other. No candidate is maximal, so
         // `select_round` must fail closed via `IncompleteAuthContext` rather
         // than panicking on an empty `max_by` over `maximal`.
-        let a = topic("$a");
-        let b = topic("$b");
-        let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
-        events.insert(a.event_id.clone(), a);
-        events.insert(b.event_id.clone(), b);
-        let mut admission = TestAdmission::default();
-        admission
-            .admissions
-            .insert("$a".into(), certificate(V3Rank::default()));
-        admission
-            .admissions
-            .insert("$b".into(), certificate(V3Rank::default()));
+        let events = two_topic_events();
+        let mut admission = topic_admission();
         admission.causal.insert(("$a".into(), "$b".into()));
         admission.causal.insert(("$b".into(), "$a".into()));
 
@@ -1095,47 +1198,24 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn creator_grant_requires_a_maximal_join_witness_and_a_power_increase() {
-        let create: LeanEvent<String, Value, String> = LeanEvent {
-            event_id: "$create".into(),
-            event_type: M_ROOM_CREATE.into(),
-            state_key: Some(String::new()),
-            sender: "@creator:example.com".into(),
-            content: crate::json!({ "creator": "@creator:example.com" }),
-            ..Default::default()
-        };
-        let b_join = LeanEvent {
-            event_id: "$b_join".into(),
-            event_type: M_ROOM_MEMBER.into(),
-            state_key: Some("@b:example.com".into()),
-            sender: "@b:example.com".into(),
-            content: crate::json!({ "membership": MEM_JOIN }),
-            ..Default::default()
-        };
-        let prior_power = LeanEvent {
-            event_id: "$prior_power".into(),
-            event_type: M_ROOM_POWER_LEVELS.into(),
-            state_key: Some(String::new()),
-            sender: "@creator:example.com".into(),
-            content: crate::json!({
+        let create = create_event();
+        let b_join = join_event("$b_join", "@b:example.com");
+        let prior_power = power_event(
+            "$prior_power",
+            "@creator:example.com",
+            crate::json!({
                 "users": { "@b:example.com": 0, "@not_creator:example.com": 100 },
             }),
-            ..Default::default()
-        };
-        let grant = LeanEvent {
-            event_id: "$grant".into(),
-            event_type: M_ROOM_POWER_LEVELS.into(),
-            state_key: Some(String::new()),
-            sender: "@creator:example.com".into(),
-            content: crate::json!({
+        );
+        let grant = power_event(
+            "$grant",
+            "@creator:example.com",
+            crate::json!({
                 "users": { "@b:example.com": 100 },
                 "tk.nutra.cdo": { "active_member": "$b_join" },
             }),
-            ..Default::default()
-        };
-        let mut branch_auth = crate::auth::RoomState::new();
-        branch_auth.insert((M_ROOM_CREATE.into(), String::new()), create);
-        branch_auth.insert((M_ROOM_MEMBER.into(), "@b:example.com".into()), b_join);
-        branch_auth.insert((M_ROOM_POWER_LEVELS.into(), String::new()), prior_power);
+        );
+        let branch_auth = branch_auth_with("@b:example.com", b_join, create, prior_power);
 
         let certified =
             certify_promotion_grant(&grant, &branch_auth, PromotionScope::CreatorOnly).unwrap();
@@ -1244,45 +1324,22 @@ mod tests {
         // `@b:example.com` explicitly in `users`; both must fall back to
         // `users_default` (10 -> 100), matching the identical fallback in
         // `auth::user::get_sender_power_level`.
-        let create: LeanEvent<String, Value, String> = LeanEvent {
-            event_id: "$create".into(),
-            event_type: M_ROOM_CREATE.into(),
-            state_key: Some(String::new()),
-            sender: "@creator:example.com".into(),
-            content: crate::json!({ "creator": "@creator:example.com" }),
-            ..Default::default()
-        };
-        let b_join = LeanEvent {
-            event_id: "$b_join".into(),
-            event_type: M_ROOM_MEMBER.into(),
-            state_key: Some("@b:example.com".into()),
-            sender: "@b:example.com".into(),
-            content: crate::json!({ "membership": MEM_JOIN }),
-            ..Default::default()
-        };
-        let prior_power = LeanEvent {
-            event_id: "$prior_power".into(),
-            event_type: M_ROOM_POWER_LEVELS.into(),
-            state_key: Some(String::new()),
-            sender: "@creator:example.com".into(),
-            content: crate::json!({ "users_default": 10 }),
-            ..Default::default()
-        };
-        let grant = LeanEvent {
-            event_id: "$grant".into(),
-            event_type: M_ROOM_POWER_LEVELS.into(),
-            state_key: Some(String::new()),
-            sender: "@creator:example.com".into(),
-            content: crate::json!({
+        let create = create_event();
+        let b_join = join_event("$b_join", "@b:example.com");
+        let prior_power = power_event(
+            "$prior_power",
+            "@creator:example.com",
+            crate::json!({ "users_default": 10 }),
+        );
+        let grant = power_event(
+            "$grant",
+            "@creator:example.com",
+            crate::json!({
                 "users_default": 100,
                 "tk.nutra.cdo": { "active_member": "$b_join" },
             }),
-            ..Default::default()
-        };
-        let mut branch_auth = crate::auth::RoomState::new();
-        branch_auth.insert((M_ROOM_CREATE.into(), String::new()), create);
-        branch_auth.insert((M_ROOM_MEMBER.into(), "@b:example.com".into()), b_join);
-        branch_auth.insert((M_ROOM_POWER_LEVELS.into(), String::new()), prior_power);
+        );
+        let branch_auth = branch_auth_with("@b:example.com", b_join, create, prior_power);
 
         let certified =
             certify_promotion_grant(&grant, &branch_auth, PromotionScope::CreatorOnly).unwrap();
@@ -1313,45 +1370,22 @@ mod tests {
         // level, here also @a) are read from the exact same prior PL event
         // via the identical fallback path, so they must agree: @a's ceiling
         // is 10, not 100, regardless of what the grant's own content claims.
-        let create: LeanEvent<String, Value, String> = LeanEvent {
-            event_id: "$create".into(),
-            event_type: M_ROOM_CREATE.into(),
-            state_key: Some(String::new()),
-            sender: "@creator:example.com".into(),
-            content: crate::json!({ "creator": "@creator:example.com" }),
-            ..Default::default()
-        };
-        let a_join = LeanEvent {
-            event_id: "$a_join".into(),
-            event_type: M_ROOM_MEMBER.into(),
-            state_key: Some("@a:example.com".into()),
-            sender: "@a:example.com".into(),
-            content: crate::json!({ "membership": MEM_JOIN }),
-            ..Default::default()
-        };
-        let prior_power = LeanEvent {
-            event_id: "$prior_power".into(),
-            event_type: M_ROOM_POWER_LEVELS.into(),
-            state_key: Some(String::new()),
-            sender: "@creator:example.com".into(),
-            content: crate::json!({ "users_default": 10 }),
-            ..Default::default()
-        };
-        let self_grant = LeanEvent {
-            event_id: "$self_grant".into(),
-            event_type: M_ROOM_POWER_LEVELS.into(),
-            state_key: Some(String::new()),
-            sender: "@a:example.com".into(),
-            content: crate::json!({
+        let create = create_event();
+        let a_join = join_event("$a_join", "@a:example.com");
+        let prior_power = power_event(
+            "$prior_power",
+            "@creator:example.com",
+            crate::json!({ "users_default": 10 }),
+        );
+        let self_grant = power_event(
+            "$self_grant",
+            "@a:example.com",
+            crate::json!({
                 "users": { "@a:example.com": 100 },
                 "tk.nutra.cdo": { "active_member": "$a_join" },
             }),
-            ..Default::default()
-        };
-        let mut branch_auth = crate::auth::RoomState::new();
-        branch_auth.insert((M_ROOM_CREATE.into(), String::new()), create);
-        branch_auth.insert((M_ROOM_MEMBER.into(), "@a:example.com".into()), a_join);
-        branch_auth.insert((M_ROOM_POWER_LEVELS.into(), String::new()), prior_power);
+        );
+        let branch_auth = branch_auth_with("@a:example.com", a_join, create, prior_power);
 
         assert!(certify_promotion_grant(
             &self_grant,
@@ -1370,50 +1404,27 @@ mod tests {
         // the same protection creator grants get against a concurrent
         // backdated kick now extends to any authorized promoter, at any PL
         // tier.
-        let create: LeanEvent<String, Value, String> = LeanEvent {
-            event_id: "$create".into(),
-            event_type: M_ROOM_CREATE.into(),
-            state_key: Some(String::new()),
-            sender: "@creator:example.com".into(),
-            content: crate::json!({ "creator": "@creator:example.com" }),
-            ..Default::default()
-        };
-        let c_join = LeanEvent {
-            event_id: "$c_join".into(),
-            event_type: M_ROOM_MEMBER.into(),
-            state_key: Some("@c:example.com".into()),
-            sender: "@c:example.com".into(),
-            content: crate::json!({ "membership": MEM_JOIN }),
-            ..Default::default()
-        };
-        let prior_power = LeanEvent {
-            event_id: "$prior_power".into(),
-            event_type: M_ROOM_POWER_LEVELS.into(),
-            state_key: Some(String::new()),
-            sender: "@creator:example.com".into(),
-            content: crate::json!({
+        let create = create_event();
+        let c_join = join_event("$c_join", "@c:example.com");
+        let prior_power = power_event(
+            "$prior_power",
+            "@creator:example.com",
+            crate::json!({
                 "users": { "@senior_admin:example.com": 100, "@c:example.com": 0 },
             }),
-            ..Default::default()
-        };
-        let grant = LeanEvent {
-            event_id: "$grant".into(),
-            event_type: M_ROOM_POWER_LEVELS.into(),
-            state_key: Some(String::new()),
-            sender: "@senior_admin:example.com".into(),
-            content: crate::json!({
+        );
+        let grant = power_event(
+            "$grant",
+            "@senior_admin:example.com",
+            crate::json!({
                 "users": {
                     "@senior_admin:example.com": 100,
                     "@c:example.com": 50,
                 },
                 "tk.nutra.cdo": { "active_member": "$c_join" },
             }),
-            ..Default::default()
-        };
-        let mut branch_auth = crate::auth::RoomState::new();
-        branch_auth.insert((M_ROOM_CREATE.into(), String::new()), create);
-        branch_auth.insert((M_ROOM_MEMBER.into(), "@c:example.com".into()), c_join);
-        branch_auth.insert((M_ROOM_POWER_LEVELS.into(), String::new()), prior_power);
+        );
+        let branch_auth = branch_auth_with("@c:example.com", c_join, create, prior_power);
 
         let certified =
             certify_promotion_grant(&grant, &branch_auth, PromotionScope::AnyAuthorizedSender)
@@ -1573,11 +1584,7 @@ mod tests {
             .causal
             .insert(("$ancestor".into(), "$descendant".into()));
 
-        let state = resolve_v3(&SharedState::new(), &events, &admission).unwrap();
-        assert_eq!(
-            state.get(&(EventType::from(M_ROOM_TOPIC), String::new())),
-            Some(&String::from("$descendant"))
-        );
+        assert_topic_winner(&events, &admission, "$descendant");
     }
 
     #[test]
@@ -1618,11 +1625,8 @@ mod tests {
             "$creator_grant".into(),
         ));
 
-        let state = resolve_v3(&SharedState::new(), &events, &admission).unwrap();
-        assert_eq!(
-            state.get(&(EventType::from(M_ROOM_MEMBER), "@b:example.com".into())),
-            Some(&String::from("$b_join")),
-        );
+        let state = resolve_state(&events, &admission);
+        assert_b_member_winner(&state, "$b_join");
         assert_eq!(
             state.get(&(EventType::from(M_ROOM_NAME), String::new())),
             Some(&String::from("$b_action")),
@@ -1648,19 +1652,13 @@ mod tests {
             "$later_kick".into(),
             certificate(rank(100, V3Polarity::Revoke, V3Specificity::Membership)),
         );
-        admission.admissions.insert(
-            "$b_sets_name".into(),
-            certificate(rank(100, V3Polarity::Neutral, V3Specificity::GenericState)),
-        );
+        insert_name_action(&mut admission);
         admission
             .causal
             .insert(("$b_join".into(), "$later_kick".into()));
 
-        let state = resolve_v3(&SharedState::new(), &events, &admission).unwrap();
-        assert_eq!(
-            state.get(&(EventType::from(M_ROOM_MEMBER), "@b:example.com".into())),
-            Some(&String::from("$later_kick")),
-        );
+        let state = resolve_state(&events, &admission);
+        assert_b_member_winner(&state, "$later_kick");
         assert_eq!(
             state.get(&(EventType::from(M_ROOM_NAME), String::new())),
             Some(&String::from("$b_sets_name")),
@@ -1687,12 +1685,9 @@ mod tests {
             "$kick_by_c".into(),
             certificate(rank(100, V3Polarity::Revoke, V3Specificity::Membership)),
         );
-        admission.admissions.insert(
-            "$b_sets_name".into(),
-            certificate(rank(100, V3Polarity::Neutral, V3Specificity::GenericState)),
-        );
+        insert_name_action(&mut admission);
 
-        let state = resolve_v3(&SharedState::new(), &events, &admission).unwrap();
+        let state = resolve_state(&events, &admission);
         assert_eq!(
             state.get(&(EventType::from(M_ROOM_MEMBER), "@b:example.com".into())),
             Some(&String::from("$kick_by_c")),
@@ -1714,17 +1709,9 @@ mod tests {
             events.insert(event.event_id.clone(), event);
         }
 
-        let mut admission = TestAdmission::default();
-        admission.admissions.insert(
-            "$join".into(),
-            certificate(rank(50, V3Polarity::Grant, V3Specificity::Membership)),
-        );
-        admission.admissions.insert(
-            "$ban".into(),
-            certificate(rank(50, V3Polarity::Ban, V3Specificity::Membership)),
-        );
+        let admission = join_ban_admission();
 
-        let state = resolve_v3(&SharedState::new(), &events, &admission).unwrap();
+        let state = resolve_state(&events, &admission);
         assert_eq!(
             state.get(&(EventType::from(M_ROOM_MEMBER), "@target:example.com".into())),
             Some(&String::from("$ban")),
@@ -1783,15 +1770,7 @@ mod tests {
     fn selection_is_independent_of_conflict_map_insertion_order() {
         let join = membership("$join", MEM_JOIN);
         let ban = membership("$ban", MEM_BAN);
-        let mut admission = TestAdmission::default();
-        admission.admissions.insert(
-            "$join".into(),
-            certificate(rank(50, V3Polarity::Grant, V3Specificity::Membership)),
-        );
-        admission.admissions.insert(
-            "$ban".into(),
-            certificate(rank(50, V3Polarity::Ban, V3Specificity::Membership)),
-        );
+        let admission = join_ban_admission();
 
         let mut first: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
         first.insert(join.event_id.clone(), join.clone());

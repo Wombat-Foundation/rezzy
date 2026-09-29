@@ -616,6 +616,15 @@ impl Parser<'_> {
             Err(Error::InvalidToken)
         }
     }
+    /// Appends the unescaped run `self.input[start..self.pos]` to `out` and
+    /// advances past the current byte.
+    fn push_segment(&mut self, out: &mut String, start: usize) -> Result<(), Error> {
+        let part =
+            core::str::from_utf8(&self.input[start..self.pos]).map_err(|_| Error::InvalidString)?;
+        out.push_str(part);
+        self.pos += 1;
+        Ok(())
+    }
     fn string(&mut self) -> Result<String, Error> {
         self.pos += 1;
         let mut out = String::new();
@@ -624,17 +633,11 @@ impl Parser<'_> {
             let b = *self.input.get(self.pos).ok_or(Error::UnexpectedEnd)?;
             match b {
                 b'"' => {
-                    let part = core::str::from_utf8(&self.input[start..self.pos])
-                        .map_err(|_| Error::InvalidString)?;
-                    out.push_str(part);
-                    self.pos += 1;
+                    self.push_segment(&mut out, start)?;
                     return Ok(out);
                 }
                 b'\\' => {
-                    let part = core::str::from_utf8(&self.input[start..self.pos])
-                        .map_err(|_| Error::InvalidString)?;
-                    out.push_str(part);
-                    self.pos += 1;
+                    self.push_segment(&mut out, start)?;
                     let escaped = *self.input.get(self.pos).ok_or(Error::UnexpectedEnd)?;
                     self.pos += 1;
                     match escaped {

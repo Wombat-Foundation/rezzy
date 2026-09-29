@@ -37,49 +37,26 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use rezzy::state::LtHash;
-use sha2::{Digest, Sha256};
 
-struct Xorshift128 {
-    state: [u64; 2],
-}
-
-impl Xorshift128 {
-    fn new(seed: u64) -> Self {
-        Self {
-            state: [seed ^ 0x9E37_79B9_7F4A_7C15, seed.wrapping_add(1) | 1],
-        }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.state[0];
-        let y = self.state[1];
-        self.state[0] = y;
-        x ^= x << 23;
-        x ^= x >> 17;
-        x ^= y ^ (y >> 26);
-        self.state[1] = x;
-        x.wrapping_add(y)
-    }
-}
+use crate::common::{
+    generate_unique_entries, sha256_sorted_hash, xor_fold_sha256, Xorshift128,
+};
 
 type StateKey = (String, String); // (event_type, state_key)
 
 fn make_entries(n: usize, seed: u64) -> Vec<(StateKey, String)> {
-    let mut rng = Xorshift128::new(seed);
-    let mut entries = Vec::with_capacity(n);
-    let mut used = std::collections::HashSet::new();
-    while entries.len() < n {
-        let uid = rng.next_u64() % 1_000_000;
-        let key = (
-            "m.room.member".to_string(),
-            format!("@user{uid}:example.org"),
-        );
-        if used.insert(key.clone()) {
-            let event_id = format!("$event{}:example.org", rng.next_u64());
-            entries.push((key, event_id));
-        }
-    }
-    entries
+    generate_unique_entries(
+        n,
+        seed,
+        |rng| {
+            let uid = rng.next_u64() % 1_000_000;
+            (
+                "m.room.member".to_string(),
+                format!("@user{uid}:example.org"),
+            )
+        },
+        |rng| format!("$event{}:example.org", rng.next_u64()),
+    )
 }
 
 fn canonical_row(event_type: &str, state_key: &str, event_id: &str) -> Vec<u8> {
@@ -98,16 +75,14 @@ fn canonical_row(event_type: &str, state_key: &str, event_id: &str) -> Vec<u8> {
 /// so producing a canonical hash means collecting every entry and sorting
 /// it fresh each time before feeding it through SHA-256 sequentially.
 fn conduwuit_style_hash(state: &HashMap<StateKey, String>) -> [u8; 32] {
-    let mut rows: Vec<Vec<u8>> = state
-        .iter()
-        .map(|((event_type, state_key), event_id)| canonical_row(event_type, state_key, event_id))
-        .collect();
-    rows.sort_unstable();
-    let mut hasher = Sha256::new();
-    for row in &rows {
-        hasher.update(row);
-    }
-    hasher.finalize().into()
+    sha256_sorted_hash(
+        state
+            .iter()
+            .map(|((event_type, state_key), event_id)| {
+                canonical_row(event_type, state_key, event_id)
+            })
+            .collect(),
+    )
 }
 
 /// Synapse-style: `O(S)`. Order-independent by construction (XOR-fold of
@@ -115,15 +90,13 @@ fn conduwuit_style_hash(state: &HashMap<StateKey, String>) -> [u8; 32] {
 /// sort is needed — but still a full recompute over every entry each
 /// mutation, not an incremental update against a running accumulator.
 fn synapse_style_hash(state: &HashMap<StateKey, String>) -> [u8; 32] {
-    let mut acc = [0u8; 32];
-    for ((event_type, state_key), event_id) in state {
-        let row = canonical_row(event_type, state_key, event_id);
-        let digest: [u8; 32] = Sha256::digest(&row).into();
-        for (a, d) in acc.iter_mut().zip(digest.iter()) {
-            *a ^= d;
-        }
-    }
-    acc
+    xor_fold_sha256(
+        state
+            .iter()
+            .map(|((event_type, state_key), event_id)| {
+                canonical_row(event_type, state_key, event_id)
+            }),
+    )
 }
 
 /// Applies `steps` sequential mutations (mix of new-key inserts, overwrites

@@ -431,6 +431,25 @@ where
 /// by an unrelated lockdown) and `test_anomaly_06b_mod_membership_evaporation`
 /// (a join into a still-public room dropped by a later, independent-branch
 /// lockdown, cascading to drop everything auth'd through that join).
+/// Yields the events cited by `auth_events`, preferring `conflicted_events`
+/// over `auth_context` and skipping ids present in neither.
+fn cited_auth_events<'a, Id, C, K, S1, S2>(
+    auth_events: &'a [Id],
+    conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
+) -> impl Iterator<Item = &'a LeanEvent<Id, C, K>> + 'a
+where
+    Id: Eq + core::hash::Hash + 'a,
+    S1: core::hash::BuildHasher + 'a,
+    S2: core::hash::BuildHasher + 'a,
+    C: 'a,
+    K: 'a,
+{
+    auth_events
+        .iter()
+        .filter_map(move |aid| conflicted_events.get(aid).or_else(|| auth_context.get(aid)))
+}
+
 fn join_has_prior_authorization<Id, C, K, S1, S2>(
     join_ev: &LeanEvent<Id, C, K>,
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
@@ -443,18 +462,12 @@ where
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 {
-    join_ev.auth_events.iter().any(|aid| {
-        conflicted_events
-            .get(aid)
-            .or_else(|| auth_context.get(aid))
-            .is_some_and(|ev| {
-                let cites_prior_membership = ev.event_type == M_ROOM_MEMBER
-                    && ev.state_key.as_ref().map(K::as_ref) == Some(join_ev.sender.as_str())
-                    && matches!(ev.get_membership(), Some(MEM_INVITE | MEM_JOIN));
-                let cites_non_lockdown_join_rules =
-                    ev.event_type == M_ROOM_JOIN_RULES && !ev.is_lockdown();
-                cites_prior_membership || cites_non_lockdown_join_rules
-            })
+    cited_auth_events(&join_ev.auth_events, conflicted_events, auth_context).any(|ev| {
+        let cites_prior_membership = ev.event_type == M_ROOM_MEMBER
+            && ev.state_key.as_ref().map(K::as_ref) == Some(join_ev.sender.as_str())
+            && matches!(ev.get_membership(), Some(MEM_INVITE | MEM_JOIN));
+        let cites_non_lockdown_join_rules = ev.event_type == M_ROOM_JOIN_RULES && !ev.is_lockdown();
+        cites_prior_membership || cites_non_lockdown_join_rules
     })
 }
 
@@ -484,32 +497,27 @@ where
     S1: core::hash::BuildHasher,
     S2: core::hash::BuildHasher,
 {
-    target_ev.auth_events.iter().any(|aid| {
-        conflicted_events
-            .get(aid)
-            .or_else(|| auth_context.get(aid))
-            .is_some_and(|ev| {
-                if ev.event_type != M_ROOM_POWER_LEVELS {
-                    return false;
-                }
-                // Effective PL: explicit `users[sender]` wins; else
-                // `users_default`; else 0.
-                let explicit = ev.get_user_power_level(target_ev.sender.as_str());
-                let effective = explicit.or_else(|| ev.get_users_default()).unwrap_or(0);
+    cited_auth_events(&target_ev.auth_events, conflicted_events, auth_context).any(|ev| {
+        if ev.event_type != M_ROOM_POWER_LEVELS {
+            return false;
+        }
+        // Effective PL: explicit `users[sender]` wins; else
+        // `users_default`; else 0.
+        let explicit = ev.get_user_power_level(target_ev.sender.as_str());
+        let effective = explicit.or_else(|| ev.get_users_default()).unwrap_or(0);
 
-                // Required PL for the target event type under *this* PL event.
-                // Uses the shared helper to stay in sync with auth checks.
-                let required = crate::auth::pl_threshold_for_event(
-                    ev,
-                    &target_ev.event_type,
-                    target_ev
-                        .state_key
-                        .as_ref()
-                        .map(core::convert::AsRef::as_ref),
-                );
+        // Required PL for the target event type under *this* PL event.
+        // Uses the shared helper to stay in sync with auth checks.
+        let required = crate::auth::pl_threshold_for_event(
+            ev,
+            &target_ev.event_type,
+            target_ev
+                .state_key
+                .as_ref()
+                .map(core::convert::AsRef::as_ref),
+        );
 
-                effective >= required
-            })
+        effective >= required
     })
 }
 

@@ -288,6 +288,30 @@ mod tests {
     use alloc::vec::Vec;
     use core::hash::BuildHasher;
 
+    /// A minimal member `LeanEvent` keyed by an interned state key, shared by
+    /// the `StateProvider` tests below.
+    fn member_event<'a>(
+        id: &str,
+        state_key: InternId<'a>,
+        sender: &str,
+    ) -> LeanEvent<alloc::string::String, crate::json::Value, InternId<'a>> {
+        LeanEvent {
+            event_id: alloc::string::String::from(id),
+            event_type: alloc::string::String::from("m.room.member"),
+            state_key: Some(state_key),
+            power_level: 0,
+            origin_server_ts: 0,
+            sender: alloc::string::String::from(sender),
+            content: crate::json::Value::Null,
+            prev_events: Vec::new(),
+            auth_events: Vec::new(),
+            depth: 1,
+            rejected: false,
+            soft_fail: false,
+            room_id: None,
+        }
+    }
+
     /// `is_empty()` must return `true` for a freshly-constructed interner
     /// even though slot 0 (`""`) is already reserved — it means "nothing
     /// beyond the reserved slot has been interned", not "the backing vec is
@@ -396,42 +420,8 @@ mod tests {
         let map = InternedRoomState {
             interner: interner_ref,
             map: alloc::collections::BTreeMap::from([
-                (
-                    (et, a),
-                    LeanEvent {
-                        event_id: alloc::string::String::from("$a"),
-                        event_type: alloc::string::String::from("m.room.member"),
-                        state_key: Some(a),
-                        power_level: 0,
-                        origin_server_ts: 0,
-                        sender: alloc::string::String::from("@a:x"),
-                        content: crate::json::Value::Null,
-                        prev_events: Vec::new(),
-                        auth_events: Vec::new(),
-                        depth: 1,
-                        rejected: false,
-                        soft_fail: false,
-                        room_id: None,
-                    },
-                ),
-                (
-                    (et, b),
-                    LeanEvent {
-                        event_id: alloc::string::String::from("$b"),
-                        event_type: alloc::string::String::from("m.room.member"),
-                        state_key: Some(b),
-                        power_level: 0,
-                        origin_server_ts: 0,
-                        sender: alloc::string::String::from("@b:x"),
-                        content: crate::json::Value::Null,
-                        prev_events: Vec::new(),
-                        auth_events: Vec::new(),
-                        depth: 1,
-                        rejected: false,
-                        soft_fail: false,
-                        room_id: None,
-                    },
-                ),
+                ((et, a), member_event("$a", a, "@a:x")),
+                ((et, b), member_event("$b", b, "@b:x")),
             ]),
         };
         let map = InternedRoomState::new(interner_ref, map.map);

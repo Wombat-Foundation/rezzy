@@ -74,29 +74,11 @@ struct Problem {
 }
 
 fn base_create(ts: u64) -> LeanEvent {
-    LeanEvent {
-        event_id: "$create".into(),
-        event_type: "m.room.create".into(),
-        state_key: Some(String::new()),
-        sender: "@admin:x".into(),
-        origin_server_ts: ts,
-        content: rezzy::json!({ "room_version": "12.1", "creator": "@admin:x" }),
-        ..Default::default()
-    }
+    crate::test_lib::admin_create_12_1(ts)
 }
 
 fn base_admin_join(ts: u64) -> LeanEvent {
-    LeanEvent {
-        event_id: "$admin_join".into(),
-        event_type: "m.room.member".into(),
-        state_key: Some("@admin:x".into()),
-        sender: "@admin:x".into(),
-        origin_server_ts: ts,
-        prev_events: vec!["$create".into()],
-        auth_events: vec!["$create".into()],
-        depth: 2,
-        ..Default::default()
-    }
+    crate::test_lib::admin_join(ts)
 }
 
 fn pl_event(ts: u64, event_id: &str, content: rezzy::JsonValue) -> LeanEvent {

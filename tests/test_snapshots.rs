@@ -14,22 +14,11 @@ mod utils;
 use rezzy::JsonValue as Value;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use std::collections::HashMap;
-
-fn to_event_map(events: &[LeanEvent]) -> HashMap<String, LeanEvent> {
-    events
-        .iter()
-        .map(|e| (e.event_id.clone(), e.clone()))
-        .collect()
-}
+use utils::to_event_map;
 
 fn load_fixture(path: &str) -> Vec<LeanEvent> {
     let content = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("Missing {path}"));
-    let val: Value = Value::parse(&content).unwrap();
-    if val.is_array() {
-        utils::parse_events_value(&val).unwrap()
-    } else {
-        utils::parse_events_value(&val["events"]).unwrap()
-    }
+    utils::parse_fixture_json(&content)
 }
 
 fn load_oracle(path: &str) -> HashMap<String, String> {
