@@ -516,7 +516,7 @@ fn log_redaction_report<Id: std::fmt::Display>(redaction_report: &RedactionRepor
 
 /// Format the timeline output.
 /// Render the timeline to a string, applying only authorized redactions.
-fn render_timeline(ctx: &FormattingContext) -> String {
+fn render_timeline(ctx: &FormattingContext, chronological: bool) -> String {
     // Owned copy of the events so the authorized redaction pass can mutate the
     // in-set targets in place. The resolved room state below is what the
     // redaction pass needs to authorize each redaction.
@@ -564,14 +564,33 @@ fn render_timeline(ctx: &FormattingContext) -> String {
         log_redaction_report(&redaction_report);
     }
 
-    // Human-facing timelines follow origin time first. Depth remains a useful
-    // deterministic tie-breaker, but is not a wall-clock ordering.
-    sorted_events.sort_by(|a, b| {
-        a.origin_server_ts
-            .cmp(&b.origin_server_ts)
-            .then(a.depth.cmp(&b.depth))
-            .then(a.event_id.cmp(&b.event_id))
-    });
+    if chronological {
+        sorted_events.sort_by(|a, b| {
+            a.origin_server_ts
+                .cmp(&b.origin_server_ts)
+                .then(a.depth.cmp(&b.depth))
+                .then(a.event_id.cmp(&b.event_id))
+        });
+    } else {
+        let ids: Vec<String> = sorted_events
+            .iter()
+            .map(|event| event.event_id.clone())
+            .collect();
+        let parents: Vec<Vec<String>> = sorted_events
+            .iter()
+            .map(|event| event.prev_events.clone())
+            .collect();
+        let timestamps: Vec<u64> = sorted_events
+            .iter()
+            .map(|event| event.origin_server_ts)
+            .collect();
+        let depths: Vec<u64> = sorted_events.iter().map(|event| event.depth).collect();
+        let order = crate::timeline_order::kahn_order(&ids, &parents, &timestamps, &depths);
+        sorted_events = order
+            .into_iter()
+            .map(|index| sorted_events[index].clone())
+            .collect();
+    }
 
     let mut displaynames: HashMap<String, String> = HashMap::new();
     for ev in &sorted_events {
@@ -653,10 +672,20 @@ fn render_timeline(ctx: &FormattingContext) -> String {
 /// Format the timeline output, printing the rendered timeline to stderr.
 #[must_use]
 pub fn format_timeline_output(ctx: &FormattingContext) -> rezzy::JsonValue {
-    eprint!("{}", render_timeline(ctx));
+    eprint!("{}", render_timeline(ctx, false));
     rezzy::json!({
         "status": "success",
         "format": "timeline",
+        "events": ctx.event_count
+    })
+}
+
+#[must_use]
+pub fn format_timeline_chronological_output(ctx: &FormattingContext) -> rezzy::JsonValue {
+    eprint!("{}", render_timeline(ctx, true));
+    rezzy::json!({
+        "status": "success",
+        "format": "timeline-chronological",
         "events": ctx.event_count
     })
 }
@@ -669,6 +698,7 @@ pub fn format_cli_output(ctx: &FormattingContext) -> rezzy::JsonValue {
         OutputFormat::Summary => format_summary_output(ctx),
         OutputFormat::ResolveState => format_resolve_state_output(ctx),
         OutputFormat::Timeline => format_timeline_output(ctx),
+        OutputFormat::TimelineChronological => format_timeline_chronological_output(ctx),
         OutputFormat::Events => {
             let mut state_events: Vec<&rezzy::JsonValue> = ctx
                 .resolved_state_list
@@ -929,7 +959,7 @@ mod tests {
                 &auth_chain_ids,
                 &auth_graph,
             );
-            render_timeline(&ctx)
+            render_timeline(&ctx, false)
         };
 
         let pl: LeanEvent = LeanEvent {

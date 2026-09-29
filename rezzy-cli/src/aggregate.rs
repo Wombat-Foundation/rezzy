@@ -360,14 +360,38 @@ fn validate_sort_metadata(events: &[rezzy::JsonValue], label: &str) -> Result<()
 
 fn sort_events(events: &mut [rezzy::JsonValue]) -> Result<(), AppError> {
     validate_sort_metadata(events, "merged aggregate")?;
-    events.sort_by(|a, b| {
-        let depth = |v: &rezzy::JsonValue| v["depth"].as_u64().unwrap();
-        let ts = |v: &rezzy::JsonValue| v["origin_server_ts"].as_u64().unwrap();
-        depth(a)
-            .cmp(&depth(b))
-            .then_with(|| ts(a).cmp(&ts(b)))
-            .then_with(|| event_id(a).cmp(event_id(b)))
-    });
+    let ids: Vec<String> = events
+        .iter()
+        .map(|event| event_id(event).to_owned())
+        .collect();
+    let parents: Vec<Vec<String>> = events
+        .iter()
+        .map(|event| {
+            event["prev_events"]
+                .as_array()
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .collect();
+    let timestamps: Vec<u64> = events
+        .iter()
+        .map(|event| event["origin_server_ts"].as_u64().unwrap())
+        .collect();
+    let depths: Vec<u64> = events
+        .iter()
+        .map(|event| event["depth"].as_u64().unwrap())
+        .collect();
+    let order = crate::timeline_order::kahn_order(&ids, &parents, &timestamps, &depths);
+    let ordered: Vec<rezzy::JsonValue> = order
+        .into_iter()
+        .map(|index| events[index].clone())
+        .collect();
+    events.clone_from_slice(&ordered);
     Ok(())
 }
 

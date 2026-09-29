@@ -93,6 +93,7 @@ pub enum OutputFormat {
     Federation,
     Summary,
     Timeline,
+    TimelineChronological,
     ResolveState,
 }
 
@@ -106,6 +107,7 @@ impl clap::ValueEnum for OutputFormat {
             Self::Federation,
             Self::Summary,
             Self::Timeline,
+            Self::TimelineChronological,
             Self::ResolveState,
         ]
     }
@@ -118,6 +120,9 @@ impl clap::ValueEnum for OutputFormat {
             Self::Federation => clap::builder::PossibleValue::new("federation"),
             Self::Summary => clap::builder::PossibleValue::new("summary"),
             Self::Timeline => clap::builder::PossibleValue::new("timeline"),
+            Self::TimelineChronological => {
+                clap::builder::PossibleValue::new("timeline-chronological")
+            }
             Self::ResolveState => {
                 clap::builder::PossibleValue::new("resolve-state").alias("resolve_state")
             }

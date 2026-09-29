@@ -22,6 +22,7 @@ pub mod format;
 pub mod jsonl_merge;
 pub mod network;
 pub mod repair;
+pub mod timeline_order;
 pub mod utils;
 
 use format::{format_cli_output, FormattingContext};
