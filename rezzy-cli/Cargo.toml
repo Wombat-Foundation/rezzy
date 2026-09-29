@@ -23,6 +23,7 @@ path = "src/main.rs"
 default = ["std"]
 std = ["rezzy/std", "clap/std"]
 mimalloc = ["dep:mimalloc"]
+tls = ["ureq/native-tls"]
 
 [dependencies]
 base64.workspace = true

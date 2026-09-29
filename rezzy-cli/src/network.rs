@@ -29,6 +29,13 @@ pub fn fetch_room_state(
         format!("https://{homeserver}")
     };
     let url = format!("{base}/_matrix/client/v3/rooms/{room_id}/state");
+    #[cfg(not(feature = "tls"))]
+    if url.starts_with("https://") {
+        bail_code!(
+            crate::error::ErrorCode::NetworkError,
+            "HTTPS request requires the `tls` feature; rebuild rezzy-cli with `--features tls` or use http://"
+        );
+    }
     eprintln!("Fetching {url}");
     let mut request = ureq::get(&url);
     if let Some(t) = token {

@@ -277,6 +277,13 @@ pub fn request(
         key.key_id
     );
     let url = format!("{}{uri}", base_url(destination));
+    #[cfg(not(feature = "tls"))]
+    if url.starts_with("https://") {
+        return Err(AppError::new(
+            ErrorCode::NetworkError,
+            "HTTPS request requires the `tls` feature; rebuild rezzy-cli with `--features tls` or use http://",
+        ));
+    }
     let mut req = match method.to_ascii_uppercase().as_str() {
         "GET" => ureq::get(&url),
         "POST" => ureq::post(&url),
