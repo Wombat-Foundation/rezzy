@@ -705,6 +705,33 @@ impl<'a, Id, C, K> ResolveOptions<'a, Id, C, K> {
     }
 }
 
+/// Mutable caches and the resolved conflicted-key set threaded through the
+/// iterative resolver's shared slow path.
+pub(crate) struct ResolveCaches<'a, Id, C, K> {
+    /// Caller-supplied auth cache reused across invocations, if any.
+    pub external_auth_cache: Option<&'a mut LocalAuthCache<Id, C, K>>,
+    /// Mainline power-level cache threaded across fork merges.
+    pub mainline_cache: &'a mut FastMap<Id, Option<Id>>,
+    /// Keys whose events are allowed to decide their own value.
+    pub conflicted_keys: &'a crate::FastSet<(EventType, K)>,
+}
+
+impl<'a, Id, C, K> ResolveCaches<'a, Id, C, K> {
+    /// Bundles the caches accepted by the iterative resolver's slow path.
+    #[must_use]
+    pub fn new(
+        external_auth_cache: Option<&'a mut LocalAuthCache<Id, C, K>>,
+        mainline_cache: &'a mut FastMap<Id, Option<Id>>,
+        conflicted_keys: &'a crate::FastSet<(EventType, K)>,
+    ) -> Self {
+        Self {
+            external_auth_cache,
+            mainline_cache,
+            conflicted_keys,
+        }
+    }
+}
+
 /// Like [`resolve_iterative_sort`], but allows passing an external local auth
 /// cache to amortize allocation costs across multiple invocations.
 ///
@@ -740,25 +767,24 @@ where
     };
     resolve_iterative_sort_with_all_caches::<Id, C, S1, S2, Spl, K>(
         inputs,
-        options.external_auth_cache,
-        &mut FastMap::default(),
-        conflicted_keys,
+        ResolveCaches::new(
+            options.external_auth_cache,
+            &mut FastMap::default(),
+            conflicted_keys,
+        ),
     )
 }
 
 /// Resolves with a fresh `pl_cache`, threading the optional external/mainline
 /// caches and a caller-supplied conflicted-key set. Shared by the non-lazy
 /// multi-state resolver and the State-DAG fork merge.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_iterative_sort_with_fresh_cache<Id, C, S1, S2, K>(
     unconflicted_state: &SharedState<Id, K>,
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     version: StateResVersion,
     empty_key: &K,
-    external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
-    mainline_cache: &mut FastMap<Id, Option<Id>>,
-    conflicted_keys: &crate::FastSet<(EventType, K)>,
+    caches: ResolveCaches<'_, Id, C, K>,
 ) -> SharedState<Id, K>
 where
     Id: EventId,
@@ -778,9 +804,7 @@ where
             &mut pl_cache,
             empty_key,
         ),
-        external_auth_cache,
-        mainline_cache,
-        conflicted_keys,
+        caches,
     )
 }
 
@@ -868,7 +892,6 @@ where
 /// loop in [`crate::state::at::run_state_pipeline_streaming`]) can thread
 /// across calls, so `build_mainline`'s BFS-per-call turns into an `O(M)`
 /// cache-hit walk instead of restarting from scratch every time.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_iterative_sort_with_all_caches<
     Id: EventId,
     C: EventContent + Clone,
@@ -878,9 +901,7 @@ pub(crate) fn resolve_iterative_sort_with_all_caches<
     K,
 >(
     inputs: IterativeInputs<'_, Id, C, K, S1, S2, Spl>,
-    external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
-    mainline_cache: &mut FastMap<Id, Option<Id>>,
-    conflicted_keys: &crate::FastSet<(EventType, K)>,
+    caches: ResolveCaches<'_, Id, C, K>,
 ) -> SharedState<Id, K>
 where
     K: StateKey,
@@ -913,7 +934,7 @@ where
 
     let mut fallback_cache = crate::state::at::LocalAuthCache::<Id, C, K>::new(version);
     let local_auth_cache =
-        select_local_auth_cache(external_auth_cache, &mut fallback_cache, version);
+        select_local_auth_cache(caches.external_auth_cache, &mut fallback_cache, version);
 
     run_power_phase_iterative_checks(
         &mut resolved,
@@ -925,7 +946,7 @@ where
         local_auth_cache,
         create_ev,
         pl_cache,
-        conflicted_keys,
+        caches.conflicted_keys,
     );
 
     let sort_set = &conflicted_events;
@@ -933,8 +954,13 @@ where
     merge_unconflicted_power_events(version, unconflicted_state, &mut resolved, empty_key);
 
     // Step 3: Build the power-level mainline for mainline sort
-    let mainline =
-        build_mainline_with_cache(&resolved, &sort_context, mainline_cache, empty_key, version);
+    let mainline = build_mainline_with_cache(
+        &resolved,
+        &sort_context,
+        caches.mainline_cache,
+        empty_key,
+        version,
+    );
 
     // Resolved-state screening pass (V2.1.1+): drop non-power conflicted events
     // whose sender is already banned in `resolved`, before mainline sort. Sound
@@ -978,7 +1004,7 @@ where
                 let key = (EventType::from(ev.event_type.as_str()), sk.clone());
                 // Same guard as the power phase: only a genuinely conflicted
                 // key may be decided here.
-                if conflicted_keys.contains(&key) {
+                if caches.conflicted_keys.contains(&key) {
                     resolved.insert(key, ev.event_id.clone());
                 }
             }

@@ -639,15 +639,17 @@ where
         inputs.events_map,
         |index, is_target| {
             run_state_pipeline_streaming(
-                index,
-                is_target,
-                inputs.events_map,
-                inputs.version,
+                PipelineRun {
+                    index,
+                    is_target,
+                    events_map: inputs.events_map,
+                    version: inputs.version,
+                    empty_key: inputs.empty_key,
+                },
                 |idx, shared_state| {
                     let id = index.items()[idx].clone();
                     on_target_resolved(id, shared_state)
                 },
-                inputs.empty_key,
             )
         },
     )
@@ -659,12 +661,8 @@ where
 /// Topologically sorts all reachable ancestors, incrementally merges state at forks,
 /// and yields the target states as they are completed.
 fn run_state_pipeline_streaming<Id, C, S, F, E, K>(
-    index: &DenseIndex<&Id, usize>,
-    is_target: &[bool],
-    events_map: &EventMap<Id, C, K, S>,
-    version: StateResVersion,
+    run: PipelineRun<'_, Id, C, S, K>,
     mut on_target: F,
-    empty_key: &K,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: EventId,
@@ -674,6 +672,13 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
+    let PipelineRun {
+        index,
+        is_target,
+        events_map,
+        version,
+        empty_key,
+    } = run;
     let PipelineSetup {
         sorted_ancestors,
         mut out_degree,
@@ -1228,6 +1233,24 @@ where
     })
 }
 
+/// Borrowed traversal inputs shared by the plain and optimized streaming
+/// pipelines.
+struct PipelineRun<'a, Id, C, S, K> {
+    index: &'a DenseIndex<&'a Id, usize>,
+    is_target: &'a [bool],
+    events_map: &'a EventMap<Id, C, K, S>,
+    version: StateResVersion,
+    empty_key: &'a K,
+}
+
+impl<Id, C, S, K> Copy for PipelineRun<'_, Id, C, S, K> {}
+
+impl<Id, C, S, K> Clone for PipelineRun<'_, Id, C, S, K> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
 /// Merges the resolved parent states at a fork.
 ///
 /// The empty case yields fresh state; a single parent — or several structurally
@@ -1306,9 +1329,11 @@ where
         events_map,
         version,
         empty_key,
-        Some(global_auth_cache),
-        mainline_cache,
-        &conflicted_keys,
+        crate::resolve::iterative::ResolveCaches::new(
+            Some(global_auth_cache),
+            mainline_cache,
+            &conflicted_keys,
+        ),
     )
 }
 
@@ -2448,13 +2473,9 @@ where
 /// This variant reuses the persistent `mainline_cache` across the whole
 /// traversal and yields `StateUpdate` values for target events, avoiding the
 /// extra cloning performed by the plain streaming path.
-fn run_state_pipeline_streaming_optimized<'a, Id, C, S, F, E, K>(
-    index: &DenseIndex<&'a Id, usize>,
-    is_target: &[bool],
-    events_map: &EventMap<Id, C, K, S>,
-    version: StateResVersion,
+fn run_state_pipeline_streaming_optimized<Id, C, S, F, E, K>(
+    run: PipelineRun<'_, Id, C, S, K>,
     mut on_target: F,
-    empty_key: &K,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: EventId,
@@ -2464,6 +2485,13 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
+    let PipelineRun {
+        index,
+        is_target,
+        events_map,
+        version,
+        empty_key,
+    } = run;
     let PipelineSetup {
         sorted_ancestors,
         mut out_degree,
@@ -2579,15 +2607,17 @@ where
         inputs.events_map,
         |index, is_target| {
             run_state_pipeline_streaming_optimized(
-                index,
-                is_target,
-                inputs.events_map,
-                inputs.version,
+                PipelineRun {
+                    index,
+                    is_target,
+                    events_map: inputs.events_map,
+                    version: inputs.version,
+                    empty_key: inputs.empty_key,
+                },
                 |idx, update| {
                     let id = index.items()[idx].clone();
                     on_target_resolved(id, update)
                 },
-                inputs.empty_key,
             )
         },
     )

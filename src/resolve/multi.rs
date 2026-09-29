@@ -307,9 +307,11 @@ where
             &mut pl_cache,
             empty_key,
         ),
-        None,
-        &mut crate::FastMap::default(),
-        &conflicted_keys,
+        crate::resolve::iterative::ResolveCaches::new(
+            None,
+            &mut crate::FastMap::default(),
+            &conflicted_keys,
+        ),
     );
     (resolved, conflicted_keys)
 }
@@ -622,9 +624,11 @@ where
         &auth_context,
         version,
         &empty_key,
-        None,
-        &mut crate::FastMap::default(),
-        &conflicted_keys,
+        crate::resolve::iterative::ResolveCaches::new(
+            None,
+            &mut crate::FastMap::default(),
+            &conflicted_keys,
+        ),
     )
 }
 
