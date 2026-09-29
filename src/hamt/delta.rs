@@ -11,15 +11,14 @@ pub type Delta<K, V> = Vec<(K, V)>;
 pub type DeltaResult<K, V, E> = Result<(Delta<K, V>, Delta<K, V>), E>;
 
 /// Walks both roots and returns the accumulated added/removed leaves.
-fn collect_delta<K, V, F, E>(
+fn collect_delta<K, V, E>(
     root_a: &NodePtr<K, V>,
     root_b: &NodePtr<K, V>,
-    resolver: &mut F,
+    resolver: &mut impl FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
 ) -> DeltaResult<K, V, HamtTraversalError<E>>
 where
     K: Hash + Clone + Eq,
     V: Hash + Clone + Eq,
-    F: NodeResolver<K, V, E>,
 {
     let mut added = Vec::new();
     let mut removed = Vec::new();

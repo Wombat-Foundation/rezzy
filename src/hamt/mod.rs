@@ -81,6 +81,21 @@ impl<K, V, E, F> NodeResolver<K, V, E> for F where
 {
 }
 
+/// A key storable in a HAMT: hashable, comparable, cloneable, and codec-able.
+///
+/// Blanket-implemented; callers never implement it themselves. Names the bound
+/// shared by the HAMT descent, mutation, and persistence entry points.
+pub trait HamtKey: Hash + Eq + Clone + HamtCodec {}
+
+impl<K: Hash + Eq + Clone + HamtCodec> HamtKey for K {}
+
+/// A value storable in a HAMT: cloneable and codec-able.
+///
+/// Blanket-implemented; callers never implement it themselves.
+pub trait HamtValue: Clone + HamtCodec {}
+
+impl<V: Clone + HamtCodec> HamtValue for V {}
+
 /// The outcome of descending one level of a HAMT with a batch of requested keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DescendResult<V> {
@@ -955,7 +970,7 @@ fn rebuild_with_child<K, V>(
 ) -> NodePtr<K, V>
 where
     K: Hash + Clone + HamtCodec,
-    V: Clone + HamtCodec,
+    V: HamtValue,
 {
     let mut children = node.children.clone();
     children[idx] = NodeRef::Resolved(new_child);
@@ -985,8 +1000,8 @@ fn insert_via_ctx<K, V, KeyHash, F, E>(
     sink: &mut MutationSink<'_, K, V>,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Clone + HamtCodec,
+    K: HamtKey,
+    V: HamtValue,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: NodeResolver<K, V, E>,
 {
@@ -1010,8 +1025,8 @@ fn insert_node<K, V, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Clone + HamtCodec,
+    K: HamtKey,
+    V: HamtValue,
     F: NodeResolver<K, V, E>,
 {
     let mut key_hash = |k: &K| key_path_hash(structural_key, k);
@@ -1053,8 +1068,8 @@ fn insert_node_with_ctx<K, V, KeyHash, F, E>(
     ctx: &mut InsertCtx<'_, K, V, KeyHash, F>,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Clone + HamtCodec,
+    K: HamtKey,
+    V: HamtValue,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: NodeResolver<K, V, E>,
 {
@@ -1123,8 +1138,8 @@ fn insert_into_leaf_slot<K, V, KeyHash, F, E>(
     ctx: &mut InsertCtx<'_, K, V, KeyHash, F>,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Clone + HamtCodec,
+    K: HamtKey,
+    V: HamtValue,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: NodeResolver<K, V, E>,
 {
@@ -1174,8 +1189,8 @@ fn insert_into_child_slot<K, V, KeyHash, F, E>(
     ctx: &mut InsertCtx<'_, K, V, KeyHash, F>,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Clone + HamtCodec,
+    K: HamtKey,
+    V: HamtValue,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: NodeResolver<K, V, E>,
 {
@@ -1218,8 +1233,8 @@ pub fn insert<K, V, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Clone + HamtCodec,
+    K: HamtKey,
+    V: HamtValue,
     F: NodeResolver<K, V, E>,
 {
     insert_with_key_hash(
@@ -1256,8 +1271,8 @@ pub fn insert_with_key_hash<K, V, KeyHash, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Clone + HamtCodec,
+    K: HamtKey,
+    V: HamtValue,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: NodeResolver<K, V, E>,
 {
@@ -1342,7 +1357,7 @@ fn remove_spine<K, V, Q, F, Slot, E>(
 ) -> MutateResult<K, V, E>
 where
     K: Hash + Eq + Borrow<Q> + Clone + HamtCodec,
-    V: Clone + HamtCodec,
+    V: HamtValue,
     Q: Eq + ?Sized,
     F: NodeResolver<K, V, E>,
     Slot: FnMut(&K) -> usize,
@@ -1384,7 +1399,7 @@ pub fn remove<K, V, Q, F, E>(
 ) -> MutateResult<K, V, E>
 where
     K: Hash + Eq + Borrow<Q> + Clone + HamtCodec,
-    V: Clone + HamtCodec,
+    V: HamtValue,
     Q: Hash + Eq + ?Sized,
     F: NodeResolver<K, V, E>,
 {
@@ -1410,7 +1425,7 @@ fn remove_node_with_ctx<K, V, Q, F, E>(
 ) -> RemoveStepResult<K, V, E>
 where
     K: Hash + Eq + Borrow<Q> + Clone + HamtCodec,
-    V: Clone + HamtCodec,
+    V: HamtValue,
     Q: Eq + ?Sized,
     F: NodeResolver<K, V, E>,
 {
@@ -1508,7 +1523,7 @@ fn finalize_remove_root<K, V, F>(
 ) -> NodePtr<K, V>
 where
     K: Hash + Clone + HamtCodec,
-    V: Clone + HamtCodec,
+    V: HamtValue,
     F: FnMut(&K) -> usize,
 {
     match outcome {
@@ -1553,8 +1568,8 @@ pub fn remove_with_key_hash<K, V, KeyHash, F, E>(
     resolver: &mut F,
 ) -> MutateResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Clone + HamtCodec,
+    K: HamtKey,
+    V: HamtValue,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: NodeResolver<K, V, E>,
 {
@@ -1619,8 +1634,8 @@ pub fn persist_mutation<K, V, F, E>(
     resolver: &mut F,
 ) -> PersistMutationResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: HamtKey,
+    V: HamtValue + Hash,
     F: NodeResolver<K, V, E>,
 {
     persist_mutation_with_key_hash(
@@ -1651,8 +1666,8 @@ pub fn persist_mutation_with_key_hash<K, V, KeyHash, F, E>(
     resolver: &mut F,
 ) -> PersistMutationResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: HamtKey,
+    V: HamtValue + Hash,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: NodeResolver<K, V, E>,
 {
@@ -1705,8 +1720,8 @@ fn finalize_persisted_mutations<K, V, F, E>(
     resolver: &mut F,
 ) -> PersistMutationsResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: HamtKey,
+    V: HamtValue + Hash,
     F: NodeResolver<K, V, E>,
 {
     if current_root.structural_hash == prev_root.structural_hash {
@@ -1765,8 +1780,8 @@ pub fn persist_mutations<K, V, I, F, E>(
     resolver: &mut F,
 ) -> PersistMutationsResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: HamtKey,
+    V: HamtValue + Hash,
     I: IntoIterator<Item = (K, Option<V>)>,
     F: NodeResolver<K, V, E>,
 {
@@ -1796,8 +1811,8 @@ pub fn persist_mutations_with_key_hash<K, V, I, KeyHash, F, E>(
     resolver: &mut F,
 ) -> PersistMutationsResult<K, V, E>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: HamtKey,
+    V: HamtValue + Hash,
     I: IntoIterator<Item = (K, Option<V>)>,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: NodeResolver<K, V, E>,
@@ -1850,8 +1865,8 @@ pub fn persist_chain<K, V, I, F, E>(
     resolver: &mut F,
 ) -> Result<Vec<ChainStep<K, V>>, HamtMutateError<E>>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: HamtKey,
+    V: HamtValue + Hash,
     I: IntoIterator<Item = (K, Option<V>)>,
     F: NodeResolver<K, V, E>,
 {
@@ -1881,8 +1896,8 @@ pub fn persist_chain_with_key_hash<K, V, I, KeyHash, F, E>(
     resolver: &mut F,
 ) -> Result<Vec<ChainStep<K, V>>, HamtMutateError<E>>
 where
-    K: Hash + Eq + Clone + HamtCodec,
-    V: Hash + Clone + HamtCodec,
+    K: HamtKey,
+    V: HamtValue + Hash,
     I: IntoIterator<Item = (K, Option<V>)>,
     KeyHash: FnMut(&K) -> StructuralHash,
     F: NodeResolver<K, V, E>,
@@ -1939,8 +1954,8 @@ pub fn descend_level<K, V, KeyHash>(
     mut key_hash_fn: KeyHash,
 ) -> Result<DescendResult<V>, DescendError>
 where
-    K: HamtCodec + Eq + Hash,
-    V: HamtCodec + Clone + Hash,
+    K: HamtKey,
+    V: HamtValue + Hash,
     KeyHash: FnMut(&K) -> KeyPathHash,
 {
     if let Some(&(_, _, first_depth, _)) = nodes_and_keys.first() {
