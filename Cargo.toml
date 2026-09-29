@@ -45,6 +45,7 @@ exclude = [
     ".cargo/",
     "rustfmt.toml",
     "tests/",
+    "support/",
     "Makefile",
     "TODO.txt",
     "pr-comments.14.md",
