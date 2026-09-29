@@ -30,6 +30,7 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
     let input = matches.get_one::<PathBuf>("input").expect("required");
     let output = matches.get_one::<PathBuf>("output").expect("required");
     let room_version = infer_room_version(input)?;
+    validate_repair_room_version(&room_version)?;
 
     let reader = BufReader::new(File::open(input)?);
     if input == output {
@@ -98,6 +99,28 @@ pub fn fill_missing_event_id(
         .ok_or_else(|| AppError::new(ErrorCode::UnexpectedFormat, "event is not a JSON object"))?
         .insert("event_id".to_owned(), JsonValue::String(format!("${hash}")));
     Ok(1)
+}
+
+pub fn validate_repair_room_version(room_version: &str) -> Result<(), AppError> {
+    let major = room_version
+        .split('.')
+        .next()
+        .and_then(|part| part.parse::<u32>().ok());
+    if major.is_some_and(|version| version <= 2) {
+        return Err(AppError::new(
+            ErrorCode::UnsupportedVersion,
+            format!(
+                "room version {room_version} has opaque event IDs; missing IDs cannot be repaired"
+            ),
+        ));
+    }
+    if rezzy::StateResVersion::from_room_version(room_version).is_none() {
+        return Err(AppError::new(
+            ErrorCode::UnsupportedVersion,
+            format!("unknown room version {room_version}"),
+        ));
+    }
+    Ok(())
 }
 
 fn infer_room_version(path: &PathBuf) -> Result<String, AppError> {

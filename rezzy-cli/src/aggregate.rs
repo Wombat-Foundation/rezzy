@@ -428,6 +428,7 @@ fn read_raw_input_with_repair(
             })?
             .trim_start_matches("-v")
             .to_owned();
+        crate::repair::validate_repair_room_version(&room_version)?;
         for (index, event) in events.iter_mut().enumerate() {
             crate::repair::fill_missing_event_id(
                 event,
