@@ -531,7 +531,7 @@ fn test_compute_state_at_streaming_non_optimized_cycle() {
         r#"{"event_id":"B","type":"m.room.message","sender":"@x:x","depth":0,"prev_events":["A"],"auth_events":[]}"#,
     ]);
 
-    rezzy::compute_state_at_streaming(
+    rezzy::StreamingInputs::compute(
         &["A"],
         &events_map,
         StateResVersion::V2,

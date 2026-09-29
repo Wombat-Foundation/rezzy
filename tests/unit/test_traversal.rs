@@ -1925,7 +1925,7 @@ fn auth_diff_context_event_scenario(version: StateResVersion) -> Option<String> 
     }
 
     let mut final_state: Option<HashMap<(String, String), String>> = None;
-    let completed = rezzy::compute_state_at_streaming_optimized(
+    let completed = rezzy::StreamingInputs::compute_optimized(
         &["$merge"],
         &events,
         version,

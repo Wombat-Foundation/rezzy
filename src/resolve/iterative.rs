@@ -32,7 +32,7 @@
 use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::{EventContent, EventId, LeanEvent, StateKey, StateResVersion};
 use crate::{
-    resolve::sorting::{build_mainline, build_mainline_with_cache, lean_kahn_sort, mainline_sort},
+    resolve::sorting::{build_mainline, build_mainline_with_cache, mainline_sort, KahnSortInputs},
     state::at::{compute_local_auth, iterative_auth_ok, LocalAuthCache, SharedState},
     state::delta::{ResolutionDelta, ResolvePhase},
     FastMap, HashMap,
@@ -277,7 +277,8 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, Spl, K>(
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    let sorted_power_ids = lean_kahn_sort(power_events, sort_context, create_ev, version, pl_cache);
+    let sorted_power_ids =
+        KahnSortInputs::new(power_events, sort_context, create_ev, version, pl_cache).sort();
     for id in &sorted_power_ids {
         // Every power event is drawn from the conflicted set or the auth
         // context (route_power_events + expand_v2 + route_msc4297), so a sorted
@@ -653,7 +654,7 @@ impl<'a, Id, C, K, S1, S2, Spl> IterativeInputs<'a, Id, C, K, S1, S2, Spl> {
 ///
 /// 1. Classify conflicted events into **power events** (create, PL, join rules,
 ///    bans/kicks) and **non-power events**.
-/// 2. Sort power events via [`lean_kahn_sort`] and iteratively auth-check them
+/// 2. Sort power events via [`KahnSortInputs::sort`] and iteratively auth-check them
 ///    to build the authoritative administrative state.
 /// 3. Sort non-power events via [`mainline_sort`] (by proximity to the resolved
 ///    power-levels chain) and iteratively auth-check them, after the
@@ -1189,7 +1190,7 @@ where
     let sort_set = &conflicted_events;
 
     let sorted_power_ids =
-        lean_kahn_sort(&power_events, &sort_context, create_ev, version, pl_cache);
+        KahnSortInputs::new(&power_events, &sort_context, create_ev, version, pl_cache).sort();
     for id in &sorted_power_ids {
         // Same graceful-skip contract as the non-delta power phase: every
         // power event is normally drawn from the conflicted set or the auth

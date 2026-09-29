@@ -641,7 +641,8 @@ pub fn apply_global_power_levels<S: std::hash::BuildHasher>(
         .find(|ev| ev.event_type == M_ROOM_CREATE);
     let mut pl_cache = HashMap::new();
     let sorted_power_ids =
-        rezzy::lean_kahn_sort(&power_events, events_map, create_ev, version, &mut pl_cache);
+        rezzy::KahnSortInputs::new(&power_events, events_map, create_ev, version, &mut pl_cache)
+            .sort();
     let mut resolved_power_state = imbl::OrdMap::new();
     for id in sorted_power_ids {
         if let Some(ev) = power_events.get(&id) {

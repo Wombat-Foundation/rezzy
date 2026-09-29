@@ -377,13 +377,8 @@ mod tests {
     fn test_v2_resolution_happy_path() {
         let (create_ev, auth, events) = super::two_member_sort_fixture(100, 50, 100, 10, 10, 1);
 
-        let sorted = rezzy::lean_kahn_sort(
-            &events,
-            &auth,
-            Some(&create_ev),
-            rezzy::StateResVersion::V2,
-            &mut std::collections::HashMap::new(),
-        );
+        let sorted =
+            super::kahn_sort_with_auth(&events, &auth, &create_ev, rezzy::StateResVersion::V2);
         // B (lower PL=50) pops first (worst event first). A pops last, wins.
         assert_eq!(sorted, vec!["B", "A"]);
     }
@@ -402,27 +397,12 @@ mod tests {
     fn test_v1_v2_v2_1_comparison_determinism() {
         let (create_ev, auth, events) = super::two_member_sort_fixture(10, 100, 10, 100, 1, 10);
 
-        let sorted_v1 = rezzy::lean_kahn_sort(
-            &events,
-            &auth,
-            Some(&create_ev),
-            rezzy::StateResVersion::V1,
-            &mut std::collections::HashMap::new(),
-        );
-        let sorted_v2 = rezzy::lean_kahn_sort(
-            &events,
-            &auth,
-            Some(&create_ev),
-            rezzy::StateResVersion::V2,
-            &mut std::collections::HashMap::new(),
-        );
-        let sorted_v2_1 = rezzy::lean_kahn_sort(
-            &events,
-            &auth,
-            Some(&create_ev),
-            rezzy::StateResVersion::V2_1,
-            &mut std::collections::HashMap::new(),
-        );
+        let sorted_v1 =
+            super::kahn_sort_with_auth(&events, &auth, &create_ev, rezzy::StateResVersion::V1);
+        let sorted_v2 =
+            super::kahn_sort_with_auth(&events, &auth, &create_ev, rezzy::StateResVersion::V2);
+        let sorted_v2_1 =
+            super::kahn_sort_with_auth(&events, &auth, &create_ev, rezzy::StateResVersion::V2_1);
         assert_eq!(sorted_v1, vec!["B", "A"]);
         // A (lower power level) pops FIRST in V2 and V2.1 — applied first, loses for same key.
         assert_eq!(sorted_v2, vec!["A", "B"]);
@@ -2461,10 +2441,7 @@ mod tests {
         assert_eq!(clamped_neg, None);
     }
 }
-use rezzy::{
-    compute_state_at, compute_state_at_streaming_optimized, KahnSortResult, LeanEvent,
-    StateResVersion,
-};
+use rezzy::{compute_state_at, KahnSortResult, LeanEvent, StateResVersion};
 
 /// Generic event constructor shared with the sibling unit-test modules
 /// (`test_auth`, `test_restricted_joins`, `differential_harness`) so each file
@@ -2843,26 +2820,39 @@ fn create_event(events: &HashMap<String, LeanEvent>) -> Option<&LeanEvent> {
 }
 
 fn kahn_sort(events: &HashMap<String, LeanEvent>, version: StateResVersion) -> Vec<String> {
-    rezzy::lean_kahn_sort(
+    rezzy::KahnSortInputs::new(
         events,
         events,
         create_event(events),
         version,
         &mut HashMap::new(),
     )
+    .sort()
+}
+
+/// Sorts `events` against a separate `auth` context and creator event, matching
+/// the fixtures used by the room-version comparison tests.
+fn kahn_sort_with_auth(
+    events: &HashMap<String, LeanEvent>,
+    auth: &HashMap<String, LeanEvent>,
+    create_ev: &LeanEvent,
+    version: StateResVersion,
+) -> Vec<String> {
+    rezzy::KahnSortInputs::new(events, auth, Some(create_ev), version, &mut HashMap::new()).sort()
 }
 
 fn kahn_sort_diag(
     events: &HashMap<String, LeanEvent>,
     version: StateResVersion,
 ) -> KahnSortResult<String> {
-    rezzy::lean_kahn_sort_with_cycle_diagnostics(
+    rezzy::KahnSortInputs::new(
         events,
         events,
         create_event(events),
         version,
         &mut HashMap::new(),
     )
+    .with_cycle_diagnostics()
 }
 
 fn into_events_map(events: Vec<LeanEvent>) -> HashMap<String, LeanEvent> {
@@ -5038,13 +5028,14 @@ fn test_sorting_coverage() {
     let mut auth = HashMap::new();
     auth.insert("pl".into(), pl_ev);
 
-    let _ = rezzy::lean_kahn_sort(
+    let _ = rezzy::KahnSortInputs::new(
         &events_map,
         &auth,
         Some(&create_ev),
         rezzy::StateResVersion::V2_2,
         &mut std::collections::HashMap::new(),
-    );
+    )
+    .sort();
 }
 
 #[test]
@@ -5063,13 +5054,14 @@ fn test_msc4289_sorting_v2_creator_gets_pl_100() {
     let auth = HashMap::new();
 
     // Sort with V2 — creator gets PL 100
-    let result = rezzy::lean_kahn_sort(
+    let result = rezzy::KahnSortInputs::new(
         &events_map,
         &auth,
         Some(&create_ev),
         rezzy::StateResVersion::V2,
         &mut std::collections::HashMap::new(),
-    );
+    )
+    .sort();
     // Creator alice should sort with higher power than bob (PL 0), meaning she comes LAST in the sorted list (since sorting is ascending)
     assert!(result.len() >= 2);
     let alice_pos = result.iter().position(|id| id == "alice_msg").unwrap();
@@ -6128,13 +6120,14 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     cyclic_kahn_events.insert("A".into(), ev_a.clone());
     cyclic_kahn_events.insert("B".into(), ev_b.clone());
 
-    let sorted_cyclic = rezzy::resolve::sorting::lean_kahn_sort(
+    let sorted_cyclic = rezzy::resolve::sorting::KahnSortInputs::new(
         &cyclic_kahn_events,
         &HashMap::new(),
         None,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
-    );
+    )
+    .sort();
     assert_eq!(sorted_cyclic.len(), 2);
 }
 
@@ -7594,7 +7587,7 @@ fn test_conflicted_keys_derived_before_cdo() {
 
 #[test]
 fn test_soft_fail_and_rejected_state_events_on_linear_chain() {
-    use rezzy::{compute_state_at_streaming, StateUpdate};
+    use rezzy::{StateUpdate, StreamingInputs};
 
     // Linear chain A -> B(soft-failed m.room.name) -> R(rejected m.room.topic) -> C.
     // Per spec server-server-api "Soft failure", soft-failed events participate in state
@@ -7632,7 +7625,7 @@ fn test_soft_fail_and_rejected_state_events_on_linear_chain() {
 
     // compute_state_at_streaming (the batch/streaming path).
     let mut streamed: Option<rezzy::SharedState<String, String>> = None;
-    compute_state_at_streaming(
+    StreamingInputs::compute(
         &["C"],
         &em,
         StateResVersion::V2,
@@ -7648,7 +7641,7 @@ fn test_soft_fail_and_rejected_state_events_on_linear_chain() {
     // compute_state_at_streaming_optimized (the full-rebuild pipeline): B contributes,
     // so a New update with state {name: B} must be emitted.
     let mut saw_name_b = false;
-    let _ = compute_state_at_streaming_optimized(
+    let _ = StreamingInputs::compute_optimized(
         &["B", "C"],
         &em,
         StateResVersion::V2,

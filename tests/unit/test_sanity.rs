@@ -296,7 +296,7 @@ fn test_compute_state_at_batch() {
 
 #[test]
 fn test_streaming_correctness_with_branched_dag() {
-    use rezzy::state::at::compute_state_at_streaming;
+    use rezzy::state::at::StreamingInputs;
     use rezzy::{LeanEvent, StateResVersion};
 
     let mut events_map = synthetic_chain(40);
@@ -410,7 +410,7 @@ fn test_streaming_correctness_with_branched_dag() {
 
     let batch_ids = vec!["$40", "$50"];
     let mut streaming_results = HashMap::new();
-    compute_state_at_streaming(
+    StreamingInputs::compute(
         &batch_ids,
         &events_map,
         StateResVersion::V2,
@@ -749,7 +749,7 @@ fn test_compute_merge_bases_max_steps() {
 /// silently handles (prints to stderr).
 #[test]
 fn test_compute_state_at_prev_events_cycle() {
-    use rezzy::state::at::{compute_state_at_streaming, StateComputationError, StreamingInputs};
+    use rezzy::state::at::{StateComputationError, StreamingInputs};
     use rezzy::{LeanEvent, StateResVersion};
 
     let mut events_map = event_map(
@@ -795,7 +795,7 @@ fn test_compute_state_at_prev_events_cycle() {
 
     // compute_state_at_streaming should silently handle CycleDetected
     let mut callback_called = false;
-    compute_state_at_streaming(
+    StreamingInputs::compute(
         &["$A"],
         &events_map,
         StateResVersion::V2,

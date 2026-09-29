@@ -80,155 +80,181 @@ where
     event.power_level()
 }
 
-/// Detailed Kahn's Topological Sort algorithm for event power resolution.
+/// Bundled inputs for Kahn's topological sort over event power resolution.
 ///
-/// This function performs a reverse topological sort on a set of events, placing
-/// descendants before their ancestors. It returns diagnostic details about any cycles
-/// if they are detected.
-///
-/// # Panics
-///
-/// Will panic if graph invariants are violated during topological sorting (specifically, if
-/// the in-degree map lacks an entry for a child event during the queue processing phase).
-#[allow(clippy::implicit_hasher)]
-pub fn lean_kahn_sort_with_cycle_diagnostics<Id, C, E, S1, Spl>(
-    events: &HashMap<Id, E, S1>,
-    sort_context: &impl EventProvider<Id, C, E>,
-    create_ev: Option<&E>,
-    version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64, Spl>,
-) -> KahnSortResult<Id>
+/// Held as one value so the diagnostic and fallback entry points share a single
+/// bound set instead of re-declaring the same five parameters.
+pub struct KahnSortInputs<'a, Id, E, P, S1, Spl> {
+    /// Events to sort, keyed by id.
+    pub events: &'a HashMap<Id, E, S1>,
+    /// Provides `auth_events` lookups for power-level resolution.
+    pub sort_context: &'a P,
+    /// Optional creator event used for V12+ infinite-power semantics.
+    pub create_ev: Option<&'a E>,
+    /// Room version selecting the auth rules.
+    pub version: StateResVersion,
+    /// Scratch cache of per-event power levels, reused across sort passes.
+    pub pl_cache: &'a mut HashMap<Id, i64, Spl>,
+}
+
+impl<'a, Id, E, P, S1, Spl> KahnSortInputs<'a, Id, E, P, S1, Spl>
 where
     Id: EventId,
     S1: BuildHasher,
     Spl: BuildHasher,
-    C: Clone + EventContent,
-    E: EventLike<Id = Id, Content = C>,
+    E: EventLike<Id = Id>,
+    P: EventProvider<Id, E::Content, E>,
 {
-    pl_cache.clear();
+    /// Bundles the inputs accepted by the sort entry points.
+    #[must_use]
+    pub fn new(
+        events: &'a HashMap<Id, E, S1>,
+        sort_context: &'a P,
+        create_ev: Option<&'a E>,
+        version: StateResVersion,
+        pl_cache: &'a mut HashMap<Id, i64, Spl>,
+    ) -> Self {
+        Self {
+            events,
+            sort_context,
+            create_ev,
+            version,
+            pl_cache,
+        }
+    }
 
-    let mut in_degree: FastMap<&Id, usize> = FastMap::default();
-    let mut adjacency: FastMap<&Id, Vec<&Id>> = FastMap::default();
+    /// Detailed Kahn's Topological Sort algorithm for event power resolution.
+    ///
+    /// This function performs a reverse topological sort on a set of events, placing
+    /// descendants before their ancestors. It returns diagnostic details about any cycles
+    /// if they are detected.
+    ///
+    /// # Panics
+    ///
+    /// Will panic if graph invariants are violated during topological sorting (specifically, if
+    /// the in-degree map lacks an entry for a child event during the queue processing phase).
+    #[must_use]
+    #[allow(clippy::implicit_hasher)]
+    pub fn with_cycle_diagnostics(self) -> KahnSortResult<Id> {
+        let Self {
+            events,
+            sort_context,
+            create_ev,
+            version,
+            pl_cache,
+        } = self;
+        pl_cache.clear();
 
-    for (id, event) in events {
-        in_degree.entry(id).or_insert(0);
-        for auth in event.dag_edges(version) {
-            if let Some((auth_key, _)) = events.get_key_value(auth) {
-                // Topological sort: ancestors come BEFORE descendants.
-                // But we want a REVERSE topological sort: descendants BEFORE ancestors.
-                // So we add edges from ancestors to descendants.
-                adjacency.entry(auth_key).or_default().push(id);
-                let val = in_degree.entry(id).or_insert(0);
-                *val = val.saturating_add(1);
+        let mut in_degree: FastMap<&Id, usize> = FastMap::default();
+        let mut adjacency: FastMap<&Id, Vec<&Id>> = FastMap::default();
+
+        for (id, event) in events {
+            in_degree.entry(id).or_insert(0);
+            for auth in event.dag_edges(version) {
+                if let Some((auth_key, _)) = events.get_key_value(auth) {
+                    // Topological sort: ancestors come BEFORE descendants.
+                    // But we want a REVERSE topological sort: descendants BEFORE ancestors.
+                    // So we add edges from ancestors to descendants.
+                    adjacency.entry(auth_key).or_default().push(id);
+                    let val = in_degree.entry(id).or_insert(0);
+                    *val = val.saturating_add(1);
+                }
             }
         }
-    }
 
-    // Pre-compute power levels once per event to avoid redundant auth chain walks
-    // inside the hot BinaryHeap push path.
-    for (id, ev) in events {
-        if !pl_cache.contains_key(id) {
-            pl_cache.insert(
-                id.clone(),
-                get_power_level_from_auth_chain(ev, sort_context, create_ev, version),
-            );
-        }
-    }
-
-    let mut queue: BinaryHeap<SortPriority<'_, E>> = BinaryHeap::new();
-    for (id, &degree) in &in_degree {
-        if degree == 0 {
-            if let Some(event) = events.get(*id) {
-                queue.push(SortPriority {
-                    event,
-                    power_level: pl_cache.get(*id).copied().unwrap_or(0),
-                    version,
-                });
+        // Pre-compute power levels once per event to avoid redundant auth chain walks
+        // inside the hot BinaryHeap push path.
+        for (id, ev) in events {
+            if !pl_cache.contains_key(id) {
+                pl_cache.insert(
+                    id.clone(),
+                    get_power_level_from_auth_chain(ev, sort_context, create_ev, version),
+                );
             }
         }
-    }
 
-    let mut result = Vec::with_capacity(events.len());
-    while let Some(priority) = queue.pop() {
-        let event = priority.event;
-
-        result.push(event.event_id().clone());
-        if let Some(neighbors) = adjacency.get(event.event_id()) {
-            for &next_id in neighbors {
-                let degree = in_degree.get_mut(next_id).unwrap();
-                *degree = degree.saturating_sub(1);
-                if *degree == 0 {
-                    let next_ev = events.get(next_id).unwrap();
+        let mut queue: BinaryHeap<SortPriority<'_, E>> = BinaryHeap::new();
+        for (id, &degree) in &in_degree {
+            if degree == 0 {
+                if let Some(event) = events.get(*id) {
                     queue.push(SortPriority {
-                        event: next_ev,
-                        power_level: pl_cache.get(next_id).copied().unwrap_or(0),
+                        event,
+                        power_level: pl_cache.get(*id).copied().unwrap_or(0),
                         version,
                     });
                 }
             }
         }
+
+        let mut result = Vec::with_capacity(events.len());
+        while let Some(priority) = queue.pop() {
+            let event = priority.event;
+
+            result.push(event.event_id().clone());
+            if let Some(neighbors) = adjacency.get(event.event_id()) {
+                for &next_id in neighbors {
+                    let degree = in_degree.get_mut(next_id).unwrap();
+                    *degree = degree.saturating_sub(1);
+                    if *degree == 0 {
+                        let next_ev = events.get(next_id).unwrap();
+                        queue.push(SortPriority {
+                            event: next_ev,
+                            power_level: pl_cache.get(next_id).copied().unwrap_or(0),
+                            version,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Detect cycles: events that never reached in-degree 0.
+        if result.len() != events.len() {
+            let sorted_set: crate::FastSet<&Id> = result.iter().collect();
+            let stuck: Vec<Id> = events
+                .keys()
+                .filter(|id| !sorted_set.contains(id))
+                .cloned()
+                .collect();
+            drop(sorted_set);
+            return KahnSortResult::CycleDetected {
+                sorted: result,
+                stuck,
+            };
+        }
+
+        KahnSortResult::Ok(result)
     }
 
-    // Detect cycles: events that never reached in-degree 0.
-    if result.len() != events.len() {
-        let sorted_set: crate::FastSet<&Id> = result.iter().collect();
-        let stuck: Vec<Id> = events
-            .keys()
-            .filter(|id| !sorted_set.contains(id))
-            .cloned()
-            .collect();
-        drop(sorted_set);
-        return KahnSortResult::CycleDetected {
-            sorted: result,
-            stuck,
-        };
-    }
-
-    KahnSortResult::Ok(result)
-}
-
-/// A simplified implementation of Kahn's Topological Sort.
-/// Backward-compatible wrapper that falls back to standard tie-breaking on cycles.
-///
-/// # Panics
-///
-/// Will panic if graph invariants are violated (specifically, if an event returned
-/// in the cycle-breaking list of stuck nodes is missing from the input `events` map).
-#[must_use]
-#[allow(clippy::implicit_hasher)]
-pub fn lean_kahn_sort<Id, C, E, S1, Spl>(
-    events: &HashMap<Id, E, S1>,
-    sort_context: &impl EventProvider<Id, C, E>,
-    create_ev: Option<&E>,
-    version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64, Spl>,
-) -> Vec<Id>
-where
-    Id: EventId,
-    S1: BuildHasher,
-    Spl: BuildHasher,
-    C: Clone + EventContent,
-    E: EventLike<Id = Id, Content = C>,
-{
-    match lean_kahn_sort_with_cycle_diagnostics(events, sort_context, create_ev, version, pl_cache)
-    {
-        KahnSortResult::Ok(sorted) => sorted,
-        KahnSortResult::CycleDetected {
-            mut sorted,
-            mut stuck,
-        } => {
-            #[cfg(feature = "std")]
-            std::eprintln!("KAHN CYCLE DETECTED! Stuck: {stuck:?}");
-            stuck.sort_by(|a, b| {
-                let ev_a = events.get(a).unwrap();
-                let ev_b = events.get(b).unwrap();
-                // Standard tie-breaking fallback (origin_server_ts ascending, then event_id ascending)
-                ev_a.origin_server_ts()
-                    .cmp(&ev_b.origin_server_ts())
-                    .then_with(|| a.cmp(b))
-            });
-            sorted.append(&mut stuck);
-            sorted
+    /// A simplified implementation of Kahn's Topological Sort.
+    /// Backward-compatible wrapper that falls back to standard tie-breaking on cycles.
+    ///
+    /// # Panics
+    ///
+    /// Will panic if graph invariants are violated (specifically, if an event returned
+    /// in the cycle-breaking list of stuck nodes is missing from the input `events` map).
+    #[must_use]
+    #[allow(clippy::implicit_hasher)]
+    pub fn sort(self) -> Vec<Id> {
+        let events = self.events;
+        match self.with_cycle_diagnostics() {
+            KahnSortResult::Ok(sorted) => sorted,
+            KahnSortResult::CycleDetected {
+                mut sorted,
+                mut stuck,
+            } => {
+                #[cfg(feature = "std")]
+                std::eprintln!("KAHN CYCLE DETECTED! Stuck: {stuck:?}");
+                stuck.sort_by(|a, b| {
+                    let ev_a = events.get(a).unwrap();
+                    let ev_b = events.get(b).unwrap();
+                    // Standard tie-breaking fallback (origin_server_ts ascending, then event_id ascending)
+                    ev_a.origin_server_ts()
+                        .cmp(&ev_b.origin_server_ts())
+                        .then_with(|| a.cmp(b))
+                });
+                sorted.append(&mut stuck);
+                sorted
+            }
         }
     }
 }
@@ -784,20 +810,22 @@ mod tests {
 
         let mut cache = HashMap::new();
 
-        let first_sort = lean_kahn_sort(&events, &events, None, StateResVersion::V2, &mut cache);
+        let first_sort =
+            KahnSortInputs::new(&events, &events, None, StateResVersion::V2, &mut cache).sort();
         assert_eq!(first_sort[0], "$first");
 
         let mut mutated_events = events.clone();
         mutated_events.get_mut("$first").unwrap().power_level = 0;
         mutated_events.get_mut("$second").unwrap().power_level = 10;
 
-        let second_sort = lean_kahn_sort(
+        let second_sort = KahnSortInputs::new(
             &mutated_events,
             &mutated_events,
             None,
             StateResVersion::V2,
             &mut cache,
-        );
+        )
+        .sort();
         assert_eq!(second_sort[0], "$second");
     }
 
@@ -828,13 +856,14 @@ mod tests {
         events.insert(pl.event_id.clone(), pl_ref);
         events.insert(msg.event_id.clone(), msg_ref);
 
-        let sorted = lean_kahn_sort(
+        let sorted = KahnSortInputs::new(
             &events,
             &events,
             None::<&LeanEventRef<'_, String>>,
             StateResVersion::V2,
             &mut HashMap::new(),
-        );
+        )
+        .sort();
 
         assert_eq!(
             sorted,

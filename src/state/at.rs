@@ -390,7 +390,7 @@ where
     }
 
     let mut result = None;
-    compute_state_at_streaming(
+    StreamingInputs::compute(
         &[target_event_id],
         events_map,
         version,
@@ -420,7 +420,7 @@ where
 /// massive memory spikes and allocation overhead.
 ///
 /// For processing multiple events in production (e.g., full room rebuilds),
-/// use [`compute_state_at_streaming`] instead to stream states via a callback
+/// use [`StreamingInputs::compute`] instead to stream states via a callback
 /// and keep memory bounded to the DAG's width.
 ///
 /// # Panics
@@ -444,7 +444,7 @@ where
 {
     let mut results = HashMap::with_capacity(target_event_ids.len());
 
-    compute_state_at_streaming(
+    StreamingInputs::compute(
         target_event_ids,
         events_map,
         version,
@@ -518,56 +518,6 @@ impl<'a, Id, C, Q: ?Sized, S, K> StreamingInputs<'a, Id, C, Q, S, K> {
     }
 }
 
-/// Same as [`compute_state_at_batch`] but yields each resolved room state
-/// to a callback (as soon as it is ready).
-///
-/// This function is **strictly superior** to [`compute_state_at_batch`] for
-/// large-scale state reconstruction (e.g. homeserver full state rebuilds).
-/// By passing ownership of the computed state to the callback, callers can
-/// immediately compress and store the state (e.g. directly into a `RocksDB`
-/// buffer), bounding the peak memory for materialized state maps to the live
-/// frontier/DAG width under strict `O(n_reachable_ancestors)` indexing metadata.
-/// TODO: pair this with the HAMT-backed state map to reduce clone pressure on
-/// large fork-heavy DAGs.
-///
-/// **NOTE:** Target IDs not found in `events_map` are silently skipped!
-///
-/// # Panics
-///
-/// Will panic if graph invariants are violated (specifically, if an ancestor event
-/// present in the reachable subgraph is missing from `events_map` during topological processing).
-pub fn compute_state_at_streaming<Id, C, Q, S, K>(
-    target_event_ids: &[&Q],
-    events_map: &EventMap<Id, C, K, S>,
-    version: StateResVersion,
-    mut on_target_resolved: impl FnMut(Id, SharedState<Id, K>),
-    empty_key: &K,
-) where
-    Id: EventId + Borrow<Q>,
-    Q: ?Sized + Eq + core::hash::Hash + Ord,
-    S: BuildHasher,
-    C: EventContent,
-    K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
-{
-    let result = StreamingInputs::new(target_event_ids, events_map, version, empty_key)
-        .try_compute(|id, state| -> Result<(), core::convert::Infallible> {
-            on_target_resolved(id, state);
-            Ok(())
-        });
-
-    match result {
-        Ok(()) => {}
-        Err(StateComputationError::CycleDetected) => {
-            #[cfg(feature = "std")]
-            std::eprintln!(
-                "rezzy::compute_state_at: Cycle detected! Reachable subgraph is malformed."
-            );
-        }
-        Err(StateComputationError::Callback(infallible)) => match infallible {},
-    }
-}
-
 /// Deduplicates `target_event_ids` against `events_map`, builds the dense ancestor
 /// index, and flags which indexed nodes are targets. Invokes `f` with the index and
 /// target mask; returns `None` when none of the requested targets are present.
@@ -634,9 +584,9 @@ where
         .unwrap_or(Ok(()))
     }
 
-    /// A fallible variant of [`compute_state_at_streaming`].
+    /// A fallible variant of [`StreamingInputs::compute`].
     ///
-    /// Functions identically to `compute_state_at_streaming`, but threads a
+    /// Functions identically to `StreamingInputs::compute`, but threads a
     /// `Result` through the callback so that callers can abort early (e.g. on
     /// I/O errors during storage).
     ///
@@ -665,6 +615,75 @@ where
         on_target_resolved: impl for<'b> FnMut(Id, StateUpdate<'b, Id, K>) -> Result<(), E>,
     ) -> Result<(), StateComputationError<E>> {
         self.with_pipeline_run(|run| run.run_optimized(on_target_resolved))
+    }
+
+    /// Same as [`compute_state_at_batch`] but yields each resolved room state
+    /// to a callback (as soon as it is ready).
+    ///
+    /// This function is **strictly superior** to [`compute_state_at_batch`] for
+    /// large-scale state reconstruction (e.g. homeserver full state rebuilds).
+    /// By passing ownership of the computed state to the callback, callers can
+    /// immediately compress and store the state (e.g. directly into a `RocksDB`
+    /// buffer), bounding the peak memory for materialized state maps to the live
+    /// frontier/DAG width under strict `O(n_reachable_ancestors)` indexing metadata.
+    /// TODO: pair this with the HAMT-backed state map to reduce clone pressure on
+    /// large fork-heavy DAGs.
+    ///
+    /// **NOTE:** Target IDs not found in `events_map` are silently skipped!
+    ///
+    /// # Panics
+    ///
+    /// Will panic if graph invariants are violated (specifically, if an ancestor event
+    /// present in the reachable subgraph is missing from `events_map` during topological processing).
+    pub fn compute(
+        target_event_ids: &[&Q],
+        events_map: &EventMap<Id, C, K, S>,
+        version: StateResVersion,
+        mut on_target_resolved: impl FnMut(Id, SharedState<Id, K>),
+        empty_key: &K,
+    ) {
+        let result = StreamingInputs::new(target_event_ids, events_map, version, empty_key)
+            .try_compute(|id, state| -> Result<(), core::convert::Infallible> {
+                on_target_resolved(id, state);
+                Ok(())
+            });
+
+        match result {
+            Ok(()) => {}
+            Err(StateComputationError::CycleDetected) => {
+                #[cfg(feature = "std")]
+                std::eprintln!(
+                    "rezzy::compute_state_at: Cycle detected! Reachable subgraph is malformed."
+                );
+            }
+            Err(StateComputationError::Callback(infallible)) => match infallible {},
+        }
+    }
+
+    /// A high-performance, non-fallible variant of [`StreamingInputs::compute`]
+    /// designed for massive rebuild pipelines.
+    ///
+    /// Returns `true` if the graph traversal completed successfully, or `false`
+    /// if a cycle was detected in the reachable subgraph.
+    #[must_use = "a `false` return means a cycle was detected and results are incomplete; silently discarding it defeats the purpose of cycle detection"]
+    pub fn compute_optimized(
+        target_event_ids: &[&Q],
+        events_map: &EventMap<Id, C, K, S>,
+        version: StateResVersion,
+        mut on_target_resolved: impl for<'b> FnMut(Id, StateUpdate<'b, Id, K>),
+        empty_key: &K,
+    ) -> bool {
+        let result = StreamingInputs::new(target_event_ids, events_map, version, empty_key)
+            .try_compute_optimized(|id, update| -> Result<(), core::convert::Infallible> {
+                on_target_resolved(id, update);
+                Ok(())
+            });
+
+        match result {
+            Ok(()) => true,
+            Err(StateComputationError::CycleDetected) => false,
+            Err(StateComputationError::Callback(infallible)) => match infallible {},
+        }
     }
 }
 
@@ -2697,40 +2716,6 @@ where
     }
 }
 
-/// A high-performance, non-fallible variant of [`compute_state_at_streaming`] designed for
-/// massive rebuild pipelines.
-///
-/// Returns `true` if the graph traversal completed successfully, or `false` if a cycle
-/// was detected in the reachable subgraph.
-#[must_use = "a `false` return means a cycle was detected and results are incomplete; silently discarding it defeats the purpose of cycle detection"]
-pub fn compute_state_at_streaming_optimized<Id, C, Q, S, K>(
-    target_event_ids: &[&Q],
-    events_map: &EventMap<Id, C, K, S>,
-    version: StateResVersion,
-    mut on_target_resolved: impl for<'b> FnMut(Id, StateUpdate<'b, Id, K>),
-    empty_key: &K,
-) -> bool
-where
-    Id: EventId + Borrow<Q>,
-    Q: ?Sized + Eq + core::hash::Hash + Ord,
-    S: BuildHasher,
-    C: EventContent,
-    K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
-{
-    let result = StreamingInputs::new(target_event_ids, events_map, version, empty_key)
-        .try_compute_optimized(|id, update| -> Result<(), core::convert::Infallible> {
-            on_target_resolved(id, update);
-            Ok(())
-        });
-
-    match result {
-        Ok(()) => true,
-        Err(StateComputationError::CycleDetected) => false,
-        Err(StateComputationError::Callback(infallible)) => match infallible {},
-    }
-}
-
 /// Computes the true forward extremities (DAG leaves) from a batched set of events.
 /// This uses `RoaringBitmap` set differences (`all_events - all_parents`) to
 /// instantly find the leaves of a DAG, no matter how deep.
@@ -3814,7 +3799,7 @@ mod tests {
         .expect_err("the plain pipeline must reject a cycle");
         assert_eq!(plain_error, StateComputationError::CycleDetected);
 
-        let completed = compute_state_at_streaming_optimized(
+        let completed = StreamingInputs::compute_optimized(
             &target,
             &events_map,
             StateResVersion::V2_1_1,
@@ -3890,7 +3875,7 @@ mod tests {
         let mut c_parent_unchanged_id = None;
         let mut d_has_new_state = false;
 
-        let completed = compute_state_at_streaming_optimized(
+        let completed = StreamingInputs::compute_optimized(
             &["B", "C", "D"],
             &events_map,
             crate::StateResVersion::V2,
@@ -4451,7 +4436,7 @@ mod tests {
 
         let mut yielded_ids = alloc::vec![];
         let mut saw_new = false;
-        let ok = compute_state_at_streaming_optimized(
+        let ok = StreamingInputs::compute_optimized(
             &["B"],
             &events_map,
             crate::StateResVersion::V2,

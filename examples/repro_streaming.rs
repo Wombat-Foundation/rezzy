@@ -183,7 +183,7 @@ fn run_streaming(
 ) -> (HashMap<String, StateMap>, bool) {
     let mut resolved_state_at: HashMap<String, StateMap> = HashMap::new();
 
-    let completed = rezzy::compute_state_at_streaming_optimized(
+    let completed = rezzy::StreamingInputs::compute_optimized(
         target_refs,
         lean_events,
         version,
