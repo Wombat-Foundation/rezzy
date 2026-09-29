@@ -6,6 +6,10 @@ use std::collections::{BinaryHeap, HashMap};
 pub enum TimelineOrder {
     /// Kahn topological order; parents always precede children. The ready queue
     /// is ordered by `--tie-break` (default `origin_server_ts,matrix_depth,event_id`).
+    ///
+    /// With the default (all-[`OrderKey::is_portable`]) tie-break this is the
+    /// server-agnostic ordering: deterministic across servers and needing no
+    /// sidecar. Including a stream key makes it server-local.
     #[default]
     Causal,
     /// Synapse-like `matrix_depth, stream_ordering, event_id`. Stream order is
@@ -28,17 +32,31 @@ impl clap::ValueEnum for TimelineOrder {
 }
 
 /// A key usable in `--tie-break`.
+///
+/// Keys split into two classes:
+///
+/// * **Portable / server-agnostic** — [`Self::OriginServerTs`],
+///   [`Self::MatrixDepth`], [`Self::EventId`]. For room v3+ these fields are
+///   bound to the event ID by the reference hash of the redacted event, so any
+///   server that verifies the same event ID sees the same value. An ordering
+///   built only from these keys is deterministic across servers and needs no
+///   sidecar. It is still only a *convention*: timestamps and depth are
+///   origin-asserted, so a malicious or backdated origin produces a valid but
+///   misleading order. Only the DAG edges carry real causal information.
+/// * **Server-local / non-portable** — [`Self::StreamOrdering`] and
+///   [`Self::PduCount`]. These are a server's local receive order and cannot be
+///   reproduced without the provenance sidecar (`--metadata`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderKey {
-    /// `origin_server_ts` (untrusted ordering hint).
+    /// `origin_server_ts` (untrusted ordering hint; portable).
     OriginServerTs,
-    /// The Matrix `depth` field (untrusted ordering hint).
+    /// The Matrix `depth` field (untrusted ordering hint; portable).
     MatrixDepth,
-    /// The event ID (content-authenticated, deterministic).
+    /// The event ID (content-addressed, deterministic; portable).
     EventId,
-    /// Normalized stream order from the provenance sidecar.
+    /// Normalized stream order from the provenance sidecar (server-local).
     StreamOrdering,
-    /// Alias of [`Self::StreamOrdering`] (Congruent/Tuwunel name).
+    /// Alias of [`Self::StreamOrdering`] (Congruent/Tuwunel name; server-local).
     PduCount,
 }
 
@@ -69,6 +87,15 @@ impl OrderKey {
     #[must_use]
     pub fn needs_stream_order(self) -> bool {
         matches!(self, Self::StreamOrdering | Self::PduCount)
+    }
+
+    /// Whether this key is portable, i.e. reproducible by any server that has
+    /// verified the event, with no local receive-order metadata.
+    ///
+    /// An ordering is server-agnostic only when every key is portable.
+    #[must_use]
+    pub fn is_portable(self) -> bool {
+        !self.needs_stream_order()
     }
 }
 
@@ -214,6 +241,23 @@ mod tests {
             kahn_order(&ids, &parents, &timestamps, &depths),
             vec![2, 1, 0]
         );
+    }
+
+    #[test]
+    fn only_event_id_bound_keys_are_portable() {
+        for key in [
+            OrderKey::OriginServerTs,
+            OrderKey::MatrixDepth,
+            OrderKey::EventId,
+        ] {
+            assert!(key.is_portable(), "{key:?} should be server-agnostic");
+            assert!(!key.needs_stream_order());
+        }
+        for key in [OrderKey::StreamOrdering, OrderKey::PduCount] {
+            assert!(!key.is_portable(), "{key:?} should be server-local");
+            assert!(key.needs_stream_order());
+        }
+        assert!(DEFAULT_TIE_BREAK.iter().all(|key| key.is_portable()));
     }
 
     #[test]

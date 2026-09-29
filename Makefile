@@ -143,7 +143,7 @@ rust/clean: ##H Remove Rust build artifacts
 
 .PHONY: rust/install
 rust/install: ##H Install rezzy binary to cargo bin
-	$(CARGO) install --timings --locked --path rezzy-cli --bin rezzy
+	$(CARGO) install --timings --locked --path rezzy-cli --bin rezzy --features tls
 
 .PHONY: rust/uninstall
 rust/uninstall: ##H Uninstall rezzy binary from cargo bin

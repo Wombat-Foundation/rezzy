@@ -19,6 +19,7 @@ pub mod error;
 pub mod aggregate;
 pub mod federation;
 pub mod format;
+pub mod inspect;
 pub mod jsonl_merge;
 pub mod network;
 pub mod provenance;
@@ -216,7 +217,7 @@ pub fn cli_command() -> clap::Command {
                 .long("tie-break")
                 .value_delimiter(',')
                 .value_parser(clap::builder::EnumValueParser::<OrderKey>::new())
-                .help("Tie-break order for simultaneously eligible events in causal mode. Parent-before-child ordering always wins."),
+                .help("Tie-break order for simultaneously eligible events in causal mode. Parent-before-child ordering always wins. Portable keys (server-agnostic): origin_server_ts,matrix_depth,event_id. Server-local keys (need --metadata): stream_ordering,pdu_count."),
         )
         .arg(
             clap::Arg::new("metadata")
@@ -226,6 +227,7 @@ pub fn cli_command() -> clap::Command {
         )
         .subcommand(aggregate::command())
         .subcommand(federation::command())
+        .subcommand(inspect::command())
         .subcommand(repair::command())
         .subcommand(
             clap::Command::new("completions")
@@ -622,6 +624,15 @@ pub fn main_entry() {
     }
     if let Some(("federation", federation_matches)) = matches.subcommand() {
         print_json_command_result(federation::run_from_matches(federation_matches));
+    }
+    if let Some(("inspect", inspect_matches)) = matches.subcommand() {
+        match inspect::run_from_matches(inspect_matches) {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
     }
     if let Some(("repair-ids", repair_matches)) = matches.subcommand() {
         print_json_command_result(repair::run_from_matches(repair_matches));

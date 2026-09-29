@@ -3,27 +3,37 @@
 use crate::error::{AppError, ErrorCode};
 use clap::{Arg, ArgMatches, Command};
 use rezzy::JsonValue;
+use std::collections::BTreeSet;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
 
+#[must_use]
 pub fn command() -> Command {
     Command::new("repair-ids")
         .about("Fill missing Matrix event IDs in a JSONL export")
-        .arg(
-            Arg::new("input")
-                .long("input")
-                .short('i')
-                .required(true)
-                .value_parser(clap::value_parser!(PathBuf)),
-        )
-        .arg(
-            Arg::new("output")
-                .long("output")
-                .short('o')
-                .required(true)
-                .value_parser(clap::value_parser!(PathBuf)),
-        )
+        .arg(input_arg())
+        .arg(output_arg(true))
+}
+
+/// The shared required `-i/--input` JSONL path argument.
+#[must_use]
+pub fn input_arg() -> Arg {
+    Arg::new("input")
+        .long("input")
+        .short('i')
+        .required(true)
+        .value_parser(clap::value_parser!(PathBuf))
+}
+
+/// The shared `-o/--output` path argument; `required` makes it mandatory.
+#[must_use]
+pub fn output_arg(required: bool) -> Arg {
+    Arg::new("output")
+        .long("output")
+        .short('o')
+        .required(required)
+        .value_parser(clap::value_parser!(PathBuf))
 }
 
 pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
@@ -146,4 +156,212 @@ fn infer_room_version(path: &PathBuf) -> Result<String, AppError> {
             format!("cannot infer room version from filename {}", path.display()),
         )
     })
+}
+
+/// Parse every non-empty line of a JSONL file into a JSON value.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read, a line is malformed JSON, or
+/// the contents are not valid UTF-8.
+pub fn read_jsonl_events(path: &Path) -> Result<Vec<JsonValue>, AppError> {
+    let text = fs::read_to_string(path)?;
+    let mut events = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        events.push(JsonValue::parse(line).map_err(|e| {
+            AppError::new(
+                ErrorCode::MalformedJson,
+                format!("{}:{}: {e}", path.display(), index + 1),
+            )
+        })?);
+    }
+    Ok(events)
+}
+
+/// Read newline-delimited event IDs from `path`, or standard input when `path`
+/// is `-`.
+///
+/// Blank lines and `#` comments are skipped, and only `$…` tokens are kept, so
+/// an emitted ID stream that also carries a JSON summary stays safe to feed
+/// back in.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read or contains invalid UTF-8.
+pub fn read_event_ids(path: &Path) -> Result<Vec<String>, AppError> {
+    let text = if path == Path::new("-") {
+        let mut buffer = String::new();
+        std::io::stdin().read_to_string(&mut buffer)?;
+        buffer
+    } else {
+        fs::read_to_string(path)?
+    };
+    let mut seen = BTreeSet::new();
+    let mut ids = Vec::new();
+    for line in text.lines() {
+        for token in event_id_tokens(line) {
+            if seen.insert(token.clone()) {
+                ids.push(token);
+            }
+        }
+    }
+    Ok(ids)
+}
+
+/// Write one event ID per line, creating parent directories as needed.
+///
+/// # Errors
+///
+/// Returns an error when the destination cannot be created or written.
+pub fn write_event_ids(path: &Path, ids: &[String]) -> Result<(), AppError> {
+    let mut text = String::new();
+    for id in ids {
+        text.push_str(id);
+        text.push('\n');
+    }
+    if path == Path::new("-") {
+        let mut stdout = std::io::stdout();
+        stdout.write_all(text.as_bytes())?;
+        stdout.flush()?;
+        return Ok(());
+    }
+    if let Some(parent) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, text)?;
+    Ok(())
+}
+
+/// Which reference list an event ID came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceKind {
+    PrevEvents,
+    AuthEvents,
+}
+
+impl ReferenceKind {
+    /// The Matrix field this kind reads.
+    #[must_use]
+    pub fn field(self) -> &'static str {
+        match self {
+            Self::PrevEvents => "prev_events",
+            Self::AuthEvents => "auth_events",
+        }
+    }
+}
+
+/// References from one event, by kind, that no scanned event defines.
+#[derive(Debug, Clone)]
+pub struct MissingReference {
+    /// The referencing event (empty when it has no usable `event_id`).
+    pub event_id: String,
+    pub kind: ReferenceKind,
+    pub missing: Vec<String>,
+}
+
+/// Local DAG gap report over a set of events.
+#[derive(Debug, Default)]
+pub struct GapReport {
+    /// Event IDs defined by the scanned events.
+    pub present: BTreeSet<String>,
+    /// Referenced-but-absent IDs from `prev_events`.
+    pub missing_prev: BTreeSet<String>,
+    /// Referenced-but-absent IDs from `auth_events`.
+    pub missing_auth: BTreeSet<String>,
+    /// Per-event, per-kind breakdown of the missing references.
+    pub references: Vec<MissingReference>,
+}
+
+impl GapReport {
+    /// Every missing ID across both kinds, sorted.
+    #[must_use]
+    pub fn missing(&self) -> Vec<String> {
+        self.missing_prev
+            .union(&self.missing_auth)
+            .cloned()
+            .collect()
+    }
+
+    /// True when both reference lists are fully covered.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.missing_prev.is_empty() && self.missing_auth.is_empty()
+    }
+}
+
+/// Scan `events` for IDs referenced by `prev_events`/`auth_events` that no
+/// event in the set defines.
+#[must_use]
+pub fn scan_gaps(events: &[JsonValue]) -> GapReport {
+    let present: BTreeSet<String> = events.iter().filter_map(event_id_of).collect();
+    let mut report = GapReport {
+        present: present.clone(),
+        ..GapReport::default()
+    };
+    for event in events {
+        let event_id = event_id_of(event).unwrap_or_default();
+        for kind in [ReferenceKind::PrevEvents, ReferenceKind::AuthEvents] {
+            let missing: Vec<String> = refs_for(event, kind)
+                .into_iter()
+                .filter(|id| !present.contains(id))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if missing.is_empty() {
+                continue;
+            }
+            match kind {
+                ReferenceKind::PrevEvents => report.missing_prev.extend(missing.iter().cloned()),
+                ReferenceKind::AuthEvents => report.missing_auth.extend(missing.iter().cloned()),
+            }
+            report.references.push(MissingReference {
+                event_id: event_id.clone(),
+                kind,
+                missing,
+            });
+        }
+    }
+    report
+}
+
+/// The event IDs referenced by `prev_events`/`auth_events` of `events` that no
+/// event in `events` defines, sorted and de-duplicated.
+#[must_use]
+pub fn referenced_but_absent(events: &[JsonValue]) -> Vec<String> {
+    scan_gaps(events).missing()
+}
+
+fn refs_for(event: &JsonValue, kind: ReferenceKind) -> Vec<String> {
+    event
+        .get(kind.field())
+        .and_then(JsonValue::as_array)
+        .map(|items| items.iter().filter_map(reference_id).collect())
+        .unwrap_or_default()
+}
+
+pub(crate) fn event_id_of(event: &JsonValue) -> Option<String> {
+    event
+        .get("event_id")
+        .and_then(JsonValue::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+}
+
+fn reference_id(item: &JsonValue) -> Option<String> {
+    let id = item.as_str().or_else(|| {
+        item.as_array()
+            .and_then(|entries| entries.first())
+            .and_then(JsonValue::as_str)
+    })?;
+    (!id.is_empty()).then(|| id.to_owned())
+}
+
+fn event_id_tokens(line: &str) -> impl Iterator<Item = String> + '_ {
+    line.split(|c: char| c.is_whitespace() || matches!(c, '"' | ',' | '[' | ']' | '{' | '}'))
+        .filter(|token| token.starts_with('$') && token.len() > 1)
+        .map(str::to_owned)
 }
