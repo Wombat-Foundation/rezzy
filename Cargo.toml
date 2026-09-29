@@ -1,7 +1,9 @@
-
 # ──────────────────────────────────────────────────────────────────
-# Root facade package — re-exports rz-core for backwards compat.
-# Tests, benches, and auxiliary binaries live here.
+# Workspace root.
+#
+# The root package IS the `rezzy` library (core: auth, state, resolve,
+# HAMT, Merkle). The `rezzy-cli` package produces the `rezzy` binary,
+# and `rz-json` / `rz-reconcile` are the primitive sub-crates.
 # ──────────────────────────────────────────────────────────────────
 
 [package]
@@ -12,18 +14,17 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Lightweight and formally verified: State Res v1, v2, and v2.1 reference implementations in Rust."
+readme = "README.md"
+description = "Core Matrix state resolution engine: auth, state, resolve, HAMT, and Merkle primitives."
 keywords = ["matrix", "state-resolution", "federation", "verification"]
 categories = ["algorithms", "mathematics"]
-default-run = "rezzy"
-autobins = false
-autobenches = false
-autotests = false
 exclude = [
     "build.rs",
     "res/",
     "scripts/",
     "docs/",
+    "spec/",
+    "benches/",
     "RumaLean/",
     "RumaLean.lean",
     "lake*",
@@ -41,16 +42,25 @@ exclude = [
     ".ignore",
     ".gitmodules",
     ".typos.toml",
-    ".cargo/cargo-wrapper.sh",
-    ".cargo/config.toml",
+    ".cargo/",
     "rustfmt.toml",
     "tests/",
     "Makefile",
+    "TODO.txt",
+    "pr-comments.14.md",
+    "changes.diff",
+    "c.diff",
 ]
+autobins = false
+autobenches = false
+autotests = false
+
+[package.metadata.cargo-machete]
+ignored = ["idna_adapter", "zeroize"]
 
 [workspace]
 resolver = "2"
-members = ["rz-cli", "rz-core", "rz-json", "rz-reconcile"]
+members = ["rezzy-cli", "rz-json", "rz-reconcile"]
 
 [workspace.package]
 version = "0.6.0-rc.0"
@@ -61,8 +71,8 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/gamesguru/rezzy"
 
 [workspace.dependencies]
-rz-cli = { path = "rz-cli" }
-rz-core = { path = "rz-core" }
+rezzy = { path = "." }
+rezzy-cli = { path = "rezzy-cli" }
 rz-json = { path = "rz-json" }
 rz-reconcile = { path = "rz-reconcile" }
 
@@ -122,33 +132,36 @@ dbg_macro = "warn"
 get_unwrap = "warn"
 
 [[bin]]
-name = "rezzy"
-path = "src/bin/rezzy.rs"
-required-features = ["cli"]
-test = false
-
-[[bin]]
 name = "regen-oracles"
-path = "scripts/regen_oracles.rs"
+path = "src/bin/regen_oracles.rs"
 required-features = ["regen"]
-test = false
 
 [features]
 default = ["std"]
-std = ["rz-core/std"]
-cli = ["std", "rz-core/cli", "dep:rz-cli"]
+std = []
+cli = ["std", "dep:clap"]
 regen = ["std"]
-signing = ["rz-core/signing"]
-signing-dalek = ["rz-core/signing-dalek"]
+signing = ["signing-dalek"]
+signing-dalek = ["dep:ed25519-dalek"]
 stress = []
 hashing = []
-simd-json-bench = []
-unstable-refcount-gc = ["rz-core/unstable-refcount-gc"]
+unstable-refcount-gc = []
 
 [dependencies]
+rz-json.workspace = true
+rz-reconcile.workspace = true
+
+base64.workspace = true
+blake2.workspace = true
+hashbrown.workspace = true
 imbl.workspace = true
-rz-cli = { workspace = true, optional = true }
-rz-core.workspace = true
+roaring.workspace = true
+sha2.workspace = true
+sha3.workspace = true
+
+# Optional
+clap = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64.workspace = true
@@ -163,6 +176,55 @@ similar.workspace = true
 test-case.workspace = true
 test-log.workspace = true
 zeroize.workspace = true
+
+[lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = [
+    "cfg(coverage)",
+    "cfg(coverage_nightly)",
+    "cfg(tarpaulin)",
+    "cfg(has_res_submodule)",
+] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+similar_names = "allow"
+multiple_crate_versions = "allow"
+arithmetic_side_effects = "warn"
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+get_unwrap = "warn"
+
+[[test]]
+name = "unit"
+path = "tests/unit/main.rs"
+
+[[test]]
+name = "test_snapshots"
+path = "tests/test_snapshots.rs"
+required-features = ["stress"]
+
+[[test]]
+name = "stress_large_rooms"
+path = "tests/stress_large_rooms.rs"
+required-features = ["stress"]
+
+[[test]]
+name = "stress_unredacted_lounge"
+path = "tests/stress_unredacted_lounge.rs"
+required-features = ["stress"]
+
+[[test]]
+name = "test_main"
+path = "tests/test_main.rs"
+required-features = ["cli"]
 
 [profile.release-max-perf]
 inherits = "release"
@@ -187,10 +249,3 @@ debug = 0
 strip = "debuginfo"
 incremental = true
 codegen-units = 256
-
-[[example]]
-name = "bench_files"
-path = "scripts/bench_files.rs"
-
-[lints]
-workspace = true

@@ -1096,8 +1096,16 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "rezzy"
 version = "0.6.0-rc.0"
 dependencies = [
+ "base64",
+ "blake2",
+ "ed25519-dalek",
+ "hashbrown 0.15.5",
  "imbl",
- "rz-core",
+ "roaring",
+ "rz-json",
+ "rz-reconcile",
+ "sha2 0.10.9",
+ "sha3",
 ]
 
 [[package]]
@@ -1256,22 +1264,6 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
-
-[[package]]
-name = "rz-core"
-version = "0.6.0-rc.0"
-dependencies = [
- "base64",
- "blake2",
- "ed25519-dalek",
- "hashbrown 0.15.5",
- "imbl",
- "roaring",
- "rz-json",
- "rz-reconcile",
- "sha2 0.10.9",
- "sha3",
-]
 
 [[package]]
 name = "rz-json"
