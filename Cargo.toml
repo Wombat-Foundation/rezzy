@@ -50,6 +50,9 @@ exclude = [
     "pr-comments.14.md",
     "changes.diff",
     "c.diff",
+    ".markdownlint.json",
+    "examples/",
+    "rust-toolchain.toml",
 ]
 autobins = false
 autobenches = false
