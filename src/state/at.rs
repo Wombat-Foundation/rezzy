@@ -1556,6 +1556,57 @@ where
 
 // ─── Position-based topological ordering ─────────────────────────────
 
+/// Collects the ancestor subgraph index and its Kahn topological order.
+fn ancestor_index_and_topo<'a, Id, C, S, K>(
+    targets: &[&'a Id],
+    events_map: &'a EventMap<Id, C, K, S>,
+) -> (DenseIndex<&'a Id, usize>, Vec<usize>)
+where
+    Id: EventId,
+    S: BuildHasher,
+    C: Clone,
+{
+    let index = collect_ancestor_short_ids_batch(targets, events_map);
+    let (sorted, _) = topological_sort_short_ids(&index, events_map);
+    (index, sorted)
+}
+
+/// Parent-max depth per dense index, in topological order.
+fn parent_max_depths<Id, C, S, K>(
+    events_map: &EventMap<Id, C, K, S>,
+    index: &DenseIndex<&Id, usize>,
+    sorted: &[usize],
+) -> Vec<u64>
+where
+    Id: EventId,
+    S: BuildHasher,
+    C: Clone,
+{
+    let mut depth_by_idx = alloc::vec![0u64; index.len()];
+    for &idx in sorted {
+        let id = index.items()[idx];
+        if let Some(ev) = events_map.get(id) {
+            let max_parent = ev
+                .prev_events
+                .iter()
+                .filter_map(|pe| index.index_of(&pe))
+                .map(|pi| depth_by_idx[pi])
+                .max()
+                .unwrap_or(0);
+            depth_by_idx[idx] = max_parent.saturating_add(1);
+        }
+    }
+    depth_by_idx
+}
+
+/// Depth of `id` from the precomputed per-index depths, or 0 if absent.
+fn depth_of<Id>(index: &DenseIndex<&Id, usize>, depth_by_idx: &[u64], id: &Id) -> u64
+where
+    Id: EventId,
+{
+    index.index_of(&id).map_or(0, |i| depth_by_idx[i])
+}
+
 /// Computes position-based topological depths for all events in the map.
 ///
 /// Unlike [`compute_depths`] (which returns `1 + max(parent_depths)` —
@@ -1609,8 +1660,7 @@ where
     }
 
     let all_ids: Vec<&Id> = events_map.keys().collect();
-    let index = collect_ancestor_short_ids_batch(&all_ids, events_map);
-    let (sorted, _) = topological_sort_short_ids(&index, events_map);
+    let (index, sorted) = ancestor_index_and_topo(&all_ids, events_map);
 
     debug_assert_eq!(
         sorted.len(),
@@ -1622,20 +1672,7 @@ where
     // Kahn sort gives a valid topological order; apply tiebreak within
     // each topological level for deterministic output.
     // First compute parent-max depths to identify levels.
-    let mut depth_by_idx = alloc::vec![0u64; index.len()];
-    for &idx in &sorted {
-        let id = index.items()[idx];
-        if let Some(ev) = events_map.get(id) {
-            let max_parent = ev
-                .prev_events
-                .iter()
-                .filter_map(|pe| index.index_of(&pe))
-                .map(|pi| depth_by_idx[pi])
-                .max()
-                .unwrap_or(0);
-            depth_by_idx[idx] = max_parent.saturating_add(1);
-        }
-    }
+    let depth_by_idx = parent_max_depths(events_map, &index, &sorted);
 
     // Sort by depth ascending (parents first), tiebreak within level.
     let mut result: Vec<Id> = sorted
@@ -1644,9 +1681,9 @@ where
         .collect();
 
     result.sort_by(|a, b| {
-        let da = index.index_of(&a).map_or(0, |i| depth_by_idx[i]);
-        let db = index.index_of(&b).map_or(0, |i| depth_by_idx[i]);
-        da.cmp(&db).then_with(|| tiebreak(a, b))
+        depth_of(&index, &depth_by_idx, a)
+            .cmp(&depth_of(&index, &depth_by_idx, b))
+            .then_with(|| tiebreak(a, b))
     });
 
     result
@@ -1683,8 +1720,7 @@ where
     }
 
     let all_ids: Vec<&Id> = events_map.keys().collect();
-    let index = collect_ancestor_short_ids_batch(&all_ids, events_map);
-    let (sorted, _) = topological_sort_short_ids(&index, events_map);
+    let (index, sorted) = ancestor_index_and_topo(&all_ids, events_map);
 
     let mut depths = alloc::vec![0u64; index.len()];
 
@@ -1868,25 +1904,10 @@ where
     };
 
     let targets = [tip_key];
-    let index = collect_ancestor_short_ids_batch(&targets, events_map);
-    let (sorted, _) = topological_sort_short_ids(&index, events_map);
+    let (index, sorted) = ancestor_index_and_topo(&targets, events_map);
 
     // Compute depths inline using the index arrays
-    let mut depth_by_idx = alloc::vec![0u64; index.len()];
-    for &idx in &sorted {
-        let id = index.items()[idx];
-        if let Some(ev) = events_map.get(id.borrow()) {
-            let max_parent = ev
-                .prev_events
-                .iter()
-                .filter_map(|pe| index.index_of(&pe))
-                .map(|pi| depth_by_idx[pi])
-                .max()
-                .unwrap_or(0);
-
-            depth_by_idx[idx] = max_parent.saturating_add(1);
-        }
-    }
+    let depth_by_idx = parent_max_depths(events_map, &index, &sorted);
 
     // Kahn sort gives parents-first; reverse for newest-first,
     // then stable-sort by depth descending with tiebreak.
@@ -1897,9 +1918,9 @@ where
         .collect();
 
     result.sort_by(|a, b| {
-        let da = index.index_of(&a).map_or(0, |i| depth_by_idx[i]);
-        let db = index.index_of(&b).map_or(0, |i| depth_by_idx[i]);
-        db.cmp(&da).then_with(|| tiebreak(a, b))
+        depth_of(&index, &depth_by_idx, b)
+            .cmp(&depth_of(&index, &depth_by_idx, a))
+            .then_with(|| tiebreak(a, b))
     });
 
     result
