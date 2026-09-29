@@ -738,14 +738,7 @@ fn test_hamt_mutation_with_custom_key_hash() {
         Some(&20_u64)
     );
 
-    let (root, removed) = crate::hamt::remove_with_key_hash(
-        &root,
-        key,
-        &1_u64,
-        |key: &u64| custom_routing_hash(*key),
-        &mut resolver,
-    )
-    .expect("custom remove should work");
+    let (root, removed) = remove_custom(&root, key, 1_u64, &mut resolver);
     assert_eq!(removed, Some(10_u64));
     assert_eq!(
         root.get_with_key_hash(&1_u64, |key| custom_routing_hash(*key)),
@@ -768,14 +761,7 @@ fn test_hamt_remove_with_custom_key_hash_collapses_to_leaf() {
         })
         .expect("build with custom hash should work");
 
-    let (root, removed) = crate::hamt::remove_with_key_hash(
-        &root,
-        key,
-        &1_u64,
-        |key: &u64| custom_routing_hash(*key),
-        &mut resolver,
-    )
-    .expect("custom remove should work");
+    let (root, removed) = remove_custom(&root, key, 1_u64, &mut resolver);
 
     assert_eq!(removed, Some(10_u64));
     assert_eq!(root.datamap.count_ones(), 1);
@@ -2844,17 +2830,7 @@ fn test_leaf_differences() {
     // Node B will have leaves at slots 1, 2
     let root_b = rebuild_node(key, 0b110, 0, vec![(2, 250), (3, 300)], vec![]);
 
-    let lattice_a = LtHash::default();
-    let lattice_b = LtHash([1u16; 1024]);
-
-    let (added, removed) = isolate_delta(
-        &root_a,
-        &lattice_a,
-        &root_b,
-        &lattice_b,
-        &mut panic_resolver,
-    )
-    .unwrap();
+    let IsolatedDelta { added, removed } = isolate_delta_default(&root_a, &root_b);
 
     // slot 0 (true, false): removed (1, 100)
     // slot 1 (true, true): differs, removed (2, 200) added (2, 250)
@@ -2873,6 +2849,41 @@ fn panic_resolver<K, V>(_hash: &StructuralHash) -> Result<Arc<HamtNode<K, V>>, (
 
 fn unreachable_resolver<K, V>() -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, ()> {
     panic_resolver::<K, V>
+}
+
+/// Diffs two `i32`-keyed roots with the canonical default/`[1; 1024]` lattices.
+struct IsolatedDelta {
+    added: Vec<(i32, i32)>,
+    removed: Vec<(i32, i32)>,
+}
+
+fn isolate_delta_default(root_a: &NodePtr<i32, i32>, root_b: &NodePtr<i32, i32>) -> IsolatedDelta {
+    let (added, removed) = isolate_delta(
+        root_a,
+        &LtHash::default(),
+        root_b,
+        &LtHash([1u16; 1024]),
+        &mut panic_resolver,
+    )
+    .unwrap();
+    IsolatedDelta { added, removed }
+}
+
+/// Removes `id` from a `u64`-keyed tree using the custom routing hash.
+fn remove_custom(
+    root: &NodePtr<u64, u64>,
+    key: &[u8],
+    id: u64,
+    resolver: &mut impl FnMut(&StructuralHash) -> Result<NodePtr<u64, u64>, ()>,
+) -> (NodePtr<u64, u64>, Option<u64>) {
+    crate::hamt::remove_with_key_hash(
+        root,
+        key,
+        &id,
+        |key: &u64| custom_routing_hash(*key),
+        resolver,
+    )
+    .expect("custom remove should work")
 }
 
 fn internal_root<K, V>(key: &[u8], slot: usize, child: NodeRef<K, V>) -> Arc<HamtNode<K, V>>
@@ -2999,17 +3010,7 @@ fn test_collect_all_leaves_recursion() {
     // triggering collect_all_leaves on internal, which then recurses into its children (leaf).
     let root_b = rebuild_node::<i32, i32>(key, 0, 0, vec![], vec![]);
 
-    let lattice_a = LtHash::default();
-    let lattice_b = LtHash([1u16; 1024]);
-
-    let (added, removed) = isolate_delta(
-        &root_a,
-        &lattice_a,
-        &root_b,
-        &lattice_b,
-        &mut panic_resolver,
-    )
-    .unwrap();
+    let IsolatedDelta { added, removed } = isolate_delta_default(&root_a, &root_b);
 
     assert_eq!(added, [] as [(i32, i32); 0]);
     assert_eq!(removed.len(), 1);
@@ -3033,17 +3034,7 @@ fn test_collect_all_leaves_recursion_added_side() {
 
     let root_a = rebuild_node::<i32, i32>(key, 0, 0, vec![], vec![]);
 
-    let lattice_a = LtHash::default();
-    let lattice_b = LtHash([1u16; 1024]);
-
-    let (added, removed) = isolate_delta(
-        &root_a,
-        &lattice_a,
-        &root_b,
-        &lattice_b,
-        &mut panic_resolver,
-    )
-    .unwrap();
+    let IsolatedDelta { added, removed } = isolate_delta_default(&root_a, &root_b);
 
     assert_eq!(removed, [] as [(i32, i32); 0]);
     assert_eq!(added.len(), 1);

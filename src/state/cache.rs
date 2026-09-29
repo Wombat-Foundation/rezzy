@@ -24,7 +24,7 @@
 //! events are converted hundreds of times.
 //!
 //! `LeanEventCache` amortizes this cost to once-per-event by caching
-//! `Arc<LeanEvent>` with LRU eviction. It implements [`EventProvider`](EventProvider) so
+//! `Arc<LeanEvent>` with LRU eviction. It implements [`EventProvider`] so
 //! it plugs directly into [`resolve_state_maps_lazy_with_diff`](crate::resolve::multi::resolve_state_maps_lazy_with_diff).
 //!
 //! # Example
@@ -78,7 +78,7 @@ use core::cell::{Cell, RefCell};
 ///
 /// The `BTreeMap` side-index is wrapped in [`RefCell`] and per-entry
 /// `last_access` fields use [`Cell<u64>`] so that the
-/// [`EventProvider`](EventProvider)
+/// [`EventProvider`]
 /// implementation (which takes `&self`) can update LRU state. This ensures
 /// events accessed through the lazy resolver path are properly marked as
 /// recently used and not prematurely evicted.
@@ -313,7 +313,7 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
     }
 }
 
-/// `LeanEventCache` implements [`EventProvider`](EventProvider) so it can be passed directly
+/// `LeanEventCache` implements [`EventProvider`] so it can be passed directly
 /// to [`resolve_state_maps_lazy_with_diff`](crate::resolve::multi::resolve_state_maps_lazy_with_diff).
 ///
 /// Unlike a plain `HashMap` provider, this implementation updates the LRU

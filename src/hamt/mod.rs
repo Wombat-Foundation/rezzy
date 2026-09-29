@@ -63,10 +63,17 @@ pub type KeyPathHash = StructuralHash;
 /// Shared pointer to a (possibly interned) HAMT node.
 pub(crate) type NodePtr<K, V> = Arc<HamtNode<K, V>>;
 
-/// Resolver bound shared by the HAMT descent, diff, and mutation APIs.
+/// Resolves a child node's [`StructuralHash`] to that node, or returns `E` if
+/// it cannot be fetched.
 ///
-/// Any closure matching the underlying `FnMut` signature satisfies it via the
-/// blanket impl, so callers pass closures exactly as before.
+/// This is the callback every HAMT descent, diff, and mutation entry point
+/// takes, named so callers can spell the bound once instead of repeating the
+/// full `FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>` signature
+/// (e.g. to store a `Box<dyn NodeResolver<..>>` or write a generic wrapper).
+///
+/// It is blanket-implemented for every matching `FnMut` closure and carries no
+/// methods, so callers pass ordinary closures and never implement it
+/// themselves.
 pub trait NodeResolver<K, V, E>: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E> {}
 
 impl<K, V, E, F> NodeResolver<K, V, E> for F where
