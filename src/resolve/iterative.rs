@@ -1082,6 +1082,12 @@ where
 /// # Panics
 ///
 /// Same conditions as [`resolve_iterative_sort`].
+/// Resolved state paired with the per-step deltas recorded while resolving.
+pub type ResolvedWithDeltas<Id, K> = (
+    SharedState<Id, K>,
+    alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
+);
+
 #[must_use]
 #[allow(clippy::type_complexity, clippy::too_many_lines)]
 #[allow(clippy::implicit_hasher)]
@@ -1094,10 +1100,7 @@ pub fn resolve_iterative_sort_with_deltas<
     K,
 >(
     inputs: IterativeInputs<'_, Id, C, K, S1, S2, Spl>,
-) -> (
-    SharedState<Id, K>,
-    alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
-)
+) -> ResolvedWithDeltas<Id, K>
 where
     K: StateKey,
     Spl: BuildHasher,
@@ -1140,10 +1143,7 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
 >(
     inputs: IterativeInputs<'_, Id, C, K, S1, S2, Spl>,
     options: ResolveOptions<'_, Id, C, K>,
-) -> (
-    SharedState<Id, K>,
-    alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
-)
+) -> ResolvedWithDeltas<Id, K>
 where
     K: StateKey,
     Spl: BuildHasher,

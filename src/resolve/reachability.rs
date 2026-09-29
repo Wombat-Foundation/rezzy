@@ -1110,38 +1110,81 @@ fn reach_from_index(
     }
 }
 
-impl<Id> Reachability for RangePrefilterReachability<Id>
-where
-    Id: EventId + Ord,
-{
+/// Representation-specific half of the reachability contract.
+///
+/// [`reaches_with`] holds the shared logic (endpoint lookup, self-reachability,
+/// cycle bail-out); each index supplies only its dense index, its cyclic-node
+/// set, whether a node reaches itself, and the final membership test. The
+/// blanket [`Reachability`] impl below is then written once.
+///
+/// This is an implementation detail of the built-in reachability indexes: it is
+/// public only so the blanket impl can name it.
+#[doc(hidden)]
+pub trait ReachIndex {
+    /// The event id type indexed by this representation.
+    type Id: EventId + Ord;
+
+    /// Dense id-to-index map shared by both representations.
+    fn index(&self) -> &DenseIndex<Self::Id>;
+    /// Nodes lying on a cycle, which make reachability unknown.
+    fn cyclic_nodes(&self) -> &BTreeSet<u32>;
+    /// Whether a node is considered reachable from itself.
+    fn self_is_reachable(&self) -> bool;
+    /// Whether `to_idx` is reachable from `from_idx` in this representation.
+    fn contains(&self, from_idx: u32, to_idx: u32) -> bool;
+}
+
+impl<Id: EventId + Ord> ReachIndex for RangePrefilterReachability<Id> {
     type Id = Id;
 
-    fn reaches(&self, from: &Self::Id, to: &Self::Id) -> Reach {
-        reaches_with(
-            &self.index,
-            &self.cyclic_nodes,
-            from,
-            to,
-            false,
-            |from_idx, to_idx| self.reaches_index(from_idx, to_idx),
-        )
+    fn index(&self) -> &DenseIndex<Id> {
+        &self.index
+    }
+
+    fn cyclic_nodes(&self) -> &BTreeSet<u32> {
+        &self.cyclic_nodes
+    }
+
+    fn self_is_reachable(&self) -> bool {
+        false
+    }
+
+    fn contains(&self, from_idx: u32, to_idx: u32) -> bool {
+        self.reaches_index(from_idx, to_idx)
     }
 }
 
-impl<Id> Reachability for ForwardReachabilityIndex<Id>
-where
-    Id: EventId + Ord,
-{
+impl<Id: EventId + Ord> ReachIndex for ForwardReachabilityIndex<Id> {
     type Id = Id;
+
+    fn index(&self) -> &DenseIndex<Id> {
+        &self.index
+    }
+
+    fn cyclic_nodes(&self) -> &BTreeSet<u32> {
+        &self.cyclic_nodes
+    }
+
+    fn self_is_reachable(&self) -> bool {
+        true
+    }
+
+    fn contains(&self, from_idx: u32, to_idx: u32) -> bool {
+        self.descendant_bitmaps[from_idx as usize].contains(to_idx)
+    }
+}
+
+impl<T: ReachIndex> Reachability for T {
+    type Id = T::Id;
 
     fn reaches(&self, from: &Self::Id, to: &Self::Id) -> Reach {
         reaches_with(
-            &self.index,
-            &self.cyclic_nodes,
+            self.index(),
+            self.cyclic_nodes(),
             from,
             to,
-            true,
-            |from_idx, to_idx| self.descendant_bitmaps[from_idx as usize].contains(to_idx),
+            self.self_is_reachable(),
+            |from_idx, to_idx| self.contains(from_idx, to_idx),
         )
     }
 }

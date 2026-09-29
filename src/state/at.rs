@@ -672,47 +672,24 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    let PipelineRun {
-        index,
-        is_target,
-        events_map,
-        version,
-        empty_key,
-    } = run;
-    let PipelineSetup {
-        sorted_ancestors,
-        mut out_degree,
-        mut global_auth_cache,
-        mut mainline_cache,
-        mut state_after_map,
-    } = prepare_pipeline(index, events_map, version)?;
+    let mut exec = prepare_execution::<Id, C, S, K, SharedState<Id, K>, E>(run)?;
 
-    for idx in sorted_ancestors {
-        let id_val = index.items()[idx];
-        let ev = events_map.get(id_val).unwrap();
-
-        let prev_states: Vec<SharedState<Id, K>> = finalized_parent_states(
-            &ev.prev_events,
-            index,
-            &mut out_degree,
-            &mut state_after_map,
-        );
-
-        let mut state_before: SharedState<Id, K> = resolve_merged_parent_states(
-            &prev_states,
-            events_map,
-            &mut global_auth_cache,
-            &mut mainline_cache,
-            version,
-            empty_key,
-        );
+    for idx in core::mem::take(&mut exec.sorted_ancestors) {
+        let (ev, prev_states) = exec.finalized_parents(idx);
+        let mut state_before: SharedState<Id, K> =
+            resolve_merged_parent_states(&prev_states, &mut exec.merge_ctx());
         record_own_state(&mut state_before, ev);
 
-        if is_target[idx] {
+        if exec.is_target[idx] {
             on_target(idx, state_before.clone()).map_err(StateComputationError::Callback)?;
         }
 
-        retain_state_for_children(&mut state_after_map, &out_degree, idx, state_before);
+        retain_state_for_children(
+            &mut exec.state_after_map,
+            &exec.out_degree,
+            idx,
+            state_before,
+        );
     }
 
     Ok(())
@@ -1243,6 +1220,133 @@ impl<Id, C, S, K> Clone for PipelineRun<'_, Id, C, S, K> {
     }
 }
 
+/// A streaming pipeline's full execution state: the borrowed traversal inputs
+/// plus the owned topological plan, caches, and per-node state slots it drives.
+struct PipelineExecution<'a, Id, C, S, K, T> {
+    index: &'a DenseIndex<&'a Id, usize>,
+    is_target: &'a [bool],
+    events_map: &'a EventMap<Id, C, K, S>,
+    version: StateResVersion,
+    empty_key: &'a K,
+    sorted_ancestors: Vec<usize>,
+    out_degree: Vec<usize>,
+    global_auth_cache: LocalAuthCache<Id, C, K>,
+    mainline_cache: FastMap<Id, Option<Id>>,
+    state_after_map: Vec<Option<T>>,
+}
+
+/// Prepares the full execution state for a streaming pipeline, failing with
+/// [`StateComputationError::CycleDetected`] on a cycle.
+fn prepare_execution<Id, C, S, K, T, E>(
+    run: PipelineRun<'_, Id, C, S, K>,
+) -> Result<PipelineExecution<'_, Id, C, S, K, T>, StateComputationError<E>>
+where
+    Id: EventId,
+    S: BuildHasher,
+    C: Clone + EventContent,
+    K: StateKey,
+{
+    let PipelineRun {
+        index,
+        is_target,
+        events_map,
+        version,
+        empty_key,
+    } = run;
+    let PipelineSetup {
+        sorted_ancestors,
+        out_degree,
+        global_auth_cache,
+        mainline_cache,
+        state_after_map,
+    } = prepare_pipeline::<Id, C, S, K, T, E>(index, events_map, version)?;
+    Ok(PipelineExecution {
+        index,
+        is_target,
+        events_map,
+        version,
+        empty_key,
+        sorted_ancestors,
+        out_degree,
+        global_auth_cache,
+        mainline_cache,
+        state_after_map,
+    })
+}
+
+impl<'a, Id, C, S, K, T> PipelineExecution<'a, Id, C, S, K, T> {
+    /// Fetches the node at `idx` and collects its finalized parent states,
+    /// applying the `out_degree`/`state_after_map` bookkeeping shared by every
+    /// streaming pipeline.
+    fn finalized_parents(&mut self, idx: usize) -> (&'a LeanEvent<Id, C, K>, Vec<T>)
+    where
+        Id: EventId,
+        S: BuildHasher,
+        T: Clone,
+    {
+        let events_map = self.events_map;
+        let id_val = self.index.items()[idx];
+        let ev = events_map
+            .get(id_val)
+            .expect("pipeline index contains only events from the event map");
+        let prev_states = finalized_parent_states(
+            &ev.prev_events,
+            self.index,
+            &mut self.out_degree,
+            &mut self.state_after_map,
+        );
+        (ev, prev_states)
+    }
+
+    /// Bundles this execution's merge inputs for a fork resolution call.
+    fn merge_ctx(&mut self) -> MergeContext<'_, Id, C, S, K> {
+        MergeContext::new(
+            self.events_map,
+            &mut self.global_auth_cache,
+            &mut self.mainline_cache,
+            self.version,
+            self.empty_key,
+        )
+    }
+}
+
+/// Shared inputs for merging parent states at a fork.
+///
+/// Bundles the event map and the caches threaded across a whole traversal, so
+/// the merge entry points stay comparable and callers construct them once
+/// instead of passing five positional arguments at every merge site.
+pub(crate) struct MergeContext<'a, Id, C, S, K> {
+    /// Event lookup for the traversal.
+    pub events_map: &'a EventMap<Id, C, K, S>,
+    /// Auth cache reused across merges.
+    pub global_auth_cache: &'a mut LocalAuthCache<Id, C, K>,
+    /// Mainline power-level cache threaded across merges.
+    pub mainline_cache: &'a mut FastMap<Id, Option<Id>>,
+    /// Room version being resolved.
+    pub version: StateResVersion,
+    /// Empty state key for the room version.
+    pub empty_key: &'a K,
+}
+
+impl<'a, Id, C, S, K> MergeContext<'a, Id, C, S, K> {
+    /// Bundles the merge inputs.
+    pub fn new(
+        events_map: &'a EventMap<Id, C, K, S>,
+        global_auth_cache: &'a mut LocalAuthCache<Id, C, K>,
+        mainline_cache: &'a mut FastMap<Id, Option<Id>>,
+        version: StateResVersion,
+        empty_key: &'a K,
+    ) -> Self {
+        Self {
+            events_map,
+            global_auth_cache,
+            mainline_cache,
+            version,
+            empty_key,
+        }
+    }
+}
+
 /// Merges the resolved parent states at a fork.
 ///
 /// The empty case yields fresh state; a single parent — or several structurally
@@ -1252,11 +1356,7 @@ impl<Id, C, S, K> Clone for PipelineRun<'_, Id, C, S, K> {
 /// subset (including the auth chain difference `auth(C) \ auth(U)`).
 pub(crate) fn resolve_merged_parent_states<Id, C, S, K>(
     prev_states: &[SharedState<Id, K>],
-    events_map: &EventMap<Id, C, K, S>,
-    global_auth_cache: &mut LocalAuthCache<Id, C, K>,
-    mainline_cache: &mut FastMap<Id, Option<Id>>,
-    version: StateResVersion,
-    empty_key: &K,
+    ctx: &mut MergeContext<'_, Id, C, S, K>,
 ) -> SharedState<Id, K>
 where
     Id: EventId,
@@ -1265,6 +1365,7 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
+    let events_map = ctx.events_map;
     let Some(first) = prev_states.first() else {
         return SharedState::new();
     };
@@ -1318,12 +1419,12 @@ where
     crate::resolve::iterative::resolve_iterative_sort_with_fresh_cache(
         &unconflicted_state,
         &conflicted_events,
-        events_map,
-        version,
-        empty_key,
+        ctx.events_map,
+        ctx.version,
+        ctx.empty_key,
         crate::resolve::iterative::ResolveCaches::new(
-            Some(global_auth_cache),
-            mainline_cache,
+            Some(&mut *ctx.global_auth_cache),
+            &mut *ctx.mainline_cache,
             &conflicted_keys,
         ),
     )
@@ -2415,14 +2516,15 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    resolve_merge_fast_path_hashed_with_cache(
-        prev_states,
+    let mut mainline_cache = FastMap::default();
+    let mut ctx = MergeContext::new(
         events_map,
         global_auth_cache,
-        &mut FastMap::default(),
+        &mut mainline_cache,
         version,
         empty_key,
-    )
+    );
+    resolve_merge_fast_path_hashed_with_cache(prev_states, &mut ctx)
 }
 
 /// Like [`resolve_merge_fast_path_hashed`], but additionally accepts a
@@ -2432,11 +2534,7 @@ where
 /// `O(M)` cache-hit walk instead of restarting from scratch every time.
 fn resolve_merge_fast_path_hashed_with_cache<Id, C, S, K>(
     prev_states: &[HashedState<Id, K>],
-    events_map: &EventMap<Id, C, K, S>,
-    global_auth_cache: &mut LocalAuthCache<Id, C, K>,
-    mainline_cache: &mut FastMap<Id, Option<Id>>,
-    version: StateResVersion,
-    empty_key: &K,
+    ctx: &mut MergeContext<'_, Id, C, S, K>,
 ) -> HashedState<Id, K>
 where
     Id: EventId,
@@ -2461,14 +2559,7 @@ where
     } else {
         let shared_states: Vec<SharedState<Id, K>> =
             prev_states.iter().map(|s| s.state.clone()).collect();
-        let resolved = resolve_merged_parent_states(
-            &shared_states,
-            events_map,
-            global_auth_cache,
-            mainline_cache,
-            version,
-            empty_key,
-        );
+        let resolved = resolve_merged_parent_states(&shared_states, ctx);
 
         // Incremental LtHash update from the first parent state!
         let mut hash = first.hash;
@@ -2514,31 +2605,10 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    let PipelineRun {
-        index,
-        is_target,
-        events_map,
-        version,
-        empty_key,
-    } = run;
-    let PipelineSetup {
-        sorted_ancestors,
-        mut out_degree,
-        mut global_auth_cache,
-        mut mainline_cache,
-        mut state_after_map,
-    } = prepare_pipeline::<Id, C, S, K, HashedState<Id, K>, E>(index, events_map, version)?;
+    let mut exec = prepare_execution::<Id, C, S, K, HashedState<Id, K>, E>(run)?;
 
-    for idx in sorted_ancestors {
-        let id_val = index.items()[idx];
-        let ev = events_map.get(id_val).unwrap();
-
-        let prev_states: Vec<HashedState<Id, K>> = finalized_parent_states(
-            &ev.prev_events,
-            index,
-            &mut out_degree,
-            &mut state_after_map,
-        );
+    for idx in core::mem::take(&mut exec.sorted_ancestors) {
+        let (ev, prev_states): (_, Vec<HashedState<Id, K>>) = exec.finalized_parents(idx);
 
         let is_state = ev.state_key.is_some();
         let has_single_parent = prev_states.len() == 1;
@@ -2547,14 +2617,14 @@ where
             HashedState::new()
         } else if has_single_parent && !is_state {
             let parent_state = prev_states.into_iter().next().unwrap();
-            if is_target[idx] {
+            if exec.is_target[idx] {
                 on_target(
                     idx,
                     StateUpdate::Unchanged {
                         parent_event_id: ev
                             .prev_events
                             .iter()
-                            .find(|pe| index.index_of(pe).is_some())
+                            .find(|pe| exec.index.index_of(pe).is_some())
                             .expect(
                                 "has_single_parent implies at least one prev_event is in the index",
                             ),
@@ -2563,19 +2633,17 @@ where
                 )
                 .map_err(StateComputationError::Callback)?;
             }
-            retain_state_for_children(&mut state_after_map, &out_degree, idx, parent_state);
+            retain_state_for_children(
+                &mut exec.state_after_map,
+                &exec.out_degree,
+                idx,
+                parent_state,
+            );
             continue;
         } else if has_single_parent {
             prev_states.into_iter().next().unwrap()
         } else {
-            resolve_merge_fast_path_hashed_with_cache(
-                &prev_states,
-                events_map,
-                &mut global_auth_cache,
-                &mut mainline_cache,
-                version,
-                empty_key,
-            )
+            resolve_merge_fast_path_hashed_with_cache(&prev_states, &mut exec.merge_ctx())
         };
 
         if let Some(state_key) = ev.accepted_state_key() {
@@ -2583,7 +2651,7 @@ where
             state_before.insert(key, ev.event_id.clone());
         }
 
-        if is_target[idx] {
+        if exec.is_target[idx] {
             on_target(
                 idx,
                 StateUpdate::New {
@@ -2594,7 +2662,12 @@ where
             .map_err(StateComputationError::Callback)?;
         }
 
-        retain_state_for_children(&mut state_after_map, &out_degree, idx, state_before);
+        retain_state_for_children(
+            &mut exec.state_after_map,
+            &exec.out_degree,
+            idx,
+            state_before,
+        );
     }
 
     Ok(())
@@ -4125,14 +4198,15 @@ mod tests {
             let mut full_cache = LocalAuthCache::new(crate::StateResVersion::V2);
             let mut mainline_cache: crate::FastMap<String, Option<String>> =
                 crate::FastMap::default();
-            let full = resolve_merged_parent_states(
-                &prev_plain,
+            let empty_key = String::new();
+            let mut full_ctx = MergeContext::new(
                 &events_map,
                 &mut full_cache,
                 &mut mainline_cache,
                 crate::StateResVersion::V2,
-                &String::new(),
+                &empty_key,
             );
+            let full = resolve_merged_parent_states(&prev_plain, &mut full_ctx);
 
             assert_eq!(
                 fast.state, full,
