@@ -706,21 +706,13 @@ where
             version,
             empty_key,
         );
-
-        if let Some(state_key) = ev.state_key.as_ref().filter(|_| !ev.rejected) {
-            state_before.insert(
-                (EventType::from(ev.event_type.as_str()), state_key.clone()),
-                ev.event_id.clone(),
-            );
-        }
+        record_own_state(&mut state_before, ev);
 
         if is_target[idx] {
             on_target(idx, state_before.clone()).map_err(StateComputationError::Callback)?;
         }
 
-        if out_degree[idx] > 0 {
-            state_after_map[idx] = Some(state_before);
-        }
+        retain_state_for_children(&mut state_after_map, &out_degree, idx, state_before);
     }
 
     Ok(())
@@ -1343,6 +1335,26 @@ fn parent_dedup_set(prev_events_len: usize) -> Option<crate::FastSet<usize>> {
     (prev_events_len > 1).then(crate::FastSet::default)
 }
 
+/// Records `ev`'s own `(type, state_key) -> id` mapping on `state` when it is an
+/// accepted state event.
+///
+/// Shared by the plain streaming pipeline and the State-DAG before/after
+/// traversals so the "rejected events never contribute state" rule is defined
+/// once (see [`LeanEvent::accepted_state_key`]).
+pub(crate) fn record_own_state<Id, C, K>(state: &mut SharedState<Id, K>, ev: &LeanEvent<Id, C, K>)
+where
+    Id: EventId,
+    C: EventContent,
+    K: StateKey,
+{
+    if let Some(state_key) = ev.accepted_state_key() {
+        state.insert(
+            (EventType::from(ev.event_type.as_str()), state_key.clone()),
+            ev.event_id.clone(),
+        );
+    }
+}
+
 /// Applies the `out_degree`/`state_after_map` bookkeeping for one parent as a
 /// child is processed, pushing the parent's finalized state into `prev_states`
 /// once all of its children have been visited.
@@ -1395,6 +1407,23 @@ where
         take_finalized_parent(pe_idx, out_degree, state_after_map, &mut prev_states);
     }
     prev_states
+}
+
+/// Stores `state` as the finalized state for `idx`, unless `idx` is a leaf.
+///
+/// Only a node with children will ever have its `state_after_map` entry read
+/// (by [`finalized_parent_states`]), so leaves are skipped to avoid retaining
+/// states the traversal will never touch. Shared by the plain and optimized
+/// streaming pipelines.
+pub(crate) fn retain_state_for_children<T>(
+    state_after_map: &mut [Option<T>],
+    out_degree: &[usize],
+    idx: usize,
+    state: T,
+) {
+    if out_degree[idx] > 0 {
+        state_after_map[idx] = Some(state);
+    }
 }
 
 /// Computes the **auth chain difference**: `auth(C) \ auth(U)`.
@@ -2534,9 +2563,7 @@ where
                 )
                 .map_err(StateComputationError::Callback)?;
             }
-            if out_degree[idx] > 0 {
-                state_after_map[idx] = Some(parent_state);
-            }
+            retain_state_for_children(&mut state_after_map, &out_degree, idx, parent_state);
             continue;
         } else if has_single_parent {
             prev_states.into_iter().next().unwrap()
@@ -2551,7 +2578,7 @@ where
             )
         };
 
-        if let Some(state_key) = ev.state_key.as_ref().filter(|_| !ev.rejected) {
+        if let Some(state_key) = ev.accepted_state_key() {
             let key = (EventType::from(ev.event_type.as_str()), state_key.clone());
             state_before.insert(key, ev.event_id.clone());
         }
@@ -2567,9 +2594,7 @@ where
             .map_err(StateComputationError::Callback)?;
         }
 
-        if out_degree[idx] > 0 {
-            state_after_map[idx] = Some(state_before);
-        }
+        retain_state_for_children(&mut state_after_map, &out_degree, idx, state_before);
     }
 
     Ok(())

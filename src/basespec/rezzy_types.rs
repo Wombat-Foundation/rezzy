@@ -2046,6 +2046,19 @@ pub struct LeanEvent<Id = String, C = Value, K = String> {
     pub room_id: Option<RoomId>,
 }
 
+impl<Id, C, K> LeanEvent<Id, C, K> {
+    /// The event's own state key, if this is an accepted state event that should
+    /// contribute its `(type, state_key) -> id` mapping to the resolved state.
+    ///
+    /// Rejected events never contribute state (see the `rejected` field docs),
+    /// and non-state events have no state key. Centralising this predicate keeps
+    /// the plain and optimized streaming pipelines from drifting.
+    #[must_use]
+    pub fn accepted_state_key(&self) -> Option<&K> {
+        self.state_key.as_ref().filter(|_| !self.rejected)
+    }
+}
+
 /// A room identifier, cheaply shared across every [`LeanEvent`] from the same
 /// ingest batch.
 ///

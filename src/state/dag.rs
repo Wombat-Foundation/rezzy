@@ -35,7 +35,8 @@ use crate::basespec::rezzy_types::{
     DagNode, EventContent, EventId, LeanEvent, StateKey, StateResVersion,
 };
 use crate::state::at::{
-    resolve_merged_parent_states, take_finalized_parent, LocalAuthCache, SharedState,
+    record_own_state, resolve_merged_parent_states, retain_state_for_children,
+    take_finalized_parent, LocalAuthCache, SharedState,
 };
 use crate::{DenseIndex, FastMap, FastSet, HashMap};
 use alloc::collections::VecDeque;
@@ -1396,22 +1397,9 @@ where
             version,
             empty_key,
         );
+        record_own_state(&mut state_before, ev);
 
-        if ev.state_key.is_some() && !ev.rejected {
-            state_before.insert(
-                (
-                    EventType::from(ev.event_type.as_str()),
-                    ev.state_key
-                        .clone()
-                        .expect("state_key was checked to be present"),
-                ),
-                ev.event_id.clone(),
-            );
-        }
-
-        if out_degree[idx] > 0 {
-            state_after_map[idx] = Some(state_before);
-        }
+        retain_state_for_children(&mut state_after_map, &out_degree, idx, state_before);
     }
 
     finish_state_after_from_dag(
@@ -1527,18 +1515,7 @@ where
     let mut state = compute_state_before_from_dag(inputs)?;
     let event = inputs.event;
 
-    if event.state_key.is_some() && !event.rejected {
-        state.insert(
-            (
-                EventType::from(event.event_type.as_str()),
-                event
-                    .state_key
-                    .clone()
-                    .expect("state_key was checked to be present"),
-            ),
-            event.event_id.clone(),
-        );
-    }
+    record_own_state(&mut state, event);
 
     Ok(state)
 }
